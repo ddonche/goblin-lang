@@ -1,0 +1,55 @@
+/// Goblin Templates Demo
+/// Shows off the :: syntax and template system
+
+default money USD
+
+/// Basic inline records with ::
+card_info = name: "Ace of Hearts" :: price: 0.50 :: condition: "mint"
+say "Card: {card_info.name} - {card_info.price}"
+
+/// Simple template with positional values
+@basic_card = name: "{card}" :: price: 0.25 :: qty: 1
+@basic_card =
+    name: "{card}" :: price: 0.25 :: qty: 1
+    "Two of Spades"
+    "Three of Spades" :: 0.30
+    "Four of Spades" :: :: 2
+
+/// Advanced template with loops and overrides
+minor_arcana = [
+    "Ace", "Two", "Three", "Four", "Five", 
+    "Six", "Seven", "Eight", "Nine", "Ten",
+    "Page", "Knight", "Queen", "King"
+]
+
+@tarot_cards = card: "{suit} – {rank}" :: price: 0.99 :: qty: 1
+
+suit: "Cups"
+    for rank in minor_arcana
+        "{rank}"
+    "Ace" :: qty: 2                /// Stock more aces
+    "Queen" :: price: 1.25         /// Premium card
+    "King" :: 1.50 :: 2            /// Positional override
+
+suit: "Swords" 
+    for rank in minor_arcana
+        "{rank}"
+    "Ace" :: qty: 2
+
+/// Board game components template
+@monopoly_props = property: "{name} Property Deed" :: price: 2.99 :: color: "red"
+@monopoly_props =
+    property: "{name} Property Deed" :: price: 2.99 :: color: "red"
+    "Park Place" :: 4.99 :: "blue"
+    "Boardwalk" :: 5.99 :: "blue"  
+    "Baltic Avenue" :: 1.99 :: "brown"
+    "Mediterranean Avenue" :: 1.99 :: "brown"
+
+/// Game tokens with bulk pricing
+@game_tokens = token: "{type} Token" :: price: 0.99 :: material: "plastic"
+@game_tokens =
+    token: "{type} Token" :: price: 0.99 :: material: "plastic"
+    "Boot"
+    "Car" :: :: "metal"           /// Skip price, override material
+    "Thimble" :: 1.25             /// Premium thimble
+    "Dog" :: 0.75 :: "wood"       /// Cheaper wooden version
