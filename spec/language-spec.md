@@ -381,10 +381,11 @@ say p.speak()
 
 ## 10. Money & Currency
 
-### 10.1 Type & Rounding
-- `money` = currency-aware numeric with exactly two decimals
-- Internal math uses minor units (cents) and converts back for display
-- Rounding policy: half-away-from-zero after operations
+### 10.1 Type & Precision Handling
+- `money` = currency-aware numeric stored as integer cents (minor units) 
+- Internal math uses minor units and converts for display
+- **No rounding** - excess precision becomes explicit remainder
+- Perfect conservation: `input_value = money_part + remainder`
 
 ### 10.2 Construction & Literals
 ```goblin
@@ -406,6 +407,9 @@ US$1.50, C$1.50, A$…, NZ$…, MX$…, HK$…, S$…
 
 /// Sign
 -$5.00, $-5.00, -USD 5.00
+
+/// High-precision construction (truncates, tracks remainder)
+money(10.555, USD) → $10.55 + remainder(0.005)
 
 /// Display
 say money(3.2, USD) → USD 3.20
@@ -440,7 +444,7 @@ age = int(45), tax = float(.0725), price = money(.99, EUR)
 /// Use // to capture remainder or divide_evenly(...)
 
 /// Scalar multiply/divide by numbers:
-money * int|float → money (same currency)
+money * int|float → money (same currency) + remainder tracking
 money // int → pair (quotient: money, remainder: money)
 money % int → remainder money (alias of second element of //)
 ```
@@ -448,6 +452,8 @@ money % int → remainder money (alias of second element of //)
 **Promotion rule:** If one operand is `money(CUR)` and the other is `int|float`, promote numeric to `money(CUR)` and operate (except `/`, which is disallowed).
 
 **Cross-currency arithmetic/comparison** → `CurrencyError` (no coercion).
+
+**Precision handling:** When operations create sub-cent amounts, the money part is truncated to currency precision and remainder is tracked in the remainder ledger.
 
 ### 10.5 Currency Config
 ```yaml
@@ -495,8 +501,9 @@ q, r = total // parts
 ```goblin
 divide_evenly(total: money, parts: int) -> array<money>
 ```
-- Splits using minor units and distributes leftover cents to the first k shares deterministically (largest remainders method)
+- Splits using minor units and distributes leftover cents deterministically (largest remainders method)
 - Sum of shares equals total exactly; no remainder returned
+- Perfect conservation guaranteed
 
 #### Remainder Ledger (Audit)
 Goblin tracks any money remainder you don't capture:
@@ -505,26 +512,34 @@ Goblin tracks any money remainder you don't capture:
 /// If you ignore remainder, it's tracked:
 q, _ = total // n
 
+/// High-precision construction tracking:
+money(10.555, USD)  /// Logs 0.005 remainder automatically
+
 /// End-of-script helpers:
 remainders_total()   → map { CUR: money }
 remainders_report()  → human-readable summary lines
 clear_remainders()   → reset ledger
 ```
 
-**Examples:**
+**Perfect Conservation Examples:**
 ```goblin
 default money USD
-total = 100
 
-q, r = total // 3   /// q = USD 33.33, r = USD 0.01
+/// Construction with remainder
+precise_amount = money(100.567, USD)  /// $100.56 + remainder(0.007)
 
-shares = divide_evenly(total, 3)
-/// shares → [USD 33.34, USD 33.33, USD 33.33]
+/// Division with remainder
+q, r = $100.00 // 3   /// q = $33.33, r = $0.01
+/// Conservation: $100.00 = $33.33 × 3 + $0.01 ✓
 
-/// If you discard remainder, it's tracked:
-_, _ = total // 7
-say remainders_total()     /// => { USD: USD 0.?? }
-say remainders_report()
+/// Even split with perfect distribution
+shares = divide_evenly($100.00, 3)
+/// shares → [$33.34, $33.33, $33.33]
+/// Conservation: $33.34 + $33.33 + $33.33 = $100.00 ✓
+
+/// Remainder tracking for ignored values
+_, _ = $100.00 // 7    /// remainder logged automatically
+say remainders_total()  /// => { USD: $0.02 }
 clear_remainders()
 ```
 
@@ -552,9 +567,10 @@ with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 /// rate_or_rates: single rate (0.10 or 10%) or array ([8.25%, 1%])
 /// compound=true applies sequentially; else additive
 ```
-- Rounding: half-away-from-zero to 2dp
-- `compound=false`: compute each component, round each to 2dp, then sum
-- `compound=true`: apply each rate sequentially, rounding each step's tax to 2dp
+- **Precision handling:** Tax calculations use truncation, not rounding
+- Any sub-cent amounts from percentage calculations are tracked in remainder ledger
+- `compound=false`: compute each component with truncation, track remainders separately
+- `compound=true`: apply each rate sequentially, tracking cumulative remainders
 
 ---
 
@@ -576,12 +592,12 @@ helper[array_expr] ≡ helper(array_expr)
 ```goblin
 add sum mult sub div min max avg root abs
 ```
-- `add` / `sum` — sum (returns element type; money stays money)
-- `mult` — product
+- `add` / `sum` — sum (returns element type; money stays money with perfect precision)
+- `mult` — product (tracks remainders for money operations)
 - `sub` — left fold subtraction
 - `div` — left fold division (returns float unless exact)
 - `min` / `max` — extrema
-- `avg` — arithmetic mean (money if same-currency; else float; rounds to 2 dp)
+- `avg` — arithmetic mean (money if same-currency with truncation; else float)
 - `root` — sequential roots (`root(27,3)` → 3)
 - `abs` — scalar abs; for array form returns elementwise array
 
@@ -694,7 +710,7 @@ sku_policy:
 ### 15.5 CSV Import/Export (Shopify)
 - `--initial`: full rows + qty; Draft by default unless `meta.publish=true`
 - `--append`: minimal rows; only new variants; no qty changes
-- CSV exports numeric Variant Price in store currency
+- CSV exports numeric Variant Price in store currency with perfect precision
 - If item currency ≠ store currency: warn and log to report.txt
 
 ---
@@ -727,7 +743,7 @@ say 5 ** 3  → 125
 say 5 ^^ 3  → 125 (5 × 5 × 5)
 ```
 
-### Money Examples
+### Money Examples with Perfect Conservation
 ```goblin
 default money USD
 
@@ -738,9 +754,16 @@ c = €3.00     /// EUR 3.00
 say a + b     /// USD 3.75
 a + c         /// CurrencyError
 
-price = 4.50
+/// High-precision handling
+precise = money(4.567, USD)  /// $4.56 + remainder(0.007)
+price = $4.50
 price++
 price = price + .05  /// USD 5.55
+
+/// Perfect conservation in operations
+total = $100.00
+shares = divide_evenly(total, 3)  /// [$33.34, $33.33, $33.33]
+say add[shares]  /// $100.00 exactly
 ```
 
 ### Templates
@@ -788,8 +811,11 @@ if, elif, el, for, in, while, class, init, return, skip, stop, try, catch, final
 assert, error, warn, say, true, false, nil, default, int, float, money, bool, 
 read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, exists, mkdirp, 
 listdir, glob, cwd, chdir, join, now, uuid, add, sum, mult, sub, div, mod, divmod, 
-pow, root, floor, ceil, round, abs, min, max, rand, randint, tax, with_tax, bit, gear
+pow, root, floor, ceil, round, abs, min, max, rand, randint, tax, with_tax, bit, gear,
+use, export, import, via, validate, remainders_total, remainders_report, clear_remainders, 
+divide_evenly
 ```
+
 ## 19. Gears: Modular Add-ons
 
 ### 19.1 Overview
@@ -892,4 +918,3 @@ export @cards via shopify::csv to "dist/products.csv" mode: "append"
 - **shopify** — Handles Shopify CSV format, product variants, inventory
 - **restaurant_menu** — Manages dishes, ingredients, dietary restrictions
 - **invoice** — Generates business invoices with tax calculations
-
