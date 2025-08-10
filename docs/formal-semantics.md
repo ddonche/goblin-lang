@@ -1,281 +1,226 @@
-# Goblin Money System – Formal Semantics (v0.1)
+# Goblin Money System — Formal Semantics (v0.2, No Rounding)
 
 ## 1. Overview
 
-The Goblin language treats **money** as a first-class type with **built-in conservation guarantees**. 
+Goblin treats money as **cents (minor units) + an explicit remainder** for any sub-cent amount. **No rounding ever occurs.**
 
-**Key Invariant:**
+**Global Invariant (per currency C):**
 ```
-For all well-typed operations:
-sum(inputs) = sum(outputs) + sum(remainders)
+sum(inputs in C) = sum(outputs in C) + sum(remainders in C)
 ```
 
-This invariant holds within each currency and is guaranteed by **construction** of the operational semantics.
+Remainders are (optionally) recorded in a **remainder ledger**; they can be inspected or later allocated (e.g., with `divide_evenly`).
 
-## 2. Syntax
+## 2. Syntax (Excerpt)
 
 ### 2.1 Types
 ```
-τ ::= int | float | money(C) | <money(C), money(C)>
+τ ::= int | float | money(C) | <money(C), money(C)> | list(money(C))
 ```
-
-Where:
-- `C` is a currency code (e.g., `USD`, `EUR`)
-- Pairs represent `(quotient, remainder)` from division
 
 ### 2.2 Expressions
 ```
-e ::= n | m | e op e | divmod(e,e) | divide_evenly(e,e)
+e ::= money(v, C) | $vC | e + e | e - e | e * k | e // n | divide_evenly(e, n)
 ```
 
 Where:
-- `n ∈ ℤ ∪ ℝ` (numeric literals)
-- `m` is a money literal, e.g., `$10.50USD`
-- `op ∈ {+, -, *, //}`
+- `v ∈ ℚ` (arbitrary-precision numeric literal)
+- `k ∈ ℚ` (scalar)
+- `n ∈ ℤ, n > 0` (split/divisor)
 
-## 3. Typing Rules
+## 3. Canonicalization (Truncate-and-Remainder)
 
-**Notation:** `Γ ⊢ e : τ` means "under environment Γ, expression e has type τ"
+Fix a currency `C` with cent size `uC = 0.01`.
 
-### 3.1 Promotion
+**Define:**
+- `to_centsC(x) = trunc(x / uC)` (truncate toward zero to integer cents)
+- `canonC(x) = (cents = to_centsC(x), rem = x - cents*uC)`
+
+Where `rem` satisfies `0 ≤ |rem| < uC` and has the same sign as `x`.
+
+**Intuition:** Split any amount into whole cents plus a sub-cent remainder; never round.
+
+## 4. Typing (Selected Rules)
+
+### Same-Currency Operations
 ```
-Γ ⊢ e1 : money(C)    Γ ⊢ e2 : num
-─────────────────────────────────────
-Γ ⊢ e1 op e2 : money(C)
-```
-
-Where `num ∈ {int, float}`, and `e2` is promoted to `money(C)` before evaluation.
-
-### 3.2 Addition & Subtraction
-```
-Γ ⊢ e1 : money(C)    Γ ⊢ e2 : money(C)
+Γ ⊢ e1 : money(C)   Γ ⊢ e2 : money(C)
 ──────────────────────────────────────
-Γ ⊢ e1 + e2 : money(C)
+Γ ⊢ e1 ± e2 : money(C)
 ```
 
-(Similarly for `-`)
-
-### 3.3 Multiplication
+### Scalar Multiplication
 ```
-Γ ⊢ e1 : money(C)    Γ ⊢ e2 : num
-────────────────────────────────────
-Γ ⊢ e1 * e2 : money(C)
+Γ ⊢ e : money(C)   Γ ⊢ k : ℚ
+──────────────────────────────
+Γ ⊢ e * k : money(C)
 ```
 
-### 3.4 Division (Integer Quotient & Remainder)
+### Division with Remainder
 ```
-Γ ⊢ e1 : money(C)    Γ ⊢ e2 : int    e2 ≠ 0
-─────────────────────────────────────────────
-Γ ⊢ e1 // e2 : <money(C), money(C)>
-```
-
-- First component: `quotient`
-- Second component: `remainder`
-
-### 3.5 Even Split
-```
-Γ ⊢ e1 : money(C)    Γ ⊢ e2 : int    e2 > 0
-─────────────────────────────────────────────
-Γ ⊢ divide_evenly(e1, e2) : list(money(C))
+Γ ⊢ e : money(C)   Γ ⊢ n : int   n > 0
+────────────────────────────────────────
+Γ ⊢ e // n : <money(C), money(C)>
 ```
 
-## 4. Operational Semantics
-
-We use **big-step semantics**: `e ⇓ v` means "expression e evaluates to value v"
-
-### 4.1 Addition
+### Even Split
 ```
-e1 ⇓ m1    e2 ⇓ m2
-────────────────────
-e1 + e2 ⇓ m1 +C m2
+Γ ⊢ e : money(C)   Γ ⊢ n : int   n > 0
+────────────────────────────────────────
+Γ ⊢ divide_evenly(e, n) : list(money(C))
 ```
 
-Where `+C` is decimal addition in currency C, rounded half-away-from-zero to 2 decimal places.
+**Cross-currency arithmetic is ill-typed** (enforced by `C`).
 
-### 4.2 Subtraction
-```
-e1 ⇓ m1    e2 ⇓ m2
-────────────────────
-e1 - e2 ⇓ m1 -C m2
-```
+## 5. Evaluation with a Remainder Ledger
 
-### 4.3 Multiplication
-```
-e1 ⇓ m    e2 ⇓ k
-──────────────────
-e1 * e2 ⇓ m ×C k
-```
+We use **big-step semantics** with an explicit **remainder ledger** `ℛ`, a map `Currency → ℚ`, accumulating sub-cent amounts.
 
-### 4.4 Division with Remainder
+**Notation:**
 ```
-e1 ⇓ m    e2 ⇓ n
-──────────────────
-e1 // e2 ⇓ <q, r>
+e ⇓ v ; ℛ'
 ```
+Meaning: evaluating `e` yields value `v` and updates the ledger from current `ℛ` to `ℛ'`.
 
-Where:
-- `q = floor(m / n)`
-- `r = m - q × n`
+### 5.1 Money Construction (Literal or Constructor)
 
-**Exact equality holds:** `m = q × n + r`
+Literal `$vC` or `money(v, C)`:
 
-### 4.5 Even Split
 ```
-e1 ⇓ m    e2 ⇓ n
-─────────────────────────────
-divide_evenly(e1, e2) ⇓ [s1, ..., sn]
+canonC(v) = (cents, rem)
+---------------------------------------
+money(v, C) ⇓ money(C, cents*uC) ; ℛ[C] += rem
 ```
 
-Such that:
-- `∑(i=1 to n) si = m`
-- `|si - sj| ≤ 0.01` for all i, j (largest remainder method)
+**No rounding:** the money value is the truncated cents; `rem` is logged.
 
-## 5. Money Conservation Theorem
+### 5.2 Addition/Subtraction (Same Currency)
 
-**Theorem (Money Conservation):** If `e` is a well-typed Goblin expression and evaluates without error:
+Exact on cents; no new remainder:
 
-### For operations returning a money value:
 ```
-∑(inputs) = output
-```
-
-### For operations returning (quotient, remainder) pairs:
-```
-∑(inputs) = quotient × divisor + remainder
+e1 ⇓ m1 ; ℛ1      e2 ⇓ m2 ; ℛ2      (cur m1 = cur m2 = C)
+----------------------------------------------------------
+e1 + e2 ⇓ m1 ⊕C m2 ; merge(ℛ1, ℛ2)    // cents add exactly
 ```
 
-### For divide_evenly:
+(Same for subtraction)
+
+### 5.3 Scalar Multiplication
+
+Multiply cents exactly in `ℚ`, then canonicalize with truncate-and-remainder:
+
 ```
-∑(parts) = input
+e ⇓ m ; ℛ
+let x = (cents(m) * uC) * k      // exact rational
+canonC(x) = (cents', rem')
+--------------------------------------------------
+e * k ⇓ money(C, cents'*uC) ; ℛ[C] += rem'
 ```
 
-**Proof Sketch:** By structural induction on evaluation derivations:
+### 5.4 Divmod // (Money by Positive Int)
 
-1. **Base cases:** Literals conserve trivially
-2. **Inductive step:** Show each operation's evaluation rule satisfies the conservation equation given its premises
-3. **Composition:** If subexpressions conserve, the composition also conserves
+Quotient in cents: integer division; remainder in cents:
 
-## 6. Currency Safety
+```
+e ⇓ m ; ℛ      n > 0
+let q_c = cents(m) / n          // integer division
+let r_c = cents(m) - q_c * n    // 0 ≤ |r_c| < n
+------------------------------------------------
+e // n ⇓ <money(C, q_c*uC), money(C, r_c*uC)> ; ℛ
+```
 
-Goblin enforces **currency matching** at compile-time:
+**No new sub-cent remainder** is created here; both results are money (cent-precision).
 
-- Cross-currency arithmetic is a type error unless explicitly converted via a currency conversion function
-- Guarantees theorem applies per currency
-- No silent currency coercion
+### 5.5 Even Split
 
-## 7. Implementation Notes
+Distribute cents exactly; no sub-cent remainder produced:
 
-### Rounding
-All intermediate operations round half-away-from-zero to avoid bias.
+```
+e ⇓ m ; ℛ      n > 0
+let q_c = cents(m) / n
+let r_c = cents(m) mod n
+produce list: r_c shares of (q_c+1) cents, else q_c cents
+----------------------------------------------------------
+divide_evenly(e, n) ⇓ [m1..mn] ; ℛ
+```
 
-### Remainder Tracking
-The interpreter can optionally log remainders from `//` for auditing.
+**Sum of shares equals `m` exactly.**
 
-### Promotion
-Numeric literals in mixed operations are promoted to `money(C)` with smallest unit precision before evaluation.
+**Ledger Behavior:** Only construction and scalar multiplication (and any future op that yields sub-cent results) log to `ℛ`. Pure cents-only ops don't touch `ℛ`.
 
-### Error Conditions
+## 6. Conservation Theorem (No Rounding)
+
+**For any well-typed expression `e` in currency `C`:**
+
+```
+Let eval(e) produce value v and ledger change Δℛ.
+Then   total_input_C = value_C + Δℛ[C]
+```
+
+**Formally, by structural induction over the rules above:**
+
+1. **Construction:** `v = trunc(v0)`, `Δℛ[C] = v0 - trunc(v0)`
+2. **+/-:** cents add exactly; ledger is just the merge of sub-ledgers
+3. **\* k:** `x = value * k`, `v = trunc(x)`, `Δℛ[C] = x - trunc(x)`
+4. **// n:** `m = q*n + r` in cents; ledger unchanged
+5. **divide_evenly:** shares sum to input; ledger unchanged
+
+**No step introduces rounding; all fractional loss is recorded as remainder.**
+
+## 7. Practical Guidance
+
+### Perfect Preservation
+You **never lose a fraction**: it's either represented as cents or logged in `ℛ`.
+
+### Auditability
+`remainders_total()` and `remainders_report()` just read `ℛ`.
+
+### Allocation
+Use `divide_evenly(total, n)` to assign cents without rounding.
+
+### Remainder Management
+To allocate ledger remainders later, expose a helper (e.g., `drip(ℛ[C])`) that periodically converts accumulated remainder to a cent and emits it deterministically.
+
+## 8. Error Conditions
+
 - **Division by zero:** `MoneyDivisionError`
 - **Currency mismatch:** `CurrencyError`
-- **Regular division on money:** `MoneyDivisionError: Use // to capture remainder`
+- **Regular money /:** `MoneyDivisionError ("use // or * by rational with truncation+ledger")`
 
-## 8. Formal Properties
+## 9. Notes Toward Mechanization
 
-### 8.1 Conservation Property
-**Property:** For any well-typed expression `e`:
+### Coq/Lean Representation
+- Represent money as `(C, ℤ)` cents
+- Represent the ledger as `Currency → ℚ`
+
+### Key Lemmas
+- Define `canonC` and prove `x = cents*uC + rem` with `|rem| < uC`
+- Replace any former rounding lemmas with truncation + remainder lemmas
+
+### Conservation Proofs
+Conservation proofs become simpler: each rule explicitly preserves `value + remainder`.
+
+## 10. Implementation Requirements
+
+### Money Type
 ```
-eval(e) preserves total money value within each currency
-```
-
-### 8.2 Currency Safety Property
-**Property:** 
-```
-No well-typed expression can mix currencies without explicit conversion
-```
-
-### 8.3 Remainder Completeness Property
-**Property:**
-```
-All money remainders are either:
-1. Explicitly captured in variables, or
-2. Tracked in the remainder ledger
-```
-
-## 9. Examples with Formal Verification
-
-### 9.1 Basic Conservation
-```goblin
-// Input: $10.00
-price = $10.00
-q, r = price // 3
-
-// Formal verification:
-// Input: money(USD, 1000) cents
-// Output: q = money(USD, 333) cents, r = money(USD, 1) cents
-// Conservation: 1000 = 333 × 3 + 1 ✓
+Money = (currency: Currency, cents: Integer)
+RemainderLedger = Map<Currency, Rational>
 ```
 
-### 9.2 Even Split Conservation
-```goblin
-// Input: $100.00
-total = $100.00
-shares = divide_evenly(total, 3)
+### Core Operations
+All operations must:
+1. Preserve exact conservation
+2. Update remainder ledger when sub-cent amounts arise
+3. Never perform rounding
 
-// Formal verification:
-// Input: money(USD, 10000) cents
-// Output: [money(USD, 3334), money(USD, 3333), money(USD, 3333)] cents
-// Conservation: 3334 + 3333 + 3333 = 10000 ✓
-```
-
-### 9.3 Currency Safety
-```goblin
-usd_price = $10.00     // money(USD, 1000)
-eur_price = €8.50      // money(EUR, 850)
-total = usd_price + eur_price  // Type error: currency mismatch
-```
-
-## 10. Extension Points
-
-### 10.1 Currency Conversion
-```
-Γ ⊢ e1 : money(C1)    Γ ⊢ rate : exchange_rate(C1, C2)
-─────────────────────────────────────────────────────
-Γ ⊢ convert(e1, C2, rate) : money(C2)
-```
-
-### 10.2 Gear System Integration
-```
-Γ ⊢ data : list(money(C))    Γ ⊢ gear : exporter(format)
-──────────────────────────────────────────────────────
-Γ ⊢ export data via gear : io_effect(format)
-```
-
-### 10.3 Audit Trail Extension
-```
-Every money operation produces:
-(result, audit_trace)
-where audit_trace : list(money_operation)
-```
-
-## 11. Formal Verification Goals
-
-1. **Mechanize semantics** in Coq/Lean/Isabelle/HOL
-2. **Prove money conservation** theorem mechanically
-3. **Verify interpreter implementation** against formal semantics
-4. **Extend to gear system** with formal module safety
-5. **Add currency conversion** with exchange rate tracking and audit trails
-6. **Prove absence of common financial bugs** (overflow, underflow, precision loss)
-
-## 12. Research Contributions
-
-This formal semantics provides:
-
-1. **First formally verified money type** in a general-purpose programming language
-2. **Provably correct remainder handling** with mathematical guarantees
-3. **Type-safe currency system** preventing mixing errors
-4. **Foundation for verified financial computation** in business applications
-5. **Extensible framework** for domain-specific financial languages
+### Verification Goals
+1. **Mechanize in formal verification system** (Coq/Lean/Isabelle)
+2. **Prove conservation theorem** mechanically
+3. **Verify interpreter implementation** against these semantics
+4. **Extend to full language** with gears and other features
 
 ---
 
-**Status:** This document provides the theoretical foundation for Goblin's revolutionary approach to financial computation. Implementation and mechanized verification are ongoing.
+**Status:** This specification provides the mathematical foundation for Goblin's revolutionary approach to financial computation with perfect conservation and no precision loss.
