@@ -1,0 +1,7 @@
+/// Money type examples
+default money USD
+
+price = $19.99
+tax_rate = 8.25%
+total = with_tax(price, tax_rate)
+say "Total: {total}"
