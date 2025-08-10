@@ -1,1 +1,5 @@
+/// Hello World in Goblin
+"Hello, World!"
 
+name = "Game Goblin"
+say "Welcome to {name}!"
