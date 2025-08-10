@@ -892,3 +892,781 @@ export @cards via shopify::csv to "dist/products.csv" mode: "append"
 - **shopify** — Handles Shopify CSV format, product variants, inventory
 - **restaurant_menu** — Manages dishes, ingredients, dietary restrictions
 - **invoice** — Generates business invoices with tax calculations
+
+Goblin Money System – Formal Semantics (v0.1)
+1. Overview
+The Goblin language treats money as a first-class type with built-in conservation guarantees.
+The key invariant:
+
+∀
+well-typed ops
+,
+sum(inputs)
+=
+sum(outputs)
++
+sum(remainders)
+∀well-typed ops,sum(inputs)=sum(outputs)+sum(remainders)
+within each currency.
+
+This invariant holds by construction of the operational semantics.
+
+2. Syntax
+2.1 Types
+𝜏
+:
+:
+=
+int
+  
+∣
+  
+float
+  
+∣
+  
+money
+(
+𝐶
+)
+  
+∣
+  
+⟨
+money
+(
+𝐶
+)
+,
+money
+(
+𝐶
+)
+⟩
+τ::=int∣float∣money(C)∣⟨money(C),money(C)⟩
+where:
+
+𝐶
+C is a currency code (e.g., USD, EUR)
+
+Pairs represent (quotient, remainder) from division.
+
+2.2 Expressions
+𝑒
+:
+:
+=
+𝑛
+  
+∣
+  
+𝑚
+  
+∣
+  
+𝑒
+  
+𝑜
+𝑝
+  
+𝑒
+  
+∣
+  
+divmod
+(
+𝑒
+,
+𝑒
+)
+  
+∣
+  
+divide_evenly
+(
+𝑒
+,
+𝑒
+)
+e::=n∣m∣eope∣divmod(e,e)∣divide_evenly(e,e)
+𝑛
+∈
+𝑍
+∪
+𝑅
+n∈Z∪R (numeric literals)
+
+𝑚
+m is a money literal, e.g., \$10.50USD
+
+op ∈ { +, -, *, // }
+
+3. Typing Rules
+Notation:
+
+Γ
+⊢
+𝑒
+:
+𝜏
+Γ⊢e:τ
+means "under environment 
+Γ
+Γ, expression 
+𝑒
+e has type 
+𝜏
+τ".
+
+3.1 Promotion
+Γ
+⊢
+𝑒
+1
+:
+money
+(
+𝐶
+)
+Γ
+⊢
+𝑒
+2
+:
+num
+Γ
+⊢
+𝑒
+1
+  
+𝑜
+𝑝
+  
+𝑒
+2
+:
+money
+(
+𝐶
+)
+Γ⊢e 
+1
+​
+ ope 
+2
+​
+ :money(C)
+Γ⊢e 
+1
+​
+ :money(C)Γ⊢e 
+2
+​
+ :num
+​
+ 
+where num ∈ {int, float}, and 
+𝑒
+2
+e 
+2
+​
+  is promoted to money(C) before evaluation.
+
+3.2 Addition & Subtraction
+Γ
+⊢
+𝑒
+1
+:
+money
+(
+𝐶
+)
+Γ
+⊢
+𝑒
+2
+:
+money
+(
+𝐶
+)
+Γ
+⊢
+𝑒
+1
++
+𝑒
+2
+:
+money
+(
+𝐶
+)
+Γ⊢e 
+1
+​
+ +e 
+2
+​
+ :money(C)
+Γ⊢e 
+1
+​
+ :money(C)Γ⊢e 
+2
+​
+ :money(C)
+​
+ 
+(similarly for -).
+
+3.3 Multiplication
+Γ
+⊢
+𝑒
+1
+:
+money
+(
+𝐶
+)
+Γ
+⊢
+𝑒
+2
+:
+num
+Γ
+⊢
+𝑒
+1
+∗
+𝑒
+2
+:
+money
+(
+𝐶
+)
+Γ⊢e 
+1
+​
+ ∗e 
+2
+​
+ :money(C)
+Γ⊢e 
+1
+​
+ :money(C)Γ⊢e 
+2
+​
+ :num
+​
+ 
+3.4 Division (integer quotient & remainder)
+Γ
+⊢
+𝑒
+1
+:
+money
+(
+𝐶
+)
+Γ
+⊢
+𝑒
+2
+:
+int
+𝑒
+2
+≠
+0
+Γ
+⊢
+𝑒
+1
+/
+/
+𝑒
+2
+:
+⟨
+money
+(
+𝐶
+)
+,
+money
+(
+𝐶
+)
+⟩
+Γ⊢e 
+1
+​
+ //e 
+2
+​
+ :⟨money(C),money(C)⟩
+Γ⊢e 
+1
+​
+ :money(C)Γ⊢e 
+2
+​
+ :inte 
+2
+​
+ 
+
+=0
+​
+ 
+First component: quotient
+
+Second component: remainder
+
+3.5 Even Split
+Γ
+⊢
+𝑒
+1
+:
+money
+(
+𝐶
+)
+Γ
+⊢
+𝑒
+2
+:
+int
+𝑒
+2
+>
+0
+Γ
+⊢
+divide_evenly
+(
+𝑒
+1
+,
+𝑒
+2
+)
+:
+list
+(
+money
+(
+𝐶
+)
+)
+Γ⊢divide_evenly(e 
+1
+​
+ ,e 
+2
+​
+ ):list(money(C))
+Γ⊢e 
+1
+​
+ :money(C)Γ⊢e 
+2
+​
+ :inte 
+2
+​
+ >0
+​
+ 
+4. Operational Semantics
+We use big-step semantics:
+
+𝑒
+⇓
+𝑣
+e⇓v
+means “expression 
+𝑒
+e evaluates to value 
+𝑣
+v”.
+
+4.1 Addition
+𝑒
+1
+⇓
+𝑚
+1
+𝑒
+2
+⇓
+𝑚
+2
+𝑒
+1
++
+𝑒
+2
+⇓
+𝑚
+1
++
+𝐶
+𝑚
+2
+e 
+1
+​
+ +e 
+2
+​
+ ⇓m 
+1
+​
+ + 
+C
+​
+ m 
+2
+​
+ 
+e 
+1
+​
+ ⇓m 
+1
+​
+ e 
+2
+​
+ ⇓m 
+2
+​
+ 
+​
+ 
+where 
++
+𝐶
++ 
+C
+​
+  is decimal addition in currency 
+𝐶
+C, rounded half-away-from-zero to 2 decimal places.
+
+4.2 Subtraction
+𝑒
+1
+⇓
+𝑚
+1
+𝑒
+2
+⇓
+𝑚
+2
+𝑒
+1
+−
+𝑒
+2
+⇓
+𝑚
+1
+−
+𝐶
+𝑚
+2
+e 
+1
+​
+ −e 
+2
+​
+ ⇓m 
+1
+​
+ − 
+C
+​
+ m 
+2
+​
+ 
+e 
+1
+​
+ ⇓m 
+1
+​
+ e 
+2
+​
+ ⇓m 
+2
+​
+ 
+​
+ 
+4.3 Multiplication
+𝑒
+1
+⇓
+𝑚
+𝑒
+2
+⇓
+𝑘
+𝑒
+1
+∗
+𝑒
+2
+⇓
+𝑚
+×
+𝐶
+𝑘
+e 
+1
+​
+ ∗e 
+2
+​
+ ⇓m× 
+C
+​
+ k
+e 
+1
+​
+ ⇓me 
+2
+​
+ ⇓k
+​
+ 
+4.4 Division with Remainder
+𝑒
+1
+⇓
+𝑚
+𝑒
+2
+⇓
+𝑛
+𝑒
+1
+/
+/
+𝑒
+2
+⇓
+⟨
+𝑞
+,
+𝑟
+⟩
+e 
+1
+​
+ //e 
+2
+​
+ ⇓⟨q,r⟩
+e 
+1
+​
+ ⇓me 
+2
+​
+ ⇓n
+​
+ 
+where:
+
+𝑞
+=
+floor
+(
+𝑚
+/
+𝑛
+)
+𝑟
+=
+𝑚
+−
+𝑞
+×
+𝑛
+q=floor(m/n)r=m−q×n
+Exact equality holds:
+
+𝑚
+=
+𝑞
+×
+𝑛
++
+𝑟
+m=q×n+r
+4.5 Even Split
+𝑒
+1
+⇓
+𝑚
+𝑒
+2
+⇓
+𝑛
+divide_evenly
+(
+𝑒
+1
+,
+𝑒
+2
+)
+⇓
+[
+𝑠
+1
+,
+…
+,
+𝑠
+𝑛
+]
+divide_evenly(e 
+1
+​
+ ,e 
+2
+​
+ )⇓[s 
+1
+​
+ ,…,s 
+n
+​
+ ]
+e 
+1
+​
+ ⇓me 
+2
+​
+ ⇓n
+​
+ 
+such that:
+
+∑
+𝑖
+=
+1
+𝑛
+𝑠
+𝑖
+=
+𝑚
+i=1
+∑
+n
+​
+ s 
+i
+​
+ =m
+and 
+∣
+𝑠
+𝑖
+−
+𝑠
+𝑗
+∣
+≤
+0.01
+∣s 
+i
+​
+ −s 
+j
+​
+ ∣≤0.01 for all 
+𝑖
+,
+𝑗
+i,j (largest remainder method).
+
+5. Money Conservation Theorem
+Theorem (Money Conservation):
+If 
+𝑒
+e is a well-typed Goblin expression and evaluates without error:
+
+For ops returning a money value:
+
+∑
+(
+inputs
+)
+=
+output
+∑(inputs)=output
+For ops returning (quotient, remainder) pairs:
+
+∑
+(
+inputs
+)
+=
+quotient
+×
+divisor
++
+remainder
+∑(inputs)=quotient×divisor+remainder
+For divide_evenly:
+
+∑
+(
+parts
+)
+=
+input
+∑(parts)=input
+Proof Sketch: By structural induction on evaluation derivations:
+
+Base cases: Literals conserve trivially.
+
+Inductive step: Show each op’s eval rule satisfies the conservation equation given its premises.
+
+Composition: If subexpressions conserve, the composition also conserves.
+
+6. Currency Safety
+Goblin enforces currency matching at compile-time:
+
+Cross-currency arithmetic is a type error unless explicitly converted via a currency conversion function.
+
+Guarantees theorem applies per currency.
+
+7. Implementation Notes
+Rounding: All intermediate ops round half-away-from-zero to avoid bias.
+
+Remainder Tracking: The interpreter can optionally log remainders from // for auditing.
+
+Promotion: Numeric literals in mixed ops are promoted to money(C) with smallest unit precision before evaluation.
