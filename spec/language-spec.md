@@ -664,6 +664,7 @@ dist/
 ```
 
 ### 15.2 CLI (Gears)
+```
 gears init                          # Initialize project
 gears spawn tarot_deck "Mystic"     # Generate template  
 gears build mystic.yaml --chain tarot_deck,shopify,etsy,ebay  # Chain exports
@@ -674,6 +675,7 @@ gears install community_gear        # Install from repository
 gears code set "Deviant Moon Borderless Tarot" DMBT
 gears codes list
 gears codes grep DMBT
+```
 
 ### 15.3 Configuration Files
 - **collections-map.yaml**: Authoritative map from Goblin category to Shopify collections (first = primary)
