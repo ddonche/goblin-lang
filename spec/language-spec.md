@@ -664,17 +664,16 @@ dist/
 ```
 
 ### 15.2 CLI (Gears)
-```bash
-goblin gear .
-goblin spawn <type> title:"…" [year:YYYY] [components:…|…] [suits:…|…] [price_major:$] [price_minor:$] [draft:true]
-goblin build <file.yaml> --initial
-goblin build <file.yaml> --append
+gears init                          # Initialize project
+gears spawn tarot_deck "Mystic"     # Generate template  
+gears build mystic.yaml --chain tarot_deck,shopify,etsy,ebay  # Chain exports
+gears list                          # Show available gears
+gears install community_gear        # Install from repository
 
 # Codes
-goblin code set "Deviant Moon Borderless Tarot" DMBT
-goblin codes list
-goblin codes grep DMBT
-```
+gears code set "Deviant Moon Borderless Tarot" DMBT
+gears codes list
+gears codes grep DMBT
 
 ### 15.3 Configuration Files
 - **collections-map.yaml**: Authoritative map from Goblin category to Shopify collections (first = primary)
@@ -789,3 +788,105 @@ read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, exists, mkdir
 listdir, glob, cwd, chdir, join, now, uuid, add, sum, mult, sub, div, mod, divmod, 
 pow, root, floor, ceil, round, abs, min, max, rand, randint, tax, with_tax, bit, gear
 ```
+## 19. Gears: Modular Add-ons
+
+### 19.1 Overview
+Gears are modular add-ons for Goblin that extend language capabilities for specific domains. Each gear is self-contained with no external dependencies, avoiding conflicts and dependency hell.
+
+**Key Points:**
+- **Independent** — Each gear operates in isolation, avoiding conflicts
+- **Community-driven** — Users can create and share gears for their industries
+- **Composable** — Install only the gears you need for your workflow
+- **First-class syntax integration** — Gears feel native in Goblin code
+
+### 19.2 Loading Gears
+```goblin
+use shopify
+use tarot_deck as tarot
+use invoice@^1.2
+```
+- `use gear_name` loads a gear into the program
+- Optional alias with `as`
+- Optional version specifier with `@`
+
+### 19.3 Namespaced Symbols
+Gears expose templates, functions, and exporters under their namespace:
+```goblin
+tarot::card_template
+shopify::csv
+invoice::calc_fee
+```
+
+### 19.4 Gear Templates
+Gears can publish template structures that integrate with Goblin's template syntax:
+```goblin
+use tarot_deck as tarot
+
+@cards = tarot::card_template(price: .99, qty: 1)
+    "Ace of Cups" :: 3
+    "Two of Cups"                  /// uses defaults
+    "Three of Cups" :: price: 1.25 :: 2
+```
+- Gear defines template structure and optional defaults
+- Local binding with `@name` sets project-specific defaults
+- Uses standard positional override syntax (`::`)
+
+### 19.5 Export/Import via Gears
+```goblin
+/// Export data through gear formatters
+export @cards via shopify::csv to "dist/products.csv" mode: "append"
+
+/// Import data through gear parsers
+orders = import "orders.csv" via shopify::csv
+```
+- `via gear` specifies which gear handles the operation
+- Target format: `shopify::csv`, `shopify::api`, etc.
+- Extra options (`to`, `mode`, etc.) are passed to the gear
+
+### 19.6 Gear Functions
+```goblin
+fee = invoice::calc_fee(subtotal: 125.00, rate: 2%)
+```
+Gear functions integrate with Goblin's type system (money, percentages, etc.)
+
+### 19.7 Configuration & Validation
+```goblin
+/// Configure gear behavior
+shopify::configure(
+    store: "game-goblin",
+    currency: USD,
+    strict_currency: false
+)
+
+/// Validate data against gear rules
+validate @cards via tarot::rules
+```
+If validation fails, Goblin raises standard errors or warnings.
+
+### 19.8 Introspection
+```goblin
+say gears()                  /// ["shopify", "tarot_deck"]
+say gear_symbols("shopify")  /// ["csv", "api", "configure", ...]
+```
+
+### 19.9 Full Example
+```goblin
+use tarot_deck as tarot
+use shopify
+
+shopify::configure(store: "game-goblin", currency: USD)
+
+@cards = tarot::card_template(price: .99, qty: 1)
+    "Ace of Cups" :: 3
+    "Two of Cups"
+    "Three of Cups" :: price: 1.25 :: 2
+
+validate @cards via tarot::rules
+export @cards via shopify::csv to "dist/products.csv" mode: "append"
+```
+
+### 19.10 Example Gear Ideas
+- **tarot_deck** — Knows about suits, arcana, card pricing
+- **shopify** — Handles Shopify CSV format, product variants, inventory
+- **restaurant_menu** — Manages dishes, ingredients, dietary restrictions
+- **invoice** — Generates business invoices with tax calculations
