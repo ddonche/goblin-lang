@@ -158,7 +158,7 @@ sum(arr)  /// semantic twin of add for arrays
 /// Compound assignment
 += -= *= /= %= **=
 ```
-Money ops must follow currency rules (same currency, see §10).
+Money ops must follow currency rules (same currency, see §10). For money, +=, -=, and *= follow the same promotion, precision, and ledger rules described in §10.
 
 ---
 
