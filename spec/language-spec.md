@@ -381,11 +381,33 @@ say p.speak()
 
 ## 10. Money & Currency
 
+### 10.0 Money Precision Policy
+
+You can fix the allowed decimal places and choose how to handle sub-cent results.
+
+```goblin
+/// Syntax (anywhere before use)
+default money USD precision: 2 policy: strict
+```
+
+**Parameters:**
+- **precision:** integer ≥ 0 (decimal places in major units)
+- **policy:** `truncate` | `warn` | `strict`
+  - `truncate` (default): canonicalize via truncate-and-ledger (current behavior)
+  - `warn`: do truncate-and-ledger, plus emit `warn MoneyPrecisionWarning(...)`
+  - `strict`: **throw** `MoneyPrecisionError` if any operation would create sub-cent
+
+**Scope:** applies to the file from that point on, per currency. Omit `precision`/`policy` to inherit current settings. Multiple `default money …` lines may update settings later in the file.
+
 ### 10.1 Type & Precision Handling
 - `money` = currency-aware numeric stored as integer cents (minor units) 
 - Internal math uses minor units and converts for display
 - **No rounding** - excess precision becomes explicit remainder
 - Perfect conservation: `input_value = money_part + remainder`
+- By default, `precision: 2, policy: truncate`. Implementations MAY change global defaults via build config, but the in-file directive overrides.
+- In `policy: strict`, any of the following that would produce more than `precision` decimals MUST raise `MoneyPrecisionError`:
+  - `money(v, CUR)`, promotion (`money` + int/float), scalar `*`, `tax`, `with_tax`, `convert`, and any gear function returning money.
+  - Addition/subtraction that themselves don't create sub-cent are allowed.
 
 ### 10.2 Construction & Literals
 ```goblin
@@ -418,6 +440,8 @@ say money(3.2, USD) → USD 3.20
 str(money) → CUR 1.23
 fmt(float(m), ",.2f")  /// numeric only
 ```
+
+If `policy: strict` and `v` has more than `precision` decimals, raise `MoneyPrecisionError` (no ledger update).
 
 ### 10.3 Number Typing & Defaults
 ```goblin
@@ -458,7 +482,7 @@ Negative money values follow the same arithmetic, division, and remainder rules 
 
 **Cross-currency arithmetic/comparison** → `CurrencyError` (no coercion).
 
-**Precision handling:** When operations create sub-cent amounts, the money part is truncated to currency precision and remainder is tracked in the remainder ledger.
+**Precision handling:** When operations create sub-cent amounts, the money part is truncated to currency precision and remainder is tracked in the remainder ledger. Precision policy applies to results: if the computed major-unit value has more than `precision` decimals, either truncate+log (policy: truncate/warn) or raise `MoneyPrecisionError` (policy: strict).
 
 ### 10.5 Currency Config
 ```yaml
@@ -547,17 +571,21 @@ _, _ = $100.00 // 7    /// remainder logged automatically
 say remainders_total()  /// => { USD: $0.02 }
 clear_remainders()
 ```
-## 10.8 Currency Conversion
-```
+
+### 10.8 Currency Conversion
+```goblin
 convert(amount: money(C1), to: C2, rate: float) → money(C2)
 ```
 Multiplies amount in major units by rate (exact rational).
 
 Canonicalizes to C2 cents + remainder.
 
-Logs any sub-cent in the target currency’s ledger.
+Logs any sub-cent in the target currency's ledger.
 
 Cross-currency arithmetic without explicit convert remains a CurrencyError.
+
+`convert` obeys precision policy in the **target** currency. In `strict`, sub-cent results error.
+
 ---
 
 ## 11. Percentages & Tax
@@ -586,6 +614,8 @@ with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 - Any sub-cent amounts from percentage calculations are tracked in remainder ledger
 - `compound=false`: compute each component with truncation, track remainders separately
 - `compound=true`: apply each rate sequentially, tracking cumulative remainders
+
+Tax obeys the active money precision policy. In `policy: strict`, if tax introduces sub-cent, it raises `MoneyPrecisionError`. Use `divide_evenly` or adjust rates/inputs to avoid sub-cent.
 
 ---
 
@@ -781,6 +811,26 @@ shares = divide_evenly(total, 3)  /// [$33.34, $33.33, $33.33]
 say add[shares]  /// $100.00 exactly
 ```
 
+### Precision Policy Examples
+```goblin
+default money USD precision: 2 policy: strict
+
+price = 19.99                        /// ok
+price = money(19.991, USD)          /// MoneyPrecisionError
+tax_amount = tax($405.95, 8.25%)    /// error (would be 33.990375)
+
+/// Fix by even-splitting a rounded rate or adjusting:
+tax_amount = divide_evenly($405.95 * 8.25%, 1)[0]
+
+/// Or switch policy temporarily
+default money USD policy: truncate
+tax_amount = tax($405.95, 8.25%)    /// ok, logs remainder
+
+/// Bank-style precision:
+default money USD precision: 5 policy: truncate
+fee = $0.00037                      /// ok, logs remainder if any operation shrinks below 5 dp
+```
+
 ### Templates
 ```goblin
 @cards =
@@ -815,7 +865,10 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`
+
+**Built-in warning types:**
+`MoneyPrecisionWarning`
 
 ---
 
