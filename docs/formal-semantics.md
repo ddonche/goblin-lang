@@ -1,4 +1,4 @@
-# Goblin Money System — Formal Semantics (v0.3, Precision & Policy)
+# Goblin Money System — Formal Semantics (v0.3.1, Precision & Policy)
 
 ## 1. Overview
 
@@ -27,7 +27,8 @@ sum(inputs in C) = sum(outputs in C) + sum(remainders in C)
 ### 2.2 Expressions
 ```
 e ::= money(v, C) | $vC | e + e | e - e | e * k | e // n
-     | divide_evenly(e, n) | convert(e, C2, rate)
+     | divide_evenly(e, n) | divide_evenly_escrow(e, n) | convert(e, C2, rate)
+     | drip_remainders(th?, commit?, label?)
 ```
 
 ## 3. Canonicalization (Precision + Policy)
@@ -74,16 +75,26 @@ For currency C:
 Γ ⊢ divide_evenly(e, n) : list(money(C))
 ```
 
-### Conversion
+### Escrow Even Split
 ```
-Γ ⊢ e : money(C1)   Γ ⊢ r : ℚ
-──────────────────────────────────────
-Γ ⊢ convert(e, C2, r) : money(C2)
+Γ ⊢ e : money(C)   Γ ⊢ n : int   n > 0
+────────────────────────────────────────
+Γ ⊢ divide_evenly_escrow(e, n) : {shares: list(money(C)), escrow: money(C)}
+```
+
+### Drip Remainders
+```
+Γ ⊢ th : ℚ | money(_) | map(Currency, money(_))   [optional]
+Γ ⊢ commit : bool   [optional]
+Γ ⊢ label : string  [optional]
+────────────────────────────────────────────────────────────
+Γ ⊢ drip_remainders(th?, commit?, label?) : map(Currency, money(_))
 ```
 
 ## 5. Evaluation with a Remainder Ledger
 
 Ledger **ℛ : Currency → ℚ** holds all remainders smaller than uC.
+Precision/policy environment **Π : Currency → (precision, policy)** tracks settings per currency.
 
 **Notation:**
 ```
@@ -142,6 +153,46 @@ canonC2(x) = (units', rem')  // using pC2, policyC2
 convert(e, C2, rate) ⇓ money(C2, units'*uC2) ; ℛ[C2] += rem'
 ```
 
+### 5.7 Escrow Even Split
+```
+e ⇓ total ; ℛ     n > 0
+Let total be money in currency C, u = uΠ(C), a = units(total)
+q = trunc(a / n)
+r = a - q·n    // 0 ≤ r < n
+shares = [ money(C, q·u) ]^n
+escrow = money(C, r·u)
+──────────────────────────────────────────────────────────
+divide_evenly_escrow(e, n) ⇓ {shares, escrow} ; ℛ
+```
+Ledger unaffected (pure unit arithmetic; no sub-quantum created).
+
+### 5.8 Drip Remainders (Audit-First)
+Let `thC` be the per-currency threshold in major units (default `uΠ(C)`), derived from `threshold` arg.
+
+**Log-only (default; commit=false):**
+```
+e ⇓ • ; ℛ
+kC = ⌊ |ℛ[C]| / thC ⌋
+potential[C] = sign(ℛ[C]) * kC * thC
+──────────────────────────────────────────────────────────
+drip_remainders(th, false, label) ⇓ {} ; ℛ
+/// Side effect: append log entry with ℛ, potential, th, label, time
+```
+
+**Commit:**
+```
+e ⇓ • ; ℛ
+kC = ⌊ |ℛ[C]| / thC ⌋
+emit[C] = sign(ℛ[C]) * kC * thC
+ℛ'[C] = ℛ[C] - emit[C]    (for all C)
+──────────────────────────────────────────────────────────
+drip_remainders(th, true, label) ⇓ { C ↦ money(C, units(emit[C])·uΠ(C)) } ; ℛ'
+/// Side effect: append log entry with before/after, emitted
+```
+
+- No rounding; exact multiples only leave the ledger.
+- Conservation holds: `value_out + ℛ' = value_out + ℛ - emit + emit = value_out + ℛ`.
+
 ## 6. Conservation Theorem
 
 For any well-typed expression `e` in currency C:
@@ -158,19 +209,16 @@ Holds for all ops given the above rules.
 - **cross-currency add/sub**: CurrencyError
 - **division by zero**: MoneyDivisionError
 
-## 8. Practical Defaults
+## 9. Desugaring & Warnings
 
-### Retail scenario:
-```goblin
-default money USD precision: 2 policy: truncate
+### 9.1 Syntactic Sugar
+```
+divide_evenly(A // n) ≡ divide_evenly(A, n)
 ```
 
-### Bank scenario:
-```goblin
-default money USD precision: 5 policy: truncate
-```
+### 9.2 Warnings (policy: warn)
+At any canonicalization `canonΠ,C(x) = (units, rem)`:
+- If `rem ≠ 0` and `policy(C) = warn`: append a warning record to log (no semantic change).
 
-### Strict accounting:
-```goblin
-default money USD precision: 2 policy: strict
-```
+### 9.3 Settlement Note (Non-semantic)
+Gears may apply `drip_remainders(commit:true)` and then `divide_evenly`/`divide_evenly_escrow` before export; these are ordinary program steps under the above rules.
