@@ -1,33 +1,41 @@
-# Goblin Money System — Formal Semantics (v0.3.1, Precision & Policy)
+# Goblin Money System — Formal Semantics (v0.3.2, Precision, Policy, & Allocation)
 
 ## 1. Overview
 
-Goblin treats money as **major units + explicit remainder** for any fraction smaller than the declared precision. **No rounding ever occurs** unless the policy is explicitly round (not recommended).
+Goblin models money as **major units + explicit remainder** for all fractions smaller than the declared precision. **No implicit rounding ever occurs** unless the policy is explicitly round (strongly discouraged).
 
-Every currency C has:
-- **Precision pC**: number of decimal places stored in the value (default: 2)
-- **Unit quantum uC = 10^(-pC)** in major units
-- **Policy**: how to handle sub-uC remainders:
-  - `truncate` → keep floor(|x| / uC) units, ledger the remainder
-  - `strict` → throw MoneyPrecisionError if |rem| ≥ uC
-  - `warn` → same as truncate but emit a warning
+For each currency C:
+- **Precision pC** → number of decimal places stored (default: 2)
+- **Quantum uC = 10^(-pC)** (in major units)
+- **Policy** for sub-quantum remainders:
+  - `truncate` → store quantum part, append remainder to ledger
+  - `warn` → same as truncate, but also append a warning to the warning log
+  - `strict` → reject any non-zero remainder with MoneyPrecisionError
 
 **Global Invariant (per currency C):**
 ```
-sum(inputs in C) = sum(outputs in C) + sum(remainders in C)
+Σ(inputs in C) = Σ(outputs in C) + Σ(ledgered remainders in C)
 ```
 
 ## 2. Syntax (Excerpt)
 
 ### 2.1 Types
 ```
-τ ::= int | float | money(C) | <money(C), money(C)> | list(money(C))
+τ ::= int | float | money(C)
+    | <money(C), money(C)>
+    | list(money(C))
+    | {shares: list(money(C)), escrow: money(C)}
+    | map(Currency, money(C))
 ```
 
 ### 2.2 Expressions
 ```
-e ::= money(v, C) | $vC | e + e | e - e | e * k | e // n
-     | divide_evenly(e, n) | divide_evenly_escrow(e, n) | convert(e, C2, rate)
+e ::= money(v, C) | $vC
+     | e + e | e - e
+     | e * k | e // n
+     | divide_evenly(e, n)
+     | divide_evenly_escrow(e, n)
+     | convert(e, C2, rate)
      | drip_remainders(th?, commit?, label?)
 ```
 
@@ -35,15 +43,15 @@ e ::= money(v, C) | $vC | e + e | e - e | e * k | e // n
 
 For currency C:
 - `uC = 10^(-pC)`
-- `to_unitsC(x) = trunc(x / uC)` (truncate toward zero)
+- `to_unitsC(x) = trunc(x / uC)` // toward zero
 
 **canonC(x):**
-1. `cents = to_unitsC(x)`
-2. `rem = x - cents*uC`
+1. `units = to_unitsC(x)`
+2. `rem = x - units*uC`
 3. Apply policy:
-   - `truncate`: accept, ledger rem
-   - `warn`: accept, ledger rem, emit warning if rem ≠ 0
-   - `strict`: if rem ≠ 0 → MoneyPrecisionError
+   - `truncate` → accept, ledger rem
+   - `warn` → accept, ledger rem, emit warning if rem ≠ 0
+   - `strict` → if rem ≠ 0 then raise MoneyPrecisionError
 
 ## 4. Typing (Selected Rules)
 
@@ -68,23 +76,23 @@ For currency C:
 Γ ⊢ e // n : <money(C), money(C)>
 ```
 
-### Even Split
+### Even Split (Allocation)
 ```
 Γ ⊢ e : money(C)   Γ ⊢ n : int   n > 0
 ────────────────────────────────────────
 Γ ⊢ divide_evenly(e, n) : list(money(C))
 ```
 
-### Escrow Even Split
+### Escrow Split
 ```
 Γ ⊢ e : money(C)   Γ ⊢ n : int   n > 0
 ────────────────────────────────────────
 Γ ⊢ divide_evenly_escrow(e, n) : {shares: list(money(C)), escrow: money(C)}
 ```
 
-### Drip Remainders
+### Drip Remainders (Audit + Commit)
 ```
-Γ ⊢ th : ℚ | money(_) | map(Currency, money(_))   [optional]
+Γ ⊢ th : ℚ | money(_) | map(Currency, money(_))  [optional]
 Γ ⊢ commit : bool   [optional]
 Γ ⊢ label : string  [optional]
 ────────────────────────────────────────────────────────────
@@ -93,132 +101,137 @@ For currency C:
 
 ## 5. Evaluation with a Remainder Ledger
 
-Ledger **ℛ : Currency → ℚ** holds all remainders smaller than uC.
-Precision/policy environment **Π : Currency → (precision, policy)** tracks settings per currency.
+- **Remainder Ledger ℛ : Currency → ℚ** — sub-quantum amounts not yet allocated.
+- **Warning Log 𝒲** — append-only list of warning records.
+- **Policy Table Π : Currency → (precision, policy)** — per-currency settings.
 
 **Notation:**
 ```
-e ⇓ v ; ℛ'
+e ⇓ v ; ℛ' ; 𝒲'
 ```
-Means: evaluating `e` yields value `v` and ledger `ℛ'`.
+Means: evaluating `e` yields value `v`, ledger `ℛ'`, and warnings `𝒲'`.
 
 ### 5.1 Money Construction
 ```
-canonC(v) = (units, rem)  // using pC, policyC
----------------------------------------------
-money(v, C) ⇓ money(C, units*uC) ; ℛ[C] += rem
+canonC(v) = (units, rem)  // per pC, policyC
+------------------------------------------------
+money(v, C) ⇓ money(C, units*uC) ; ℛ[C] += rem ; warn_if_needed(rem)
 ```
 
 ### 5.2 Addition/Subtraction
 ```
-e1 ⇓ m1 ; ℛ1      e2 ⇓ m2 ; ℛ2    cur(m1) = cur(m2) = C
---------------------------------------------------------
-e1 + e2 ⇓ m1 ⊕C m2 ; merge(ℛ1, ℛ2)
+e1 ⇓ m1 ; ℛ1 ; 𝒲1    e2 ⇓ m2 ; ℛ2 ; 𝒲2   cur(m1) = cur(m2) = C
+---------------------------------------------------------------
+e1 + e2 ⇓ m1 ⊕C m2 ; merge(ℛ1, ℛ2) ; merge(𝒲1, 𝒲2)
 ```
 
 ### 5.3 Scalar Multiplication
 ```
-e ⇓ m ; ℛ
+e ⇓ m ; ℛ ; 𝒲
 let x = value(m) * k
-canonC(x) = (units', rem')  // using pC, policyC
+canonC(x) = (units', rem')
 -------------------------------------------------
-e * k ⇓ money(C, units'*uC) ; ℛ[C] += rem'
+e * k ⇓ money(C, units'*uC) ; ℛ[C] += rem' ; warn_if_needed(rem')
 ```
 
-### 5.4 Division (//)
+### 5.4 Integer Division (//)
 ```
-e ⇓ m ; ℛ     n > 0
+e ⇓ m ; ℛ ; 𝒲     n > 0
 q_u = units(m) // n
 r_u = units(m) - q_u*n
------------------------------------------------
-e // n ⇓ <money(C, q_u*uC), money(C, r_u*uC)> ; ℛ
+------------------------------------------------
+e // n ⇓ <money(C, q_u*uC), money(C, r_u*uC)> ; ℛ ; 𝒲
 ```
 
 ### 5.5 Even Split
 ```
-e ⇓ m ; ℛ     n > 0
+e ⇓ m ; ℛ ; 𝒲     n > 0
 q_u = units(m) // n
 r_u = units(m) mod n
 Produce list: r_u shares of (q_u+1)uC else q_u*uC
 -------------------------------------------------
-divide_evenly(e, n) ⇓ [m1..mn] ; ℛ
+divide_evenly(e, n) ⇓ [m1..mn] ; ℛ ; 𝒲
 ```
 
-### 5.6 Currency Conversion
+### 5.6 Escrow Even Split
 ```
-e ⇓ m ; ℛ
+e ⇓ total ; ℛ ; 𝒲     n > 0
+a = units(total)    u = uΠ(C)
+q = trunc(a / n)    r = a - q*n
+shares = [money(C, q*u)]^n
+escrow = money(C, r*u)
+------------------------------------------------
+divide_evenly_escrow(e, n) ⇓ {shares, escrow} ; ℛ ; 𝒲
+```
+Ledger unaffected — no sub-quantum generated.
+
+### 5.7 Currency Conversion
+```
+e ⇓ m ; ℛ ; 𝒲
 let x = value(m) * rate
-canonC2(x) = (units', rem')  // using pC2, policyC2
+canonC2(x) = (units', rem')
 ---------------------------------------------------
-convert(e, C2, rate) ⇓ money(C2, units'*uC2) ; ℛ[C2] += rem'
+convert(e, C2, rate) ⇓ money(C2, units'*uC2) ; ℛ[C2] += rem' ; warn_if_needed(rem')
 ```
 
-### 5.7 Escrow Even Split
-```
-e ⇓ total ; ℛ     n > 0
-Let total be money in currency C, u = uΠ(C), a = units(total)
-q = trunc(a / n)
-r = a - q·n    // 0 ≤ r < n
-shares = [ money(C, q·u) ]^n
-escrow = money(C, r·u)
-──────────────────────────────────────────────────────────
-divide_evenly_escrow(e, n) ⇓ {shares, escrow} ; ℛ
-```
-Ledger unaffected (pure unit arithmetic; no sub-quantum created).
+### 5.8 Drip Remainders
 
-### 5.8 Drip Remainders (Audit-First)
-Let `thC` be the per-currency threshold in major units (default `uΠ(C)`), derived from `threshold` arg.
-
-**Log-only (default; commit=false):**
+**Log-only (commit=false or default):**
 ```
-e ⇓ • ; ℛ
+e ⇓ • ; ℛ ; 𝒲
 kC = ⌊ |ℛ[C]| / thC ⌋
 potential[C] = sign(ℛ[C]) * kC * thC
-──────────────────────────────────────────────────────────
-drip_remainders(th, false, label) ⇓ {} ; ℛ
-/// Side effect: append log entry with ℛ, potential, th, label, time
+---------------------------------------------------
+drip_remainders(th, false, label) ⇓ {} ; ℛ ; 𝒲
+/// Side effect: append to audit log: {ℛ, potential, th, label, timestamp}
 ```
 
 **Commit:**
 ```
-e ⇓ • ; ℛ
+e ⇓ • ; ℛ ; 𝒲
 kC = ⌊ |ℛ[C]| / thC ⌋
 emit[C] = sign(ℛ[C]) * kC * thC
-ℛ'[C] = ℛ[C] - emit[C]    (for all C)
-──────────────────────────────────────────────────────────
-drip_remainders(th, true, label) ⇓ { C ↦ money(C, units(emit[C])·uΠ(C)) } ; ℛ'
-/// Side effect: append log entry with before/after, emitted
+ℛ'[C] = ℛ[C] - emit[C]
+---------------------------------------------------
+drip_remainders(th, true, label) ⇓ {C ↦ money(C, units(emit[C])*uΠ(C))} ; ℛ' ; 𝒲
+/// Side effect: append to audit log: {before: ℛ, after: ℛ', emitted: emit, label, timestamp}
 ```
 
-- No rounding; exact multiples only leave the ledger.
-- Conservation holds: `value_out + ℛ' = value_out + ℛ - emit + emit = value_out + ℛ`.
+- No rounding — only exact multiples leave the ledger.
+- Conservation holds: `value_out + ℛ' = value_out + ℛ`.
 
 ## 6. Conservation Theorem
 
-For any well-typed expression `e` in currency C:
+For any well-typed `e` in currency C:
 ```
-input_total_C = value_C + ℛ[C]
+input_total_C = output_total_C + ℛ[C]
 ```
-Holds for all ops given the above rules.
+Holds under all operations above.
 
 ## 7. Error & Policy Behavior
 
-- **truncate**: Always stores quantum part, ledgers remainder
-- **warn**: Same as truncate + emit warning if remainder ≠ 0
-- **strict**: If remainder ≠ 0, raise MoneyPrecisionError
-- **cross-currency add/sub**: CurrencyError
-- **division by zero**: MoneyDivisionError
+- **truncate** — store quantum part, ledger remainder.
+- **warn** — as truncate, plus append to warning log if remainder ≠ 0.
+- **strict** — throw MoneyPrecisionError if remainder ≠ 0.
+- **Cross-currency ±** → CurrencyError.
+- **Division by zero** → MoneyDivisionError.
 
-## 9. Desugaring & Warnings
+## 8. Desugaring & Warnings
 
-### 9.1 Syntactic Sugar
+### Syntactic Sugar
 ```
 divide_evenly(A // n) ≡ divide_evenly(A, n)
 ```
 
-### 9.2 Warnings (policy: warn)
-At any canonicalization `canonΠ,C(x) = (units, rem)`:
-- If `rem ≠ 0` and `policy(C) = warn`: append a warning record to log (no semantic change).
+### Warning Behavior
+- Warnings (`warn` policy) occur only at canonicalization, ensuring no silent loss.
+- Warning log 𝒲 is append-only until explicitly cleared or deleted.
 
-### 9.3 Settlement Note (Non-semantic)
-Gears may apply `drip_remainders(commit:true)` and then `divide_evenly`/`divide_evenly_escrow` before export; these are ordinary program steps under the above rules.
+## 9. Implementation Notes
+
+This version makes audit logs and warning logs explicit, keeps your escrow and split semantics, and bakes in `drip_remainders` as a first-class, trackable operation.
+
+From here, an interpreter just needs to:
+1. Maintain three state structures: ℛ (remainders), 𝒲 (warnings), Π (policies).
+2. Append to logs as described.
+3. Apply policy in `canonC()` consistently.
