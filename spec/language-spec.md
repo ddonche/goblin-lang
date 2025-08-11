@@ -1,4 +1,4 @@
-# Goblin — Language Specification v1.4
+# Goblin — Language Specification v1.5
 
 ## Philosophy
 
@@ -158,7 +158,7 @@ sum(arr)  /// semantic twin of add for arrays
 /// Compound assignment
 += -= *= /= %= **=
 ```
-Money ops must follow currency rules (same currency, see §10). For money, +=, -=, and *= follow the same promotion, precision, and ledger rules described in §10.
+Money ops must follow currency rules (same currency, see §10). For money, +=, -=, and *= follow the same promotion, precision, and ledger rules described in §10 (including precision:/policy:).
 
 ---
 
@@ -383,31 +383,27 @@ say p.speak()
 
 ### 10.0 Money Precision Policy
 
-You can fix the allowed decimal places and choose how to handle sub-cent results.
+You can fix the allowed decimal places and choose how to handle sub-precision results.
 
 ```goblin
 /// Syntax (anywhere before use)
-default money USD precision: 2 policy: strict
+default money USD precision: 2 policy: truncate
 ```
 
 **Parameters:**
 - **precision:** integer ≥ 0 (decimal places in major units)
-- **policy:** `truncate` | `warn` | `strict`
-  - `truncate` (default): canonicalize via truncate-and-ledger (current behavior)
-  - `warn`: do truncate-and-ledger, plus emit `warn MoneyPrecisionWarning(...)`
-  - `strict`: **throw** `MoneyPrecisionError` if any operation would create sub-cent
+- **policy:** `truncate` (default) | `warn` | `strict`
+  - `truncate`: canonicalize via truncate-and-ledger (no rounding)
+  - `warn`: same as truncate, also warn `MoneyPrecisionWarning(...)`
+  - `strict`: throw `MoneyPrecisionError` if any op would produce sub-precision
 
-**Scope:** applies to the file from that point on, per currency. Omit `precision`/`policy` to inherit current settings. Multiple `default money …` lines may update settings later in the file.
+**Scope:** from the directive forward; per currency. Unset currencies use global default (`precision: 2, policy: truncate`) unless overridden.
 
 ### 10.1 Type & Precision Handling
-- `money` = currency-aware numeric stored as integer cents (minor units) 
-- Internal math uses minor units and converts for display
+- Values are stored as integer quanta of size `10^(-precision)` in major units; any sub-quantum remainder is tracked per §10.7.
+- `policy` applies at canonicalization sites: `money(v,C)`, promotion (`money` ± int/float), `*`, `tax`, `with_tax`, `convert`, and gear functions returning money.
 - **No rounding** - excess precision becomes explicit remainder
 - Perfect conservation: `input_value = money_part + remainder`
-- By default, `precision: 2, policy: truncate`. Implementations MAY change global defaults via build config, but the in-file directive overrides.
-- In `policy: strict`, any of the following that would produce more than `precision` decimals MUST raise `MoneyPrecisionError`:
-  - `money(v, CUR)`, promotion (`money` + int/float), scalar `*`, `tax`, `with_tax`, `convert`, and any gear function returning money.
-  - Addition/subtraction that themselves don't create sub-cent are allowed.
 
 ### 10.2 Construction & Literals
 ```goblin
@@ -433,7 +429,7 @@ US$1.50, C$1.50, A$…, NZ$…, MX$…, HK$…, S$…
 /// High-precision construction (truncates, tracks remainder)
 money(10.555, USD) → $10.55 + remainder(0.005)
 
-Any numeric (int or float) passed to money(v, CUR) is canonicalized: the cent value is truncated toward zero and any sub-cent remainder is recorded in the ledger. This applies equally to literals, variables, or computed expressions—no special cases for floats.
+Any numeric (int or float) passed to money(v, CUR) is canonicalized: the quantum value is truncated toward zero and any sub-quantum remainder is recorded in the ledger. This applies equally to literals, variables, or computed expressions—no special cases for floats.
 
 /// Display
 say money(3.2, USD) → USD 3.20
@@ -474,15 +470,14 @@ money * int|float → money (same currency) + remainder tracking
 money // int → pair (quotient: money, remainder: money)
 money % int → remainder money (alias of second element of //)
 ```
-Implementation note: scalar multiplication converts to major units, multiplies exactly, then canonicalizes using truncate-and-remainder. Equivalent minor-unit formulations are also valid.
+
+**Scalar multiply** converts to major units, multiplies exactly, then canonicalizes (minor-units formulation is equivalent).
 
 **Promotion rule:** If one operand is `money(CUR)` and the other is `int|float`, promote numeric to `money(CUR)` and operate (except `/`, which is disallowed). Promotion also applies to compound assignments (+=, -=, *= etc.), which are syntactic sugar for the corresponding binary operations.
 
-Negative money values follow the same arithmetic, division, and remainder rules as positive amounts. For money // int, integer division is truncation toward zero, and the remainder has the same sign as the dividend (or is zero).
+**Negative money** follows the same rules. For money // int, integer division truncates toward zero; the remainder has the same sign as the dividend or is zero.
 
 **Cross-currency arithmetic/comparison** → `CurrencyError` (no coercion).
-
-**Precision handling:** When operations create sub-cent amounts, the money part is truncated to currency precision and remainder is tracked in the remainder ledger. Precision policy applies to results: if the computed major-unit value has more than `precision` decimals, either truncate+log (policy: truncate/warn) or raise `MoneyPrecisionError` (policy: strict).
 
 ### 10.5 Currency Config
 ```yaml
@@ -512,7 +507,7 @@ Build-time override: `goblin build … --currency USD`
 money++ / money--  /// add/subtract exactly 1 whole unit
 ```
 - Postfix `**` and `//` are not allowed on money (TypeError)
-- To change cents: do it explicitly (`price = price + .05`)
+- To change at quantum level: do it explicitly (`price = price + .05`)
 
 ### 10.7 Even Splits & Remainder Ledger
 
@@ -522,17 +517,24 @@ Using `/` with money always errors: `MoneyDivisionError: Use // to capture remai
 #### Divmod for Money
 ```goblin
 q, r = total // parts
-/// q = base share (money)
-/// r = leftover remainder (money, < 1 unit in minor currency)
 ```
+`q` and `r` are money at current precision; no ledger change.
 
 #### Even Split Helper
 ```goblin
 divide_evenly(total: money, parts: int) -> array<money>
 ```
-- Splits using minor units and distributes leftover cents deterministically (largest remainders method)
-- Sum of shares equals total exactly; no remainder returned
-- Perfect conservation guaranteed
+- Distributes integer quanta: `r` shares of `(q+1 quantum)`, else `q`.
+- Sum equals total exactly; ledger unchanged.
+- **Sugar:** `divide_evenly(A // n)` ≡ `divide_evenly(A, n)`.
+
+#### Escrow Even Split
+```goblin
+divide_evenly_escrow(total: money, parts: int)
+  -> { shares: array<money>, escrow: money }
+```
+- Returns `parts` shares all at floor share `q`; all leftover goes to `escrow` (0 ≤ escrow < 1 quantum).
+- **Conservation:** `add[shares] + escrow == total`; ledger unchanged.
 
 #### Remainder Ledger (Audit)
 Goblin tracks any money remainder you don't capture:
@@ -550,6 +552,41 @@ remainders_report()  → human-readable summary lines
 clear_remainders()   → reset ledger
 ```
 
+`remainders_total()`, `remainders_report()`, `clear_remainders()` operate on the sub-precision ledger (not the escrow helper above).
+
+### 10.8 Currency Conversion
+```goblin
+convert(amount: money(C1), to: C2, rate: float) → money(C2)
+```
+Multiplies amount in major units by rate (exact rational).
+
+Canonicalizes to C2 quanta + remainder.
+
+Logs any sub-quantum in the target currency's ledger.
+
+Cross-currency arithmetic without explicit convert remains a CurrencyError.
+
+Policy applies in the **target** currency; in `strict`, sub-precision results error.
+
+### 10.9 Dripping Remainders
+
+```goblin
+drip_remainders(threshold=1, commit=false, label=nil) -> map<CUR, money>
+```
+
+- **threshold:** chunk size per currency (default = 1 quantum at current precision). Accepts:
+  - integer (quanta), or a money, or a `{CUR: money}` map.
+- **commit=false** (default): audit-only. Compute potential emission, append to log, return `{}`, do not modify the ledger.
+- **commit=true**: actually reduce the ledger by emitted amount(s) and return `{ CUR: money }`.
+
+Always appends a JSON line to `dist/remainders.log` with before/after, potential/emitted, currency, precision, label, and timestamp.
+
+### 10.10 Allocation Patterns
+
+To settle dripped amounts across recipients, use:
+- `divide_evenly(drops.CUR, n)` to consume into shares, or
+- `divide_evenly_escrow(drops.CUR, n)` to hold back remainder centrally.
+
 **Perfect Conservation Examples:**
 ```goblin
 default money USD
@@ -566,25 +603,16 @@ shares = divide_evenly($100.00, 3)
 /// shares → [$33.34, $33.33, $33.33]
 /// Conservation: $33.34 + $33.33 + $33.33 = $100.00 ✓
 
+/// Escrow split
+result = divide_evenly_escrow($100.00, 7)
+/// result.shares → 7 × $14.28, result.escrow → $0.04
+/// Conservation: 7 × $14.28 + $0.04 = $100.00 ✓
+
 /// Remainder tracking for ignored values
 _, _ = $100.00 // 7    /// remainder logged automatically
 say remainders_total()  /// => { USD: $0.02 }
 clear_remainders()
 ```
-
-### 10.8 Currency Conversion
-```goblin
-convert(amount: money(C1), to: C2, rate: float) → money(C2)
-```
-Multiplies amount in major units by rate (exact rational).
-
-Canonicalizes to C2 cents + remainder.
-
-Logs any sub-cent in the target currency's ledger.
-
-Cross-currency arithmetic without explicit convert remains a CurrencyError.
-
-`convert` obeys precision policy in the **target** currency. In `strict`, sub-cent results error.
 
 ---
 
@@ -611,11 +639,11 @@ with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 /// compound=true applies sequentially; else additive
 ```
 - **Precision handling:** Tax calculations use truncation, not rounding
-- Any sub-cent amounts from percentage calculations are tracked in remainder ledger
+- Any sub-quantum amounts from percentage calculations are tracked in remainder ledger
 - `compound=false`: compute each component with truncation, track remainders separately
 - `compound=true`: apply each rate sequentially, tracking cumulative remainders
 
-Tax obeys the active money precision policy. In `policy: strict`, if tax introduces sub-cent, it raises `MoneyPrecisionError`. Use `divide_evenly` or adjust rates/inputs to avoid sub-cent.
+Tax obeys the active precision policy. In `policy: strict`, if tax introduces sub-precision, raise `MoneyPrecisionError`. Under `warn`/`truncate`, record the sub-precision in the ledger and (for `warn`) emit a warning.
 
 ---
 
@@ -722,6 +750,8 @@ dist/
     products.csv
     append.csv
     report.txt
+    warnings.log
+    remainders.log
 ```
 
 ### 15.2 CLI (Gears)
@@ -736,6 +766,12 @@ gears install community_gear        # Install from repository
 gears code set "Deviant Moon Borderless Tarot" DMBT
 gears codes list
 gears codes grep DMBT
+
+# Remainders & Warnings
+goblin remainders status            # show ledger and last N entries
+goblin remainders clear             # clear in-memory ledger (keeps logs)
+goblin remainders rotate            # rotate remainders.log
+goblin warnings clear|rotate
 ```
 
 ### 15.3 Configuration Files
@@ -757,6 +793,25 @@ sku_policy:
 - `--append`: minimal rows; only new variants; no qty changes
 - CSV exports numeric Variant Price in store currency with perfect precision
 - If item currency ≠ store currency: warn and log to report.txt
+
+### 15.6 Gear Settlement Options
+
+```goblin
+shopify::configure(
+  settlement: "line_item" | "adjust_price" | "none" = "none",
+  settlement_sku: "ROUND-ADJ",
+  settlement_title: "Rounding Adjustment"
+)
+```
+
+- **none**: export 2-dp values; call `drip_remainders(label: order_id)` (audit-only).
+- **line_item**: `drip_remainders(commit:true, label: order_id)`; add single ± line item of the emitted amount.
+- **adjust_price**: `drip_remainders(commit:true, label: order_id)`; distribute via `divide_evenly` across lines; recompute tax.
+
+### 15.7 Logs (Standardized)
+
+- **dist/warnings.log** — JSON Lines; precision warnings, with op, currency, remainder, location.
+- **dist/remainders.log** — JSON Lines; drip operations (log-only or commit), before/after ledger, thresholds, emitted.
 
 ---
 
@@ -841,6 +896,24 @@ fee = $0.00037                      /// ok, logs remainder if any operation shri
     "Four of Cups" :: 1.25 :: 2
 ```
 
+### Remainder Management
+```goblin
+/// Check current remainder ledger
+say remainders_total()  /// {USD: $0.0347}
+
+/// Audit potential drips (no commit)
+potential = drip_remainders(threshold: $0.05, label: "order_123")
+/// Logs to dist/remainders.log but doesn't modify ledger
+
+/// Actually drip remainders
+actual = drip_remainders(threshold: $0.05, commit: true, label: "order_123")
+say actual  /// {USD: $0.03}
+/// Ledger now has {USD: $0.0047}
+
+/// Allocate dripped amounts
+shares = divide_evenly(actual.USD, 3)  /// [$0.01, $0.01, $0.01]
+```
+
 ---
 
 ## 17. Errors & Warnings
@@ -881,7 +954,7 @@ read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, exists, mkdir
 listdir, glob, cwd, chdir, join, now, uuid, add, sum, mult, sub, div, mod, divmod, 
 pow, root, floor, ceil, round, abs, min, max, rand, randint, tax, with_tax, bit, gear,
 use, export, import, via, validate, remainders_total, remainders_report, clear_remainders, 
-divide_evenly
+divide_evenly, divide_evenly_escrow, drip_remainders
 ```
 
 ## 19. Gears: Modular Add-ons
