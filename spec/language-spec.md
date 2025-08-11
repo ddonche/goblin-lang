@@ -411,6 +411,8 @@ US$1.50, C$1.50, A$…, NZ$…, MX$…, HK$…, S$…
 /// High-precision construction (truncates, tracks remainder)
 money(10.555, USD) → $10.55 + remainder(0.005)
 
+Any numeric (int or float) passed to money(v, CUR) is canonicalized: the cent value is truncated toward zero and any sub-cent remainder is recorded in the ledger. This applies equally to literals, variables, or computed expressions—no special cases for floats.
+
 /// Display
 say money(3.2, USD) → USD 3.20
 str(money) → CUR 1.23
@@ -448,8 +450,11 @@ money * int|float → money (same currency) + remainder tracking
 money // int → pair (quotient: money, remainder: money)
 money % int → remainder money (alias of second element of //)
 ```
+Implementation note: scalar multiplication converts to major units, multiplies exactly, then canonicalizes using truncate-and-remainder. Equivalent minor-unit formulations are also valid.
 
-**Promotion rule:** If one operand is `money(CUR)` and the other is `int|float`, promote numeric to `money(CUR)` and operate (except `/`, which is disallowed).
+**Promotion rule:** If one operand is `money(CUR)` and the other is `int|float`, promote numeric to `money(CUR)` and operate (except `/`, which is disallowed). Promotion also applies to compound assignments (+=, -=, *= etc.), which are syntactic sugar for the corresponding binary operations.
+
+Negative money values follow the same arithmetic, division, and remainder rules as positive amounts. For money // int, integer division is truncation toward zero, and the remainder has the same sign as the dividend (or is zero).
 
 **Cross-currency arithmetic/comparison** → `CurrencyError` (no coercion).
 
@@ -542,7 +547,17 @@ _, _ = $100.00 // 7    /// remainder logged automatically
 say remainders_total()  /// => { USD: $0.02 }
 clear_remainders()
 ```
+## 10.8 Currency Conversion
+```
+convert(amount: money(C1), to: C2, rate: float) → money(C2)
+```
+Multiplies amount in major units by rate (exact rational).
 
+Canonicalizes to C2 cents + remainder.
+
+Logs any sub-cent in the target currency’s ledger.
+
+Cross-currency arithmetic without explicit convert remains a CurrencyError.
 ---
 
 ## 11. Percentages & Tax
