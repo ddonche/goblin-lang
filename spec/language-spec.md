@@ -719,6 +719,14 @@ read_yaml(path), write_yaml(path, obj)
 read_csv(path) → array of maps (values as strings)
 write_csv(path, rows) /// rows = array of maps
 
+/// JSON
+read_json(path, opts={}) → value
+write_json(path, value, opts={}) → nil
+
+/// In-memory JSON (no filesystem)
+json_stringify(value, opts={}) → string
+json_parse(s, opts={}) → value
+
 /// File System
 exists(path), mkdirp(path), listdir(path), glob(pattern)
 cwd(), chdir(path), join(a,b,...)
@@ -727,6 +735,84 @@ cwd(), chdir(path), join(a,b,...)
 now(), uuid()
 ```
 Paths relative to CWD unless absolute.
+
+### 14.2 JSON
+
+#### 14.2.1 Type Mapping
+- JSON `null` → Goblin `nil`
+- JSON `true/false` → Goblin `true/false`
+- JSON number → Goblin `float` (no auto-cast to `int`/`money`)
+- JSON string → Goblin `string` (no auto-cast)
+- JSON array → Goblin `array`
+- JSON object → Goblin `map` (string keys)
+
+**No silent money parsing.** Strings like `"USD 1.50"` remain strings unless you opt in (see below).
+
+#### 14.2.2 Options (All Functions)
+`opts` is a map. Unknown keys are ignored.
+
+**Writing:**
+- `indent: int` (default `2`) — pretty print spaces; `0` or `nil` for minified
+- `sort_keys: bool` (default `false`) — stable key order for objects
+- `money: "object" | "string" | "units"` (default `"object"`)
+  - `"object"` (canonical): Money is written as:
+    ```json
+    { "_type": "money", "currency": "USD", "amount": "123.45" }
+    ```
+    `amount` is a **string in major units** with the active precision (no float drift).
+  - `"string"`: `"USD 123.45"`
+  - `"units"`:
+    ```json
+    { "_type": "money", "currency": "USD", "units": 12345, "precision": 2 }
+    ```
+    where `units` are integer **quanta** at `precision` (see §10.0).
+
+**Reading:**
+- `money: "off" | "object" | "string" | "auto"` (default `"off"`)
+  - `"off"`: never decode money; you always get plain maps/strings.
+  - `"object"`: only decode the **canonical object** form (above) to Goblin `money`.
+  - `"string"`: decode strings strictly matching `"{CUR} {major}"` (e.g., `"USD 1.23"`) to `money`. Uses `money(major, CUR)` and follows precision policy (§10.0).
+  - `"auto"`: try `"object"` then `"string"`; if both fail, leave as-is.
+- `strict_numbers: bool` (default `false`): when `true`, error on non-finite numbers (NaN/Infinity) if present.
+
+#### 14.2.3 Errors
+- Malformed JSON → `ValueError`
+- `money:"object"` with missing/invalid `currency`/`amount|units` → `ValueError`
+- When decoding to `money`, **precision policy applies**:
+  - `strict` → `MoneyPrecisionError` if sub-precision appears
+  - `warn`/`truncate` → canonicalize + ledger remainder (and warn in `warn`)
+
+#### 14.2.4 Examples
+
+**Write canonical money objects:**
+```goblin
+default money USD precision: 2
+cart = { total: $123.45, items: 3 }
+write_json("dist/cart.json", cart, { money: "object", indent: 2 })
+```
+
+**Read with safe defaults (no money decoding):**
+```goblin
+raw = read_json("dist/cart.json")  /// money stays as maps with _type
+```
+
+**Opt-in decode to money:**
+```goblin
+cart = read_json("dist/cart.json", { money: "object" })
+say cart.total  /// USD 123.45
+```
+
+**String mode round-trip:**
+```goblin
+write_json("price.json", $19.99, { money: "string" })
+p = read_json("price.json", { money: "string" })  /// -> USD 19.99
+```
+
+**In-memory stringify/parse:**
+```goblin
+s = json_stringify({ x: 1, m: $0.05 }, { money: "units" })
+obj = json_parse(s, { money: "units" })
+```
 
 ---
 
@@ -950,11 +1036,12 @@ warn "msg"
 ```
 if, elif, el, for, in, while, class, init, return, skip, stop, try, catch, finally, 
 assert, error, warn, say, true, false, nil, default, int, float, money, bool, 
-read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, exists, mkdirp, 
-listdir, glob, cwd, chdir, join, now, uuid, add, sum, mult, sub, div, mod, divmod, 
-pow, root, floor, ceil, round, abs, min, max, rand, randint, tax, with_tax, bit, gear,
-use, export, import, via, validate, remainders_total, remainders_report, clear_remainders, 
-divide_evenly, divide_evenly_escrow, drip_remainders
+read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, read_json, write_json, 
+json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now, uuid, 
+add, sum, mult, sub, div, mod, divmod, pow, root, floor, ceil, round, abs, min, max, 
+rand, randint, tax, with_tax, bit, gear, use, export, import, via, validate, 
+remainders_total, remainders_report, clear_remainders, divide_evenly, divide_evenly_escrow, 
+drip_remainders
 ```
 
 ## 19. Gears: Modular Add-ons
