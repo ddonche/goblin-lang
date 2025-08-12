@@ -1140,6 +1140,10 @@ goblin remainders rotate            # rotate remainders.log
 goblin warnings clear|rotate
 ```
 
+```
+gears gmark rebalance  # Compact ords by current sort; reassign 1..N (atomic)
+```
+
 ### 16.3 Configuration Files
 - **collections-map.yaml**: Authoritative map from Goblin category to Shopify collections (first = primary)
 - **types-registry.yaml**: Per type: required fields, allowed categories, defaults (options, split strategy, SEO templates)
@@ -2097,16 +2101,18 @@ is_client_error(code: Http) = code.value() in 400..499
 is_server_error(code: Http) = code.value() in 500..599
 ```
 
-## 22. Gmark — Project‑Local Stable References
+# 22. Gmark — Project‑Local Stable References
 
-### 22.1 What is a gmark?
+## 22.1 What is a gmark?
+
 A gmark is a stable, human‑readable handle that uniquely identifies a piece of content within a project (e.g., a blog post, page, product). Gmarks are intended for internal linking and sorting, and are independent of filenames/paths so gears can move files around without breaking references.
 
-- **Name:** a string key (e.g., `"post/how-to-play"` or `"how-to-play"`)
-- **Ord:** a project‑wide integer used for stable ordering (newest at the end by default)
-- **ID (opaque):** optional unique token for registry internals; not user‑facing
+* **Name:** a string key (e.g., `"post/how-to-play"` or `"how-to-play"`)
+* **Ord:** a project‑wide integer used for stable ordering (newest at the end by default)
+* **ID (opaque):** optional unique token for registry internals; not user‑facing
 
-### 22.2 Persistence
+## 22.2 Persistence
+
 The registry lives at `.goblin/gmarks.lock` (JSON). It tracks:
 
 ```json
@@ -2119,10 +2125,11 @@ The registry lives at `.goblin/gmarks.lock` (JSON). It tracks:
 }
 ```
 
-- Written atomically on mutation
-- Loaded read‑only during `--deterministic` builds (unless an explicit write is allowed by policy)
+* Written atomically on mutation
+* Loaded read‑only during `--deterministic` builds (unless an explicit write is allowed by policy)
 
-### 22.3 Creating/ensuring a gmark
+## 22.3 Creating/ensuring a gmark
+
 ```goblin
 /// Auto-increment ord (default)
 gmark("post/how-to-play")           /// => { name:"post/how-to-play", ord: 138 }
@@ -2132,34 +2139,41 @@ gmark("post/how-to-play", ord: 42)  /// => { name:"post/how-to-play", ord: 42 }
 ```
 
 **Rules:**
-- If `ord:` omitted → auto uses `last_ord + 1`
-- If `ord:` is provided:
-  - If the ord is unused → assign it
-  - If the ord is already taken → `GmarkConflictError` (no silent reshuffle)
-- Re‑calling `gmark(name, …)` is idempotent: returns existing record unless you change the ord (see §22.5)
+* If `ord:` omitted → auto uses `last_ord + 1`
+* If `ord:` is provided:
+   * If the ord is unused → assign it
+   * If the ord is already taken → `GmarkConflictError` (no silent reshuffle)
+* Re‑calling `gmark(name, …)` is idempotent: returns existing record unless you change the ord (see §22.5)
 
-### 22.4 Naming rules
-- **Allowed:** letters, numbers, `_`, `-`, `/`, `.`
-- No leading/trailing slashes; no empty segments; max length 256
-- Names are case‑sensitive
-- Must not be a reserved word (§19)
-- Invalid names → `GmarkInvalidError`
+## 22.4 Naming rules
 
-### 22.5 Updating ord (manual positioning)
+* **Allowed:** letters, numbers, `_`, `-`, `/`, `.`
+* No leading/trailing slashes; no empty segments; max length 256
+* Names are case‑sensitive
+* Must not be a reserved word (§19)
+* Invalid names → `GmarkInvalidError`
+
+## 22.5 Updating ord (manual positioning)
+
 ```goblin
 gmark_set_ord("post/how-to-play", 200)   /// move to ord 200 (must be free)
 ```
-- If target ord taken → `GmarkConflictError`
-- Does not renumber others. Use CLI tooling (outside the language) to batch‑rebalance if you want compact ords
 
-### 22.6 Introspection & lookup
+* If target ord taken → `GmarkConflictError`
+* Does not renumber others. Use CLI tooling (outside the language) to batch‑rebalance if you want compact ords
+
+## 22.6 Introspection & lookup
+
 ```goblin
 gmark_info("post/how-to-play")  /// -> { name, ord, id, created, updated } or nil
 gmarks()                        /// -> array<{ name, ord, id }> sorted by ord
 next_ord()                      /// -> last_ord + 1 (does not allocate)
+gmarks_filter(prefix: string)   /// -> array<{ name, ord, id }> sorted by ord
+                                /// e.g., gmarks_filter("post/") returns only "post/*"
 ```
 
-### 22.7 Linking from content
+## 22.7 Linking from content
+
 Gears decide how a gmark resolves to URLs/paths. Core provides the stable key; a CMS gear might offer:
 
 ```goblin
@@ -2167,40 +2181,70 @@ blog::href(gmark: "post/how-to-play")   /// "/posts/how-to-play"
 blog::link(text: "How to Play", gmark: "post/how-to-play")
 ```
 
-### 22.8 Sorting & querying
-`gmarks()` returns ord‑sorted entries for simple chronological lists.
+## 22.8 Sorting & querying
 
+`gmarks()` returns ord‑sorted entries for simple chronological lists.
 Gears can maintain additional indices (by tag/date/category) but ord remains the single, portable, stable sequence number for "publish order".
 
-### 22.9 Determinism & policy
+## 22.9 Determinism & policy
+
 In `--deterministic` builds, writes to `.goblin/gmarks.lock` are blocked unless the project policy explicitly allows it. Attempting to allocate a new gmark/ord then → `DeterminismError`.
 
 Reads are always allowed.
 
-### 22.10 Errors
-- `GmarkConflictError` — duplicate name or ord in the project
-- `GmarkNotFoundError` — referenced gmark doesn't exist
-- `GmarkInvalidError` — bad name format or reserved collision
-- `GmarkPersistenceError` — registry file can't be read/written
+Projects can explicitly allow gmark writes during `--deterministic` builds:
 
-### 22.11 Examples
+```yaml
+# goblin.config.yaml
+gears:
+  allow_state_writes:
+    - "gmark"  # allow only gmark registry mutations during deterministic builds
+```
+
+When enabled, the runtime:
+* appends a JSONL audit entry to `.goblin/gmarks.audit.log` for each mutation (`ensure`, `set_ord`, `rebalance`)
+* includes `{ before, after, ts, actor: "goblin", op, lock_checksum }`
+* preserves atomicity and lock integrity (mutex + fsync)
+
+## 22.10 Errors
+
+* `GmarkConflictError` — duplicate name or ord in the project
+* `GmarkNotFoundError` — referenced gmark doesn't exist
+* `GmarkInvalidError` — bad name format or reserved collision
+* `GmarkPersistenceError` — registry file can't be read/written
+
+## 22.11 Examples
 
 **Auto vs manual:**
+
 ```goblin
 post = gmark("post/hello-world")           /// ord auto → 138
 pin  = gmark("post/welcome", ord: 1)       /// manual pin to top
 ```
 
 **Stable lists:**
+
 ```goblin
 for m in gmarks()           /// already sorted by ord
     say m.name || "@" || str(m.ord)
 ```
 
 **Move a post later:**
+
 ```goblin
 target = next_ord() + 10
 gmark_set_ord("post/hello-world", target)
+```
+
+## 22.12 Rebalance & prefix demo
+
+```goblin
+/// Rebalance ords after a migration (CLI)
+# shell: gears gmark rebalance
+
+/// Build a blog index from "post/*"
+for m in gmarks_filter("post/")
+    say blog::link(text: m.name.replace("post/","").title(), gmark: m.name)
 ```
 
 # 23. Morph — Temporary Type Adaptation
