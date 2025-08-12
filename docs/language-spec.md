@@ -1476,9 +1476,13 @@ s = Status.Paid
 h = Http.Ok
 c = Suit.Clubs
 ```
-Type of `s` is `Status`, not string/int.
+Type of s is Status, not string/int.
 
-Access is namespaced: `EnumName.Variant`.
+Access is namespaced: EnumName.Variant.
+
+Singleton guarantee: Each enum variant is a unique, immutable singleton object. Any reference to Status.Paid in the program points to the same instance in memory, so equality checks are O(1) identity comparisons (Status.Paid is Status.Paid → true).
+
+This also means you can safely use enum members as map/set keys without worrying about duplicate construction.
 
 ### 21.4 Introspection & Methods
 ```goblin
