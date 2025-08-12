@@ -769,6 +769,7 @@ Paths relative to CWD unless absolute.
 - `datetime: "string" | "object"` (default `"string"`)
   - `"string"`: canonical ISO-8601 strings
   - `"object"`: structured form with `_type` field
+- `enum: "name" | "value" | "object"` (default `"name"`)
 
 **Reading:**
 - `money: "off" | "object" | "string" | "auto"` (default `"off"`)
@@ -777,7 +778,11 @@ Paths relative to CWD unless absolute.
   - `"string"`: decode strings strictly matching `"{CUR} {major}"` (e.g., `"USD 1.23"`) to `money`. Uses `money(major, CUR)` and follows precision policy (§10.0).
   - `"auto"`: try `"object"` then `"string"`; if both fail, leave as-is.
 - `datetime: "off" | "string" | "object" | "auto"` (default `"off"`)
+- `enum: "off" | "name" | "value" | "object" | "auto"` (default `"off"`)
+- `enum_schema: map<string,string>` — key → EnumName, only used with `enum:"value"`
 - `strict_numbers: bool` (default `false`): when `true`, error on non-finite numbers (NaN/Infinity) if present.
+
+**Gears and Serialization:** Gears may register their own JSON/YAML serialization handlers for custom types they define. If no handler is registered, the gear's types inherit the core JSON serialization rules. Gear-specific serialization follows the same safety policies (deterministic build restrictions, permission checks) as all other gear operations.
 
 #### 14.2.3 Errors
 - Malformed JSON → `ValueError`
@@ -1259,6 +1264,56 @@ ensure_time_verified("transaction_log")
 transaction_stamp = trusted_now()
 ```
 
+### Enum Examples
+```goblin
+enum Status
+    Pending
+    Paid
+    Shipped
+end
+
+order = { id: 17, status: Status.Pending }
+
+if order.status is Status.Pending
+    "hold"
+el
+    "continue"
+
+/// Int-backed with sequential auto-increment
+enum Priority as int seq
+    Low = 1
+    Medium       /// 2
+    High         /// 3
+    Critical = 10
+    Urgent       /// 11
+end
+
+assert Priority.Low < Priority.High
+assert Priority.Critical.value() == 10
+
+/// JSON roundtrip
+write_json("order.json", order, { enum: "name" })
+back = read_json("order.json", { enum: "name" })
+say back.status                    /// Status.Pending
+```
+
+### Gear Examples
+```goblin
+use tarot_deck@1.2 as tarot
+use shopify@^1.6 as shp
+
+prefer product.export via shp
+
+@cards = tarot::card_template(price: .99, qty: 1)
+    "Ace of Cups" :: 3
+    "Two of Cups"
+    "Three of Cups" :: price: 1.25 :: 2
+
+ensure_time_verified("shopify export")
+file = product.export(@cards) via shp
+say "Wrote {file}"
+```
+
 ---
 
 ## 18. Errors & Warnings
@@ -1283,7 +1338,7 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `EnumError`
 
 **Built-in warning types:**
 `MoneyPrecisionWarning`, `TimeSourceWarning`
@@ -1302,111 +1357,230 @@ rand, randint, tax, with_tax, bit, gear, use, export, import, via, validate,
 remainders_total, remainders_report, clear_remainders, divide_evenly, divide_evenly_escrow, 
 drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_datetime,
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
-trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified
+trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
+prefer, contract, emit, emit_async, on, test, enum
 ```
 
-## 20. Gears: Modular Add-ons
+## 20. Gears — Philosophy & Architecture
 
-### 20.1 Overview
-Gears are modular add-ons for Goblin that extend language capabilities for specific domains. Each gear is self-contained with no external dependencies, avoiding conflicts and dependency hell.
+### 20.1 Purpose
+Gears are first‑class, modular extensions that feel native to Goblin. The core stays lean; anything domain‑specific lives in a gear.
 
-**Key Points:**
-- **Independent** — Each gear operates in isolation, avoiding conflicts
-- **Community-driven** — Users can create and share gears for their industries
-- **Composable** — Install only the gears you need for your workflow
-- **First-class syntax integration** — Gears feel native in Goblin code
+**Key properties:**
+- **Language‑native**: `use`, namespacing, `via`, `prefer`
+- **Type‑aware**: gears can register types & capabilities
+- **Contract‑checked**: implementations must match declared contracts
+- **Deterministic**: pin versions, lock builds, sandbox side effects
 
-### 20.2 Loading Gears
+### 20.2 Loading & Versioning
 ```goblin
-use shopify
-use tarot_deck as tarot
-use invoice@^1.2
+use shopify@^1.6 as shp
+use tarot_deck@1.2
+use invoice            /// latest allowed by policy if not pinned (discouraged)
 ```
-- `use gear_name` loads a gear into the program
-- Optional alias with `as`
-- Optional version specifier with `@`
+Pin by default. Projects should reference a version/range.
 
-### 20.3 Namespaced Symbols
-Gears expose templates, functions, and exporters under their namespace:
+Alias: `as` sets a local alias (`shp::csv`).
+
+Lockfile: `gears.lock` records `{gear, version, checksum, source}`; builds resolve only from lock unless `--update`.
+
+### 20.3 Capability Resolution
+Gears declare capabilities (named functions/templates/exporters). Calls resolve deterministically:
+
+Call‑site `via`:
 ```goblin
-tarot::card_template
-shopify::csv
-invoice::calc_fee
-```
-
-### 20.4 Gear Templates
-Gears can publish template structures that integrate with Goblin's template syntax:
-```goblin
-use tarot_deck as tarot
-
-@cards = tarot::card_template(price: .99, qty: 1)
-    "Ace of Cups" :: 3
-    "Two of Cups"                  /// uses defaults
-    "Three of Cups" :: price: 1.25 :: 2
-```
-- Gear defines template structure and optional defaults
-- Local binding with `@name` sets project-specific defaults
-- Uses standard positional override syntax (`::`)
-
-### 20.5 Export/Import via Gears
-```goblin
-/// Export data through gear formatters
-export @cards via shopify::csv to "dist/products.csv" mode: "append"
-
-/// Import data through gear parsers
-orders = import "orders.csv" via shopify::csv
-```
-- `via gear` specifies which gear handles the operation
-- Target format: `shopify::csv`, `shopify::api`, etc.
-- Extra options (`to`, `mode`, etc.) are passed to the gear
-
-### 20.6 Gear Functions
-```goblin
-fee = invoice::calc_fee(subtotal: 125.00, rate: 2%)
-```
-Gear functions integrate with Goblin's type system (money, percentages, etc.)
-
-### 20.7 Configuration & Validation
-```goblin
-/// Configure gear behavior
-shopify::configure(
-    store: "game-goblin",
-    currency: USD,
-    strict_currency: false
-)
-
-/// Validate data against gear rules
-validate @cards via tarot::rules
-```
-If validation fails, Goblin raises standard errors or warnings.
-
-### 20.8 Introspection
-```goblin
-say gears()                  /// ["shopify", "tarot_deck"]
-say gear_symbols("shopify")  /// ["csv", "api", "configure", ...]
+export @cards via shp::csv
 ```
 
-### 20.9 Full Example
+Global preference:
 ```goblin
-use tarot_deck as tarot
-use shopify
+prefer product.export via shp
+```
 
-shopify::configure(store: "game-goblin", currency: USD)
+Project config default map (`goblin.config.yaml`)
 
-@cards = tarot::card_template(price: .99, qty: 1)
-    "Ace of Cups" :: 3
+If multiple providers remain → `AmbiguityError`.
+
+**Namespacing:**
+Public symbols: `gear::Symbol` (e.g., `shopify::csv`)
+
+Use `via gear::symbol` (or `via alias::symbol`) to bind a call
+
+### 20.4 Contracts (First‑Class)
+Contracts define the shape & errors of a capability; Goblin checks them at use time.
+
+```goblin
+contract product.export(items: array<Product>) -> file
+    errors: [ValidationError, AuthError]
+end
+```
+
+**Rules:**
+Signature (names, arity, types) must match exactly
+
+Only declared errors may be thrown; others are wrapped as `GearError(gear, capability, cause)`
+
+Contracts are global IDs (e.g., `product.export`)
+
+**Introspection:**
+```goblin
+gear_contracts("shopify")   /// ["product.export", "inventory.sync", ...]
+```
+
+### 20.5 Gear Manifest & Permissions
+Each gear ships a `gear.yaml`:
+
+```yaml
+name: shopify
+version: 1.6.2
+provides: [product.export, inventory.sync]
+contracts: [product.export]
+requires:
+  fs: ["dist/"]               # allowlisted paths
+  net: ["api.shopify.com"]    # allowlisted hosts
+  env: ["SHOPIFY_TOKEN"]
+permissions:
+  mode: "fs+net"              # none | fs | fs+net
+checksum: "sha256-…"
+```
+
+On use, core validates manifest/permissions against project policy. In deterministic builds, network is blocked unless allowlisted.
+
+```goblin
+gear_permissions("shopify")
+```
+
+### 20.6 Event Bus
+Lightweight, in‑process bus with clear sync/async semantics.
+
+**Emit:**
+```goblin
+emit "catalog.ready", payload            /// synchronous (errors bubble)
+emit_async "order.ready", payload        /// enqueued (returns job id)
+```
+
+**Subscribe:**
+```goblin
+on "order.ready" mode: "async" concurrency: 4 error: "collect"
+    ...
+end
+```
+
+**Options:**
+- `mode`: "sync" | "async" (default "sync")
+- `concurrency`: workers for async handlers (default 1)
+- `error`: "stop" (default for sync), "skip", "collect"
+
+### 20.7 Sandbox & Determinism
+Sandbox is enforced by the gear manifest + project policy.
+
+Sandbox modes: "none" | "fs" | "fs+net"
+
+Deterministic builds:
+
+`goblin build --deterministic` blocks wall‑clock (use `trusted_now()` if permitted), blocks network unless allowlisted, and rejects nondeterministic randomness (seed it).
+
+Dry‑run support for exporter contracts:
+```goblin
+file = product.export(@items) via shp dry_run:true
+```
+
+### 20.8 Logging & Telemetry
+Standard JSONL at `dist/gear.log`, emitted by core around capability calls:
+
+```json
+{"ts":"2025-08-12T15:30:00Z","gear":"shopify","cap":"product.export","ms":128,"ok":true}
+{"ts":"2025-08-12T15:30:01Z","gear":"shopify","cap":"product.export","ok":false,"err":"ValidationError: missing title"}
+```
+
+No phoning home unless a gear explicitly does so and permissions allow.
+
+### 20.9 Testing Hooks
+Inline tests run in a sandbox:
+
+```goblin
+test "shopify csv emits header"
+    rows = shopify::csv_preview(@cards)
+    assert rows[0].starts_with("Handle,Title")
+end
+```
+
+**CLI:**
+- `gears test shopify`
+- `gears test --all`
+
+### 20.10 Introspection APIs
+```goblin
+gears()                         /// ["shopify","tarot_deck"]
+gear_symbols("shopify")         /// ["csv","api","configure", ...]
+gear_contracts("shopify")       /// implemented contracts
+gear_permissions("shopify")     /// sandbox/allowlists
+```
+
+### 20.11 Usage Patterns
+
+#### 20.11.1 Single Export
+```goblin
+use tarot_deck@1.2, shopify@^1.6 as shp
+prefer product.export via shp
+
+@cards = tarot_deck::card_template(price: .99, qty: 1)
+    "Ace of Cups"
     "Two of Cups"
-    "Three of Cups" :: price: 1.25 :: 2
 
-validate @cards via tarot::rules
-export @cards via shopify::csv to "dist/products.csv" mode: "append"
+ensure_time_verified("shopify export")
+file = product.export(@cards) via shp
+say "Wrote {file}"
 ```
 
-### 20.10 Example Gear Ideas
-- **tarot_deck** — Knows about suits, arcana, card pricing
-- **shopify** — Handles Shopify CSV format, product variants, inventory
-- **restaurant_menu** — Manages dishes, ingredients, dietary restrictions
-- **invoice** — Generates business invoices with tax calculations
+#### 20.11.2 Multi‑Platform Chain
+```goblin
+use board_game, shopify@^1.6 as shp, etsy@^2
+
+@games = board_game::template()
+    "Catan" :: qty: 4
+    "Pandemic" :: qty: 2
+
+export @games via shp::csv to "dist/shopify.csv"
+export @games via etsy::csv to "dist/etsy.csv"
+```
+
+#### 20.11.3 Event‑Driven Pipeline
+```goblin
+emit "catalog.ready", @games
+
+on "catalog.ready" mode: "async" concurrency: 2 error: "collect"
+    ensure_time_verified("bulk export")
+    product.export($event.payload) via shp
+end
+```
+
+### 20.12 Errors
+`GearError(gear, capability, cause)`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`.
+
+### 20.13 Project Config (excerpt)
+```yaml
+# goblin.config.yaml
+gears:
+  defaults:
+    product.export: shopify
+  permissions:
+    mode: "fs+net"
+    fs_allow: ["dist/"]
+    net_allow: ["api.shopify.com"]
+  enforce_lock: true
+  deterministic_build: true
+```
+
+### 20.14 Example Contract & Call (sketch)
+```goblin
+contract product.export(items: array<Product>) -> file
+    errors: [ValidationError, AuthError]
+end
+
+# Provided by shopify gear
+file = product.export(@cards) via shopify::csv
+```
 
 ## 21. Enums (Core)
 
@@ -1476,11 +1650,11 @@ s = Status.Paid
 h = Http.Ok
 c = Suit.Clubs
 ```
-Type of s is Status, not string/int.
+Type of `s` is `Status`, not string/int.
 
-Access is namespaced: EnumName.Variant.
+Access is namespaced: `EnumName.Variant`.
 
-Singleton guarantee: Each enum variant is a unique, immutable singleton object. Any reference to Status.Paid in the program points to the same instance in memory, so equality checks are O(1) identity comparisons (Status.Paid is Status.Paid → true).
+Singleton guarantee: Each enum variant is a unique, immutable singleton object. Any reference to `Status.Paid` in the program points to the same instance in memory, so equality checks are O(1) identity comparisons (`Status.Paid is Status.Paid` → true).
 
 This also means you can safely use enum members as map/set keys without worrying about duplicate construction.
 
