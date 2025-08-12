@@ -1545,9 +1545,80 @@ goblin_empty_pockets, goblin_stash, goblin_payout
 - v3.0: "Trickster King"
 - v3.5: "Mischief Maker"
 
-## 20. Gears — Philosophy & Architecture
+## 20. Core vs. Gears Architecture
 
-### 20.1 Purpose
+### 20.1 Design Philosophy
+Goblin maintains a **lean core** with **extensible gears** to balance safety with flexibility. Core provides guarantees that gears cannot compromise; gears handle domain-specific functionality.
+
+### 20.2 Must Be Core
+These components **must** remain in core to ensure safety, determinism, and language coherence:
+
+**Syntax & Parser:**
+- Keywords (`use`, `via`, `prefer`, `contract`, `emit`, `on`, `test`)
+- Operators (percent literals, postfix `++`/`--`, infix `//`)
+- Precedence rules and "no-space vs space" `%` behavior
+- Template syntax (`::`, `@name`)
+
+**Type System Primitives:**
+- Core types (`int`, `float`, `bool`, `string`, `money`, `percent`, `date`, `time`, `datetime`, `duration`, `enum`)
+- Money conservation/precision rules and remainder tracking
+- Trusted time semantics and verification chains
+- Enum identity and singleton guarantees
+
+**Contract System:**
+- Global contract registry (`contract name -> signature/errors`)
+- Implementation compliance checking
+- Call-site resolution (`via` > `prefer` > defaults)
+- Error handling (`AmbiguityError`, `ContractError`)
+
+**Sandbox & Determinism:**
+- Permission enforcement (FS/NET allowlists, env gating)
+- `--deterministic` behavior (wall-clock blocking, network restrictions, RNG seeding)
+- Dry-run infrastructure
+
+**Security Infrastructure:**
+- Trusted time chain and HMAC verification
+- Lockfile management and version resolution
+- Build reproducibility guarantees
+
+**Runtime Safety:**
+- Standard error classes and gear error wrapping
+- JSONL logging around capability calls
+- Reserved word collision prevention
+
+**Core I/O & Serialization:**
+- JSON/YAML/CSV base functionality
+- Serialization hooks for gear types
+- Type-safe deserialization policies
+
+### 20.3 Should Be Gears
+These components are **appropriately** handled by gears:
+
+- Domain capabilities (Shopify, blockchain, invoices)
+- Domain types (`Product`, `Order`, custom records)
+- Platform integrations and APIs
+- Specialized exporters/importers
+- Domain-specific validation rules
+- External telemetry (beyond core logging)
+- Workflow CLIs and tooling
+
+### 20.4 Gray Areas
+These may evolve between core and gears:
+
+- **Event bus workers**: Core provides basic scheduling; advanced gears may enhance
+- **RNG**: Core provides seeded `rand`; crypto gears may add secure variants (with permission checks)
+- **Formatting**: Goblin personality messages stay in core but may be configurable
+
+### 20.5 Architectural Benefits
+This split ensures:
+- **Core stays lean** while providing enterprise guarantees
+- **Gears can innovate** without breaking safety/determinism
+- **No vendor lock-in** - multiple gear implementations can compete
+- **Auditability** - core behavior is predictable and verifiable
+
+## 21. Gears — Philosophy & Architecture
+
+### 21.1 Purpose
 Gears are first‑class, modular extensions that feel native to Goblin. The core stays lean; anything domain‑specific lives in a gear.
 
 **Key properties:**
@@ -1781,7 +1852,7 @@ end
 file = product.export(@cards) via shopify::csv
 ```
 
-## 21. Enums (Core)
+## 22. Enums (Core)
 
 ### 21.1 Purpose
 Closed sets of named constants with an optional backing int or string. Enums are first‑class types with strict equality and simple utilities. No implicit coercion.
