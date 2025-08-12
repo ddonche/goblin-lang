@@ -628,6 +628,11 @@ clear_remainders()
 
 /// Invalid: 10%off (insert separator)
 10% * price  /// correct
+
+/// Precedence: % binds tighter than arithmetic
+say 100 + 20% * 2      /// 100 + (20% * 2) = 100 + (0.2 * 2) = 100.4
+say 8 * 25%            /// 8 * 0.25 = 2.0
+say 100 + 20% * 2 / 5  /// 100 + (0.2 * 2) / 5 = 100 + 0.4 / 5 = 100.08
 ```
 
 ### 11.2 Tax Helpers
@@ -859,6 +864,8 @@ default datetime cache_path: "dist/time.cache"
 default datetime cache_signing_key: nil     /// optional HMAC key
 ```
 
+`cache_signing_key` is used for HMAC verification of the trusted‑time cache; if nil, cache is unsigned (less secure in hostile environments).
+
 **Policies:**
 - `strict`: If neither server nor valid cache are available → `TimeSourceError`.
 - `warn`: Fall back to cache or local and emit `TimeSourceWarning`.
@@ -1023,6 +1030,7 @@ default datetime tz: "America/Denver"
 default datetime source: "https://time.goblin-lang.org/api/now"
 default datetime policy: warn
 default datetime prefer_trusted: true
+default datetime cache_signing_key: "my-secret-123"
 
 start = datetime("2025-08-12 09:00")          /// MDT
 say start.iso()                                /// 2025-08-12T09:00:00-06:00
@@ -1031,6 +1039,10 @@ say start.iso()                                /// 2025-08-12T09:00:00-06:00
 ensure_time_verified("checkout capture")
 stamp = trusted_now()
 say stamp.format("YYYY-MM-DD HH:mm ZZ")
+
+/// Blockchain-ready verification
+ensure_time_verified("blockchain-tx")         /// Verifies cache with HMAC
+transaction_stamp = trusted_now()
 
 /// Date iteration
 for d in date("2025-08-01")..date("2025-08-03")
@@ -1087,6 +1099,8 @@ dist/
 gears init                          # Initialize project
 gears spawn tarot_deck "Mystic"     # Generate template  
 gears build mystic.yaml --chain tarot_deck,shopify,etsy,ebay  # Chain exports
+gears build --deterministic         # Enforce deterministic build with locked gears
+gears lint                          # Check for reserved word conflicts and other issues
 gears list                          # Show available gears
 gears install community_gear        # Install from repository
 
@@ -1338,7 +1352,7 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `EnumError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`
 
 **Built-in warning types:**
 `MoneyPrecisionWarning`, `TimeSourceWarning`
@@ -1358,7 +1372,7 @@ remainders_total, remainders_report, clear_remainders, divide_evenly, divide_eve
 drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_datetime,
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
-prefer, contract, emit, emit_async, on, test, enum
+prefer, contract, emit, emit_async, on, test, enum, seq
 ```
 
 ## 20. Gears — Philosophy & Architecture
@@ -1413,6 +1427,10 @@ Contracts define the shape & errors of a capability; Goblin checks them at use t
 contract product.export(items: array<Product>) -> file
     errors: [ValidationError, AuthError]
 end
+
+contract ledger_json(data: map) -> string
+    errors: [ValueError, TypeError]
+end
 ```
 
 **Rules:**
@@ -1443,6 +1461,8 @@ permissions:
   mode: "fs+net"              # none | fs | fs+net
 checksum: "sha256-…"
 ```
+
+**Gear naming:** Gear names may not be reserved words (see §19) to avoid namespace conflicts.
 
 On use, core validates manifest/permissions against project policy. In deterministic builds, network is blocked unless allowlisted.
 
@@ -1517,6 +1537,8 @@ gear_contracts("shopify")       /// implemented contracts
 gear_permissions("shopify")     /// sandbox/allowlists
 ```
 
+**Development Tools:** Lint tools should warn if gear names match reserved words (§19) during `gears test` to catch conflicts early.
+
 ### 20.11 Usage Patterns
 
 #### 20.11.1 Single Export
@@ -1553,6 +1575,13 @@ on "catalog.ready" mode: "async" concurrency: 2 error: "collect"
     ensure_time_verified("bulk export")
     product.export($event.payload) via shp
 end
+
+/// Blockchain ledger logging
+emit "tx.logged", ledger_json({ 
+    total: $100.00, 
+    status: Status.Paid, 
+    ts: trusted_now() 
+})
 ```
 
 ### 20.12 Errors
@@ -1633,6 +1662,8 @@ enum Http as int seq
     Created      /// 201
     BadRequest = 400
     NotFound     /// 401 (continues from last explicit)
+    ServerError = 500
+    BadGateway   /// 501
 end
 ```
 
@@ -1755,6 +1786,8 @@ Enum types are iterable in declaration order.
 ### 21.10 Errors
 `EnumError` (unknown name/value, duplicate value in int/string enums), plus `TypeError` where noted.
 
+**Development Tools:** Lint tools should warn if `seq` gaps exceed 100 to catch potential mistakes (e.g., `Low = 1, High = 1000`) that could break ordering logic.
+
 ### 21.11 Examples
 ```goblin
 enum Status
@@ -1781,6 +1814,15 @@ end
 
 assert Priority.Low < Priority.High
 assert Priority.Critical.value() == 10
+
+/// Non-sequential example showing seq flexibility
+enum Level as int seq
+    Beginner = 1
+    Advanced = 10
+    Expert       /// 11
+end
+
+say Level.Expert.value()  /// 11
 
 /// String-backed
 enum Suit as string
