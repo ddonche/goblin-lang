@@ -1,4 +1,4 @@
-# Goblin — Language Specification v1.5
+# Goblin — Language Specification v1.5 "Treasure Hoarder"
 
 ## Philosophy
 
@@ -397,6 +397,8 @@ default money USD precision: 2 policy: truncate
   - `warn`: same as truncate, also warn `MoneyPrecisionWarning(...)`
   - `strict`: throw `MoneyPrecisionError` if any op would produce sub-precision
 
+**Goblin Aliases:** `policy: goblin` (= truncate), `policy: hoard` (= warn), `policy: greedy` (= strict)
+
 **Scope:** from the directive forward; per currency. Unset currencies use global default (`precision: 2, policy: truncate`) unless overridden.
 
 ### 10.1 Type & Precision Handling
@@ -523,10 +525,16 @@ q, r = total // parts
 #### Even Split Helper
 ```goblin
 divide_evenly(total: money, parts: int) -> array<money>
+
+/// Goblin alias
+goblin_stash(total: money, parts: int) -> { shares: array<money>, escrow: money }  // = divide_evenly_escrow()
 ```
 - Distributes integer quanta: `r` shares of `(q+1 quantum)`, else `q`.
 - Sum equals total exactly; ledger unchanged.
 - **Sugar:** `divide_evenly(A // n)` ≡ `divide_evenly(A, n)`.
+
+**Special Output for escrow:**
+- When using `divide_evenly_escrow()`: *"Goblins stashed ${amount} for safekeeping"*
 
 #### Escrow Even Split
 ```goblin
@@ -572,6 +580,9 @@ Policy applies in the **target** currency; in `strict`, sub-precision results er
 
 ```goblin
 drip_remainders(threshold=1, commit=false, label=nil) -> map<CUR, money>
+
+/// Goblin alias
+goblin_payout(threshold=1, commit=false, label=nil) -> map<CUR, money>  // = drip_remainders()
 ```
 
 - **threshold:** chunk size per currency (default = 1 quantum at current precision). Accepts:
@@ -580,6 +591,10 @@ drip_remainders(threshold=1, commit=false, label=nil) -> map<CUR, money>
 - **commit=true**: actually reduce the ledger by emitted amount(s) and return `{ CUR: money }`.
 
 Always appends a JSON line to `dist/remainders.log` with before/after, potential/emitted, currency, precision, label, and timestamp.
+
+**Special Output:**
+- When `commit=true`: *"Goblins paid out ${amount} from their hoard"*
+- When `commit=false`: *"Goblins would pay out ${amount} (audit only)"*
 
 ### 10.10 Allocation Patterns
 
@@ -883,6 +898,10 @@ ensure_time_verified(reason="")        /// raise/warn per policy if not verified
 clear_time_cache()   → nil
 ```
 
+**Special Output:**
+- When `ensure_time_verified()` succeeds: *"Time goblins confirm: timestamp verified! ⏰"*
+- When `ensure_time_verified()` fails: *"Time goblins are suspicious of this timestamp"*
+
 **Behavior (summary):**
 - Server-first (HTTPS Date header or JSON epoch). On success, cache:
   `server_epoch_utc`, `local_monotonic_at_sync`, `local_wall_at_sync`, `tz_at_sync`, `sig`.
@@ -1103,6 +1122,11 @@ gears build --deterministic         # Enforce deterministic build with locked ge
 gears lint                          # Check for reserved word conflicts and other issues
 gears list                          # Show available gears
 gears install community_gear        # Install from repository
+
+# Goblin easter eggs
+goblin hoard status                 # = remainders status  
+goblin --about-goblins              # Fun goblin lore
+goblin --version                    # Shows ASCII art + version name
 
 # Codes
 gears code set "Deviant Moon Borderless Tarot" DMBT
@@ -1354,6 +1378,141 @@ warn "msg"
 **Built-in error types:**
 `NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`
 
+**Goblin Error Messages:**
+Error messages may occasionally include goblin-themed variations for personality:
+
+- `NameError`: 
+  - *"The goblins can't find variable 'pricess' (did you mean 'prices'?)"*
+  - *"Variable 'cofee' has vanished! (did you mean 'coffee'?)"*
+  - *"The treasure map is missing 'totla' (did you mean 'total'?)"*
+  - *"Goblins searched everywhere but 'nmae' doesn't exist (did you mean 'name'?)"*
+
+- `MoneyPrecisionError`: 
+  - *"The goblins refuse to lose precision! Use policy: truncate or fix your decimals"*
+  - *"Treasure counting error: goblins demand exact amounts"*
+  - *"The coin-counting goblins reject imprecise values"*
+  - *"Money goblins detected sub-precision chaos - fix your math!"*
+
+- `CurrencyError`: 
+  - *"The goblins won't mix USD and EUR without explicit conversion!"*
+  - *"Currency mixing detected - goblins demand clarity"*
+  - *"The exchange goblins refuse to blend currencies"*
+  - *"Different coins in the same pouch? The goblins disapprove!"*
+
+- `TimeSourceError`: 
+  - *"The time goblins can't verify this timestamp"*
+  - *"Chronometer goblins report: time source unavailable"*
+  - *"The temporal guardians have lost track of time"*
+  - *"Time verification failed - the goblins are confused"*
+
+- `TimeSourceWarning`: 
+  - *"Time goblins warning: using unverified timestamp"*
+  - *"The chronometer goblins are concerned about timing"*
+  - *"Temporal warning: goblins suggest verification"*
+  - *"Time precision questionable - goblins recommend caution"*
+
+- `EnumError`: 
+  - *"The classification goblins don't recognize 'Payed' (did you mean Status.Paid?)"*
+  - *"Enum goblins report: 'BadReques' is not a valid Http value"*
+  - *"The sorting goblins found an unknown variant"*
+  - *"Category error: goblins can't find that enum value"*
+
+- `GearError`: 
+  - *"The gear goblins encountered an unexpected error in '{gear}'"*
+  - *"Mechanical failure: {gear} goblins report malfunction"*
+  - *"The engineering goblins detected chaos in '{capability}'"*
+  - *"Gear malfunction: goblins recommend checking '{gear}' configuration"*
+
+- `ContractError`: 
+  - *"The contract goblins found signature mismatch in '{capability}'"*
+  - *"Legal eagles (goblin division) report contract violation"*
+  - *"The agreement goblins are confused by this signature"*
+  - *"Contract breach: goblins expected different parameters"*
+
+- `SyntaxError`: 
+  - *"The goblins are confused by line {line} - missing 'end'?"*
+  - *"Syntax goblins stumbled at line {line}: unexpected '{token}'"*
+  - *"The grammar goblins don't understand this structure"*
+  - *"Code parsing failed - goblins need clearer instructions"*
+
+- `TypeError`: 
+  - *"The type goblins won't let you {operation} a {type1} and {type2}"*
+  - *"Type mismatch: goblins refuse to mix incompatible types"*
+  - *"The classification goblins detected type chaos"*
+  - *"Type error: goblins demand compatible data types"*
+
+- `ValueError`: 
+  - *"The value goblins reject this input: {value}"*
+  - *"Invalid data detected by the validation goblins"*
+  - *"The quality control goblins found a bad value"*
+  - *"Value error: goblins can't process this input"*
+
+- `IndexError`: 
+  - *"The index goblins can't find position {index} in this array"*
+  - *"Array bounds error: goblins only found {length} items"*
+  - *"The list goblins report: index {index} is out of range"*
+  - *"Position error: goblins can't access item {index}"*
+
+- `KeyError`: 
+  - *"The key goblins can't find '{key}' in this map"*
+  - *"Dictionary search failed: goblins don't see key '{key}'"*
+  - *"The lookup goblins report: '{key}' doesn't exist"*
+  - *"Map error: goblins found no entry for '{key}'"*
+
+- `ZeroDivisionError`: 
+  - *"The math goblins refuse to divide by zero!"*
+  - *"Division error: goblins can't split by nothing"*
+  - *"The calculation goblins detected impossible math"*
+  - *"Zero division chaos - goblins demand valid denominators"*
+
+- `AssertionError`: 
+  - *"The verification goblins found a failed assertion: {message}"*
+  - *"Assertion failed: goblins expected this to be true"*
+  - *"The testing goblins report: assertion violated"*
+  - *"Logic error: goblins can't verify this condition"*
+
+- `MoneyDivisionError`: 
+  - *"The treasury goblins forbid dividing money directly - use // or divide_evenly()"*
+  - *"Money division blocked: goblins demand explicit remainder handling"*
+  - *"The accounting goblins refuse money division without precision control"*
+  - *"Currency math error: goblins require // for money division"*
+
+- `TimezoneError`: 
+  - *"The geography goblins don't recognize timezone '{timezone}'"*
+  - *"Time zone error: goblins are lost in '{timezone}'"*
+  - *"The mapping goblins can't find that time zone"*
+  - *"Timezone chaos: goblins need a valid zone identifier"*
+
+- `OverflowError`: 
+  - *"The capacity goblins report: number too large to handle"*
+  - *"Overflow detected: goblins can't count that high"*
+  - *"The size goblins found an impossibly large value"*
+  - *"Number overflow: goblins reached their counting limit"*
+
+- `PermissionError`: 
+  - *"The security goblins deny access to '{resource}'"*
+  - *"Permission denied: goblins guard this resource"*
+  - *"The guardian goblins block unauthorized access"*
+  - *"Access error: goblins require proper permissions"*
+
+- `AmbiguityError`: 
+  - *"The decision goblins found multiple options for '{capability}'"*
+  - *"Ambiguity detected: goblins need clearer instructions"*
+  - *"The choice goblins are confused by multiple providers"*
+  - *"Resolution error: goblins can't pick between options"*
+
+- `LockfileError`: 
+  - *"The archive goblins found lockfile problems"*
+  - *"Lockfile error: goblins can't verify gear versions"*
+  - *"The versioning goblins report lockfile chaos"*
+  - *"Lock verification failed: goblins demand consistent versions"*
+
+- `DeterminismError`: 
+  - *"The consistency goblins detected non-deterministic behavior"*
+  - *"Determinism error: goblins demand predictable results"*
+  - *"The reliability goblins found chaotic operations"*
+  - *"Non-deterministic chaos: goblins require consistent execution"*
+
 **Built-in warning types:**
 `MoneyPrecisionWarning`, `TimeSourceWarning`
 
@@ -1372,8 +1531,19 @@ remainders_total, remainders_report, clear_remainders, divide_evenly, divide_eve
 drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_datetime,
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
-prefer, contract, emit, emit_async, on, test, enum, seq
+prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
+goblin_empty_pockets, goblin_stash, goblin_payout
 ```
+
+**Version Codenames:**
+- v1.5: "Treasure Hoarder" *(current)*
+- v1.6: "Gold Sniffer"
+- v1.7: "Wealth Watcher" 
+- v1.8: "Loot Guardian"
+- v2.0: "Hoard Lord"
+- v2.5: "Sneaky Pilferer"
+- v3.0: "Trickster King"
+- v3.5: "Mischief Maker"
 
 ## 20. Gears — Philosophy & Architecture
 
