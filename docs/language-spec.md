@@ -1512,6 +1512,12 @@ Error messages may occasionally include goblin-themed variations for personality
   - *"Determinism error: goblins demand predictable results"*
   - *"The reliability goblins found chaotic operations"*
   - *"Non-deterministic chaos: goblins require consistent execution"*
+ 
+- `GmarkConflictError`:
+- `GmarkNotFoundError`:
+- `GmarkInvalidError`:
+- `GmarkPeristenceError`:
+
 
 **Built-in warning types:**
 `MoneyPrecisionWarning`, `TimeSourceWarning`
@@ -1532,7 +1538,7 @@ drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_d
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
-goblin_empty_pockets, goblin_stash, goblin_payout
+goblin_empty_pockets, goblin_stash, goblin_payout, gmark, ord
 ```
 
 **Version Codenames:**
