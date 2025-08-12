@@ -1,171 +1,268 @@
-# Goblin Gears — Philosophy & Architecture
+## 19. Gears — Philosophy & Architecture
 
-## Overview
+### 19.1 Purpose
+Gears are first‑class, modular extensions that feel native to Goblin. The core stays lean; anything domain‑specific lives in a gear.
 
-Gears are first-class, modular extensions for the Goblin programming language.
-Unlike traditional plugin systems, Gears are built into Goblin's DNA — the language syntax, type system, and runtime are all designed with Gears in mind.
+**Key properties:**
+- **Language‑native**: `use`, namespacing, and `via` are part of Goblin
+- **Type‑aware**: gears can register types and capabilities
+- **Contract‑checked**: gears must implement declared contracts
+- **Deterministic**: pin versions, lock builds, sandbox side effects
 
-**The goal:**
-- Keep the core of Goblin lean and focused
-- Push domain-specific or specialized functionality into Gears  
-- Make Gears feel native, not bolted on
+### 19.2 Loading & Versioning
+```goblin
+use shopify@^1.6 as shp
+use tarot_deck@1.2
+use invoice          /// latest allowed by policy if not pinned (discouraged)
+```
 
-When someone uses Goblin, they should assume they will be using Gears — it's not an "advanced" feature.
-**Goblin is the gear language.**
+**Pin by default**: Projects should reference a version/range.
 
-## Why Gears Are Different
+**Aliases**: `as` sets a local alias (e.g., `shp::csv`).
 
-Other systems either:
-- **Have fat cores with plugins** (Rails, WordPress)
-- **Have lean cores but treat plugins as second-class** (UNIX scripts, DSLs)  
-- **Have contract systems but require heavyweight service plugins** (Terraform providers, cloud SDKs)
+**Lockfile**: `gears.lock` records `{gear, version, checksum, source}`.
+Builds resolve only from the lock unless `--update` is used.
 
-**Goblin's Gears are unique because:**
+**CLI behavior (informative):**
+- `gears install` writes/updates `gears.lock`
+- `goblin build` fails if a required gear isn't locked (deterministic by default)
 
-### 1. Language-native integration
-Gears plug directly into Goblin grammar:
+### 19.3 Capability Resolution
+Gears declare capabilities (named functions/templates/exporters). Calls resolve deterministically:
+
+**Order of precedence:**
+1. Call‑site `via`:
+   ```goblin
+   export @cards via shp::csv
+   ```
+
+2. Global preference:
+   ```goblin
+   prefer product.export via shp
+   ```
+
+3. Project config default map (`goblin.config.yaml`)
+
+Ambiguity error if multiple providers remain.
+
+**Namespacing:**
+- Public symbols: `gear::Symbol` (e.g., `shopify::csv`)
+- Use `via gear::symbol` to bind a call to a provider
+
+### 19.4 Contracts (First‑Class)
+Contracts define the shape and errors of a capability and are checked at use time.
 
 ```goblin
-use shopify, tarot_deck
+contract product.export(items: array<Product>) -> file
+    errors: [ValidationError, AuthError]
+end
+```
 
-@cards = tarot_deck.template()
+**Rules:**
+- Signature (names, arity, types) must match exactly in any implementing gear
+- Only declared errors may be thrown. Others are wrapped as `GearError(gear, capability, cause)`
+- Contracts are global identifiers (`product.export`); gears register implementations
+
+**Introspection:**
+```goblin
+gear_contracts("shopify")   /// ["product.export", "inventory.sync", ...]
+```
+
+### 19.5 Gear Manifest & Permissions
+Each gear ships a `gear.yaml`:
+
+```yaml
+name: shopify
+version: 1.6.2
+provides:
+  - product.export
+  - inventory.sync
+contracts:
+  - product.export
+requires:
+  fs:
+    - "dist/"               # path allowlist
+  net:
+    - "api.shopify.com"     # host allowlist
+  env:
+    - "SHOPIFY_TOKEN"
+permissions:
+  mode: "fs+net"            # none | fs | fs+net
+checksum: "sha256-…"
+```
+
+**On use:**
+- Core validates manifest and permissions against project policy
+- In `--deterministic` mode, network is blocked unless allowlisted
+
+**Introspection:**
+```goblin
+gear_permissions("shopify")
+```
+
+### 19.6 Event Bus
+Lightweight, in‑process bus with clear sync/async semantics.
+
+**Emit:**
+```goblin
+emit "catalog.ready", payload            /// synchronous (errors bubble)
+emit_async "order.ready", payload        /// enqueued (returns job id)
+```
+
+**Subscribe:**
+```goblin
+on "order.ready" mode: "async" concurrency: 4 error: "collect"
+    ...
+end
+```
+
+**Options:**
+- `mode`: `"sync"|"async"` (default "sync" in code; "async" recommended for long tasks)
+- `concurrency`: workers for async handlers (default 1)
+- `error` policy:
+  - `"stop"` (default for sync): first error aborts, bubbles
+  - `"skip"`: ignore handler errors, continue others
+  - `"collect"`: aggregate errors; expose via handler result
+
+### 19.7 Sandbox & Side‑Effects
+**Sandbox modes:**
+- `"none"`: no FS/NET (pure)
+- `"fs"`: file I/O allowed only on allowlisted paths
+- `"fs+net"`: file I/O plus outbound HTTP to allowlisted hosts
+
+**Enforced by:**
+- Gear manifest `permissions.mode` + `requires.fs/net`
+- Project overrides via `goblin.config.yaml`
+- `--deterministic` build flag downgrades to "fs" or "none" unless explicitly allowed
+
+### 19.8 Determinism, Lockfile, Dry‑Run
+Lockfile required for reproducible builds.
+
+`goblin build --deterministic`:
+- Blocks wall‑clock (use `trusted_now()` only if permitted)
+- Blocks network unless allowlisted
+- Fails on nondeterministic randomness (use seeded rand)
+
+**Dry‑run support on exporter contracts:**
+```goblin
+file = product.export(@items) via shp dry_run:true
+```
+
+### 19.9 Logging & Telemetry
+Standard JSONL: `dist/gear.log`
+
+```json
+{"ts":"2025-08-12T15:30:00Z","gear":"shopify","cap":"product.export","ms":128,"ok":true}
+{"ts":"2025-08-12T15:30:01Z","gear":"shopify","cap":"product.export","ok":false,"err":"ValidationError: missing title"}
+```
+
+Emitted by core around capability calls.
+
+No phoning home. External telemetry only if a gear explicitly implements it and permissions allow.
+
+### 19.10 Testing Hooks
+Inline gear tests run in a sandbox:
+
+```goblin
+test "shopify csv emits header"
+    rows = shopify::csv_preview(@cards)
+    assert rows[0].starts_with("Handle,Title")
+end
+```
+
+**CLI:**
+- `gears test shopify` runs all test blocks in that gear
+- `gears test --all` runs across loaded gears
+
+### 19.11 Introspection APIs
+```goblin
+gears()                         /// ["shopify","tarot_deck"]
+gear_symbols("shopify")         /// ["csv","api","configure", ...]
+gear_contracts("shopify")       /// implemented contracts
+gear_permissions("shopify")     /// sandbox/allowlists
+```
+
+### 19.12 Usage Patterns
+
+#### 19.12.1 Single Export
+```goblin
+use tarot_deck@1.2, shopify@^1.6 as shp
+prefer product.export via shp
+
+@cards = tarot_deck::card_template(price: .99, qty: 1)
     "Ace of Cups"
     "Two of Cups"
 
-export @cards via shopify
+ensure_time_verified("shopify export")
+file = product.export(@cards) via shp
+say "Wrote {file}"
 ```
 
-### 2. Type-aware
-Gears register types and capabilities directly with Goblin's type system.
-
-### 3. Contract enforcement
-Gears must match well-defined contracts that Goblin validates at load time.
-
-### 4. No service dependency
-Gears run in-process by default but can scale out-of-process if needed.
-
-## Core Philosophy
-
-### 1. Lean Core
-
-The Goblin core:
-- Provides only the universal language essentials
-- Includes built-in types (money, percent, date, etc.)
-- Handles parsing, execution, type enforcement, and gear loading
-
-**Anything domain-specific or platform-specific goes into a Gear.**
-
-### 2. Gears as First-Class Citizens
-
-Gears are not "extensions" in the traditional sense — they are the primary way to expand Goblin.
-
-To make them first-class:
-- **Native syntax** (`use gear_name`)
-- **Native type registration** (gears add types the same way core does)
-- **Native event system** (gears emit/subscribe without extra libraries)
-- **Native contract validation** (if a gear says it implements `product.export`, Goblin checks it)
-
-### 3. Capability Model
-
-Every gear declares capabilities — functions, types, events it provides.
-
-Example:
+#### 19.12.2 Multi‑Platform Chain
 ```goblin
-gear shopify:
-    provides:
-        product.export
-        inventory.sync
-```
+use board_game, shopify@^1.6 as shp, etsy@^2
 
-When your Goblin code calls:
-```goblin
-product.export(my_items)
-```
-
-The runtime:
-- Looks up which gear(s) provide `product.export`
-- Resolves conflicts by explicit user preference, default order, or config
-
-### 4. Event Bus
-
-All Gears share a lightweight in-process event bus:
-- Gears emit named events with payloads
-- Other gears can subscribe to these events
-- Events are synchronous by default, async if specified
-- No "offline" gears — all loaded gears are always active
-
-Example:
-```goblin
-emit "user.logged_in", user_id
-
-on "user.logged_in":
-    send_welcome_email(user_id)
-```
-
-### 5. Contracts
-
-Contracts define what a capability looks like:
-- Function signatures
-- Type expectations  
-- Error behavior
-
-Stored centrally so any gear implementing a capability is guaranteed to be compatible.
-
-Example contract:
-```goblin
-contract product.export(items: list[product]) -> file
-```
-
-### 6. Data Sharing
-
-- All loaded gears share a common runtime context
-- State can be passed explicitly via events or stored in shared memory
-- No global variable sprawl — shared state must be registered
-
-## Example Use Cases
-
-### Shopify Listing Generator
-
-1. **tarot_deck gear:** generates card product data
-2. **shopify gear:** formats & exports to Shopify CSV
-3. **You:**
-
-```goblin
-use tarot_deck, shopify
-
-@cards = tarot_deck.template()
-    "Ace of Cups"
-    "Two of Cups"
-
-export @cards via shopify
-```
-
-### Multi-Platform Export
-
-You can chain multiple gears for multi-platform listings:
-
-```goblin
-use board_game, shopify, etsy
-
-@games = board_game.template()
+@games = board_game::template()
     "Catan" :: qty: 4
     "Pandemic" :: qty: 2
 
-export @games via shopify, etsy
+export @games via shp::csv
+export @games via etsy::csv
 ```
 
-## Why This Matters
+#### 19.12.3 Event‑Driven Pipeline
+```goblin
+emit "catalog.ready", @games
 
-**Developers don't ask:** *"Can Goblin do X?"*
+on "catalog.ready" mode: "async" concurrency: 2 error: "collect"
+    ensure_time_verified("bulk export")
+    product.export($event.payload) via shp
+end
+```
 
-**They ask:** *"Is there a gear for X?"*
+### 19.13 Errors
+- `GearError(gear, capability, cause)` — unknown/undeclared error bubbled from a gear
+- `ContractError` — signature mismatch at load/resolution
+- `PermissionError` — sandbox/requirement violation
+- `AmbiguityError` — multiple providers with no resolution (via/prefer/config)
+- `LockfileError` — missing/incompatible lock entries
+- `DeterminismError` — disallowed side effect in deterministic mode
 
-And if there isn't, they write one — without hacking the core.
+### 19.14 Project Config (excerpt)
+```yaml
+# goblin.config.yaml
+gears:
+  defaults:
+    product.export: shopify
+  permissions:
+    mode: "fs+net"
+    fs_allow:
+      - "dist/"
+    net_allow:
+      - "api.shopify.com"
+  enforce_lock: true
+  deterministic_build: true
+```
 
-- **Goblin stays lean**
-- **Gears stay native**  
-- **The ecosystem grows without turning into dependency hell**
+### 19.15 Example Contract & Gear Implementation (sketch)
+```goblin
+contract product.export(items: array<Product>) -> file
+    errors: [ValidationError, AuthError]
+end
 
-## In One Line
+# Provided by shopify gear
+file = product.export(@cards) via shopify::csv
+```
 
-> **Goblin is a lean, domain-agnostic core language, designed from day one to be extended by native-feeling, first-class gears — making specialized programming as simple as writing plain Goblin.**
+**Gear side (manifest idea):**
+```yaml
+name: shopify
+version: 1.6.2
+provides: [product.export]
+contracts: [product.export]
+requires:
+  fs: ["dist/"]
+  net: ["api.shopify.com"]
+permissions:
+  mode: "fs+net"
+```
