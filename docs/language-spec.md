@@ -2086,3 +2086,75 @@ Http.from_value(404)              /// Http.NotFound
 is_client_error(code: Http) = code.value() in 400..499
 is_server_error(code: Http) = code.value() in 500..599
 ```
+
+## 22. gmark (Goblin Mark)
+
+**gmark** is Goblin's built-in **global reference system** — a unique, persistent identifier for records within a project. It's designed to make cross-file, cross-gear linking dead-simple without relying on databases, manual key management, or brittle file paths.
+
+### 22.1 Purpose
+`gmark` solves three common problems in modular, file-driven projects:
+
+1. **Stable Linking** — A gmark stays the same even if file paths, names, or structures change.
+2. **Conflict-Free** — Each gmark is unique **within a project scope**, avoiding collisions between unrelated records.
+3. **Gear-Aware** — Gears can read/write gmarks without knowing file layouts, making interlinking trivial.
+
+### 22.2 Structure
+A gmark consists of:
+
+- **Type Prefix** *(optional)* — Short string indicating the kind of thing (`page`, `post`, `order`, etc.).
+- **Name String** *(required)* — Human-readable slug (`about-us`, `invoice-1928`).
+- **ord** *(auto-assigned)* — Internal integer ID used for sorting/search; invisible to end-users.
+
+**Example:**
+```
+gmark: post:about-us ord: 42
+```
+
+### 22.3 Creation
+- **Automatic**: When a new record is created, Goblin assigns the next available `ord` and generates a gmark from the provided name.
+- **Manual**: Developers may specify a gmark explicitly to preserve legacy links or match external systems.
+- **Guaranteed Unique**: Goblin enforces uniqueness at project scope. A conflict results in a `GmarkConflictError`.
+
+### 22.4 Storage
+- All gmarks and their ord values are tracked in a `.gmarks` file at the project root.
+- This file is updated automatically on create, delete, or rename operations.
+- It is **core Goblin**, not gear-specific, so every gear benefits from the same ID system.
+
+**Example `.gmarks` file:**
+```
+post:about-us: 42
+post:contact: 43
+order:2025-08-12-004: 44
+```
+
+### 22.5 Usage
+Gmarks are used to:
+
+- Link one record to another (`related: gmark:post:about-us`)
+- Cross-reference between gears (Shopify gear links `order` to `customer`)
+- Resolve records even if file paths change
+
+**Example linking in YAML:**
+```yaml
+title: Contact
+gmark: post:contact
+related: 
+  - post:about-us
+```
+
+### 22.6 Search & Sort
+- Gmarks can be **looked up** directly (`find_gmark("post:about-us")`).
+- `ord` can be used for **ordering** (chronological inserts) without parsing names.
+- The `.gmarks` registry is indexed in memory for instant lookups.
+
+### 22.7 Reserved Behaviors
+- **Project Scope**: Gmarks are unique per project, but different projects may reuse the same names without conflict.
+- **Immutable by Default**: Changing a gmark after creation is discouraged; Goblin will emit a `GmarkChangeWarning`.
+- **Gear-Agnostic**: Any gear can read/write gmarks without special integration.
+
+### 22.8 Error Types
+- `GmarkConflictError` — Attempted creation of a duplicate gmark.
+- `GmarkMissingError` — Reference to a gmark that does not exist.
+- `GmarkChangeWarning` — Modification of an existing gmark.
+
+This system makes Goblin feel **tightly integrated** between core and gears, while keeping the flexibility of a purely file-driven, modular environment.
