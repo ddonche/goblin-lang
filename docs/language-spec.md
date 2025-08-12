@@ -2507,6 +2507,80 @@ end
 ```
 
 ---
+# 24. Release Checklist
+
+## ✅ Must-Have for v1.5
+
+### Goblin Core
+
+**Blob primitives**
+- blob type
+- read_bytes(path) -> blob, write_bytes(path, blob)
+- blob_len(b), blob_slice(b, start, end), blob_concat(a,b)
+- to_base64(blob) -> string, from_base64(string) -> blob
+- to_hex(blob) -> string, from_hex(string) -> blob
+
+**Hashing & HMAC**
+- hash(data: string|blob, algorithm="sha256") -> string
+- hmac(data: string|blob, key: string|blob, algorithm="sha256") -> string
+- Supported algos: sha256, sha1, md5 (warn), sha512
+- Streaming over blobs; tests with known vectors
+
+**Money allocation helper**
+- allocate_money(total: money, weights: array<number>) -> array<money>
+- Alias: goblin_divvy(...)
+- Perfect conservation + ledger integration; tests
+
+**gmarks basics**
+- gmarks_filter(prefix) implementation & tests
+- Deterministic-build write policy gate + .goblin/gmarks.audit.log
+
+**morph runtime essentials**
+- Implement accessor discovery (incl. is_foo() booleans)
+- Transactional copy-in/out + rollback
+- Cache shared-field maps; full test suite
+
+**Blob/JSON interop glue**
+- Ensure JSON/YAML leave blobs alone by default (no auto-encode)
+- Example helpers to base64 when needed
+
+### Baseline Gears
+
+- regex gear: regex::test, regex::findall, regex::replace (+ flags)
+- fs.glob gear: fs::glob(pattern) -> array<string>, fs::walk(dir, pattern="**/*")
+- retry/backoff gear: retry::with_backoff(fn, attempts=3, base_ms=250, jitter=true)
+- http gear polish: http::request(method, url, headers={}, body=""), deterministic-mode safeguards
+
+---
+
+## ➕ Optional / v1.5+ (Can Push to First Point Release)
+
+### Core Horde-Readiness
+
+- Pure function runner mode (--stdin / --stdout)
+- Warm VM / preload mode (goblin serve --preload)
+- Determinism hardening knobs (--seed, block wall clock, etc.)
+- Resource limits (--cpu-ms, --mem-mb, --max-steps)
+- Correlation & idempotency (request_id, --idempotency-key)
+- Structured exit codes
+- Audit log enrichment with IDs/keys
+- Clock/testing hook (freeze_time)
+
+### Gears / Host-Side Horde-Readiness
+
+- scheduler gear: scheduler::cron(spec, task) (executes scripts/caps on a schedule)
+- s3::upload / netlify::deploy gears
+- metrics::emit gear
+- horde examples (Rust worker pool + Kubernetes YAML)
+
+### Other Optional Core Enhancements
+
+- gears gmark rebalance (CLI) implementation
+- Extra blob helpers (beyond base64/hex) if needed for niche formats
+
+---
+
+If we ship just the must-have list, Goblin v1.5 Core will be fully usable, have a clean feature set, and Gears will cover the basics. Then we drop horde-readiness + deploy gears in v1.5.1 or v1.6 without delaying launch.
 
 ## 23.11 Determinism
 
