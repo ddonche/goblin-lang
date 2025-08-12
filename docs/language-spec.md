@@ -1517,7 +1517,10 @@ Error messages may occasionally include goblin-themed variations for personality
 - `GmarkNotFoundError`:
 - `GmarkInvalidError`:
 - `GmarkPeristenceError`:
-
+MorphTypeError
+MorphFieldError
+MorphCurrencyError
+MorphActionError
 
 **Built-in warning types:**
 `MoneyPrecisionWarning`, `TimeSourceWarning`
@@ -1538,7 +1541,8 @@ drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_d
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
-goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord, next_ord, ord
+goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
+next_ord, ord, morph
 ```
 
 **Version Codenames:**
@@ -2198,3 +2202,230 @@ for m in gmarks()           /// already sorted by ord
 target = next_ord() + 10
 gmark_set_ord("post/hello-world", target)
 ```
+
+# 23. Morph — Temporary Type Adaptation
+
+## 23.1 Purpose
+
+morph lets you temporarily treat an object as another class just long enough to call one method, then copy any changed fields back — all transactionally and privacy‑safe. It never breaks encapsulation: it only uses public getters/setters.
+
+Typical uses: reuse a method that already exists on a different class (discount calculators, formatters, geometry transforms) without writing adapters or duplicating logic.
+
+---
+
+## 23.2 Signature
+
+```goblin
+result = morph(obj, TargetType, method_call)
+```
+
+- **obj**: any instance (the "source").
+- **TargetType**: a class identifier.
+- **method_call**: exactly one method call that must exist on TargetType (e.g., `rotate(90)`, `apply_discount(10%)`, `to_string()`).
+
+Returns whatever the target method returns. The original obj keeps its class.
+
+---
+
+## 23.3 Accessor Convention (Privacy‑Safe Sync)
+
+Morph never touches private fields (`#x`). It syncs via accessors:
+
+- **Getter**: `x()` (for booleans, `x()` or `is_x()`)
+- **Setter**: `set_x(v)`
+
+A field x participates in morph syncing only if both a getter and a setter exist on both classes (source and target). Accessor names are matched by the logical field name (x).
+
+Examples:
+- `price()` / `set_price(v)`
+- `name()` / `set_name(v)`
+- `active()` or `is_active()` / `set_active(v)`
+
+---
+
+## 23.4 What Morph Actually Does (Step‑by‑Step)
+
+### 1. Resolve & Validate
+- Ensure TargetType is a class and method_call names a public instance method on it.
+- Build the shared field map = intersection of fields that have compatible accessors on both types.
+- Pre‑validate types for all shared fields (see §23.5). If any mismatch → error, no mutation.
+
+### 2. Construct a Temporary Target
+Create a new TargetType instance with default construction:
+- If TargetType has `init(...)`, call `init()` with no args.
+- If it requires args, that target class must also provide a zero‑arg init or a `from_map(map)` factory.
+- If `from_map(map)` exists, it is preferred and may be used by morph to instantiate.
+
+### 3. Copy In (Source → Temp Target)
+For each shared field f: `temp.set_f( obj.f() )`.
+
+### 4. Call the Method
+- Invoke the requested method on the temp target.
+- If the method throws, wrap as `MorphActionError(cause)` and abort with no mutation.
+
+### 5. Copy Out (Temp Target → Source)
+- Re‑validate types of all shared fields after the call.
+- Write back atomically: `obj.set_f( temp.f() )` for each shared field.
+- If any write‑back fails type checks, rollback (no fields written) and raise `MorphFieldError`.
+
+### 6. Return
+Return the method's return value. obj remains the original class.
+
+**Determinism**: morph itself is pure aside from field writes. Any I/O inside the target method follows normal sandbox rules.
+
+---
+
+## 23.5 Type Compatibility Rules
+
+Field values are validated both on copy‑in and copy‑out:
+
+- **Primitives**: `int ↔ int`, `float ↔ float`, `bool ↔ bool`, `string ↔ string`.
+  No implicit widening/narrowing.
+
+- **Money**: currencies must match (e.g., `USD ↔ USD`). Precision differences are allowed and canonicalized per active money policy (§10.0). Cross‑currency → `MorphCurrencyError`.
+
+- **Datetime types**: like‑type only (`date↔date`, `time↔time`, `datetime↔datetime`, `duration↔duration`). Zone differences for datetime are allowed; values carry their zones.
+
+- **Arrays / Maps**: allowed if both sides expose the same element/value types by contract; otherwise `MorphFieldError`.
+
+- **Classes/Enums**: must be the same type on both sides (no auto‑coercion).
+
+- **Nil**: only permitted if the setter accepts nil (implementation decides via type metadata).
+
+---
+
+## 23.6 Visibility & Method Scope
+
+- The target method must be public.
+- Only public accessors are used. Morph never reflects into `#private` state.
+- If a target relies on private invariants, it must expose those via its public API (e.g., a `normalize()`).
+
+---
+
+## 23.7 Performance Notes
+
+- Engines may cache the shared‑field accessor map by `(SourceType, TargetType)` to avoid repeated discovery.
+- Copy‑in/out is O(n_shared_fields). For large objects, prefer narrower accessors or expose an aggregate setter.
+
+---
+
+## 23.8 Errors
+
+- **MorphTypeError** — target is not a class; or method not found/visible; or multiple methods implied.
+- **MorphFieldError(field, expected, actual)** — accessor missing or incompatible type on copy‑in/out.
+- **MorphCurrencyError(field, from_cur, to_cur)** — money currencies differ.
+- **MorphActionError(cause)** — target method threw; original cause is attached.
+
+All morph errors are transactional: the source object is unchanged.
+
+---
+
+## 23.9 Examples
+
+### A. Geometry rotate without adapters
+
+```goblin
+class Dot
+    init(x, y)
+        #x = x; #y = y
+    end
+    x() = #x; set_x(v) = #x = v
+    y() = #y; set_y(v) = #y = v
+end
+
+class Shape
+    init(x=0, y=0)
+        #x = x; #y = y
+    end
+    x() = #x; set_x(v) = #x = v
+    y() = #y; set_y(v) = #y = v
+
+    rotate(deg)
+        rad = deg * 3.1415926535 / 180
+        nx = #x * cos(rad) - #y * sin(rad)
+        ny = #x * sin(rad) + #y * cos(rad)
+        #x = nx; #y = ny
+        self
+    end
+end
+
+p = Dot(1, 0)
+morph(p, Shape, rotate(90))
+say p.x(), p.y()          /// ~0, 1
+```
+
+### B. Discount using a method that lives on another class
+
+```goblin
+class Book
+    init(title, price)
+        #title = title; #price = price
+    end
+    title() = #title; set_title(v) = #title = v
+    price() = #price; set_price(v) = #price = v
+end
+
+class Card
+    init(name="", price=money(0))
+        #name = name; #price = price
+    end
+    name() = #name; set_name(v) = #name = v
+    price() = #price; set_price(v) = #price = v
+
+    apply_discount(rate)   /// rate can be 10% etc.
+        #price = #price * (1 - rate)
+        #price
+    end
+end
+
+default money USD
+b = Book("Guide", $29.99)
+morph(b, Card, apply_discount(10%))
+say b.price()             /// USD 26.99 (policy applies for precision)
+```
+
+### C. Boolean accessors
+
+```goblin
+class A
+    init(active=false)  #active = active end
+    active() = #active
+    set_active(v) = #active = v
+end
+
+class B
+    init(enabled=false)  #enabled = enabled end
+    /// Both forms are recognized as getter for boolean:
+    is_active() = #enabled
+    set_active(v) = #enabled = v
+
+    toggle()  #enabled = not #enabled end
+end
+
+a = A(true)
+morph(a, B, toggle())
+say a.active()    /// false
+```
+
+---
+
+## 23.10 Testing Hooks
+
+Golden tests are encouraged:
+
+```goblin
+test "morph discount keeps type and updates price"
+    default money USD
+    b = Book("Gloomhaven", $100.00)
+    r = morph(b, Card, apply_discount(25%))
+    assert b.price() == $75.00
+    assert r == $75.00
+end
+```
+
+---
+
+## 23.11 Determinism
+
+morph does not enable I/O. Any side‑effects are those performed by the target method and are governed by the usual sandbox/permission model (core or gear).
+
