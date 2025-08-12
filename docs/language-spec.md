@@ -766,6 +766,9 @@ Paths relative to CWD unless absolute.
     { "_type": "money", "currency": "USD", "units": 12345, "precision": 2 }
     ```
     where `units` are integer **quanta** at `precision` (see §10.0).
+- `datetime: "string" | "object"` (default `"string"`)
+  - `"string"`: canonical ISO-8601 strings
+  - `"object"`: structured form with `_type` field
 
 **Reading:**
 - `money: "off" | "object" | "string" | "auto"` (default `"off"`)
@@ -773,6 +776,7 @@ Paths relative to CWD unless absolute.
   - `"object"`: only decode the **canonical object** form (above) to Goblin `money`.
   - `"string"`: decode strings strictly matching `"{CUR} {major}"` (e.g., `"USD 1.23"`) to `money`. Uses `money(major, CUR)` and follows precision policy (§10.0).
   - `"auto"`: try `"object"` then `"string"`; if both fail, leave as-is.
+- `datetime: "off" | "string" | "object" | "auto"` (default `"off"`)
 - `strict_numbers: bool` (default `false`): when `true`, error on non-finite numbers (NaN/Infinity) if present.
 
 #### 14.2.3 Errors
@@ -816,9 +820,242 @@ obj = json_parse(s, { money: "units" })
 
 ---
 
-## 15. Shopify Profile (Gears: "Game Goblin")
+## 15. Date & Time (Core)
 
-### 15.1 Repo Layout
+### 15.1 Types
+```goblin
+date — calendar day (no time, no zone)
+time — clock time (no date, no zone)
+datetime — date + time + zone (zone required; defaults to active default)
+duration — elapsed time in seconds (no zone)
+```
+No implicit coercion between these types.
+
+### 15.2 Defaults & Time Zone
+```goblin
+default datetime tz: "America/Denver"
+```
+Accepts IANA names ("America/Denver"), "UTC", or fixed offsets ("+00:00", "-07:00").
+
+Affects constructors, parse helpers without explicit `tz:`, and `today()`/`now()` when using local clock.
+
+### 15.3 Trusted Time (Server → Cache → Local)
+Goblin can source time from a trusted server, then fall back to a signed monotonic cache, then to the local clock.
+
+#### 15.3.1 Config
+```goblin
+default datetime source: "https://time.goblin-lang.org/api/now"
+default datetime policy: strict | warn | allow = warn
+default datetime prefer_trusted: false      /// if true: now()/today() use trusted chain
+default datetime ttl: 60s                   /// refresh window while online
+default datetime cache_ttl: 24h             /// max offline age for cache
+default datetime skew_tolerance: 5s         /// wall-clock vs monotonic drift
+default datetime cache_path: "dist/time.cache"
+default datetime cache_signing_key: nil     /// optional HMAC key
+```
+
+**Policies:**
+- `strict`: If neither server nor valid cache are available → `TimeSourceError`.
+- `warn`: Fall back to cache or local and emit `TimeSourceWarning`.
+- `allow`: Fall back silently.
+
+#### 15.3.2 API
+```goblin
+trusted_now()        → datetime        /// server > cache > local per policy
+trusted_today()      → date
+last_trusted_sync()  → datetime | nil  /// last server-verified instant
+time_status()        → { source: "server"|"cache"|"local",
+                         verified: bool, age_s: int,
+                         offset_s: float, drift_s: float }
+ensure_time_verified(reason="")        /// raise/warn per policy if not verified
+clear_time_cache()   → nil
+```
+
+**Behavior (summary):**
+- Server-first (HTTPS Date header or JSON epoch). On success, cache:
+  `server_epoch_utc`, `local_monotonic_at_sync`, `local_wall_at_sync`, `tz_at_sync`, `sig`.
+- Cache fallback reconstructs current epoch via monotonic delta. If signature bad, cache too old (> `cache_ttl`), or drift exceeds `skew_tolerance`, react per policy.
+- Local last‑resort uses wall clock (unverified).
+- Every attempt appends JSONL to `dist/time.log`.
+- `now()`/`today()` use the local clock unless `prefer_trusted:true`. Use `trusted_*` where verification matters (e.g., money).
+
+### 15.4 Construction & Parsing
+```goblin
+d  = date("2025-08-12")                           /// YYYY-MM-DD
+t  = time("14:30:05")                              /// HH:MM[:SS[.SSS]]
+dt = datetime("2025-08-12 14:30", tz: "UTC")       /// localizes to tz
+dt2 = datetime("2025-08-12T14:30:00-06:00")        /// ISO-8601 w/ offset
+```
+
+**Strict parse helpers (format-guided):**
+```goblin
+parse_date(s, fmt="YYYY-MM-DD")
+parse_time(s, fmt="HH:mm[:ss[.SSS]]")
+parse_datetime(s, fmt="YYYY-MM-DD HH:mm[:ss[.SSS]]", tz=nil)
+```
+Format tokens: `YYYY MM DD HH mm ss SSS ZZ` (e.g., `"YYYY-MM-DD'T'HH:mm:SSS ZZ"`).
+
+If string has Z/offset, it overrides `tz:` and defaults.
+
+Malformed input → `ValueError`.
+
+### 15.5 Duration Literals
+```goblin
+1s  90s  5m  1h  2d  3w  6mo  1y
+```
+Units: `s`, `m`, `h`, `d`, `w`, `mo`(=30d), `y`(=365d).
+
+Combine via `+` (e.g., `1h + 30m`). Negative allowed.
+
+`duration(n_seconds)` also available.
+
+### 15.6 Now/Today & Zone Helpers
+```goblin
+now()          → datetime   /// local or trusted per prefer_trusted
+today()        → date
+utcnow()       → datetime   /// UTC (ignores prefer_trusted, uses trusted chain if enabled)
+local_tz()     → string
+to_tz(dt, "UTC")            /// convert datetime's zone (wall time adjusts)
+```
+
+### 15.7 Formatting & Accessors
+```goblin
+/// Stringification
+.iso()                    /// ISO-8601 canonical
+.format("YYYY-MM-DD")     /// token format
+str(x)                    /// uses .iso()
+
+/// Accessors (read-only)
+dt.year dt.month dt.day
+dt.hour dt.minute dt.second dt.millisecond
+dt.weekday   /// 1..7 (Mon=1)
+dt.yearday   /// 1..366
+dt.date()    → date
+dt.time()    → time
+dt.tz()      → string
+dt.epoch()   → float   /// seconds since Unix epoch (UTC)
+```
+Tokens: `YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`, `SSS`, `ZZ`(+/-HH:MM), `ZZZ`(UTC/offset name).
+
+### 15.8 Arithmetic & Comparisons
+```goblin
+/// Add/sub durations
+datetime + duration  → datetime
+datetime - duration  → datetime
+date     + duration  → date      /// duration must be whole days
+date     - duration  → date
+time     + duration  → time      /// must remain within 00:00..24:00 (else ValueError)
+
+/// Differences
+datetime - datetime  → duration  /// exact seconds
+date     - date      → duration  /// whole-day seconds
+
+/// Comparisons (like-types only)
+< <= > >= == !=  on date/date, time/time, datetime/datetime
+```
+Cross-type comparison → `TypeError`.
+
+### 15.9 Truncation / Rounding
+```goblin
+floor_dt(dt, unit)   /// "year","month","week","day","hour","minute","second"
+ceil_dt(dt, unit)
+```
+Weeks floor to Monday 00:00 in the instance's tz.
+
+### 15.10 Calendar-Safe Adders
+Month/Year math respects month length & leap years (clamps when needed).
+
+```goblin
+add_days(d|dt, n)       → same type
+add_months(d|dt, n)     → same type    /// e.g., Jan 31 + 1mo → Feb 28/29
+add_years(d|dt, n)      → same type    /// Feb 29 → Feb 28 on non-leap
+```
+
+### 15.11 Ranges
+```goblin
+for d  in date("2025-08-01")..date("2025-08-05")      /// step=1d by default
+for ts in dt_start...dt_end step 30m                   /// exclusive end, custom step
+```
+Date range default step: `1d`. Datetime range default step: `1h`.
+
+`step` must be a duration.
+
+### 15.12 JSON / YAML / CSV Interop
+Default surface is string (no auto-decode) per §14 principles.
+
+**Canonical strings:**
+- `date` → `"YYYY-MM-DD"`
+- `time` → `"HH:MM:SS[.SSS]"`
+- `datetime` → `"2025-08-12T14:30:00-06:00"`
+- `duration` → `"PT3600S"` (ISO‑8601)
+
+**JSON options (write/read):**
+```goblin
+write_json(path, value, { datetime: "string" | "object" = "string" })
+read_json(path,  { datetime: "off" | "string" | "object" | "auto" = "off" })
+```
+
+**"object" forms:**
+```json
+{"_type":"datetime","value":"2025-08-12T14:30:00-06:00"}
+{"_type":"date","value":"2025-08-12"}
+{"_type":"time","value":"14:30:00"}
+{"_type":"duration","seconds":3600}
+```
+
+`"auto"`: try "object", then strict ISO string; else leave raw.
+
+Bad values → `ValueError`.
+
+(YAML/CSV mirror "string" mode; use parse helpers to opt in.)
+
+### 15.13 Errors & Warnings
+`ValueError` (malformed), `TypeError` (illegal cross-type op), `OverflowError` (out of range), `TimezoneError` (unknown tz), `TimeSourceError`, `TimeSourceWarning`.
+
+### 15.14 Examples
+```goblin
+default datetime tz: "America/Denver"
+default datetime source: "https://time.goblin-lang.org/api/now"
+default datetime policy: warn
+default datetime prefer_trusted: true
+
+start = datetime("2025-08-12 09:00")          /// MDT
+say start.iso()                                /// 2025-08-12T09:00:00-06:00
+
+/// Verified timestamp for a receipt
+ensure_time_verified("checkout capture")
+stamp = trusted_now()
+say stamp.format("YYYY-MM-DD HH:mm ZZ")
+
+/// Date iteration
+for d in date("2025-08-01")..date("2025-08-03")
+    say d                                     /// 01, 02, 03
+
+/// Floor/Ceil
+ts = datetime("2025-08-12 14:37:55")
+say floor_dt(ts, "hour")                      /// 2025-08-12T14:00:00-06:00
+
+/// Calendar adders
+bill = date("2025-01-31")
+say add_months(bill, 1)                       /// 2025-02-28
+
+/// Differences
+lap = datetime("2025-08-12 10:00") - datetime("2025-08-12 09:42")
+say lap                                       /// PT1080S (18m)
+```
+
+**Server Endpoint (reference):**
+The default source expects either:
+- HTTPS Date header (RFC 7231)
+- or JSON: `{"epoch": 1723473000.0}` (UTC seconds, float).
+
+Clients must tolerate minor network/processing latency; monotonic adjustment is applied at cache write.
+
+---
+
+## 16. Shopify Profile (Gears: "Game Goblin")
+
+### 16.1 Repo Layout
 ```
 goblin.config.yaml
 types-registry.yaml
@@ -840,7 +1077,7 @@ dist/
     remainders.log
 ```
 
-### 15.2 CLI (Gears)
+### 16.2 CLI (Gears)
 ```
 gears init                          # Initialize project
 gears spawn tarot_deck "Mystic"     # Generate template  
@@ -860,12 +1097,12 @@ goblin remainders rotate            # rotate remainders.log
 goblin warnings clear|rotate
 ```
 
-### 15.3 Configuration Files
+### 16.3 Configuration Files
 - **collections-map.yaml**: Authoritative map from Goblin category to Shopify collections (first = primary)
 - **types-registry.yaml**: Per type: required fields, allowed categories, defaults (options, split strategy, SEO templates)
 - **goblin.config.yaml**: SKU policy, paths, currency settings
 
-### 15.4 SKU Generation
+### 16.4 SKU Generation
 ```yaml
 sku_policy:
   default_pattern: "{CODE}-{YEAR?}-{LIST}-{PARTCODE}-{ATTRCODE?}"
@@ -874,13 +1111,13 @@ sku_policy:
   autoinc: false  # set true to allow A/B suffixing on collisions
 ```
 
-### 15.5 CSV Import/Export (Shopify)
+### 16.5 CSV Import/Export (Shopify)
 - `--initial`: full rows + qty; Draft by default unless `meta.publish=true`
 - `--append`: minimal rows; only new variants; no qty changes
 - CSV exports numeric Variant Price in store currency with perfect precision
 - If item currency ≠ store currency: warn and log to report.txt
 
-### 15.6 Gear Settlement Options
+### 16.6 Gear Settlement Options
 
 ```goblin
 shopify::configure(
@@ -894,14 +1131,14 @@ shopify::configure(
 - **line_item**: `drip_remainders(commit:true, label: order_id)`; add single ± line item of the emitted amount.
 - **adjust_price**: `drip_remainders(commit:true, label: order_id)`; distribute via `divide_evenly` across lines; recompute tax.
 
-### 15.7 Logs (Standardized)
+### 16.7 Logs (Standardized)
 
 - **dist/warnings.log** — JSON Lines; precision warnings, with op, currency, remainder, location.
 - **dist/remainders.log** — JSON Lines; drip operations (log-only or commit), before/after ledger, thresholds, emitted.
 
 ---
 
-## 16. Examples
+## 17. Examples
 
 ### Concatenation & Casting
 ```goblin
@@ -1000,9 +1237,31 @@ say actual  /// {USD: $0.03}
 shares = divide_evenly(actual.USD, 3)  /// [$0.01, $0.01, $0.01]
 ```
 
+### Date & Time Examples
+```goblin
+default datetime tz: "America/Denver"
+
+/// Basic construction
+start_date = date("2025-08-12")
+meeting_time = datetime("2025-08-12 14:30")
+duration = 1h + 30m
+
+/// Arithmetic
+end_time = meeting_time + duration
+days_until = date("2025-12-25") - today()
+
+/// Ranges and iteration
+for d in date("2025-08-01")..date("2025-08-07")
+    say "Day: {d.format('YYYY-MM-DD')}"
+
+/// Trusted time for financial records
+ensure_time_verified("transaction_log")
+transaction_stamp = trusted_now()
+```
+
 ---
 
-## 17. Errors & Warnings
+## 18. Errors & Warnings
 
 ```goblin
 /// Throw errors
@@ -1024,14 +1283,14 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`
 
 **Built-in warning types:**
-`MoneyPrecisionWarning`
+`MoneyPrecisionWarning`, `TimeSourceWarning`
 
 ---
 
-## 18. Reserved Words
+## 19. Reserved Words
 
 ```
 if, elif, el, for, in, while, class, init, return, skip, stop, try, catch, finally, 
@@ -1041,12 +1300,14 @@ json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now
 add, sum, mult, sub, div, mod, divmod, pow, root, floor, ceil, round, abs, min, max, 
 rand, randint, tax, with_tax, bit, gear, use, export, import, via, validate, 
 remainders_total, remainders_report, clear_remainders, divide_evenly, divide_evenly_escrow, 
-drip_remainders
+drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_datetime,
+today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
+trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified
 ```
 
-## 19. Gears: Modular Add-ons
+## 20. Gears: Modular Add-ons
 
-### 19.1 Overview
+### 20.1 Overview
 Gears are modular add-ons for Goblin that extend language capabilities for specific domains. Each gear is self-contained with no external dependencies, avoiding conflicts and dependency hell.
 
 **Key Points:**
@@ -1055,7 +1316,7 @@ Gears are modular add-ons for Goblin that extend language capabilities for speci
 - **Composable** — Install only the gears you need for your workflow
 - **First-class syntax integration** — Gears feel native in Goblin code
 
-### 19.2 Loading Gears
+### 20.2 Loading Gears
 ```goblin
 use shopify
 use tarot_deck as tarot
@@ -1065,7 +1326,7 @@ use invoice@^1.2
 - Optional alias with `as`
 - Optional version specifier with `@`
 
-### 19.3 Namespaced Symbols
+### 20.3 Namespaced Symbols
 Gears expose templates, functions, and exporters under their namespace:
 ```goblin
 tarot::card_template
@@ -1073,7 +1334,7 @@ shopify::csv
 invoice::calc_fee
 ```
 
-### 19.4 Gear Templates
+### 20.4 Gear Templates
 Gears can publish template structures that integrate with Goblin's template syntax:
 ```goblin
 use tarot_deck as tarot
@@ -1087,7 +1348,7 @@ use tarot_deck as tarot
 - Local binding with `@name` sets project-specific defaults
 - Uses standard positional override syntax (`::`)
 
-### 19.5 Export/Import via Gears
+### 20.5 Export/Import via Gears
 ```goblin
 /// Export data through gear formatters
 export @cards via shopify::csv to "dist/products.csv" mode: "append"
@@ -1099,13 +1360,13 @@ orders = import "orders.csv" via shopify::csv
 - Target format: `shopify::csv`, `shopify::api`, etc.
 - Extra options (`to`, `mode`, etc.) are passed to the gear
 
-### 19.6 Gear Functions
+### 20.6 Gear Functions
 ```goblin
 fee = invoice::calc_fee(subtotal: 125.00, rate: 2%)
 ```
 Gear functions integrate with Goblin's type system (money, percentages, etc.)
 
-### 19.7 Configuration & Validation
+### 20.7 Configuration & Validation
 ```goblin
 /// Configure gear behavior
 shopify::configure(
@@ -1119,13 +1380,13 @@ validate @cards via tarot::rules
 ```
 If validation fails, Goblin raises standard errors or warnings.
 
-### 19.8 Introspection
+### 20.8 Introspection
 ```goblin
 say gears()                  /// ["shopify", "tarot_deck"]
 say gear_symbols("shopify")  /// ["csv", "api", "configure", ...]
 ```
 
-### 19.9 Full Example
+### 20.9 Full Example
 ```goblin
 use tarot_deck as tarot
 use shopify
@@ -1141,7 +1402,7 @@ validate @cards via tarot::rules
 export @cards via shopify::csv to "dist/products.csv" mode: "append"
 ```
 
-### 19.10 Example Gear Ideas
+### 20.10 Example Gear Ideas
 - **tarot_deck** — Knows about suits, arcana, card pricing
 - **shopify** — Handles Shopify CSV format, product variants, inventory
 - **restaurant_menu** — Manages dishes, ingredients, dietary restrictions
