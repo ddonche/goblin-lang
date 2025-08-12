@@ -1538,7 +1538,7 @@ drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_d
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
-goblin_empty_pockets, goblin_stash, goblin_payout, gmark, ord
+goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord, next_ord, ord
 ```
 
 **Version Codenames:**
@@ -2093,74 +2093,108 @@ is_client_error(code: Http) = code.value() in 400..499
 is_server_error(code: Http) = code.value() in 500..599
 ```
 
-## 22. gmark (Goblin Mark)
+## 22. Gmark — Project‑Local Stable References
 
-**gmark** is Goblin's built-in **global reference system** — a unique, persistent identifier for records within a project. It's designed to make cross-file, cross-gear linking dead-simple without relying on databases, manual key management, or brittle file paths.
+### 22.1 What is a gmark?
+A gmark is a stable, human‑readable handle that uniquely identifies a piece of content within a project (e.g., a blog post, page, product). Gmarks are intended for internal linking and sorting, and are independent of filenames/paths so gears can move files around without breaking references.
 
-### 22.1 Purpose
-`gmark` solves three common problems in modular, file-driven projects:
+- **Name:** a string key (e.g., `"post/how-to-play"` or `"how-to-play"`)
+- **Ord:** a project‑wide integer used for stable ordering (newest at the end by default)
+- **ID (opaque):** optional unique token for registry internals; not user‑facing
 
-1. **Stable Linking** — A gmark stays the same even if file paths, names, or structures change.
-2. **Conflict-Free** — Each gmark is unique **within a project scope**, avoiding collisions between unrelated records.
-3. **Gear-Aware** — Gears can read/write gmarks without knowing file layouts, making interlinking trivial.
+### 22.2 Persistence
+The registry lives at `.goblin/gmarks.lock` (JSON). It tracks:
 
-### 22.2 Structure
-A gmark consists of:
-
-- **Type Prefix** *(optional)* — Short string indicating the kind of thing (`page`, `post`, `order`, etc.).
-- **Name String** *(required)* — Human-readable slug (`about-us`, `invoice-1928`).
-- **ord** *(auto-assigned)* — Internal integer ID used for sorting/search; invisible to end-users.
-
-**Example:**
-```
-gmark: post:about-us ord: 42
-```
-
-### 22.3 Creation
-- **Automatic**: When a new record is created, Goblin assigns the next available `ord` and generates a gmark from the provided name.
-- **Manual**: Developers may specify a gmark explicitly to preserve legacy links or match external systems.
-- **Guaranteed Unique**: Goblin enforces uniqueness at project scope. A conflict results in a `GmarkConflictError`.
-
-### 22.4 Storage
-- All gmarks and their ord values are tracked in a `.gmarks` file at the project root.
-- This file is updated automatically on create, delete, or rename operations.
-- It is **core Goblin**, not gear-specific, so every gear benefits from the same ID system.
-
-**Example `.gmarks` file:**
-```
-post:about-us: 42
-post:contact: 43
-order:2025-08-12-004: 44
+```json
+{
+  "last_ord": 137,
+  "marks": {
+    "post/how-to-play": { "ord": 121, "id": "gm_8C3...", "created":"...", "updated":"..." },
+    "post/faq":         { "ord": 122, "id": "gm_F91...", "created":"...", "updated":"..." }
+  }
+}
 ```
 
-### 22.5 Usage
-Gmarks are used to:
+- Written atomically on mutation
+- Loaded read‑only during `--deterministic` builds (unless an explicit write is allowed by policy)
 
-- Link one record to another (`related: gmark:post:about-us`)
-- Cross-reference between gears (Shopify gear links `order` to `customer`)
-- Resolve records even if file paths change
+### 22.3 Creating/ensuring a gmark
+```goblin
+/// Auto-increment ord (default)
+gmark("post/how-to-play")           /// => { name:"post/how-to-play", ord: 138 }
 
-**Example linking in YAML:**
-```yaml
-title: Contact
-gmark: post:contact
-related: 
-  - post:about-us
+/// Manual ord (explicit position)
+gmark("post/how-to-play", ord: 42)  /// => { name:"post/how-to-play", ord: 42 }
 ```
 
-### 22.6 Search & Sort
-- Gmarks can be **looked up** directly (`find_gmark("post:about-us")`).
-- `ord` can be used for **ordering** (chronological inserts) without parsing names.
-- The `.gmarks` registry is indexed in memory for instant lookups.
+**Rules:**
+- If `ord:` omitted → auto uses `last_ord + 1`
+- If `ord:` is provided:
+  - If the ord is unused → assign it
+  - If the ord is already taken → `GmarkConflictError` (no silent reshuffle)
+- Re‑calling `gmark(name, …)` is idempotent: returns existing record unless you change the ord (see §22.5)
 
-### 22.7 Reserved Behaviors
-- **Project Scope**: Gmarks are unique per project, but different projects may reuse the same names without conflict.
-- **Immutable by Default**: Changing a gmark after creation is discouraged; Goblin will emit a `GmarkChangeWarning`.
-- **Gear-Agnostic**: Any gear can read/write gmarks without special integration.
+### 22.4 Naming rules
+- **Allowed:** letters, numbers, `_`, `-`, `/`, `.`
+- No leading/trailing slashes; no empty segments; max length 256
+- Names are case‑sensitive
+- Must not be a reserved word (§19)
+- Invalid names → `GmarkInvalidError`
 
-### 22.8 Error Types
-- `GmarkConflictError` — Attempted creation of a duplicate gmark.
-- `GmarkMissingError` — Reference to a gmark that does not exist.
-- `GmarkChangeWarning` — Modification of an existing gmark.
+### 22.5 Updating ord (manual positioning)
+```goblin
+gmark_set_ord("post/how-to-play", 200)   /// move to ord 200 (must be free)
+```
+- If target ord taken → `GmarkConflictError`
+- Does not renumber others. Use CLI tooling (outside the language) to batch‑rebalance if you want compact ords
 
-This system makes Goblin feel **tightly integrated** between core and gears, while keeping the flexibility of a purely file-driven, modular environment.
+### 22.6 Introspection & lookup
+```goblin
+gmark_info("post/how-to-play")  /// -> { name, ord, id, created, updated } or nil
+gmarks()                        /// -> array<{ name, ord, id }> sorted by ord
+next_ord()                      /// -> last_ord + 1 (does not allocate)
+```
+
+### 22.7 Linking from content
+Gears decide how a gmark resolves to URLs/paths. Core provides the stable key; a CMS gear might offer:
+
+```goblin
+blog::href(gmark: "post/how-to-play")   /// "/posts/how-to-play"
+blog::link(text: "How to Play", gmark: "post/how-to-play")
+```
+
+### 22.8 Sorting & querying
+`gmarks()` returns ord‑sorted entries for simple chronological lists.
+
+Gears can maintain additional indices (by tag/date/category) but ord remains the single, portable, stable sequence number for "publish order".
+
+### 22.9 Determinism & policy
+In `--deterministic` builds, writes to `.goblin/gmarks.lock` are blocked unless the project policy explicitly allows it. Attempting to allocate a new gmark/ord then → `DeterminismError`.
+
+Reads are always allowed.
+
+### 22.10 Errors
+- `GmarkConflictError` — duplicate name or ord in the project
+- `GmarkNotFoundError` — referenced gmark doesn't exist
+- `GmarkInvalidError` — bad name format or reserved collision
+- `GmarkPersistenceError` — registry file can't be read/written
+
+### 22.11 Examples
+
+**Auto vs manual:**
+```goblin
+post = gmark("post/hello-world")           /// ord auto → 138
+pin  = gmark("post/welcome", ord: 1)       /// manual pin to top
+```
+
+**Stable lists:**
+```goblin
+for m in gmarks()           /// already sorted by ord
+    say m.name || "@" || str(m.ord)
+```
+
+**Move a post later:**
+```goblin
+target = next_ord() + 10
+gmark_set_ord("post/hello-world", target)
+```
