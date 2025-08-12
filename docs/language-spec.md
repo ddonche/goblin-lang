@@ -1407,3 +1407,221 @@ export @cards via shopify::csv to "dist/products.csv" mode: "append"
 - **shopify** — Handles Shopify CSV format, product variants, inventory
 - **restaurant_menu** — Manages dishes, ingredients, dietary restrictions
 - **invoice** — Generates business invoices with tax calculations
+
+## 21. Enums (Core)
+
+### 21.1 Purpose
+Closed sets of named constants with an optional backing int or string. Enums are first‑class types with strict equality and simple utilities. No implicit coercion.
+
+### 21.2 Declaration
+```goblin
+enum Status
+    Pending
+    Paid
+    Shipped
+end
+
+enum Http as int
+    Ok = 200
+    NotFound = 404
+end
+
+enum Suit as string
+    Clubs = "C"
+    Diamonds = "D"
+    Hearts = "H"
+    Spades = "S"
+end
+```
+
+`as int` / `as string` are optional.
+
+No backing specified → symbolic enum with stable ordinal (0..n‑1).
+
+With `as int`/`as string`, values must be explicit to avoid surprises.
+
+Variant names must be unique within the enum.
+
+Enums are closed (no late additions).
+
+#### 21.2.1 Sequential Int Enums (Optional)
+For int‑backed enums, add `seq` to enable auto‑increment:
+
+```goblin
+enum Priority as int seq
+    Low = 1      /// seed required
+    Medium       /// auto: 2  
+    High         /// auto: 3
+end
+
+enum Http as int seq
+    Ok = 200
+    Created      /// 201
+    BadRequest = 400
+    NotFound     /// 401 (continues from last explicit)
+end
+```
+
+**Rules:**
+- `seq` only allowed with `as int`
+- First variant in a `seq` enum **must** have an explicit int
+- After any explicit value, subsequent unassigned variants continue `+1`
+- Mixed explicit+auto is fine; duplicates still raise `EnumError`
+- No `seq` for string‑backed enums (too magical/conflict‑prone)
+- Omit `seq` if you want every int explicit (original behavior still supported)
+
+### 21.3 Construction & Access
+```goblin
+s = Status.Paid
+h = Http.Ok
+c = Suit.Clubs
+```
+Type of `s` is `Status`, not string/int.
+
+Access is namespaced: `EnumName.Variant`.
+
+### 21.4 Introspection & Methods
+```goblin
+/// Instance methods
+s.name()         → "Paid"
+s.value()        → backing value or s.name() for symbolic enums
+s.ordinal()      → 0‑based declaration index
+str(s)           → "Status.Paid"
+
+/// Type methods
+Status.values()  → [Status.Pending, Status.Paid, Status.Shipped]
+Status.names()   → ["Pending","Paid","Shipped"]
+Status.from_name("Paid")          → Status.Paid
+Status.try_from_name("X")         → nil
+Http.from_value(404)              → Http.NotFound
+Http.try_from_value(201)          → nil
+```
+`from_*` throws `EnumError` on failure; `try_from_*` returns `nil`.
+
+### 21.5 Operators & Type Rules
+Allowed comparisons: `==`, `!=`, `is`, `is not` between the same enum type.
+
+Ordering (`<` etc.): allowed **only** for int‑backed enums (including `seq`) and **only** within the same enum type.
+
+Cross‑type comparisons (e.g., `Status.Paid == "Paid"`): `TypeError`. Cast explicitly if needed.
+
+Arithmetic / `++` / `--` / postfix math: not allowed on enums.
+
+Maps/sets: enum members are valid keys (use bracket notation for keys):
+
+```goblin
+prices = {}
+prices[Suit.Clubs] = 1.25
+```
+
+### 21.6 Patterning (Simple)
+No special switch construct. Use standard conditionals or map dispatch:
+
+```goblin
+if s is Status.Pending
+    "hold"
+elif s is Status.Paid
+    "ship"
+el
+    "investigate"
+```
+
+### 21.7 Interop (JSON/YAML/CSV)
+Default surface is string name to keep files human‑readable, with opt‑ins mirroring money/datetime.
+
+**Write options (additive to §14.2.2):**
+```goblin
+write_json(path, v, { enum: "name" | "value" | "object" = "name" })
+```
+
+**Read options:**
+```goblin
+read_json(path, { enum: "off" | "name" | "value" | "object" | "auto" = "off" })
+```
+
+**Modes:**
+- **"name"**: write/read `"Status.Paid"` (qualified) to disambiguate across enums. On read with `enum:"name"`, strings of the form `"Enum.Variant"` decode if the enum exists; bare `"Variant"` is not decoded.
+
+- **"value"**: write the backing value only (int/string); decode requires target enum context:
+  ```goblin
+  orders = read_json("orders.json", { enum: "value", enum_schema: { "status": "Status" } })
+  ```
+  Unknown keys in `enum_schema` are ignored.
+
+- **"object"** (canonical object):
+  ```json
+  {"_type":"enum","enum":"Status","name":"Paid","value":"Paid","ordinal":1}
+  ```
+
+- **"auto"**: try "object" → qualified "Enum.Variant" → leave raw.
+
+YAML/CSV behave like JSON "name" mode by default. No auto‑decode unless options specify.
+
+**Stability note:** If stability across versions matters, prefer `"object"` or `"name"` modes in JSON. `"value"` mode ties you to the numeric plan (seq or explicit).
+
+### 21.8 Casting & Formatting
+```goblin
+str(Status.Paid)     → "Status.Paid"
+Status.Paid.name()   → "Paid"
+Status.Paid.value()  → "Paid"   /// for symbolic enums equals name()
+fmt(Status.Paid, "") → "Status.Paid"   /// fmt defers to str()
+```
+
+### 21.9 Ranges & Loops
+```goblin
+for v in Status
+    say v.name()
+```
+Enum types are iterable in declaration order.
+
+### 21.10 Errors
+`EnumError` (unknown name/value, duplicate value in int/string enums), plus `TypeError` where noted.
+
+### 21.11 Examples
+```goblin
+enum Status
+    Pending
+    Paid
+    Shipped
+end
+
+order = { id: 17, status: Status.Pending }
+
+if order.status is Status.Pending
+    "hold"
+el
+    "continue"
+
+/// Int-backed with sequential auto-increment
+enum Priority as int seq
+    Low = 1
+    Medium       /// 2
+    High         /// 3
+    Critical = 10
+    Urgent       /// 11
+end
+
+assert Priority.Low < Priority.High
+assert Priority.Critical.value() == 10
+
+/// String-backed
+enum Suit as string
+    Clubs = "C"
+    Diamonds = "D"
+    Hearts = "H"
+    Spades = "S"
+end
+
+/// JSON roundtrip
+write_json("order.json", order, { enum: "name" })
+back = read_json("order.json", { enum: "name" })
+say back.status                    /// Status.Pending
+
+/// From strings/values
+Status.from_name("Paid")          /// Status.Paid
+Http.from_value(404)              /// Http.NotFound
+
+/// Predicate helpers for value ranges
+is_client_error(code: Http) = code.value() in 400..499
+is_server_error(code: Http) = code.value() in 500..599
+```
