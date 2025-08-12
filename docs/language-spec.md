@@ -1380,7 +1380,7 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPeristenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`
 
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
