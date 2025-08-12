@@ -1518,13 +1518,52 @@ Error messages may occasionally include goblin-themed variations for personality
   - *"Non-deterministic chaos: goblins require consistent execution"*
  
 - `GmarkConflictError`:
+  - *"The bookmark goblins found duplicate gmark '{name}' - they demand unique names!"*
+  - *"Gmark collision detected: archive goblins refuse duplicate ord {ord}"*
+  - *"The registry goblins report: '{name}' already exists with ord {ord}"*
+  - *"Conflict chaos: goblins can't assign ord {ord} - already taken!"*
+
 - `GmarkNotFoundError`:
+  - *"The search goblins can't find gmark '{name}' in the registry"*
+  - *"Missing bookmark: archive goblins don't see '{name}'"*
+  - *"The catalog goblins report: gmark '{name}' has vanished"*
+  - *"Registry error: goblins found no record of '{name}'"*
+
 - `GmarkInvalidError`:
-- `GmarkPeristenceError`:
-MorphTypeError
-MorphFieldError
-MorphCurrencyError
-MorphActionError
+  - *"The naming goblins reject invalid gmark '{name}' - check the format!"*
+  - *"Invalid bookmark: goblins don't allow '{name}' as a gmark"*
+  - *"The format goblins found illegal characters in gmark '{name}'"*
+  - *"Name validation failed: goblins demand proper gmark syntax"*
+
+- `GmarkPersistenceError`:
+  - *"The storage goblins can't save gmark registry to disk"*
+  - *"Archive error: goblins failed to write .goblin/gmarks.lock"*
+  - *"The file goblins report: gmark persistence chaos"*
+  - *"Registry save failed: goblins can't update the bookmark database"*
+
+- `MorphTypeError`:
+  - *"The shape-shifting goblins can't morph '{obj}' using '{target}' - invalid types!"*
+  - *"Morph error: transformation goblins don't recognize method '{method}'"*
+  - *"The metamorphosis goblins found incompatible target type"*
+  - *"Type transformation failed: goblins can't perform this morph"*
+
+- `MorphFieldError`:
+  - *"The field goblins found incompatible '{field}': expected {expected}, got {actual}"*
+  - *"Morph field error: transformation goblins can't sync '{field}'"*
+  - *"The accessor goblins report: field '{field}' types don't match"*
+  - *"Field sync chaos: goblins refuse to mix incompatible field types"*
+
+- `MorphCurrencyError`:
+  - *"The currency goblins won't morph {from_cur} into {to_cur} for field '{field}'"*
+  - *"Money morph error: exchange goblins demand matching currencies"*
+  - *"The treasury goblins found currency mismatch in '{field}'"*
+  - *"Currency transformation failed: goblins can't mix {from_cur} and {to_cur}"*
+
+- `MorphActionError`:
+  - *"The action goblins failed during morph: {cause}"*
+  - *"Morph execution error: method goblins encountered chaos"*
+  - *"The transformation goblins report: target method exploded"*
+  - *"Action failure: goblins couldn't complete the morph operation"*
 
 **Built-in warning types:**
 `MoneyPrecisionWarning`, `TimeSourceWarning`
