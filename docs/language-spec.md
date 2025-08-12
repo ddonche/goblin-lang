@@ -1629,6 +1629,7 @@ next_ord, ord, morph
 ```
 
 **Version Codenames:**
+- v1.0: "Evil Redcap" *(MVP)*
 - v1.5: "Treasure Hoarder" *(current)*
 - v1.6: "Gold Sniffer"
 - v1.7: "Wealth Watcher" 
