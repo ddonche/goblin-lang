@@ -86,8 +86,7 @@ fmt(x, ".2f"), fmt(x, ","), fmt(x, ",.2f")
 postfix operators: ** (square), // (square root), ++, --
 **, ^^ (right-to-left)      [binary power and explain-power]
 unary + - not !
-* / %
-//  (infix divmod — quotient+remainder, spaces required)
+* / % // >>                 [multiplicative family]
 + -
 | then ||                   [string joins only]
 comparisons: == != < <= > >= === !== is is not   (chaining allowed)
@@ -96,20 +95,35 @@ inline conditional ? ?? :   (right-associative)
 ```
 
 **Notes:**
-- Postfix forms (`**`, `//`, `++`, `--`) bind tighter than binary math
-- If an operator token is followed by an operand → binary; if it ends the expression (no RHS) → postfix
-- `//=` is not supported (divmod returns a pair)
+- Postfix forms (`**`, `//`, `++`, `--`) bind tighter than any binary operator (like parentheses)
+- Bind only to the **nearest primary** (literal, variable, or parenthesized expression)
+- `>>` sits at the same precedence level as `* / % //` (multiplicative group)
+- If an operator token has spaces around it → binary; if it ends the expression (no RHS) → postfix
 
-### 2.2 Arithmetic
+### 2.2 Division & Divmod
 ```goblin
-/// Division
-/ → float division (10/2 → 5.0)
-a // b → quotient + remainder pair
-say 5 // 2 → 2 r 1
-q, r = 5 // 2
+/// Division types
+/ → float division (numbers only)
+// → quotient-only division (floor division, Python-style)  
+>> → divmod returning pair (q, r) for numbers and money
 
-/// Modulus
+/// Examples (numbers)
+10.75 / 3 → 3.5833333333
+10.75 // 3 → 3
+10.75 >> 3 → (3, 1.75)
+-7 / 3 → -2.3333333333
+-7 // 3 → -3      /// floor semantics
+-7 >> 3 → (-3, 2) /// because -7 = (-3)*3 + 2
+
+/// Money (using `/` with money → MoneyDivisionError)
+price = $10.75
+q = price // 3      /// USD 3.00 (quotient only)
+q, r = price >> 3   /// (USD 3.00, USD 1.75)
+price / 3           /// MoneyDivisionError
+
+/// Remainder operator
 % → remainder (modulus)
+/// For money: amount % n returns money remainder (same as second element of amount >> n)
 ```
 
 ### 2.3 Exponentiation
@@ -119,7 +133,7 @@ q, r = 5 // 2
 say 5 ^^ 3 → 125 (5 × 5 × 5)
 ```
 - Same precedence/associativity/value as `**`
-- `^` reserved for future XOR (not an operator in v1.4)
+- `^` reserved for future XOR (not an operator in v1.5)
 
 ### 2.4 Postfix Math Shorthands
 ```goblin
@@ -127,6 +141,11 @@ n** → square (9** → 81)
 n// → square root (9// → 3)
 x++ → yields old x, then x = x + 1
 x-- → yields old x, then x = x - 1
+
+/// Precedence examples
+16// ** 2 → (sqrt(16)) ** 2 → 16
+a + b** * 3 → a + (b**) * 3
+arr[i]++ * 2 → (old arr[i]) * 2, then mutate
 ```
 
 **Types:**
@@ -134,7 +153,7 @@ x-- → yields old x, then x = x - 1
 - `x++`/`x--`: int/float/money; money changes by 1 whole unit
 - Lvalues only (e.g., `arr[i]++` ok). Not on literals/temporaries: `(x+1)++` → SyntaxError
 - No chaining: `x++++` and `(x++)++` → SyntaxError
-- No prefix forms (`++x`, `--x`) in v1.4
+- No prefix forms (`++x`, `--x`) in v1.5
 
 ### 2.5 Bitwise
 Operators removed to avoid conflict with string pipes. Use functions instead:
@@ -189,7 +208,7 @@ if cond
     ...
 elif cond
     ...
-el
+else
     ...
 ```
 No colons. Indentation defines blocks.
@@ -461,17 +480,21 @@ age = int(45), tax = float(.0725), price = money(.99, EUR)
 
 ### 10.4 Arithmetic & Comparisons
 ```goblin
-/// Allowed (same currency): + - * // %
-/// Not allowed: / on money
-
-/// Attempting money / anything → MoneyDivisionError
-/// Use // to capture remainder or divide_evenly(...)
+/// Allowed (same currency): + - * // >> %
+/// Not allowed: / on money (→ MoneyDivisionError)
 
 /// Scalar multiply/divide by numbers:
 money * int|float → money (same currency) + remainder tracking
-money // int → pair (quotient: money, remainder: money)
-money % int → remainder money (alias of second element of //)
+money // int → quotient money (no remainder returned)
+money >> int → pair (quotient: money, remainder: money)
+money % int → remainder money (alias of second element of money >> int)
 ```
+
+**Division behavior:**
+- `money / anything` → `MoneyDivisionError` 
+- `money // int` → quotient only (same as `(money >> int).first`)
+- `money >> int` → complete divmod pair `(quotient, remainder)`
+- `money % int` → remainder only (same as `(money >> int).second`)
 
 **Scalar multiply** converts to major units, multiplies exactly, then canonicalizes (minor-units formulation is equivalent).
 
@@ -514,11 +537,12 @@ money++ / money--  /// add/subtract exactly 1 whole unit
 ### 10.7 Even Splits & Remainder Ledger
 
 #### Hard Rule on Division
-Using `/` with money always errors: `MoneyDivisionError: Use // to capture remainder or divide_evenly(total, parts).`
+Using `/` with money always errors: `MoneyDivisionError: Use // or >> for quotient, or divide_evenly(total, parts).`
 
 #### Divmod for Money
 ```goblin
-q, r = total // parts
+q = total // parts     /// quotient only
+q, r = total >> parts  /// quotient and remainder
 ```
 `q` and `r` are money at current precision; no ledger change.
 
@@ -549,7 +573,7 @@ Goblin tracks any money remainder you don't capture:
 
 ```goblin
 /// If you ignore remainder, it's tracked:
-q, _ = total // n
+q, _ = total >> n
 
 /// High-precision construction tracking:
 money(10.555, USD)  /// Logs 0.005 remainder automatically
@@ -610,7 +634,7 @@ default money USD
 precise_amount = money(100.567, USD)  /// $100.56 + remainder(0.007)
 
 /// Division with remainder
-q, r = $100.00 // 3   /// q = $33.33, r = $0.01
+q, r = $100.00 >> 3   /// q = $33.33, r = $0.01
 /// Conservation: $100.00 = $33.33 × 3 + $0.01 ✓
 
 /// Even split with perfect distribution
@@ -624,7 +648,7 @@ result = divide_evenly_escrow($100.00, 7)
 /// Conservation: 7 × $14.28 + $0.04 = $100.00 ✓
 
 /// Remainder tracking for ignored values
-_, _ = $100.00 // 7    /// remainder logged automatically
+_, _ = $100.00 >> 7    /// remainder logged automatically
 say remainders_total()  /// => { USD: $0.02 }
 clear_remainders()
 ```
@@ -1138,9 +1162,7 @@ goblin remainders status            # show ledger and last N entries
 goblin remainders clear             # clear in-memory ledger (keeps logs)
 goblin remainders rotate            # rotate remainders.log
 goblin warnings clear|rotate
-```
 
-```
 gears gmark rebalance  # Compact ords by current sort; reassign 1..N (atomic)
 ```
 
@@ -1194,10 +1216,28 @@ shopify::configure(
 str(5) || str(10) → 5 10
 ```
 
-### Infix Divmod & Destructure
+### Division & Divmod Examples
 ```goblin
-q, r = 17 // 5  /// q=3, r=2
-say 5 // 2      /// 2 r 1
+/// Numbers
+10.75 / 3 → 3.5833333333
+10.75 // 3 → 3
+10.75 >> 3 → (3, 1.75)
+-7 / 3 → -2.3333333333
+-7 // 3 → -3         /// floor semantics
+-7 >> 3 → (-3, 2)    /// because -7 = (-3)*3 + 2
+
+/// Money
+default money USD
+price = $10.75
+q = price // 3       /// USD 3.00 (quotient only)
+q, r = price >> 3    /// (USD 3.00, USD 1.75)
+price / 3            /// MoneyDivisionError
+
+/// Quick sanity check
+a = 10.75
+say a / 3            /// 3.5833333333
+say a // 3           /// 3
+say a >> 3           /// (3, 1.75)
 ```
 
 ### Postfix Math
@@ -1318,7 +1358,7 @@ order = { id: 17, status: Status.Pending }
 
 if order.status is Status.Pending
     "hold"
-el
+else
     "continue"
 
 /// Int-backed with sequential auto-increment
@@ -1380,7 +1420,7 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPeristenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`
 
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
@@ -1476,10 +1516,10 @@ Error messages may occasionally include goblin-themed variations for personality
   - *"Logic error: goblins can't verify this condition"*
 
 - `MoneyDivisionError`: 
-  - *"The treasury goblins forbid dividing money directly - use // or divide_evenly()"*
+  - *"The treasury goblins forbid dividing money directly - use // or >> for division, or divide_evenly()"*
   - *"Money division blocked: goblins demand explicit remainder handling"*
   - *"The accounting goblins refuse money division without precision control"*
-  - *"Currency math error: goblins require // for money division"*
+  - *"Currency math error: goblins require // or >> for money division"*
 
 - `TimezoneError`: 
   - *"The geography goblins don't recognize timezone '{timezone}'"*
@@ -1573,7 +1613,7 @@ Error messages may occasionally include goblin-themed variations for personality
 ## 19. Reserved Words
 
 ```
-if, elif, el, for, in, while, class, init, return, skip, stop, try, catch, finally, 
+if, elif, else, for, in, while, class, init, return, skip, stop, try, catch, finally, 
 assert, error, warn, say, true, false, nil, default, int, float, money, bool, 
 read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, read_json, write_json, 
 json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now, uuid, 
@@ -1608,7 +1648,7 @@ These components **must** remain in core to ensure safety, determinism, and lang
 
 **Syntax & Parser:**
 - Keywords (`use`, `via`, `prefer`, `contract`, `emit`, `on`, `test`)
-- Operators (percent literals, postfix `++`/`--`, infix `//`)
+- Operators (percent literals, postfix `++`/`--`, infix `//`, `>>`)
 - Precedence rules and "no-space vs space" `%` behavior
 - Template syntax (`::`, `@name`)
 
@@ -1680,7 +1720,7 @@ Gears are first‑class, modular extensions that feel native to Goblin. The core
 - **Contract‑checked**: implementations must match declared contracts
 - **Deterministic**: pin versions, lock builds, sandbox side effects
 
-### 20.2 Loading & Versioning
+### 21.2 Loading & Versioning
 ```goblin
 use shopify@^1.6 as shp
 use tarot_deck@1.2
@@ -1692,7 +1732,7 @@ Alias: `as` sets a local alias (`shp::csv`).
 
 Lockfile: `gears.lock` records `{gear, version, checksum, source}`; builds resolve only from lock unless `--update`.
 
-### 20.3 Capability Resolution
+### 21.3 Capability Resolution
 Gears declare capabilities (named functions/templates/exporters). Calls resolve deterministically:
 
 Call‑site `via`:
@@ -1714,7 +1754,7 @@ Public symbols: `gear::Symbol` (e.g., `shopify::csv`)
 
 Use `via gear::symbol` (or `via alias::symbol`) to bind a call
 
-### 20.4 Contracts (First‑Class)
+### 21.4 Contracts (First‑Class)
 Contracts define the shape & errors of a capability; Goblin checks them at use time.
 
 ```goblin
@@ -1739,7 +1779,7 @@ Contracts are global IDs (e.g., `product.export`)
 gear_contracts("shopify")   /// ["product.export", "inventory.sync", ...]
 ```
 
-### 20.5 Gear Manifest & Permissions
+### 21.5 Gear Manifest & Permissions
 Each gear ships a `gear.yaml`:
 
 ```yaml
@@ -1764,7 +1804,7 @@ On use, core validates manifest/permissions against project policy. In determini
 gear_permissions("shopify")
 ```
 
-### 20.6 Event Bus
+### 21.6 Event Bus
 Lightweight, in‑process bus with clear sync/async semantics.
 
 **Emit:**
@@ -1785,7 +1825,7 @@ end
 - `concurrency`: workers for async handlers (default 1)
 - `error`: "stop" (default for sync), "skip", "collect"
 
-### 20.7 Sandbox & Determinism
+### 21.7 Sandbox & Determinism
 Sandbox is enforced by the gear manifest + project policy.
 
 Sandbox modes: "none" | "fs" | "fs+net"
@@ -1799,7 +1839,7 @@ Dry‑run support for exporter contracts:
 file = product.export(@items) via shp dry_run:true
 ```
 
-### 20.8 Logging & Telemetry
+### 21.8 Logging & Telemetry
 Standard JSONL at `dist/gear.log`, emitted by core around capability calls:
 
 ```json
@@ -1809,7 +1849,7 @@ Standard JSONL at `dist/gear.log`, emitted by core around capability calls:
 
 No phoning home unless a gear explicitly does so and permissions allow.
 
-### 20.9 Testing Hooks
+### 21.9 Testing Hooks
 Inline tests run in a sandbox:
 
 ```goblin
@@ -1823,7 +1863,7 @@ end
 - `gears test shopify`
 - `gears test --all`
 
-### 20.10 Introspection APIs
+### 21.10 Introspection APIs
 ```goblin
 gears()                         /// ["shopify","tarot_deck"]
 gear_symbols("shopify")         /// ["csv","api","configure", ...]
@@ -1833,9 +1873,9 @@ gear_permissions("shopify")     /// sandbox/allowlists
 
 **Development Tools:** Lint tools should warn if gear names match reserved words (§19) during `gears test` to catch conflicts early.
 
-### 20.11 Usage Patterns
+### 21.11 Usage Patterns
 
-#### 20.11.1 Single Export
+#### 21.11.1 Single Export
 ```goblin
 use tarot_deck@1.2, shopify@^1.6 as shp
 prefer product.export via shp
@@ -1849,7 +1889,7 @@ file = product.export(@cards) via shp
 say "Wrote {file}"
 ```
 
-#### 20.11.2 Multi‑Platform Chain
+#### 21.11.2 Multi‑Platform Chain
 ```goblin
 use board_game, shopify@^1.6 as shp, etsy@^2
 
@@ -1861,7 +1901,7 @@ export @games via shp::csv to "dist/shopify.csv"
 export @games via etsy::csv to "dist/etsy.csv"
 ```
 
-#### 20.11.3 Event‑Driven Pipeline
+#### 21.11.3 Event‑Driven Pipeline
 ```goblin
 emit "catalog.ready", @games
 
@@ -1878,10 +1918,10 @@ emit "tx.logged", ledger_json({
 })
 ```
 
-### 20.12 Errors
+### 21.12 Errors
 `GearError(gear, capability, cause)`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`.
 
-### 20.13 Project Config (excerpt)
+### 21.13 Project Config (excerpt)
 ```yaml
 # goblin.config.yaml
 gears:
@@ -1895,7 +1935,7 @@ gears:
   deterministic_build: true
 ```
 
-### 20.14 Example Contract & Call (sketch)
+### 21.14 Example Contract & Call (sketch)
 ```goblin
 contract product.export(items: array<Product>) -> file
     errors: [ValidationError, AuthError]
@@ -1907,10 +1947,10 @@ file = product.export(@cards) via shopify::csv
 
 ## 22. Enums (Core)
 
-### 21.1 Purpose
+### 22.1 Purpose
 Closed sets of named constants with an optional backing int or string. Enums are first‑class types with strict equality and simple utilities. No implicit coercion.
 
-### 21.2 Declaration
+### 22.2 Declaration
 ```goblin
 enum Status
     Pending
@@ -1941,7 +1981,7 @@ Variant names must be unique within the enum.
 
 Enums are closed (no late additions).
 
-#### 21.2.1 Sequential Int Enums (Optional)
+#### 22.2.1 Sequential Int Enums (Optional)
 For int‑backed enums, add `seq` to enable auto‑increment:
 
 ```goblin
@@ -1969,7 +2009,7 @@ end
 - No `seq` for string‑backed enums (too magical/conflict‑prone)
 - Omit `seq` if you want every int explicit (original behavior still supported)
 
-### 21.3 Construction & Access
+### 22.3 Construction & Access
 ```goblin
 s = Status.Paid
 h = Http.Ok
@@ -1983,7 +2023,7 @@ Singleton guarantee: Each enum variant is a unique, immutable singleton object. 
 
 This also means you can safely use enum members as map/set keys without worrying about duplicate construction.
 
-### 21.4 Introspection & Methods
+### 22.4 Introspection & Methods
 ```goblin
 /// Instance methods
 s.name()         → "Paid"
@@ -2001,7 +2041,7 @@ Http.try_from_value(201)          → nil
 ```
 `from_*` throws `EnumError` on failure; `try_from_*` returns `nil`.
 
-### 21.5 Operators & Type Rules
+### 22.5 Operators & Type Rules
 Allowed comparisons: `==`, `!=`, `is`, `is not` between the same enum type.
 
 Ordering (`<` etc.): allowed **only** for int‑backed enums (including `seq`) and **only** within the same enum type.
@@ -2017,7 +2057,7 @@ prices = {}
 prices[Suit.Clubs] = 1.25
 ```
 
-### 21.6 Patterning (Simple)
+### 22.6 Patterning (Simple)
 No special switch construct. Use standard conditionals or map dispatch:
 
 ```goblin
@@ -2025,11 +2065,11 @@ if s is Status.Pending
     "hold"
 elif s is Status.Paid
     "ship"
-el
+else
     "investigate"
 ```
 
-### 21.7 Interop (JSON/YAML/CSV)
+### 22.7 Interop (JSON/YAML/CSV)
 Default surface is string name to keep files human‑readable, with opt‑ins mirroring money/datetime.
 
 **Write options (additive to §14.2.2):**
@@ -2062,7 +2102,7 @@ YAML/CSV behave like JSON "name" mode by default. No auto‑decode unless option
 
 **Stability note:** If stability across versions matters, prefer `"object"` or `"name"` modes in JSON. `"value"` mode ties you to the numeric plan (seq or explicit).
 
-### 21.8 Casting & Formatting
+### 22.8 Casting & Formatting
 ```goblin
 str(Status.Paid)     → "Status.Paid"
 Status.Paid.name()   → "Paid"
@@ -2070,19 +2110,19 @@ Status.Paid.value()  → "Paid"   /// for symbolic enums equals name()
 fmt(Status.Paid, "") → "Status.Paid"   /// fmt defers to str()
 ```
 
-### 21.9 Ranges & Loops
+### 22.9 Ranges & Loops
 ```goblin
 for v in Status
     say v.name()
 ```
 Enum types are iterable in declaration order.
 
-### 21.10 Errors
+### 22.10 Errors
 `EnumError` (unknown name/value, duplicate value in int/string enums), plus `TypeError` where noted.
 
 **Development Tools:** Lint tools should warn if `seq` gaps exceed 100 to catch potential mistakes (e.g., `Low = 1, High = 1000`) that could break ordering logic.
 
-### 21.11 Examples
+### 22.11 Examples
 ```goblin
 enum Status
     Pending
@@ -2094,7 +2134,7 @@ order = { id: 17, status: Status.Pending }
 
 if order.status is Status.Pending
     "hold"
-el
+else
     "continue"
 
 /// Int-backed with sequential auto-increment
@@ -2140,9 +2180,9 @@ is_client_error(code: Http) = code.value() in 400..499
 is_server_error(code: Http) = code.value() in 500..599
 ```
 
-# 22. Gmark — Project‑Local Stable References
+# 23. Gmark — Project‑Local Stable References
 
-## 22.1 What is a gmark?
+## 23.1 What is a gmark?
 
 A gmark is a stable, human‑readable handle that uniquely identifies a piece of content within a project (e.g., a blog post, page, product). Gmarks are intended for internal linking and sorting, and are independent of filenames/paths so gears can move files around without breaking references.
 
@@ -2150,7 +2190,7 @@ A gmark is a stable, human‑readable handle that uniquely identifies a piece of
 * **Ord:** a project‑wide integer used for stable ordering (newest at the end by default)
 * **ID (opaque):** optional unique token for registry internals; not user‑facing
 
-## 22.2 Persistence
+## 23.2 Persistence
 
 The registry lives at `.goblin/gmarks.lock` (JSON). It tracks:
 
@@ -2167,7 +2207,7 @@ The registry lives at `.goblin/gmarks.lock` (JSON). It tracks:
 * Written atomically on mutation
 * Loaded read‑only during `--deterministic` builds (unless an explicit write is allowed by policy)
 
-## 22.3 Creating/ensuring a gmark
+## 23.3 Creating/ensuring a gmark
 
 ```goblin
 /// Auto-increment ord (default)
@@ -2182,9 +2222,9 @@ gmark("post/how-to-play", ord: 42)  /// => { name:"post/how-to-play", ord: 42 }
 * If `ord:` is provided:
    * If the ord is unused → assign it
    * If the ord is already taken → `GmarkConflictError` (no silent reshuffle)
-* Re‑calling `gmark(name, …)` is idempotent: returns existing record unless you change the ord (see §22.5)
+* Re‑calling `gmark(name, …)` is idempotent: returns existing record unless you change the ord (see §23.5)
 
-## 22.4 Naming rules
+## 23.4 Naming rules
 
 * **Allowed:** letters, numbers, `_`, `-`, `/`, `.`
 * No leading/trailing slashes; no empty segments; max length 256
@@ -2192,7 +2232,7 @@ gmark("post/how-to-play", ord: 42)  /// => { name:"post/how-to-play", ord: 42 }
 * Must not be a reserved word (§19)
 * Invalid names → `GmarkInvalidError`
 
-## 22.5 Updating ord (manual positioning)
+## 23.5 Updating ord (manual positioning)
 
 ```goblin
 gmark_set_ord("post/how-to-play", 200)   /// move to ord 200 (must be free)
@@ -2201,7 +2241,7 @@ gmark_set_ord("post/how-to-play", 200)   /// move to ord 200 (must be free)
 * If target ord taken → `GmarkConflictError`
 * Does not renumber others. Use CLI tooling (outside the language) to batch‑rebalance if you want compact ords
 
-## 22.6 Introspection & lookup
+## 23.6 Introspection & lookup
 
 ```goblin
 gmark_info("post/how-to-play")  /// -> { name, ord, id, created, updated } or nil
@@ -2211,7 +2251,7 @@ gmarks_filter(prefix: string)   /// -> array<{ name, ord, id }> sorted by ord
                                 /// e.g., gmarks_filter("post/") returns only "post/*"
 ```
 
-## 22.7 Linking from content
+## 23.7 Linking from content
 
 Gears decide how a gmark resolves to URLs/paths. Core provides the stable key; a CMS gear might offer:
 
@@ -2220,12 +2260,12 @@ blog::href(gmark: "post/how-to-play")   /// "/posts/how-to-play"
 blog::link(text: "How to Play", gmark: "post/how-to-play")
 ```
 
-## 22.8 Sorting & querying
+## 23.8 Sorting & querying
 
 `gmarks()` returns ord‑sorted entries for simple chronological lists.
 Gears can maintain additional indices (by tag/date/category) but ord remains the single, portable, stable sequence number for "publish order".
 
-## 22.9 Determinism & policy
+## 23.9 Determinism & policy
 
 In `--deterministic` builds, writes to `.goblin/gmarks.lock` are blocked unless the project policy explicitly allows it. Attempting to allocate a new gmark/ord then → `DeterminismError`.
 
@@ -2245,14 +2285,14 @@ When enabled, the runtime:
 * includes `{ before, after, ts, actor: "goblin", op, lock_checksum }`
 * preserves atomicity and lock integrity (mutex + fsync)
 
-## 22.10 Errors
+## 23.10 Errors
 
 * `GmarkConflictError` — duplicate name or ord in the project
 * `GmarkNotFoundError` — referenced gmark doesn't exist
 * `GmarkInvalidError` — bad name format or reserved collision
 * `GmarkPersistenceError` — registry file can't be read/written
 
-## 22.11 Examples
+## 23.11 Examples
 
 **Auto vs manual:**
 
@@ -2275,7 +2315,7 @@ target = next_ord() + 10
 gmark_set_ord("post/hello-world", target)
 ```
 
-## 22.12 Rebalance & prefix demo
+## 23.12 Rebalance & prefix demo
 
 ```goblin
 /// Rebalance ords after a migration (CLI)
@@ -2286,9 +2326,9 @@ for m in gmarks_filter("post/")
     say blog::link(text: m.name.replace("post/","").title(), gmark: m.name)
 ```
 
-# 23. Morph — Temporary Type Adaptation
+# 24. Morph — Temporary Type Adaptation
 
-## 23.1 Purpose
+## 24.1 Purpose
 
 morph lets you temporarily treat an object as another class just long enough to call one method, then copy any changed fields back — all transactionally and privacy‑safe. It never breaks encapsulation: it only uses public getters/setters.
 
@@ -2296,7 +2336,7 @@ Typical uses: reuse a method that already exists on a different class (discount 
 
 ---
 
-## 23.2 Signature
+## 24.2 Signature
 
 ```goblin
 result = morph(obj, TargetType, method_call)
@@ -2310,7 +2350,7 @@ Returns whatever the target method returns. The original obj keeps its class.
 
 ---
 
-## 23.3 Accessor Convention (Privacy‑Safe Sync)
+## 24.3 Accessor Convention (Privacy‑Safe Sync)
 
 Morph never touches private fields (`#x`). It syncs via accessors:
 
@@ -2326,12 +2366,12 @@ Examples:
 
 ---
 
-## 23.4 What Morph Actually Does (Step‑by‑Step)
+## 24.4 What Morph Actually Does (Step‑by‑Step)
 
 ### 1. Resolve & Validate
 - Ensure TargetType is a class and method_call names a public instance method on it.
 - Build the shared field map = intersection of fields that have compatible accessors on both types.
-- Pre‑validate types for all shared fields (see §23.5). If any mismatch → error, no mutation.
+- Pre‑validate types for all shared fields (see §24.5). If any mismatch → error, no mutation.
 
 ### 2. Construct a Temporary Target
 Create a new TargetType instance with default construction:
@@ -2358,7 +2398,7 @@ Return the method's return value. obj remains the original class.
 
 ---
 
-## 23.5 Type Compatibility Rules
+## 24.5 Type Compatibility Rules
 
 Field values are validated both on copy‑in and copy‑out:
 
@@ -2377,7 +2417,7 @@ Field values are validated both on copy‑in and copy‑out:
 
 ---
 
-## 23.6 Visibility & Method Scope
+## 24.6 Visibility & Method Scope
 
 - The target method must be public.
 - Only public accessors are used. Morph never reflects into `#private` state.
@@ -2385,14 +2425,14 @@ Field values are validated both on copy‑in and copy‑out:
 
 ---
 
-## 23.7 Performance Notes
+## 24.7 Performance Notes
 
 - Engines may cache the shared‑field accessor map by `(SourceType, TargetType)` to avoid repeated discovery.
 - Copy‑in/out is O(n_shared_fields). For large objects, prefer narrower accessors or expose an aggregate setter.
 
 ---
 
-## 23.8 Errors
+## 24.8 Errors
 
 - **MorphTypeError** — target is not a class; or method not found/visible; or multiple methods implied.
 - **MorphFieldError(field, expected, actual)** — accessor missing or incompatible type on copy‑in/out.
@@ -2403,7 +2443,7 @@ All morph errors are transactional: the source object is unchanged.
 
 ---
 
-## 23.9 Examples
+## 24.9 Examples
 
 ### A. Geometry rotate without adapters
 
@@ -2492,7 +2532,7 @@ say a.active()    /// false
 
 ---
 
-## 23.10 Testing Hooks
+## 24.10 Testing Hooks
 
 Golden tests are encouraged:
 
@@ -2507,7 +2547,14 @@ end
 ```
 
 ---
-# 24. Release Checklist
+
+## 24.11 Determinism
+
+morph does not enable I/O. Any side‑effects are those performed by the target method and are governed by the usual sandbox/permission model (core or gear).
+
+---
+
+# 25. Release Checklist
 
 ## ✅ Must-Have for v1.5
 
@@ -2581,8 +2628,3 @@ end
 ---
 
 If we ship just the must-have list, Goblin v1.5 Core will be fully usable, have a clean feature set, and Gears will cover the basics. Then we drop horde-readiness + deploy gears in v1.5.1 or v1.6 without delaying launch.
-
-## 23.11 Determinism
-
-morph does not enable I/O. Any side‑effects are those performed by the target method and are governed by the usual sandbox/permission model (core or gear).
-
