@@ -98,7 +98,14 @@ inline conditional ? ?? :   (right-associative)
 - Postfix forms (`**`, `//`, `++`, `--`) bind tighter than any binary operator (like parentheses)
 - Bind only to the **nearest primary** (literal, variable, or parenthesized expression)
 - `>>` sits at the same precedence level as `* / % //` (multiplicative group)
-- If an operator token has spaces around it → binary; if it ends the expression (no RHS) → postfix
+- **Lexer rule:** Postfix operators are recognized when immediately followed by line end, `)`, `]`, `}`, `:`, `,`, or another operator that cannot start an expression. Everything else is infix.
+
+**Examples:**
+```goblin
+16// ** 2 → (sqrt(16)) ** 2 → 16
+a + b** * 3 → a + (b**) * 3
+9 // 2** → SyntaxError  /// postfix needs expression end
+```
 
 ### 2.2 Division & Divmod
 ```goblin
@@ -175,9 +182,11 @@ sum(arr)  /// semantic twin of add for arrays
 /// Valid on int, float, money
 
 /// Compound assignment
-+= -= *= /= %= **=
++= -= *= **=
 ```
 Money ops must follow currency rules (same currency, see §10). For money, +=, -=, and *= follow the same promotion, precision, and ledger rules described in §10 (including precision:/policy:).
+
+**Money restrictions:** `/=` and `%=` with money → `MoneyDivisionError` (same as `/` and `%` restrictions in §10.4).
 
 ---
 
@@ -414,6 +423,9 @@ Both class styles support both instantiation methods:
    * `x()` getter
    * `set_x(v)` setter  
    * `is_x()` for booleans
+   
+   **Precedence:** If a class defines a method with the same name as an auto-generated accessor, the user-defined method takes precedence (must match expected signature).
+
 * **Private fields** (`#x`): accessible **only** inside class methods. External access → `PermissionError("cannot access private field '#energy'")`.
 * **Readonly:** `readonly id: uuid()` → getter only; writing → `TypeError("field 'id' is readonly")`.
 
@@ -567,6 +579,8 @@ money % int → remainder money (alias of second element of money >> int)
 - `money // int` → quotient only (same as `(money >> int).first`)
 - `money >> int` → complete divmod pair `(quotient, remainder)`
 - `money % int` → remainder only (same as `(money >> int).second`)
+
+**Compound assignment restrictions:** `/=` and `%=` with money → `MoneyDivisionError`.
 
 **Scalar multiply** converts to major units, multiplies exactly, then canonicalizes (minor-units formulation is equivalent).
 
@@ -747,14 +761,23 @@ In Goblin, a percent is never "naked." It is always **"percent of *something*."*
 
 This is consistent, human, and **audit-safe**. It eliminates the hidden inconsistency in calculator math (where `*` and `/` default to "percent of 100," but `+` and `-` do not).
 
-### 11.2 Explicit Form
+**Percent literals:** `25%` (no space between number and `%` symbol).
+
+### 11.2 Construction & Casting
+```goblin
+pct(25) → 25%          /// from number (as percentage)
+pct(0.25) → 25%        /// from decimal fraction  
+str(25%) → "25%"       /// string representation
+```
+
+### 11.3 Explicit Form
 
 * `A% of B` binds as a single unit (highest precedence after literals and parentheses).
 * Works in **any** position:
    * `total = price + 10% of fee`
    * `share = 10% of total / 2` → `(10% of total) / 2`
 
-### 11.3 Calculator Escape Hatch
+### 11.4 Calculator Escape Hatch
 
 If you want "calculator-style" percent math (percent of 100), use decimals:
 * `8 * 0.25` → `2`
@@ -762,7 +785,7 @@ If you want "calculator-style" percent math (percent of 100), use decimals:
 
 No warnings in decimal mode.
 
-### 11.4 Warnings (Default Behavior)
+### 11.5 Warnings (Default Behavior)
 
 To smooth adoption and avoid confusion, Goblin warns by default when `*` or `/` has a **percent literal** on the right-hand side without `of`:
 
@@ -777,18 +800,19 @@ say 8 / 25%
 ```
 
 * Addition and subtraction (`+`/`-`) **do not warn**, since they match most people's intuition.
-* Configurable:
-   * `percent_warning: "warn"` (default)
-   * `percent_warning: "allow"` (never warn)
-   * `percent_warning: "strict"` (throw error)
+* **Configuration** (in `goblin.config.yaml`):
+```yaml
+percent:
+  warning: warn    # warn | allow | strict
+```
 
-### 11.5 Money Interop
+### 11.6 Money Interop
 
 * Works identically with money types under §10 rules.
 * Fixed-point precision always respected.
 * Division on money still follows §10 — if result is money, `/` must divide by scalar, not money; use `quotient`/`remainder` for money-to-money division.
 
-### 11.6 Tax Helpers
+### 11.7 Tax Helpers
 
 ```goblin
 tax(subtotal, rate_or_rates, compound=false) → tax amount
@@ -805,7 +829,7 @@ with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 
 Tax obeys the active precision policy. In `policy: strict`, if tax introduces sub-precision, raise `MoneyPrecisionError`. Under `warn`/`truncate`, record the sub-precision in the ledger and (for `warn`) emit a warning.
 
-### 11.7 Examples
+### 11.8 Examples
 
 ```goblin
 price = $80
@@ -816,6 +840,10 @@ price + 10% of fee   /// $80.50 (10% of fee)
 8 * 25%              /// 16 (warns; use 8 * 0.25 for calculator style)
 10% of price         /// $8.00
 (10% of price) / 2   /// $4.00
+
+/// Using constructor
+rate = pct(8.5)      /// 8.5%
+discount_rate = pct(0.15)  /// 15%
 ```
 ---
 
@@ -833,9 +861,10 @@ helper([a, b, c])
 helper[array_expr] ≡ helper(array_expr)
 ```
 
-### 12.2 Bracket-Enabled Helpers (Whitelist)
+### 12.2 Bracket-Enabled Helpers (All Math Functions)
+All built-in math functions support bracket sugar for array operations:
 ```goblin
-add sum mult sub div min max avg root abs
+add sum mult sub div min max avg root abs floor ceil round pow divmod
 ```
 - `add` / `sum` — sum (returns element type; money stays money with perfect precision)
 - `mult` — product (tracks remainders for money operations)
@@ -845,6 +874,8 @@ add sum mult sub div min max avg root abs
 - `avg` — arithmetic mean (money if same-currency with truncation; else float)
 - `root` — sequential roots (`root(27,3)` → 3)
 - `abs` — scalar abs; for array form returns elementwise array
+- `floor` / `ceil` / `round` — elementwise for arrays
+- `pow` — sequential powers; `divmod` — sequential divmod
 
 **Type rules:** mixed numeric → float; money arrays must share currency (else TypeError)
 
@@ -919,6 +950,8 @@ Paths relative to CWD unless absolute.
 - JSON object → Goblin `map` (string keys)
 
 **No silent money parsing.** Strings like `"USD 1.50"` remain strings unless you opt in (see below).
+
+**Money from JSON floats:** When reading JSON numbers into Goblin, money must be explicitly constructed via `money(float_value, CUR)` or by using `read_json(..., { money: ... })` options. External systems expect money as floats/decimals, so Goblin exports money at the precision they can handle and imports by explicit conversion.
 
 #### 14.2.2 Options (All Functions)
 `opts` is a map. Unknown keys are ignored.
@@ -1096,7 +1129,7 @@ Combine via `+` (e.g., `1h + 30m`). Negative allowed.
 ```goblin
 now()          → datetime   /// local or trusted per prefer_trusted
 today()        → date
-utcnow()       → datetime   /// UTC (ignores prefer_trusted, uses trusted chain if enabled)
+utcnow()       → datetime   /// Always uses trusted chain when configured; else local clock
 local_tz()     → string
 to_tz(dt, "UTC")            /// convert datetime's zone (wall time adjusts)
 ```
@@ -1742,7 +1775,7 @@ Error messages may occasionally include goblin-themed variations for personality
 
 ```
 if, elif, else, for, in, while, class, fn, return, skip, stop, try, catch, finally, 
-assert, error, warn, say, true, false, nil, default, int, float, money, bool, 
+assert, error, warn, say, true, false, nil, default, int, float, money, bool, pct,
 read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, read_json, write_json, 
 json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now, uuid, 
 add, sum, mult, sub, div, mod, divmod, pow, root, floor, ceil, round, abs, min, max, 
@@ -2592,8 +2625,8 @@ class Shape = x: 0 :: y: 0
 
     fn rotate(deg)
         rad = deg * 3.1415926535 / 180
-        nx = #x * cos(rad) - #y * sin(rad)
-        ny = #x * sin(rad) + #y * cos(rad)
+        nx = #x * rad - #y * rad     /// simplified math, no trig
+        ny = #x * rad + #y * rad
         #x = nx; #y = ny
         self
     end
@@ -2601,7 +2634,7 @@ end
 
 p = Dot: 1 :: 0
 morph(p, Shape, rotate(90))
-say p.x(), p.y()          /// ~0, 1
+say p.x(), p.y()
 ```
 
 ### B. Discount using a method that lives on another class
