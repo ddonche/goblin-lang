@@ -211,7 +211,7 @@ false, 0, 0.0, "", [], {}, nil
 
 ## 4. Conditionals
 
-### 4.1 Block Form
+### 4.1 Block Form — Classic and Readable
 ```goblin
 if cond
     ...
@@ -220,15 +220,128 @@ elif cond
 else
     ...
 ```
-No colons. Indentation defines blocks.
+* No colons; indentation defines blocks.
+* `elif` and `else` are optional.
+* Last expression in a branch is the value returned by that branch **only if** you explicitly use it (assign/say/etc.). The block form itself does not yield a value.
 
-### 4.2 Inline Form
+**Examples:**
 ```goblin
-/// One ? (if), any number of ?? (elif), one : (else)
+if score >= 90
+    say "A"
+elif score >= 80
+    say "B"
+elif score >= 70
+    say "C"
+else
+    say "F"
+```
+
+### 4.2 Judge — Declarative, Expression‑Oriented Branching
+`judge` is a compact, template‑style conditional that **returns a value**. It comes in multiline and inline forms.
+
+#### 4.2.1 Multiline Form (Most Readable)
+```goblin
+result = judge
+    cond1: expr1
+    cond2: expr2
+    ...
+    else: exprN
+```
+* Evaluated **top‑to‑bottom**; first true `cond:` wins.
+* `else:` is optional, but recommended. If omitted and nothing matches → `nil`.
+* Each `expr` is any expression (string literal, function call, money, pct, etc.).
+
+**Examples:**
+```goblin
+/// REPL: prints "A" because REPL auto-prints expression results
+judge
+    score >= 90: "A"
+    score >= 80: "B"
+    score >= 70: "C"
+    else: "F"
+
+/// Script: silent, because you didn't use the value
+grade = judge
+    score >= 90: "A"
+    score >= 80: "B"
+    score >= 70: "C"
+    else: "F"
+say grade  /// prints later
+```
+
+You can also put **actions** inside an expression, but remember `judge`'s value is whatever the winning expression evaluates to:
+
+```goblin
+judge
+    total > $100: say "High roller!"
+    else: say "Thanks!"
+```
+(Here the value is the result of `say ...` which is typically `nil`—that's fine if you only care about the side effect.)
+
+#### 4.2.2 Inline Form (Template‑Style, One Line)
+```goblin
+judge: cond1: expr1 :: cond2: expr2 :: ... :: else: exprN
+```
+
+**Examples:**
+```goblin
+/// Print immediately
+say judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
+
+/// Store and use later
+grade = judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
+say grade
+```
+
+**Important:** Outside the REPL, a bare inline `judge` with no `say`/assignment is a no‑op:
+```goblin
+judge: score >= 90: "A" :: else: "F"  /// does nothing in a script
+```
+Use `say` or assign it to a name.
+
+#### 4.2.3 Discarded‑Value Warning (Scripts)
+If a `judge` value is evaluated and **not used** in non‑interactive mode, Goblin emits:
+```
+UnusedJudgeValueWarning: result of 'judge' is ignored (line N). Assign it or wrap with 'say'.
+```
+*(No warning in the REPL, where auto‑print is expected.)*
+
+### 4.3 Interop Notes
+* `judge` is an **expression**; it can appear anywhere an expression can:
+```goblin
+label = "Tier " || judge: price >= $100: "Gold" :: price >= $50: "Silver" :: else: "Bronze"
+```
+* Branch expressions follow all usual type rules (money, pct, etc.).
+* Short‑circuit semantics: evaluation stops at the first matching condition.
+
+### 4.4 Removed: Inline `? ?? :`
+The old inline conditional (`? ?? :`) is **removed** in v1.5 to favor readability and consistency with templates. `judge` and the classic block form replace it.
+
+**Before (old):**
+```goblin
 say score >= 90 ? "A" ?? score >= 80 ? "B" ?? score >= 70 ? "C" : "F"
 ```
-Right-associative; binds lower than comparisons/logical ops, higher than assignment.
 
+**Now (pick one):**
+```goblin
+say judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
+
+/// or the classic block:
+if score >= 90
+    say "A"
+elif score >= 80
+    say "B"
+elif score >= 70
+    say "C"
+else
+    say "F"
+```
+
+### 4.5 Quick Cheat‑Sheet
+* **Block:** `if cond ... elif cond ... else ...`
+* **Judge (multiline):** `x = judge c1: v1 c2: v2 else: v3`
+* **Judge (inline):** `say judge: c1: v1 :: c2: v2 :: else: v3`
+* **Warning (scripts):** Ignored `judge` → `UnusedJudgeValueWarning` with line number and hint.
 ---
 
 ## 5. Loops
@@ -1771,6 +1884,14 @@ Error messages may occasionally include goblin-themed variations for personality
 **Built-in warning types:**
 `MoneyPrecisionWarning`, `TimeSourceWarning`
 
+UnusedJudgeValueWarning: result of 'judge' is ignored (line N). Assign it or wrap with 'say'.
+
+- `JudgeError`:
+  - *"The judgment goblins found malformed judge expression"*
+  - *"Decision error: goblins need proper condition: value syntax"*
+  - *"The choice goblins are confused by this judge structure"*
+  - *"Judge syntax chaos: goblins demand clear conditions"*
+
 ---
 
 ## 19. Reserved Words
@@ -1788,7 +1909,7 @@ today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_yea
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
-next_ord, ord, morph
+next_ord, ord, morph, judge
 ```
 
 **Version Codenames:**
