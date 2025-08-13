@@ -2903,3 +2903,309 @@ morph does not enable I/O. Any side‑effects are those performed by the target 
 ---
 
 If we ship just the must-have list, Goblin v1.5 Core will be fully usable, have a clean feature set, and Glam will cover the basics. Then we drop horde-readiness + deploy glam in v1.5.1 or v1.6 without delaying launch.
+
+# 26. HTML Glam (v1.0)
+
+The HTML Glam renders HTML/CSS from Goblin data using the same template (`::`) ergonomics you already use for cards, products, etc. It keeps business logic in Goblin and outsources HTML‑specific concerns (escaping, head metadata, assets, layouts, partials) to a deterministic, sandboxed glam.
+
+You typically load it like:
+
+```goblin
+use html@^1.0 as web
+```
+(Examples below use `html::...` in signatures; feel free to alias to `web::...` in your scripts.)
+
+## 26.1 Core Concepts
+
+**Goblin templates in, HTML out.** You pass data maps or template records built with `::`. The glam returns strings (HTML) or writes files to `dist/` per permissions.
+
+**Auto‑escape by default.** Text nodes and attributes are HTML‑escaped unless explicitly marked raw.
+
+**Composable.** Use `render_many` for arrays, `layout` for full pages, and `partials` to DRY up shared fragments.
+
+**Deterministic.** FS‑only by default; no network. Works in `--deterministic` builds.
+
+## 26.2 Contracts (Public API)
+
+```goblin
+/// Render a single node or component to HTML (string)
+html::render(tpl: map, data: map|nil = nil, opts: map|nil = nil) -> string
+
+/// Render many: map each element through tpl and join
+html::render_many(tpl: map, rows: array<map>, opts: map|nil = nil) -> string
+
+/// Return a named partial's rendered HTML (string)
+html::partial(name: string, data: map|nil = nil) -> string
+
+/// Wrap content with a layout (doctype, head/meta, body)
+html::layout(wrapper: string|map, opts: map = {}) -> string
+
+/// Declare / write CSS with optional fingerprinting; returns the href
+html::write_css(path: string, theme: string|map = "default", opts: map|nil = nil) -> string
+
+/// Register / fingerprint an asset (css/js/img). Returns href string.
+html::asset(path: string, opts: map|nil = nil) -> string
+
+/// Write a rendered HTML string to a file under dist/
+html::write_static(path: string, html: string, opts: map|nil = nil) -> nil
+
+/// Escape helpers
+html::raw(s: string) -> string         /// mark as safe (opt‑in)
+html::esc(s: string) -> string         /// force escape
+```
+
+**Common `opts` keys:**
+- `join: string` (`render_many` joiner; default `""`)
+- `minify: bool` (`layout` / `render`; default `false`)
+- `indent: int` (pretty print; default `2` when not minifying)
+- `attrs: map<string,string|bool>` (extra attributes for a node)
+- `lang: string` (`layout` `<html lang="">"; default `"en"`)
+- `meta: bool|map` (control metadata injection; see §26.8)
+- `title: string` (`layout` `<title>`)
+- `css: array<string>` (`layout` CSS links; paths go through `asset()`)
+
+## 26.3 Data Shapes (What `tpl` Looks Like)
+
+You can pass either a canonical html node map or your own domain template that your renderer understands.
+
+**Canonical node map (lowest level):**
+```goblin
+node = {
+  tag: "div",
+  class: "card",          /// optional
+  id: "product-123",      /// optional
+  attrs: { "data-stock": "7", disabled: false },  /// bool true prints key only
+  content: "<p>safe html or nested render output</p>"  /// string (already rendered)
+}
+html::render(node)
+```
+
+**Domain template (preferred):**
+```goblin
+@card = id: "{id}" :: title: "{title}" :: price: "{price}" :: stock: 0
+html::render(@card, product)     /// renderer for @card composes canonical nodes
+```
+
+Glam implementations SHOULD ship built‑ins for common nodes (`div`, `h1..h6`, `p`, `img`, `a`, `button`) to keep templates concise.
+
+## 26.4 Escaping & Safety
+
+**Auto‑escape:** text and attribute values are escaped (`& < > " '`) by default.
+
+`html::raw(s)` opts out — use sparingly and only for trusted content.
+
+`html::esc(s)` forces escaping when you're unsure.
+
+**Errors:**
+- `ValueError("untrusted raw content")` when glam is configured to forbid `raw()` in deterministic mode.
+
+## 26.5 Partials
+
+Partials are small HTML fragments resolved by name.
+
+**Resolution order (first match wins):**
+1. **Project overrides:** `partials/` in your project root
+   - Example: `partials/meta/og_tags.html`, `partials/head.html`, `partials/footer.html`
+2. **Glam defaults:** `glams/html/partials/...`
+
+**Load & render:**
+```goblin
+head = html::partial("head", { title: "Shop" })
+badge = html::partial("badge", { type: "low", text: "Low stock" })
+```
+
+Partials can interpolate `{vars}` from data and may nest other partials.
+
+## 26.6 Assets & CSS
+
+`html::asset("styles.css")` → returns fingerprinted href like `/assets/styles.4f9a7.css`
+
+`html::write_css("dist/styles.css", "shop-theme")` writes CSS and returns href
+
+Both register links so `layout()` can auto‑inject `<link rel="stylesheet" ...>` tags
+
+**`opts` for `write_css` / `asset`:**
+- `fingerprint: bool` (default `true`)
+- `subdir: string` (default `"assets"`)
+- `copy: bool` (for asset to copy inputs under `dist/`; default `true`)
+
+## 26.7 Permissions (Manifest)
+
+The html glam ships with FS‑only permissions:
+
+```yaml
+# glams/html/glam.yaml (excerpt)
+requires:
+  fs: ["dist/","assets/","partials/"]
+permissions:
+  mode: "fs"
+```
+
+Writes outside `dist/` → `PermissionError`. In `--deterministic` builds, behavior is unchanged; all paths must be inside allowlists.
+
+## 26.8 Metadata Injection (Layouts + Meta Partials)
+
+`html::layout(wrapper, opts)` wraps your content and injects sane defaults:
+
+```html
+<!DOCTYPE html>
+<html lang="{lang}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{opts.title or "Untitled"}</title>
+  {css_links}
+  {meta_tags}
+</head>
+<body>
+  {content}
+</body>
+</html>
+```
+
+**CSS links:** collected from `opts.css` and previously registered assets.
+
+**Meta tags:** concatenation of meta partials loaded from:
+- **Project:** `partials/meta/*.html`
+- **Glam defaults:** `glams/html/partials/meta/*.html`
+
+Disable with `opts.meta: false`, or pass a map to control which meta partials to include:
+
+```goblin
+html::layout(page, { title: "Shop", meta: { include: ["og_tags","twitter_card"], exclude:["favicon"] } })
+```
+
+## 26.9 Full Example — "Adventurer's Emporium"
+
+**Goal:** Render a product grid page, with auto metadata, CSS links, badges, and buy button behavior. Clean business logic in `.gbln`; HTML fuss handled by the glam.
+
+```goblin
+# shop.gbln
+default money USD precision: 2 policy: truncate
+use html@^1.0 as web
+
+/// --- Data ---------------------------------------------------------------
+products = [
+  { id: "p1", title: "Magic Sword",    price: $29.99, stock: 8 },
+  { id: "p2", title: "Healing Potion", price: $5.50,  stock: 2 },
+  { id: "p3", title: "Dragon Shield",  price: $89.00, stock: 0 }
+]
+
+/// --- Templates (domain-level) -------------------------------------------
+@page = title: "{title}" :: css: ["styles.css"] :: content: ""
+
+@card = id: "{id}" :: title: "{title}" :: price: "{price}" :: stock: 0
+
+/// --- Renderers ----------------------------------------------------------
+/// Return HTML for a product card. Inside we build canonical nodes and let glam render.
+fn render_card(p)
+    /// title
+    title_node = { tag: "h2", content: web::esc(p.title) }
+
+    /// price (format money as string; keep business rules here)
+    price_str = "$" | fmt(float(p.price), ",.2f")
+    price_node = { tag: "p", class: "price", content: web::esc(price_str) }
+
+    /// badges
+    badge_html = judge
+        p.stock == 0: web::partial("badge", { type: "soldout", text: "Sold out" })
+        p.stock < 5:  web::partial("badge", { type: "low",     text: "Low stock" })
+        else: ""
+
+    /// button
+    btn_attrs = judge
+        p.stock == 0: { type: "submit", disabled: true }
+        else:         { type: "submit" }
+    btn_node = { tag: "button", attrs: btn_attrs, content: "Buy Now" }
+
+    /// card container
+    card_node = {
+      tag: "div",
+      class: "card",
+      id: p.id,
+      content: 
+        web::render(title_node) |
+        web::render(price_node) |
+        badge_html |
+        web::render(btn_node)
+    }
+
+    web::render(card_node)
+end
+
+/// --- Page assembly ------------------------------------------------------
+cards = []
+for p in products
+    cards.push(render_card(p))
+end
+
+grid_node = { tag: "div", class: "grid", content: join(cards, "") }
+grid_html = web::render(grid_node)
+
+page = page: title: "Adventurer's Emporium" :: css: ["styles.css"] :: content: grid_html
+
+html_out = web::layout(
+  web::partial("base"),              /// wrapper (can be a partial or a map)
+  { title: page.title, css: page.css, content: page.content }
+)
+
+/// --- Assets & output ----------------------------------------------------
+href_css = web::write_css("dist/styles.css", "shop-theme")   /// returns href; also auto-linked by layout
+
+mkdirp("dist")
+web::write_static("dist/index.html", html_out)
+say "Wrote dist/index.html"
+```
+
+**`partials/` (project overrides are optional):**
+
+```
+partials/
+  base.html                 # optional: outer shell (if not provided, glam uses its default)
+  badge.html                # optional; otherwise use glam default
+  meta/
+    og_tags.html            # optional meta fragment
+    twitter_card.html       # optional meta fragment
+    favicon.html            # optional meta fragment
+```
+
+**`badge.html` example (project override):**
+
+```html
+<span class="badge {type}">{text}</span>
+```
+
+**Glam default CSS (theme) example (implementation-defined):**
+
+`web::write_css("dist/styles.css", "shop-theme")` writes a minimal, dark UI:
+
+```css
+:root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI"; }
+body { margin: 0; padding: 2rem; background: #0b0f14; color: #e6edf3; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px,1fr)); gap: 1rem; }
+.card { background: #10161d; border: 1px solid #1f2937; border-radius: 16px; padding: 1rem; }
+.card h2 { margin: 0 0 .5rem 0; font-size: 1.125rem; }
+.price { margin: .25rem 0 1rem 0; font-weight: 600; }
+.badge { display: inline-block; margin-right: .5rem; padding: .125rem .5rem; border-radius: 999px; font-size: .75rem; }
+.badge.low { background: #332700; color: #ffd166; border: 1px solid #ffcc4d; }
+.badge.soldout { background: #2a0e12; color: #ff6b6b; border: 1px solid #ff6b6b; }
+button { padding: .5rem .75rem; border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: #e6edf3; }
+button[disabled] { opacity: .5; cursor: not-allowed; }
+```
+
+## 26.10 Errors & Warnings
+
+- **`ValueError`** — bad node shape, invalid partial name, malformed attrs
+- **`TypeError`** — wrong argument types for API
+- **`PermissionError`** — attempts to write outside allowlisted paths
+- **`GlamError("html", cap, cause)`** — any unexpected glam failure
+- **`UnusedHtmlWarning`** — glam MAY warn if you compute HTML and never use/write it (lint‑style)
+
+## 26.11 Notes & Best Practices
+
+- Keep money math in Goblin (§10–§11). Pass strings to HTML only at render time.
+- Prefer partials for boilerplate head/meta and badges/footers.
+- Use `render_many` for clean list rendering without explicit loops when you like, but loops are fine when conditional glue is needed.
+- Only use `html::raw` for trusted fragments (e.g., sanitized CMS).
+
+With this, you can keep `.gbln` scripts clean, predictable, and auditable — while shipping production‑ready HTML with zero repetition.
