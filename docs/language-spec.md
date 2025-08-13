@@ -953,6 +953,8 @@ Paths relative to CWD unless absolute.
 
 **Money from JSON floats:** When reading JSON numbers into Goblin, money must be explicitly constructed via `money(float_value, CUR)` or by using `read_json(..., { money: ... })` options. External systems expect money as floats/decimals, so Goblin exports money at the precision they can handle and imports by explicit conversion.
 
+When importing, Goblin promotes values to money only if the source schema or header explicitly marks them as monetary (e.g., "money", "price", "tax", "amount"), or the field type in a mapped class is declared as money. In all other cases, decimal numbers are imported as numeric types. All internal money arithmetic is done in integer sub-units according to currency precision, and exports follow the declared precision policy.
+
 #### 14.2.2 Options (All Functions)
 `opts` is a map. Unknown keys are ignored.
 
