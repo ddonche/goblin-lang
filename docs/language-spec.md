@@ -390,7 +390,7 @@ say p.speak()
 - Instance variables: `#name`, `#age` (only valid inside class methods)
 - No inline `#var =` outside init/methods; prefer setting in init
 - `init` is the constructor name (locked in)
-- `spawn` is reserved for Gears scaffolding (CLI), not for classes
+- `spawn` is reserved for Glam scaffolding (CLI), not for classes
 
 ### 9.2 Visibility
 - Instance variables (`#x`) are private to the instance (accessible only in class body)
@@ -422,7 +422,7 @@ default money USD precision: 2 policy: truncate
 
 ### 10.1 Type & Precision Handling
 - Values are stored as integer quanta of size `10^(-precision)` in major units; any sub-quantum remainder is tracked per §10.7.
-- `policy` applies at canonicalization sites: `money(v,C)`, promotion (`money` ± int/float), `*`, `tax`, `with_tax`, `convert`, and gear functions returning money.
+- `policy` applies at canonicalization sites: `money(v,C)`, promotion (`money` ± int/float), `*`, `tax`, `with_tax`, `convert`, and glam functions returning money.
 - **No rounding** - excess precision becomes explicit remainder
 - Perfect conservation: `input_value = money_part + remainder`
 
@@ -882,7 +882,7 @@ Paths relative to CWD unless absolute.
 - `enum_schema: map<string,string>` — key → EnumName, only used with `enum:"value"`
 - `strict_numbers: bool` (default `false`): when `true`, error on non-finite numbers (NaN/Infinity) if present.
 
-**Gears and Serialization:** Gears may register their own JSON/YAML serialization handlers for custom types they define. If no handler is registered, the gear's types inherit the core JSON serialization rules. Gear-specific serialization follows the same safety policies (deterministic build restrictions, permission checks) as all other gear operations.
+**Glam and Serialization:** Glam may register their own JSON/YAML serialization handlers for custom types they define. If no handler is registered, the glam's types inherit the core JSON serialization rules. Glam-specific serialization follows the same safety policies (deterministic build restrictions, permission checks) as all other glam operations.
 
 #### 14.2.3 Errors
 - Malformed JSON → `ValueError`
@@ -1169,7 +1169,7 @@ Clients must tolerate minor network/processing latency; monotonic adjustment is 
 
 ---
 
-## 16. Shopify Profile (Gears: "Game Goblin")
+## 16. Shopify Profile (Glam: "Game Goblin")
 
 ### 16.1 Repo Layout
 ```
@@ -1193,15 +1193,15 @@ dist/
     remainders.log
 ```
 
-### 16.2 CLI (Gears)
+### 16.2 CLI (Glam)
 ```
-gears init                          # Initialize project
-gears spawn tarot_deck "Mystic"     # Generate template  
-gears build mystic.yaml --chain tarot_deck,shopify,etsy,ebay  # Chain exports
-gears build --deterministic         # Enforce deterministic build with locked gears
-gears lint                          # Check for reserved word conflicts and other issues
-gears list                          # Show available gears
-gears install community_gear        # Install from repository
+glam init                          # Initialize project
+glam spawn tarot_deck "Mystic"     # Generate template  
+glam build mystic.yaml --chain tarot_deck,shopify,etsy,ebay  # Chain exports
+glam build --deterministic         # Enforce deterministic build with locked glam
+glam lint                          # Check for reserved word conflicts and other issues
+glam list                          # Show available glam
+glam install community_glam        # Install from repository
 
 # Goblin easter eggs
 goblin hoard status                 # = remainders status  
@@ -1209,9 +1209,9 @@ goblin --about-goblins              # Fun goblin lore
 goblin --version                    # Shows ASCII art + version name
 
 # Codes
-gears code set "Deviant Moon Borderless Tarot" DMBT
-gears codes list
-gears codes grep DMBT
+glam code set "Deviant Moon Borderless Tarot" DMBT
+glam codes list
+glam codes grep DMBT
 
 # Remainders & Warnings
 goblin remainders status            # show ledger and last N entries
@@ -1219,7 +1219,7 @@ goblin remainders clear             # clear in-memory ledger (keeps logs)
 goblin remainders rotate            # rotate remainders.log
 goblin warnings clear|rotate
 
-gears gmark rebalance  # Compact ords by current sort; reassign 1..N (atomic)
+glam gmark rebalance  # Compact ords by current sort; reassign 1..N (atomic)
 ```
 
 ### 16.3 Configuration Files
@@ -1242,7 +1242,7 @@ sku_policy:
 - CSV exports numeric Variant Price in store currency with perfect precision
 - If item currency ≠ store currency: warn and log to report.txt
 
-### 16.6 Gear Settlement Options
+### 16.6 Glam Settlement Options
 
 ```goblin
 shopify::configure(
@@ -1435,7 +1435,7 @@ back = read_json("order.json", { enum: "name" })
 say back.status                    /// Status.Pending
 ```
 
-### Gear Examples
+### Glam Examples
 ```goblin
 use tarot_deck@1.2 as tarot
 use shopify@^1.6 as shp
@@ -1476,7 +1476,7 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GearError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`
 
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
@@ -1517,11 +1517,11 @@ Error messages may occasionally include goblin-themed variations for personality
   - *"The sorting goblins found an unknown variant"*
   - *"Category error: goblins can't find that enum value"*
 
-- `GearError`: 
-  - *"The gear goblins encountered an unexpected error in '{gear}'"*
-  - *"Mechanical failure: {gear} goblins report malfunction"*
+- `GlamError`: 
+  - *"The glam goblins encountered an unexpected error in '{glam}'"*
+  - *"Mechanical failure: {glam} goblins report malfunction"*
   - *"The engineering goblins detected chaos in '{capability}'"*
-  - *"Gear malfunction: goblins recommend checking '{gear}' configuration"*
+  - *"Glam malfunction: goblins recommend checking '{glam}' configuration"*
 
 - `ContractError`: 
   - *"The contract goblins found signature mismatch in '{capability}'"*
@@ -1603,7 +1603,7 @@ Error messages may occasionally include goblin-themed variations for personality
 
 - `LockfileError`: 
   - *"The archive goblins found lockfile problems"*
-  - *"Lockfile error: goblins can't verify gear versions"*
+  - *"Lockfile error: goblins can't verify glam versions"*
   - *"The versioning goblins report lockfile chaos"*
   - *"Lock verification failed: goblins demand consistent versions"*
 
@@ -1674,7 +1674,7 @@ assert, error, warn, say, true, false, nil, default, int, float, money, bool,
 read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, read_json, write_json, 
 json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now, uuid, 
 add, sum, mult, sub, div, mod, divmod, pow, root, floor, ceil, round, abs, min, max, 
-rand, randint, tax, with_tax, bit, gear, use, export, import, via, validate, 
+rand, randint, tax, with_tax, bit, glam, use, export, import, via, validate, 
 remainders_total, remainders_report, clear_remainders, divide_evenly, divide_evenly_escrow, 
 drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_datetime,
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
@@ -1695,10 +1695,10 @@ next_ord, ord, morph
 - v3.0: "Trickster King"
 - v3.5: "Mischief Maker"
 
-## 20. Core vs. Gears Architecture
+## 20. Core vs. Glam Architecture
 
 ### 20.1 Design Philosophy
-Goblin maintains a **lean core** with **extensible gears** to balance safety with flexibility. Core provides guarantees that gears cannot compromise; gears handle domain-specific functionality.
+Goblin maintains a **lean core** with **extensible glam** to balance safety with flexibility. Core provides guarantees that glam cannot compromise; glam handle domain-specific functionality.
 
 ### 20.2 Must Be Core
 These components **must** remain in core to ensure safety, determinism, and language coherence:
@@ -1732,17 +1732,17 @@ These components **must** remain in core to ensure safety, determinism, and lang
 - Build reproducibility guarantees
 
 **Runtime Safety:**
-- Standard error classes and gear error wrapping
+- Standard error classes and glam error wrapping
 - JSONL logging around capability calls
 - Reserved word collision prevention
 
 **Core I/O & Serialization:**
 - JSON/YAML/CSV base functionality
-- Serialization hooks for gear types
+- Serialization hooks for glam types
 - Type-safe deserialization policies
 
-### 20.3 Should Be Gears
-These components are **appropriately** handled by gears:
+### 20.3 Should Be Glam
+These components are **appropriately** handled by glam:
 
 - Domain capabilities (Shopify, blockchain, invoices)
 - Domain types (`Product`, `Order`, custom records)
@@ -1753,27 +1753,27 @@ These components are **appropriately** handled by gears:
 - Workflow CLIs and tooling
 
 ### 20.4 Gray Areas
-These may evolve between core and gears:
+These may evolve between core and glam:
 
-- **Event bus workers**: Core provides basic scheduling; advanced gears may enhance
-- **RNG**: Core provides seeded `rand`; crypto gears may add secure variants (with permission checks)
+- **Event bus workers**: Core provides basic scheduling; advanced glam may enhance
+- **RNG**: Core provides seeded `rand`; crypto glam may add secure variants (with permission checks)
 - **Formatting**: Goblin personality messages stay in core but may be configurable
 
 ### 20.5 Architectural Benefits
 This split ensures:
 - **Core stays lean** while providing enterprise guarantees
-- **Gears can innovate** without breaking safety/determinism
-- **No vendor lock-in** - multiple gear implementations can compete
+- **Glam can innovate** without breaking safety/determinism
+- **No vendor lock-in** - multiple glam implementations can compete
 - **Auditability** - core behavior is predictable and verifiable
 
-## 21. Gears — Philosophy & Architecture
+## 21. Glam — Philosophy & Architecture
 
 ### 21.1 Purpose
-Gears are first‑class, modular extensions that feel native to Goblin. The core stays lean; anything domain‑specific lives in a gear.
+Glam are first‑class, modular extensions that feel native to Goblin. The core stays lean; anything domain‑specific lives in a glam.
 
 **Key properties:**
 - **Language‑native**: `use`, namespacing, `via`, `prefer`
-- **Type‑aware**: gears can register types & capabilities
+- **Type‑aware**: glam can register types & capabilities
 - **Contract‑checked**: implementations must match declared contracts
 - **Deterministic**: pin versions, lock builds, sandbox side effects
 
@@ -1787,10 +1787,10 @@ Pin by default. Projects should reference a version/range.
 
 Alias: `as` sets a local alias (`shp::csv`).
 
-Lockfile: `gears.lock` records `{gear, version, checksum, source}`; builds resolve only from lock unless `--update`.
+Lockfile: `glam.lock` records `{glam, version, checksum, source}`; builds resolve only from lock unless `--update`.
 
 ### 21.3 Capability Resolution
-Gears declare capabilities (named functions/templates/exporters). Calls resolve deterministically:
+Glam declare capabilities (named functions/templates/exporters). Calls resolve deterministically:
 
 Call‑site `via`:
 ```goblin
@@ -1807,9 +1807,9 @@ Project config default map (`goblin.config.yaml`)
 If multiple providers remain → `AmbiguityError`.
 
 **Namespacing:**
-Public symbols: `gear::Symbol` (e.g., `shopify::csv`)
+Public symbols: `glam::Symbol` (e.g., `shopify::csv`)
 
-Use `via gear::symbol` (or `via alias::symbol`) to bind a call
+Use `via glam::symbol` (or `via alias::symbol`) to bind a call
 
 ### 21.4 Contracts (First‑Class)
 Contracts define the shape & errors of a capability; Goblin checks them at use time.
@@ -1827,17 +1827,17 @@ end
 **Rules:**
 Signature (names, arity, types) must match exactly
 
-Only declared errors may be thrown; others are wrapped as `GearError(gear, capability, cause)`
+Only declared errors may be thrown; others are wrapped as `GlamError(glam, capability, cause)`
 
 Contracts are global IDs (e.g., `product.export`)
 
 **Introspection:**
 ```goblin
-gear_contracts("shopify")   /// ["product.export", "inventory.sync", ...]
+glam_contracts("shopify")   /// ["product.export", "inventory.sync", ...]
 ```
 
-### 21.5 Gear Manifest & Permissions
-Each gear ships a `gear.yaml`:
+### 21.5 Glam Manifest & Permissions
+Each glam ships a `glam.yaml`:
 
 ```yaml
 name: shopify
@@ -1853,12 +1853,12 @@ permissions:
 checksum: "sha256-…"
 ```
 
-**Gear naming:** Gear names may not be reserved words (see §19) to avoid namespace conflicts.
+**Glam naming:** Glam names may not be reserved words (see §19) to avoid namespace conflicts.
 
 On use, core validates manifest/permissions against project policy. In deterministic builds, network is blocked unless allowlisted.
 
 ```goblin
-gear_permissions("shopify")
+glam_permissions("shopify")
 ```
 
 ### 21.6 Event Bus
@@ -1883,7 +1883,7 @@ end
 - `error`: "stop" (default for sync), "skip", "collect"
 
 ### 21.7 Sandbox & Determinism
-Sandbox is enforced by the gear manifest + project policy.
+Sandbox is enforced by the glam manifest + project policy.
 
 Sandbox modes: "none" | "fs" | "fs+net"
 
@@ -1897,14 +1897,14 @@ file = product.export(@items) via shp dry_run:true
 ```
 
 ### 21.8 Logging & Telemetry
-Standard JSONL at `dist/gear.log`, emitted by core around capability calls:
+Standard JSONL at `dist/glam.log`, emitted by core around capability calls:
 
 ```json
-{"ts":"2025-08-12T15:30:00Z","gear":"shopify","cap":"product.export","ms":128,"ok":true}
-{"ts":"2025-08-12T15:30:01Z","gear":"shopify","cap":"product.export","ok":false,"err":"ValidationError: missing title"}
+{"ts":"2025-08-12T15:30:00Z","glam":"shopify","cap":"product.export","ms":128,"ok":true}
+{"ts":"2025-08-12T15:30:01Z","glam":"shopify","cap":"product.export","ok":false,"err":"ValidationError: missing title"}
 ```
 
-No phoning home unless a gear explicitly does so and permissions allow.
+No phoning home unless a glam explicitly does so and permissions allow.
 
 ### 21.9 Testing Hooks
 Inline tests run in a sandbox:
@@ -1917,18 +1917,18 @@ end
 ```
 
 **CLI:**
-- `gears test shopify`
-- `gears test --all`
+- `glam test shopify`
+- `glam test --all`
 
 ### 21.10 Introspection APIs
 ```goblin
-gears()                         /// ["shopify","tarot_deck"]
-gear_symbols("shopify")         /// ["csv","api","configure", ...]
-gear_contracts("shopify")       /// implemented contracts
-gear_permissions("shopify")     /// sandbox/allowlists
+glams()                         /// ["shopify","tarot_deck"]
+glam_symbols("shopify")         /// ["csv","api","configure", ...]
+glam_contracts("shopify")       /// implemented contracts
+glam_permissions("shopify")     /// sandbox/allowlists
 ```
 
-**Development Tools:** Lint tools should warn if gear names match reserved words (§19) during `gears test` to catch conflicts early.
+**Development Tools:** Lint tools should warn if glam names match reserved words (§19) during `glam test` to catch conflicts early.
 
 ### 21.11 Usage Patterns
 
@@ -1976,12 +1976,12 @@ emit "tx.logged", ledger_json({
 ```
 
 ### 21.12 Errors
-`GearError(gear, capability, cause)`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`.
+`GlamError(glam, capability, cause)`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`.
 
 ### 21.13 Project Config (excerpt)
 ```yaml
 # goblin.config.yaml
-gears:
+glam:
   defaults:
     product.export: shopify
   permissions:
@@ -1998,7 +1998,7 @@ contract product.export(items: array<Product>) -> file
     errors: [ValidationError, AuthError]
 end
 
-# Provided by shopify gear
+# Provided by shopify glam
 file = product.export(@cards) via shopify::csv
 ```
 
@@ -2241,7 +2241,7 @@ is_server_error(code: Http) = code.value() in 500..599
 
 ## 23.1 What is a gmark?
 
-A gmark is a stable, human‑readable handle that uniquely identifies a piece of content within a project (e.g., a blog post, page, product). Gmarks are intended for internal linking and sorting, and are independent of filenames/paths so gears can move files around without breaking references.
+A gmark is a stable, human‑readable handle that uniquely identifies a piece of content within a project (e.g., a blog post, page, product). Gmarks are intended for internal linking and sorting, and are independent of filenames/paths so glam can move files around without breaking references.
 
 * **Name:** a string key (e.g., `"post/how-to-play"` or `"how-to-play"`)
 * **Ord:** a project‑wide integer used for stable ordering (newest at the end by default)
@@ -2310,7 +2310,7 @@ gmarks_filter(prefix: string)   /// -> array<{ name, ord, id }> sorted by ord
 
 ## 23.7 Linking from content
 
-Gears decide how a gmark resolves to URLs/paths. Core provides the stable key; a CMS gear might offer:
+Glam decide how a gmark resolves to URLs/paths. Core provides the stable key; a CMS glam might offer:
 
 ```goblin
 blog::href(gmark: "post/how-to-play")   /// "/posts/how-to-play"
@@ -2320,7 +2320,7 @@ blog::link(text: "How to Play", gmark: "post/how-to-play")
 ## 23.8 Sorting & querying
 
 `gmarks()` returns ord‑sorted entries for simple chronological lists.
-Gears can maintain additional indices (by tag/date/category) but ord remains the single, portable, stable sequence number for "publish order".
+Glam can maintain additional indices (by tag/date/category) but ord remains the single, portable, stable sequence number for "publish order".
 
 ## 23.9 Determinism & policy
 
@@ -2332,7 +2332,7 @@ Projects can explicitly allow gmark writes during `--deterministic` builds:
 
 ```yaml
 # goblin.config.yaml
-gears:
+glam:
   allow_state_writes:
     - "gmark"  # allow only gmark registry mutations during deterministic builds
 ```
@@ -2376,7 +2376,7 @@ gmark_set_ord("post/hello-world", target)
 
 ```goblin
 /// Rebalance ords after a migration (CLI)
-# shell: gears gmark rebalance
+# shell: glam gmark rebalance
 
 /// Build a blog index from "post/*"
 for m in gmarks_filter("post/")
@@ -2607,7 +2607,7 @@ end
 
 ## 24.11 Determinism
 
-morph does not enable I/O. Any side‑effects are those performed by the target method and are governed by the usual sandbox/permission model (core or gear).
+morph does not enable I/O. Any side‑effects are those performed by the target method and are governed by the usual sandbox/permission model (core or glam).
 
 ---
 
@@ -2648,12 +2648,12 @@ morph does not enable I/O. Any side‑effects are those performed by the target 
 - Ensure JSON/YAML leave blobs alone by default (no auto-encode)
 - Example helpers to base64 when needed
 
-### Baseline Gears
+### Baseline Glam
 
-- regex gear: regex::test, regex::findall, regex::replace (+ flags)
-- fs.glob gear: fs::glob(pattern) -> array<string>, fs::walk(dir, pattern="**/*")
-- retry/backoff gear: retry::with_backoff(fn, attempts=3, base_ms=250, jitter=true)
-- http gear polish: http::request(method, url, headers={}, body=""), deterministic-mode safeguards
+- regex glam: regex::test, regex::findall, regex::replace (+ flags)
+- fs.glob glam: fs::glob(pattern) -> array<string>, fs::walk(dir, pattern="**/*")
+- retry/backoff glam: retry::with_backoff(fn, attempts=3, base_ms=250, jitter=true)
+- http glam polish: http::request(method, url, headers={}, body=""), deterministic-mode safeguards
 
 ---
 
@@ -2670,18 +2670,18 @@ morph does not enable I/O. Any side‑effects are those performed by the target 
 - Audit log enrichment with IDs/keys
 - Clock/testing hook (freeze_time)
 
-### Gears / Host-Side Horde-Readiness
+### Glam / Host-Side Horde-Readiness
 
-- scheduler gear: scheduler::cron(spec, task) (executes scripts/caps on a schedule)
-- s3::upload / netlify::deploy gears
-- metrics::emit gear
+- scheduler glam: scheduler::cron(spec, task) (executes scripts/caps on a schedule)
+- s3::upload / netlify::deploy glam
+- metrics::emit glam
 - horde examples (Rust worker pool + Kubernetes YAML)
 
 ### Other Optional Core Enhancements
 
-- gears gmark rebalance (CLI) implementation
+- glam gmark rebalance (CLI) implementation
 - Extra blob helpers (beyond base64/hex) if needed for niche formats
 
 ---
 
-If we ship just the must-have list, Goblin v1.5 Core will be fully usable, have a clean feature set, and Gears will cover the basics. Then we drop horde-readiness + deploy gears in v1.5.1 or v1.6 without delaying launch.
+If we ship just the must-have list, Goblin v1.5 Core will be fully usable, have a clean feature set, and Glam will cover the basics. Then we drop horde-readiness + deploy glam in v1.5.1 or v1.6 without delaying launch.
