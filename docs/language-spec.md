@@ -286,13 +286,13 @@ keys() values() items() delete()
 ## 7. Functions
 
 ```goblin
-init greet(name="Traveler")
+fn greet(name="Traveler")
     "Hello, {name}"   /// last expression is implicit return
 end
 ```
 - `return` allowed; else last expression returns
 - Defaults supported; arity is strict (defaults satisfy arity)
-- **Note:** `init` is also reserved for class constructors (see §9.3)
+- Single-line functions: `fn add(a, b) = a + b`
 
 ---
 
@@ -363,38 +363,110 @@ suit: "Wands"
 
 ## 9. Objects & Classes
 
-### 9.1 Class Declaration, Constructor, Methods
+### 9.1 Definition & Constructor
+A **class** defines a reusable object type with **public** and **private** fields and methods. Calling the class name **creates a new instance**.
+
+**Two equivalent styles:**
+
+**Template Class (Goblin-flavored):**
 ```goblin
-class Pet
-    init(name, age=0)
-        #name = name
-        #age  = age
-    end
-
-    speak()
-        "Hi, I'm {#name} and I'm {#age}"
-    end
-
-    birthday()
-        #age++
-        #age
+class Pet = name: "{name}" :: age: 0 :: species: "dog"
+    fn speak()
+        "Hi, I'm {name}, a {age}-year-old {species}."
     end
 end
-
-/// Create instance
-p = Pet("Fido", 3)
-
-/// Call methods
-say p.speak()
 ```
-- Instance variables: `#name`, `#age` (only valid inside class methods)
-- No inline `#var =` outside init/methods; prefer setting in init
-- `init` is the constructor name (locked in)
-- `spawn` is reserved for Glam scaffolding (CLI), not for classes
 
-### 9.2 Visibility
-- Instance variables (`#x`) are private to the instance (accessible only in class body)
-- Methods are public by default (future versions may add visibility keywords)
+**Regular Class (function-style):**
+```goblin
+class Pet(name: string, age: int = 0, species: string = "dog")
+    fn speak()
+        "Hi, I'm {name}, a {age}-year-old {species}."
+    end
+end
+```
+
+**Constructor signature:**
+* The **constructor line** defines the **field order**, **types**, and **defaults**.
+* Reordering fields is a **breaking change**.
+* Template style uses `::` separators; function style uses comma separators.
+
+### 9.2 Instantiation
+Both class styles support both instantiation methods:
+
+* **Template style:** `Pet: "Fido" :: 3 :: "cat"`
+* **Function style:** `Pet("Fido", 3, "cat")` /// maps **strictly** to declared field order
+
+**Options:**
+* **Named overrides:** `Pet("Rex", species: "wolf")`
+* **Skip positional:** `Pet("Max", :: "cat")` /// skip `age`, set `species`
+* **Defaults:** Omitted fields use their declared default; if a required field has no default → `TypeError("missing field 'name' for Pet")`.
+* **Type safety:** Invalid overrides (e.g., `species: 42`) → `TypeError`.
+
+### 9.3 Field Semantics
+* **Interpolation:** `name: "{name}"` → expects string parameter.
+* **Capture:** `price: {price}` → expects typed parameter (inferred from usage).
+* **Computed defaults:** `sku: slug("{title}")` allowed.
+* **Per‑instance defaults:** Evaluate **at instantiation** (not class load). E.g., `id: uuid()` is unique per instance.
+
+### 9.4 Access Rules
+* **Public fields** (no `#`): readable/writable externally. Auto‑generated accessors:
+   * `x()` getter
+   * `set_x(v)` setter  
+   * `is_x()` for booleans
+* **Private fields** (`#x`): accessible **only** inside class methods. External access → `PermissionError("cannot access private field '#energy'")`.
+* **Readonly:** `readonly id: uuid()` → getter only; writing → `TypeError("field 'id' is readonly")`.
+
+### 9.5 Lifecycle
+* `on_create()` (optional) runs **after** field binding but **before** instance is returned; throw to abort construction.
+* **Determinism:** `on_create()` **must be deterministic**. Side effects (FS/NET/env) require glam with declared permissions; non‑deterministic work raises `DeterminismError` in deterministic mode.
+
+### 9.6 Style Choice
+*Any Goblin class can be defined in template form or function form. The two are interchangeable; choose the style that's most readable for your project.*
+
+* **Template style** → declarative, readable, matches `@template` variables
+* **Function style** → compact, familiar, traditional
+
+### 9.7 Errors
+* Missing field → `TypeError("missing field 'x' for Pet")`
+* Unknown field → `TypeError("unknown field 'foo' for Pet")`
+* Type mismatch → `TypeError("field 'price' expects money, got int")`
+* Currency mismatch → `CurrencyError` (see §10)
+* Private access → `PermissionError("cannot access private field '#x'")`
+
+### 9.8 Serialization & Helpers
+* `write_json` / `write_yaml`: serialize **public fields** by default; `include_private: true` opt‑in.
+* `to_map()` → map of public fields.
+* `copy(overrides…)` → shallow copy with overrides.
+* Structural equality (`==`) compares public fields; `is` is identity.
+
+### 9.9 Morph Compatibility
+`morph` (§24) operates on **public fields via auto‑accessors**; `#private` remains sealed unless you expose public getters/setters.
+
+### 9.10 No Inheritance
+Goblin has **no class inheritance**. Prefer **composition** and `morph` (§24).
+
+### 9.11 Percent & Money Behavior
+Inside methods and field expressions:
+* **Percent is "percent of the left operand"** (§11):
+   * `$8 + 25%` → `$10` (`$8 + ($8 * 0.25)`)
+   * `$8 * 25%` → `$16` (`$8 * ($8 * 0.25)`)
+   * `$8 / 25%` → `$4` (`$8 / ($8 * 0.25)`)
+* **Money is fixed‑point** with precision policy and ledger (§10).
+* `/` on money is forbidden → `MoneyDivisionError`. Use `//` for quotient or `>>` for divmod.
+
+**Example:**
+```goblin
+class Book = title: "{title}" :: price: $0
+    fn discount(p: percent) = price - (price * p)    /// §11 percent rule
+end
+
+b = Book: "Guide" :: $8
+say b.discount(25%)     /// $6
+say b.price() + 25%     /// $10  
+say b.price() * 25%     /// $16
+say b.price() / 25%     /// $4
+```
 
 ---
 
@@ -1669,7 +1741,7 @@ Error messages may occasionally include goblin-themed variations for personality
 ## 19. Reserved Words
 
 ```
-if, elif, else, for, in, while, class, init, return, skip, stop, try, catch, finally, 
+if, elif, else, for, in, while, class, fn, return, skip, stop, try, catch, finally, 
 assert, error, warn, say, true, false, nil, default, int, float, money, bool, 
 read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, read_json, write_json, 
 json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now, uuid, 
@@ -2505,22 +2577,20 @@ All morph errors are transactional: the source object is unchanged.
 ### A. Geometry rotate without adapters
 
 ```goblin
-class Dot
-    init(x, y)
-        #x = x; #y = y
-    end
-    x() = #x; set_x(v) = #x = v
-    y() = #y; set_y(v) = #y = v
+class Dot = x: 0 :: y: 0
+    fn x() = #x
+    fn set_x(v) = #x = v
+    fn y() = #y  
+    fn set_y(v) = #y = v
 end
 
-class Shape
-    init(x=0, y=0)
-        #x = x; #y = y
-    end
-    x() = #x; set_x(v) = #x = v
-    y() = #y; set_y(v) = #y = v
+class Shape = x: 0 :: y: 0
+    fn x() = #x
+    fn set_x(v) = #x = v
+    fn y() = #y
+    fn set_y(v) = #y = v
 
-    rotate(deg)
+    fn rotate(deg)
         rad = deg * 3.1415926535 / 180
         nx = #x * cos(rad) - #y * sin(rad)
         ny = #x * sin(rad) + #y * cos(rad)
@@ -2529,7 +2599,7 @@ class Shape
     end
 end
 
-p = Dot(1, 0)
+p = Dot: 1 :: 0
 morph(p, Shape, rotate(90))
 say p.x(), p.y()          /// ~0, 1
 ```
@@ -2537,29 +2607,23 @@ say p.x(), p.y()          /// ~0, 1
 ### B. Discount using a method that lives on another class
 
 ```goblin
-class Book
-    init(title, price)
-        #title = title; #price = price
-    end
-    title() = #title; set_title(v) = #title = v
-    price() = #price; set_price(v) = #price = v
+class Book = title: "{title}" :: price: $0
+    fn set_title(v) = #title = v
+    fn set_price(v) = #price = v
 end
 
-class Card
-    init(name="", price=money(0))
-        #name = name; #price = price
-    end
-    name() = #name; set_name(v) = #name = v
-    price() = #price; set_price(v) = #price = v
+class Card = name: "{name}" :: price: money(0)
+    fn set_name(v) = #name = v
+    fn set_price(v) = #price = v
 
-    apply_discount(rate)   /// rate can be 10% etc.
+    fn apply_discount(rate)   /// rate can be 10% etc.
         #price = #price * (1 - rate)
         #price
     end
 end
 
 default money USD
-b = Book("Guide", $29.99)
+b = Book: "Guide" :: $29.99
 morph(b, Card, apply_discount(10%))
 say b.price()             /// USD 26.99 (policy applies for precision)
 ```
@@ -2567,22 +2631,20 @@ say b.price()             /// USD 26.99 (policy applies for precision)
 ### C. Boolean accessors
 
 ```goblin
-class A
-    init(active=false)  #active = active end
-    active() = #active
-    set_active(v) = #active = v
+class A = active: false
+    fn active() = #active
+    fn set_active(v) = #active = v
 end
 
-class B
-    init(enabled=false)  #enabled = enabled end
+class B = enabled: false
     /// Both forms are recognized as getter for boolean:
-    is_active() = #enabled
-    set_active(v) = #enabled = v
+    fn is_active() = #enabled
+    fn set_active(v) = #enabled = v
 
-    toggle()  #enabled = not #enabled end
+    fn toggle() = #enabled = not #enabled
 end
 
-a = A(true)
+a = A: true
 morph(a, B, toggle())
 say a.active()    /// false
 ```
@@ -2596,7 +2658,7 @@ Golden tests are encouraged:
 ```goblin
 test "morph discount keeps type and updates price"
     default money USD
-    b = Book("Gloomhaven", $100.00)
+    b = Book: "Gloomhaven" :: $100.00
     r = morph(b, Card, apply_discount(25%))
     assert b.price() == $75.00
     assert r == $75.00
