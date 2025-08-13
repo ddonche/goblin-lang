@@ -655,26 +655,69 @@ clear_remainders()
 
 ---
 
-## 11. Percentages & Tax
+## 11. Percent Type — "Percent of **what**?"
 
-### 11.1 Percent Literal
+### 11.1 Core Principle
+
+In Goblin, a percent is never "naked." It is always **"percent of *something*."**
+
+* **Default:** If you **don't** specify, it's **percent of the left operand**.
+   * `x + 10%` → `x + (10% of x)`
+   * `x - 10%` → `x - (10% of x)`
+   * `x * 10%` → `x * (10% of x)`
+   * `x / 10%` → `x / (10% of x)`
+
+* **Explicit:** If you want "percent of" a **different** value, say it:
+   * `x + 10% of y`
+   * `x - 10% of y`
+   * `x * 10% of y`
+   * `x / 10% of y`
+
+This is consistent, human, and **audit-safe**. It eliminates the hidden inconsistency in calculator math (where `*` and `/` default to "percent of 100," but `+` and `-` do not).
+
+### 11.2 Explicit Form
+
+* `A% of B` binds as a single unit (highest precedence after literals and parentheses).
+* Works in **any** position:
+   * `total = price + 10% of fee`
+   * `share = 10% of total / 2` → `(10% of total) / 2`
+
+### 11.3 Calculator Escape Hatch
+
+If you want "calculator-style" percent math (percent of 100), use decimals:
+* `8 * 0.25` → `2`
+* `8 / 0.25` → `32`
+
+No warnings in decimal mode.
+
+### 11.4 Warnings (Default Behavior)
+
+To smooth adoption and avoid confusion, Goblin warns by default when `*` or `/` has a **percent literal** on the right-hand side without `of`:
+
 ```goblin
-10%     → 0.10
-8.25%   → 0.0825
+say 8 * 25%
+/// Warning: "Percent math: 8 * 25% = 16 (25% of 8 times 8).
+/// For calculator-style math, use 8 * 0.25 = 2."
 
-/// % with spaces = modulo
-10 % 3
-
-/// Invalid: 10%off (insert separator)
-10% * price  /// correct
-
-/// Precedence: % binds tighter than arithmetic
-say 100 + 20% * 2      /// 100 + (20% * 2) = 100 + (0.2 * 2) = 100.4
-say 8 * 25%            /// 8 * 0.25 = 2.0
-say 100 + 20% * 2 / 5  /// 100 + (0.2 * 2) / 5 = 100 + 0.4 / 5 = 100.08
+say 8 / 25%
+/// Warning: "Percent math: 8 / 25% = 4 (8 ÷ 25% of 8).
+/// For calculator-style math, use 8 / 0.25 = 32."
 ```
 
-### 11.2 Tax Helpers
+* Addition and subtraction (`+`/`-`) **do not warn**, since they match most people's intuition.
+* Configurable:
+   * `percent_warning: "warn"` (default)
+   * `percent_warning: "allow"` (never warn)
+   * `percent_warning: "strict"` (throw error)
+
+### 11.5 Money Interop
+
+* Works identically with money types under §10 rules.
+* Fixed-point precision always respected.
+* Division on money still follows §10 — if result is money, `/` must divide by scalar, not money; use `quotient`/`remainder` for money-to-money division.
+
+### 11.6 Tax Helpers
+
 ```goblin
 tax(subtotal, rate_or_rates, compound=false) → tax amount
 with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
@@ -682,6 +725,7 @@ with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 /// rate_or_rates: single rate (0.10 or 10%) or array ([8.25%, 1%])
 /// compound=true applies sequentially; else additive
 ```
+
 - **Precision handling:** Tax calculations use truncation, not rounding
 - Any sub-quantum amounts from percentage calculations are tracked in remainder ledger
 - `compound=false`: compute each component with truncation, track remainders separately
@@ -689,6 +733,18 @@ with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 
 Tax obeys the active precision policy. In `policy: strict`, if tax introduces sub-precision, raise `MoneyPrecisionError`. Under `warn`/`truncate`, record the sub-precision in the ledger and (for `warn`) emit a warning.
 
+### 11.7 Examples
+
+```goblin
+price = $80
+fee = $5
+
+price + 10%          /// $88.00 (10% of price)
+price + 10% of fee   /// $80.50 (10% of fee)
+8 * 25%              /// 16 (warns; use 8 * 0.25 for calculator style)
+10% of price         /// $8.00
+(10% of price) / 2   /// $4.00
+```
 ---
 
 ## 12. Helper Sugar (Functions + Brackets)
