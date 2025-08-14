@@ -614,14 +614,169 @@ Money behavior is governed by the active policy (§27).
 
 **Parameters:**
 - **precision:** integer ≥ 0 (decimal places in major units)
-- **policy:** `truncate` (default) | `warn` | `strict`
-  - `truncate`: canonicalize via truncate-and-ledger (no rounding)
-  - `warn`: same as truncate, also warn `MoneyPrecisionWarning(...)`
-  - `strict`: throw `MoneyPrecisionError` if any op would produce sub-precision
+- **policy:** `"truncate"` (default) | `"warn"` | `"strict"` | `"defer"`
+  - `"truncate"`: canonicalize via truncate-and-ledger (no rounding)
+  - `"warn"`: same as truncate, also warn `MoneyPrecisionWarning(...)`
+  - `"strict"`: throw `MoneyPrecisionError` if any op would produce sub-precision
+  - `"defer"`: carry full precision until explicit settlement or export boundary
 
-**Goblin Aliases:** `policy: goblin` (= truncate), `policy: hoard` (= warn), `policy: greedy` (= strict)
+**Goblin Aliases:** `policy: "cleave"` (= truncate), `policy: "grumble"` (= warn), `policy: "grim"` (= strict), `policy: "hoard"` (= defer)
 
 **Scope:** Per currency. Unset currencies use global default unless overridden.
+
+### 10.0.1 Defer ("Hoard") Policy — Keep crumbs until told otherwise
+
+**Purpose:** For multi-step financial math (compound interest, accruals, amortization), users must be able to carry sub-precision forward across steps and only canonicalize when they say so. Policy `"defer"` does exactly that.
+
+**Policy keywords:**
+- `policy: "defer"` — canonical name
+- `policy: "hoard"` — goblin alias (exact synonym)
+
+**Example:**
+```goblin
+@policy = "compound_interest"
+    money: { currency: "USD", precision: 2, policy: "defer" }
+```
+
+**Semantics (precise but simple):**
+
+Under `"defer"`, money values internally keep full intermediate precision (engine precision), instead of truncating at each operation.
+
+Display (`str(x)`, `say x`) still shows the canonical 2-dp surface so files and logs stay human-readable; the extra fraction is carried but not lost.
+
+Canonicalization to the configured precision occurs only when:
+- you call an explicit settle helper (below), or
+- you cross a boundary that requires canonical amounts (e.g., CSV/JSON export in "string/object" modes, FS writes by a glam that declares money surfaces), or
+- you temporarily opt into truncate/warn/strict via a scoped override.
+
+**Important:** When canonicalization happens, the sub-precision excess is moved into the standard remainder ledger (§10.7/§10.9). `"defer"` changes when we commit crumbs, not where they go.
+
+**New helpers (small, focused):**
+
+```goblin
+settle(x: money) -> money
+```
+Canonicalize x to current precision; adds the sub-precision remainder to the ledger; returns the canonical money. (Idempotent if already clean.)
+
+```goblin
+excess(x: money) -> float
+```
+Inspect the sub-precision being carried in defer mode (major-unit float; sign can be ±). For dashboards and tests. Returns 0.0 in non-defer modes.
+
+```goblin
+with_money_policy(policy, block)
+```
+Temporarily override precision policy inside block. Useful to do a one-off truncation step inside an otherwise deferred workflow.
+
+```goblin
+with_money_policy("truncate")
+    // this block behaves like truncate
+end
+```
+
+**Export/serialization boundaries:**
+
+Core writers (`write_csv`, `write_json` in "string/object" modes, glam exports that surface money as text/decimal) canonicalize amounts they serialize. In defer mode, this implies an automatic ledger entry for any carried remainder on those values at the moment of write.
+
+**Export compatibility for inferior systems:**
+
+Many external systems expect rounded amounts instead of mathematically correct values. Goblin handles this with export policies and educational messaging:
+
+```goblin
+/// Export policy options
+shopify::export(@orders, { money_compat: "round_up" })
+write_csv("export.csv", orders, { money_compat: "truncate" })
+```
+
+**Export compatibility modes:**
+- `money_compat: "exact"` (default) — export precise values, their problem
+- `money_compat: "truncate"` — truncate to precision, add snarky footer
+- `money_compat: "round_up"` — round up to precision, add snarky footer
+
+**Snarky footer example (when money_compat used):**
+```
+# ═══════════════════════════════════════════════════════════════
+# GOBLIN PRECISION AUDIT
+# ═══════════════════════════════════════════════════════════════
+# Actual total: USD 1700.56789 (mathematically correct)
+# Exported total: USD 1700.57 (rounded for your inferior system)  
+# Precision sacrificed: USD 0.00211 (tracked in goblin ledger)
+#
+# ⚠️  WARNING: Your system's rounding may cause cascading errors.
+# The goblins calculated this correctly. Any downstream 
+# discrepancies are YOUR problem, not ours.
+#
+# 🧌 Powered by Goblin Language - Where Every Cent Counts
+# ═══════════════════════════════════════════════════════════════
+```
+
+If a glam needs raw exacts (rare), it must opt in via its contract/options and emit in units mode (§14.2.2: "units"), which carries integers + precision without touching the ledger.
+
+**Examples:**
+
+**A. Compound interest (works as users expect)**
+```goblin
+@policy = "compound_interest"
+    money: { currency: "USD", precision: 2, policy: "defer" }
+
+set @policy compound_interest
+
+bal = $1000.00
+for _ in 1..3
+    bal = bal * 1.05
+end
+
+say bal          /// USD 1157.625 (shows actual carried value)
+say excess(bal)  /// 0.0 (no hidden precision - it's all visible)
+
+/// End of quarter: settle to books (moves crumb to ledger)
+bal = settle(bal)
+say bal          /// USD 1157.63
+say remainders_total()  /// { USD: $0.00... } + ledger includes 0.005 from settle()
+```
+
+**B. Mixed workflow: one step must be "clean"**
+```goblin
+@policy = "mixed_precision"
+    money: { currency: "USD", precision: 2, policy: "defer" }
+
+set @policy mixed_precision
+
+x = $10.00 * 2.5     /// carries extra precision if any
+/// One particular step must match a legacy system's truncate behavior:
+with_money_policy("truncate")
+    x = x * 1.07     /// canonicalized here; any crumb logged immediately
+end
+/// Continue deferring after the block
+x = x * 1.03
+```
+
+**C. Export boundary auto-settles for that surface**
+```goblin
+@policy = "export_defer"
+    money: { currency: "USD", precision: 2, policy: "defer" }
+
+set @policy export_defer
+
+invoice = $1157.625    /// via prior math
+write_csv("dist/invoice.csv", [ { total: invoice } ])
+/// -> Writes "USD 1157.63"
+/// -> Moves 0.005 to remainder ledger (export is a canonicalizing boundary)
+```
+
+**Error/warning behavior (unchanged where it should be):**
+
+`"strict"` still forbids sub-precision creation; `"warn"` behaves like truncate + warning.
+
+`"defer"` allows sub-precision and never warns until a canonicalization point (explicit settle or an export).
+
+All cross-currency rules, `/` prohibitions, and divmod semantics remain as in §10.4–§10.7.
+
+**Notes (goblin flavor):**
+
+"Hoard mode" = the coin-counting goblins keep every shaving in your pouch until you say "book it."
+
+Once booked (by settle or export), the shavings go into the hoard ledger and can be handled exactly like today with `drip_remainders` / `goblin_payout` or `goblin_stash` patterns.
 
 ### 10.1 Type & Precision Handling
 - Values are stored as integer quanta of size `10^(-precision)` in major units; any sub-quantum remainder is tracked per §10.7.
@@ -1966,7 +2121,7 @@ today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_yea
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
-next_ord, ord, morph, judge, import, expose, vault, set
+next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy
 ```
 
 **Version Codenames:**
