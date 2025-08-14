@@ -29,6 +29,11 @@ Block comment content
 ```
 Block comment markers must appear alone on their line (no trailing text).
 
+**Statements:**
+```goblin
+set @policy <name>    /// changes the active policy for the current scope
+```
+
 ### 1.2 Printing
 ```goblin
 say expr
@@ -427,7 +432,7 @@ card: "Two of Cups" :: price: .99 :: qty: 4
 ```
 - `::` separates fields
 - LHS must be identifiers
-- RHS any expression
+- RHS any expression (including nested maps/arrays)
 
 ### 8.2 Templates
 
@@ -599,11 +604,12 @@ say b.price() / 25%     /// $4
 
 ### 10.0 Money Precision Policy
 
-You can fix the allowed decimal places and choose how to handle sub-precision results.
+Money behavior is governed by the active policy (§27).
 
 ```goblin
-/// Syntax (anywhere before use)
-default money USD precision: 2 policy: truncate
+/// Example policy configuration
+@policy = "strict_money"
+    money: { currency: "USD", precision: 2, policy: "strict" }
 ```
 
 **Parameters:**
@@ -615,17 +621,17 @@ default money USD precision: 2 policy: truncate
 
 **Goblin Aliases:** `policy: goblin` (= truncate), `policy: hoard` (= warn), `policy: greedy` (= strict)
 
-**Scope:** from the directive forward; per currency. Unset currencies use global default (`precision: 2, policy: truncate`) unless overridden.
+**Scope:** Per currency. Unset currencies use global default unless overridden.
 
 ### 10.1 Type & Precision Handling
 - Values are stored as integer quanta of size `10^(-precision)` in major units; any sub-quantum remainder is tracked per §10.7.
-- `policy` applies at canonicalization sites: `money(v,C)`, promotion (`money` ± int/float), `*`, `tax`, `with_tax`, `convert`, and glam functions returning money.
+- Policy applies at canonicalization sites: `money(v,C)`, promotion (`money` ± int/float), `*`, `tax`, `with_tax`, `convert`, and glam functions returning money.
 - **No rounding** - excess precision becomes explicit remainder
 - Perfect conservation: `input_value = money_part + remainder`
 
 ### 10.2 Construction & Literals
 ```goblin
-money(1.50)        /// uses script/build default currency
+money(1.50)        /// uses active policy currency
 money(1.50, USD)   /// explicit currency
 
 /// Accepted literals (all yield money(amount, CUR)):
@@ -655,7 +661,7 @@ str(money) → CUR 1.23
 fmt(float(m), ",.2f")  /// numeric only
 ```
 
-If `policy: strict` and `v` has more than `precision` decimals, raise `MoneyPrecisionError` (no ledger update).
+If active policy is `strict` and `v` has more than `precision` decimals, raise `MoneyPrecisionError` (no ledger update).
 
 ### 10.3 Number Typing & Defaults
 ```goblin
@@ -664,10 +670,8 @@ If `policy: strict` and `v` has more than `precision` decimals, raise `MoneyPrec
 1.23     → float
 $1.50    → money
 
-/// Declaring a default mid-file affects subsequent untyped numerics:
-default int / default float / default money [CUR]
-
-/// With default money USD:
+/// Policy affects subsequent untyped numerics:
+set @policy usd_money   /// if this policy sets money.currency: USD
 x = 5    → USD 5.00
 y = 2.5  → USD 2.50
 
@@ -725,6 +729,8 @@ currency:
     "₽": RUB
 ```
 Build-time override: `goblin build … --currency USD`
+
+Policies do not redefine symbol maps; they only set currency, precision, and policy.
 
 ### 10.6 Increments with Money
 ```goblin
@@ -827,7 +833,7 @@ To settle dripped amounts across recipients, use:
 
 **Perfect Conservation Examples:**
 ```goblin
-default money USD
+set @policy site_default
 
 /// Construction with remainder
 precise_amount = money(100.567, USD)  /// $100.56 + remainder(0.007)
@@ -945,6 +951,7 @@ Tax obeys the active precision policy. In `policy: strict`, if tax introduces su
 ### 11.8 Examples
 
 ```goblin
+set @policy site_default
 price = $80
 fee = $5
 
@@ -1115,7 +1122,7 @@ When importing, Goblin promotes values to money only if the source schema or hea
 
 **Write canonical money objects:**
 ```goblin
-default money USD precision: 2
+set @policy site_default
 cart = { total: $123.45, items: 3 }
 write_json("dist/cart.json", cart, { money: "object", indent: 2 })
 ```
@@ -1157,9 +1164,14 @@ duration — elapsed time in seconds (no zone)
 No implicit coercion between these types.
 
 ### 15.2 Defaults & Time Zone
+Datetime behavior (trusted time, policy, default tz) follows the active policy (§27).
+
 ```goblin
-default datetime tz: "America/Denver"
+/// Example policy setting
+@policy = "site_default"
+    datetime: { tz: "America/Denver", prefer_trusted: false, policy: "warn" }
 ```
+
 Accepts IANA names ("America/Denver"), "UTC", or fixed offsets ("+00:00", "-07:00").
 
 Affects constructors, parse helpers without explicit `tz:`, and `today()`/`now()` when using local clock.
@@ -1169,14 +1181,17 @@ Goblin can source time from a trusted server, then fall back to a signed monoton
 
 #### 15.3.1 Config
 ```goblin
-default datetime source: "https://time.goblin-lang.org/api/now"
-default datetime policy: strict | warn | allow = warn
-default datetime prefer_trusted: false      /// if true: now()/today() use trusted chain
-default datetime ttl: 60s                   /// refresh window while online
-default datetime cache_ttl: 24h             /// max offline age for cache
-default datetime skew_tolerance: 5s         /// wall-clock vs monotonic drift
-default datetime cache_path: "dist/time.cache"
-default datetime cache_signing_key: nil     /// optional HMAC key
+@policy = "strict_time"
+    datetime: { 
+        source: "https://time.goblin-lang.org/api/now",
+        policy: "strict",
+        prefer_trusted: true,
+        ttl: "60s",
+        cache_ttl: "24h",
+        skew_tolerance: "5s",
+        cache_path: "dist/time.cache",
+        cache_signing_key: "my-secret-123"
+    }
 ```
 
 `cache_signing_key` is used for HMAC verification of the trusted‑time cache; if nil, cache is unsigned (less secure in hostile environments).
@@ -1345,12 +1360,7 @@ Bad values → `ValueError`.
 
 ### 15.14 Examples
 ```goblin
-default datetime tz: "America/Denver"
-default datetime source: "https://time.goblin-lang.org/api/now"
-default datetime policy: warn
-default datetime prefer_trusted: true
-default datetime cache_signing_key: "my-secret-123"
-
+set @policy site_default
 start = datetime("2025-08-12 09:00")          /// MDT
 say start.iso()                                /// 2025-08-12T09:00:00-06:00
 
@@ -1394,6 +1404,7 @@ Clients must tolerate minor network/processing latency; monotonic adjustment is 
 ### 16.1 Repo Layout
 ```
 goblin.config.yaml
+policies.gbln
 types-registry.yaml
 collections-map.yaml
 registry/
@@ -1503,7 +1514,7 @@ str(5) || str(10) → 5 10
 -7 >> 3 → (-3, 2)    /// because -7 = (-3)*3 + 2
 
 /// Money
-default money USD
+set @policy site_default
 price = $10.75
 q = price // 3       /// USD 3.00 (quotient only)
 q, r = price >> 3    /// (USD 3.00, USD 1.75)
@@ -1531,7 +1542,7 @@ say 5 ^^ 3  → 125 (5 × 5 × 5)
 
 ### Money Examples with Perfect Conservation
 ```goblin
-default money USD
+set @policy site_default
 
 a = 1.50      /// USD 1.50
 b = $2.25     /// USD 2.25  
@@ -1554,7 +1565,7 @@ say add[shares]  /// $100.00 exactly
 
 ### Precision Policy Examples
 ```goblin
-default money USD precision: 2 policy: strict
+set @policy strict_money
 
 price = 19.99                        /// ok
 price = money(19.991, USD)          /// MoneyPrecisionError
@@ -1564,11 +1575,11 @@ tax_amount = tax($405.95, 8.25%)    /// error (would be 33.990375)
 tax_amount = divide_evenly($405.95 * 8.25%, 1)[0]
 
 /// Or switch policy temporarily
-default money USD policy: truncate
+set @policy site_default
 tax_amount = tax($405.95, 8.25%)    /// ok, logs remainder
 
 /// Bank-style precision:
-default money USD precision: 5 policy: truncate
+set @policy high_precision   /// precision: 5, policy: truncate
 fee = $0.00037                      /// ok, logs remainder if any operation shrinks below 5 dp
 ```
 
@@ -1602,7 +1613,7 @@ shares = divide_evenly(actual.USD, 3)  /// [$0.01, $0.01, $0.01]
 
 ### Date & Time Examples
 ```goblin
-default datetime tz: "America/Denver"
+set @policy site_default
 
 /// Basic construction
 start_date = date("2025-08-12")
@@ -1696,7 +1707,7 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`, `ModuleNotFoundError`, `ModuleNameConflictError`, `ModuleCycleError`, `ModuleVisibilityError`, `PolicyNotFoundError`, `PolicyValueError`, `PolicyScopeError`, `PolicyVisibilityError`
 
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
@@ -1881,10 +1892,56 @@ Error messages may occasionally include goblin-themed variations for personality
   - *"The transformation goblins report: target method exploded"*
   - *"Action failure: goblins couldn't complete the morph operation"*
 
-**Built-in warning types:**
-`MoneyPrecisionWarning`, `TimeSourceWarning`
+- `ModuleNotFoundError`:
+  - *"The import goblins can't find module at '{path}'"*
+  - *"Module search failed: goblins lost the trail to '{path}'"*
+  - *"The file goblins report: no module at '{path}'"*
+  - *"Import chaos: goblins can't locate the requested module"*
 
-UnusedJudgeValueWarning: result of 'judge' is ignored (line N). Assign it or wrap with 'say'.
+- `ModuleNameConflictError`:
+  - *"The naming goblins found duplicate alias '{alias}' in imports"*
+  - *"Import conflict: goblins refuse overlapping module names"*
+  - *"The organization goblins detected alias collision for '{alias}'"*
+  - *"Namespace chaos: goblins demand unique import aliases"*
+
+- `ModuleCycleError`:
+  - *"The dependency goblins found a circular import: {cycle}"*
+  - *"Module cycle detected: goblins can't resolve circular dependencies"*
+  - *"The logic goblins report: infinite import loop detected"*
+  - *"Import chaos: goblins refuse circular module dependencies"*
+
+- `ModuleVisibilityError`:
+  - *"The access goblins deny import of vault symbol '{symbol}'"*
+  - *"Module visibility error: goblins guard private symbols"*
+  - *"The security goblins block access to hidden '{symbol}'"*
+  - *"Import permission denied: goblins protect vault contents"*
+
+- `PolicyNotFoundError`:
+  - *"The policy goblins can't find configuration '{name}'"*
+  - *"Unknown policy: goblins don't recognize '{name}'"*
+  - *"The rulebook goblins report: policy '{name}' doesn't exist"*
+  - *"Configuration error: goblins need a valid policy name"*
+
+- `PolicyValueError`:
+  - *"The validation goblins found invalid policy value at '{path}': {reason}"*
+  - *"Policy configuration error: goblins reject malformed settings"*
+  - *"The rules goblins detected bad policy data"*
+  - *"Configuration chaos: goblins demand valid policy values"*
+
+- `PolicyScopeError`:
+  - *"The scope goblins found policy declaration in wrong location"*
+  - *"Policy placement error: goblins expect header policies first"*
+  - *"The organization goblins demand proper policy positioning"*
+  - *"Scope violation: goblins require policies at file start"*
+
+- `PolicyVisibilityError`:
+  - *"The policy goblins block this import due to active restrictions"*
+  - *"Import denied: policy goblins enforce visibility rules"*
+  - *"The access goblins report: policy prevents this operation"*
+  - *"Policy violation: goblins restrict this action"*
+
+**Built-in warning types:**
+`MoneyPrecisionWarning`, `TimeSourceWarning`, `UnusedJudgeValueWarning`
 
 - `JudgeError`:
   - *"The judgment goblins found malformed judge expression"*
@@ -1898,18 +1955,18 @@ UnusedJudgeValueWarning: result of 'judge' is ignored (line N). Assign it or wra
 
 ```
 if, elif, else, for, in, while, class, fn, return, skip, stop, try, catch, finally, 
-assert, error, warn, say, true, false, nil, default, int, float, money, bool, pct,
+assert, error, warn, say, true, false, nil, int, float, money, bool, pct,
 read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, read_json, write_json, 
 json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now, uuid, 
 add, sum, mult, sub, div, mod, divmod, pow, root, floor, ceil, round, abs, min, max, 
-rand, randint, tax, with_tax, bit, glam, use, export, import, via, validate, 
+rand, randint, tax, with_tax, bit, glam, use, export, via, validate, 
 remainders_total, remainders_report, clear_remainders, divide_evenly, divide_evenly_escrow, 
 drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_datetime,
 today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
-next_ord, ord, morph, judge
+next_ord, ord, morph, judge, import, expose, vault, set
 ```
 
 **Version Codenames:**
@@ -1932,7 +1989,7 @@ Goblin maintains a **lean core** with **extensible glam** to balance safety with
 These components **must** remain in core to ensure safety, determinism, and language coherence:
 
 **Syntax & Parser:**
-- Keywords (`use`, `via`, `prefer`, `contract`, `emit`, `on`, `test`)
+- Keywords (`use`, `via`, `prefer`, `contract`, `emit`, `on`, `test`, `import`, `set`)
 - Operators (percent literals, postfix `++`/`--`, infix `//`, `>>`)
 - Precedence rules and "no-space vs space" `%` behavior
 - Template syntax (`::`, `@name`)
@@ -2778,7 +2835,7 @@ class Card = name: "{name}" :: price: money(0)
     end
 end
 
-default money USD
+set @policy site_default
 b = Book: "Guide" :: $29.99
 morph(b, Card, apply_discount(10%))
 say b.price()             /// USD 26.99 (policy applies for precision)
@@ -2813,7 +2870,7 @@ Golden tests are encouraged:
 
 ```goblin
 test "morph discount keeps type and updates price"
-    default money USD
+    set @policy site_default
     b = Book: "Gloomhaven" :: $100.00
     r = morph(b, Card, apply_discount(25%))
     assert b.price() == $75.00
@@ -3081,7 +3138,7 @@ html::layout(page, { title: "Shop", meta: { include: ["og_tags","twitter_card"],
 
 ```goblin
 # shop.gbln
-default money USD precision: 2 policy: truncate
+set @policy site_default
 use html@^1.0 as web
 
 /// --- Data ---------------------------------------------------------------
@@ -3209,3 +3266,312 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 - Only use `html::raw` for trusted fragments (e.g., sanitized CMS).
 
 With this, you can keep `.gbln` scripts clean, predictable, and auditable — while shipping production‑ready HTML with zero repetition.
+
+---
+
+## 27. Policies — Project "Loadouts"
+
+### 27.1 Purpose
+Policies are named "loadouts" that centralize behavior for key features. Define them once, then apply them:
+- Project‑wide (via policies.gbln site default)
+- Per file (header)
+- Inline (within any block)
+
+Policies replace scattered directives. Environment/config knobs (e.g., currency map, time server) stay in goblin.config.yaml; policies can override them selectively.
+
+### 27.2 Where Policies Live
+Create a special, auto‑loaded file at the project root:
+```
+policies.gbln
+```
+
+It's always available (no import). Define named templates there using standard template syntax; nested maps/arrays are allowed on the RHS of fields.
+
+```goblin
+/// policies.gbln
+@policy = name: "{name}" :: money: {} :: modules: {} :: strings: {} :: datetime: {}
+
+@policy = "site_default"
+    money:   { currency: "USD", precision: 2, policy: "truncate" }
+    modules: { mode: "expose" }      /// expose | vault
+    strings: { trim: true, strip_html: false, escape: false }
+    datetime:{ prefer_trusted: false, policy: "warn" }  /// warn | strict | allow
+
+@policy = "strict_money"
+    money:   { currency: "USD", precision: 2, policy: "strict" }
+
+@policy = "sealed_mods"
+    modules: { mode: "vault" }
+```
+
+### 27.3 Applying Policies
+Policies are applied with a single statement:
+```goblin
+set @policy site_default
+```
+
+**Scopes:**
+- **File header**: first non‑blank/comment statement → applies file‑wide.
+- **Inline**: anywhere in code; applies to the current block and inner scopes.
+
+**Precedence**: inline > file > project default (either "site_default" or the first policy declared with default: true, if you add that convention later).
+
+**Partial fills**: Any key not set in a policy inherits from project config (goblin.config.yaml). Nothing is silently guessed.
+
+### 27.4 Categories & Fields
+
+#### 27.4.1 Money
+```goblin
+money: {
+  currency: "USD",     /// ISO code
+  precision: 2,        /// ≥ 0
+  policy: "truncate"   /// truncate | warn | strict
+}
+```
+
+Affects: construction (money(v, CUR)), promotion with numbers, *, tax, with_tax, convert, and glam returns of money.
+
+**Config fallback**: currency symbol map, $ disambiguation/suffix flags, etc., remain in goblin.config.yaml.
+
+#### 27.4.2 Modules
+```goblin
+modules: {
+  mode: "expose"       /// expose | vault
+}
+```
+
+Mirrors module visibility (§28). If a file sets modules.mode, it behaves as if it had a pragma header (see §28).
+
+**Namespacing & calls**: importing uses `import "./path" as X` and call sites use `X::symbol` (module) and `glam::symbol` (glam); the namespaces don't collide.
+
+**Errors (visibility)**:
+- Attempt to import a vault file or call a vault symbol → `ModuleVisibilityError`.
+- If a policy sets a file to vault and you still try to import → `PolicyVisibilityError`.
+
+#### 27.4.3 Strings
+```goblin
+strings: {
+  trim: true,          /// l/r trim for inputs to selected helpers
+  strip_html: false,   /// tag removal for designated surfaces
+  escape: false        /// conservative escaping for non-HTML sinks
+}
+```
+
+Hints honored by core helpers and glams where sensible. HTML glam still auto‑escapes; escape:true is additive for non‑HTML sinks.
+
+#### 27.4.4 Datetime
+```goblin
+datetime: {
+  prefer_trusted: false,  /// when true, now()/today() prefer trusted chain
+  policy: "warn",         /// strict | warn | allow (as in §15.3)
+  tz: nil                 /// override default time zone (string); nil → config
+}
+```
+
+**Config fallback**: trusted‑time URL, TTLs, HMAC key, etc., stay in goblin.config.yaml.
+
+### 27.5 Syntax Notes
+- **Nested structures in templates**: Allowed on RHS: `{ … }` and `[ … ]` (same literals as §6).
+- `set @policy …` is a statement (no value). Re‑applying later replaces the current effective policy for subsequent statements in that scope.
+- Linters should warn if a file has both a `# @module …` pragma and a conflicting `modules.mode` via policy.
+
+### 27.6 Errors
+- `PolicyNotFoundError("name")` — unknown policy name in set @policy.
+- `PolicyValueError(path, reason)` — invalid field (e.g., negative precision).
+- `PolicyScopeError` — header set @policy is not first statement when a strict build/lint requires it.
+- `PolicyVisibilityError` — import/use blocked by an active policy (e.g., modules.mode: "vault").
+
+### 27.7 Examples
+
+**Quick before/after:**
+
+Before:
+```goblin
+default money USD precision: 2 policy: truncate
+price = $80
+say price + 10%
+```
+
+After:
+```goblin
+set @policy site_default
+price = $80
+say price + 10%
+```
+
+**Inline tighten:**
+```goblin
+set @policy strict_money
+tax_amount = tax($405.95, 8.25%)   /// raises in strict if sub-precision appears
+```
+
+**Modules via policy:**
+```goblin
+set @policy sealed_mods    /// this file acts like # @module vault
+```
+
+---
+
+## 28. Modules — Project‑Local Imports
+
+### 28.1 Purpose
+Modules let you split code across files and reuse it without glam. They're project‑local, namespaced, and governed by the Modules policy (see §27). You can run in "open by default" mode or lock things down and explicitly expose only what you need.
+
+### 28.2 Import basics
+- Any .gbln file can be imported (no special folders).
+- Paths resolve relative to the importing file.
+- The .gbln suffix is optional.
+- Each import requires an alias; access via Alias::name.
+
+```goblin
+import "./helpers" as H
+say H::slug("Deviant Moon")
+```
+
+Namespace access: `Alias::symbol` (keep `.` for method/property access only).
+
+### 28.3 Visibility via policy (open vs. locked)
+Visibility is driven by the active Modules policy:
+- **expose** (easy mode): top‑level declarations are importable unless marked `vault`.
+- **vault** (locked mode): nothing is importable unless marked `expose`.
+
+You set policy the same way as elsewhere:
+- **Project‑wide default** in policies.gbln (e.g., `modules: { mode: "expose" }` or `modules: { mode: "vault" }`).
+- **File‑level**: first non‑comment line
+  ```goblin
+  set @policy my_modules_policy
+  ```
+- **Scoped/inline**:
+  ```goblin
+  fn build()
+      set @policy locked_modules   /// modules: { mode: "vault" }
+      ...
+  end
+  ```
+
+**Precedence**: inner scope > file header > project default.
+
+**Errors**:
+If a file is effectively vault because of policy and you try to import a symbol not marked expose, that import fails. Use error taxonomy in §28.8.
+
+### 28.4 Symbol‑level modifiers
+Independently of file policy, mark specific declarations:
+```goblin
+expose fn new_id() = uuid()            /// importable
+vault  fn seed()   = 12345              /// never importable
+
+expose class Product = title: "{t}" :: price: $0
+vault  enum Mode
+    A
+    B
+end
+
+expose @row = title: "{t}" :: price: "{p}"
+```
+
+**Rules:**
+- In **expose** files: everything is importable except symbols marked `vault`.
+- In **vault** files: nothing is importable except symbols marked `expose`.
+- Conflicting redeclarations (same name with different visibility) → `ModuleVisibilityError` at definition time.
+
+### 28.5 Execution & caching
+- A module's top‑level code executes once on its first import; subsequent imports use the cached exports.
+- Side‑effects follow sandbox rules; in `--deterministic` builds, disallowed FS/NET fail as usual.
+
+### 28.6 Aliases & collisions
+- Duplicate `import … as Alias` in one file → `ModuleNameConflictError`.
+- Duplicate symbol definitions inside a module → normal duplicate‑definition error at load time.
+
+### 28.7 Cycles (MVP)
+Import cycles are disallowed in v1.5. Detecting A → B → A raises:
+```
+ModuleCycleError("A <-> B")
+```
+
+(A future release may relax this with deferred bindings.)
+
+### 28.8 Interop (modules vs. glam)
+- **Modules**: `import "./x" as X` → `X::symbol`.
+- **Glam**: `use glam@ver as g` and `via g::cap`.
+
+Namespaces won't collide; both use `Alias::symbol`, but aliases originate from different mechanisms.
+
+### 28.9 Errors
+- `ModuleNotFoundError` — bad path or unreadable file.
+- `ModuleNameConflictError` — duplicate alias in the importer.
+- `ModuleCycleError` — cyclic import detected.
+- `ModuleVisibilityError` — symbol hidden by its declaration (vault) or not exposed under a vault file.
+- `PolicyVisibilityError` — import denied because the active policy makes the target effectively vault and the symbol isn't expose.
+
+(Goblin‑flair messages allowed per §18.)
+
+### 28.10 Examples
+
+#### A. Open by default (easy reuse)
+**policies.gbln**
+```goblin
+@policy = "easy_modules"
+    modules: { mode: "expose" }
+```
+
+**strings.gbln**
+```goblin
+fn slug(s) = s.lower().replace(" ", "-")     /// importable (expose file)
+vault fn only_here() = 7                     /// force hidden
+```
+
+**post.gbln**
+```goblin
+set @policy easy_modules
+import "./strings" as S
+
+say S::slug("Deviant Moon")    /// "deviant-moon"
+S::only_here()                 /// ModuleVisibilityError
+```
+
+#### B. Locked file with explicit exposes
+**policies.gbln**
+```goblin
+@policy = "locked_modules"
+    modules: { mode: "vault" }
+```
+
+**ids.gbln**
+```goblin
+set @policy locked_modules
+
+expose fn new_id() = uuid()    /// allowed to import
+fn seed() = 12345              /// hidden (implicit vault under file vault)
+```
+
+**main.gbln**
+```goblin
+import "./ids" as IDs
+say IDs::new_id()
+IDs::seed()                    /// ModuleVisibilityError (or PolicyVisibilityError if policy blocks file)
+```
+
+#### C. Mixed sections
+**tools.gbln**
+```goblin
+set @policy easy_modules       /// expose section
+fn slug(s) = s.lower().replace(" ", "-")
+
+set @policy locked_modules     /// vault section
+expose fn checksum(b) = hash(b, "sha256")
+fn secret() = "g0b1in"
+```
+
+Importer can use `slug` and `checksum`, not `secret`.
+
+### 28.11 Reserved words (delta)
+Add to §19:
+```
+import, expose, vault
+```
+
+(Keep as contextual inside import statements. Names in strings/fields are unaffected.)
+
+---
+
+*[End of Goblin Language Specification v1.5 "Treasure Hoarder" - Refactored]*
