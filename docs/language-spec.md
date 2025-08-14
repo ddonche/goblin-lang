@@ -602,6 +602,9 @@ say b.price() / 25%     /// $4
 
 ## 10. Money & Currency
 
+Money behavior (currency, precision, rounding/truncation) is governed by the active policy (§27).  
+When integrating with external systems that use flawed rounding, see §27.4.1 compat for mode/shame_level controls.
+
 ### 10.0 Money Precision Policy
 
 Money behavior is governed by the active policy (§27).
@@ -677,38 +680,6 @@ end
 **Export/serialization boundaries:**
 
 Core writers (`write_csv`, `write_json` in "string/object" modes, glam exports that surface money as text/decimal) canonicalize amounts they serialize. In defer mode, this implies an automatic ledger entry for any carried remainder on those values at the moment of write.
-
-**Export compatibility for inferior systems:**
-
-Many external systems expect rounded amounts instead of mathematically correct values. Goblin handles this with export policies and educational messaging:
-
-```goblin
-/// Export policy options
-shopify::export(@orders, { money_compat: "round_up" })
-write_csv("export.csv", orders, { money_compat: "truncate" })
-```
-
-**Export compatibility modes:**
-- `money_compat: "exact"` (default) — export precise values, their problem
-- `money_compat: "truncate"` — truncate to precision, add snarky footer
-- `money_compat: "round_up"` — round up to precision, add snarky footer
-
-**Snarky footer example (when money_compat used):**
-```
-# ═══════════════════════════════════════════════════════════════
-# GOBLIN PRECISION AUDIT
-# ═══════════════════════════════════════════════════════════════
-# Actual total: USD 1700.56789 (mathematically correct)
-# Exported total: USD 1700.57 (rounded for your inferior system)  
-# Precision sacrificed: USD 0.00211 (tracked in goblin ledger)
-#
-# ⚠️  WARNING: Your system's rounding may cause cascading errors.
-# The goblins calculated this correctly. Any downstream 
-# discrepancies are YOUR problem, not ours.
-#
-# 🧌 Powered by Goblin Language - Where Every Cent Counts
-# ═══════════════════════════════════════════════════════════════
-```
 
 If a glam needs raw exacts (rare), it must opt in via its contract/options and emit in units mode (§14.2.2: "units"), which carries integers + precision without touching the ledger.
 
@@ -2121,7 +2092,8 @@ today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_yea
 trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
-next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy
+next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
+compat, mode, track_theft, shame_level
 ```
 
 **Version Codenames:**
@@ -3478,15 +3450,121 @@ set @policy site_default
 #### 27.4.1 Money
 ```goblin
 money: {
-  currency: "USD",     /// ISO code
-  precision: 2,        /// ≥ 0
-  policy: "truncate"   /// truncate | warn | strict
+  currency: "USD",            /// default currency (string ISO code)
+  precision: 2,               /// ≥ 0
+  policy: "truncate",         /// truncate | warn | strict | defer (same semantics as §10)
+  compat: {                   /// compatibility mode for external/broken systems
+    mode: "none",              /// none | round_per_op | round_final | bankers_round | truncate_display
+    track_theft: true,         /// maintain parallel "theft ledger" for discrepancies
+    shame_level: "silent"      /// silent | educational | passive_aggressive | brutal
+                               /// (lost-money variants allowed for passive_aggressive/brutal)
+  }
 }
 ```
 
-Affects: construction (money(v, CUR)), promotion with numbers, *, tax, with_tax, convert, and glam returns of money.
+**Behavior:**
+- Applies to money construction, promotion, *, tax/with_tax, convert, glam return values that are money.
+- Policy overrides default money behavior from goblin.config.yaml; unset fields inherit from config.
+- Compat mode affects ONLY how amounts are emitted to external systems (exports, invoices, APIs). Internal math always uses perfect Goblin math.
+- When compat.mode != "none", Goblin tracks both:
+    - Correct Ledger (pure Goblin math)
+    - Broken Ledger (external system's result per compat.mode)
+  Differences are recorded in theft ledger (even if money is lost instead of gained).
 
-**Config fallback**: currency symbol map, $ disambiguation/suffix flags, etc., remain in goblin.config.yaml.
+**Shame Level Semantics:**
+- `silent` — emit no commentary; still logs theft ledger internally if track_theft = true.
+- `educational` — provide step-by-step breakdown of calculations for debugging/teaching.
+- `passive_aggressive` — provide summary of discrepancy with light snark.
+- `brutal` — provide aggressively snarky discrepancy report.
+- lost-money variants — passive_aggressive/brutal text adapted for when compat mode causes the *user* to lose money instead of gain.
+
+**Shame Level Examples:**
+
+`shame_level: "passive_aggressive"`
+```
+# ═══════════════════════════════════════════════════════════════
+# GOBLIN PRECISION AUDIT
+# ═══════════════════════════════════════════════════════════════
+# Correct total: USD 1,247.66 (mathematically accurate)
+# Your total: USD 1,247.83 (rounded to match your expectations)
+# Discrepancy: USD 0.17 (tracked in goblin ledger)
+#
+# Note: Your system's rounding caused this difference.
+# The goblins maintain perfect records for your reference.
+# 🧌 Where Every Cent Counts
+# ═══════════════════════════════════════════════════════════════
+```
+
+`shame_level: "brutal"`
+```
+# ═══════════════════════════════════════════════════════════════
+# 🧌 GOBLIN FINANCIAL CRIMES UNIT REPORT 🧌
+# ═══════════════════════════════════════════════════════════════
+# CORRECT AMOUNT: USD 1,247.66 (what honest math produces)
+# YOUR AMOUNT: USD 1,247.83 (what your broken system thinks)
+# THEFT AMOUNT: USD 0.17 (you ripped someone off)
+#
+# 🚨 FINANCIAL MALPRACTICE DETECTED 🚨
+# Your rounding errors have resulted in USD 0.17 being stolen
+# from someone. The goblins are disappointed in your life choices.
+# 
+# Maybe consider upgrading from "calculator math" to "actual math"?
+# We'll be here with perfect arithmetic when you're ready to evolve.
+#
+# Sincerely,
+# The Goblin Financial Accuracy Department
+# "We count coins so you don't have to steal them"
+# ═══════════════════════════════════════════════════════════════
+```
+
+`shame_level: "passive_aggressive"` (Lost Money)
+```
+# ═══════════════════════════════════════════════════════════════
+# GOBLIN PRECISION AUDIT
+# ═══════════════════════════════════════════════════════════════
+# Correct total: USD 1,247.83 (mathematically accurate)
+# Your total: USD 1,247.66 (rounded to match your expectations)
+# Money lost: USD 0.17 (vanished into the rounding void)
+#
+# Note: Your system's rounding caused you to lose money.
+# The goblins tried to warn you, but here we are.
+# 🧌 Where Every Cent Counts (Even The Ones You Lose)
+# ═══════════════════════════════════════════════════════════════
+```
+
+`shame_level: "brutal"` (Lost Money)
+```
+# ═══════════════════════════════════════════════════════════════
+# 🧌 GOBLIN FINANCIAL INCOMPETENCE REPORT 🧌
+# ═══════════════════════════════════════════════════════════════
+# CORRECT AMOUNT: USD 1,247.83 (what competent math produces)
+# YOUR AMOUNT: USD 1,247.66 (what your broken system lost)
+# MONEY EVAPORATED: USD 0.17 (poof! gone forever!)
+#
+# 💸 FINANCIAL SELF-HARM DETECTED 💸
+# Congratulations! Your rounding errors just made USD 0.17 
+# disappear into the mathematical void. The goblins would cry,
+# but we're too busy counting our precisely-tracked coins.
+#
+# Pro tip: Money doesn't usually vanish by itself.
+# That takes special incompetence that only humans can achieve.
+#
+# Tragically yours,
+# The Goblin "We Told You So" Department  
+# "Watching humans lose money since 2025"
+# ═══════════════════════════════════════════════════════════════
+```
+
+**Logging Note:**
+When `compat.track_theft = true`, Goblin always records the theft ledger internally, even if `shame_level = "silent"`.  
+By default, this is emitted as a structured log entry at `warn` level on export, containing:
+  - correct_amount
+  - broken_amount
+  - discrepancy
+  - mode
+  - timestamp
+
+Logging level is configurable via goblin.config.yaml. This ensures project maintainers are aware of all discrepancies, even when suppressed in output sent to external systems.
 
 #### 27.4.2 Modules
 ```goblin
