@@ -1130,6 +1130,28 @@ bigDiscount = pct(15)      /// 15%
 
 **Note on money + bare %**: Because `%` defaults to "of 1," adding a bare percent to a money amount adds a scalar amount (e.g., `$80 + 10%` adds `$0.10`). For clarity, prefer `10%s` (self) or `10% of price` (explicit base) when operating on money.
 
+11.9 Examples
+price = $100
+
+discount = 15%                /// 0.15 (scalar form, percent of 1)
+price - 15%s                  /// $85.00 (15% of price — percent of self)
+15% of price                  /// $15.00 (explicit base)
+with_tax($100, 8.5%)          /// $108.50 (tax helper)
+
+/// Using constructor
+rate = pct(8.5)               /// 8.5%  → 8.5 / 100 = 0.085
+discount_rate = pct(15)       /// 15%   → 15 / 100 = 0.15
+// if you wrote:
+oops = pct(0.15)              /// 0.15% → 0.15 / 100 = 0.0015
+
+
+Concrete check with pct(0.15):
+
+price = $100
+r = pct(0.15)                 /// 0.15% → 0.0015
+r of price                    /// 0.0015 * $100 = $0.15
+price - (r of price)          /// $99.85
+
 ## 11.x Context-Bound Percent Literals (%s)
 
 `%s` means "percent of self," where self is the left-hand operand in the containing expression.
