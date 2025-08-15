@@ -2206,7 +2206,7 @@ trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, en
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
-compat, mode, track_theft, shame_level
+compat, mode, track_theft, shame_level, unless
 ```
 
 **Version Codenames:**
