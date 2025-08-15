@@ -216,7 +216,14 @@ false, 0, 0.0, "", [], {}, nil
 
 ## 4. Conditionals
 
+Goblin supports four conditional keywords:
+* `if` — run the block if the condition is **true**.
+* `unless` — run the block if the condition is **false** (syntactic sugar for `if not`).
+* `elif` — test a new condition if all previous `if`/`unless` branches failed.
+* `else` — run the block if no previous branch executed.
+
 ### 4.1 Block Form — Classic and Readable
+
 ```goblin
 if cond
     ...
@@ -224,9 +231,17 @@ elif cond
     ...
 else
     ...
+
+unless cond
+    ...
+else
+    ...
 ```
+
 * No colons; indentation defines blocks.
 * `elif` and `else` are optional.
+* `unless <condition>` is compiled exactly as `if not (<condition>)`.
+* You may freely mix `if` and `unless` with `elif` and `else`.
 * Last expression in a branch is the value returned by that branch **only if** you explicitly use it (assign/say/etc.). The block form itself does not yield a value.
 
 **Examples:**
@@ -239,6 +254,18 @@ elif score >= 70
     say "C"
 else
     say "F"
+
+unless user.is_admin
+    deny_access()
+else
+    grant_admin_access()
+
+if user.is_verified
+    process_order()
+elif user.needs_verification
+    send_verification_email()
+else
+    require_signup()
 ```
 
 ### 4.2 Judge — Declarative, Expression‑Oriented Branching
@@ -344,11 +371,10 @@ else
 
 ### 4.5 Quick Cheat‑Sheet
 * **Block:** `if cond ... elif cond ... else ...`
+* **Unless:** `unless cond ... else ...` (same as `if not cond`)
 * **Judge (multiline):** `x = judge c1: v1 c2: v2 else: v3`
 * **Judge (inline):** `say judge: c1: v1 :: c2: v2 :: else: v3`
 * **Warning (scripts):** Ignored `judge` → `UnusedJudgeValueWarning` with line number and hint.
----
-
 ## 5. Loops
 
 ```goblin
