@@ -986,111 +986,101 @@ clear_remainders()
 
 ---
 
-## 11. Percent Type — "Percent of **what**?"
+11. Percent Type — "Percent of what?"
+11.0 Reserved tokens / keywords
+Reserved: % (postfix percent), %s (postfix "percent of self"), of (base binder), pct (constructor).
+Modulus uses infix % with spaces: a % b.
+11.1 Core principle (CIPO)
+Goblin uses the Context‑Independent Percent Operator rule:
+% is a first‑class percent value; it is never "naked." It always denotes percent of a base.
 
-### 11.1 Core Principle
+Default base for % is 1 (programmer‑style).
+This makes p% equal to p/100 as a numeric factor.
+%s (self) means percent of the left operand (calculator‑style), for all four operators.
+% of E names an explicit base E.
+No operator changes the meaning of %. There is no context magic.
 
-In Goblin, a percent is never "naked." It is always **"percent of *something*."**
+11.2 Literals and construction
+Literal: 25% → numeric factor 0.25 in numeric contexts.
+Constructor (percentage points):
+goblinpct(25)     → 25%         /// 0.25 in numeric contexts
+pct(0.5)    → 0.5%        /// 0.005 in numeric contexts
+pct(-10)    → -10%
+str(25%)    → "25%"
+pct(n) always interprets n as percentage points.
+11.3 Operator forms (explicit and uniform)
+A) % — percent of 1 (default)
+goblin8 * 25%   = 2           /// 8 * 0.25
+100 / 25% = 400         /// 100 / 0.25
+8 + 25%   = 8.25        /// 8 + 0.25
+8 - 25%   = 7.75        /// 8 - 0.25
+B) %s — percent of self (left operand)
+goblin8 + 25%s  = 10          /// 8 + (0.25 * 8)
+8 - 25%s  = 6           /// 8 - (0.25 * 8)
+8 * 25%s  = 16          /// 8 * (0.25 * 8)
+8 / 25%s  = 4           /// 8 / (0.25 * 8)
+C) % of E — explicit base
+goblin8 + (25% of 50) = 20.5  /// 8 + (0.25 * 50)
+D) % with spaces — modulus (unchanged)
+goblin8 % 3 = 2
+11.4 Binding & precedence
 
-* **Default:** If you **don't** specify, it's **percent of the left operand**.
-   * `x + 10%` → `x + (10% of x)`
-   * `x - 10%` → `x - (10% of x)`
-   * `x * 10%` → `x * (10% of x)`
-   * `x / 10%` → `x / (10% of x)`
+p%, p%s, and p% of E are atomic numeric factors (postfix/primary), binding tighter than *//.
+of binds to the percent literal: p% of E is one unit.
+Spaced modulus (a % b) is a multiplicative infix operator alongside * and /.
 
-* **Explicit:** If you want "percent of" a **different** value, say it:
-   * `x + 10% of y`
-   * `x - 10% of y`
-   * `x * 10% of y`
-   * `x / 10% of y`
+Example:
+goblinx + 25%s * 2  ==  x + ((25% of x) * 2)
+11.5 Desugaring (spec‑level operational definition)
+A ∘ (p%s)        ⇒  A ∘ ((p/100) * A)         /// ∘ ∈ { +, -, *, / }
+p%               ⇒  (p / 100)
+(p% of B)        ⇒  (p / 100) * B
+A % B  [spaced]  ⇒  Mod(A, B)
+pct(X)           ⇒  (X / 100)  as a percent value
+11.6 Functions and composition
+Percent values are dimensionless numbers and work anywhere numbers work:
+goblinsqrt(25%)  = sqrt(0.25) = 0.5
+(25%)^2    = (0.25)^2   = 0.0625
+sin(50%)   = sin(0.5)
+With of, the result inherits the unit of the base (e.g., money, length).
+11.7 Money interop (with §10)
 
-This is consistent, human, and **audit-safe**. It eliminates the hidden inconsistency in calculator math (where `*` and `/` default to "percent of 100," but `+` and `-` do not).
+percent × money uses §10 fixed‑point rules and precision.
+Division on money follows §10: if the result is money, divide by a scalar, not money. Use quotient/remainder for money‑to‑money division.
 
-**Percent literals:** `25%` (no space between number and `%` symbol).
-
-### 11.2 Construction & Casting
-```goblin
-pct(25) → 25%          /// from number (as percentage)
-pct(0.25) → 25%        /// from decimal fraction  
-str(25%) → "25%"       /// string representation
-```
-
-### 11.3 Explicit Form
-
-* `A% of B` binds as a single unit (highest precedence after literals and parentheses).
-* Works in **any** position:
-   * `total = price + 10% of fee`
-   * `share = 10% of total / 2` → `(10% of total) / 2`
-
-### 11.4 Calculator Escape Hatch
-
-If you want "calculator-style" percent math (percent of 100), use decimals:
-* `8 * 0.25` → `2`
-* `8 / 0.25` → `32`
-
-No warnings in decimal mode.
-
-### 11.5 Warnings (Default Behavior)
-
-To smooth adoption and avoid confusion, Goblin warns by default when `*` or `/` has a **percent literal** on the right-hand side without `of`:
-
-```goblin
-say 8 * 25%
-/// Warning: "Percent math: 8 * 25% = 16 (25% of 8 times 8).
-/// For calculator-style math, use 8 * 0.25 = 2."
-
-say 8 / 25%
-/// Warning: "Percent math: 8 / 25% = 4 (8 ÷ 25% of 8).
-/// For calculator-style math, use 8 / 0.25 = 32."
-```
-
-* Addition and subtraction (`+`/`-`) **do not warn**, since they match most people's intuition.
-* **Configuration** (in `goblin.config.yaml`):
-```yaml
-percent:
-  warning: warn    # warn | allow | strict
-```
-
-### 11.6 Money Interop
-
-* Works identically with money types under §10 rules.
-* Fixed-point precision always respected.
-* Division on money still follows §10 — if result is money, `/` must divide by scalar, not money; use `quotient`/`remainder` for money-to-money division.
-
-### 11.7 Tax Helpers
-
-```goblin
-tax(subtotal, rate_or_rates, compound=false) → tax amount
+Examples:
+goblin$80 * 10%        = $8.00
+10% of $80       = $8.00
+($80 + 15%s)     = $92.00
+11.8 Tax helpers (unchanged API; now true percent type)
+goblintax(subtotal, rate_or_rates, compound=false) → tax amount
 with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 
-/// rate_or_rates: single rate (0.10 or 10%) or array ([8.25%, 1%])
-/// compound=true applies sequentially; else additive
-```
+rate_or_rates: accept 0.10 (decimal) or 10% (percent type), or array [8.25%, 1%].
+compound=true applies sequentially; else additive.
+Precision: truncation, with sub‑quantum remainders ledgered per policy.
+strict policy raises MoneyPrecisionError; warn/truncate record and/or warn.
 
-- **Precision handling:** Tax calculations use truncation, not rounding
-- Any sub-quantum amounts from percentage calculations are tracked in remainder ledger
-- `compound=false`: compute each component with truncation, track remainders separately
-- `compound=true`: apply each rate sequentially, tracking cumulative remainders
+11.9 Worked examples (spec)
+goblinprice = $80
+fee   = $5
 
-Tax obeys the active precision policy. In `policy: strict`, if tax introduces sub-precision, raise `MoneyPrecisionError`. Under `warn`/`truncate`, record the sub-precision in the ledger and (for `warn`) emit a warning.
+price + 10%            /// $88.00    (10% of 1 → 0.10; $80 + $0.10? NO → applies to numbers. Use %s for self.)
+                       /// CORRECT: with money, + 10% means + 0.10 units. Prefer explicit base forms below.
 
-### 11.8 Examples
+price + 10%s           /// $88.00    ($80 + 0.10*$80)
+10% of price           /// $8.00
+(10% of price) / 2     /// $4.00
+price + (10% of fee)   /// $80 + $0.50 = $80.50
 
-```goblin
-set @policy site_default
-price = $80
-fee = $5
+8 * 25%                /// 2
+8 * 25%s               /// 16
+8 + (25% of 50)        /// 20.5
 
-price + 10%          /// $88.00 (10% of price)
-price + 10% of fee   /// $80.50 (10% of fee)
-8 * 25%              /// 16 (warns; use 8 * 0.25 for calculator style)
-10% of price         /// $8.00
-(10% of price) / 2   /// $4.00
-
-/// Using constructor
-rate = pct(8.5)      /// 8.5%
-discount_rate = pct(0.15)  /// 15%
-```
+rate        = pct(8.5)     /// 8.5%
+discount    = pct(0.15)    /// 0.15% (i.e., 0.0015)
+bigDiscount = pct(15)      /// 15%
+Note on money + bare %: Because % defaults to "of 1," adding a bare percent to a money amount adds a scalar amount (e.g., $80 + 10% adds $0.10). For clarity, prefer 10%s (self) or 10% of price (explicit base) when operating on money.
 ---
 
 ## 12. Helper Sugar (Functions + Brackets)
