@@ -4808,7 +4808,285 @@ goblin runes.encrypt "treasure at oak"
 → quick, reproducible cipher (default key + fixed grid).
 Add :: 1,3 for custom key; add :: 87 for seeded grid.
 
-32. Release Checklist
+§32 — List Utilities
+32.0 Overview
+
+Goblin lists are ordered, 0-based, and homogenous by convention (mixed types allowed but some ops forbid mixing). Random forms respect the global RNG seed (deterministic when provided).
+
+Indexing sugar:
+
+at <I> → element at index I (0-based).
+
+first → index 0.
+
+last → final element.
+
+Mutability conventions:
+
+Non-destructive: pick, shuffle, sort.
+
+Destructive: reap, usurp, replace, insert, add.
+
+Reserved words in this section:
+
+Hard: pick, reap, usurp, len, shuffle, sort, add, insert, replace.
+
+Soft (only recognized inside list verbs): from, at, first, last, to, into, in, with, dups.
+
+32.1 pick — non-destructive selection
+
+Return element(s) from a list without modifying it.
+
+Forms
+
+pick <list>
+pick <N> from <list>
+pick <N> dups from <list>
+pick first from <list>
+pick last from <list>
+pick at <I> from <list>
+
+
+Returns
+
+Element for single-slot forms.
+
+List of length N for pick <N> ….
+
+Errors
+EmptyPickError | PickCountError | PickIndexError | PickTypeError
+
+Examples
+
+names = ["Alice","Bob","Charlie","Dana"]
+say pick names                  /// "Charlie"
+say pick 2 from names           /// ["Dana","Alice"]
+say pick 5 dups from [1,2,3]    /// [2,2,3,1,2]
+say pick first from names       /// "Alice"
+say pick at 2 from names        /// "Charlie"
+
+32.2 reap — destructive selection
+
+Remove element(s) and return them. Mutates the list.
+
+Forms
+
+reap from <list>
+reap <N> from <list>
+reap first|last from <list>
+reap at <I> from <list>
+
+
+Errors
+ReapEmptyError | ReapCountError | ReapIndexError | ReapTypeError
+
+32.3 usurp — destructive replace
+
+Replace slot(s) with new values, return (old,new) pairs.
+
+Forms
+
+usurp at <I> in <list> with <V>
+usurp from <list> with <V>
+usurp <N> from <list> with <Vs>
+
+
+Errors
+UsurpIndexError | UsurpEmptyError | UsurpCountError | UsurpArityError | UsurpTypeError
+
+32.4 replace — overwrite at index
+
+Mutates without return.
+
+Form
+
+replace at <I> in <list> with <V>
+
+
+Errors
+ReplaceIndexError | ReplaceTypeError
+
+32.5 add — append / concat
+
+Forms
+
+add <value> to <list>
+add <list2> to <list1>
+
+
+Errors
+AddTypeError
+
+32.6 insert — insert at index
+
+Form
+
+insert <value> at <I> into <list>
+
+
+Errors
+InsertIndexError | InsertTypeError
+
+32.7 len — list length
+len <list> → int
+
+32.8 shuffle — random permutation
+shuffle <list> → new_list
+
+
+Errors
+ShuffleTypeError
+
+32.9 sort — sorted copy
+sort <list> → new_list
+
+
+Errors
+SortTypeError
+
+Rules
+
+Ascending, stable.
+
+Numeric → numeric compare.
+
+String → lexicographic.
+
+Mixed → error.
+
+32.10 Determinism
+
+Random verbs (pick, reap from … (random), usurp from … (random), shuffle) must use the runtime RNG and honor the global seed.
+
+32.11 Range Integration
+
+Ranges (A..B) are list literals. All list verbs apply directly to ranges.
+
+Examples
+
+say pick 1..100
+say pick 5 from 1..100
+say pick 5 dups from 1..100
+say reap from 10..20
+say len 50..75
+say shuffle 1..6
+
+
+Notes
+
+Ranges immutable; destructive verbs materialize mutable copy.
+
+len returns B − A + 1.
+
+32.12 Functional Aliases
+
+Readable sugar ≡ call form.
+
+Examples
+
+pick names                ≡ pick(names)
+pick 2 from names         ≡ pick_n(names, 2)
+pick 5 dups from xs       ≡ pick_n_dups(xs, 5)
+pick at 3 from xs         ≡ pick_at(xs, 3)
+pick 1..100               ≡ pick_range(1,100)
+pick 5 from 1..100        ≡ pick_range_n(1,100,5)
+
+reap from xs              ≡ reap_one(xs)
+reap at 2 from xs         ≡ reap_at(xs,2)
+usurp at 2 in xs with v   ≡ usurp_at(xs,2,v)
+add 3 to xs               ≡ push(xs,3)
+insert "B" at 1 into xs   ≡ insert_at(xs,1,"B")
+
+shuffle xs                ≡ shuffle_copy(xs)
+sort xs                   ≡ sort_copy(xs)
+len xs                    ≡ length(xs)
+len 1..100                ≡ length_range(1,100)
+
+32.13 Mini Game Recipes
+1. Randomly kill 3 enemies (distinct, removed from play)
+enemies = ["goblin","orc","slime","bat","skeleton","bandit"]
+
+killed = reap 3 from enemies
+say "💀 Killed: " || killed
+say "👣 Remaining: " || enemies
+
+2. Draw cards vs burn random cards
+deck = ["A♠","K♠","Q♠","J♠","10♠"]
+
+hand = [reap first from deck, reap first from deck]
+say "✋ Hand: " || hand
+say "📦 Deck: " || deck
+
+burned = reap 2 from deck
+say "🔥 Burned: " || burned
+say "📦 Deck now: " || deck
+
+3. Randomly damage N items in inventory
+inventory = ["Sword","Shield","Bow","Helmet","Boots"]
+replacements = ["Sword (Damaged)","Shield (Cracked)"]
+
+pairs = usurp 2 from inventory with replacements
+say pairs
+say "🎒 Inventory: " || inventory
+
+4. Random loot without repeats
+loot_table = ["gold","gem","potion","map","ring"]
+drop = reap from loot_table
+say "🎁 Drop: " || drop
+say "📜 Loot left: " || loot_table
+
+5. Gacha pulls (allow duplicates)
+pool = ["common","common","common","rare","rare","epic"]
+
+pulls = pick 10 dups from pool
+say "🧪 Pulls: " || pulls
+say "Pool unchanged: " || pool
+
+6. Random party order (initiative)
+party = ["Lamar","Tanisha","Marcus","Ingrid"]
+initiative = shuffle party
+say "🎲 Initiative: " || initiative
+
+7. Trap: remove 1 random item
+bag = ["Key","Rope","Torch","Pickaxe"]
+lost = reap from bag
+say "🕳️ Lost to trap: " || lost
+say "🎒 Bag now: " || bag
+
+8. Weapon break (swap-in broken variant)
+weapons = ["Dagger","Axe","Spear"]
+(old, new) = usurp at 1 in weapons with "Axe (Broken)"
+say "💥 " || old || " → " || new
+say weapons
+
+9. Event preview vs trigger
+events = ["Ambush","Treasure","Merchant","Rest"]
+
+say "Peek: " || pick events
+say "Trigger: " || reap from events
+say "Queue left: " || events
+
+10. “Cull the horde” with cap
+horde = ["A","B","C"]
+n = 5
+if n > len horde
+  n = len horde
+end
+culled = reap n from horde
+say culled, horde
+
+
+Notes
+
+reap = destructive grab, great for consumable effects.
+
+pick = non-destructive peek/preview.
+
+usurp = destructive swap-in.
+
+Random ops always honor the global seed (--seed 1337 reproducible).
+
+33. Release Checklist
 
 ## ✅ Must-Have for v1.5
 
