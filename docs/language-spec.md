@@ -2126,7 +2126,21 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`, `ModuleNotFoundError`, `ModuleNameConflictError`, `ModuleCycleError`, `ModuleVisibilityError`, `PolicyNotFoundError`, `PolicyValueError`, `PolicyScopeError`, `PolicyVisibilityError`, `BanishError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`, `ModuleNotFoundError`, `ModuleNameConflictError`, `ModuleCycleError`, `ModuleVisibilityError`, `PolicyNotFoundError`, `PolicyValueError`, `PolicyScopeError`, `PolicyVisibilityError`, `BanishError`, EmptyPickError, PickCountError, PickIndexError, PickTypeError
+
+ReapEmptyError, ReapCountError, ReapIndexError, ReapTypeError
+
+UsurpIndexError, UsurpEmptyError, UsurpCountError, UsurpArityError, UsurpTypeError
+
+ReplaceIndexError, ReplaceTypeError
+
+AddTypeError
+
+InsertIndexError, InsertTypeError
+
+ShuffleTypeError
+
+SortTypeError
 
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
@@ -2407,7 +2421,7 @@ goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gm
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
 compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
 is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin, banish, unbanish,
-plan, publish
+plan, publish, pick, reap, usurp, len, shuffle, sort, add, insert, replace
 ```
 Note on `delete`: in v1.5, `delete` is an operation within `export/publish` blocks (not a top-level statement) and is not reserved as a keyword. If promoted to a statement in a future version, it will be added to the reserved list then.
 
