@@ -2375,6 +2375,18 @@ BanishError:
 "Pipe operator '|' is forbidden here - goblins enforce the project rules"
 "Feature 'unless' is banished from this realm by goblin decree"
 
+DeleteThresholdExceeded
+- Category: Runtime (DB/Service)
+- Trigger: a delete operation would affect more rows/documents than the configured threshold
+- Fields:
+    table|collection: string
+    where|selector  : string (summary)
+    matched         : integer
+    threshold       : integer
+- Remediation:
+    - Narrow the selector or raise the limit explicitly with --db-delete-force
+    - Re-run with --commit (if dry-run) to apply after reviewing the plan
+
 ---
 
 ## 19. Reserved Words
@@ -2394,8 +2406,10 @@ prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_tr
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
 compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
-is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin, banish, unbanish
+is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin, banish, unbanish,
+plan, publish
 ```
+Note on `delete`: in v1.5, `delete` is an operation within `export/publish` blocks (not a top-level statement) and is not reserved as a keyword. If promoted to a statement in a future version, it will be added to the reserved list then.
 
 **Version Codenames:**
 - v1.0: "Evil Redcap" *(MVP)*
@@ -2813,7 +2827,10 @@ to "dist/export.csv" → dist/shp_v1.6_export.csv
 
 
 Sanitization: identifiers are sanitized to filesystem-safe tokens (letters, digits, _, -, .)
-Idempotence: re-running the same export with the same alias/version rewrites that file only
+Idempotence: re-running the same command targets the same namespaced path. Whether it overwrites depends on §21.18 write mode:
+- default Create: fail if the file already exists (no-clobber)
+- Update: allowed only with write: "append" | "patch" | "replace" and matching CLI gates
+
 Chaining: To modify another glam's file, a glam must explicitly import that file and then export a new file; core will still namespace the new output
 
 Configuration (Advanced):
@@ -2878,6 +2895,7 @@ Deterministic mode: require a hash manifest of each file to delete; mismatch →
 Audit lines: list every file deleted (or moved), bytes, pre-hash
 
 CLI gates: --fs-delete[=hard]
+
 21.18.2 Database/Service CRUD
 Common Safety Contracts:
 
@@ -2923,7 +2941,7 @@ publish @cleanup via sql {
 CLI gates: --commit --db-delete
 Protections:
 
-If delete_where would affect >N rows (configurable), fail with DeleteThresholdExceeded unless --db-delete-force is present
+If delete_where would affect > N rows (configurable), the engine MUST fail with DeleteThresholdExceeded unless --db-delete-force is present.
 Always log: table/collection, selector summary, match count, sample keys, duration
 
 21.18.3 Default Safety Policy
