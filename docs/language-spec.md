@@ -4578,7 +4578,237 @@ Rules:
 - Streaming output must match one-shot hash(...) / hmac(...) for the same data.
 - Provide golden-vector tests for streaming and one-shot forms (identical results).
 
-31. Release Checklist
+  31. Runes (v1.2, KIC by default)
+31.0 Lore
+
+The goblins hide their steps inside the message.
+To the untrained eye it’s just scratches; to a goblin it’s a map.
+
+31.1 Purpose
+
+runes is a built-in, symmetric, lore-flavored cipher for quick secrecy and puzzles.
+Default (v1.2): the movement key is hidden inside the ciphertext via Key-in-Ciphertext (KIC).
+
+Runes is obfuscation-first. For strong cryptography, wrap with HMAC or AEAD (see §31.10).
+
+31.2 Grid
+
+Fixed 6×6 “banded” grid, wraparound moves:
+
+Row0: A  B  D  E  F  G
+Row1: 0  1  2  3  4  Z
+Row2: H  I  J  K  L  M
+Row3: 5  6  7  8  9  .
+Row4: N  O  P  Q  R  S
+Row5: T  U  V  W  X  Y
+
+31.3 Key
+
+Key = list of (direction, distance) pairs (length 1–6).
+
+Directions: 0..8 (0=stay, 1=N, 2=NE, …, 8=NW)
+
+Distance: 0..6 (wraparound)
+
+If a single pair is given (e.g., "1,3"), it repeats for all characters.
+
+Default key if omitted: 1,1;2,1;3,1;4,1;5,1;6,1;7,1;8,1.
+
+(§31.9 allows optional per-character variation via Pack/Seed.)
+
+31.4 Normalization
+
+Plaintext uppercased.
+
+Spaces → . (dot).
+
+Allowed plaintext: A–Z (no C), digits 0–9, dot ..
+
+Default mapping: C → K.
+Configurable: e.g., C → S.
+Unsupported glyphs are dropped unless a mapping is specified.
+
+31.5 API & CLI
+Language
+
+KIC is on by default.
+
+ct = runes.encrypt("meet at dawn", key: "1,3")    /// headerless, key hidden in ct
+pt = runes.decrypt(ct)                            /// auto-recovers key
+
+
+Sealed KIC (passphrase):
+
+ct = runes.encrypt("meet at dawn", key: "1,3", passphrase: "riddleme")
+pt = runes.decrypt(ct, passphrase: "riddleme")
+
+
+Seeded grids (§31.9):
+
+ct = runes.encrypt("meet at dawn", key: "1,3", seed: 87)
+pt = runes.decrypt(ct, seed: 87)
+
+
+Sealed with seed:
+
+ct = runes.encrypt("meet at dawn", key: "1,3", seed: 87, passphrase: "riddleme")
+pt = runes.decrypt(ct, seed: 87, passphrase: "riddleme")
+
+CLI
+
+Canonical positional form (short):
+
+# Encrypt: goblin runes.encrypt "<message>" [:: <key>] [:: <seed>]
+# Decrypt: goblin runes.decrypt "<ciphertext>" [:: <key>] [:: <seed>]
+
+goblin runes.encrypt "treasure at oak"                   # default key + fixed grid
+goblin runes.encrypt "treasure at oak" :: 1,3            # custom key
+goblin runes.encrypt "treasure at oak" :: 1,3 :: 87      # custom key + seeded grid
+goblin runes.decrypt "T8X@1X1G#3KN4X7"                   # auto-recover key
+
+
+Long-form flags (--key, --seed, --passphrase, --no-kic) remain valid.
+
+--no-kic reverts to legacy header mode.
+
+31.6 Key-in-Ciphertext (KIC v1)
+31.6.1 Marker set
+
+Reserved cycle: @, #, %, _, -, $ (then repeat).
+
+31.6.2 Key serialization
+
+Pairs (d,s) encoded as hex-like digits (0–9, A–F).
+Multiple pairs joined with F.
+
+Examples:
+
+"1,3"                → 13
+"1,1;2,2;3,1"        → 11F22F31
+
+
+(Triples from Pack mode (§31.9): d s g → d s <gid in base16>, joined with F.)
+
+31.6.3 Insertion schedule
+
+Walk ciphertext left→right.
+
+After every 3 carrier symbols, insert marker + next key-char.
+
+If carrier ends with key-chars remaining, append them (marker+char) at the tail.
+
+Decoding:
+
+Scan for markers. Each marker+next char = embedded key.
+
+Remove them, reconstruct key, then decrypt cleaned carrier.
+
+Sealed KIC:
+
+Serialize key, AEAD-encrypt with passphrase, embed result via same schedule.
+
+On decode: extract, AEAD-decrypt, recover movement key.
+
+31.7 Golden Test Vectors
+31.7.1 Simple pair
+Plaintext: HELLO.W0RLD
+Key: 1,3 → 13
+Base ct: T8XX1GKN4X7
+KIC ct:  T8X@1X1G#3KN4X7
+
+31.7.2 Multi-pair
+Plaintext: SECRET.PRAETOR  (C mapped → K)
+Key: 1,1;2,2;3,1 → 11F22F31
+Base ct: .SLXSUMFSTSU6M
+KIC ct:  .SL@1XSU#1MFS%FTSU_26M-2$F@3#1
+
+31.8 Pack & Seed Interop
+
+Pack mode (triples) and Seed mode (pairs) serialize normally and embed via KIC.
+
+Seed camouflage: SEED=<seed>|KEY=<key> embedded.
+
+Sealed: key+seed AEAD-encrypted together; decrypt requires passphrase only.
+
+31.9 Seeded Grids
+
+Deterministic infinite grids without packs.
+
+Seed: integer 1..1000 (expandable later).
+
+Base symbols:
+A B D E F G 0 1 2 3 4 Z H I J K L M 5 6 7 8 9 . N O P Q R S T U V W X Y
+
+Shuffle: Fisher–Yates with PRNG seeded by:
+HMAC-SHA256("RUNES-SEED-v1", seed_int_be)
+
+Reshape into 6×6 grid.
+
+Rules:
+
+Omit seed → fixed grid (§31.2).
+
+Provide seed → both sides must match.
+
+KIC embeds seed if present (camouflage or sealed).
+
+31.10 Safety Banner
+
+Runes is for lore, puzzles, and light secrecy.
+For tamper-evident or strong confidentiality, wrap with HMAC or AEAD (e.g., ChaCha20-Poly1305).
+
+31.11 Self-Test
+
+runes.selftest() (and CLI: goblin runes.selftest) validates an implementation:
+
+Fixed grid + KIC
+
+Input: HELLO.W0RLD
+
+Key: 1,3 → 13
+
+Output: T8X@1X1G#3KN4X7
+
+Fixed grid + KIC + multi-pair
+
+Input: SECRET.PRAETOR
+
+Key: 1,1;2,2;3,1 → 11F22F31
+
+Output: .SL@1XSU#1MFS%FTSU_26M-2$F@3#1
+
+Seeded grid (smoke)
+
+Seed: 87, Key: 1,3
+
+Input: MEET.AT.DAWN
+
+Verify: decrypt(encrypt(x, key, seed), seed) == x
+
+Self-test passes if all three succeed.
+
+31.12 Implementation Constants
+
+Marker cycle: @ # % _ - $
+
+KIC cadence: after every 3 symbols, insert marker+char; append remainder.
+
+Key serialization: pairs ds; joined with F.
+
+PRF (seed): HMAC-SHA256("RUNES-SEED-v1" || seed_int_be)
+
+PRF (sealed KIC): PBKDF2-HMAC-SHA256(passphrase, salt="RUNES-KIC-AEAD", iters=100k) → 32-byte key
+
+AEAD: ChaCha20-Poly1305 (reference choice).
+
+Quick CLI Note
+goblin runes.encrypt "treasure at oak"
+
+
+→ quick, reproducible cipher (default key + fixed grid).
+Add :: 1,3 for custom key; add :: 87 for seeded grid.
+
+32. Release Checklist
 
 ## ✅ Must-Have for v1.5
 
