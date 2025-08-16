@@ -51,11 +51,16 @@ price = 1.50
 - Using a variable before assignment → `NameError` (with "Did you mean …?")
 - Empty assignment (`x =`) → `SyntaxError`
 - Numeric types (int/float/money) are inferred unless cast
+- Binary data uses blob type for raw bytes, images, files
 
 ### 1.4 Casting & Formatting
 ```goblin
 /// Casts
 str(x), int(x), float(x), bool(x), money(x, CUR?)
+/// Binary data
+blob(x), str(blob_data)                /// UTF-8 conversion (strict)
+to_base64(blob_data), from_base64(s)   /// base64 encoding/decoding  
+to_hex(blob_data), from_hex(s)         /// hex encoding/decoding
 
 /// Parse helpers
 int("$1,234") → 1234
@@ -1009,7 +1014,45 @@ _, _ = $100.00 >> 7    /// remainder logged automatically
 say remainders_total()  /// => { USD: $0.02 }
 clear_remainders()
 ```
+10.11 Money Allocation & Distribution
+goblinallocate_money(total: money, weights: array<number>) → array<money>
 
+/// Goblin alias  
+goblin_divvy(total: money, weights: array<number>) → array<money>
+Distributes total proportionally to weights. Returns array where sum(result) == total exactly.
+Algorithm:
+
+Normalize weights to proportions that sum to 1.0
+Calculate ideal shares: ideal[i] = total * (weights[i] / sum(weights))
+Quantize to money precision (floor each ideal share)
+Distribute remainder quanta to recipients with largest fractional parts
+
+Perfect conservation: No money is lost or created; any sub-precision goes to remainder ledger per §10.7.
+Examples:
+goblin/// Equal weights (equivalent to divide_evenly)
+shares = allocate_money($100.00, [1, 1, 1])  /// [$33.34, $33.33, $33.33]
+
+/// Proportional split  
+shares = allocate_money($100.00, [50, 30, 20])  /// [$50.00, $30.00, $20.00]
+
+/// Revenue sharing based on investment amounts
+total_profit = $10000.00
+investments = [$25000.00, $15000.00, $10000.00]
+shares = allocate_money(total_profit, investments)  /// Proportional to investment
+
+/// Bill splitting with different consumption
+bill = $87.43
+consumption = [2.5, 1.0, 3.0, 1.5]  /// Relative usage
+shares = allocate_money(bill, consumption)
+Error conditions:
+
+All weights zero → ValueError("all weights are zero")
+Negative weights → ValueError("negative weight at index N")
+Cross-currency weights → CurrencyError
+Non-numeric weights → TypeError
+
+Money weights: Weights can be money amounts (same currency as total) for investment-proportional distributions.
+Precision policy interaction: Follows active money policy (§27.4.1) for truncate/warn/strict/defer behavior.
 ---
 
 # 11. Percent Type — "Percent of what?"
@@ -1292,6 +1335,10 @@ json_parse(s, opts={}) → value
 /// File System
 exists(path), mkdirp(path), listdir(path), glob(pattern)
 cwd(), chdir(path), join(a,b,...)
+
+/// Binary
+read_bytes(path), write_bytes(path, blob)
+is_binary(path)  /// content sniffing heuristic
 
 /// Utils
 now(), uuid()
@@ -2206,7 +2253,8 @@ trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, en
 prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
-compat, mode, track_theft, shame_level, unless
+compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
+is_binary, read_bytes, to_base64, to_hex, write_bytes
 ```
 
 **Version Codenames:**
@@ -3191,24 +3239,6 @@ morph does not enable I/O. Any side‑effects are those performed by the target 
 
 ### Goblin Core
 
-**Blob primitives**
-- blob type
-- read_bytes(path) -> blob, write_bytes(path, blob)
-- blob_len(b), blob_slice(b, start, end), blob_concat(a,b)
-- to_base64(blob) -> string, from_base64(string) -> blob
-- to_hex(blob) -> string, from_hex(string) -> blob
-
-**Hashing & HMAC**
-- hash(data: string|blob, algorithm="sha256") -> string
-- hmac(data: string|blob, key: string|blob, algorithm="sha256") -> string
-- Supported algos: sha256, sha1, md5 (warn), sha512
-- Streaming over blobs; tests with known vectors
-
-**Money allocation helper**
-- allocate_money(total: money, weights: array<number>) -> array<money>
-- Alias: goblin_divvy(...)
-- Perfect conservation + ledger integration; tests
-
 **gmarks basics**
 - gmarks_filter(prefix) implementation & tests
 - Deterministic-build write policy gate + .goblin/gmarks.audit.log
@@ -3978,5 +4008,112 @@ import, expose, vault
 (Keep as contextual inside import statements. Names in strings/fields are unaffected.)
 
 ---
+29. Blob Type & Binary Data
+29.1 Purpose
+The blob type handles raw binary data for images, files, cryptographic operations, and binary protocols. Unlike strings (UTF-8), blobs store arbitrary bytes.
+29.2 Construction
+goblin/// From file
+data = read_bytes("image.png")
+
+/// Empty blob
+empty = blob()
+
+/// From encodings
+pdf_data = from_base64("JVBERi0xLjQK...")
+signature = from_hex("deadbeef1234567890abcdef")
+
+/// From UTF-8 string
+utf8_bytes = blob("Hello, world!")
+29.3 Operations
+goblin/// Length and slicing
+len(data), data.len()
+data[0:100]     /// first 100 bytes
+data[10:]       /// from byte 10 to end
+data[:-4]       /// all but last 4 bytes
+
+/// Concatenation
+blob_concat(a, b)   /// explicit helper
+a + b               /// operator overload
+29.4 Encoding Conversions
+goblin/// Base64 (RFC 4648)
+to_base64(data) → string
+from_base64(s)  → blob (ValueError if invalid)
+
+/// Hexadecimal (lowercase output, case-insensitive input)
+to_hex(data)    → string  
+from_hex(s)     → blob (ValueError if invalid)
+
+/// UTF-8 (strict)
+str(blob_data)  → string (ValueError if invalid UTF-8)
+blob(text)      → blob
+29.5 JSON Serialization
+Default: blobs are not auto-serialized.
+Options:
+goblinwrite_json(path, value, { blob: "base64" | "hex" | "error" = "error" })
+read_json(path, { blob: "off" | "base64" | "hex" | "auto" = "off" })
+29.6 Examples
+goblin/// Read image, encode for web
+img = read_bytes("logo.png")
+data_url = "data:image/png;base64," | to_base64(img)
+
+/// Binary protocol parsing
+packet = from_hex("deadbeef00010203")
+header = packet[0:4]        /// first 4 bytes
+payload = packet[4:]        /// remaining bytes
+
+/// File type detection
+if is_binary("document.pdf")
+    content = read_bytes("document.pdf")
+else
+    content = blob(read_text("document.txt"))
+end
+
+PATCH 6: NEW SECTION 30 - Insert after Section 29 (Blob Type)
+30. Cryptographic Hashing & HMAC
+30.1 Core Functions
+goblinhash(data: string|blob, algorithm: string = "sha256") → string
+hmac(data: string|blob, key: string|blob, algorithm: string = "sha256") → string
+Supported algorithms:
+
+"sha256" (default, recommended)
+"sha512"
+"sha1" (legacy, emits warning)
+"md5" (legacy, emits strong warning)
+
+Output is lowercase hex string.
+30.2 Use Cases
+goblin/// File integrity verification
+content = read_bytes("document.pdf")
+checksum = hash(content)
+say "SHA256: {checksum}"
+
+/// API request signing
+payload = json_stringify(order_data)
+api_key = "your-secret-key"
+signature = hmac(payload, api_key)
+headers = { "X-Signature": "sha256=" | signature }
+
+/// File deduplication
+files_seen = {}
+for path in glob("**/*.jpg")
+    h = hash(read_bytes(path))
+    if files_seen[h]
+        say "Duplicate: {path} = {files_seen[h]}"
+    else
+        files_seen[h] = path
+    end
+end
+30.3 Security Notes
+
+Not for passwords: Use proper password hashing (bcrypt, scrypt, Argon2) via security glam
+Timing attacks: Hash comparison is not constant-time
+Key management: Keep HMAC keys secure; rotate regularly
+
+30.4 Algorithm Warnings
+goblin/// Emits: "SHA1 is cryptographically weak; consider SHA256"
+legacy_hash = hash(data, "sha1")
+
+/// Emits: "MD5 is broken for security; use only for non-cryptographic checksums"
+checksum = hash(data, "md5")
 
 *[End of Goblin Language Specification v1.5 "Treasure Hoarder" - Refactored]*
