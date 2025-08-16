@@ -2565,6 +2565,27 @@ http_rust implements http.get using Rust crates (e.g., reqwest), but only the ca
 Note — Ecosystem Analogy.
 Goblin + Glams intentionally mirror the layering seen in Elixir on BEAM: a lean core with a first-class extension system. Like Elixir leveraging Erlang’s OTP, Goblin can leverage Rust’s ecosystem—Glams wrap Rust libraries while preserving Goblin’s contract checks, permission sandbox, and deterministic dispatch. This means you inherit Rust’s breadth of capabilities without sacrificing auditability, safety, or swap-ability.
 
+### 21.16 Namespace Collisions & Explicit Aliases
+
+If two or more glams export a capability with the same name, you can still use all of them in the same script by importing each glam with its own alias. The alias becomes that glam’s namespace, preventing name collisions.
+
+use trans_lib1@1.0 as lib1
+use trans_lib2@1.0 as lib2
+
+say lib1.translate_spanish("Hello world")   # Uses the first glam
+say lib2.translate_spanish("Good morning")  # Uses the second glam
+
+
+Rules:
+
+Alias required to disambiguate. Without an alias, duplicate names across glams are a compile-time error.
+
+Namespace is mandatory in the call when more than one glam provides the same capability and no prefer/via rule is set.
+
+Prefer/via still works if you want to set a default provider for a capability, but fully-qualified calls using aliases always override that default.
+
+This makes it possible to mix and match different implementations of the same capability within one project without conflicts or ambiguity.
+
 ## 22. Enums (Core)
 
 ### 22.1 Purpose
