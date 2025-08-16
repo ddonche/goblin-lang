@@ -10,6 +10,129 @@
 
 **File extension**: `.gbln`
 
+## 0. Keywords, etc.
+Keywords (hard, unshadowable)
+
+Flow/blocks: if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, stop, assert
+Defs/modules: class, fn, enum, use, import, export, via, test
+Literals/types: true, false, nil, int, float, bool, money, pct
+Goblin forms: morph, vault, judge, banish, unbanish
+
+Removed keywords: try, catch, finally, expose
+
+Prelude (global, shadowable; originals at std.*)
+
+Lists & play: pick, reap, usurp, shuffle, sort, add, insert, replace, len
+Dice/sampling: roll, freq, mode, sample_weighted
+Math: min, max, abs, floor, ceil, round, pow
+Output/events: say, emit, emit_async
+Utilities: error, warn, sum
+
+Removed from prelude: rand, randint (use pick ranges or roll dice)
+
+Spec line to add:
+
+Prelude helpers are injected globally and are shadowable. Originals are always reachable as std.<name>.
+
+Std modules (opt-in via use)
+
+std.play: roll_detail (moved here).
+std.fs: read/write files & dirs.
+std.json, std.yaml, std.csv: parse/stringify/read/write.
+std.codec: base64/hex, is_binary.
+std.time: date/time APIs; std.time.trust for trusted-time controls.
+std.crypto: hash, hmac.
+std.util: uuid, validate, compat, prefer, plan, publish, mode, track_theft, shame_level.
+std.money: canonical money/settlement helpers (no goblin_* aliases).
+(Optional later: std.gmarks, std.events, std.blob if/when you formalize them.)
+
+Dice literals (no strings)
+
+Forms:
+
+roll dice_expr
+roll(dice_expr)
+roll_detail dice_expr        # only after `use play`
+std.play.roll_detail(dice_expr)
+
+dice_expr ::= INT "d" INT [("+"|"-") INT]?
+
+
+Rules:
+
+dice_expr is recognized after bare roll (Prelude) and bare roll_detail only if use play is in scope.
+
+Namespaced calls (e.g., std.play.roll_detail) must use parentheses.
+
+Determinism & RNG note
+All random helpers (pick, roll, sample_weighted, shuffle) use the runtime RNG and honor the global seed.
+Deprecated: rand, randint → use pick (ranges) or roll (dice).
+
+Error style (“grumble”)
+
+Project default: off (plain). Toggle per project or CLI.
+
+Config snippet:
+
+/goblin.project
+  error_style = "plain"    # "plain" | "grumble"
+
+
+Runtime:
+
+Error codes are stable (e.g., DICE_PARSE, WEIGHT_TYPE).
+
+Only the human message skin changes.
+
+Example mapping:
+
+DICE_PARSE
+  plain:   "cannot parse dice expression: {expr}"
+  grumble: "the dice goblins can’t parse '{expr}'"
+
+Deprecations / removals box
+
+Removed keywords: try, catch, finally, expose
+
+Removed prelude: rand, randint
+
+Removed aliases: all goblin_* money helpers (use std.money canonical names)
+
+Tiny examples (sanity)
+
+Shadowing:
+
+len = 42
+say len                /// 42
+say std.len [1,2,3]    /// 3
+
+
+Dice + detail:
+
+say roll 2d6+1
+use play
+r = roll_detail 4d8-2
+say r.dice, r.sum, r.total
+
+
+Percentile (transparent):
+
+d1 = roll 1d10
+d2 = roll 1d10
+tens = (d1 == 10 ? 0 : d1) * 10
+ones = (d2 == 10 ? 0 : d2)
+percent = tens + ones
+if percent == 0
+  percent = 100
+end
+say "Dice: " || d1 || " and " || d2
+say "Percentile: " || percent
+
+
+Pick over ranges (rand/ randint replacement):
+
+say pick 1..6
+say pick 0..99
 ---
 
 ## 1. Files, Printing, Variables
