@@ -50,13 +50,19 @@ price = 1.50
 ```
 - Using a variable before assignment → `NameError` (with "Did you mean …?")
 - Empty assignment (`x =`) → `SyntaxError`
+- Core types: int, float, bool, string, money, percent, date, time, datetime, duration, blob, enum
 - Numeric types (int/float/money) are inferred unless cast
 - Binary data uses blob type for raw bytes, images, files
+- Enums are user-defined closed sets (see §22)
 
 ### 1.4 Casting & Formatting
 ```goblin
 /// Casts
 str(x), int(x), float(x), bool(x), money(x, CUR?)
+
+/// Percent construction
+pct(x)                                 /// percentage points (pct(25) → 25%)
+
 /// Binary data
 blob(x), str(blob_data)                /// UTF-8 conversion (strict)
 to_base64(blob_data), from_base64(s)   /// base64 encoding/decoding  
@@ -96,6 +102,7 @@ fmt(x, ".2f"), fmt(x, ","), fmt(x, ",.2f")
 postfix operators: ** (square), // (square root), ++, --
 **, ^^ (right-to-left)      [binary power and explain-power]
 unary + - not !
+postfix percent: %, %s, % of E        [percent literals and self-reference]
 * / % // >>                 [multiplicative family]
 + -
 | then ||                   [string joins only]
@@ -343,6 +350,19 @@ UnusedJudgeValueWarning: result of 'judge' is ignored (line N). Assign it or wra
 ```
 *(No warning in the REPL, where auto‑print is expected.)*
 
+4.2.4 Judge with Unless
+judge works with unless conditions for readable negative logic:
+goblin/// Multiline form
+status = judge
+    unless user.is_verified: "verify_email"
+    unless user.has_payment: "add_payment"  
+    user.is_premium: "premium_flow"
+    else: "standard_flow"
+
+/// Inline form  
+action = judge: unless user.is_admin: "deny" :: user.can_edit: "allow" :: else: "readonly"
+Mixed unless and positive conditions are allowed in the same judge expression.
+
 ### 4.3 Interop Notes
 * `judge` is an **expression**; it can appear anywhere an expression can:
 ```goblin
@@ -454,6 +474,29 @@ end
 
 ---
 
+7.1 Module and Glam Function Calls
+goblin/// Module calls (after import)
+import "./helpers" as H
+slug = H::slugify("Product Name")
+
+/// Glam calls (explicit namespace)
+use shopify@^1.6 as shp
+use translator@1.0 as trans
+
+/// Direct glam method calls
+spanish = trans::translate_spanish("Hello world")
+csv_data = shp::export_csv(products)
+
+/// Multiple glams with same capability
+use trans_lib1@1.0 as lib1  
+use trans_lib2@1.0 as lib2
+
+result1 = lib1::translate_spanish("Hello world")    /// Uses first glam
+result2 = lib2::translate_spanish("Good morning")   /// Uses second glam
+
+/// No collisions due to explicit aliasing
+/// prefer/via optional when using explicit aliases
+
 ## 8. Key-Value "Pipes" (::) and Templates
 
 ### 8.1 Inline KV with ::
@@ -519,6 +562,38 @@ suit: "Wands"
 
 ---
 
+8.2.3 Nested Data Structures
+Templates support nested maps and arrays using standard { } and [ ] syntax:
+goblin/// Nested maps and arrays in templates
+@product = 
+    title: "{title}" :: 
+    price: .99 :: 
+    meta: { tags: ["new", "featured"], inventory: { count: 0, warehouse: "A" } } ::
+    variants: [
+        { size: "S", color: "red", sku: "{title}-S-R" },
+        { size: "M", color: "blue", sku: "{title}-M-B" }
+    ]
+
+/// Usage
+item = @product:
+    title: "Magic Sword"
+    
+/// Results in:
+/// {
+///   title: "Magic Sword",
+///   price: 0.99,  
+///   meta: { tags: ["new", "featured"], inventory: { count: 0, warehouse: "A" } },
+///   variants: [
+///     { size: "S", color: "red", sku: "Magic Sword-S-R" },
+///     { size: "M", color: "blue", sku: "Magic Sword-M-B" }  
+///   ]
+/// }
+Interpolation in nested structures:
+
+String interpolation {var} works in nested string values
+Nested structures themselves are literal (not interpolated)
+Use consistent quoting: "string" for interpolated strings, bare identifiers for keys
+
 ## 9. Objects & Classes
 
 ### 9.1 Definition & Constructor
@@ -575,7 +650,9 @@ Both class styles support both instantiation methods:
    
    **Precedence:** If a class defines a method with the same name as an auto-generated accessor, the user-defined method takes precedence (must match expected signature).
 
-* **Private fields** (`#x`): accessible **only** inside class methods. External access → `PermissionError("cannot access private field '#energy'")`.
+* **Instance variables** (`#variable_name`): private fields accessible **only** inside class methods, similar to Ruby's `@variable`. External access → `PermissionError("cannot access private field '#variable_name'")`.
+* Instance variables use `#` prefix (e.g., `#price`, `#inventory_count`)
+* Public fields have auto-generated accessors; instance variables do not
 * **Readonly:** `readonly id: uuid()` → getter only; writing → `TypeError("field 'id' is readonly")`.
 
 ### 9.5 Lifecycle
@@ -608,28 +685,26 @@ Both class styles support both instantiation methods:
 Goblin has **no class inheritance**. Prefer **composition** and `morph` (§24).
 
 ### 9.11 Percent & Money Behavior
-Inside methods and field expressions:
-* **Percent is "percent of the left operand"** (§11):
-   * `$8 + 25%` → `$10` (`$8 + ($8 * 0.25)`)
-   * `$8 * 25%` → `$16` (`$8 * ($8 * 0.25)`)
-   * `$8 / 25%` → `$4` (`$8 / ($8 * 0.25)`)
-* **Money is fixed‑point** with precision policy and ledger (§10).
-* `/` on money is forbidden → `MoneyDivisionError`. Use `//` for quotient or `>>` for divmod.
+Inside methods and field expressions, percent follows CIPO rules (§11):
 
-**Example:**
 ```goblin
 class Book = title: "{title}" :: price: $0
-    fn discount(p: percent) = price - (price * p)    /// §11 percent rule
+    fn discount(rate: percent) = #price - (rate of #price)    /// explicit base
+    fn add_tax(rate: percent) = #price + (rate of #price)     /// explicit base  
+    fn quick_calc() = #price + 10%s                           /// percent of self
 end
 
 b = Book: "Guide" :: $8
-say b.discount(25%)     /// $6
-say b.price() + 25%     /// $10  
-say b.price() * 25%     /// $16
-say b.price() / 25%     /// $4
-```
+say b.discount(25%)     /// $6.00 (25% of $8 = $2, so $8 - $2)
+say b.add_tax(10%)      /// $8.80 (10% of $8 = $0.80, so $8 + $0.80)  
+say b.quick_calc()      /// $8.80 (same as above using %s)
 
----
+CIPO compliance:
+
+% is percent of 1 (programmer-style): #price + 25% adds $0.25
+%s is percent of self: #price + 25%s adds 25% of #price
+% of E uses explicit base: 25% of #price is 25% of the price
+Money division still forbidden: use // or >> (§10.4)
 
 ## 10. Money & Currency
 
@@ -657,6 +732,20 @@ Money behavior is governed by the active policy (§27).
 **Goblin Aliases:** `policy: "cleave"` (= truncate), `policy: "grumble"` (= warn), `policy: "grim"` (= strict), `policy: "hoard"` (= defer)
 
 **Scope:** Per currency. Unset currencies use global default unless overridden.
+
+### 10.0.0.1 Policy Scoping
+
+Money policies are scoped to avoid conflicts with other domains:
+
+```goblin
+/// No conflicts - different policy domains
+@policy = "financial_strict"
+    money: { currency: "USD", precision: 2, policy: "strict" }
+    datetime: { policy: "warn", prefer_trusted: true }
+    
+/// Each domain has independent policy settings
+set @policy financial_strict
+Policy domains: money, datetime, modules, strings. Settings within each domain don't affect other domains.
 
 ### 10.0.1 Defer ("Hoard") Policy — Keep crumbs until told otherwise
 
@@ -947,6 +1036,41 @@ clear_remainders()   → reset ledger
 ```
 
 `remainders_total()`, `remainders_report()`, `clear_remainders()` operate on the sub-precision ledger (not the escrow helper above).
+
+#### Round Robin Allocation
+goblinallocate_round_robin(total: money, recipients: int) → array<money>
+
+/// Goblin alias
+goblin_round_robin(total: money, recipients: int) → array<money>
+Distributes money one quantum at a time in round-robin fashion until exhausted.
+Algorithm:
+
+Start with array of recipients zero amounts
+While total > 0, add one quantum to next recipient (cycling)
+Perfect conservation: sum(result) == total
+
+Examples:
+goblin/// Small amount, many recipients
+shares = allocate_round_robin($0.07, 5)
+/// → [$0.02, $0.02, $0.01, $0.01, $0.01] (first two get extra)
+
+/// Even distribution
+shares = allocate_round_robin($1.50, 3)  
+/// → [$0.50, $0.50, $0.50]
+
+/// Uneven distribution  
+shares = allocate_round_robin($1.00, 3)
+/// → [$0.34, $0.33, $0.33] (first gets extra penny)
+Use cases:
+
+Fair distribution when proportions unknown
+Micropayments to many recipients
+Even-as-possible splits for small amounts
+
+Comparison:
+
+divide_evenly(total, n): optimizes for fewer larger shares to some recipients
+allocate_round_robin(total, n): optimizes for fairness (everyone gets something before anyone gets more)
 
 ### 10.8 Currency Conversion
 ```goblin
@@ -2254,7 +2378,7 @@ prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_tr
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
 compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
-is_binary, read_bytes, to_base64, to_hex, write_bytes
+is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin
 ```
 
 **Version Codenames:**
@@ -2620,8 +2744,8 @@ If two or more glams export a capability with the same name, you can still use a
 use trans_lib1@1.0 as lib1
 use trans_lib2@1.0 as lib2
 
-say lib1.translate_spanish("Hello world")   # Uses the first glam
-say lib2.translate_spanish("Good morning")  # Uses the second glam
+say lib1::translate_spanish("Hello world")   /// Uses the first glam
+say lib2::translate_spanish("Good morning")  /// Uses the second glam
 
 
 Rules:
@@ -2635,6 +2759,7 @@ Prefer/via still works if you want to set a default provider for a capability, b
 This makes it possible to mix and match different implementations of the same capability within one project without conflicts or ambiguity.
 
 ## 22. Enums (Core)
+Enums are one of Goblin's core primitive types (see §1.3). They create closed sets of named constants with optional backing values.
 
 ### 22.1 Purpose
 Closed sets of named constants with an optional backing int or string. Enums are first‑class types with strict equality and simple utilities. No implicit coercion.
