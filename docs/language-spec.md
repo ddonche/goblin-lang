@@ -2126,7 +2126,7 @@ warn "msg"
 ```
 
 **Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`, `ModuleNotFoundError`, `ModuleNameConflictError`, `ModuleCycleError`, `ModuleVisibilityError`, `PolicyNotFoundError`, `PolicyValueError`, `PolicyScopeError`, `PolicyVisibilityError`
+`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`, `ModuleNotFoundError`, `ModuleNameConflictError`, `ModuleCycleError`, `ModuleVisibilityError`, `PolicyNotFoundError`, `PolicyValueError`, `PolicyScopeError`, `PolicyVisibilityError`, `BanishError`
 
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
@@ -2367,6 +2367,13 @@ Error messages may occasionally include goblin-themed variations for personality
   - *"Decision error: goblins need proper condition: value syntax"*
   - *"The choice goblins are confused by this judge structure"*
   - *"Judge syntax chaos: goblins demand clear conditions"*
+ 
+BanishError:
+
+"Feature 'core.morph' has been banished from this project - the goblins won't allow it!"
+"The ban goblins have blocked 'judge' inline form in this codebase"
+"Pipe operator '|' is forbidden here - goblins enforce the project rules"
+"Feature 'unless' is banished from this realm by goblin decree"
 
 ---
 
@@ -2387,7 +2394,7 @@ prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_tr
 goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
 compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
-is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin
+is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin, banish, unbanish
 ```
 
 **Version Codenames:**
@@ -3367,64 +3374,146 @@ morph does not enable I/O. Any side‑effects are those performed by the target 
 
 ---
 
-# 25. Release Checklist
+## 25. Banish — Project-Local Feature Blocking
 
-## ✅ Must-Have for v1.5
+### 25.1 Purpose & Scope
+**Goal**: Give projects a simple, portable safety brake to block specific language features.
 
-### Goblin Core
+**Scope**: Project-local only. Banish rules live in the repo and travel with it.
 
-**gmarks basics** (see §23.9)
-- gmarks_filter(prefix) implementation & tests
-- Deterministic-build write policy gate + .goblin/gmarks.audit.log
+**Effect**: Any usage of a banished feature raises `BanishError` at compile time (hard error).
 
-**Blob/JSON interop glue** (see §29.5)
-- Ensure JSON/YAML leave blobs alone by default (no auto-encode)
-- Example helpers to base64 when needed
+### 25.2 Feature IDs (Namespaces)
+Feature IDs are stable strings used by tools and the compiler. They are namespaced for clarity:
 
-**Hashing & HMAC** (see §30)
-- hash(data: string|blob, algorithm="sha256") -> string
-- hmac(data: string|blob, key: string|blob, algorithm="sha256") -> string
-- Supported algos: sha256, sha1, md5 (warn), sha512
-- Streaming over blobs; tests with known vectors
+- `core.<keyword>` — core language constructs (e.g., `core.morph`, `core.judge.inline`)
+- `op.<operator>` — operators and forms (e.g., `op.pipe_join`, `op.divmod`, `op.postfix.inc`)
+- `type.<type>` — types/literals (e.g., `type.money`, `type.percent`, `type.datetime`)
+- `builtin.<function>` — built-ins and std helpers (e.g., `builtin.tax`, `builtin.write_json`)
+- `glam.<ns>.<symbol>` — glam capabilities by namespace (e.g., `glam.html.raw`, `glam.shopify.product.export`)
 
-### Baseline Glam
+**Notes:**
+- Feature IDs reference **usage**, not availability. Banish never rewrites code; it only blocks.
+- Core safety invariants are not features and cannot be banished (see §25.7).
 
-- regex glam: regex::test, regex::findall, regex::replace (+ flags)
-- fs.glob glam: fs::glob(pattern) -> array<string>, fs::walk(dir, pattern="**/*")
-- retry/backoff glam: retry::with_backoff(fn, attempts=3, base_ms=250, jitter=true)
-- http glam polish: http::request(method, url, headers={}, body=""), deterministic-mode safeguards
+### 25.3 Config File
+**Location**: project root `.goblin.banish.toml`. Subdirectories are ignored.
+
+```toml
+# .goblin.banish.toml
+
+[[banish]]
+feature = "core.morph"
+reason  = "Temporary safety: known issue in v1.5.x"
+
+[[banish]]
+feature = "op.pipe_join"
+reason  = "Creative constraint: prefer explicit concatenation"
+```
+
+- **feature** — required string (one of the IDs above)
+- **reason** — required string (human explanation that shows in errors)
+
+**Audit log**: Banish and unbanish actions append JSON Lines to `dist/banish.log`:
+
+```json
+{"ts":"2025-08-13T15:21:08Z","op":"banish","feature":"core.morph","reason":"Temporary safety"}
+{"ts":"2025-08-13T15:22:44Z","op":"unbanish","feature":"core.morph"}
+```
+
+### 25.4 CLI
+```bash
+goblin banish <feature_id> --reason "<text>"   # add/replace entry
+goblin unbanish <feature_id>                   # remove entry
+goblin banish --list                           # show active bans
+```
+
+**Notes:**
+- `--reason` is required for `banish` to promote transparency.
+- All commands operate on `.goblin.banish.toml` in the repo root.
+- Each command appends an entry to `dist/banish.log` (see §25.3).
+
+### 25.5 Compiler & Tooling Behavior
+On any compile/run/lint step, Goblin loads `.goblin.banish.toml`.
+
+If the AST / resolved symbols contain a banished feature, emit `BanishError` with source location.
+
+LSP/IDE surfaces the same diagnostics in-editor.
+
+**Banner Notice (project status)**: When any banishments exist, Goblin prints a one-liner on CLI startup:
+```
+⚠ This project has N banished features (run `goblin banish --list`).
+```
+
+### 25.6 Errors
+Add to §18 (Errors & Warnings):
+
+**BanishError**: Thrown when code uses a banished feature.
+
+Message style (Goblin voice allowed):
+```
+🚫 Feature '{feature}' has been banished from this project (line {line}, col {col}).
+    Reason: {reason}
+    Unbanish with: goblin unbanish {feature}
+```
+
+**Examples:**
+```goblin
+morph(book, Card, apply_discount(10%))
+/// → BanishError: Feature 'core.morph' has been banished...
+```
+
+### 25.7 Self-Protection & Non-banishable Items
+Certain core guarantees cannot be banished:
+
+- The banish mechanism itself (banish, config loading, diagnostics).
+- Core sandbox/permissions and determinism gates.
+- Money safety invariants (e.g., "/ on money is illegal").
+- Lockfile integrity checks.
+
+Attempting to banish these emits a config-time `ValueError`:
+```
+"The goblins won't let you banish '{feature}'"
+```
+
+### 25.8 MVP Constraints (v1)
+To keep the first release simple and reliable:
+
+- Project-local only (no user-global overlays).
+- Hard errors only (no warn-only/severity levels).
+- Flat list of banishes (feature, reason).
+- No dependency scanning (rules apply to app code).
+- No expiry/version gates (manual unbanish when you're ready).
+
+**Future (non-MVP) ideas**: severity levels, version-gated unbanish (e.g., "until ≥1.6"), dependency scope (deps|all), presets, and advisory imports (GQA).
+
+### 25.9 Examples
+
+**Banish morph for safety:**
+```bash
+goblin banish core.morph --reason "Edge-case bug; waiting for fix"
+```
+
+**Creative constraint:**
+```bash
+goblin banish op.pipe_join --reason "Practice explicit string building"
+```
+
+**List:**
+```bash
+goblin banish --list
+# core.morph  — Edge-case bug; waiting for fix
+# op.pipe_join — Practice explicit string building
+```
+
+**Unbanish:**
+```bash
+goblin unbanish core.morph
+```
 
 ---
 
-## ➕ Optional / v1.5+ (Can Push to First Point Release)
-
-### Core Horde-Readiness
-
-- Pure function runner mode (--stdin / --stdout)
-- Warm VM / preload mode (goblin serve --preload)
-- Determinism hardening knobs (--seed, block wall clock, etc.)
-- Resource limits (--cpu-ms, --mem-mb, --max-steps)
-- Correlation & idempotency (request_id, --idempotency-key)
-- Structured exit codes
-- Audit log enrichment with IDs/keys
-- Clock/testing hook (freeze_time)
-
-### Glam / Host-Side Horde-Readiness
-
-- scheduler glam: scheduler::cron(spec, task) (executes scripts/caps on a schedule)
-- s3::upload / netlify::deploy glam
-- metrics::emit glam
-- horde examples (Rust worker pool + Kubernetes YAML)
-
-### Other Optional Core Enhancements
-
-- glam gmark rebalance (CLI) implementation
-- Extra blob helpers (beyond base64/hex) if needed for niche formats
-
----
-
-If we ship just the must-have list, Goblin v1.5 Core will be fully usable, have a clean feature set, and Glam will cover the basics. Then we drop horde-readiness + deploy glam in v1.5.1 or v1.6 without delaying launch.
-
+**Design note**: Goblins banish things. This feature is the emergency brake: rarely used, always ready. It favors safety, clarity, and auditability without changing program semantics or requiring language patches.
 # 26. HTML Glam (v1.0)
 
 The HTML Glam renders HTML/CSS from Goblin data using the same template (`::`) ergonomics you already use for cards, products, etc. It keeps business logic in Goblin and outsources HTML‑specific concerns (escaping, head metadata, assets, layouts, partials) to a deterministic, sandboxed glam.
@@ -4272,5 +4361,63 @@ Rules:
 - .start(algo) returns a stateful context; .update(x) accepts blob or string; .finish() returns lowercase hex.
 - Streaming output must match one-shot hash(...) / hmac(...) for the same data.
 - Provide golden-vector tests for streaming and one-shot forms (identical results).
+
+31. Release Checklist
+
+## ✅ Must-Have for v1.5
+
+### Goblin Core
+
+**gmarks basics** (see §23.9)
+- gmarks_filter(prefix) implementation & tests
+- Deterministic-build write policy gate + .goblin/gmarks.audit.log
+
+**Blob/JSON interop glue** (see §29.5)
+- Ensure JSON/YAML leave blobs alone by default (no auto-encode)
+- Example helpers to base64 when needed
+
+**Hashing & HMAC** (see §30)
+- hash(data: string|blob, algorithm="sha256") -> string
+- hmac(data: string|blob, key: string|blob, algorithm="sha256") -> string
+- Supported algos: sha256, sha1, md5 (warn), sha512
+- Streaming over blobs; tests with known vectors
+
+### Baseline Glam
+
+- regex glam: regex::test, regex::findall, regex::replace (+ flags)
+- fs.glob glam: fs::glob(pattern) -> array<string>, fs::walk(dir, pattern="**/*")
+- retry/backoff glam: retry::with_backoff(fn, attempts=3, base_ms=250, jitter=true)
+- http glam polish: http::request(method, url, headers={}, body=""), deterministic-mode safeguards
+
+---
+
+## ➕ Optional / v1.5+ (Can Push to First Point Release)
+
+### Core Horde-Readiness
+
+- Pure function runner mode (--stdin / --stdout)
+- Warm VM / preload mode (goblin serve --preload)
+- Determinism hardening knobs (--seed, block wall clock, etc.)
+- Resource limits (--cpu-ms, --mem-mb, --max-steps)
+- Correlation & idempotency (request_id, --idempotency-key)
+- Structured exit codes
+- Audit log enrichment with IDs/keys
+- Clock/testing hook (freeze_time)
+
+### Glam / Host-Side Horde-Readiness
+
+- scheduler glam: scheduler::cron(spec, task) (executes scripts/caps on a schedule)
+- s3::upload / netlify::deploy glam
+- metrics::emit glam
+- horde examples (Rust worker pool + Kubernetes YAML)
+
+### Other Optional Core Enhancements
+
+- glam gmark rebalance (CLI) implementation
+- Extra blob helpers (beyond base64/hex) if needed for niche formats
+
+---
+
+If we ship just the must-have list, Goblin v1.5 Core will be fully usable, have a clean feature set, and Glam will cover the basics. Then we drop horde-readiness + deploy glam in v1.5.1 or v1.6 without delaying launch.
 
 *[End of Goblin Language Specification v1.5 "Treasure Hoarder" - Refactored]*
