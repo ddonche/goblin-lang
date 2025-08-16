@@ -96,26 +96,35 @@ fmt(x, ".2f"), fmt(x, ","), fmt(x, ",.2f")
 
 ## 2. Operators & Math
 
-### 2.1 Precedence (high → low)
-```
+2.1 Precedence (high → low)
 ()
+member / call / index / optional chaining: .  ()  []  ?.
 postfix operators: ** (square), // (square root), ++, --
-**, ^^ (right-to-left)      [binary power and explain-power]
+**, ^^ (right-to-left)        [binary power and explain-power]
 unary + - not !
-postfix percent: %, %s, % of E        [percent literals and self-reference]
-* / % // >>                 [multiplicative family]
+postfix percent: %, %s, % of E       [percent literals and self-reference]
+* / % // >>                         [multiplicative family, divmod included]
 + -
-| then ||                   [string joins only]
+|>                                  [pipeline operator, left-associative]
+| then ||                           [string joins only]
 comparisons: == != < <= > >= === !== is is not   (chaining allowed)
-logical: and / or          (aliases: ! for not, && for and)
-inline conditional ? ?? :   (right-associative)
-```
+logical: and / or                   (aliases: ! for not, && for and)
+inline conditional ? ?? :            (right-associative)
 
-**Notes:**
-- Postfix forms (`**`, `//`, `++`, `--`) bind tighter than any binary operator (like parentheses)
-- Bind only to the **nearest primary** (literal, variable, or parenthesized expression)
-- `>>` sits at the same precedence level as `* / % //` (multiplicative group)
-- **Lexer rule:** Postfix operators are recognized when immediately followed by line end, `)`, `]`, `}`, `:`, `,`, or another operator that cannot start an expression. Everything else is infix.
+
+Notes:
+
+Postfix forms (**, //, ++, --) bind tighter than any binary operator (like parentheses).
+
+Bind only to the nearest primary (literal, variable, or parenthesized expression).
+
+>> (divmod) sits at the same precedence level as * / % // (multiplicative group).
+
+?. (optional chaining) binds at the same tier as member access, call, and index — tighter than everything below.
+
+|> (pipeline) is its own tier: lower than arithmetic, higher than string joins. Left-associative.
+
+Lexer rule: Postfix operators are recognized when immediately followed by line end, ), ], }, :, ,, or another operator that cannot start an expression. Everything else is infix.
 
 **Examples:**
 ```goblin
@@ -2143,6 +2152,8 @@ ShuffleTypeError
 
 SortTypeError
 
+ArityMismatch
+
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
 
@@ -2422,7 +2433,7 @@ goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gm
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
 compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
 is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin, banish, unbanish,
-plan, publish, pick, reap, usurp, len, shuffle, sort, add, insert, replace
+plan, publish, pick, reap, usurp, len, shuffle, sort, add, insert, replace, attempt, rescue, ensure
 ```
 Note on `delete`: in v1.5, `delete` is an operation within `export/publish` blocks (not a top-level statement) and is not reserved as a keyword. If promoted to a statement in a future version, it will be added to the reserved list then.
 
@@ -5207,7 +5218,91 @@ Negatives: confirm the four (-/+) examples above
 
 Money: valid when scale compatible; / → MoneyDivisionError
 
-34. Release Checklist
+§34 — Pipelines, Optional Chaining, and Error Blocks
+34.0 Overview
+
+This section introduces three new language features:
+
+Pipeline operator (|>) — left-to-right function chaining.
+
+Optional chaining (?.) — safe navigation for null/undefined.
+
+Structured error handling (attempt / rescue / ensure) — block form exception handling.
+
+34.1 Pipeline Operator (|>)
+
+Meaning: a |> f(x) ≡ f(a, x)
+
+Associativity: left-to-right.
+
+Precedence: tighter than +, &&, ||; looser than call/index/member access and ?..
+
+Arity rule: RHS must accept the piped value as its first argument. Otherwise → ArityMismatch.
+
+Does not short-circuit on null — combine with ?? or ?. if needed.
+
+Examples:
+
+x |> f() |> g(y)      # g(f(x), y)
+a + b |> f            # a + (b |> f)
+obj?.p |> normalize   # normalize(obj?.p)
+
+34.2 Optional Chaining (?.)
+
+Meaning: safe member/call; returns null if LHS is null/undefined.
+
+Short-circuits at first null.
+
+Does not swallow errors — if the call executes and throws, the error propagates.
+
+Covers both null and undefined.
+
+Examples:
+
+a?.b          # null if a is null/undefined
+a?.b()?.c     # null if a is null, or if b() is null
+user?.address?.city ?? "Unknown"
+
+34.3 attempt / rescue / ensure
+
+Block form for exception handling:
+
+result =
+  attempt
+      risky()
+      "ok"
+  rescue Timeout as e
+      backoff(); "retrying"
+  ensure
+      close_handles()
+  end
+
+
+Semantics:
+
+Run the attempt block.
+
+On error, match first rescue by type (order matters).
+
+ensure always runs.
+
+If no rescue matches, error propagates after ensure.
+
+Value = last expression of executed branch.
+
+raise rethrows (bare raise keeps original stack).
+
+34.4 Interactions & Gotchas
+
+Pipelines + Optional Chaining: composable.
+
+Pipelines + Error Blocks: pipelines don’t catch; use inside attempt.
+
+Operator mixing: |> precedence rules avoid ambiguity.
+
+Method chaining vs pipelines: both valid; pipelines preferred for mixed styles.
+
+35. Release Checklist
 
 ## ✅ Must-Have for v1.5
 
