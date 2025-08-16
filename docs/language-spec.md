@@ -2154,6 +2154,14 @@ SortTypeError
 
 ArityMismatch
 
+DICE_PARSE
+
+DICE_BOUNDS
+
+WEIGHT_TYPE
+
+WEIGHT_EMPTY
+
 **Goblin Error Messages:**
 Error messages may occasionally include goblin-themed variations for personality:
 
@@ -2433,7 +2441,7 @@ goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gm
 next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
 compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
 is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin, banish, unbanish,
-plan, publish, pick, reap, usurp, len, shuffle, sort, add, insert, replace, attempt, rescue, ensure
+plan, publish, pick, reap, usurp, len, shuffle, sort, add, insert, replace, attempt, rescue, ensure, roll, roll_detail, freq, mode, sample_weighted
 ```
 Note on `delete`: in v1.5, `delete` is an operation within `export/publish` blocks (not a top-level statement) and is not reserved as a keyword. If promoted to a statement in a future version, it will be added to the reserved list then.
 
@@ -5362,7 +5370,175 @@ All other thrown exceptions propagate normally (unless rescued).
 
 ?. never raises on null/undefined, always collapses to null.
 
-35. Release Checklist
+§35 — Play & Randomization Helpers
+
+35.0 Overview
+Goblin bakes in tabletop-style dice, weighted sampling, and frequency helpers. Random operations honor the global RNG seed (deterministic if seeded).
+
+Grammar note:
+A new literal form dice_expr is recognized inside roll and roll_detail.
+Form:
+
+dice_expr ::= INT "d" INT [("+"|"-") INT]?
+
+
+Examples: 1d10, 2d6+1, 4d8-2
+
+Outside roll and roll_detail, dice_expr is not valid.
+
+35.1 roll — dice evaluation
+
+Rolls a dice expression and returns the total.
+
+Forms:
+
+roll dice_expr
+roll(dice_expr)
+
+
+Examples:
+
+say roll 2d6+1          /// e.g., 9
+r = roll_detail 4d8-2
+say r.dice, r.sum       /// [3,8,1,4], 16
+say r.total             /// 14
+
+
+Results:
+
+roll → total only (Int)
+
+roll_detail → record: { dice: [..], sum: int, total: int }
+
+dice: list of raw rolls
+
+sum: pre-modifier sum
+
+total: sum after modifier
+
+Errors:
+
+DICE_PARSE — invalid form (e.g., 2d7q+1)
+
+DICE_BOUNDS — nonpositive dice count or sides
+
+35.2 freq — frequency map
+
+Count elements in a list and return a {value:count} map.
+
+Form:
+
+freq list → map
+
+
+Examples:
+
+say freq ["a","b","a","c","a","b"]  
+/// {"a":3, "b":2, "c":1}
+
+say mode ["orc","goblin","orc","slime","orc","slime"]  
+/// ["orc"]
+
+35.3 mode — statistical mode(s)
+
+Return list of most frequent element(s).
+
+Form:
+
+mode list → list
+
+
+Examples:
+
+say mode ["orc","goblin","orc","slime","orc","slime"]
+/// ["orc"]
+
+say mode ["a","b","b","a"]  
+/// ["a","b"]     # multimodal
+
+35.4 sample_weighted — weighted random choice
+
+Randomly select items with bias. Accepts either (value, weight) pairs or a weight map.
+
+Forms:
+
+sample_weighted list        # list of (value, weight) pairs
+sample_weighted map         # {"value": weight, ...}
+
+
+Weights:
+
+must be ≥ 0
+
+relative only (no normalization needed)
+
+Examples:
+
+loot = [("potion", 10), ("ring", 3), ("sword", 1)]
+say sample_weighted loot
+
+loot_map = {"potion":10, "ring":3, "sword":1}
+say sample_weighted loot_map
+
+
+Errors:
+
+WEIGHT_TYPE — weight not numeric
+
+WEIGHT_EMPTY — no positive weights
+
+35.5 Recipes
+
+Percentile dice (d100):
+
+d1 = roll 1d10    /// 1–10
+d2 = roll 1d10    /// 1–10
+percent = (d1-1)*10 + (d2-1)   # 0–99
+if percent == 0
+  percent = 100
+end
+say "🎲 Percentile: " || percent
+
+
+Skill check (d10-themed):
+
+check = roll 1d10
+if check >= 8
+  say "✅ Success!"
+else
+  say "❌ Fail!"
+end
+
+
+Yahtzee-style:
+
+rolls = roll_detail 5d6
+say "🎲 Dice: " || rolls.dice
+say "Total: " || rolls.total
+
+
+Card draws (with reap/shuffle):
+
+deck = ["A♠","K♠","Q♠","J♠","10♠"]
+shuffle deck              # permute deck
+hand = [reap first from deck, reap first from deck]
+say "✋ Hand: " || hand
+say "📦 Deck left: " || deck
+
+
+35.6 Error Codes (summary)
+
+DICE_PARSE
+
+DICE_BOUNDS
+
+WEIGHT_TYPE
+
+WEIGHT_EMPTY
+
+✨ This makes dice rolls native Goblin literals, not strings — so players see results they trust, and engineers get clean syntax.
+
+36. Release Checklist
 
 ## ✅ Must-Have for v1.5
 
