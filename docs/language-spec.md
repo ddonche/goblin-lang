@@ -1197,7 +1197,7 @@ Goblin uses the Context‑Independent Percent Operator rule:
 - This makes `p%` equal to `p/100` as a numeric factor.
 - **`%s` (self)** means percent of the left operand (calculator‑style), for all four operators.
 - **`% of E`** names an explicit base E.
-- **No operator changes the meaning of `%`**. There is no context magic.
+- **No operator changes the meaning of `%`**. There is no context magic. All examples MUST use `%`, `%s`, or `% of E` per these rules.
 
 ## 11.2 Literals and construction
 
@@ -1304,8 +1304,15 @@ with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 price = $80
 fee   = $5
 
-price + 10%            /// $88.00    (10% of 1 → 0.10; $80 + $0.10? NO → applies to numbers. Use %s for self.)
-                       /// CORRECT: with money, + 10% means + 0.10 units. Prefer explicit base forms below.
+price + 10%            /// $80.10    (10% defaults to 1 → 0.10; added to $80 yields $80.10)
+price + 10%s           /// $88.00    (percent of self: $80 + 0.10*$80)
+10% of price           /// $8.00
+(10% of price) / 2     /// $4.00
+price + (10% of fee)   /// $80 + $0.50 = $80.50
+
+Note:
+- Use `%s` (self) or `10% of X` when you mean “percent of that value.”
+- Plain `p%` is **percent of 1** by definition (CIPO).
 
 price + 10%s           /// $88.00    ($80 + 0.10*$80)
 10% of price           /// $8.00
@@ -1507,6 +1514,7 @@ When importing, Goblin promotes values to money only if the source schema or hea
   - `"string"`: canonical ISO-8601 strings
   - `"object"`: structured form with `_type` field
 - `enum: "name" | "value" | "object"` (default `"name"`)
+- blob: "base64" | "hex" | "error" = "error"   /// see §29.5
 
 **Reading:**
 - `money: "off" | "object" | "string" | "auto"` (default `"off"`)
@@ -1518,6 +1526,7 @@ When importing, Goblin promotes values to money only if the source schema or hea
 - `enum: "off" | "name" | "value" | "object" | "auto"` (default `"off"`)
 - `enum_schema: map<string,string>` — key → EnumName, only used with `enum:"value"`
 - `strict_numbers: bool` (default `false`): when `true`, error on non-finite numbers (NaN/Infinity) if present.
+- blob: "off" | "base64" | "hex" | "auto" = "off"   /// see §29.5
 
 **Glam and Serialization:** Glam may register their own JSON/YAML serialization handlers for custom types they define. If no handler is registered, the glam's types inherit the core JSON serialization rules. Glam-specific serialization follows the same safety policies (deterministic build restrictions, permission checks) as all other glam operations.
 
@@ -3364,18 +3373,19 @@ morph does not enable I/O. Any side‑effects are those performed by the target 
 
 ### Goblin Core
 
-**gmarks basics**
+**gmarks basics** (see §23.9)
 - gmarks_filter(prefix) implementation & tests
 - Deterministic-build write policy gate + .goblin/gmarks.audit.log
 
-**morph runtime essentials**
-- Implement accessor discovery (incl. is_foo() booleans)
-- Transactional copy-in/out + rollback
-- Cache shared-field maps; full test suite
-
-**Blob/JSON interop glue**
+**Blob/JSON interop glue** (see §29.5)
 - Ensure JSON/YAML leave blobs alone by default (no auto-encode)
 - Example helpers to base64 when needed
+
+**Hashing & HMAC** (see §30)
+- hash(data: string|blob, algorithm="sha256") -> string
+- hmac(data: string|blob, key: string|blob, algorithm="sha256") -> string
+- Supported algos: sha256, sha1, md5 (warn), sha512
+- Streaming over blobs; tests with known vectors
 
 ### Baseline Glam
 
@@ -4149,6 +4159,7 @@ signature = from_hex("deadbeef1234567890abcdef")
 
 /// From UTF-8 string
 utf8_bytes = blob("Hello, world!")
+
 29.3 Operations
 goblin/// Length and slicing
 len(data), data.len()
@@ -4156,9 +4167,10 @@ data[0:100]     /// first 100 bytes
 data[10:]       /// from byte 10 to end
 data[:-4]       /// all but last 4 bytes
 
-/// Concatenation
-blob_concat(a, b)   /// explicit helper
-a + b               /// operator overload
+ /// Concatenation
+  blob_concat(a, b)   /// explicit helper (canonical)
+  a + b               /// operator overload (exactly equivalent to blob_concat)
+
 29.4 Encoding Conversions
 goblin/// Base64 (RFC 4648)
 to_base64(data) → string
@@ -4240,5 +4252,25 @@ legacy_hash = hash(data, "sha1")
 
 /// Emits: "MD5 is broken for security; use only for non-cryptographic checksums"
 checksum = hash(data, "md5")
+
+30.5 Streaming API (incremental hashing/HMAC)
+
+goblin
+# Hash (incremental)
+h = hash.start("sha256")
+h.update(part1)                /// part1: blob|string
+h.update(part2)
+digest = h.finish()            /// digest: lowercase hex string
+
+# HMAC (incremental)
+s = hmac.start(key: "secret", algorithm: "sha256")
+s.update(part1)
+s.update(part2)
+sig = s.finish()               /// signature: lowercase hex string
+
+Rules:
+- .start(algo) returns a stateful context; .update(x) accepts blob or string; .finish() returns lowercase hex.
+- Streaming output must match one-shot hash(...) / hmac(...) for the same data.
+- Provide golden-vector tests for streaming and one-shot forms (identical results).
 
 *[End of Goblin Language Specification v1.5 "Treasure Hoarder" - Refactored]*
