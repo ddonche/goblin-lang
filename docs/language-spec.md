@@ -2526,6 +2526,44 @@ end
 # Provided by shopify glam
 file = product.export(@cards) via shopify::csv
 ```
+### 21.15 Rust-Backed Glams (Implementation Notes)
+
+Purpose. Glams may be implemented in Rust (the VM’s host language), wrapping existing Rust crates. The runtime enforces all contracts and permissions, so only declared capabilities are visible to Goblin code. (See §21.3–§21.5.)
+
+Allowed shapes (platform choice):
+
+In-process crate: Link the glam as a Rust crate; register capabilities on load. Fastest path.
+
+Dynamic plugin: Load a .so/.dll with a stable entrypoint that returns the glam’s contract table.
+
+Out-of-process/WASM: Run as a worker with IPC; honors sandbox modes and deterministic builds.
+
+Hard rules (enforced by VM):
+
+Contract fidelity. Each exported capability must match its declared signature and error set; unexpected errors are wrapped as GlamError(glam, capability, cause).
+
+Permissions. All side effects must obey the glam’s manifest (fs/net/env allowlists). Violations are blocked.
+
+Determinism. In deterministic builds, disallow unseeded RNG, wall-clock, and non-allowlisted network; provide trusted_now() where permitted.
+
+Discovery. Glams must expose introspection so tools can list capabilities and contracts.
+
+Example (conceptual):
+
+use http_rust@1.0 as http
+
+contract http.get(url: string, headers: map = {}) -> map
+    errors: [NetworkError, ValueError]
+end
+
+prefer http.get via http
+say http.get("https://api.example.com").status
+
+
+http_rust implements http.get using Rust crates (e.g., reqwest), but only the capability surface is callable from Goblin; network hosts must be allowlisted in the glam manifest.
+
+Note — Ecosystem Analogy.
+Goblin + Glams intentionally mirror the layering seen in Elixir on BEAM: a lean core with a first-class extension system. Like Elixir leveraging Erlang’s OTP, Goblin can leverage Rust’s ecosystem—Glams wrap Rust libraries while preserving Goblin’s contract checks, permission sandbox, and deterministic dispatch. This means you inherit Rust’s breadth of capabilities without sacrificing auditability, safety, or swap-ability.
 
 ## 22. Enums (Core)
 
