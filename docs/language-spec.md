@@ -986,6 +986,7 @@ money++ / money--  /// add/subtract exactly 1 whole unit
 - To change at quantum level: do it explicitly (`price = price + .05`)
 
 ### 10.7 Even Splits & Remainder Ledger
+For the formal definition of quotient+remainder division, see §33 Divmod.
 
 #### Hard Rule on Division
 Using `/` with money always errors: `MoneyDivisionError: Use // or >> for quotient, or divide_evenly(total, parts).`
@@ -5099,190 +5100,112 @@ pick = non-destructive peek/preview.
 usurp = destructive swap-in.
 
 Random ops always honor the global seed (--seed 1337 reproducible).
+
 §33 — Divmod
 33.0 Overview
 
-Goblin provides a first-class division-with-remainder operation:
+Goblin provides a first-class division-with-remainder:
 
-Operator: >> — computes quotient and remainder as a structured value.
+Operator: >> — returns quotient and remainder together.
 
-Function: div_rem(a, b) — equivalent semantics; useful for clarity and grepability.
+Function (alias): div_rem(a, b) — identical semantics (optional alias).
 
-Both forms are interchangeable and produce DivRem{q, r}.
-
-In REPL / say, the value pretty-prints as q r r (e.g. 3 r 2).
+Both forms produce a structured pair (q, r) and support destructuring, as used elsewhere in the spec (e.g., q, r = price >> 3). 
 
 33.1 Typing
 
-Signature:
+Defined for integers and fixed-scale numeric types (e.g., money/decimal with integral storage).
 
-div_rem : (IntLike a) => (a, a) -> DivRem<a>
-(>>)     : (IntLike a) => (a, a) -> DivRem<a>
+Conceptual signature
 
-
-Where IntLike includes:
-
-Built-in integers (arbitrary precision or machine int per target).
-
-Fixed-scale numeric types (money, decimal) with integral underlying storage.
-
-Result type:
-
-type DivRem<a> = { q: a, r: a }
+div_rem : (IntLike a) => (a, a) -> (a, a)   -- optional alias
+(>>)     : (IntLike a) => (a, a) -> (a, a)
 
 
-Constraints:
+IntLike includes built-in integers and fixed-scale numerics (money/decimal) where the scale matches (see Errors).
 
-For money/decimal, divisor must share scale. Otherwise → ScaleMismatch.
+Result is a pair (q, r) of the same numeric kind.
 
 33.2 Semantics
 
-Goblin uses floor division semantics (Python/Rust style).
+Goblin uses floor division semantics (as shown in §2.2 examples). 
 
-Given a, b with b ≠ 0:
+For a, b with b ≠ 0:
 
-q = floor(a / b) (greatest integer ≤ a/b).
+q = floor(a / b)
 
-r = a − q*b.
+r = a − q*b
 
-Remainder has the sign of divisor b.
+Remainder r has the sign of the divisor b.
 
-Invariants:
+Invariants
 
-a = q*b + r.
+a = q*b + r
 
-0 ≤ |r| < |b|.
+0 ≤ |r| < |b|
 
-33.3 Grammar (EBNF)
-expr        ::= addExpr ;
-addExpr     ::= mulExpr (("+" | "-") mulExpr)* ;
-mulExpr     ::= divremExpr (("*" | "/" | "%" ) divremExpr)* ;
-divremExpr  ::= unaryExpr ((">>") unaryExpr)* ;
-unaryExpr   ::= primary | ("+" | "-") unaryExpr ;
-primary     ::= NUMBER | IDENT | "(" expr ")" | callExpr ;
-callExpr    ::= IDENT "(" [ args ] ")" ;
-args        ::= expr ("," expr)* ;
+33.3 Grammar & Precedence
 
+>> is left-associative and sits in the multiplicative tier with * / % (already specified in §2.1/§2.2). 
 
->> is left-associative.
-
-Shares precedence with * / %.
+(No new grammar beyond what §2 provides; this section consolidates semantics and typing.)
 
 33.4 Destructuring & Access
-let (q, r) = 17 >> 5
-let (q2, r2) = div_rem(17, 5)
 
-let dm = 125 >> 100
-say dm.q    # 1
-say dm.r    # 25
+Tuple destructuring is supported:
 
-say (17 >> 5).tuple      # (3, 2)
-div_rem(17, 5).tuple     # (3, 2)
+q, r = 17 >> 5      /// q=3, r=2
+q2, r2 = div_rem(17, 5)  /// same result (if alias is enabled)
 
-33.5 Printing & Serialization
 
-Pretty print: q r r.
+You can pass the pair through APIs or extract components via pattern matching, as shown in money examples. 
 
-Programmatic:
+33.5 Money / Fixed-Scale Notes
 
-JSON → {"q":3,"r":2}.
+Divmod works for money when the scale is compatible with the divisor (your money rules show price // 3 and price >> 3; / on money is an error). 
 
-Binary/MsgPack/DB → stable field order q, then r.
+For incompatible scales, emit a typed error (see Errors).
 
 33.6 Errors
 
-DivisionByZero — divisor = 0.
+DivisionByZero — divisor is zero.
 
-ScaleMismatch — money/decimal scales differ.
+ScaleMismatch — fixed-scale types with incompatible scale/base.
 
-Overflow — follows Goblin integer overflow policy.
+MoneyDivisionError — / used with money (already defined in §10.7). 
 
-33.7 Examples
-say 17 >> 5          # 3 r 2
-say div_rem(17, 5)   # 3 r 2
+(Overflow follows your global integer policy.)
 
-# Negatives
-say  7 >>  3   # 2 r 1
-say -7 >>  3   # -3 r 2
-say  7 >> -3   # -3 r -2
-say -7 >> -3   # 2 r -1
+33.7 Examples (canonical)
 
-# Money (cents)
-let price = $10.75
-say price // 3       # USD 3.00
-say price >> 3       # 3 r USD 1.75
-say price / 3        # MoneyDivisionError
+Numbers (consistent with §2.2):
 
-# Ledger allocation
-let (each, rem) = 1000 >> 3   # each=333, rem=1
-
-33.8 Conformance
-
-Identity:
-
-a == (a >> b).q * b + (a >> b).r
-abs((a >> b).r) < abs(b)
+10.75 / 3  → 3.5833333333
+10.75 // 3 → 3
+10.75 >> 3 → (3, 1.75)
+-7 // 3    → -3
+-7 >> 3    → (-3, 2)
 
 
-Sign law: remainder matches divisor’s sign or is zero.
+Money (consistent with §10.7, §17 Examples):
 
-Equivalence: a >> b == div_rem(a, b).
+price = $10.75
+q = price // 3      /// USD 3.00
+q, r = price >> 3   /// (USD 3.00, USD 1.75)
+price / 3           /// MoneyDivisionError
 
-Pretty print vs tuple:
 
-say a >> b → "q r r".
+33.8 Conformance (sketch)
 
-(a >> b).tuple == (q, r).
+Identity: a == (a >> b).0 * b + (a >> b).1 and abs(r) < abs(b)
 
-Zero division → DivisionByZero.
+Sign law: sign(r) == sign(b) or r == 0
 
-Scale mismatch → ScaleMismatch.
+Equivalence: div_rem(a,b) (if present) equals a >> b
 
-33.9 Rationale
+Negatives: confirm the four (-/+) examples above
 
-One semantic truth, two entrypoints (>>, div_rem).
-
-Pretty but safe: 3 r 2 presentation, structured record under the hood.
-
-Floor semantics: predictable with negatives; algebraic identities hold.
-
-Finance-friendly: exact apportionment for money/ledger use.
-
-Patch Notes
-
-To integrate this cleanly with the existing spec:
-
-Section 10.7 (Money Splits)
-
-Keep / error, // (quotient only), and >> (quotient+remainder) examples.
-
-Add a forward reference: “See §33 for formal divmod definition.”
-
-Examples (basic ops)
-
-The tuples (3, 2) shown under division should be updated to the new pretty-print 3 r 2 form.
-
-Optionally show both: “prints as 3 r 2, structured as (3,2) tuple.”
-
-Reserved words / operators list
-
-Add >> to operator list.
-
-Add div_rem to built-in functions.
-
-Errors list
-
-Already has MoneyDivisionError. Add:
-
-DivisionByZero
-
-ScaleMismatch
-
-(Ensure Overflow is already covered by global integer rules.)
-
-Consistency sweep
-
-Replace any stray (q,r) tuple mentions with “prints as q r r, structured as DivRem{q,r}.”
+Money: valid when scale compatible; / → MoneyDivisionError
 
 34. Release Checklist
 
