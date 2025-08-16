@@ -5231,41 +5231,60 @@ Structured error handling (attempt / rescue / ensure) — block form exception h
 
 34.1 Pipeline Operator (|>)
 
-Meaning: a |> f(x) ≡ f(a, x)
+Meaning:
+a |> f(x) desugars to f(a, x).
 
-Associativity: left-to-right.
+Associativity:
+Left-to-right.
 
-Precedence: tighter than +, &&, ||; looser than call/index/member access and ?..
+a |> f() |> g(y)      # g(f(a), y)
 
-Arity rule: RHS must accept the piped value as its first argument. Otherwise → ArityMismatch.
 
-Does not short-circuit on null — combine with ?? or ?. if needed.
+Precedence:
 
-Examples:
+Binds looser than arithmetic (+, *)
 
-x |> f() |> g(y)      # g(f(x), y)
-a + b |> f            # a + (b |> f)
-obj?.p |> normalize   # normalize(obj?.p)
+Binds tighter than string joins (| then ||), comparisons, and logical operators
+
+Binds looser than function call, member access, indexing, and optional chaining (?.)
+
+Arity rule:
+The RHS must accept the piped value as its first argument. If not → ArityMismatch.
+
+Lambda escape hatch:
+
+val |> (s -> between(lower: 0, upper: s, value: val2))
+
+
+Null handling:
+Pipelines do not short-circuit; they pass null downstream. Combine with ?? or ?. if needed.
 
 34.2 Optional Chaining (?.)
 
-Meaning: safe member/call; returns null if LHS is null/undefined.
-
-Short-circuits at first null.
-
-Does not swallow errors — if the call executes and throws, the error propagates.
-
-Covers both null and undefined.
-
-Examples:
+Meaning:
+Safely access a property or call a method; if the left-hand side is null or undefined, evaluation short-circuits to null.
 
 a?.b          # null if a is null/undefined
 a?.b()?.c     # null if a is null, or if b() is null
-user?.address?.city ?? "Unknown"
+
+
+Scope of short-circuit:
+
+obj?.prop → skip property read if obj is null/undefined.
+
+obj?.method(args) → skip the entire call if obj is null/undefined (arguments not evaluated in that context).
+
+Chains short-circuit at the first null.
+
+Errors:
+
+Does not swallow exceptions: if the access/call is performed and throws, the error propagates normally.
+
+Applies equally to both null and undefined.
 
 34.3 attempt / rescue / ensure
 
-Block form for exception handling:
+Form:
 
 result =
   attempt
@@ -5282,25 +5301,66 @@ Semantics:
 
 Run the attempt block.
 
-On error, match first rescue by type (order matters).
+If it throws, match the first rescue arm by error type.
 
-ensure always runs.
+ensure always runs, regardless of success/failure.
 
-If no rescue matches, error propagates after ensure.
+If no rescue matches, the error propagates after ensure.
 
-Value = last expression of executed branch.
+Return value = last expression of whichever branch executes.
 
-raise rethrows (bare raise keeps original stack).
+Features:
+
+Multiple rescue clauses allowed; first match wins.
+
+Bare raise rethrows the current error with its original stack.
+
+No implicit propagation sugar (no Rust-style ?). Explicitly omit rescue or use raise.
 
 34.4 Interactions & Gotchas
 
-Pipelines + Optional Chaining: composable.
+Pipelines + Optional Chaining
 
-Pipelines + Error Blocks: pipelines don’t catch; use inside attempt.
+user
+  |> fetch_profile()
+  |> (_.address?.city)
+  |> (c -> c ?? "Unknown")
 
-Operator mixing: |> precedence rules avoid ambiguity.
 
-Method chaining vs pipelines: both valid; pipelines preferred for mixed styles.
+Pipelines + Error Blocks
+Pipelines don’t catch. Use inside attempt as needed.
+
+attempt
+    data |> parse() |> validate()
+rescue ParseError
+    log("bad input"); raise
+ensure
+    metrics.increment("parse_attempt")
+end
+
+
+Optional Chaining in rescue/ensure
+Works normally:
+
+rescue e
+    say e?.message ?? "unknown error"
+
+
+Method chaining vs pipelines
+
+obj.method1().method2()       # traditional
+obj |> method1() |> method2() # pipeline style
+
+
+Pipelines are preferred when mixing functions and methods, or when long chains improve readability.
+
+34.5 Errors
+
+ArityMismatch — RHS of pipeline cannot accept piped argument.
+
+All other thrown exceptions propagate normally (unless rescued).
+
+?. never raises on null/undefined, always collapses to null.
 
 35. Release Checklist
 
