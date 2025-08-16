@@ -2774,6 +2774,204 @@ Prefer/via still works if you want to set a default provider for a capability, b
 
 This makes it possible to mix and match different implementations of the same capability within one project without conflicts or ambiguity.
 
+21.17 Output File Namespace Isolation (Alias-First)
+To prevent accidental overwrites in multi-glam pipelines, Goblin automatically namespaces every file a glam writes.
+Rule:
+
+If an alias is present: use <alias>_v<resolved-version>_<original-filename>
+If no alias: use <glam-name>_v<resolved-version>_<original-filename>
+
+This is enforced by core, not by individual glams.
+Examples:
+goblinuse shopify@^1.6 as shp
+export @cards via shp                   /// writes: shp_v1.6_export.csv
+export @cards via shp to "out.csv"      /// writes: shp_v1.6_out.csv
+
+use etsy@1.12
+export @cards via etsy                  /// writes: etsy_v1.12_export.csv
+export @cards via etsy to "out.csv"     /// writes: etsy_v1.12_out.csv
+Multiple platforms side-by-side never overwrite each other:
+
+shp_v1.6_out.csv
+etsy_v1.12_out.csv
+ebay_v1.4_out.csv
+
+Rationale: Silent overwrites (e.g., multiple glams all writing export.csv) are a classic pipeline footgun. Namespacing at the core level guarantees:
+
+No cross-glam clobbering
+Clear provenance: which glam + version produced which file
+Zero burden on glam authors (works automatically)
+
+Goblin lore: "Each goblin keeps their loot tagged. No other goblin may touch it without asking first."
+Details & Edge Cases:
+
+Alias wins: the alias (if any) is always the identifier. Otherwise fall back to the glam's declared name
+Version string: the resolved version (from glam.lock) is used (e.g., ^1.6 → v1.6)
+Custom paths: if user provides a path, Goblin prefixes the basename and preserves directories:
+
+to "dist/export.csv" → dist/shp_v1.6_export.csv
+
+
+Sanitization: identifiers are sanitized to filesystem-safe tokens (letters, digits, _, -, .)
+Idempotence: re-running the same export with the same alias/version rewrites that file only
+Chaining: To modify another glam's file, a glam must explicitly import that file and then export a new file; core will still namespace the new output
+
+Configuration (Advanced):
+yaml# goblin.config.yaml
+glam:
+  file_isolation: true   # default (safe)
+  # set to false to disable namespacing (power users only)
+Errors:
+
+PermissionError if a glam tries to write outside allowlisted paths (§21.5), even after namespacing
+ValueError if the final path is invalid after sanitization
+
+
+21.18 CRUD Operations & Safety Gates
+Goblin provides explicit, safe CRUD (Create/Read/Update/Delete) operations across files and data stores.
+One Mental Model:
+
+C (Create): default behavior — no-clobber file writes; DB inserts require unique keys
+R (Read): allowed in cwd by default; elsewhere requires --allow
+U (Update): managed mutations (append/patch/replace) for files; upsert/patch for DBs
+D (Delete): off by default; double-gated and reversible (soft-delete)
+
+21.18.1 Filesystem CRUD
+Create (Default):
+goblinexport @content via blog to "posts/new.md"    /// fails if exists
+Default behavior is no-clobber. Files are namespaced per §21.16.
+Read (Default):
+goblincontent = read_text("posts/draft.md")         /// allowed in cwd
+Reads in working directory allowed. Outside paths require --allow fs.read:/path.
+Update (Opt-in):
+goblin/// Append with anchor
+export @post via blog to "index.md" {
+  write: "append", 
+  anchor: "<!-- GOBLIN:POSTS -->",
+  format: "- [{title}](/posts/{slug}) — {date}\n"
+}
+
+/// Patch with fenced markers  
+export @content via blog to "config.yaml" {
+  write: "patch",
+  fence: "# GOBLIN:CONFIG"
+}
+
+/// Replace (rare, gated)
+export @content via blog to "full.md" { write: "replace" }
+CLI gates: --fs-mutate=append,patch[,replace]
+Delete (Strongly Gated):
+goblin/// Soft delete (moves to trash)
+export @cleanup via blog delete "content/drafts/*.md" { 
+  reason: "cleanup" 
+}
+
+/// Hard delete (rare, double-gated)
+export @purge via blog delete "content/tmp/*.tmp" { 
+  hard: true 
+}
+Rules:
+
+Soft-delete moves files to ./.goblin_trash/YYYYMMDD-HHMMSS/... and logs original path + sha256
+Hard delete only if both { hard: true } and --fs-delete=hard are present
+Deterministic mode: require a hash manifest of each file to delete; mismatch → fail
+Audit lines: list every file deleted (or moved), bytes, pre-hash
+
+CLI gates: --fs-delete[=hard]
+21.18.2 Database/Service CRUD
+Common Safety Contracts:
+
+Dry-run by default: plan operations show diffs (rows to insert/update/delete)
+--commit required for any mutation (Create/Update/Delete)
+Capability manifest: glam declares net/db scopes; user grants via --allow
+Idempotency: require keys (e.g., handle, sku, id) so reruns don't duplicate
+Deterministic mode: disallow live net/db unless fixtures provided
+
+Create:
+goblinpublish @product via shp       /// INSERT/CREATE (idempotent by handle+sku)
+Read:
+goblinimport @inventory via sql from "SELECT * FROM parts WHERE updated_at > :cutoff"
+Update:
+goblin/// Upsert semantics
+publish @product via sql {
+  table: "products",
+  key: ["handle"],
+  upsert: {
+    title: project.title,
+    tags: tags
+  }
+}
+
+/// Patch semantics  
+publish @inventory via nosql {
+  collection: "parts",
+  key: ["sku"],
+  patch: { qty: new_qty }      /// only changes listed fields
+}
+Delete (Double-Gated):
+goblin/// Preview first
+plan @cleanup via sql {
+  table: "products", 
+  where: "discontinued = true AND updated_at < :cutoff"
+}                                /// shows count + sample rows
+
+/// Execute with gates
+publish @cleanup via sql {
+  table: "products",
+  delete_where: "discontinued = true AND updated_at < :cutoff"
+}
+CLI gates: --commit --db-delete
+Protections:
+
+If delete_where would affect >N rows (configurable), fail with DeleteThresholdExceeded unless --db-delete-force is present
+Always log: table/collection, selector summary, match count, sample keys, duration
+
+21.18.3 Default Safety Policy
+Files:
+
+Default: Create only (no-clobber)
+Updates: append/patch allowed only if --fs-mutate=...
+Deletes: soft by default; require --fs-delete; hard requires --fs-delete=hard
+Deterministic: require base hashes for any update/delete
+
+DB/Services:
+
+Default: Read-only; --commit required for C/U/D
+Deletes: require both --commit and --db-delete (and threshold check)
+Always provide plan (dry-run) verb; publish executes
+Idempotent keys mandatory for create/update
+
+21.18.4 Examples
+Blog workflow:
+goblin/// Create new post
+export @post via blog to "content/posts/{slug}.md"
+
+/// Update index  
+export @index via blog to "content/index.md" {
+  write: "append", 
+  anchor: "<!-- GOBLIN:POSTS -->",
+  format: "- [{title}](/posts/{slug}) — {date}\n"
+}
+
+/// Clean up drafts
+export @cleanup via blog delete "content/drafts/*.md"
+CLI:
+bashgoblin run blog.gbln --allow fs.write:./content --fs-mutate=append --fs-delete
+SQL workflow:
+goblin/// Preview cleanup
+plan @cleanup via sql { 
+  table: "parts", 
+  where: "discontinued=1" 
+}
+
+/// Execute cleanup
+publish @cleanup via sql { 
+  table: "parts", 
+  delete_where: "discontinued=1" 
+}
+CLI:
+bashgoblin run inv.gbln --allow db:postgres://... --commit --db-delete
+
 ## 22. Enums (Core)
 Enums are one of Goblin's core primitive types (see §1.3). They create closed sets of named constants with optional backing values.
 
