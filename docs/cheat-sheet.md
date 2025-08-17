@@ -42,7 +42,7 @@ unary + - not !
 + -                                /// additive
 |>                                 /// pipeline (left-associative)
 | then ||                          /// string joins
-== != < <= > >= === !== is is not  /// comparisons (chainable)
+== != < <= > >= is is not  /// comparisons (chainable)
 and or                             /// logical (aliases: && for and, ! for not)
 ```
 
@@ -276,6 +276,8 @@ end
 
 ## 7. Templates
 
+*Templates use `::` to separate fields in key-value records.*
+
 ### Basic Templates
 ```goblin
 @card = title: "{title}" :: price: .99 :: qty: 1
@@ -391,6 +393,8 @@ set @policy locked_modules   /// modules: { mode: "vault" }
 ```
 
 ## 10. Glam (Extensions)
+
+*Glam are Goblin's first-class extension system - modular capabilities that feel native to the language.*
 
 ### Usage
 ```goblin
@@ -581,7 +585,7 @@ add, insert, replace, roll, freq, mode, sample_weighted
 
 **Soft Keywords (context-dependent):**
 ```
-from, at, first, last, to, into, in, with, dups, seq, as
+from, at, first, last, to, into, with, dups, seq, as
 ```
 
 ## 17. Special Forms
