@@ -1,7 +1,12 @@
 # Goblin Language AI Cheat Sheet v1.5.1
-*Complete syntax reference for AI assistants*
+*Complete syntax reference for AI assistants - Reorganized for Documentation Flow*
 
-## 1. Basic Syntax
+## GETTING STARTED
+
+### Basic Syntax Overview
+- One statement per line
+- Indentation defines blocks (spaces only, no tabs)
+- No semicolons
 
 ### Comments
 ```goblin
@@ -12,11 +17,6 @@ Block comment content
 ////
 ```
 
-### Statements
-- One statement per line
-- Indentation defines blocks (spaces only, no tabs)
-- No semicolons
-
 ### Variables
 ```goblin
 name = "Frank"
@@ -24,24 +24,33 @@ age = 45
 price = $1.50
 ```
 
-## 2. Operators & Precedence (high → low)
+## LANGUAGE GUIDE
 
+### Core Concepts
+
+#### Operators & Precedence (high → low)
 ```
 ()                                  /// grouping
-.  ()  []  ?.                      /// member/call/index/optional chaining
-**  //  ++  --                     /// postfix (square, sqrt, increment/decrement)
-**  ^^                             /// power (right-associative)
-unary + - not !
-%  %s  % of E                      /// percent literals and self-reference
-* / % // >>                        /// multiplicative + quotient/divmod
-+ -                                /// additive
-|>                                 /// pipeline (left-associative)
-| then ||                          /// string joins
-== != < <= > >= === !== is is not  /// chainable comparisons; see notes on ===/!==
-and or                             /// logical (aliases: && for and, ! for not)
+.  ()  []  ?.                       /// member/call/index/optional chaining
+**  //  ++  --                      /// postfix (square, sqrt, inc/dec)
+**  ^^                              /// power (right-assoc)
+unary + - not !                     /// unary
+%  %s  % of E                       /// percent literals & self-reference
+* / % // >>                         /// multiplicative + quotient/divmod
+|>                                  /// pipeline (left-assoc; tighter than + -, looser than member/call/?.)
++ -                                 /// additive
+| then ||                           /// string joins
+??                                  /// null-coalescing (right-assoc)
+== != < <= > >= === !== is is not   /// chainable comparisons
+and or                              /// logical (aliases: && for and, ! for not)
 ```
 
-### Key Operators
+**Notes:**
+- Postfix ops bind to the nearest primary
+- `//` is postfix sqrt vs infix quotient based on position
+- No inline `?:` operator in Goblin
+
+#### Key Operators
 ```goblin
 /// Postfix Math
 9**        → 81                    /// square
@@ -51,8 +60,11 @@ x--        → old x, then x = x - 1 /// decrement
 
 /// Division & Divmod  
 10 / 3     → 3.333...              /// float division
-10 // 3    → 3                     /// quotient only (infix)
-10 >> 3    → (3, 1)               /// divmod pair (quotient, remainder)
+10 // 3    → 3                     /// integer quotient
+10 >> 3    → 3 r 1                 /// REPL pretty-print of DivRem{q=3, r=1}
+(10 >> 3).tuple → (3, 1)           /// canonical tuple view
+(10 >> 3).q → 3                    /// quotient
+(10 >> 3).r → 1                    /// remainder
 
 /// Comparisons
 ==   /// value equality (numeric 3 == 3.0 is true; containers compare structurally)
@@ -61,11 +73,6 @@ x--        → old x, then x = x - 1 /// decrement
 !==  /// negation of ===
 is / is not  /// same-variant checks for enums and type predicates
 
-/// Disambiguation: `//` appears twice:
-///  - postfix:  n//       → sqrt(n)
-///  - infix:    a // b    → integer quotient
-/// Parser distinguishes by position (postfix has no RHS).
-
 /// String Joins
 "a" | "b"  → "ab"                 /// no-space join
 "a" || "b" → "a b"                /// space join
@@ -73,65 +80,64 @@ is / is not  /// same-variant checks for enums and type predicates
 /// Pipeline
 x |> f(y)  → f(x, y)              /// left-to-right chaining
 
-/// Optional Chaining
+/// Optional Chaining & Null-Coalescing
 obj?.prop  → prop if obj exists, nil if obj is nil/undefined
 obj?.method(args) → call if obj exists, nil otherwise
+user.profile?.email ?? "unknown@example.com"  /// null-coalescing example
 ```
 
-## 3. Types & Literals
+### Data Types
 
-### Core Types
+#### Primitives
 ```goblin
-/// Primitives
 42                  /// int
 3.14               /// float
 true, false        /// bool
 "hello"            /// string
 nil                /// null/undefined
+```
 
-/// Money
-$1.50, USD 1.50, €2.00, £3.00, ¥100    /// literals
-money(1.50, USD)                         /// constructor
+#### String Features
+```goblin
+"Hello {name}"    /// interpolation
+.upper() .lower() .title() .slug()  /// methods
+```
 
-/// Percent
-25%                /// 0.25 (percent of 1)
-25%s               /// percent of self (left operand)
-25% of price       /// percent of explicit base
-pct(25)           /// 25% (constructor from percentage points)
-
-/// Collections
+#### Collections
+```goblin
 [1, 2, 3]         /// array
 {key: "val", price: 1.5}  /// map
 
 /// Ranges
 1..5              /// inclusive (1,2,3,4,5)
 1...5             /// exclusive (1,2,3,4)
+```
 
-/// Date/Time
+#### Date/Time
+```goblin
 date("2025-08-12")
 time("14:30:05")
 datetime("2025-08-12 14:30", tz: "UTC")
 1h + 30m          /// duration literals: s, m, h, d, w, mo, y
+```
 
-/// Dice (only valid inside roll/roll_detail)
-roll 2d6+1        /// dice literal form
-roll(1d20)        /// function form
-
-/// Binary Data
+#### Binary Data
+```goblin
 blob()            /// empty blob
 blob("text")      /// from UTF-8 string
 from_base64(s), from_hex(s)  /// from encoded strings
 ```
 
-### String Features
+#### Dice (only valid inside roll/roll_detail)
 ```goblin
-"Hello {name}"    /// interpolation
-.upper() .lower() .title() .slug()  /// methods
+roll 2d6+1        /// dice literal form
+roll(1d20)        /// function form
+r = roll_detail 4d8-2   /// r.dice, r.sum, r.total
 ```
 
-## 4. Control Flow
+### Control Flow
 
-### Conditionals
+#### Conditionals
 ```goblin
 /// Block form
 if cond
@@ -160,7 +166,7 @@ end
 result = judge: cond1: expr1 :: cond2: expr2 :: else: exprN
 ```
 
-### Loops
+#### Loops
 ```goblin
 /// For loops
 for i in 1..5        /// ranges
@@ -178,9 +184,9 @@ skip    /// continue
 stop    /// break
 ```
 
-### Error Handling
+#### Error Handling
 ```goblin
-/// New structured form
+/// Structured form
 attempt
     risky_operation()
     "success"
@@ -191,24 +197,15 @@ ensure
     cleanup()
 end
 
-/// Legacy (still supported)
-try
-    risky_operation()
-catch e
-    handle_error(e)
-finally
-    cleanup()
-end
-
 /// Manual
 error "message"
 assert cond, "msg"
 warn "message"
 ```
 
-## 5. Functions
+### Functions
 
-### Definition
+#### Definition
 ```goblin
 /// Basic
 fn greet(name="Traveler")
@@ -227,15 +224,15 @@ fn complex(x)
 end
 ```
 
-### Calls
+#### Calls
 ```goblin
 greet("Alice")
 greet(name: "Bob")     /// named parameter
 ```
 
-## 6. Classes
+### Object-Oriented Programming
 
-### Definition (Two Styles)
+#### Class Definition (Two Styles)
 
 **Template Style:**
 ```goblin
@@ -255,7 +252,7 @@ class Pet(name: string, age: int = 0, species: string = "dog")
 end
 ```
 
-### Instantiation
+#### Instantiation
 ```goblin
 /// Template style
 pet = Pet: "Fido" :: 3 :: "cat"
@@ -266,7 +263,7 @@ pet = Pet("Rex", species: "wolf")    /// named args
 pet = Pet("Max", :: "cat")           /// skip middle arg
 ```
 
-### Access & Privacy
+#### Access & Privacy
 ```goblin
 /// Public fields (auto-generate accessors)
 pet.name()          /// getter
@@ -283,21 +280,21 @@ end
 /// Privacy: `#field` accessible only on `self` inside defining class methods; not on `other`.
 ```
 
-## 7. Templates
+### Templates
 
 /// `::` is the binding separator used in templates, template-style classes, and inline judge.
 
-### Basic Templates
+#### Basic Templates
 ```goblin
 @card = title: "{title}" :: price: .99 :: qty: 1
 
-/// Usage with data
+// Usage with data
 card1 = @card: title: "Ace of Cups"
 card2 = @card: title: "Two Cups" :: price: 1.25
-card3 = @card: title: "Three Cups" :: :: 2  /// skip price, set qty
+card3 = @card: title: "Three Cups" :: :: 2  // skip price, set qty
 ```
 
-### Template Blocks
+#### Template Blocks
 ```goblin
 @cards =
     card: "{name}" :: price: .99 :: qty: 1
@@ -307,7 +304,7 @@ card3 = @card: title: "Three Cups" :: :: 2  /// skip price, set qty
     "Four of Cups" :: 1.25 :: 2      /// set both
 ```
 
-### With Loops
+#### With Loops
 ```goblin
 suits = ["Cups", "Wands", "Swords", "Pentacles"]
 
@@ -317,13 +314,13 @@ suit: "Cups"
     for rank in ["Ace", "Two", "Three"]
         "{rank}"
     end
-    "Ace" :: qty: 2              /// override specific cards
+    "Ace" :: qty: 2              // override specific cards
 end
 ```
 
-## 8. Enums
+### Enums
 
-### Definition
+#### Definition
 ```goblin
 /// Basic enum
 enum Status
@@ -352,7 +349,7 @@ enum Suit as string
 end
 ```
 
-### Usage
+#### Usage
 ```goblin
 status = Status.Pending
 if status is Status.Paid
@@ -372,83 +369,18 @@ Http.from_value(404)           /// Http.NotFound
 /// Lookups throw EnumError on failure: Status.from_name(...), Http.from_value(...)
 ```
 
-## 9. Modules
+## FINANCIAL PROGRAMMING
 
-### Import/Export
+### Money System
+
+#### Money Types & Literals
 ```goblin
-/// Import
-import "./helpers" as H
-import "./utils" as U
-
-/// Usage
-slug = H::slugify("Product Name")
-result = U::process(data)
+/// Money
+$1.50, USD 1.50, €2.00, £3.00, ¥100    /// literals
+money(1.50, USD)                         /// constructor
 ```
 
-### Visibility
-```goblin
-/// Expose mode (default): everything visible except 'vault'
-expose fn public_helper() = "available"
-vault fn private_helper() = "hidden"
-
-/// Vault mode: nothing visible except 'expose'  
-expose fn only_this_visible() = "available"
-fn this_is_hidden() = "not available"
-```
-
-### Policy Control
-```goblin
-/// Set module visibility policy
-set @policy open_modules     /// modules: { mode: "expose" }
-set @policy locked_modules   /// modules: { mode: "vault" }
-```
-
-## 10. Glam (Extensions)
-
-/// Glam = sandboxed extension package (semver). use/prefer/via control invocation.
-
-### Usage
-```goblin
-/// Load glam
-use shopify@^1.6 as shp
-use tarot_deck@1.2
-
-/// Set preferences
-prefer product.export via shp
-
-/// Call capabilities
-file = product.export(@cards) via shp
-result = shp::csv_export(data)
-```
-
-### Contracts
-```goblin
-contract product.export(items: array<Product>) -> file
-    errors: [ValidationError, AuthError]
-end
-```
-
-### Provider Defaults (NEW)
-```goblin
-/// File-level default for all contracts a glam implements
-prefer via shp
-
-/// Per-contract default  
-prefer product.export via shp
-
-/// Precedence: per-call via > per-contract prefer > file-level prefer > config
-```
-
-### Fanout Operator (NEW)
-```goblin
-/// Run contract on ALL loaded glam that implement it
-files = product.export(@items) via all
-/// Returns: { glam_alias: result_or_error }
-```
-
-## 11. Money System
-
-### Precision & Policy
+#### Precision & Policy
 ```goblin
 /// Money follows active policy for precision/rounding
 set @policy strict_money    /// precision: 2, policy: "strict"
@@ -462,7 +394,7 @@ remainders_total()          /// current remainder ledger
 drip_remainders(threshold: $0.05, commit: true)  /// payout accumulated
 ```
 
-### Currency Rules
+#### Currency Rules
 ```goblin
 /// Same currency operations allowed
 $10 + $5    → $15
@@ -475,9 +407,18 @@ $10 / 3     → MoneyDivisionError  /// use // or >> instead
 $10 + €5    → CurrencyError       /// no auto-conversion
 ```
 
-## 12. Percent System (CIPO)
+### Percent System (CIPO)
 
-### Three Forms
+#### Percent Types
+```goblin
+/// Percent
+25%                /// 0.25 (percent of 1)
+25%s               /// percent of self (left operand)
+25% of price       /// percent of explicit base
+pct(25)           /// 25% (constructor from percentage points)
+```
+
+#### Three Forms
 ```goblin
 /// % = percent of 1 (programmer style)
 8 + 25%     → 8.25              /// 8 + 0.25
@@ -489,7 +430,7 @@ $10 + €5    → CurrencyError       /// no auto-conversion
 8 + (25% of 50)  → 20.5         /// 8 + (0.25 * 50)
 ```
 
-### Money Integration
+#### Money Integration
 ```goblin
 price = $80
 price + 10%s    → $88.00        /// $80 + (10% of $80)
@@ -498,19 +439,127 @@ tax(price, 8.5%) → $6.80        /// helper function
 with_tax(price, 8.5%) → $86.80  /// price + tax
 ```
 
-## 13. Collections & Utilities
+## ADVANCED FEATURES
 
-### Arrays
+### Modules & Imports
+
+#### Import/Export
 ```goblin
-arr = [1, 2, 3]
-arr[0]          /// access
-arr[-1]         /// negative indexing
-arr[1:3]        /// slicing
-len(arr)        /// length
-arr.push(4)     /// mutate
+/// Import
+import "./helpers" as H
+import "./utils" as U
+
+/// Usage
+slug = H::slugify("Product Name")
+result = U::process(data)
 ```
 
-### Maps
+#### Visibility
+```goblin
+/// Expose mode (default): everything visible except 'vault'
+expose fn public_helper() = "available"
+vault fn private_helper() = "hidden"
+
+/// Vault mode: nothing visible except 'expose'  
+expose fn only_this_visible() = "available"
+fn this_is_hidden() = "not available"
+```
+
+#### Policy Control
+```goblin
+/// Set module visibility policy
+set @policy open_modules     /// modules: { mode: "expose" }
+set @policy locked_modules   /// modules: { mode: "vault" }
+```
+
+### Glam Extensions
+
+/// Glam = sandboxed extension package (semver). use/prefer/via control invocation.
+
+#### Usage
+```goblin
+/// Load glam
+use shopify@^1.6 as shp
+use tarot_deck@1.2
+
+/// Set preferences
+prefer product.export via shp
+
+/// Call capabilities
+file = product.export(@cards) via shp
+result = shp::csv_export(data)
+
+/// Fanout to all loaded providers that implement the contract:
+files = product.export(items) via all
+/// returns { provider_key → result|error }  (provider_key = alias if present else glam name)
+
+/// Destinations & naming (no placeholders in code):
+/// - Project default directory: goblin.config.yaml → glam.artifacts.dir
+/// - Optional file default:  prefer artifacts.dir "/reports"
+/// - Optional call override: dir: "/adhoc"
+/// - Filenames are always provider-prefixed + date-stamped; no overwrites by default.
+/// - Concurrency/timeout/retry live in config (glam.fanout.*); you usually just write `via all`.
+```
+
+#### Contracts
+```goblin
+contract product.export(items: array<Product>) -> file
+    errors: [ValidationError, AuthError]
+end
+```
+
+### Special Forms
+
+#### Morphing (Temporary Type Adaptation)
+```goblin
+/// Transform object temporarily using another class's method
+result = morph(book, Card, apply_discount(10%))
+/// book keeps its type, but discount method from Card is applied
+```
+
+#### Gmarks (Stable References)
+```goblin
+/// Create stable project-local identifiers
+post_ref = gmark("post/how-to-play")      /// auto-increment ord
+pin_ref = gmark("post/welcome", ord: 1)   /// manual position
+
+/// Query
+gmarks()                    /// all gmarks, sorted by ord
+gmark_info("post/welcome")  /// details for specific gmark
+```
+
+#### Policies (Project Configuration)
+```goblin
+/// Define in policies.gbln
+@policy = "site_default"
+    money: { currency: "USD", precision: 2, policy: "truncate" }
+    modules: { mode: "expose" }
+
+/// Apply
+set @policy site_default
+```
+
+#### Banish (Feature Blocking)
+```goblin
+/// Block language features project-wide via .goblin.banish.toml
+/// Usage of banished features → BanishError at compile time
+```
+
+### Collections & Utilities
+
+#### Arrays
+```goblin
+arr = [1, 2, 3]
+arr[0]                      /// access
+arr[-1]                     /// negative indexing
+arr[1:3]                    /// slicing
+len(arr)                    /// length
+add 4 to arr                /// append
+insert "X" at 1 into arr    /// insert
+reap from arr               /// destructive random remove
+```
+
+#### Maps
 ```goblin
 m = {key: "val", price: 1.5}
 m.key           /// dot access (identifier keys)
@@ -519,7 +568,7 @@ m.keys()        /// ["key", "price"]
 m.values()      /// ["val", 1.5]
 ```
 
-### List Operations
+#### List Operations
 ```goblin
 /// Non-destructive
 pick names              /// random element
@@ -535,7 +584,7 @@ add "Item" to names     /// append
 insert "Item" at 2 into names   /// insert at position
 ```
 
-### Math Helpers
+#### Math Helpers
 ```goblin
 add(1, 2, 3)           /// sum
 sum([1, 2, 3])         /// same as add
@@ -544,7 +593,7 @@ max([1, 5, 3])         /// maximum
 roll 2d6+1             /// dice roll
 ```
 
-## 14. I/O & Serialization
+## I/O & DATA
 
 ### File Operations
 ```goblin
@@ -563,7 +612,9 @@ read_bytes("image.png")
 write_bytes("file.bin", blob_data)
 ```
 
-### JSON Options
+### JSON Handling
+
+#### JSON Options
 ```goblin
 /// Write with options
 write_json("data.json", obj, {
@@ -584,9 +635,9 @@ read_json("data.json", {
 /// Note: `auto` in read_json infers format from input; not supported in write_json for explicitness.
 ```
 
-## 15. Error Types
+## ERROR REFERENCE
 
-### Core Errors
+### Core Error Types
 ```
 NameError, TypeError, ValueError, IndexError, KeyError, ZeroDivisionError,
 SyntaxError, AssertionError, OverflowError
@@ -604,13 +655,19 @@ GLAM_DEST_INVALID, GLAM_TIMEOUT, GLAM_OVERWRITE_DENIED, GLAM_AMBIGUOUS_PROVIDER
 
 ### List Operation Errors
 ```
-EmptyPickError, PickCountError, ReapEmptyError, UsurpIndexError,
+EmptyPickError, PickCountError, PickIndexError, PickTypeError,
+ReapEmptyError, ReapCountError, ReapIndexError, ReapTypeError,
+UsurpIndexError, UsurpCountError, UsurpArityError, UsurpTypeError,
+ReplaceIndexError, ReplaceTypeError,
+InsertIndexError, InsertTypeError,
 ShuffleTypeError, SortTypeError, AddTypeError
 ```
 
-## 16. Reserved Words
+## LANGUAGE REFERENCE
 
-**Hard Keywords (cannot be shadowed):**
+### Reserved Words
+
+#### Hard Keywords (cannot be shadowed)
 ```
 if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, stop, assert,
 class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
@@ -618,49 +675,12 @@ morph, vault, judge, banish, unbanish, expose, set, settle, pick, reap, usurp, l
 add, insert, replace, roll, freq, mode, sample_weighted
 ```
 
-**Soft Keywords (context-dependent):**
+#### Soft Keywords (context-dependent)
 ```
 from, at, first, last, to, into, with, dups, seq, as
 ```
 
 /// `in` is hard for loops/list-DSL; no general boolean `in` operator.
-
-## 17. Special Forms
-
-### Morphing (Temporary Type Adaptation)
-```goblin
-/// Transform object temporarily using another class's method
-result = morph(book, Card, apply_discount(10%))
-/// book keeps its type, but discount method from Card is applied
-```
-
-### Gmarks (Stable References)
-```goblin
-/// Create stable project-local identifiers
-post_ref = gmark("post/how-to-play")      /// auto-increment ord
-pin_ref = gmark("post/welcome", ord: 1)   /// manual position
-
-/// Query
-gmarks()                    /// all gmarks, sorted by ord
-gmark_info("post/welcome")  /// details for specific gmark
-```
-
-### Policies (Project Configuration)
-```goblin
-/// Define in policies.gbln
-@policy = "site_default"
-    money: { currency: "USD", precision: 2, policy: "truncate" }
-    modules: { mode: "expose" }
-
-/// Apply
-set @policy site_default
-```
-
-### Banish (Feature Blocking)
-```goblin
-/// Block language features project-wide via .goblin.banish.toml
-/// Usage of banished features → BanishError at compile time
-```
 
 ---
 
