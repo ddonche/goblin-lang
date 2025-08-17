@@ -3,7 +3,7 @@ add(1, 2, 3)           /// sum
 sum([1, 2, 3])         /// same as add
 min(1, 5, 3)           /// minimum
 max([1, 5, 3])         /// maximum
-roll 2d6+1             /// dice roll# Goblin Language AI Cheat Sheet v1.5
+roll 2d6+1             /// dice roll# Goblin Language AI Cheat Sheet v1.5.1
 *Complete syntax reference for AI assistants*
 
 ## 1. Basic Syntax
@@ -42,7 +42,7 @@ unary + - not !
 + -                                /// additive
 |>                                 /// pipeline (left-associative)
 | then ||                          /// string joins
-== != < <= > >= is is not  /// comparisons (chainable)
+== != < <= > >= === !== is is not  /// chainable comparisons; see notes on ===/!==
 and or                             /// logical (aliases: && for and, ! for not)
 ```
 
@@ -58,6 +58,18 @@ x--        → old x, then x = x - 1 /// decrement
 10 / 3     → 3.333...              /// float division
 10 // 3    → 3                     /// quotient only (infix)
 10 >> 3    → (3, 1)               /// divmod pair (quotient, remainder)
+
+/// Comparisons
+==   /// value equality (numeric 3 == 3.0 is true; containers compare structurally)
+!=   /// negation of ==
+===  /// strict identity: type AND value must match; for objects/enums: same identity
+!==  /// negation of ===
+is / is not  /// same-variant checks for enums and type predicates
+
+/// Disambiguation: `//` appears twice:
+///  - postfix:  n//       → sqrt(n)
+///  - infix:    a // b    → integer quotient
+/// Parser distinguishes by position (postfix has no RHS).
 
 /// String Joins
 "a" | "b"  → "ab"                 /// no-space join
@@ -118,8 +130,8 @@ from_base64(s), from_hex(s)  /// from encoded strings
 
 ### String Features
 ```goblin
-"Hello {name}"    // interpolation
-.upper() .lower() .title() .slug()  // methods
+"Hello {name}"    /// interpolation
+.upper() .lower() .title() .slug()  /// methods
 ```
 
 ## 4. Control Flow
@@ -272,11 +284,13 @@ class Book = title: "{title}" :: price: $0
     
     fn stock() = #inventory  /// expose via method
 end
+
+/// Privacy: `#field` accessible only on `self` inside defining class methods; not on `other`.
 ```
 
 ## 7. Templates
 
-*Templates use `::` to separate fields in key-value records.*
+/// `::` is the binding separator used in templates, template-style classes, and inline judge.
 
 ### Basic Templates
 ```goblin
@@ -359,6 +373,8 @@ status.ordinal()    /// 0-based index
 Status.values()                 /// all variants
 Status.from_name("Paid")       /// Status.Paid
 Http.from_value(404)           /// Http.NotFound
+
+/// Lookups throw EnumError on failure: Status.from_name(...), Http.from_value(...)
 ```
 
 ## 9. Modules
@@ -394,7 +410,7 @@ set @policy locked_modules   /// modules: { mode: "vault" }
 
 ## 10. Glam (Extensions)
 
-*Glam are Goblin's first-class extension system - modular capabilities that feel native to the language.*
+/// Glam = sandboxed extension package (semver). use/prefer/via control invocation.
 
 ### Usage
 ```goblin
@@ -548,6 +564,11 @@ read_json("data.json", {
     money: "object",     /// "off" | "object" | "string" | "auto"
     enum: "name"         /// "off" | "name" | "value" | "auto"
 })
+
+/// Defaults: write_json → money:"string", enum:"name", datetime:"string";
+///           read_json  → money:"auto",   enum:"auto", datetime:"auto"
+
+/// Note: `auto` in read_json infers format from input; not supported in write_json for explicitness.
 ```
 
 ## 15. Error Types
@@ -587,6 +608,8 @@ add, insert, replace, roll, freq, mode, sample_weighted
 ```
 from, at, first, last, to, into, with, dups, seq, as
 ```
+
+/// `in` is hard for loops/list-DSL; no general boolean `in` operator.
 
 ## 17. Special Forms
 
