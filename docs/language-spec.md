@@ -130,34 +130,38 @@
 
 ## 2.1 Precedence (high → low)
 
-    ()                                  /// grouping
-    .  ()  []  ?.                       /// member/call/index/optional chaining
-    **  //  ++  --                      /// postfix (square, sqrt, inc/dec)
-    **  ^^                              /// power (right-assoc)
-    unary + - not !                     /// unary
-    %  %s  % of E                       /// percent literals & self-reference
-    * / % // >>                         /// multiplicative + quotient/divmod
-    |>                                  /// pipeline (left-assoc; tighter than + -, looser than member/call/?.)
-    + -                                 /// additive
-    | then ||                           /// string joins
-    ??                                  /// null-coalescing (right-assoc)
-    == != < <= > >= === !== is is not   /// chainable comparisons
-    and or                              /// logical (aliases: && for and, ! for not)
+```
+()                                  /// grouping
+.  ()  []  ?.                       /// member/call/index/optional chaining
+**  //  ++  --                      /// postfix (square, sqrt, inc/dec)
+**  ^^                              /// power (right-assoc)
+unary + - not !                     /// unary
+%  %s  % of E                       /// percent literals & self-reference
+* / % // >>                         /// multiplicative + quotient/divmod
+|>                                  /// pipeline (left-assoc; tighter than + -, looser than member/call/?.)
++ -                                 /// additive
+| then ||                           /// string joins
+??                                  /// null-coalescing (right-assoc)
+== != < <= > >= === !== is is not   /// chainable comparisons
+and or                              /// logical (aliases: && for and, ! for not)
+```
 
 **Notes**
-
 - Postfix ops bind tighter than any binary operator, only to the nearest primary.
 - `//` is postfix sqrt when trailing, but infix quotient when between operands.
 - `>>` (divmod) is grouped with multiplicative ops.
 - `?.` (optional chaining) is at the same tier as member/call/index.
 - `|>` (pipeline) sits between arithmetic and string joins.
 - No inline `?:` operator in Goblin (use `judge`).
+- Time arithmetic is explicit: `time ± duration` → `TimeArithmeticError`. Use `wrap_time()` or `shift_time()`, or set a project policy to desugar.
 
 **Examples**
 
-    16// ** 2    → (sqrt(16)) ** 2 → 16
-    a + b** * 3  → a + (b**) * 3
-    9 // 2**     → SyntaxError   /// postfix must end expression
+```goblin
+16// ** 2    → (sqrt(16)) ** 2 → 16
+a + b** * 3  → a + (b**) * 3
+9 // 2**     → SyntaxError   /// postfix must end expression
+```
 
 ## 2.2 Division & Divmod
 
@@ -240,31 +244,38 @@ Random/dice support:
 
 # 3. Comparisons, Booleans, Truthiness
 
-    /// Equality
-    ==    /// value equality (numeric 3 == 3.0 is true; containers compare structurally)
-    !=    /// negation of ==
+```goblin
+/// Equality
+==    /// value equality (numeric 3 == 3.0 is true; containers compare structurally)
+!=    /// negation of ==
 
-    /// Strict identity
-    ===   /// type AND value must match
-    !==   /// negation of ===
+/// Strict identity
+===   /// type AND value must match (including enums, datetime, money, etc.)
+!==   /// negation of ===
 
-    /// Enum/type checks
-    is / is not   /// same-variant checks for enums and type predicates
+/// Enum/type checks
+is / is not   /// same-variant checks for enums and type predicates
 
-    /// Chaining
-    if 1 < x < 10    /// allowed
+/// Chaining
+if 1 < x < 10    /// allowed
+```
+
+**Datetime & Money Equality Notes**
+- `==` compares **value in canonical form**: `datetime("2025-01-01T00:00Z") == datetime("2024-12-31T19:00-05:00")` → true Money in the same currency with equal amount is also true.
+- `===` requires same type, zone, and representation: The above datetimes are **not** strictly identical; `$1.00 USD === 1.00` is false.
 
 ## 3.1 Boolean Logic
 
-    and, or        /// logical ops
-    &&             /// alias for and
-    !              /// alias for not
-    not            /// keyword form
+```goblin
+and, or        /// logical ops
+&&             /// alias for and
+!              /// alias for not
+not            /// keyword form
+```
 
 ## 3.2 Truthiness
 
 **Falsey values**
-
 - `false`
 - `0`, `0.0`
 - `""` (empty string)
@@ -273,87 +284,104 @@ Random/dice support:
 - `nil`
 
 **Notes**
-
 - Accessing an undefined variable → `NameError`, not a falsey.
 - Comparisons are chainable (`a < b < c`).
+- Datetime and money values are always truthy (even zero durations).
 
 # 4. Conditionals
 
 Goblin supports four conditional keywords:
-
 - `if` — run the block if the condition is **true**
 - `unless` — run the block if the condition is **false** (sugar for `if not`)
 - `elif` — test a new condition if all previous branches failed
 - `else` — run the block if no previous branch executed
 
+Datetime, money, and duration comparisons may be used in conditions directly (`if dt1 < dt2`, `if price >= $100`).
+
 ## 4.1 Block Form — Classic and Readable
 
-    if cond
-        ...
-    elif cond
-        ...
-    else
-        ...
+```goblin
+if cond
+    ...
+elif cond
+    ...
+else
+    ...
+end
 
-    unless cond
-        ...
-    else
-        ...
+unless cond
+    ...
+else
+    ...
+end
+```
 
 - No colons; indentation defines blocks.
 - `elif` and `else` are optional.
 - `unless cond` compiles as `if not cond`.
 - You may mix `if`/`unless` with `elif`/`else`.
-- Block form **does not yield a value**; use `say` or assignment inside.
+- Block form is a **statement** (does not yield a value); use `say` or assignment inside.
 
 **Examples**
 
-    if score >= 90
-        say "A"
-    elif score >= 80
-        say "B"
-    elif score >= 70
-        say "C"
-    else
-        say "F"
+```goblin
+if score >= 90
+    say "A"
+elif score >= 80
+    say "B"
+elif score >= 70
+    say "C"
+else
+    say "F"
+end
 
-    unless user.is_admin
-        deny_access()
-    else
-        grant_admin_access()
+unless user.is_admin
+    deny_access()
+else
+    grant_admin_access()
+end
+```
 
 ## 4.2 Judge — Declarative, Expression-Oriented Branching
 
-`judge` is an expression form that **returns a value**. Two styles exist: multiline and inline.
+`judge` is an **expression form** that always yields a value. Two styles exist: multiline and inline.
 
 ### 4.2.1 Multiline
 
-    result = judge
-        cond1: expr1
-        cond2: expr2
-        else: exprN
-    end
+```goblin
+result = judge
+    cond1: expr1
+    cond2: expr2
+    else: exprN
+end
+```
 
 - Conditions are tested top-to-bottom; first match wins.
 - `else:` is optional (default = `nil`).
-- Each `expr` can be any expression (string, call, money, percent, etc.).
+- Each `expr` can be any expression (string, call, money, datetime, etc.).
 
 **Example**
 
-    grade = judge
-        score >= 90: "A"
-        score >= 80: "B"
-        score >= 70: "C"
-        else: "F"
-    end
+```goblin
+grade = judge
+    score >= 90: "A"
+    score >= 80: "B"
+    score >= 70: "C"
+    else: "F"
+end
+```
 
 ### 4.2.2 Inline
 
-    judge: cond1: expr1 :: cond2: expr2 :: else: exprN
+```goblin
+judge: cond1: expr1 :: cond2: expr2 :: else: exprN
+```
 
 **Example**
 
-    say judge: score >= 90: "A" :: score >= 80: "B" :: else: "F"
+```goblin
+say judge: score >= 90: "A" :: score >= 80: "B" :: else: "F"
+```
 
 - Inline `judge` must be assigned or wrapped in `say`; otherwise it is a no-op.
 
@@ -361,12 +389,14 @@ Goblin supports four conditional keywords:
 
 `unless` works inside judge for negative logic:
 
-    status = judge
-        unless user.is_verified: "verify_email"
-        unless user.has_payment: "add_payment"
-        user.is_premium: "premium_flow"
-        else: "standard_flow"
-    end
+```goblin
+status = judge
+    unless user.is_verified: "verify_email"
+    unless user.has_payment: "add_payment"
+    user.is_premium: "premium_flow"
+    else: "standard_flow"
+end
+```
 
 ## 4.3 Interop Notes
 
@@ -376,31 +406,23 @@ Goblin supports four conditional keywords:
 
 **Example**
 
-    label = "Tier " || judge: price >= $100: "Gold" :: price >= $50: "Silver" :: else: "Bronze"
+```goblin
+label = "Tier " || judge: price >= $100: "Gold" :: price >= $50: "Silver" :: else: "Bronze"
+```
 
-## 4.4 Removed: Inline `?:`
-
-The old inline conditional (`? ?? :`) is **removed** in v1.5.
-
-**Before (removed):**
-
-    say score >= 90 ? "A" ?? score >= 80 ? "B" ?? score >= 70 ? "C" : "F"
-
-**Now (valid):**
-
-    say judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
-
-## 4.5 Quick Cheat-Sheet
+## 4.4 Quick Cheat-Sheet
 
 - **Block:** `if cond ... elif cond ... else ...`
 - **Unless:** `unless cond ... else ...`
 - **Judge multiline:**
 
-      x = judge
-          c1: v1
-          c2: v2
-          else: v3
-      end
+```goblin
+x = judge
+    c1: v1
+    c2: v2
+    else: v3
+end
+```
 
 - **Judge inline:** `say judge: c1: v1 :: c2: v2 :: else: v3`
   
@@ -408,27 +430,73 @@ The old inline conditional (`? ?? :`) is **removed** in v1.5.
 
 ## 5.1 Ranges
 
-    1..5    /// inclusive (1,2,3,4,5)
-    1...5   /// exclusive (1,2,3,4)
-    5..1    /// reversed (step -1)
+```goblin
+/// Numbers
+1..5    /// inclusive → 1,2,3,4,5
+1...5   /// exclusive → 1,2,3,4
+5..1    /// reversed (step = -1)
+```
+
+**Dates**
+
+```goblin
+for d in date("2025-08-01")..date("2025-08-03")
+    say d
+end
+/// → 2025-08-01, 2025-08-02, 2025-08-03
+```
+
+- Always **inclusive** (`..`)
+- Default step = `1d`
+- Step must be whole-day durations (`1d`, `2d`, …)
+
+**Datetimes**
+
+```goblin
+for ts in dt_start...dt_end
+    process(ts)
+end
+
+for ts in dt_start...dt_end step 30m
+    tick(ts)
+end
+```
+
+- Always **exclusive** (`...`)
+- Default step = `1h`
+- Step may be any duration (`m/h/d/...`)
+
+**Notes**
+- `time ± duration` is not allowed directly in range heads — wrap/shift first:
+
+```goblin
+for t in wrap_time(time("23:30"), 1h)...wrap_time(time("02:30"), 1h)
+    ...
+end
+```
 
 ## 5.2 Loop Forms
 
-    for i in 1..5          /// numeric range
-    for v in array         /// iterate array values
-    for i, v in array      /// array with index
-    for k, v in map        /// map keys and values
+```goblin
+for i in 1..5          /// numeric range
+for v in array         /// iterate array values
+for i, v in array      /// array with index
+for k, v in map        /// map keys and values
 
-    while cond
-        ...
-    end
+while cond
+    ...
+end
+```
 
 ## 5.3 Loop Control
 
-    skip    /// continue to next iteration
-    stop    /// break out of loop
+```goblin
+skip    /// continue to next iteration
+stop    /// break out of loop
+```
 
 - Using `skip` or `stop` outside a loop → `SyntaxError`.
+- Map iteration order is insertion-stable.
 
 # 6. Collections
 
