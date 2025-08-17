@@ -1,4 +1,4 @@
-# Goblin Language AI Cheat Sheet v1.5.1
+# Goblin Language AI Cheat Sheet v1.5.2
 *Complete syntax reference for AI assistants - Reorganized for Documentation Flow*
 
 ## GETTING STARTED
@@ -113,12 +113,27 @@ nil                /// null/undefined
 1...5             /// exclusive (1,2,3,4)
 ```
 
-#### Date/Time
+#### Date/Time (No naive timestamps)
 ```goblin
-date("2025-08-12")
-time("14:30:05")
-datetime("2025-08-12 14:30", tz: "UTC")
-1h + 30m          /// duration literals: s, m, h, d, w, mo, y
+date("2025-08-12")                          /// calendar day (no time, no zone)
+time("14:30:05")                            /// clock time (no date, no zone)  
+datetime("2025-08-12 14:30", tz: "UTC")     /// date + time + zone (zone required)
+duration(3600)                              /// elapsed seconds constructor
+
+/// Duration literals: s, m (minutes), h, d, w, mo (months), y
+1h + 30m          /// 90 minutes
+6mo               /// 6 months (NOT 6 minutes - use 'mo' for months)
+
+/// No implicit coercions between date/time/datetime/duration types
+/// time ± duration requires explicit wrap_time() or shift_time()
+
+/// Calendar-safe helpers (field changes, clamped)
+add_months(d, n), add_years(d, n)           /// Jan 31 + 1mo → Feb 28/29
+floor_dt(dt, "day"), ceil_dt(dt, "hour")    /// truncation/rounding
+
+/// Trusted time (opt-in via policy/glam)
+trusted_now()                               /// server > cache > local per policy
+ensure_time_verified("receipt timestamp")   /// verify time source or error/warn
 ```
 
 #### Binary Data
@@ -533,6 +548,7 @@ gmark_info("post/welcome")  /// details for specific gmark
 /// Define in policies.gbln
 @policy = "site_default"
     money: { currency: "USD", precision: 2, policy: "truncate" }
+    datetime: { tz: "America/Denver", prefer_trusted: false, policy: "allow" }
     modules: { mode: "expose" }
 
 /// Apply
@@ -620,17 +636,18 @@ write_bytes("file.bin", blob_data)
 write_json("data.json", obj, {
     money: "object",     /// "object" | "string" | "units"
     enum: "name",        /// "name" | "value" | "object"  
-    datetime: "string"   /// "string" | "object"
+    datetime: "string"   /// "string" | "object" (no auto on write)
 })
 
 /// Read with options  
 read_json("data.json", {
     money: "object",     /// "off" | "object" | "string" | "auto"
-    enum: "name"         /// "off" | "name" | "value" | "auto"
+    enum: "name",        /// "off" | "name" | "value" | "auto"
+    datetime: "auto"     /// "off" | "string" | "object" | "auto"
 })
 
 /// Defaults: write_json → money:"string", enum:"name", datetime:"string";
-///           read_json  → money:"auto",   enum:"auto", datetime:"auto"
+///           read_json  → money:"auto",   enum:"auto", datetime:"off"
 
 /// Note: `auto` in read_json infers format from input; not supported in write_json for explicitness.
 ```
@@ -646,10 +663,11 @@ SyntaxError, AssertionError, OverflowError
 ### Goblin-Specific Errors
 ```
 CurrencyError, MoneyDivisionError, MoneyPrecisionError,
-TimeSourceError, TimezoneError, EnumError, GlamError, ContractError,
-PermissionError, AmbiguityError, LockfileError, DeterminismError,
-MorphTypeError, MorphFieldError, ModuleNotFoundError, PolicyNotFoundError,
-BanishError, GLAM_NO_PROVIDER, GLAM_FANOUT_UNSUPPORTED, GLAM_PARTIAL_FAILURE,
+TimeSourceError, TimeSourceWarning, TimezoneError, TimeArithmeticError,
+EnumError, GlamError, ContractError, PermissionError, AmbiguityError, 
+LockfileError, DeterminismError, MorphTypeError, MorphFieldError, 
+ModuleNotFoundError, PolicyNotFoundError, BanishError, DatetimeCompatWarning,
+GLAM_NO_PROVIDER, GLAM_FANOUT_UNSUPPORTED, GLAM_PARTIAL_FAILURE,
 GLAM_DEST_INVALID, GLAM_TIMEOUT, GLAM_OVERWRITE_DENIED, GLAM_AMBIGUOUS_PROVIDER
 ```
 
@@ -671,8 +689,8 @@ ShuffleTypeError, SortTypeError, AddTypeError
 ```
 if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, stop, assert,
 class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
-morph, vault, judge, banish, unbanish, expose, set, settle, pick, reap, usurp, len, shuffle, sort, 
-add, insert, replace, roll, freq, mode, sample_weighted
+date, time, datetime, duration, morph, vault, judge, banish, unbanish, expose, set, settle, 
+pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted
 ```
 
 #### Soft Keywords (context-dependent)
