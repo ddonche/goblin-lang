@@ -1,9 +1,4 @@
-```goblin
-add(1, 2, 3)           /// sum
-sum([1, 2, 3])         /// same as add
-min(1, 5, 3)           /// minimum
-max([1, 5, 3])         /// maximum
-roll 2d6+1             /// dice roll# Goblin Language AI Cheat Sheet v1.5.1
+# Goblin Language AI Cheat Sheet v1.5.1
 *Complete syntax reference for AI assistants*
 
 ## 1. Basic Syntax
@@ -296,10 +291,10 @@ end
 ```goblin
 @card = title: "{title}" :: price: .99 :: qty: 1
 
-// Usage with data
+/// Usage with data
 card1 = @card: title: "Ace of Cups"
 card2 = @card: title: "Two Cups" :: price: 1.25
-card3 = @card: title: "Three Cups" :: :: 2  // skip price, set qty
+card3 = @card: title: "Three Cups" :: :: 2  /// skip price, set qty
 ```
 
 ### Template Blocks
@@ -322,7 +317,7 @@ suit: "Cups"
     for rank in ["Ace", "Two", "Three"]
         "{rank}"
     end
-    "Ace" :: qty: 2              // override specific cards
+    "Ace" :: qty: 2              /// override specific cards
 end
 ```
 
@@ -431,6 +426,24 @@ result = shp::csv_export(data)
 contract product.export(items: array<Product>) -> file
     errors: [ValidationError, AuthError]
 end
+```
+
+### Provider Defaults (NEW)
+```goblin
+/// File-level default for all contracts a glam implements
+prefer via shp
+
+/// Per-contract default  
+prefer product.export via shp
+
+/// Precedence: per-call via > per-contract prefer > file-level prefer > config
+```
+
+### Fanout Operator (NEW)
+```goblin
+/// Run contract on ALL loaded glam that implement it
+files = product.export(@items) via all
+/// Returns: { glam_alias: result_or_error }
 ```
 
 ## 11. Money System
@@ -585,7 +598,8 @@ CurrencyError, MoneyDivisionError, MoneyPrecisionError,
 TimeSourceError, TimezoneError, EnumError, GlamError, ContractError,
 PermissionError, AmbiguityError, LockfileError, DeterminismError,
 MorphTypeError, MorphFieldError, ModuleNotFoundError, PolicyNotFoundError,
-BanishError
+BanishError, GLAM_NO_PROVIDER, GLAM_FANOUT_UNSUPPORTED, GLAM_PARTIAL_FAILURE,
+GLAM_DEST_INVALID, GLAM_TIMEOUT, GLAM_OVERWRITE_DENIED, GLAM_AMBIGUOUS_PROVIDER
 ```
 
 ### List Operation Errors
