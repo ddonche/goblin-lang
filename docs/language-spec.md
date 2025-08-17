@@ -10,1699 +10,1267 @@
 
 **File extension**: `.gbln`
 
-## 0. Keywords, etc.
-Keywords (hard, unshadowable)
+# 0. Keywords and Prelude
 
-Flow/blocks: if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, stop, assert
-Defs/modules: class, fn, enum, use, import, export, via, test
-Literals/types: true, false, nil, int, float, bool, money, pct
-Goblin forms: morph, vault, judge, banish, unbanish
+## Hard Keywords (cannot be shadowed)
 
-Removed keywords: try, catch, finally, expose
+    if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, stop, assert,
+    class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
+    morph, vault, judge, banish, unbanish, expose, set, settle, pick, reap, usurp, len, shuffle, sort,
+    add, insert, replace, roll, freq, mode, sample_weighted
 
-Prelude (global, shadowable; originals at std.*)
+## Soft Keywords (context-dependent)
 
-Lists & play: pick, reap, usurp, shuffle, sort, add, insert, replace, len
-Dice/sampling: roll, freq, mode, sample_weighted
-Math: min, max, abs, floor, ceil, round, pow
-Output/events: say, emit, emit_async
-Utilities: error, warn, sum
+    from, at, first, last, to, into, with, dups, seq, as
 
-Removed from prelude: rand, randint (use pick ranges or roll dice)
+## Notes
 
-Spec line to add:
+- `in` is hard for loops and list-DSL; no general boolean `in` operator.
+- File extension: `.gbln`
+- One statement per line; indentation defines blocks.
 
-Prelude helpers are injected globally and are shadowable. Originals are always reachable as std.<name>.
+## Prelude (global, shadowable)
 
-Std modules (opt-in via use)
+    pick, reap, usurp, shuffle, sort, add, insert, replace, len, roll, roll_detail, freq, mode,
+    sample_weighted, min, max, abs, floor, ceil, round, pow, sum, error, warn
 
-std.play: roll_detail (moved here).
-std.fs: read/write files & dirs.
-std.json, std.yaml, std.csv: parse/stringify/read/write.
-std.codec: base64/hex, is_binary.
-std.time: date/time APIs; std.time.trust for trusted-time controls.
-std.crypto: hash, hmac.
-std.util: uuid, validate, compat, prefer, plan, publish, mode, track_theft, shame_level.
-std.money: canonical money/settlement helpers (no goblin_* aliases).
-(Optional later: std.gmarks, std.events, std.blob if/when you formalize them.)
+- Prelude helpers are injected globally and shadowable. Originals are reachable via `std.*`.
 
-Dice literals (no strings)
+## Dice Literals
 
-Forms:
+- Valid inside `roll` and `roll_detail`.
+- Forms: `roll 2d6+1`, `roll(1d20)`, `roll_detail 4d8-2`.
+- Example:
 
-roll dice_expr
-roll(dice_expr)
-roll_detail dice_expr        # only after `use play`
-std.play.roll_detail(dice_expr)
+    roll 2d6+1        /// dice roll
+    roll(1d20)        /// function form
+    r = roll_detail 4d8-2   /// r.dice, r.sum, r.total
+# 1. Files, Printing, Variables
 
-dice_expr ::= INT "d" INT [("+"|"-") INT]?
+## 1.1 Files & Layout
 
+- Source files are UTF-8, with LF newlines.
+- Indentation uses **spaces only** (no tabs).
+- One statement per line; blank lines are allowed.
 
-Rules:
+**Comments**
 
-dice_expr is recognized after bare roll (Prelude) and bare roll_detail only if use play is in scope.
+    /// Single-line comment
 
-Namespaced calls (e.g., std.play.roll_detail) must use parentheses.
+    //// 
+    Block comment content
+    ////
 
-Determinism & RNG note
-All random helpers (pick, roll, sample_weighted, shuffle) use the runtime RNG and honor the global seed.
-Deprecated: rand, randint → use pick (ranges) or roll (dice).
+- Block comment markers must appear alone on their line (no trailing text).
 
-Error style (“grumble”)
+## 1.2 Printing
 
-Project default: off (plain). Toggle per project or CLI.
+    say expr
 
-Config snippet:
+**Leading-quote shorthand:** Any line beginning with a quoted string is equivalent to `say`:
 
-/goblin.project
-  error_style = "plain"    # "plain" | "grumble"
+    "Hello"    ≡    say "Hello"
 
+## 1.3 Variables
 
-Runtime:
+    name = "Frank"
+    age = 45
+    price = $1.50   /// money literal
 
-Error codes are stable (e.g., DICE_PARSE, WEIGHT_TYPE).
+- Using a variable before assignment → `NameError` (with "Did you mean …?" suggestion).
+- Empty assignment (`x =`) → `SyntaxError`.
+- Types are inferred unless cast.
 
-Only the human message skin changes.
+**Core Types**
 
-Example mapping:
+- **Primitives:** `int`, `float`, `bool`, `string`, `nil`
+- **Extended:** `money`, `percent`, `date`, `time`, `datetime`, `duration`, `blob`, `enum`, `array`, `map`
 
-DICE_PARSE
-  plain:   "cannot parse dice expression: {expr}"
-  grumble: "the dice goblins can’t parse '{expr}'"
+**Notes**
 
-Deprecations / removals box
+- Binary data uses the `blob` type for raw bytes, encoded strings, or files.
+- Enums are user-defined closed sets (see §Enums).
 
-Removed keywords: try, catch, finally, expose
+## 1.4 Casting & Formatting
 
-Removed prelude: rand, randint
+    /// Casts
+    str(x), int(x), float(x), bool(x), money(x, CUR?)
 
-Removed aliases: all goblin_* money helpers (use std.money canonical names)
+    /// Percent construction
+    pct(25)          /// 25% as a type-safe percent
 
-Tiny examples (sanity)
+    /// Binary data
+    blob("text")     /// UTF-8 conversion (strict)
+    from_base64(s), from_hex(s)  /// decode into blob
 
-Shadowing:
+    /// Parse helpers
+    int("$1,234")    → 1234
+    float("$1,234.50") → 1234.5
 
-len = 42
-say len                /// 42
-say std.len [1,2,3]    /// 3
+    /// Numeric formatting
+    fmt(x, ".2f"), fmt(x, ","), fmt(x, ",.2f")
 
+## 1.5 Strings
 
-Dice + detail:
+    /// Interpolation
+    "Hello {name}"
 
-say roll 2d6+1
-use play
-r = roll_detail 4d8-2
-say r.dice, r.sum, r.total
-
-
-Percentile (transparent):
-
-d1 = roll 1d10
-d2 = roll 1d10
-tens = (d1 == 10 ? 0 : d1) * 10
-ones = (d2 == 10 ? 0 : d2)
-percent = tens + ones
-if percent == 0
-  percent = 100
-end
-say "Dice: " || d1 || " and " || d2
-say "Percentile: " || percent
-
-
-Pick over ranges (rand/ randint replacement):
-
-say pick 1..6
-say pick 0..99
----
-
-## 1. Files, Printing, Variables
-
-### 1.1 Files & Layout
-- UTF-8, LF newlines
-- Indent with spaces only (no tabs)
-- One statement per line; blank lines allowed
-
-**Comments:**
-```goblin
-/// Single-line comment
-
-//// 
-Block comment content
-////
-```
-Block comment markers must appear alone on their line (no trailing text).
-
-**Statements:**
-```goblin
-set @policy <name>    /// changes the active policy for the current scope
-```
-
-### 1.2 Printing
-```goblin
-say expr
-
-/// Leading-quote shorthand: a line beginning with a quoted string is printed
-"Hello" ≡ say "Hello"
-```
-
-### 1.3 Variables
-```goblin
-name = "Frank"
-age = 45
-price = 1.50
-```
-- Using a variable before assignment → `NameError` (with "Did you mean …?")
-- Empty assignment (`x =`) → `SyntaxError`
-- Core types: int, float, bool, string, money, percent, date, time, datetime, duration, blob, enum
-- Numeric types (int/float/money) are inferred unless cast
-- Binary data uses blob type for raw bytes, images, files
-- Enums are user-defined closed sets (see §22)
-
-### 1.4 Casting & Formatting
-```goblin
-/// Casts
-str(x), int(x), float(x), bool(x), money(x, CUR?)
-
-/// Percent construction
-pct(x)                                 /// percentage points (pct(25) → 25%)
-
-/// Binary data
-blob(x), str(blob_data)                /// UTF-8 conversion (strict)
-to_base64(blob_data), from_base64(s)   /// base64 encoding/decoding  
-to_hex(blob_data), from_hex(s)         /// hex encoding/decoding
-
-/// Parse helpers
-int("$1,234") → 1234
-float("$1,234.50") → 1234.5
-
-/// Numeric formatting
-fmt(x, ".2f"), fmt(x, ","), fmt(x, ",.2f")
-```
-
-### 1.5 Strings
-```goblin
-/// Interpolation
-"Hello {name}"
-
-/// Methods
-.upper() .lower() .title() .slug()
-
-/// Concatenation operators
-| → no-space join for strings
-|| → space join for strings
-```
-- Mixed types must be cast (e.g., `str(5) || str(10)`)
-- `.` is for method/property access only
-- Methods may be called on literals, e.g., `"hi".upper()`
-
----
-
-## 2. Operators & Math
-
-2.1 Precedence (high → low)
-()
-member / call / index / optional chaining: .  ()  []  ?.
-postfix operators: ** (square), // (square root), ++, --
-**, ^^ (right-to-left)        [binary power and explain-power]
-unary + - not !
-postfix percent: %, %s, % of E       [percent literals and self-reference]
-* / % // >>                         [multiplicative family, divmod included]
-+ -
-|>                                  [pipeline operator, left-associative]
-| then ||                           [string joins only]
-comparisons: == != < <= > >= === !== is is not   (chaining allowed)
-logical: and / or                   (aliases: ! for not, && for and)
-inline conditional ? ?? :            (right-associative)
-
-
-Notes:
-
-Postfix forms (**, //, ++, --) bind tighter than any binary operator (like parentheses).
-
-Bind only to the nearest primary (literal, variable, or parenthesized expression).
-
->> (divmod) sits at the same precedence level as * / % // (multiplicative group).
-
-?. (optional chaining) binds at the same tier as member access, call, and index — tighter than everything below.
-
-|> (pipeline) is its own tier: lower than arithmetic, higher than string joins. Left-associative.
-
-Lexer rule: Postfix operators are recognized when immediately followed by line end, ), ], }, :, ,, or another operator that cannot start an expression. Everything else is infix.
-
-**Examples:**
-```goblin
-16// ** 2 → (sqrt(16)) ** 2 → 16
-a + b** * 3 → a + (b**) * 3
-9 // 2** → SyntaxError  /// postfix needs expression end
-```
-
-### 2.2 Division & Divmod
-```goblin
-/// Division types
-/ → float division (numbers only)
-// → quotient-only division (floor division, Python-style)  
->> → divmod returning pair (q, r) for numbers and money
-
-/// Examples (numbers)
-10.75 / 3 → 3.5833333333
-10.75 // 3 → 3
-10.75 >> 3 → (3, 1.75)
--7 / 3 → -2.3333333333
--7 // 3 → -3      /// floor semantics
--7 >> 3 → (-3, 2) /// because -7 = (-3)*3 + 2
-
-/// Money (using `/` with money → MoneyDivisionError)
-price = $10.75
-q = price // 3      /// USD 3.00 (quotient only)
-q, r = price >> 3   /// (USD 3.00, USD 1.75)
-price / 3           /// MoneyDivisionError
-
-/// Remainder operator
-% → remainder (modulus)
-/// For money: amount % n returns money remainder (same as second element of amount >> n)
-```
-
-### 2.3 Exponentiation
-```goblin
-** → normal exponent (5 ** 3 → 125)
-^^ → explain-power
-say 5 ^^ 3 → 125 (5 × 5 × 5)
-```
-- Same precedence/associativity/value as `**`
-- `^` reserved for future XOR (not an operator in v1.5)
-
-### 2.4 Postfix Math Shorthands
-```goblin
-n** → square (9** → 81)
-n// → square root (9// → 3)
-x++ → yields old x, then x = x + 1
-x-- → yields old x, then x = x - 1
-
-/// Precedence examples
-16// ** 2 → (sqrt(16)) ** 2 → 16
-a + b** * 3 → a + (b**) * 3
-arr[i]++ * 2 → (old arr[i]) * 2, then mutate
-```
-
-**Types:**
-- `n**` and `n//`: int/float only (money not allowed; TypeError)
-- `x++`/`x--`: int/float/money; money changes by 1 whole unit
-- Lvalues only (e.g., `arr[i]++` ok). Not on literals/temporaries: `(x+1)++` → SyntaxError
-- No chaining: `x++++` and `(x++)++` → SyntaxError
-- No prefix forms (`++x`, `--x`) in v1.5
-
-### 2.5 Bitwise
-Operators removed to avoid conflict with string pipes. Use functions instead:
-```goblin
-bit.and(a,b), bit.or(a,b), bit.xor(a,b), bit.not(x), bit.shl(x,n), bit.shr(x,n)
-```
-
-### 2.6 Built-in Math Functions
-All support variadic and array forms:
-```goblin
-add sub mult div mod divmod pow root floor ceil round abs min max rand randint
-add(1,2,3) == add([1,2,3])
-sum(arr)  /// semantic twin of add for arrays
-```
-
-### 2.7 Increments & Compound Assignment
-```goblin
-/// Postfix ++ / -- are expressions (yield old value, then mutate lvalue)
-/// Valid on int, float, money
-
-/// Compound assignment
-+= -= *= **=
-```
-Money ops must follow currency rules (same currency, see §10). For money, +=, -=, and *= follow the same promotion, precision, and ledger rules described in §10 (including precision:/policy:).
-
-**Money restrictions:** `/=` and `%=` with money → `MoneyDivisionError` (same as `/` and `%` restrictions in §10.4).
-
----
-
-## 3. Comparisons, Booleans, Truthiness
-
-```goblin
-/// Equality
-== (value); strict: === / !== (type + value)
-
-/// Aliases
-is ≡ ==, is not ≡ !=
-
-/// Chaining allowed
-if 1 < x < 10
-
-/// Falsey values
-false, 0, 0.0, "", [], {}, nil
-```
-**Note:** Undefined var access → error, not falsey
-
----
-
-## 4. Conditionals
+    /// Methods
+    .upper() .lower() .title() .slug()
+
+    /// Concatenation
+    "a" | "b"   → "ab"    /// no-space join
+    "a" || "b"  → "a b"   /// space join
+
+- Mixed types must be cast (e.g., `str(5) || str(10)`).
+- `.` is for **member access, method calls, indexing, and optional chaining** (`?.`).
+- Methods may be called directly on literals, e.g., `"hi".upper()`.
+
+# 2. Operators & Math
+
+## 2.1 Precedence (high → low)
+
+    ()                                  /// grouping
+    .  ()  []  ?.                       /// member/call/index/optional chaining
+    **  //  ++  --                      /// postfix (square, sqrt, inc/dec)
+    **  ^^                              /// power (right-assoc)
+    unary + - not !                     /// unary
+    %  %s  % of E                       /// percent literals & self-reference
+    * / % // >>                         /// multiplicative + quotient/divmod
+    |>                                  /// pipeline (left-assoc; tighter than + -, looser than member/call/?.)
+    + -                                 /// additive
+    | then ||                           /// string joins
+    ??                                  /// null-coalescing (right-assoc)
+    == != < <= > >= === !== is is not   /// chainable comparisons
+    and or                              /// logical (aliases: && for and, ! for not)
+
+**Notes**
+
+- Postfix ops bind tighter than any binary operator, only to the nearest primary.
+- `//` is postfix sqrt when trailing, but infix quotient when between operands.
+- `>>` (divmod) is grouped with multiplicative ops.
+- `?.` (optional chaining) is at the same tier as member/call/index.
+- `|>` (pipeline) sits between arithmetic and string joins.
+- No inline `?:` operator in Goblin (use `judge`).
+
+**Examples**
+
+    16// ** 2    → (sqrt(16)) ** 2 → 16
+    a + b** * 3  → a + (b**) * 3
+    9 // 2**     → SyntaxError   /// postfix must end expression
+
+## 2.2 Division & Divmod
+
+    10 / 3    → 3.333...              /// float division
+    10 // 3   → 3                     /// integer quotient (floor)
+    10 >> 3   → 3 r 1                 /// REPL pretty-print
+    (10 >> 3).tuple → (3, 1)          /// canonical tuple view
+    (10 >> 3).q     → 3               /// quotient
+    (10 >> 3).r     → 1               /// remainder
+
+**Money**
+
+    price = $10.75
+    q, r = price >> 3   /// (USD 3.00, USD 1.75)
+    q = price // 3      /// USD 3.00
+    price / 3           /// MoneyDivisionError
+
+**Remainder**
+
+- `%` is numeric remainder (modulus).
+- For money: `amount % n` = same as the second element of `amount >> n`.
+
+## 2.3 Exponentiation
+
+    5 ** 3   → 125        /// normal power
+    5 ^^ 3   → 125        /// explain-power (same precedence/assoc)
+    say 5 ^^ 3 → 125 (5 × 5 × 5)
+
+- `^` is reserved (future XOR).
+
+## 2.4 Postfix Math Shorthands
+
+    9**      → 81        /// square
+    16//     → 4         /// square root
+    x++      → old x, then x = x + 1
+    x--      → old x, then x = x - 1
+
+**Rules**
+
+- `n**`, `n//`: numeric only (int/float). Money not allowed → `TypeError`.
+- `x++`, `x--`: valid on int/float/money; money changes by one major unit.
+- Lvalues only (e.g. `arr[i]++` OK). Not allowed on literals/temps.
+- No chaining: `(x++)++` → `SyntaxError`.
+- No prefix forms (`++x`, `--x`) in v1.5.
+
+## 2.5 Bitwise
+
+Bitwise operators are removed to avoid conflict with string joins. Use functions:
+
+    bit.and(a,b), bit.or(a,b), bit.xor(a,b), bit.not(x)
+    bit.shl(x,n), bit.shr(x,n)
+
+## 2.6 Built-in Math Functions
+
+All accept both variadic args and arrays:
+
+    add(1,2,3)    → 6
+    add([1,2,3])  → 6
+    sum([1,2,3])  → 6      /// synonym for add
+    min(1,5,3)    → 1
+    max([1,5,3])  → 5
+
+Random/dice support:
+
+    roll 2d6+1
+    rand(), randint(1,10)
+
+## 2.7 Increments & Compound Assignment
+
+    x++  /// postfix increment (yield old value, then mutate)
+    x--  /// postfix decrement
+
+    /// Compound assignment
+    +=  -=  *=  **=
+
+**Money restrictions**
+
+- `+=`, `-=`, `*=` allowed, subject to currency rules and precision policy.
+- `/=` and `%=` on money → `MoneyDivisionError`.
+
+# 3. Comparisons, Booleans, Truthiness
+
+    /// Equality
+    ==    /// value equality (numeric 3 == 3.0 is true; containers compare structurally)
+    !=    /// negation of ==
+
+    /// Strict identity
+    ===   /// type AND value must match
+    !==   /// negation of ===
+
+    /// Enum/type checks
+    is / is not   /// same-variant checks for enums and type predicates
+
+    /// Chaining
+    if 1 < x < 10    /// allowed
+
+## 3.1 Boolean Logic
+
+    and, or        /// logical ops
+    &&             /// alias for and
+    !              /// alias for not
+    not            /// keyword form
+
+## 3.2 Truthiness
+
+**Falsey values**
+
+- `false`
+- `0`, `0.0`
+- `""` (empty string)
+- `[]` (empty array)
+- `{}` (empty map)
+- `nil`
+
+**Notes**
+
+- Accessing an undefined variable → `NameError`, not a falsey.
+- Comparisons are chainable (`a < b < c`).
+
+# 4. Conditionals
 
 Goblin supports four conditional keywords:
-* `if` — run the block if the condition is **true**.
-* `unless` — run the block if the condition is **false** (syntactic sugar for `if not`).
-* `elif` — test a new condition if all previous `if`/`unless` branches failed.
-* `else` — run the block if no previous branch executed.
 
-### 4.1 Block Form — Classic and Readable
-
-```goblin
-if cond
-    ...
-elif cond
-    ...
-else
-    ...
-
-unless cond
-    ...
-else
-    ...
-```
-
-* No colons; indentation defines blocks.
-* `elif` and `else` are optional.
-* `unless <condition>` is compiled exactly as `if not (<condition>)`.
-* You may freely mix `if` and `unless` with `elif` and `else`.
-* Last expression in a branch is the value returned by that branch **only if** you explicitly use it (assign/say/etc.). The block form itself does not yield a value.
-
-**Examples:**
-```goblin
-if score >= 90
-    say "A"
-elif score >= 80
-    say "B"
-elif score >= 70
-    say "C"
-else
-    say "F"
-
-unless user.is_admin
-    deny_access()
-else
-    grant_admin_access()
-
-if user.is_verified
-    process_order()
-elif user.needs_verification
-    send_verification_email()
-else
-    require_signup()
-```
-
-### 4.2 Judge — Declarative, Expression‑Oriented Branching
-`judge` is a compact, template‑style conditional that **returns a value**. It comes in multiline and inline forms.
-
-#### 4.2.1 Multiline Form (Most Readable)
-```goblin
-result = judge
-    cond1: expr1
-    cond2: expr2
-    ...
-    else: exprN
-```
-* Evaluated **top‑to‑bottom**; first true `cond:` wins.
-* `else:` is optional, but recommended. If omitted and nothing matches → `nil`.
-* Each `expr` is any expression (string literal, function call, money, pct, etc.).
-
-**Examples:**
-```goblin
-/// REPL: prints "A" because REPL auto-prints expression results
-judge
-    score >= 90: "A"
-    score >= 80: "B"
-    score >= 70: "C"
-    else: "F"
-
-/// Script: silent, because you didn't use the value
-grade = judge
-    score >= 90: "A"
-    score >= 80: "B"
-    score >= 70: "C"
-    else: "F"
-say grade  /// prints later
-```
-
-You can also put **actions** inside an expression, but remember `judge`'s value is whatever the winning expression evaluates to:
-
-```goblin
-judge
-    total > $100: say "High roller!"
-    else: say "Thanks!"
-```
-(Here the value is the result of `say ...` which is typically `nil`—that's fine if you only care about the side effect.)
-
-#### 4.2.2 Inline Form (Template‑Style, One Line)
-```goblin
-judge: cond1: expr1 :: cond2: expr2 :: ... :: else: exprN
-```
-
-**Examples:**
-```goblin
-/// Print immediately
-say judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
-
-/// Store and use later
-grade = judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
-say grade
-```
-
-**Important:** Outside the REPL, a bare inline `judge` with no `say`/assignment is a no‑op:
-```goblin
-judge: score >= 90: "A" :: else: "F"  /// does nothing in a script
-```
-Use `say` or assign it to a name.
-
-#### 4.2.3 Discarded‑Value Warning (Scripts)
-If a `judge` value is evaluated and **not used** in non‑interactive mode, Goblin emits:
-```
-UnusedJudgeValueWarning: result of 'judge' is ignored (line N). Assign it or wrap with 'say'.
-```
-*(No warning in the REPL, where auto‑print is expected.)*
-
-4.2.4 Judge with Unless
-judge works with unless conditions for readable negative logic:
-goblin/// Multiline form
-status = judge
-    unless user.is_verified: "verify_email"
-    unless user.has_payment: "add_payment"  
-    user.is_premium: "premium_flow"
-    else: "standard_flow"
-
-/// Inline form  
-action = judge: unless user.is_admin: "deny" :: user.can_edit: "allow" :: else: "readonly"
-Mixed unless and positive conditions are allowed in the same judge expression.
-
-### 4.3 Interop Notes
-* `judge` is an **expression**; it can appear anywhere an expression can:
-```goblin
-label = "Tier " || judge: price >= $100: "Gold" :: price >= $50: "Silver" :: else: "Bronze"
-```
-* Branch expressions follow all usual type rules (money, pct, etc.).
-* Short‑circuit semantics: evaluation stops at the first matching condition.
-
-### 4.4 Removed: Inline `? ?? :`
-The old inline conditional (`? ?? :`) is **removed** in v1.5 to favor readability and consistency with templates. `judge` and the classic block form replace it.
-
-**Before (old):**
-```goblin
-say score >= 90 ? "A" ?? score >= 80 ? "B" ?? score >= 70 ? "C" : "F"
-```
-
-**Now (pick one):**
-```goblin
-say judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
-
-/// or the classic block:
-if score >= 90
-    say "A"
-elif score >= 80
-    say "B"
-elif score >= 70
-    say "C"
-else
-    say "F"
-```
-
-### 4.5 Quick Cheat‑Sheet
-* **Block:** `if cond ... elif cond ... else ...`
-* **Unless:** `unless cond ... else ...` (same as `if not cond`)
-* **Judge (multiline):** `x = judge c1: v1 c2: v2 else: v3`
-* **Judge (inline):** `say judge: c1: v1 :: c2: v2 :: else: v3`
-* **Warning (scripts):** Ignored `judge` → `UnusedJudgeValueWarning` with line number and hint.
-## 5. Loops
-
-```goblin
-/// Ranges
-1..5   /// inclusive
-1...5  /// exclusive
-5..1   /// reversed (step -1)
-
-/// Loop forms
-for i in 1..5
-for v in array
-for i, v in array
-for k, v in map
-while cond
-
-/// Control
-skip  /// continue
-stop  /// break
-```
-Using `skip`/`stop` outside loops → SyntaxError
-
----
-
-## 6. Collections
-
-### 6.1 Arrays
-```goblin
-/// Literals
-[1, 2, 3]
-
-/// Indexing (negative indexing supported)
-arr[0], arr[-1]
-
-/// Slicing
-a[1:4]
-
-/// Length
-len(a) or a.len()
-
-/// Mutators
-push pop unshift shift insert remove clear, reverse(), sorted()
-
-/// Helpers
-sum(a), join(a, sep)
-```
-
-### 6.2 Maps
-```goblin
-/// Literals
-{key: "val", price: 1.5}
-
-/// Access
-m.key         /// identifier keys
-m["any-key"]  /// any key
-
-/// Methods
-keys() values() items() delete()
-```
-
----
-
-## 7. Functions
-
-```goblin
-fn greet(name="Traveler")
-    "Hello, {name}"   /// last expression is implicit return
-end
-```
-- `return` allowed; else last expression returns
-- Defaults supported; arity is strict (defaults satisfy arity)
-- Single-line functions: `fn add(a, b) = a + b`
-
----
-
-7.1 Module and Glam Function Calls
-goblin/// Module calls (after import)
-import "./helpers" as H
-slug = H::slugify("Product Name")
-
-/// Glam calls (explicit namespace)
-use shopify@^1.6 as shp
-use translator@1.0 as trans
-
-/// Direct glam method calls
-spanish = trans::translate_spanish("Hello world")
-csv_data = shp::export_csv(products)
-
-/// Multiple glams with same capability
-use trans_lib1@1.0 as lib1  
-use trans_lib2@1.0 as lib2
-
-result1 = lib1::translate_spanish("Hello world")    /// Uses first glam
-result2 = lib2::translate_spanish("Good morning")   /// Uses second glam
-
-/// No collisions due to explicit aliasing
-/// prefer/via optional when using explicit aliases
-
-## 8. Key-Value "Pipes" (::) and Templates
-
-### 8.1 Inline KV with ::
-```goblin
-/// Anywhere a short record is helpful
-card: "Two of Cups" :: price: .99 :: qty: 4
-```
-- `::` separates fields
-- LHS must be identifiers
-- RHS any expression (including nested maps/arrays)
-
-### 8.2 Templates
-
-#### 8.2.1 Positional with Defaults
-```goblin
-/// Define template
-@cards = card: "{name}" :: price: .99 :: qty: 1
-
-/// Use template
-@cards =
-    card: "{name}" :: price: .99 :: qty: 1
-    "Ace of Cups"
-    "Two of Cups" :: 1.25
-    "Three of Cups" :: :: 2
-    "Four of Cups" :: 1.25 :: 2
-    "Five of Cups" :: qty: 3         /// keyed override also allowed
-```
-
-**Rules (positional):**
-- Values map in the same order as template fields
-- Trailing fields may be omitted → defaults are used
-- To skip a middle field but provide a later one, leave the slot empty with `::`
-- Keys are optional—`price: 1.25` is allowed for clarity, but not required
-- The first field can itself be templated, e.g., `card: "{name}"`
-
-#### 8.2.2 Arrays, Loops, and Selective Overrides
-```goblin
-minor_arcana = [
-    "Ace","Two","Three","Four","Five",
-    "Six","Seven","Eight","Nine","Ten",
-    "Page","Knight","Queen","King"
-]
-
-@tarot = card: "{suit} – {card}" :: price: .99 :: qty: 1
-
-suit: "Cups"
-    for card in minor_arcana
-        "{card}"
-    "Ace" :: qty: 2                 /// override qty only
-    "Two" :: price: 1.25            /// override price only
-    "Three" :: 1.25 :: 2            /// positional override of price, qty
-
-suit: "Wands"
-    for card in minor_arcana
-        "{card}"
-```
-
-**Rules (arrays/loops):**
-- Template parameters fill from defaults unless overridden on a line
-- Overrides match the generated entry by the current loop variables (`{suit}`, `{card}`, etc.)
-- You may use positional overrides (`::`) or keyed overrides (`price: 1.25`)
-- `_` is not required; just use `::` to skip a position when you need to reach a later field
-
----
-
-8.2.3 Nested Data Structures
-Templates support nested maps and arrays using standard { } and [ ] syntax:
-goblin/// Nested maps and arrays in templates
-@product = 
-    title: "{title}" :: 
-    price: .99 :: 
-    meta: { tags: ["new", "featured"], inventory: { count: 0, warehouse: "A" } } ::
-    variants: [
-        { size: "S", color: "red", sku: "{title}-S-R" },
-        { size: "M", color: "blue", sku: "{title}-M-B" }
-    ]
-
-/// Usage
-item = @product:
-    title: "Magic Sword"
-    
-/// Results in:
-/// {
-///   title: "Magic Sword",
-///   price: 0.99,  
-///   meta: { tags: ["new", "featured"], inventory: { count: 0, warehouse: "A" } },
-///   variants: [
-///     { size: "S", color: "red", sku: "Magic Sword-S-R" },
-///     { size: "M", color: "blue", sku: "Magic Sword-M-B" }  
-///   ]
-/// }
-Interpolation in nested structures:
-
-String interpolation {var} works in nested string values
-Nested structures themselves are literal (not interpolated)
-Use consistent quoting: "string" for interpolated strings, bare identifiers for keys
-
-## 9. Objects & Classes
-
-### 9.1 Definition & Constructor
-A **class** defines a reusable object type with **public** and **private** fields and methods. Calling the class name **creates a new instance**.
-
-**Two equivalent styles:**
-
-**Template Class (Goblin-flavored):**
-```goblin
-class Pet = name: "{name}" :: age: 0 :: species: "dog"
-    fn speak()
-        "Hi, I'm {name}, a {age}-year-old {species}."
+- `if` — run the block if the condition is **true**
+- `unless` — run the block if the condition is **false** (sugar for `if not`)
+- `elif` — test a new condition if all previous branches failed
+- `else` — run the block if no previous branch executed
+
+## 4.1 Block Form — Classic and Readable
+
+    if cond
+        ...
+    elif cond
+        ...
+    else
+        ...
+
+    unless cond
+        ...
+    else
+        ...
+
+- No colons; indentation defines blocks.
+- `elif` and `else` are optional.
+- `unless cond` compiles as `if not cond`.
+- You may mix `if`/`unless` with `elif`/`else`.
+- Block form **does not yield a value**; use `say` or assignment inside.
+
+**Examples**
+
+    if score >= 90
+        say "A"
+    elif score >= 80
+        say "B"
+    elif score >= 70
+        say "C"
+    else
+        say "F"
+
+    unless user.is_admin
+        deny_access()
+    else
+        grant_admin_access()
+
+## 4.2 Judge — Declarative, Expression-Oriented Branching
+
+`judge` is an expression form that **returns a value**. Two styles exist: multiline and inline.
+
+### 4.2.1 Multiline
+
+    result = judge
+        cond1: expr1
+        cond2: expr2
+        else: exprN
     end
-end
-```
 
-**Regular Class (function-style):**
-```goblin
-class Pet(name: string, age: int = 0, species: string = "dog")
-    fn speak()
-        "Hi, I'm {name}, a {age}-year-old {species}."
+- Conditions are tested top-to-bottom; first match wins.
+- `else:` is optional (default = `nil`).
+- Each `expr` can be any expression (string, call, money, percent, etc.).
+
+**Example**
+
+    grade = judge
+        score >= 90: "A"
+        score >= 80: "B"
+        score >= 70: "C"
+        else: "F"
     end
-end
-```
-
-**Constructor signature:**
-* The **constructor line** defines the **field order**, **types**, and **defaults**.
-* Reordering fields is a **breaking change**.
-* Template style uses `::` separators; function style uses comma separators.
-
-### 9.2 Instantiation
-Both class styles support both instantiation methods:
-
-* **Template style:** `Pet: "Fido" :: 3 :: "cat"`
-* **Function style:** `Pet("Fido", 3, "cat")` /// maps **strictly** to declared field order
-
-**Options:**
-* **Named overrides:** `Pet("Rex", species: "wolf")`
-* **Skip positional:** `Pet("Max", :: "cat")` /// skip `age`, set `species`
-* **Defaults:** Omitted fields use their declared default; if a required field has no default → `TypeError("missing field 'name' for Pet")`.
-* **Type safety:** Invalid overrides (e.g., `species: 42`) → `TypeError`.
-
-### 9.3 Field Semantics
-* **Interpolation:** `name: "{name}"` → expects string parameter.
-* **Capture:** `price: {price}` → expects typed parameter (inferred from usage).
-* **Computed defaults:** `sku: slug("{title}")` allowed.
-* **Per‑instance defaults:** Evaluate **at instantiation** (not class load). E.g., `id: uuid()` is unique per instance.
-
-### 9.4 Access Rules
-* **Public fields** (no `#`): readable/writable externally. Auto‑generated accessors:
-   * `x()` getter
-   * `set_x(v)` setter  
-   * `is_x()` for booleans
-   
-   **Precedence:** If a class defines a method with the same name as an auto-generated accessor, the user-defined method takes precedence (must match expected signature).
-
-* **Instance variables** (`#variable_name`): private fields accessible **only** inside class methods, similar to Ruby's `@variable`. External access → `PermissionError("cannot access private field '#variable_name'")`.
-* Instance variables use `#` prefix (e.g., `#price`, `#inventory_count`)
-* Public fields have auto-generated accessors; instance variables do not
-* **Readonly:** `readonly id: uuid()` → getter only; writing → `TypeError("field 'id' is readonly")`.
-
-### 9.5 Lifecycle
-* `on_create()` (optional) runs **after** field binding but **before** instance is returned; throw to abort construction.
-* **Determinism:** `on_create()` **must be deterministic**. Side effects (FS/NET/env) require glam with declared permissions; non‑deterministic work raises `DeterminismError` in deterministic mode.
-
-### 9.6 Style Choice
-*Any Goblin class can be defined in template form or function form. The two are interchangeable; choose the style that's most readable for your project.*
-
-* **Template style** → declarative, readable, matches `@template` variables
-* **Function style** → compact, familiar, traditional
-
-### 9.7 Errors
-* Missing field → `TypeError("missing field 'x' for Pet")`
-* Unknown field → `TypeError("unknown field 'foo' for Pet")`
-* Type mismatch → `TypeError("field 'price' expects money, got int")`
-* Currency mismatch → `CurrencyError` (see §10)
-* Private access → `PermissionError("cannot access private field '#x'")`
-
-### 9.8 Serialization & Helpers
-* `write_json` / `write_yaml`: serialize **public fields** by default; `include_private: true` opt‑in.
-* `to_map()` → map of public fields.
-* `copy(overrides…)` → shallow copy with overrides.
-* Structural equality (`==`) compares public fields; `is` is identity.
 
-### 9.9 Morph Compatibility
-`morph` (§24) operates on **public fields via auto‑accessors**; `#private` remains sealed unless you expose public getters/setters.
+### 4.2.2 Inline
 
-### 9.10 No Inheritance
-Goblin has **no class inheritance**. Prefer **composition** and `morph` (§24).
+    judge: cond1: expr1 :: cond2: expr2 :: else: exprN
 
-### 9.11 Percent & Money Behavior
-Inside methods and field expressions, percent follows CIPO rules (§11):
+**Example**
 
-```goblin
-class Book = title: "{title}" :: price: $0
-    fn discount(rate: percent) = #price - (rate of #price)    /// explicit base
-    fn add_tax(rate: percent) = #price + (rate of #price)     /// explicit base  
-    fn quick_calc() = #price + 10%s                           /// percent of self
-end
-
-b = Book: "Guide" :: $8
-say b.discount(25%)     /// $6.00 (25% of $8 = $2, so $8 - $2)
-say b.add_tax(10%)      /// $8.80 (10% of $8 = $0.80, so $8 + $0.80)  
-say b.quick_calc()      /// $8.80 (same as above using %s)
-
-CIPO compliance:
+    say judge: score >= 90: "A" :: score >= 80: "B" :: else: "F"
 
-% is percent of 1 (programmer-style): #price + 25% adds $0.25
-%s is percent of self: #price + 25%s adds 25% of #price
-% of E uses explicit base: 25% of #price is 25% of the price
-Money division still forbidden: use // or >> (§10.4)
+- Inline `judge` must be assigned or wrapped in `say`; otherwise it is a no-op.
 
-## 10. Money & Currency
+### 4.2.3 Unless Inside Judge
 
-Money behavior (currency, precision, rounding/truncation) is governed by the active policy (§27).  
-When integrating with external systems that use flawed rounding, see §27.4.1 compat for mode/shame_level controls.
+`unless` works inside judge for negative logic:
 
-### 10.0 Money Precision Policy
+    status = judge
+        unless user.is_verified: "verify_email"
+        unless user.has_payment: "add_payment"
+        user.is_premium: "premium_flow"
+        else: "standard_flow"
+    end
 
-Money behavior is governed by the active policy (§27).
+## 4.3 Interop Notes
 
-```goblin
-/// Example policy configuration
-@policy = "strict_money"
-    money: { currency: "USD", precision: 2, policy: "strict" }
-```
+- `judge` can appear anywhere an expression can.
+- Expressions inside branches follow all normal type rules.
+- Short-circuit: evaluation stops at the first match.
 
-**Parameters:**
-- **precision:** integer ≥ 0 (decimal places in major units)
-- **policy:** `"truncate"` (default) | `"warn"` | `"strict"` | `"defer"`
-  - `"truncate"`: canonicalize via truncate-and-ledger (no rounding)
-  - `"warn"`: same as truncate, also warn `MoneyPrecisionWarning(...)`
-  - `"strict"`: throw `MoneyPrecisionError` if any op would produce sub-precision
-  - `"defer"`: carry full precision until explicit settlement or export boundary
+**Example**
 
-**Goblin Aliases:** `policy: "cleave"` (= truncate), `policy: "grumble"` (= warn), `policy: "grim"` (= strict), `policy: "hoard"` (= defer)
+    label = "Tier " || judge: price >= $100: "Gold" :: price >= $50: "Silver" :: else: "Bronze"
 
-**Scope:** Per currency. Unset currencies use global default unless overridden.
+## 4.4 Removed: Inline `?:`
 
-### 10.0.0.1 Policy Scoping
+The old inline conditional (`? ?? :`) is **removed** in v1.5.
 
-Money policies are scoped to avoid conflicts with other domains:
+**Before (removed):**
 
-```goblin
-/// No conflicts - different policy domains
-@policy = "financial_strict"
-    money: { currency: "USD", precision: 2, policy: "strict" }
-    datetime: { policy: "warn", prefer_trusted: true }
-    
-/// Each domain has independent policy settings
-set @policy financial_strict
-Policy domains: money, datetime, modules, strings. Settings within each domain don't affect other domains.
+    say score >= 90 ? "A" ?? score >= 80 ? "B" ?? score >= 70 ? "C" : "F"
 
-### 10.0.1 Defer ("Hoard") Policy — Keep crumbs until told otherwise
+**Now (valid):**
 
-**Purpose:** For multi-step financial math (compound interest, accruals, amortization), users must be able to carry sub-precision forward across steps and only canonicalize when they say so. Policy `"defer"` does exactly that.
+    say judge: score >= 90: "A" :: score >= 80: "B" :: score >= 70: "C" :: else: "F"
 
-**Policy keywords:**
-- `policy: "defer"` — canonical name
-- `policy: "hoard"` — goblin alias (exact synonym)
+## 4.5 Quick Cheat-Sheet
 
-**Example:**
-```goblin
-@policy = "compound_interest"
-    money: { currency: "USD", precision: 2, policy: "defer" }
-```
+- **Block:** `if cond ... elif cond ... else ...`
+- **Unless:** `unless cond ... else ...`
+- **Judge multiline:**
 
-**Semantics (precise but simple):**
+      x = judge
+          c1: v1
+          c2: v2
+          else: v3
+      end
 
-Under `"defer"`, money values internally keep full intermediate precision (engine precision), instead of truncating at each operation.
+- **Judge inline:** `say judge: c1: v1 :: c2: v2 :: else: v3`
+  
+# 5. Loops
 
-Display (`str(x)`, `say x`) still shows the canonical 2-dp surface so files and logs stay human-readable; the extra fraction is carried but not lost.
+## 5.1 Ranges
 
-Canonicalization to the configured precision occurs only when:
-- you call an explicit settle helper (below), or
-- you cross a boundary that requires canonical amounts (e.g., CSV/JSON export in "string/object" modes, FS writes by a glam that declares money surfaces), or
-- you temporarily opt into truncate/warn/strict via a scoped override.
+    1..5    /// inclusive (1,2,3,4,5)
+    1...5   /// exclusive (1,2,3,4)
+    5..1    /// reversed (step -1)
 
-**Important:** When canonicalization happens, the sub-precision excess is moved into the standard remainder ledger (§10.7/§10.9). `"defer"` changes when we commit crumbs, not where they go.
+## 5.2 Loop Forms
 
-**New helpers (small, focused):**
+    for i in 1..5          /// numeric range
+    for v in array         /// iterate array values
+    for i, v in array      /// array with index
+    for k, v in map        /// map keys and values
 
-```goblin
-settle(x: money) -> money
-```
-Canonicalize x to current precision; adds the sub-precision remainder to the ledger; returns the canonical money. (Idempotent if already clean.)
+    while cond
+        ...
+    end
 
-```goblin
-excess(x: money) -> float
-```
-Inspect the sub-precision being carried in defer mode (major-unit float; sign can be ±). For dashboards and tests. Returns 0.0 in non-defer modes.
+## 5.3 Loop Control
 
-```goblin
-with_money_policy(policy, block)
-```
-Temporarily override precision policy inside block. Useful to do a one-off truncation step inside an otherwise deferred workflow.
+    skip    /// continue to next iteration
+    stop    /// break out of loop
 
-```goblin
-with_money_policy("truncate")
-    // this block behaves like truncate
-end
-```
+- Using `skip` or `stop` outside a loop → `SyntaxError`.
 
-**Export/serialization boundaries:**
+# 6. Collections
 
-Core writers (`write_csv`, `write_json` in "string/object" modes, glam exports that surface money as text/decimal) canonicalize amounts they serialize. In defer mode, this implies an automatic ledger entry for any carried remainder on those values at the moment of write.
+## 6.1 Arrays
 
-If a glam needs raw exacts (rare), it must opt in via its contract/options and emit in units mode (§14.2.2: "units"), which carries integers + precision without touching the ledger.
+    /// Literals
+    [1, 2, 3]
 
-**Examples:**
+    /// Indexing (supports negative indexes)
+    arr[0]      /// first element
+    arr[-1]     /// last element
 
-**A. Compound interest (works as users expect)**
-```goblin
-@policy = "compound_interest"
-    money: { currency: "USD", precision: 2, policy: "defer" }
+    /// Slicing
+    arr[1:3]    /// subarray
 
-set @policy compound_interest
+    /// Length
+    len(arr)    /// array length
 
-bal = $1000.00
-for _ in 1..3
-    bal = bal * 1.05
-end
+**Mutators**
 
-say bal          /// USD 1157.625 (shows actual carried value)
-say excess(bal)  /// 0.0 (no hidden precision - it's all visible)
+    add 4 to arr                 /// append
+    insert "X" at 1 into arr     /// insert at index
+    reap from arr                /// destructive random remove
+    reap 2 from arr              /// remove & return 2 random elements
+    usurp at 1 in arr with "New" /// replace element, return (old,new)
 
-/// End of quarter: settle to books (moves crumb to ledger)
-bal = settle(bal)
-say bal          /// USD 1157.63
-say remainders_total()  /// { USD: $0.00... } + ledger includes 0.005 from settle()
-```
+**Helpers**
 
-**B. Mixed workflow: one step must be "clean"**
-```goblin
-@policy = "mixed_precision"
-    money: { currency: "USD", precision: 2, policy: "defer" }
+    pick arr             /// random element (non-destructive)
+    pick 3 from arr      /// 3 random elements
+    shuffle arr          /// shuffled copy
+    sort arr             /// sorted copy
+    sum(arr)             /// numeric sum
 
-set @policy mixed_precision
+## 6.2 Maps
 
-x = $10.00 * 2.5     /// carries extra precision if any
-/// One particular step must match a legacy system's truncate behavior:
-with_money_policy("truncate")
-    x = x * 1.07     /// canonicalized here; any crumb logged immediately
-end
-/// Continue deferring after the block
-x = x * 1.03
-```
+    /// Literals
+    {key: "val", price: 1.5}
 
-**C. Export boundary auto-settles for that surface**
-```goblin
-@policy = "export_defer"
-    money: { currency: "USD", precision: 2, policy: "defer" }
+    /// Access
+    m.key         /// dot-access (identifier keys only)
+    m["any-key"]  /// bracket-access (any key)
 
-set @policy export_defer
+    /// Methods
+    m.keys()      /// list of keys
+    m.values()    /// list of values
 
-invoice = $1157.625    /// via prior math
-write_csv("dist/invoice.csv", [ { total: invoice } ])
-/// -> Writes "USD 1157.63"
-/// -> Moves 0.005 to remainder ledger (export is a canonicalizing boundary)
-```
+# 7. Functions
 
-**Error/warning behavior (unchanged where it should be):**
+## 7.1 Definition
 
-`"strict"` still forbids sub-precision creation; `"warn"` behaves like truncate + warning.
+    /// Basic
+    fn greet(name="Traveler")
+        "Hello, {name}"    /// implicit return (last expression)
+    end
 
-`"defer"` allows sub-precision and never warns until a canonicalization point (explicit settle or an export).
+    /// Single-line
+    fn add(a, b) = a + b
 
-All cross-currency rules, `/` prohibitions, and divmod semantics remain as in §10.4–§10.7.
+    /// With explicit return
+    fn complex(x)
+        if x > 0
+            return x * 2
+        end
+        return 0
+    end
 
-**Notes (goblin flavor):**
+- `return` is allowed; otherwise the last expression is returned.
+- Defaults are supported. Arity is strict, but defaults satisfy arity.
 
-"Hoard mode" = the coin-counting goblins keep every shaving in your pouch until you say "book it."
+## 7.2 Calls
 
-Once booked (by settle or export), the shavings go into the hoard ledger and can be handled exactly like today with `drip_remainders` / `goblin_payout` or `goblin_stash` patterns.
+    greet("Alice")
+    greet(name: "Bob")     /// named parameter
 
-### 10.1 Type & Precision Handling
-- Values are stored as integer quanta of size `10^(-precision)` in major units; any sub-quantum remainder is tracked per §10.7.
-- Policy applies at canonicalization sites: `money(v,C)`, promotion (`money` ± int/float), `*`, `tax`, `with_tax`, `convert`, and glam functions returning money.
-- **No rounding** - excess precision becomes explicit remainder
-- Perfect conservation: `input_value = money_part + remainder`
+## 7.3 Module Function Calls
 
-### 10.2 Construction & Literals
-```goblin
-money(1.50)        /// uses active policy currency
-money(1.50, USD)   /// explicit currency
+    import "./helpers" as H
+    slug = H::slugify("Product Name")
 
-/// Accepted literals (all yield money(amount, CUR)):
-/// ISO formats
-USD 1.50, USD$1.50, 1.50 USD
+- `::` is the namespace separator.
+- Works with modules loaded by `import`.
 
-/// Symbols via map
-$1.50, €1.50, £1.50, ¥150, ₹99, ₽200
+## 7.4 Glam Function Calls
 
-/// Suffix (if enabled)
-1.50€, 99₹
+    /// Load glams
+    use shopify@^1.6 as shp
+    use translator@1.0 as trans
 
-/// Disambiguated $
-US$1.50, C$1.50, A$…, NZ$…, MX$…, HK$…, S$…
+    /// Direct glam calls
+    csv = shp::csv_export(products)
+    spanish = trans::translate_spanish("Hello world")
 
-/// Sign
--$5.00, $-5.00, -USD 5.00
+    /// Fanout across multiple glams
+    files = product.export(items) via all
 
-/// High-precision construction (truncates, tracks remainder)
-money(10.555, USD) → $10.55 + remainder(0.005)
+**Notes**
 
-Any numeric (int or float) passed to money(v, CUR) is canonicalized: the quantum value is truncated toward zero and any sub-quantum remainder is recorded in the ledger. This applies equally to literals, variables, or computed expressions—no special cases for floats.
+- Explicit aliases (`as shp`, `as trans`) prevent collisions.
+- `prefer` / `via` can route calls when multiple glams implement the same contract.
+- Fanout returns `{ provider_key → result|error }`.
 
-/// Display
-say money(3.2, USD) → USD 3.20
-str(money) → CUR 1.23
-fmt(float(m), ",.2f")  /// numeric only
-```
-
-If active policy is `strict` and `v` has more than `precision` decimals, raise `MoneyPrecisionError` (no ledger update).
-
-### 10.3 Number Typing & Defaults
-```goblin
-/// If no default yet:
-123      → int
-1.23     → float
-$1.50    → money
-
-/// Policy affects subsequent untyped numerics:
-set @policy usd_money   /// if this policy sets money.currency: USD
-x = 5    → USD 5.00
-y = 2.5  → USD 2.50
-
-/// Explicit casts always win:
-age = int(45), tax = float(.0725), price = money(.99, EUR)
-```
-
-### 10.4 Arithmetic & Comparisons
-```goblin
-/// Allowed (same currency): + - * // >> %
-/// Not allowed: / on money (→ MoneyDivisionError)
-
-/// Scalar multiply/divide by numbers:
-money * int|float → money (same currency) + remainder tracking
-money // int → quotient money (no remainder returned)
-money >> int → pair (quotient: money, remainder: money)
-money % int → remainder money (alias of second element of money >> int)
-```
-
-**Division behavior:**
-- `money / anything` → `MoneyDivisionError` 
-- `money // int` → quotient only (same as `(money >> int).first`)
-- `money >> int` → complete divmod pair `(quotient, remainder)`
-- `money % int` → remainder only (same as `(money >> int).second`)
-
-**Compound assignment restrictions:** `/=` and `%=` with money → `MoneyDivisionError`.
-
-**Scalar multiply** converts to major units, multiplies exactly, then canonicalizes (minor-units formulation is equivalent).
-
-**Promotion rule:** If one operand is `money(CUR)` and the other is `int|float`, promote numeric to `money(CUR)` and operate (except `/`, which is disallowed). Promotion also applies to compound assignments (+=, -=, *= etc.), which are syntactic sugar for the corresponding binary operations.
-
-**Negative money** follows the same rules. For money // int, integer division truncates toward zero; the remainder has the same sign as the dividend or is zero.
-
-**Cross-currency arithmetic/comparison** → `CurrencyError` (no coercion).
-
-### 10.5 Currency Config
-```yaml
-currency:
-  default: USD
-  allow_suffix: true
-  symbol_map:
-    "$": USD
-    "US$": USD
-    "C$": CAD
-    "A$": AUD
-    "NZ$": NZD
-    "MX$": MXN
-    "HK$": HKD
-    "S$": SGD
-    "€": EUR
-    "£": GBP
-    "¥": JPY
-    "CN¥": CNY
-    "₹": INR
-    "₽": RUB
-```
-Build-time override: `goblin build … --currency USD`
-
-Policies do not redefine symbol maps; they only set currency, precision, and policy.
-
-### 10.6 Increments with Money
-```goblin
-money++ / money--  /// add/subtract exactly 1 whole unit
-```
-- Postfix `**` and `//` are not allowed on money (TypeError)
-- To change at quantum level: do it explicitly (`price = price + .05`)
+# 8. Key-Value Binding (`::`) and Templates
 
-### 10.7 Even Splits & Remainder Ledger
-For the formal definition of quotient+remainder division, see §33 Divmod.
+## 8.1 Inline KV with `::`
 
-#### Hard Rule on Division
-Using `/` with money always errors: `MoneyDivisionError: Use // or >> for quotient, or divide_evenly(total, parts).`
+    card: "Two of Cups" :: price: .99 :: qty: 4
 
-#### Divmod for Money
-```goblin
-q = total // parts     /// quotient only
-q, r = total >> parts  /// quotient and remainder
-```
-`q` and `r` are money at current precision; no ledger change.
+- `::` is the binding separator.
+- Left-hand side must be identifiers.
+- Right-hand side may be any expression (strings, numbers, maps, arrays, etc.).
 
-#### Even Split Helper
-```goblin
-divide_evenly(total: money, parts: int) -> array<money>
+## 8.2 Templates
 
-/// Goblin alias
-goblin_stash(total: money, parts: int) -> { shares: array<money>, escrow: money }  // = divide_evenly_escrow()
-```
-- Distributes integer quanta: `r` shares of `(q+1 quantum)`, else `q`.
-- Sum equals total exactly; ledger unchanged.
-- **Sugar:** `divide_evenly(A // n)` ≡ `divide_evenly(A, n)`.
+Templates define reusable records with defaults. `::` applies values in order, with optional key overrides.
 
-**Special Output for escrow:**
-- When using `divide_evenly_escrow()`: *"Goblins stashed ${amount} for safekeeping"*
+### 8.2.1 Positional with Defaults
 
-#### Escrow Even Split
-```goblin
-divide_evenly_escrow(total: money, parts: int)
-  -> { shares: array<money>, escrow: money }
-```
-- Returns `parts` shares all at floor share `q`; all leftover goes to `escrow` (0 ≤ escrow < 1 quantum).
-- **Conservation:** `add[shares] + escrow == total`; ledger unchanged.
+    /// Define template
+    @card = title: "{title}" :: price: .99 :: qty: 1
 
-#### Remainder Ledger (Audit)
-Goblin tracks any money remainder you don't capture:
+    /// Usage
+    card1 = @card: title: "Ace of Cups"
+    card2 = @card: title: "Two of Cups" :: price: 1.25
+    card3 = @card: title: "Three of Cups" :: :: 2   /// skip price, set qty
 
-```goblin
-/// If you ignore remainder, it's tracked:
-q, _ = total >> n
+**Rules**
 
-/// High-precision construction tracking:
-money(10.555, USD)  /// Logs 0.005 remainder automatically
+- Values fill in positional order.
+- Trailing fields may be omitted → defaults apply.
+- To skip a field, leave its slot empty with `::`.
+- Keyed overrides are always allowed (`price: 1.25`).
+- Fields can contain interpolated strings (`"{title}"`).
 
-/// End-of-script helpers:
-remainders_total()   → map { CUR: money }
-remainders_report()  → human-readable summary lines
-clear_remainders()   → reset ledger
-```
+### 8.2.2 Arrays, Loops, and Overrides
 
-`remainders_total()`, `remainders_report()`, `clear_remainders()` operate on the sub-precision ledger (not the escrow helper above).
+    suits = ["Cups", "Wands", "Swords", "Pentacles"]
 
-#### Round Robin Allocation
-goblinallocate_round_robin(total: money, recipients: int) → array<money>
+    @tarot = card: "{suit} – {rank}" :: price: .99 :: qty: 1
 
-/// Goblin alias
-goblin_round_robin(total: money, recipients: int) → array<money>
-Distributes money one quantum at a time in round-robin fashion until exhausted.
-Algorithm:
+    suit: "Cups"
+        for rank in ["Ace", "Two", "Three"]
+            "{rank}"
+        "Ace"   :: qty: 2             /// keyed override
+        "Two"   :: price: 1.25        /// keyed override
+        "Three" :: 1.25 :: 2          /// positional override
+    end
 
-Start with array of recipients zero amounts
-While total > 0, add one quantum to next recipient (cycling)
-Perfect conservation: sum(result) == total
+**Rules**
 
-Examples:
-goblin/// Small amount, many recipients
-shares = allocate_round_robin($0.07, 5)
-/// → [$0.02, $0.02, $0.01, $0.01, $0.01] (first two get extra)
+- Defaults apply unless overridden.
+- Overrides match the generated entry by loop vars.
+- Both positional and keyed overrides are supported.
 
-/// Even distribution
-shares = allocate_round_robin($1.50, 3)  
-/// → [$0.50, $0.50, $0.50]
+### 8.2.3 Nested Data Structures
 
-/// Uneven distribution  
-shares = allocate_round_robin($1.00, 3)
-/// → [$0.34, $0.33, $0.33] (first gets extra penny)
-Use cases:
+Templates can embed maps and arrays as fields. Interpolation works inside string literals.
 
-Fair distribution when proportions unknown
-Micropayments to many recipients
-Even-as-possible splits for small amounts
+    @product =
+        title: "{title}" ::
+        price: .99 ::
+        meta: { tags: ["new","featured"], inventory: { count: 0, warehouse: "A" } } ::
+        variants: [
+            { size: "S", color: "red", sku: "{title}-S-R" },
+            { size: "M", color: "blue", sku: "{title}-M-B" }
+        ]
 
-Comparison:
-
-divide_evenly(total, n): optimizes for fewer larger shares to some recipients
-allocate_round_robin(total, n): optimizes for fairness (everyone gets something before anyone gets more)
+    item = @product: title: "Magic Sword"
 
-### 10.8 Currency Conversion
-```goblin
-convert(amount: money(C1), to: C2, rate: float) → money(C2)
-```
-Multiplies amount in major units by rate (exact rational).
-
-Canonicalizes to C2 quanta + remainder.
-
-Logs any sub-quantum in the target currency's ledger.
-
-Cross-currency arithmetic without explicit convert remains a CurrencyError.
-
-Policy applies in the **target** currency; in `strict`, sub-precision results error.
-
-### 10.9 Dripping Remainders
-
-```goblin
-drip_remainders(threshold=1, commit=false, label=nil) -> map<CUR, money>
-
-/// Goblin alias
-goblin_payout(threshold=1, commit=false, label=nil) -> map<CUR, money>  // = drip_remainders()
-```
-
-- **threshold:** chunk size per currency (default = 1 quantum at current precision). Accepts:
-  - integer (quanta), or a money, or a `{CUR: money}` map.
-- **commit=false** (default): audit-only. Compute potential emission, append to log, return `{}`, do not modify the ledger.
-- **commit=true**: actually reduce the ledger by emitted amount(s) and return `{ CUR: money }`.
-
-Always appends a JSON line to `dist/remainders.log` with before/after, potential/emitted, currency, precision, label, and timestamp.
-
-**Special Output:**
-- When `commit=true`: *"Goblins paid out ${amount} from their hoard"*
-- When `commit=false`: *"Goblins would pay out ${amount} (audit only)"*
-
-### 10.10 Allocation Patterns
-
-To settle dripped amounts across recipients, use:
-- `divide_evenly(drops.CUR, n)` to consume into shares, or
-- `divide_evenly_escrow(drops.CUR, n)` to hold back remainder centrally.
-
-**Perfect Conservation Examples:**
-```goblin
-set @policy site_default
-
-/// Construction with remainder
-precise_amount = money(100.567, USD)  /// $100.56 + remainder(0.007)
-
-/// Division with remainder
-q, r = $100.00 >> 3   /// q = $33.33, r = $0.01
-/// Conservation: $100.00 = $33.33 × 3 + $0.01 ✓
-
-/// Even split with perfect distribution
-shares = divide_evenly($100.00, 3)
-/// shares → [$33.34, $33.33, $33.33]
-/// Conservation: $33.34 + $33.33 + $33.33 = $100.00 ✓
-
-/// Escrow split
-result = divide_evenly_escrow($100.00, 7)
-/// result.shares → 7 × $14.28, result.escrow → $0.04
-/// Conservation: 7 × $14.28 + $0.04 = $100.00 ✓
-
-/// Remainder tracking for ignored values
-_, _ = $100.00 >> 7    /// remainder logged automatically
-say remainders_total()  /// => { USD: $0.02 }
-clear_remainders()
-```
-10.11 Money Allocation & Distribution
-goblinallocate_money(total: money, weights: array<number>) → array<money>
-
-/// Goblin alias  
-goblin_divvy(total: money, weights: array<number>) → array<money>
-Distributes total proportionally to weights. Returns array where sum(result) == total exactly.
-Algorithm:
-
-Normalize weights to proportions that sum to 1.0
-Calculate ideal shares: ideal[i] = total * (weights[i] / sum(weights))
-Quantize to money precision (floor each ideal share)
-Distribute remainder quanta to recipients with largest fractional parts
-
-Perfect conservation: No money is lost or created; any sub-precision goes to remainder ledger per §10.7.
-Examples:
-goblin/// Equal weights (equivalent to divide_evenly)
-shares = allocate_money($100.00, [1, 1, 1])  /// [$33.34, $33.33, $33.33]
-
-/// Proportional split  
-shares = allocate_money($100.00, [50, 30, 20])  /// [$50.00, $30.00, $20.00]
-
-/// Revenue sharing based on investment amounts
-total_profit = $10000.00
-investments = [$25000.00, $15000.00, $10000.00]
-shares = allocate_money(total_profit, investments)  /// Proportional to investment
-
-/// Bill splitting with different consumption
-bill = $87.43
-consumption = [2.5, 1.0, 3.0, 1.5]  /// Relative usage
-shares = allocate_money(bill, consumption)
-Error conditions:
-
-All weights zero → ValueError("all weights are zero")
-Negative weights → ValueError("negative weight at index N")
-Cross-currency weights → CurrencyError
-Non-numeric weights → TypeError
-
-Money weights: Weights can be money amounts (same currency as total) for investment-proportional distributions.
-Precision policy interaction: Follows active money policy (§27.4.1) for truncate/warn/strict/defer behavior.
----
+**Result**
+
+    {
+      "title": "Magic Sword",
+      "price": 0.99,
+      "meta": { "tags": ["new","featured"], "inventory": { "count": 0, "warehouse": "A" } },
+      "variants": [
+        { "size": "S", "color": "red", "sku": "Magic Sword-S-R" },
+        { "size": "M", "color": "blue", "sku": "Magic Sword-M-B" }
+      ]
+    }
+
+**Notes**
+
+- Use double quotes around interpolated strings.
+- Keys remain bare identifiers.
+- Nested maps/arrays are literal unless you insert interpolated strings inside them.
+
+# 9. Objects & Classes
+
+## 9.1 Definition & Constructor
+
+A **class** defines a reusable object type with fields and methods. Calling the class name creates a new instance.
+
+**Two styles:**
+
+**Template style**
+
+    class Pet = name: "{name}" :: age: 0 :: species: "dog"
+        fn speak()
+            "Hi, I'm {name}, a {age}-year-old {species}."
+        end
+    end
+
+**Function style**
+
+    class Pet(name: string, age: int = 0, species: string = "dog")
+        fn speak()
+            "Hi, I'm {name}, a {age}-year-old {species}."
+        end
+    end
+
+- Template style uses `::` separators.
+- Function style uses commas.
+- Field order is the constructor order; changing it is a breaking change.
+
+## 9.2 Instantiation
+
+Both styles support both instantiation forms:
+
+    /// Template style
+    pet1 = Pet: "Fido" :: 3 :: "cat"
+
+    /// Function style
+    pet2 = Pet("Fido", 3, "cat")
+    pet3 = Pet("Rex", species: "wolf")    /// named override
+    pet4 = Pet("Max", :: "cat")           /// skip middle arg
+
+- Defaults apply if omitted.
+- Missing required field → `TypeError`.
+- Invalid type → `TypeError`.
+
+## 9.3 Field Semantics
+
+- **Interpolation:** `name: "{name}"` → expects a string.
+- **Capture:** `price: {price}` → uses type inference.
+- **Computed defaults:** expressions like `sku: slug("{title}")` are allowed.
+- **Per-instance defaults:** evaluated at instantiation (e.g. `uuid()`).
+
+## 9.4 Access Rules
+
+- **Public fields**: externally visible, with auto-generated accessors:
+  - `x()` getter
+  - `set_x(v)` setter
+  - `is_x()` for booleans
+  - User-defined methods override auto-generated ones.
+- **Private fields**: `#field` prefix. Accessible only inside the class.
+  - External access → `PermissionError`.
+  - No auto-accessors generated.
+- **Readonly fields**:
+
+      readonly id: uuid()
+
+  Creates getter only; writes → `TypeError`.
+
+## 9.5 Lifecycle
+
+- `on_create()` runs after field binding, before returning the instance.
+- Throws → aborts construction.
+- Must be deterministic; nondeterministic work raises `DeterminismError` unless explicitly permitted.
+
+## 9.6 Style Choice
+
+Both forms are equivalent.
+
+- **Template style** → declarative, readable, matches `@template`.
+- **Function style** → compact, traditional.
+
+## 9.7 Errors
+
+- Missing field → `TypeError`
+- Unknown field → `TypeError`
+- Type mismatch → `TypeError`
+- Currency mismatch → `CurrencyError`
+- Private field access → `PermissionError`
+
+## 9.8 Serialization & Helpers
+
+- `write_json` / `write_yaml`: serializes public fields by default; private fields require `include_private: true`.
+- `to_map()` → returns map of public fields.
+- `copy(overrides…)` → shallow copy with overrides.
+- Structural equality (`==`) compares public fields.
+- `is` tests identity.
+
+## 9.9 Morph Compatibility
+
+`morph` (§Special Forms) works on **public fields via accessors**. Private fields remain sealed unless exposed.
+
+## 9.10 No Inheritance
+
+Goblin does not support class inheritance. Prefer **composition** and `morph`.
+
+## 9.11 Percent & Money Behavior
+
+Inside class fields and methods, percent follows CIPO rules (§Percent):
+
+    class Book = title: "{title}" :: price: $0
+        fn discount(rate: percent) = #price - (rate of #price)
+        fn add_tax(rate: percent) = #price + (rate of #price)
+        fn quick_calc() = #price + 10%s
+    end
+
+**Examples**
+
+    b = Book: "Guide" :: $8
+    say b.discount(25%)   /// $6.00
+    say b.add_tax(10%)    /// $8.80
+    say b.quick_calc()    /// $8.80
+
+- `%` → percent of 1 (adds $0.25)
+- `%s` → percent of self (adds 25% of price)
+- `% of E` → explicit base
+- Money division with `/` → `MoneyDivisionError` (use `//` or `>>`).
+
+# 10. Money & Currency
+
+Money is a core type with strict semantics. All behavior (currency, precision, division, cross-currency rules) is governed by the active **policy** (§27).
+
+## 10.1 Precision Policy
+
+    @policy = "strict_money"
+        money: { currency: "USD", precision: 2, policy: "strict" }
+
+**Parameters**
+
+- **precision**: number of decimal places (≥ 0).
+- **policy**: `"truncate"` (default) | `"warn"` | `"strict"` | `"defer"`.
+  - *truncate*: truncate to precision, ledger remainder.
+  - *warn*: same as truncate + `MoneyPrecisionWarning`.
+  - *strict*: raise `MoneyPrecisionError`.
+  - *defer*: carry full precision until explicit settlement.
+
+**Aliases (keywords only)**: `"cleave"`, `"grumble"`, `"grim"`, `"hoard"`.
+
+**Scope**: Per currency; policy domains (money, datetime, modules, strings) are independent.
+
+## 10.2 Defer ("Hoard") Policy
+
+Keeps sub-precision crumbs until you explicitly settle or cross an export boundary.
+
+**Helpers**
+
+    settle(x: money) -> money    /// canonicalize to current precision
+    excess(x: money) -> float    /// inspect carried precision
+    with_money_policy("truncate")
+        ...
+    end
+
+**Boundaries that canonicalize automatically**
+
+- Explicit `settle` call.
+- Export (`write_csv`, `write_json`, glam surface).
+- Scoped override via `with_money_policy`.
+
+Display always shows canonical precision; internal value may be higher in `"defer"`.
+
+## 10.3 Construction & Literals
+
+    money(1.50)        /// uses active policy currency
+    money(1.50, USD)   /// explicit currency
+
+    $1.50, €1.50, 1.50 USD, US$1.50
+    -$5.00, $-5.00
+
+- High-precision input truncates and records excess in ledger.
+- `"strict"` forbids excess; `"warn"` logs a warning.
+- `str(money)` → `CUR 1.23`.
+
+## 10.4 Typing Defaults
+
+    123    → int
+    1.23   → float
+    $1.50  → money
+
+If a policy sets default currency:
+
+    set @policy usd_money
+    5   → USD 5.00
+
+Explicit casts (`int(x)`, `float(x)`, `money(x, CUR)`) always win.
+
+## 10.5 Arithmetic & Comparisons
+
+    + - * // >> %    /// allowed, same currency
+    /                /// forbidden → MoneyDivisionError
+
+- Multiply/divide by scalar: allowed, ledger remainder tracked.
+- `//` → floor quotient only.
+- `>>` → `(quotient, remainder)`.
+- `%` → remainder only.
+- Cross-currency arithmetic → `CurrencyError`.
+
+**Compound assignment**
+
+- `+=`, `-=`, `*=` allowed.
+- `/=`, `%=` forbidden (`MoneyDivisionError`).
+
+## 10.6 Currency Config
+
+    currency:
+      default: USD
+      allow_suffix: true
+      symbol_map:
+        "$": USD
+        "US$": USD
+        "C$": CAD
+        "€": EUR
+        "£": GBP
+        "¥": JPY
+        "₹": INR
+
+Build-time override: `goblin build --currency USD`.
+
+## 10.7 Increments
+
+    price++   /// add 1 major unit
+    price--   /// subtract 1 major unit
+
+- Only works on `money`.
+- Postfix `**` and `//` not allowed (TypeError).
+
+## 10.8 Division, Splits & Remainders
+
+### 10.8.1 Divmod
+
+    q = total // parts
+    q, r = total >> parts
+
+- `/` is always invalid.
+- `//` returns floor share.
+- `>>` returns pair `(quotient, remainder)`.
+
+### 10.8.2 Even Splits
+
+    divide_evenly($100, 3)        /// [$33.34, $33.33, $33.33]
+    divide_evenly_escrow($100, 7) /// { shares: [...], escrow: $0.04 }
+
+- Perfect conservation guaranteed.
+- Escrow form holds leftover centrally.
+
+### 10.8.3 Remainder Ledger
+
+Any discarded crumbs are tracked automatically.
+
+    remainders_total()   /// { USD: $0.02 }
+    remainders_report()
+    clear_remainders()
+
+### 10.8.4 Round-Robin Distribution
+
+    allocate_round_robin($0.07, 5)
+    /// [$0.02, $0.02, $0.01, $0.01, $0.01]
+
+- Distributes one quantum at a time in rotation.
+- Fairness > compactness.
+
+### 10.8.5 Weighted Allocation
+
+    allocate_money($100, [50,30,20]) 
+    /// [$50, $30, $20]
+
+- Weights may be numbers or money (same currency).
+- Negative/zero weights error.
+- Policy applies at quantization step.
+
+## 10.9 Currency Conversion
+
+    convert($10, to: EUR, rate: 0.91) → EUR 9.10
+
+- Logs any sub-precision in target ledger.
+- `"strict"` forbids excess.
+
+## 10.10 Dripping Remainders
+
+    drip_remainders(threshold=1, commit=false)
+
+- **threshold**: minimum chunk to release (default = 1 quantum).
+- **commit=false**: audit only.
+- **commit=true**: actually pay out, reduce ledger.
+
+## 10.11 Conservation Examples
+
+    q, r = $100 >> 3
+    /// $100 = $33.33 × 3 + $0.01 ✓
+
+    divide_evenly($100, 3)
+    /// $33.34 + $33.33 + $33.33 = $100 ✓
 
 # 11. Percent Type — "Percent of what?"
 
-## 11.0 Reserved tokens / keywords
+## 11.0 Reserved Tokens / Keywords
 
-**Reserved**: `%` (postfix percent), `%s` (postfix "percent of self"), `of` (base binder), `pct` (constructor).
+**Reserved:**
 
-**Modulus** uses infix `%` with spaces: `a % b`.
+- `%` (postfix percent)
+- `%s` (postfix "percent of self")
+- `of` (base binder)
+- `pct` (constructor)
 
-## 11.1 Core principle (CIPO)
+**Modulus** continues to use infix `%` with spaces: `a % b`.
 
-Goblin uses the Context‑Independent Percent Operator rule:
+## 11.1 Core Principle (CIPO)
 
-**`%` is a first‑class percent value; it is never "naked." It always denotes percent of a base.**
+Goblin follows the **Context-Independent Percent Operator** rule:
 
-- **Default base** for `%` is 1 (programmer‑style).
-- This makes `p%` equal to `p/100` as a numeric factor.
-- **`%s` (self)** means percent of the left operand (calculator‑style), for all four operators.
-- **`% of E`** names an explicit base E.
-- **No operator changes the meaning of `%`**. There is no context magic. All examples MUST use `%`, `%s`, or `% of E` per these rules.
+- `%` is always a **first-class percent value**. It is never "naked."
+- **Default base:** `1` → so `25%` = `0.25` as a factor.
+- `%s` = percent of self (calculator-style).
+- `% of E` = percent of explicit base.
+- **No operator changes meaning**: all forms must use `%`, `%s`, or `% of E`.
 
-## 11.2 Literals and construction
+## 11.2 Literals & Construction
 
-**Literal**: `25%` → numeric factor 0.25 in numeric contexts.
+    25%      → factor 0.25  
+    pct(25)  → 25% (0.25)  
+    pct(0.5) → 0.5% (0.005)  
+    pct(-10) → -10%  
+    str(25%) → "25%"
 
-**Constructor (percentage points)**:
-```goblin
-pct(25)     → 25%         /// 0.25 in numeric contexts
-pct(0.5)    → 0.5%        /// 0.005 in numeric contexts
-pct(-10)    → -10%
-str(25%)    → "25%"
-```
+`pct(n)` always interprets `n` as percentage points.
 
-`pct(n)` always interprets n as percentage points.
+## 11.3 Operator Forms
 
-## 11.3 Operator forms (explicit and uniform)
+A) `%` — percent of 1 (default)
 
-### A) `%` — percent of 1 (default)
-```goblin
-8 * 25%   = 2           /// 8 * 0.25
-100 / 25% = 400         /// 100 / 0.25
-8 + 25%   = 8.25        /// 8 + 0.25
-8 - 25%   = 7.75        /// 8 - 0.25
-```
+    8 * 25%   = 2
+    100 / 25% = 400
+    8 + 25%   = 8.25
+    8 - 25%   = 7.75
 
-### B) `%s` — percent of self (left operand)
-```goblin
-8 + 25%s  = 10          /// 8 + (0.25 * 8)
-8 - 25%s  = 6           /// 8 - (0.25 * 8)
-8 * 25%s  = 16          /// 8 * (0.25 * 8)
-8 / 25%s  = 4           /// 8 / (0.25 * 8)
-```
+B) `%s` — percent of self (left operand)
 
-### C) `% of E` — explicit base
-```goblin
-8 + (25% of 50) = 20.5  /// 8 + (0.25 * 50)
-```
+    8 + 25%s = 10
+    8 - 25%s = 6
+    8 * 25%s = 16
+    8 / 25%s = 4
 
-### D) `%` with spaces — modulus (unchanged)
-```goblin
-8 % 3 = 2
-```
+C) `% of E` — explicit base
 
-## 11.4 Binding & precedence
+    8 + (25% of 50) = 20.5
 
-- `p%`, `p%s`, and `p% of E` are **atomic numeric factors** (postfix/primary), binding tighter than `*//`.
-- `of` binds to the percent literal: `p% of E` is one unit.
-- **Spaced modulus** (`a % b`) is a multiplicative infix operator alongside `*` and `/`.
+D) `%` with spaces — modulus
 
-**Example**:
-```goblin
-x + 25%s * 2  ==  x + ((25% of x) * 2)
-```
+    8 % 3 = 2
 
-## 11.5 Desugaring (spec‑level operational definition)
+## 11.4 Binding & Precedence
 
-```
-A ∘ (p%s)        ⇒  A ∘ ((p/100) * A)         /// ∘ ∈ { +, -, *, / }
-p%               ⇒  (p / 100)
-(p% of B)        ⇒  (p / 100) * B
-A % B  [spaced]  ⇒  Mod(A, B)
-pct(X)           ⇒  (X / 100)  as a percent value
-```
+- `p%`, `p%s`, and `p% of E` are **atomic primaries**, binding tighter than `* //`.
+- `of` binds to the percent literal: `25% of X` is one unit.
+- `a % b` with spaces = modulus, grouped with `* / //`.
 
-## 11.6 Functions and composition
+**Example:**
 
-Percent values are **dimensionless numbers** and work anywhere numbers work:
+    x + 25%s * 2  ==  x + ((25% of x) * 2)
 
-```goblin
-sqrt(25%)  = sqrt(0.25) = 0.5
-(25%)^2    = (0.25)^2   = 0.0625
-sin(50%)   = sin(0.5)
-```
+## 11.5 Desugaring
 
-With `of`, the result inherits the unit of the base (e.g., money, length).
+    A ∘ (p%s)       ⇒ A ∘ ((p/100) * A)   /// ∘ ∈ {+ - * /}
+    p%              ⇒ (p / 100)
+    (p% of B)       ⇒ (p / 100) * B
+    A % B [spaced]  ⇒ Mod(A, B)
+    pct(X)          ⇒ (X / 100) as a percent value
 
-## 11.7 Money interop (with §10)
+## 11.6 Functions & Composition
 
-- `percent × money` uses §10 fixed‑point rules and precision.
-- **Division on money** follows §10: if the result is money, divide by a scalar, not money. Use quotient/remainder for money‑to‑money division.
+Percent is dimensionless and valid in numeric functions:
 
-**Examples**:
-```goblin
-$80 * 10%        = $8.00
-10% of $80       = $8.00
-($80 + 15%s)     = $92.00
-```
+    sqrt(25%)  = 0.5
+    (25%)^2    = 0.0625
+    sin(50%)   = sin(0.5)
 
-## 11.8 Tax helpers (unchanged API; now true percent type)
+With `of`, the result inherits the base's unit:
 
-```goblin
-tax(subtotal, rate_or_rates, compound=false) → tax amount
-with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
-```
+    10% of $80  = $8
 
-- **`rate_or_rates`**: accept `0.10` (decimal) or `10%` (percent type), or array `[8.25%, 1%]`.
-- **`compound=true`** applies sequentially; else additive.
-- **Precision**: truncation, with sub‑quantum remainders ledgered per policy.
-- **`strict` policy** raises `MoneyPrecisionError`; `warn/truncate` record and/or warn.
+## 11.7 Money Interop
 
-## 11.9 Worked examples (spec)
+- `percent × money` follows §10 fixed-point precision.
+- `/` with money is forbidden — use `//` or `>>`.
 
-```goblin
-price = $80
-fee   = $5
+**Examples:**
 
-price + 10%            /// $80.10    (10% defaults to 1 → 0.10; added to $80 yields $80.10)
-price + 10%s           /// $88.00    (percent of self: $80 + 0.10*$80)
-10% of price           /// $8.00
-(10% of price) / 2     /// $4.00
-price + (10% of fee)   /// $80 + $0.50 = $80.50
+    $80 * 10%       = $8.00
+    10% of $80      = $8.00
+    $80 + 15%s      = $92.00
 
-Note:
-- Use `%s` (self) or `10% of X` when you mean “percent of that value.”
-- Plain `p%` is **percent of 1** by definition (CIPO).
+## 11.8 Tax Helpers
 
-price + 10%s           /// $88.00    ($80 + 0.10*$80)
-10% of price           /// $8.00
-(10% of price) / 2     /// $4.00
-price + (10% of fee)   /// $80 + $0.50 = $80.50
+    tax(subtotal, rate_or_rates, compound=false) → tax amount
+    with_tax(subtotal, rate_or_rates, compound=false) → subtotal + tax(...)
 
-8 * 25%                /// 2
-8 * 25%s               /// 16
-8 + (25% of 50)        /// 20.5
+- `rate_or_rates`: accepts `0.10`, `10%`, or array `[8.25%, 1%]`.
+- `compound=true` → sequential; else additive.
+- Precision: truncation, with remainders ledgered.
+- `strict` → `MoneyPrecisionError`.
 
-rate        = pct(8.5)     /// 8.5%
-discount    = pct(0.15)    /// 0.15% (i.e., 0.0015)
-bigDiscount = pct(15)      /// 15%
-```
+## 11.9 Worked Examples
 
-**Note on money + bare %**: Because `%` defaults to "of 1," adding a bare percent to a money amount adds a scalar amount (e.g., `$80 + 10%` adds `$0.10`). For clarity, prefer `10%s` (self) or `10% of price` (explicit base) when operating on money.
+    price = $80
+    fee   = $5
 
-11.9 Examples
-price = $100
+    price + 10%          /// $80.10 (10% = 0.10 of 1 → $0.10)
+    price + 10%s         /// $88.00 (10% of self)
+    10% of price         /// $8.00
+    (10% of fee) + price /// $80.50
 
-discount = 15%                /// 0.15 (scalar form, percent of 1)
-price - 15%s                  /// $85.00 (15% of price — percent of self)
-15% of price                  /// $15.00 (explicit base)
-with_tax($100, 8.5%)          /// $108.50 (tax helper)
+    /// Constructor
+    rate    = pct(8.5)   /// 8.5%
+    tiny    = pct(0.15)  /// 0.15% = 0.0015
+    big     = pct(15)    /// 15%
 
-/// Using constructor
-rate = pct(8.5)               /// 8.5%  → 8.5 / 100 = 0.085
-discount_rate = pct(15)       /// 15%   → 15 / 100 = 0.15
-// if you wrote:
-oops = pct(0.15)              /// 0.15% → 0.15 / 100 = 0.0015
+## 11.10 Context-Bound `%s`
 
+`%s` requires a **self** base.
 
-Concrete check with pct(0.15):
+Illegal:
 
-price = $100
-r = pct(0.15)                 /// 0.15% → 0.0015
-r of price                    /// 0.0015 * $100 = $0.15
-price - (r of price)          /// $99.85
+    rate = 8.5%s    /// ERROR: no self context
 
-## 11.x Context-Bound Percent Literals (%s)
+Correct:
 
-`%s` means "percent of self," where self is the left-hand operand in the containing expression.
+    rate = 8.5%                 /// store as percent
+    total = price + (rate of price)
 
-**`%s` is illegal in any context where self is undefined** (e.g., direct assignment to a variable).
+    discount = 8.5% of price    /// bound to explicit base
 
-Attempting to assign `8.5%s` without a base results in a compile-time error:
+This rule ensures **CIPO compliance**: every percent has a determinate base at creation.
 
-```goblin
-tax_rate = 8.5%s  // ERROR: %s has no base context
-```
+# 12. Helper Sugar (Functions + Brackets)
 
-To store a reusable rate, either:
+## 12.1 Call Styles
 
-```goblin
-tax_rate = 8.5% of price      // Bind to explicit base
-```
+    /// Variadic
+    helper(a, b, c)
 
-or
+    /// Array
+    helper([a, b, c])
 
-```goblin
-tax_rate = 8.5%               // Store as pure percent
-total = price + (tax_rate of price)
-```
+    /// Bracket sugar
+    helper[array_expr] ≡ helper(array_expr)
 
-This restriction enforces CIPO's guarantee that every percentage has a determinate base at creation time, preventing dangling references and context-dependent interpretation.
----
+## 12.2 Bracket-Enabled Helpers (Math Functions)
 
-## 12. Helper Sugar (Functions + Brackets)
-
-### 12.1 Call Styles
-```goblin
-/// Variadic
-helper(a, b, c)
-
-/// Array
-helper([a, b, c])
-
-/// Bracket sugar
-helper[array_expr] ≡ helper(array_expr)
-```
-
-### 12.2 Bracket-Enabled Helpers (All Math Functions)
 All built-in math functions support bracket sugar for array operations:
-```goblin
-add sum mult sub div min max avg root abs floor ceil round pow divmod
-```
-- `add` / `sum` — sum (returns element type; money stays money with perfect precision)
+
+    add sum mult sub div min max avg root abs floor ceil round pow divmod
+
+- `add` / `sum` — sum (returns element type; money stays money with precision rules)
 - `mult` — product (tracks remainders for money operations)
-- `sub` — left fold subtraction
-- `div` — left fold division (returns float unless exact)
+- `sub` — left-fold subtraction
+- `div` — left-fold division (returns float unless exact)
 - `min` / `max` — extrema
 - `avg` — arithmetic mean (money if same-currency with truncation; else float)
 - `root` — sequential roots (`root(27,3)` → 3)
 - `abs` — scalar abs; for array form returns elementwise array
 - `floor` / `ceil` / `round` — elementwise for arrays
-- `pow` — sequential powers; `divmod` — sequential divmod
+- `pow` — sequential powers
+- `divmod` — sequential divmod
 
-**Type rules:** mixed numeric → float; money arrays must share currency (else TypeError)
+**Type rules:**
 
----
+- Mixed numeric → float
+- Money arrays must share currency (else `TypeError`)
 
-## 13. Regex & Text Utilities
+## 12.3 Strings & Non-Numeric Arrays
 
-### 13.1 Regex Functions (PCRE-style)
-```goblin
-re_test(s, pat, flags="") → bool
-re_match(s, pat, flags="") → first match object or nil
-re_findall(s, pat, flags="") → array of matches
-re_replace(s, pat, repl, flags="") → string
+Strings are treated as lists of characters in Goblin (§6). Helper sugar applies consistently:
 
-/// Flags: i (case-insensitive), m (multi-line), s (dot-all), x (verbose)
+- `add`
+  - On strings/char arrays → concatenates.
+  - Example: `add["hi","there"]` → `"hithere"`.
+- `mult`
+  - On string × int → repeat.
+  - Example: `mult["ha", 3]` → `"hahaha"`.
+  - On pure string arrays → `TypeError` (no notion of "product" of multiple strings).
+- **Other math helpers** (`sub`, `div`, `avg`, etc.)
+  - On non-numeric arrays or strings → `TypeError`.
+  - Example: `avg["hi","ho"]` → `TypeError("avg requires numeric array")`.
 
-/// String shorthands:
-"abc123".matches(pat, flags="") → bool
-"abc123".replace(pat, repl, flags="") → string
-"abc123".findall(pat, flags="") → array
-```
+**Principle:** helper sugar does **not** silently coerce non-numeric arrays (except for the explicit string cases above).
 
-### 13.2 Text Helpers
-```goblin
-lines(s)     /// split by \n (keeps no terminators)
-strip(s), lstrip(s), rstrip(s)
-split(s, sep=nil, max=-1), join(arr, sep)
-slug(s), title(s), lower(s), upper(s)
-```
+# 13. Regex & Text Utilities
 
----
+## 13.1 Regex Functions (PCRE-style)
 
-## 14. File I/O (Sandboxed)
+    re_test(s, pat, flags="")         → bool
+    re_match(s, pat, flags="")        → first match object or nil
+    re_findall(s, pat, flags="")      → array of matches
+    re_replace(s, pat, repl, flags="") → string
 
-### 14.1 Core Functions
-```goblin
-/// Text
-read_text(path), write_text(path, s)
+**Flags:**
 
-/// YAML
-read_yaml(path), write_yaml(path, obj)
+- `i` — case-insensitive
+- `m` — multi-line (`^` and `$` match per line)
+- `s` — dot-all (`.` matches newline)
+- `x` — verbose (ignore whitespace and allow comments)
 
-/// CSV
-read_csv(path) → array of maps (values as strings)
-write_csv(path, rows) /// rows = array of maps
+**String method shorthands:**
 
-/// JSON
-read_json(path, opts={}) → value
-write_json(path, value, opts={}) → nil
+    "abc123".matches(pat, flags="")   → bool
+    "abc123".replace(pat, repl, flags="") → string
+    "abc123".findall(pat, flags="")   → array
 
-/// In-memory JSON (no filesystem)
-json_stringify(value, opts={}) → string
-json_parse(s, opts={}) → value
+## 13.2 Text Helpers
 
-/// File System
-exists(path), mkdirp(path), listdir(path), glob(pattern)
-cwd(), chdir(path), join(a,b,...)
+    lines(s)                   /// split by \n (no terminators)
+    strip(s), lstrip(s), rstrip(s)
+    split(s, sep=nil, max=-1)  /// default: split on whitespace
+    join(arr, sep)             /// concat array elements with sep
+    slug(s), title(s), lower(s), upper(s)
 
-/// Binary
-read_bytes(path), write_bytes(path, blob)
-is_binary(path)  /// content sniffing heuristic
+- `lines(s)` always returns an array of strings.
+- `strip` variants remove whitespace (or explicit chars, if passed).
+- `split` with `sep=nil` collapses consecutive whitespace.
+- `slug(s)` → lowercased, hyphen-separated, ASCII-safe identifier.
+- `title(s)` → capitalizes words; `lower/upper` are case transforms.
 
-/// Utils
-now(), uuid()
-```
-Paths relative to CWD unless absolute.
+# 14. File I/O (Sandboxed)
 
-### 14.2 JSON
+## 14.1 Core Functions
 
-#### 14.2.1 Type Mapping
-- JSON `null` → Goblin `nil`
-- JSON `true/false` → Goblin `true/false`
-- JSON number → Goblin `float` (no auto-cast to `int`/`money`)
-- JSON string → Goblin `string` (no auto-cast)
-- JSON array → Goblin `array`
-- JSON object → Goblin `map` (string keys)
+    /// Text
+    read_text(path), write_text(path, s)
 
-**No silent money parsing.** Strings like `"USD 1.50"` remain strings unless you opt in (see below).
+    /// YAML
+    read_yaml(path), write_yaml(path, obj)
 
-**Money from JSON floats:** When reading JSON numbers into Goblin, money must be explicitly constructed via `money(float_value, CUR)` or by using `read_json(..., { money: ... })` options. External systems expect money as floats/decimals, so Goblin exports money at the precision they can handle and imports by explicit conversion.
+    /// CSV
+    read_csv(path) → array of maps (values as strings)
+    write_csv(path, rows)  /// rows = array of maps
 
-When importing, Goblin promotes values to money only if the source schema or header explicitly marks them as monetary (e.g., "money", "price", "tax", "amount"), or the field type in a mapped class is declared as money. In all other cases, decimal numbers are imported as numeric types. All internal money arithmetic is done in integer sub-units according to currency precision, and exports follow the declared precision policy.
+    /// JSON
+    read_json(path, opts={}) → value
+    write_json(path, value, opts={}) → nil
 
-#### 14.2.2 Options (All Functions)
-`opts` is a map. Unknown keys are ignored.
+    /// In-memory JSON (no filesystem)
+    json_stringify(value, opts={}) → string
+    json_parse(s, opts={}) → value
+
+    /// File System
+    exists(path), mkdirp(path), listdir(path), glob(pattern)
+    cwd(), chdir(path), join(a,b,...)
+
+    /// Binary
+    read_bytes(path), write_bytes(path, blob)
+    is_binary(path)  /// content sniffing heuristic
+
+    /// Utils
+    now(), uuid()
+
+*All paths are relative to current working directory unless absolute.*
+
+## 14.2 JSON
+
+### 14.2.1 Type Mapping
+
+- `null` → `nil`
+- `true/false` → `true/false`
+- numbers → `float` (no auto-cast to `int`/`money`)
+- strings → `string` (no auto-cast)
+- arrays → `array`
+- objects → `map` (string keys only)
+
+**No silent money parsing.** Strings like `"USD 1.50"` stay strings unless you opt in via options. Money from JSON floats requires explicit `money(float, CUR)` or decode options.
+
+### 14.2.2 Options (All JSON Functions)
+
+`opts` is a map. Unknown keys ignored.
 
 **Writing:**
-- `indent: int` (default `2`) — pretty print spaces; `0` or `nil` for minified
-- `sort_keys: bool` (default `false`) — stable key order for objects
+
+- `indent: int` (default `2`) — pretty print spaces; `0`/`nil` for minified
+- `sort_keys: bool` (default `false`)
 - `money: "object" | "string" | "units"` (default `"object"`)
-  - `"object"` (canonical): Money is written as:
-    ```json
-    { "_type": "money", "currency": "USD", "amount": "123.45" }
-    ```
-    `amount` is a **string in major units** with the active precision (no float drift).
+  - `"object"` (canonical):
+
+        { "_type": "money", "currency": "USD", "amount": "123.45" }
+
   - `"string"`: `"USD 123.45"`
   - `"units"`:
-    ```json
-    { "_type": "money", "currency": "USD", "units": 12345, "precision": 2 }
-    ```
-    where `units` are integer **quanta** at `precision` (see §10.0).
+
+        { "_type": "money", "currency": "USD", "units": 12345, "precision": 2 }
+
 - `datetime: "string" | "object"` (default `"string"`)
-  - `"string"`: canonical ISO-8601 strings
-  - `"object"`: structured form with `_type` field
 - `enum: "name" | "value" | "object"` (default `"name"`)
-- blob: "base64" | "hex" | "error" = "error"   /// see §29.5
+- `blob: "base64" | "hex" | "error"` (default `"error"`)
 
 **Reading:**
+
 - `money: "off" | "object" | "string" | "auto"` (default `"off"`)
-  - `"off"`: never decode money; you always get plain maps/strings.
-  - `"object"`: only decode the **canonical object** form (above) to Goblin `money`.
-  - `"string"`: decode strings strictly matching `"{CUR} {major}"` (e.g., `"USD 1.23"`) to `money`. Uses `money(major, CUR)` and follows precision policy (§10.0).
-  - `"auto"`: try `"object"` then `"string"`; if both fail, leave as-is.
 - `datetime: "off" | "string" | "object" | "auto"` (default `"off"`)
 - `enum: "off" | "name" | "value" | "object" | "auto"` (default `"off"`)
-- `enum_schema: map<string,string>` — key → EnumName, only used with `enum:"value"`
-- `strict_numbers: bool` (default `false`): when `true`, error on non-finite numbers (NaN/Infinity) if present.
-- blob: "off" | "base64" | "hex" | "auto" = "off"   /// see §29.5
+- `enum_schema: map<string,string>` (for `enum:"value"`)
+- `strict_numbers: bool` (default `false`) — error on NaN/Infinity
+- `blob: "off" | "base64" | "hex" | "auto"` (default `"off"`)
 
-**Glam and Serialization:** Glam may register their own JSON/YAML serialization handlers for custom types they define. If no handler is registered, the glam's types inherit the core JSON serialization rules. Glam-specific serialization follows the same safety policies (deterministic build restrictions, permission checks) as all other glam operations.
+**Glam:** may register their own JSON/YAML handlers for custom types. If none registered, they fall back to these rules.
 
-#### 14.2.3 Errors
+### 14.2.3 Errors
+
 - Malformed JSON → `ValueError`
-- `money:"object"` with missing/invalid `currency`/`amount|units` → `ValueError`
-- When decoding to `money`, **precision policy applies**:
-  - `strict` → `MoneyPrecisionError` if sub-precision appears
-  - `warn`/`truncate` → canonicalize + ledger remainder (and warn in `warn`)
+- Bad money object (missing/invalid fields) → `ValueError`
+- Precision policy applies on decode:
+  - `strict` → `MoneyPrecisionError` on sub-precision
+  - `warn`/`truncate` → canonicalize + ledger remainder
 
-#### 14.2.4 Examples
+### 14.2.4 Examples
 
-**Write canonical money objects:**
-```goblin
-set @policy site_default
-cart = { total: $123.45, items: 3 }
-write_json("dist/cart.json", cart, { money: "object", indent: 2 })
-```
+    /// Write canonical money object
+    write_json("cart.json", { total: $123.45 }, { money: "object", indent: 2 })
 
-**Read with safe defaults (no money decoding):**
-```goblin
-raw = read_json("dist/cart.json")  /// money stays as maps with _type
-```
+    /// Read without decoding
+    raw = read_json("cart.json")  /// money stays map
 
-**Opt-in decode to money:**
-```goblin
-cart = read_json("dist/cart.json", { money: "object" })
-say cart.total  /// USD 123.45
-```
+    /// Read with decode
+    cart = read_json("cart.json", { money: "object" })
+    say cart.total  /// USD 123.45
 
-**String mode round-trip:**
-```goblin
-write_json("price.json", $19.99, { money: "string" })
-p = read_json("price.json", { money: "string" })  /// -> USD 19.99
-```
+    /// String mode
+    write_json("price.json", $19.99, { money: "string" })
+    read_json("price.json", { money: "string" })  /// USD 19.99
 
-**In-memory stringify/parse:**
-```goblin
-s = json_stringify({ x: 1, m: $0.05 }, { money: "units" })
-obj = json_parse(s, { money: "units" })
-```
+    /// In-memory round-trip
+    s = json_stringify({ m: $0.05 }, { money: "units" })
+    obj = json_parse(s, { money: "units" })
 
----
+## 14.3 YAML
+
+- **Functions:** `read_yaml(path)`, `write_yaml(path, obj)`
+- **Options:** YAML honors the same `money`, `datetime`, `enum`, and `blob` options as JSON.
+- **Errors:** invalid YAML → `ValueError`.
+- Type mapping identical to JSON (null→nil, etc.).
+
+## 14.4 CSV
+
+- **Functions:**
+  - `read_csv(path) → array<map<string,string>>`
+  - `write_csv(path, rows: array<map>)`
+- **Notes:**
+  - Values are strings on read; caller must cast (`int`, `float`, `money`, etc.).
+  - `write_csv` supports `money` options (`"string"`, `"object"`, `"units"`) for round-trip fidelity.
+  - No auto-decode of money/datetime; explicit opts required.
+  - Malformed CSV → `ValueError`.
 
 ## 15. Date & Time (Core)
 
