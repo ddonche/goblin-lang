@@ -1,4 +1,4 @@
-# Goblin — Language Specification v1.5 "Treasure Hoarder"
+# Goblin — Language Specification v1.5.3 "Treasure Hoarder"
 
 ## Philosophy
 
