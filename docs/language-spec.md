@@ -1666,776 +1666,275 @@ Use lints/codemods to replace `time ± duration` with `wrap_time`/`shift_time`, 
 
 No naive timestamps; explicit policy; trusted time is opt-in; strict parsing/formatting; calendar-safe adders; explicit human time math; clear ranges; clean serialization; deterministic core; surfaced tzdata; O(1) policy snapshots; first-class introspection; presets & adapters; smooth migration.
 
-## 16. Shopify Profile (Glam: "Game Goblin")
+# 16. Errors & Warnings
 
-### 16.1 Repo Layout
-```
-goblin.config.yaml
-policies.gbln
-types-registry.yaml
-collections-map.yaml
-registry/
-  titles.yaml
-  skus.jsonl
-  collisions.log
-titles/
-  board_game/…yaml
-  tarot_deck/…yaml
-  book/…yaml
-dist/
-  <slug>/
-    products.csv
-    append.csv
-    report.txt
-    warnings.log
-    remainders.log
-```
-
-### 16.2 CLI (Glam)
-```
-glam init                          # Initialize project
-glam spawn tarot_deck "Mystic"     # Generate template  
-glam build mystic.yaml --chain tarot_deck,shopify,etsy,ebay  # Chain exports
-glam build --deterministic         # Enforce deterministic build with locked glam
-glam lint                          # Check for reserved word conflicts and other issues
-glam list                          # Show available glam
-glam install community_glam        # Install from repository
-
-# Goblin easter eggs
-goblin hoard status                 # = remainders status  
-goblin --about-goblins              # Fun goblin lore
-goblin --version                    # Shows ASCII art + version name
-
-# Codes
-glam code set "Deviant Moon Borderless Tarot" DMBT
-glam codes list
-glam codes grep DMBT
-
-# Remainders & Warnings
-goblin remainders status            # show ledger and last N entries
-goblin remainders clear             # clear in-memory ledger (keeps logs)
-goblin remainders rotate            # rotate remainders.log
-goblin warnings clear|rotate
-
-glam gmark rebalance  # Compact ords by current sort; reassign 1..N (atomic)
-```
-
-### 16.3 Configuration Files
-- **collections-map.yaml**: Authoritative map from Goblin category to Shopify collections (first = primary)
-- **types-registry.yaml**: Per type: required fields, allowed categories, defaults (options, split strategy, SEO templates)
-- **goblin.config.yaml**: SKU policy, paths, currency settings
-
-### 16.4 SKU Generation
-```yaml
-sku_policy:
-  default_pattern: "{CODE}-{YEAR?}-{LIST}-{PARTCODE}-{ATTRCODE?}"
-  tarot_deck_pattern: "{CODE}-{LIST}-{SUITCODE}-{CARDNUM:02}"
-  require_year_for_types: ["rpg_book", "vg_guide", "vintage"]
-  autoinc: false  # set true to allow A/B suffixing on collisions
-```
-
-### 16.5 CSV Import/Export (Shopify)
-- `--initial`: full rows + qty; Draft by default unless `meta.publish=true`
-- `--append`: minimal rows; only new variants; no qty changes
-- CSV exports numeric Variant Price in store currency with perfect precision
-- If item currency ≠ store currency: warn and log to report.txt
-
-### 16.6 Glam Settlement Options
+## 16.1 Error Handling Syntax
 
 ```goblin
-shopify::configure(
-  settlement: "line_item" | "adjust_price" | "none" = "none",
-  settlement_sku: "ROUND-ADJ",
-  settlement_title: "Rounding Adjustment"
-)
-```
-
-- **none**: export 2-dp values; call `drip_remainders(label: order_id)` (audit-only).
-- **line_item**: `drip_remainders(commit:true, label: order_id)`; add single ± line item of the emitted amount.
-- **adjust_price**: `drip_remainders(commit:true, label: order_id)`; distribute via `divide_evenly` across lines; recompute tax.
-
-### 16.7 Logs (Standardized)
-
-- **dist/warnings.log** — JSON Lines; precision warnings, with op, currency, remainder, location.
-- **dist/remainders.log** — JSON Lines; drip operations (log-only or commit), before/after ledger, thresholds, emitted.
-
----
-
-## 17. Examples
-
-### Concatenation & Casting
-```goblin
-"Deviant" | "Moon" → DeviantMoon
-"Deviant" || "Moon" → Deviant Moon
-str(5) || str(10) → 5 10
-```
-
-### Division & Divmod Examples
-```goblin
-/// Numbers
-10.75 / 3 → 3.5833333333
-10.75 // 3 → 3
-10.75 >> 3 → (3, 1.75)
--7 / 3 → -2.3333333333
--7 // 3 → -3         /// floor semantics
--7 >> 3 → (-3, 2)    /// because -7 = (-3)*3 + 2
-
-/// Money
-set @policy site_default
-price = $10.75
-q = price // 3       /// USD 3.00 (quotient only)
-q, r = price >> 3    /// (USD 3.00, USD 1.75)
-price / 3            /// MoneyDivisionError
-
-/// Quick sanity check
-a = 10.75
-say a / 3            /// 3.5833333333
-say a // 3           /// 3
-say a >> 3           /// (3, 1.75)
-```
-
-### Postfix Math
-```goblin
-9**         → 81
-16//        → 4
-16// ** 2   → 16
-```
-
-### Explain-Power
-```goblin
-say 5 ** 3  → 125
-say 5 ^^ 3  → 125 (5 × 5 × 5)
-```
-
-### Money Examples with Perfect Conservation
-```goblin
-set @policy site_default
-
-a = 1.50      /// USD 1.50
-b = $2.25     /// USD 2.25  
-c = €3.00     /// EUR 3.00
-
-say a + b     /// USD 3.75
-a + c         /// CurrencyError
-
-/// High-precision handling
-precise = money(4.567, USD)  /// $4.56 + remainder(0.007)
-price = $4.50
-price++
-price = price + .05  /// USD 5.55
-
-/// Perfect conservation in operations
-total = $100.00
-shares = divide_evenly(total, 3)  /// [$33.34, $33.33, $33.33]
-say add[shares]  /// $100.00 exactly
-```
-
-### Precision Policy Examples
-```goblin
-set @policy strict_money
-
-price = 19.99                        /// ok
-price = money(19.991, USD)          /// MoneyPrecisionError
-tax_amount = tax($405.95, 8.25%)    /// error (would be 33.990375)
-
-/// Fix by even-splitting a rounded rate or adjusting:
-tax_amount = divide_evenly($405.95 * 8.25%, 1)[0]
-
-/// Or switch policy temporarily
-set @policy site_default
-tax_amount = tax($405.95, 8.25%)    /// ok, logs remainder
-
-/// Bank-style precision:
-set @policy high_precision   /// precision: 5, policy: truncate
-fee = $0.00037                      /// ok, logs remainder if any operation shrinks below 5 dp
-```
-
-### Templates
-```goblin
-@cards =
-    card: "{name}" :: price: .99 :: qty: 1
-    "Ace of Cups"
-    "Two of Cups" :: 1.25
-    "Three of Cups" :: :: 2
-    "Four of Cups" :: 1.25 :: 2
-```
-
-### Remainder Management
-```goblin
-/// Check current remainder ledger
-say remainders_total()  /// {USD: $0.0347}
-
-/// Audit potential drips (no commit)
-potential = drip_remainders(threshold: $0.05, label: "order_123")
-/// Logs to dist/remainders.log but doesn't modify ledger
-
-/// Actually drip remainders
-actual = drip_remainders(threshold: $0.05, commit: true, label: "order_123")
-say actual  /// {USD: $0.03}
-/// Ledger now has {USD: $0.0047}
-
-/// Allocate dripped amounts
-shares = divide_evenly(actual.USD, 3)  /// [$0.01, $0.01, $0.01]
-```
-
-### Date & Time Examples
-```goblin
-set @policy site_default
-
-/// Basic construction
-start_date = date("2025-08-12")
-meeting_time = datetime("2025-08-12 14:30")
-duration = 1h + 30m
-
-/// Arithmetic
-end_time = meeting_time + duration
-days_until = date("2025-12-25") - today()
-
-/// Ranges and iteration
-for d in date("2025-08-01")..date("2025-08-07")
-    say "Day: {d.format('YYYY-MM-DD')}"
-
-/// Trusted time for financial records
-ensure_time_verified("transaction_log")
-transaction_stamp = trusted_now()
-```
-
-### Enum Examples
-```goblin
-enum Status
-    Pending
-    Paid
-    Shipped
+/// Structured error handling
+attempt
+    risky_operation()
+    "success"
+rescue ErrorType as e
+    handle_error(e)
+    "recovered"
+ensure
+    cleanup()
 end
 
-order = { id: 17, status: Status.Pending }
-
-if order.status is Status.Pending
-    "hold"
-else
-    "continue"
-
-/// Int-backed with sequential auto-increment
-enum Priority as int seq
-    Low = 1
-    Medium       /// 2
-    High         /// 3
-    Critical = 10
-    Urgent       /// 11
-end
-
-assert Priority.Low < Priority.High
-assert Priority.Critical.value() == 10
-
-/// JSON roundtrip
-write_json("order.json", order, { enum: "name" })
-back = read_json("order.json", { enum: "name" })
-say back.status                    /// Status.Pending
-```
-
-### Glam Examples
-```goblin
-use tarot_deck@1.2 as tarot
-use shopify@^1.6 as shp
-
-prefer product.export via shp
-
-@cards = tarot::card_template(price: .99, qty: 1)
-    "Ace of Cups" :: 3
-    "Two of Cups"
-    "Three of Cups" :: price: 1.25 :: 2
-
-ensure_time_verified("shopify export")
-file = product.export(@cards) via shp
-say "Wrote {file}"
-```
-
----
-
-## 18. Errors & Warnings
-
-```goblin
-/// Throw errors
+/// Manual throws
 error "message"
 
 /// Assertions
 assert cond, "msg"
 
-/// Try/catch/finally
-try
-    ...
-catch e
-    "Oops: {e.message}"
-finally
-    "done"
-
 /// Warnings
 warn "msg"
 ```
 
-**Built-in error types:**
-`NameError`, `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `SyntaxError`, `AssertionError`, `CurrencyError`, `MoneyDivisionError`, `MoneyPrecisionError`, `TimezoneError`, `TimeSourceError`, `OverflowError`, `EnumError`, `GlamError`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`, `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`, `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`, `ModuleNotFoundError`, `ModuleNameConflictError`, `ModuleCycleError`, `ModuleVisibilityError`, `PolicyNotFoundError`, `PolicyValueError`, `PolicyScopeError`, `PolicyVisibilityError`, `BanishError`, EmptyPickError, PickCountError, PickIndexError, PickTypeError
+## 16.2 Error Categories
 
-ReapEmptyError, ReapCountError, ReapIndexError, ReapTypeError
-
-UsurpIndexError, UsurpEmptyError, UsurpCountError, UsurpArityError, UsurpTypeError
-
-ReplaceIndexError, ReplaceTypeError
-
-AddTypeError
-
-InsertIndexError, InsertTypeError
-
-ShuffleTypeError
-
-SortTypeError
-
-ArityMismatch
-
-DICE_PARSE
-
-DICE_BOUNDS
-
-WEIGHT_TYPE
-
-WEIGHT_EMPTY
-
-**Goblin Error Messages:**
-Error messages may occasionally include goblin-themed variations for personality:
-
-- `NameError`: 
-  - *"The goblins can't find variable 'pricess' (did you mean 'prices'?)"*
-  - *"Variable 'cofee' has vanished! (did you mean 'coffee'?)"*
-  - *"The treasure map is missing 'totla' (did you mean 'total'?)"*
-  - *"Goblins searched everywhere but 'nmae' doesn't exist (did you mean 'name'?)"*
-
-- `MoneyPrecisionError`: 
-  - *"The goblins refuse to lose precision! Use policy: truncate or fix your decimals"*
-  - *"Treasure counting error: goblins demand exact amounts"*
-  - *"The coin-counting goblins reject imprecise values"*
-  - *"Money goblins detected sub-precision chaos - fix your math!"*
-
-- `CurrencyError`: 
-  - *"The goblins won't mix USD and EUR without explicit conversion!"*
-  - *"Currency mixing detected - goblins demand clarity"*
-  - *"The exchange goblins refuse to blend currencies"*
-  - *"Different coins in the same pouch? The goblins disapprove!"*
-
-- `TimeSourceError`: 
-  - *"The time goblins can't verify this timestamp"*
-  - *"Chronometer goblins report: time source unavailable"*
-  - *"The temporal guardians have lost track of time"*
-  - *"Time verification failed - the goblins are confused"*
-
-- `TimeSourceWarning`: 
-  - *"Time goblins warning: using unverified timestamp"*
-  - *"The chronometer goblins are concerned about timing"*
-  - *"Temporal warning: goblins suggest verification"*
-  - *"Time precision questionable - goblins recommend caution"*
-
-- `EnumError`: 
-  - *"The classification goblins don't recognize 'Payed' (did you mean Status.Paid?)"*
-  - *"Enum goblins report: 'BadReques' is not a valid Http value"*
-  - *"The sorting goblins found an unknown variant"*
-  - *"Category error: goblins can't find that enum value"*
-
-- `GlamError`: 
-  - *"The glam goblins encountered an unexpected error in '{glam}'"*
-  - *"Mechanical failure: {glam} goblins report malfunction"*
-  - *"The engineering goblins detected chaos in '{capability}'"*
-  - *"Glam malfunction: goblins recommend checking '{glam}' configuration"*
-
-- `ContractError`: 
-  - *"The contract goblins found signature mismatch in '{capability}'"*
-  - *"Legal eagles (goblin division) report contract violation"*
-  - *"The agreement goblins are confused by this signature"*
-  - *"Contract breach: goblins expected different parameters"*
-
-- `SyntaxError`: 
-  - *"The goblins are confused by line {line} - missing 'end'?"*
-  - *"Syntax goblins stumbled at line {line}: unexpected '{token}'"*
-  - *"The grammar goblins don't understand this structure"*
-  - *"Code parsing failed - goblins need clearer instructions"*
-
-- `TypeError`: 
-  - *"The type goblins won't let you {operation} a {type1} and {type2}"*
-  - *"Type mismatch: goblins refuse to mix incompatible types"*
-  - *"The classification goblins detected type chaos"*
-  - *"Type error: goblins demand compatible data types"*
-
-- `ValueError`: 
-  - *"The value goblins reject this input: {value}"*
-  - *"Invalid data detected by the validation goblins"*
-  - *"The quality control goblins found a bad value"*
-  - *"Value error: goblins can't process this input"*
-
-- `IndexError`: 
-  - *"The index goblins can't find position {index} in this array"*
-  - *"Array bounds error: goblins only found {length} items"*
-  - *"The list goblins report: index {index} is out of range"*
-  - *"Position error: goblins can't access item {index}"*
-
-- `KeyError`: 
-  - *"The key goblins can't find '{key}' in this map"*
-  - *"Dictionary search failed: goblins don't see key '{key}'"*
-  - *"The lookup goblins report: '{key}' doesn't exist"*
-  - *"Map error: goblins found no entry for '{key}'"*
-
-- `ZeroDivisionError`: 
-  - *"The math goblins refuse to divide by zero!"*
-  - *"Division error: goblins can't split by nothing"*
-  - *"The calculation goblins detected impossible math"*
-  - *"Zero division chaos - goblins demand valid denominators"*
-
-- `AssertionError`: 
-  - *"The verification goblins found a failed assertion: {message}"*
-  - *"Assertion failed: goblins expected this to be true"*
-  - *"The testing goblins report: assertion violated"*
-  - *"Logic error: goblins can't verify this condition"*
-
-- `MoneyDivisionError`: 
-  - *"The treasury goblins forbid dividing money directly - use // or >> for division, or divide_evenly()"*
-  - *"Money division blocked: goblins demand explicit remainder handling"*
-  - *"The accounting goblins refuse money division without precision control"*
-  - *"Currency math error: goblins require // or >> for money division"*
-
-- `TimezoneError`: 
-  - *"The geography goblins don't recognize timezone '{timezone}'"*
-  - *"Time zone error: goblins are lost in '{timezone}'"*
-  - *"The mapping goblins can't find that time zone"*
-  - *"Timezone chaos: goblins need a valid zone identifier"*
-
-- `OverflowError`: 
-  - *"The capacity goblins report: number too large to handle"*
-  - *"Overflow detected: goblins can't count that high"*
-  - *"The size goblins found an impossibly large value"*
-  - *"Number overflow: goblins reached their counting limit"*
-
-- `PermissionError`: 
-  - *"The security goblins deny access to '{resource}'"*
-  - *"Permission denied: goblins guard this resource"*
-  - *"The guardian goblins block unauthorized access"*
-  - *"Access error: goblins require proper permissions"*
-
-- `AmbiguityError`: 
-  - *"The decision goblins found multiple options for '{capability}'"*
-  - *"Ambiguity detected: goblins need clearer instructions"*
-  - *"The choice goblins are confused by multiple providers"*
-  - *"Resolution error: goblins can't pick between options"*
-
-- `LockfileError`: 
-  - *"The archive goblins found lockfile problems"*
-  - *"Lockfile error: goblins can't verify glam versions"*
-  - *"The versioning goblins report lockfile chaos"*
-  - *"Lock verification failed: goblins demand consistent versions"*
-
-- `DeterminismError`: 
-  - *"The consistency goblins detected non-deterministic behavior"*
-  - *"Determinism error: goblins demand predictable results"*
-  - *"The reliability goblins found chaotic operations"*
-  - *"Non-deterministic chaos: goblins require consistent execution"*
- 
-- `GmarkConflictError`:
-  - *"The bookmark goblins found duplicate gmark '{name}' - they demand unique names!"*
-  - *"Gmark collision detected: archive goblins refuse duplicate ord {ord}"*
-  - *"The registry goblins report: '{name}' already exists with ord {ord}"*
-  - *"Conflict chaos: goblins can't assign ord {ord} - already taken!"*
-
-- `GmarkNotFoundError`:
-  - *"The search goblins can't find gmark '{name}' in the registry"*
-  - *"Missing bookmark: archive goblins don't see '{name}'"*
-  - *"The catalog goblins report: gmark '{name}' has vanished"*
-  - *"Registry error: goblins found no record of '{name}'"*
-
-- `GmarkInvalidError`:
-  - *"The naming goblins reject invalid gmark '{name}' - check the format!"*
-  - *"Invalid bookmark: goblins don't allow '{name}' as a gmark"*
-  - *"The format goblins found illegal characters in gmark '{name}'"*
-  - *"Name validation failed: goblins demand proper gmark syntax"*
-
-- `GmarkPersistenceError`:
-  - *"The storage goblins can't save gmark registry to disk"*
-  - *"Archive error: goblins failed to write .goblin/gmarks.lock"*
-  - *"The file goblins report: gmark persistence chaos"*
-  - *"Registry save failed: goblins can't update the bookmark database"*
-
-- `MorphTypeError`:
-  - *"The shape-shifting goblins can't morph '{obj}' using '{target}' - invalid types!"*
-  - *"Morph error: transformation goblins don't recognize method '{method}'"*
-  - *"The metamorphosis goblins found incompatible target type"*
-  - *"Type transformation failed: goblins can't perform this morph"*
-
-- `MorphFieldError`:
-  - *"The field goblins found incompatible '{field}': expected {expected}, got {actual}"*
-  - *"Morph field error: transformation goblins can't sync '{field}'"*
-  - *"The accessor goblins report: field '{field}' types don't match"*
-  - *"Field sync chaos: goblins refuse to mix incompatible field types"*
-
-- `MorphCurrencyError`:
-  - *"The currency goblins won't morph {from_cur} into {to_cur} for field '{field}'"*
-  - *"Money morph error: exchange goblins demand matching currencies"*
-  - *"The treasury goblins found currency mismatch in '{field}'"*
-  - *"Currency transformation failed: goblins can't mix {from_cur} and {to_cur}"*
-
-- `MorphActionError`:
-  - *"The action goblins failed during morph: {cause}"*
-  - *"Morph execution error: method goblins encountered chaos"*
-  - *"The transformation goblins report: target method exploded"*
-  - *"Action failure: goblins couldn't complete the morph operation"*
-
-- `ModuleNotFoundError`:
-  - *"The import goblins can't find module at '{path}'"*
-  - *"Module search failed: goblins lost the trail to '{path}'"*
-  - *"The file goblins report: no module at '{path}'"*
-  - *"Import chaos: goblins can't locate the requested module"*
-
-- `ModuleNameConflictError`:
-  - *"The naming goblins found duplicate alias '{alias}' in imports"*
-  - *"Import conflict: goblins refuse overlapping module names"*
-  - *"The organization goblins detected alias collision for '{alias}'"*
-  - *"Namespace chaos: goblins demand unique import aliases"*
-
-- `ModuleCycleError`:
-  - *"The dependency goblins found a circular import: {cycle}"*
-  - *"Module cycle detected: goblins can't resolve circular dependencies"*
-  - *"The logic goblins report: infinite import loop detected"*
-  - *"Import chaos: goblins refuse circular module dependencies"*
-
-- `ModuleVisibilityError`:
-  - *"The access goblins deny import of vault symbol '{symbol}'"*
-  - *"Module visibility error: goblins guard private symbols"*
-  - *"The security goblins block access to hidden '{symbol}'"*
-  - *"Import permission denied: goblins protect vault contents"*
-
-- `PolicyNotFoundError`:
-  - *"The policy goblins can't find configuration '{name}'"*
-  - *"Unknown policy: goblins don't recognize '{name}'"*
-  - *"The rulebook goblins report: policy '{name}' doesn't exist"*
-  - *"Configuration error: goblins need a valid policy name"*
-
-- `PolicyValueError`:
-  - *"The validation goblins found invalid policy value at '{path}': {reason}"*
-  - *"Policy configuration error: goblins reject malformed settings"*
-  - *"The rules goblins detected bad policy data"*
-  - *"Configuration chaos: goblins demand valid policy values"*
-
-- `PolicyScopeError`:
-  - *"The scope goblins found policy declaration in wrong location"*
-  - *"Policy placement error: goblins expect header policies first"*
-  - *"The organization goblins demand proper policy positioning"*
-  - *"Scope violation: goblins require policies at file start"*
-
-- `PolicyVisibilityError`:
-  - *"The policy goblins block this import due to active restrictions"*
-  - *"Import denied: policy goblins enforce visibility rules"*
-  - *"The access goblins report: policy prevents this operation"*
-  - *"Policy violation: goblins restrict this action"*
-
-**Built-in warning types:**
-`MoneyPrecisionWarning`, `TimeSourceWarning`, `UnusedJudgeValueWarning`
-
-- `JudgeError`:
-  - *"The judgment goblins found malformed judge expression"*
-  - *"Decision error: goblins need proper condition: value syntax"*
-  - *"The choice goblins are confused by this judge structure"*
-  - *"Judge syntax chaos: goblins demand clear conditions"*
- 
-BanishError:
-
-"Feature 'core.morph' has been banished from this project - the goblins won't allow it!"
-"The ban goblins have blocked 'judge' inline form in this codebase"
-"Pipe operator '|' is forbidden here - goblins enforce the project rules"
-"Feature 'unless' is banished from this realm by goblin decree"
-
-DeleteThresholdExceeded
-- Category: Runtime (DB/Service)
-- Trigger: a delete operation would affect more rows/documents than the configured threshold
-- Fields:
-    table|collection: string
-    where|selector  : string (summary)
-    matched         : integer
-    threshold       : integer
-- Remediation:
-    - Narrow the selector or raise the limit explicitly with --db-delete-force
-    - Re-run with --commit (if dry-run) to apply after reviewing the plan
-
----
-
-## 19. Reserved Words
+**Core Error Types**
 
 ```
-if, elif, else, for, in, while, class, fn, return, skip, stop, try, catch, finally, 
-assert, error, warn, say, true, false, nil, int, float, money, bool, pct,
-read_text, write_text, read_yaml, write_yaml, read_csv, write_csv, read_json, write_json, 
-json_stringify, json_parse, exists, mkdirp, listdir, glob, cwd, chdir, join, now, uuid, 
-add, sum, mult, sub, div, mod, divmod, pow, root, floor, ceil, round, abs, min, max, 
-rand, randint, tax, with_tax, bit, glam, use, export, via, validate, 
-remainders_total, remainders_report, clear_remainders, divide_evenly, divide_evenly_escrow, 
-drip_remainders, date, time, datetime, duration, parse_date, parse_time, parse_datetime,
-today, utcnow, local_tz, to_tz, floor_dt, ceil_dt, add_days, add_months, add_years,
-trusted_now, trusted_today, last_trusted_sync, time_status, clear_time_cache, ensure_time_verified,
-prefer, contract, emit, emit_async, on, test, enum, seq, goblin_hoard, goblin_treasure, 
-goblin_empty_pockets, goblin_stash, goblin_payout, gmark, gmarks, gmark_info, gmark_set_ord,
-next_ord, ord, morph, judge, import, expose, vault, set, settle, excess, with_money_policy,
-compat, mode, track_theft, shame_level, unless, allocate_money, blob, from_base64, from_hex, goblin_divvy, hash, hmac, 
-is_binary, read_bytes, to_base64, to_hex, write_bytes, allocate_round_robin, goblin_round_robin, banish, unbanish,
-plan, publish, pick, reap, usurp, len, shuffle, sort, add, insert, replace, attempt, rescue, ensure, roll, roll_detail, freq, mode, sample_weighted
+NameError, TypeError, ValueError, IndexError, KeyError,
+ZeroDivisionError, SyntaxError, AssertionError, OverflowError
 ```
-Note on `delete`: in v1.5, `delete` is an operation within `export/publish` blocks (not a top-level statement) and is not reserved as a keyword. If promoted to a statement in a future version, it will be added to the reserved list then.
 
-**Version Codenames:**
-- v1.0: "Evil Redcap" *(MVP)*
-- v1.5: "Treasure Hoarder" *(current)*
-- v1.6: "Gold Sniffer"
-- v1.7: "Wealth Watcher" 
-- v1.8: "Loot Guardian"
-- v2.0: "Hoard Lord"
-- v2.5: "Sneaky Pilferer"
-- v3.0: "Trickster King"
-- v3.5: "Mischief Maker"
+**Goblin-Specific Error Types**
 
-## 20. Core vs. Glam Architecture
+```
+CurrencyError, MoneyDivisionError, MoneyPrecisionError,
+TimeSourceError, TimeSourceWarning, TimezoneError, TimeArithmeticError,
+EnumError, GlamError, ContractError, PermissionError, AmbiguityError,
+LockfileError, DeterminismError, MorphTypeError, MorphFieldError,
+ModuleNotFoundError, PolicyNotFoundError, BanishError, DatetimeCompatWarning,
+GLAM_NO_PROVIDER, GLAM_FANOUT_UNSUPPORTED, GLAM_PARTIAL_FAILURE,
+GLAM_DEST_INVALID, GLAM_TIMEOUT, GLAM_OVERWRITE_DENIED, GLAM_AMBIGUOUS_PROVIDER
+```
 
-### 20.1 Design Philosophy
-Goblin maintains a **lean core** with **extensible glam** to balance safety with flexibility. Core provides guarantees that glam cannot compromise; glam handle domain-specific functionality.
+**List Operation Errors**
 
-### 20.2 Must Be Core
-These components **must** remain in core to ensure safety, determinism, and language coherence:
+```
+EmptyPickError, PickCountError, PickIndexError, PickTypeError,
+ReapEmptyError, ReapCountError, ReapIndexError, ReapTypeError,
+UsurpIndexError, UsurpCountError, UsurpArityError, UsurpTypeError,
+ReplaceIndexError, ReplaceTypeError,
+InsertIndexError, InsertTypeError,
+ShuffleTypeError, SortTypeError, AddTypeError
+```
 
-**Syntax & Parser:**
-- Keywords (`use`, `via`, `prefer`, `contract`, `emit`, `on`, `test`, `import`, `set`)
-- Operators (percent literals, postfix `++`/`--`, infix `//`, `>>`)
-- Precedence rules and "no-space vs space" `%` behavior
-- Template syntax (`::`, `@name`)
+## 16.3 Warnings
 
-**Type System Primitives:**
-- Core types (`int`, `float`, `bool`, `string`, `money`, `percent`, `date`, `time`, `datetime`, `duration`, `enum`)
-- Money conservation/precision rules and remainder tracking
+Built-in warning types:
+
+```
+MoneyPrecisionWarning, TimeSourceWarning, UnusedJudgeValueWarning
+```
+
+## 16.4 Notes on Goblin-Themed Error Messages
+
+- The specification supports **standardized error and warning messages** as listed above.
+- A future feature called **"grumble mode"** will allow enabling *goblin-flavored error messages* for personality and developer feedback.
+- By default, **grumble mode is off**. Config option will enable it.
+- The **cheat sheet should document** this option when grumble mode is implemented.
+
+# 17. Reserved Words
+
+## 17.1 Hard Keywords
+
+These cannot be shadowed or redefined:
+
+```
+if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, stop, assert,
+class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
+date, time, datetime, duration, morph, vault, judge, banish, unbanish, expose, set, settle,
+pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted
+```
+
+## 17.2 Soft Keywords
+
+These are context-dependent (reserved only in specific constructs):
+
+```
+from, at, first, last, to, into, with, dups, seq, as
+```
+
+Note: `in` is always a hard keyword (loop syntax); there is no general boolean `in` operator.
+
+## 17.3 Notes
+
+- `delete`: not a reserved word. In v1.5 it is only valid as an operation within `export/publish` blocks. If promoted to a statement in a future version, it will be added here.
+- Some identifiers (e.g. built-in functions like `read_text`, `write_json`, `divide_evenly`, etc.) are *standard library functions*, not reserved words. They may be shadowed unless explicitly banished by policy.
+
+## 17.4 Version Codenames
+
+- v1.0: *Evil Redcap* (MVP)
+- v1.5: *Treasure Hoarder* (current)
+- v1.6: *Gold Sniffer*
+- v1.7: *Wealth Watcher*
+- v1.8: *Loot Guardian*
+- v2.0: *Hoard Lord*
+- v2.5: *Sneaky Pilferer*
+- v3.0: *Trickster King*
+- v3.5: *Mischief Maker*
+
+# 18. Core vs. Glam Architecture
+
+## 18.1 Design Philosophy
+
+Goblin maintains a **lean, auditable core** with **extensible glam**.
+
+- **Core** guarantees determinism, safety, and language coherence.
+- **Glam** provides domain-specific functionality (commerce, APIs, custom records).
+
+Core cannot be bypassed or compromised by glam. Glams must operate within the rules of the runtime.
+
+## 18.2 Must Be Core
+
+The following remain in **core** to ensure safety, determinism, and predictability:
+
+**Syntax & Parser**
+- Keywords: `use`, `via`, `prefer`, `contract`, `test`, `import`, `set`
+- Operators: percent literals (`%`, `%s`, `% of`), postfix `++`/`--`, infix `//`, `>>`
+- Operator precedence and `%` semantics (`%` vs `%s` vs `% of`)
+- Template syntax: `::`, `@name`
+
+**Type System Primitives**
+- Built-in types: `int`, `float`, `bool`, `string`, `money`, `percent`, `date`, `time`, `datetime`, `duration`, `enum`
+- Money conservation, precision, and remainder tracking
 - Trusted time semantics and verification chains
 - Enum identity and singleton guarantees
 
-**Contract System:**
-- Global contract registry (`contract name -> signature/errors`)
-- Implementation compliance checking
-- Call-site resolution (`via` > `prefer` > defaults)
-- Error handling (`AmbiguityError`, `ContractError`)
+**Contract System**
+- Global contract registry (`contract name → signature/errors`)
+- Compliance enforcement at implementation and call sites
+- Call-site resolution order: `via` > `prefer` > default
+- Error classes: `AmbiguityError`, `ContractError`
 
-**Sandbox & Determinism:**
+**Sandbox & Determinism**
 - Permission enforcement (FS/NET allowlists, env gating)
-- `--deterministic` behavior (wall-clock blocking, network restrictions, RNG seeding)
+- Deterministic mode (`--deterministic`): wall-clock blocking, RNG seeding, network restrictions
 - Dry-run infrastructure
 
-**Security Infrastructure:**
-- Trusted time chain and HMAC verification
-- Lockfile management and version resolution
+**Security Infrastructure**
+- Trusted time chains and HMAC verification
+- Lockfile management and version pinning
 - Build reproducibility guarantees
 
-**Runtime Safety:**
+**Runtime Safety**
 - Standard error classes and glam error wrapping
-- JSONL logging around capability calls
+- Structured JSONL logging around capability calls
 - Reserved word collision prevention
 
-**Core I/O & Serialization:**
-- JSON/YAML/CSV base functionality
-- Serialization hooks for glam types
+**Core I/O & Serialization**
+- JSON, YAML, CSV built-ins
+- Serialization hooks for glam-defined types
 - Type-safe deserialization policies
 
-### 20.3 Should Be Glam
-These components are **appropriately** handled by glam:
+## 18.3 Should Be Glam
 
-- Domain capabilities (Shopify, blockchain, invoices)
-- Domain types (`Product`, `Order`, custom records)
+These belong to **glam**, not core:
+
+- Domain capabilities (e.g. Shopify, blockchain, invoicing)
+- Domain types (`Product`, `Order`, etc.)
 - Platform integrations and APIs
 - Specialized exporters/importers
 - Domain-specific validation rules
 - External telemetry (beyond core logging)
-- Workflow CLIs and tooling
+- Workflow CLIs and developer tooling
 
-### 20.4 Gray Areas
-These may evolve between core and glam:
+## 18.4 Gray Areas
 
-- **Event bus workers**: Core provides basic scheduling; advanced glam may enhance
-- **RNG**: Core provides seeded `rand`; crypto glam may add secure variants (with permission checks)
-- **Formatting**: Goblin personality messages stay in core but may be configurable
+Some features may evolve between core and glam:
 
-### 20.5 Architectural Benefits
-This split ensures:
-- **Core stays lean** while providing enterprise guarantees
-- **Glam can innovate** without breaking safety/determinism
-- **No vendor lock-in** - multiple glam implementations can compete
-- **Auditability** - core behavior is predictable and verifiable
+- **Event bus / scheduling**: Core ensures minimal scheduling; glam may extend with workers or queues.
+- **Randomness**: Core provides seeded `rand`; crypto glams may add secure RNG with explicit permissions.
+- **Formatting & personality**: Core supports plain errors; optional goblin "grumble mode" may be enabled (config).
 
-## 21. Glam — Philosophy & Architecture
+## 18.5 Architectural Benefits
 
-### 21.1 Purpose
-Glam are first‑class, modular extensions that feel native to Goblin. The core stays lean; anything domain‑specific lives in a glam.
+This split provides:
 
-**Key properties:**
-- **Language‑native**: `use`, namespacing, `via`, `prefer`
-- **Type‑aware**: glam can register types & capabilities
-- **Contract‑checked**: implementations must match declared contracts
-- **Deterministic**: pin versions, lock builds, sandbox side effects
+- **Lean, auditable core** — deterministic and safe.
+- **Innovative glams** — flexible domain extensions.
+- **No vendor lock-in** — multiple glam providers can compete.
+- **Auditability** — core execution remains verifiable and predictable.
 
-### 21.2 Loading & Versioning
+# 19. Glam — Philosophy & Architecture
+
+## 19.1 Purpose
+
+Glams are first-class, modular extensions that feel native to Goblin. The core stays lean; anything domain-specific lives in a glam.
+
+Key properties:
+
+- **Language-native**: use, namespacing, via, prefer
+- **Type-aware**: glams can register types & capabilities
+- **Contract-checked**: implementations must match declared contracts
+- **Deterministic**: pinned versions, lockfiles, sandboxed side effects
+
+## 19.2 Loading & Versioning
+
 ```goblin
 use shopify@^1.6 as shp
 use tarot_deck@1.2
 use invoice            /// latest allowed by policy if not pinned (discouraged)
 ```
-Pin by default. Projects should reference a version/range.
 
-Alias: `as` sets a local alias (`shp::csv`).
+- Pin by default. Projects should reference a version/range.
+- `as` sets a local alias (`shp::csv`).
+- Lockfile (`glam.lock`) records `{glam, version, checksum, source}`; builds resolve only from lock unless `--update`.
 
-Lockfile: `glam.lock` records `{glam, version, checksum, source}`; builds resolve only from lock unless `--update`.
+## 19.3 Capability Resolution
 
-### 21.3 Capability Resolution
-Glam declare capabilities (named functions/templates/exporters). Calls resolve deterministically:
+Glams declare capabilities (functions, templates, exporters). Calls resolve deterministically:
 
-Call‑site `via`:
+**Call-site via:**
+
 ```goblin
 export @cards via shp::csv
 ```
 
-Global preference:
+**Global preference:**
+
 ```goblin
 prefer product.export via shp
 ```
 
-Project config default map (`goblin.config.yaml`)
+**Project defaults:** `goblin.config.yaml` maps contracts → glams.
 
-If multiple providers remain → `AmbiguityError`.
+If multiple providers remain, throw `AmbiguityError`.
 
-**Namespacing:**
-Public symbols: `glam::Symbol` (e.g., `shopify::csv`)
+**Namespacing**
 
-Use `via glam::symbol` (or `via alias::symbol`) to bind a call
+- Public symbols: `glam::Symbol` (e.g., `shopify::csv`)
+- Use `via glam::symbol` or `via alias::symbol` to bind a call
 
-### 21.4 Contracts (First‑Class)
-Contracts define the shape & errors of a capability; Goblin checks them at use time.
+## 19.4 Contracts (First-Class)
+
+Contracts define capability shape & allowed errors. Goblin checks them at use time.
 
 ```goblin
 contract product.export(items: array<Product>) -> file
     errors: [ValidationError, AuthError]
 end
-
-contract ledger_json(data: map) -> string
-    errors: [ValueError, TypeError]
-end
 ```
 
 **Rules:**
-Signature (names, arity, types) must match exactly
 
-Only declared errors may be thrown; others are wrapped as `GlamError(glam, capability, cause)`
+- Signature (names, arity, types) must match exactly.
+- Only declared errors may be thrown; others wrapped as `GlamError(glam, capability, cause)`.
+- Contracts are global IDs (`product.export`).
 
-Contracts are global IDs (e.g., `product.export`)
+**Introspection**
 
-**Introspection:**
 ```goblin
-glam_contracts("shopify")   /// ["product.export", "inventory.sync", ...]
+glam_contracts("shopify")
 ```
 
-### 21.5 Glam Manifest & Permissions
+## 19.5 Glam Manifest & Permissions
+
 Each glam ships a `glam.yaml`:
 
 ```yaml
@@ -2444,32 +1943,35 @@ version: 1.6.2
 provides: [product.export, inventory.sync]
 contracts: [product.export]
 requires:
-  fs: ["dist/"]               # allowlisted paths
-  net: ["api.shopify.com"]    # allowlisted hosts
+  fs: ["dist/"]
+  net: ["api.shopify.com"]
   env: ["SHOPIFY_TOKEN"]
 permissions:
-  mode: "fs+net"              # none | fs | fs+net
+  mode: "fs+net"
 checksum: "sha256-…"
 ```
 
-**Glam naming:** Glam names may not be reserved words (see §19) to avoid namespace conflicts.
-
-On use, core validates manifest/permissions against project policy. In deterministic builds, network is blocked unless allowlisted.
+- Glam names may not be reserved words (§17).
+- Core validates manifest/permissions against project policy.
+- In deterministic builds, network is blocked unless allowlisted.
 
 ```goblin
 glam_permissions("shopify")
 ```
 
-### 21.6 Event Bus
-Lightweight, in‑process bus with clear sync/async semantics.
+## 19.6 Event Bus
+
+Lightweight, in-process bus with sync/async semantics.
 
 **Emit:**
+
 ```goblin
-emit "catalog.ready", payload            /// synchronous (errors bubble)
-emit_async "order.ready", payload        /// enqueued (returns job id)
+emit "catalog.ready", payload            /// sync (errors bubble)
+emit_async "order.ready", payload        /// async queue (job id)
 ```
 
 **Subscribe:**
+
 ```goblin
 on "order.ready" mode: "async" concurrency: 4 error: "collect"
     ...
@@ -2477,36 +1979,43 @@ end
 ```
 
 **Options:**
-- `mode`: "sync" | "async" (default "sync")
-- `concurrency`: workers for async handlers (default 1)
-- `error`: "stop" (default for sync), "skip", "collect"
 
-### 21.7 Sandbox & Determinism
-Sandbox is enforced by the glam manifest + project policy.
+- `mode`: "sync" | "async" (default sync)
+- `concurrency`: async workers (default 1)
+- `error`: "stop" | "skip" | "collect"
 
-Sandbox modes: "none" | "fs" | "fs+net"
+## 19.7 Sandbox & Determinism
 
-Deterministic builds:
+**Sandbox** = glam manifest + project policy
 
-`goblin build --deterministic` blocks wall‑clock (use `trusted_now()` if permitted), blocks network unless allowlisted, and rejects nondeterministic randomness (seed it).
+**Modes:** "none" | "fs" | "fs+net"
 
-Dry‑run support for exporter contracts:
+**Deterministic builds:**
+
+- Block wall-clock (`trusted_now()` required)
+- Block network unless allowlisted
+- Reject unseeded RNG
+
+**Dry-runs** allowed for exporter contracts:
+
 ```goblin
 file = product.export(@items) via shp dry_run:true
 ```
 
-### 21.8 Logging & Telemetry
-Standard JSONL at `dist/glam.log`, emitted by core around capability calls:
+## 19.8 Logging & Telemetry
+
+Core emits JSONL logs (`dist/glam.log`) around glam calls:
 
 ```json
 {"ts":"2025-08-12T15:30:00Z","glam":"shopify","cap":"product.export","ms":128,"ok":true}
 {"ts":"2025-08-12T15:30:01Z","glam":"shopify","cap":"product.export","ok":false,"err":"ValidationError: missing title"}
 ```
 
-No phoning home unless a glam explicitly does so and permissions allow.
+No phoning home unless glam explicitly requests and permissions allow.
 
-### 21.9 Testing Hooks
-Inline tests run in a sandbox:
+## 19.9 Testing Hooks
+
+Inline tests run in sandbox:
 
 ```goblin
 test "shopify csv emits header"
@@ -2516,22 +2025,25 @@ end
 ```
 
 **CLI:**
-- `glam test shopify`
-- `glam test --all`
 
-### 21.10 Introspection APIs
-```goblin
-glams()                         /// ["shopify","tarot_deck"]
-glam_symbols("shopify")         /// ["csv","api","configure", ...]
-glam_contracts("shopify")       /// implemented contracts
-glam_permissions("shopify")     /// sandbox/allowlists
+```bash
+glam test shopify
+glam test --all
 ```
 
-**Development Tools:** Lint tools should warn if glam names match reserved words (§19) during `glam test` to catch conflicts early.
+## 19.10 Introspection APIs
 
-### 21.11 Usage Patterns
+```goblin
+glams()                         /// ["shopify","tarot_deck"]
+glam_symbols("shopify")         /// exported symbols
+glam_contracts("shopify")       /// implemented contracts
+glam_permissions("shopify")     /// sandbox info
+```
 
-#### 21.11.1 Single Export
+## 19.11 Usage Patterns
+
+### 19.11.1 Single Export
+
 ```goblin
 use tarot_deck@1.2, shopify@^1.6 as shp
 prefer product.export via shp
@@ -2540,12 +2052,11 @@ prefer product.export via shp
     "Ace of Cups"
     "Two of Cups"
 
-ensure_time_verified("shopify export")
 file = product.export(@cards) via shp
-say "Wrote {file}"
 ```
 
-#### 21.11.2 Multi‑Platform Chain
+### 19.11.2 Multi-Platform Chain
+
 ```goblin
 use board_game, shopify@^1.6 as shp, etsy@^2
 
@@ -2557,29 +2068,32 @@ export @games via shp::csv to "dist/shopify.csv"
 export @games via etsy::csv to "dist/etsy.csv"
 ```
 
-#### 21.11.3 Event‑Driven Pipeline
+### 19.11.3 Event-Driven Pipeline
+
 ```goblin
 emit "catalog.ready", @games
 
 on "catalog.ready" mode: "async" concurrency: 2 error: "collect"
-    ensure_time_verified("bulk export")
     product.export($event.payload) via shp
 end
-
-/// Blockchain ledger logging
-emit "tx.logged", ledger_json({ 
-    total: $100.00, 
-    status: Status.Paid, 
-    ts: trusted_now() 
-})
 ```
 
-### 21.12 Errors
-`GlamError(glam, capability, cause)`, `ContractError`, `PermissionError`, `AmbiguityError`, `LockfileError`, `DeterminismError`.
+## 19.12 Errors
 
-### 21.13 Project Config (excerpt)
+Glams may throw:
+
+```
+GlamError(glam, capability, cause)
+ContractError
+PermissionError
+AmbiguityError
+LockfileError
+DeterminismError
+```
+
+## 19.13 Project Config (excerpt)
+
 ```yaml
-# goblin.config.yaml
 glam:
   defaults:
     product.export: shopify
@@ -2591,284 +2105,87 @@ glam:
   deterministic_build: true
 ```
 
-### 21.14 Example Contract & Call (sketch)
+## 19.14 Rust-Backed Glams
+
+Glams may wrap Rust crates:
+
+- In-process crate (fastest)
+- Dynamic plugin (`.so`/`.dll`)
+- Out-of-process/WASM with IPC
+
+**VM Enforces:**
+
+- Contract fidelity (unexpected errors → `GlamError`)
+- Permissions (respect fs/net/env allowlists)
+- Determinism (no wall-clock, seeded RNG, `trusted_now` only)
+- Introspection APIs
+
+## 19.15 Namespace Collisions
+
+If two glams export the same symbol:
+
 ```goblin
-contract product.export(items: array<Product>) -> file
-    errors: [ValidationError, AuthError]
-end
-
-# Provided by shopify glam
-file = product.export(@cards) via shopify::csv
-```
-### 21.15 Rust-Backed Glams (Implementation Notes)
-
-Purpose. Glams may be implemented in Rust (the VM’s host language), wrapping existing Rust crates. The runtime enforces all contracts and permissions, so only declared capabilities are visible to Goblin code. (See §21.3–§21.5.)
-
-Allowed shapes (platform choice):
-
-In-process crate: Link the glam as a Rust crate; register capabilities on load. Fastest path.
-
-Dynamic plugin: Load a .so/.dll with a stable entrypoint that returns the glam’s contract table.
-
-Out-of-process/WASM: Run as a worker with IPC; honors sandbox modes and deterministic builds.
-
-Hard rules (enforced by VM):
-
-Contract fidelity. Each exported capability must match its declared signature and error set; unexpected errors are wrapped as GlamError(glam, capability, cause).
-
-Permissions. All side effects must obey the glam’s manifest (fs/net/env allowlists). Violations are blocked.
-
-Determinism. In deterministic builds, disallow unseeded RNG, wall-clock, and non-allowlisted network; provide trusted_now() where permitted.
-
-Discovery. Glams must expose introspection so tools can list capabilities and contracts.
-
-Example (conceptual):
-
-use http_rust@1.0 as http
-
-contract http.get(url: string, headers: map = {}) -> map
-    errors: [NetworkError, ValueError]
-end
-
-prefer http.get via http
-say http.get("https://api.example.com").status
-
-
-http_rust implements http.get using Rust crates (e.g., reqwest), but only the capability surface is callable from Goblin; network hosts must be allowlisted in the glam manifest.
-
-Note — Ecosystem Analogy.
-Goblin + Glams intentionally mirror the layering seen in Elixir on BEAM: a lean core with a first-class extension system. Like Elixir leveraging Erlang’s OTP, Goblin can leverage Rust’s ecosystem—Glams wrap Rust libraries while preserving Goblin’s contract checks, permission sandbox, and deterministic dispatch. This means you inherit Rust’s breadth of capabilities without sacrificing auditability, safety, or swap-ability.
-
-### 21.16 Namespace Collisions & Explicit Aliases
-
-If two or more glams export a capability with the same name, you can still use all of them in the same script by importing each glam with its own alias. The alias becomes that glam’s namespace, preventing name collisions.
-
 use trans_lib1@1.0 as lib1
 use trans_lib2@1.0 as lib2
 
-say lib1::translate_spanish("Hello world")   /// Uses the first glam
-say lib2::translate_spanish("Good morning")  /// Uses the second glam
+say lib1::translate_spanish("Hello")
+say lib2::translate_spanish("Good morning")
+```
 
+- Alias required to disambiguate
+- Compile-time error if duplicate names with no alias
+- `prefer`/`via` can set defaults, but alias always overrides
 
-Rules:
+## 19.16 Output File Namespace Isolation
 
-Alias required to disambiguate. Without an alias, duplicate names across glams are a compile-time error.
+Goblin automatically namespaces glam outputs to avoid clobbering:
 
-Namespace is mandatory in the call when more than one glam provides the same capability and no prefer/via rule is set.
+- `<alias>_v<resolved-version>_<filename>` if alias present
+- `<glam-name>_v<resolved-version>_<filename>` if not
 
-Prefer/via still works if you want to set a default provider for a capability, but fully-qualified calls using aliases always override that default.
+**Example:**
 
-This makes it possible to mix and match different implementations of the same capability within one project without conflicts or ambiguity.
-
-21.17 Output File Namespace Isolation (Alias-First)
-To prevent accidental overwrites in multi-glam pipelines, Goblin automatically namespaces every file a glam writes.
-Rule:
-
-If an alias is present: use <alias>_v<resolved-version>_<original-filename>
-If no alias: use <glam-name>_v<resolved-version>_<original-filename>
-
-This is enforced by core, not by individual glams.
-Examples:
-goblinuse shopify@^1.6 as shp
-export @cards via shp                   /// writes: shp_v1.6_export.csv
-export @cards via shp to "out.csv"      /// writes: shp_v1.6_out.csv
-
-use etsy@1.12
-export @cards via etsy                  /// writes: etsy_v1.12_export.csv
-export @cards via etsy to "out.csv"     /// writes: etsy_v1.12_out.csv
-Multiple platforms side-by-side never overwrite each other:
-
+```
 shp_v1.6_out.csv
 etsy_v1.12_out.csv
-ebay_v1.4_out.csv
+```
 
-Rationale: Silent overwrites (e.g., multiple glams all writing export.csv) are a classic pipeline footgun. Namespacing at the core level guarantees:
+**Rationale:** No silent overwrites across glams.
 
-No cross-glam clobbering
-Clear provenance: which glam + version produced which file
-Zero burden on glam authors (works automatically)
+## 19.17 CRUD Operations & Safety Gates
 
-Goblin lore: "Each goblin keeps their loot tagged. No other goblin may touch it without asking first."
-Details & Edge Cases:
+Goblin enforces explicit CRUD with strong defaults:
 
-Alias wins: the alias (if any) is always the identifier. Otherwise fall back to the glam's declared name
-Version string: the resolved version (from glam.lock) is used (e.g., ^1.6 → v1.6)
-Custom paths: if user provides a path, Goblin prefixes the basename and preserves directories:
+- **Create** = no-clobber by default
+- **Read** = cwd allowed; external paths require `--allow`
+- **Update** = opt-in (append, patch, replace) gated by CLI
+- **Delete** = soft by default; hard delete requires double-gates (`hard: true` + `--fs-delete=hard`)
 
-to "dist/export.csv" → dist/shp_v1.6_export.csv
+**For DB/services:**
 
+- Dry-run by default (plan)
+- `--commit` required for mutations
+- Deletes threshold-gated (`DeleteThresholdExceeded` if over N rows)
 
-Sanitization: identifiers are sanitized to filesystem-safe tokens (letters, digits, _, -, .)
-Idempotence: re-running the same command targets the same namespaced path. Whether it overwrites depends on §21.18 write mode:
-- default Create: fail if the file already exists (no-clobber)
-- Update: allowed only with write: "append" | "patch" | "replace" and matching CLI gates
+## 19.18 Default Safety Policy
 
-Chaining: To modify another glam's file, a glam must explicitly import that file and then export a new file; core will still namespace the new output
+- **Files:** Create-only, no overwrite. Updates gated. Deletes double-gated.
+- **DB/Services:** Read-only by default. C/U/D require explicit commit and gating.
+- **Determinism:** hash manifests required for updates/deletes.
 
-Configuration (Advanced):
-yaml# goblin.config.yaml
-glam:
-  file_isolation: true   # default (safe)
-  # set to false to disable namespacing (power users only)
-Errors:
+# 20. Enums (Core)
 
-PermissionError if a glam tries to write outside allowlisted paths (§21.5), even after namespacing
-ValueError if the final path is invalid after sanitization
+Enums are a core primitive type (see §1.3). They define closed sets of named constants with optional backing values. Enums are strict, first-class, and never implicitly coerce to other types.
 
+## 20.1 Purpose
 
-21.18 CRUD Operations & Safety Gates
-Goblin provides explicit, safe CRUD (Create/Read/Update/Delete) operations across files and data stores.
-One Mental Model:
+- Closed, finite sets of named constants.
+- Optional backing values (int or string).
+- Strict equality, no implicit coercion.
+- Safe to use as keys in maps/sets (singleton guarantee).
 
-C (Create): default behavior — no-clobber file writes; DB inserts require unique keys
-R (Read): allowed in cwd by default; elsewhere requires --allow
-U (Update): managed mutations (append/patch/replace) for files; upsert/patch for DBs
-D (Delete): off by default; double-gated and reversible (soft-delete)
+## 20.2 Declaration
 
-21.18.1 Filesystem CRUD
-Create (Default):
-goblinexport @content via blog to "posts/new.md"    /// fails if exists
-Default behavior is no-clobber. Files are namespaced per §21.16.
-Read (Default):
-goblincontent = read_text("posts/draft.md")         /// allowed in cwd
-Reads in working directory allowed. Outside paths require --allow fs.read:/path.
-Update (Opt-in):
-goblin/// Append with anchor
-export @post via blog to "index.md" {
-  write: "append", 
-  anchor: "<!-- GOBLIN:POSTS -->",
-  format: "- [{title}](/posts/{slug}) — {date}\n"
-}
-
-/// Patch with fenced markers  
-export @content via blog to "config.yaml" {
-  write: "patch",
-  fence: "# GOBLIN:CONFIG"
-}
-
-/// Replace (rare, gated)
-export @content via blog to "full.md" { write: "replace" }
-CLI gates: --fs-mutate=append,patch[,replace]
-Delete (Strongly Gated):
-goblin/// Soft delete (moves to trash)
-export @cleanup via blog delete "content/drafts/*.md" { 
-  reason: "cleanup" 
-}
-
-/// Hard delete (rare, double-gated)
-export @purge via blog delete "content/tmp/*.tmp" { 
-  hard: true 
-}
-Rules:
-
-Soft-delete moves files to ./.goblin_trash/YYYYMMDD-HHMMSS/... and logs original path + sha256
-Hard delete only if both { hard: true } and --fs-delete=hard are present
-Deterministic mode: require a hash manifest of each file to delete; mismatch → fail
-Audit lines: list every file deleted (or moved), bytes, pre-hash
-
-CLI gates: --fs-delete[=hard]
-
-21.18.2 Database/Service CRUD
-Common Safety Contracts:
-
-Dry-run by default: plan operations show diffs (rows to insert/update/delete)
---commit required for any mutation (Create/Update/Delete)
-Capability manifest: glam declares net/db scopes; user grants via --allow
-Idempotency: require keys (e.g., handle, sku, id) so reruns don't duplicate
-Deterministic mode: disallow live net/db unless fixtures provided
-
-Create:
-goblinpublish @product via shp       /// INSERT/CREATE (idempotent by handle+sku)
-Read:
-goblinimport @inventory via sql from "SELECT * FROM parts WHERE updated_at > :cutoff"
-Update:
-goblin/// Upsert semantics
-publish @product via sql {
-  table: "products",
-  key: ["handle"],
-  upsert: {
-    title: project.title,
-    tags: tags
-  }
-}
-
-/// Patch semantics  
-publish @inventory via nosql {
-  collection: "parts",
-  key: ["sku"],
-  patch: { qty: new_qty }      /// only changes listed fields
-}
-Delete (Double-Gated):
-goblin/// Preview first
-plan @cleanup via sql {
-  table: "products", 
-  where: "discontinued = true AND updated_at < :cutoff"
-}                                /// shows count + sample rows
-
-/// Execute with gates
-publish @cleanup via sql {
-  table: "products",
-  delete_where: "discontinued = true AND updated_at < :cutoff"
-}
-CLI gates: --commit --db-delete
-Protections:
-
-If delete_where would affect > N rows (configurable), the engine MUST fail with DeleteThresholdExceeded unless --db-delete-force is present.
-Always log: table/collection, selector summary, match count, sample keys, duration
-
-21.18.3 Default Safety Policy
-Files:
-
-Default: Create only (no-clobber)
-Updates: append/patch allowed only if --fs-mutate=...
-Deletes: soft by default; require --fs-delete; hard requires --fs-delete=hard
-Deterministic: require base hashes for any update/delete
-
-DB/Services:
-
-Default: Read-only; --commit required for C/U/D
-Deletes: require both --commit and --db-delete (and threshold check)
-Always provide plan (dry-run) verb; publish executes
-Idempotent keys mandatory for create/update
-
-21.18.4 Examples
-Blog workflow:
-goblin/// Create new post
-export @post via blog to "content/posts/{slug}.md"
-
-/// Update index  
-export @index via blog to "content/index.md" {
-  write: "append", 
-  anchor: "<!-- GOBLIN:POSTS -->",
-  format: "- [{title}](/posts/{slug}) — {date}\n"
-}
-
-/// Clean up drafts
-export @cleanup via blog delete "content/drafts/*.md"
-CLI:
-bashgoblin run blog.gbln --allow fs.write:./content --fs-mutate=append --fs-delete
-SQL workflow:
-goblin/// Preview cleanup
-plan @cleanup via sql { 
-  table: "parts", 
-  where: "discontinued=1" 
-}
-
-/// Execute cleanup
-publish @cleanup via sql { 
-  table: "parts", 
-  delete_where: "discontinued=1" 
-}
-CLI:
-bashgoblin run inv.gbln --allow db:postgres://... --commit --db-delete
-
-## 22. Enums (Core)
-Enums are one of Goblin's core primitive types (see §1.3). They create closed sets of named constants with optional backing values.
-
-### 22.1 Purpose
-Closed sets of named constants with an optional backing int or string. Enums are first‑class types with strict equality and simple utilities. No implicit coercion.
-
-### 22.2 Declaration
 ```goblin
 enum Status
     Pending
@@ -2889,94 +2206,77 @@ enum Suit as string
 end
 ```
 
-`as int` / `as string` are optional.
+- `as int` / `as string` are optional.
+- No backing → symbolic enum with stable ordinal (0..n-1).
+- Int/string-backed values must be explicit (unless using `seq`).
+- Variants must be unique; enums are closed (no late additions).
 
-No backing specified → symbolic enum with stable ordinal (0..n‑1).
+### 20.2.1 Sequential Int Enums
 
-With `as int`/`as string`, values must be explicit to avoid surprises.
-
-Variant names must be unique within the enum.
-
-Enums are closed (no late additions).
-
-#### 22.2.1 Sequential Int Enums (Optional)
-For int‑backed enums, add `seq` to enable auto‑increment:
+Optional `seq` auto-increments int-backed enums:
 
 ```goblin
 enum Priority as int seq
-    Low = 1      /// seed required
-    Medium       /// auto: 2  
-    High         /// auto: 3
+    Low = 1
+    Medium       /// 2
+    High         /// 3
 end
 
 enum Http as int seq
     Ok = 200
     Created      /// 201
     BadRequest = 400
-    NotFound     /// 401 (continues from last explicit)
+    NotFound     /// 401
     ServerError = 500
     BadGateway   /// 501
 end
 ```
 
 **Rules:**
-- `seq` only allowed with `as int`
-- First variant in a `seq` enum **must** have an explicit int
-- After any explicit value, subsequent unassigned variants continue `+1`
-- Mixed explicit+auto is fine; duplicates still raise `EnumError`
-- No `seq` for string‑backed enums (too magical/conflict‑prone)
-- Omit `seq` if you want every int explicit (original behavior still supported)
 
-### 22.3 Construction & Access
+- `seq` only valid with `as int`.
+- First entry must be explicit.
+- Auto-values increment from last explicit.
+- Mixed explicit + auto is valid; duplicates error.
+- Not allowed for string-backed enums.
+
+## 20.3 Construction & Access
+
 ```goblin
 s = Status.Paid
 h = Http.Ok
 c = Suit.Clubs
 ```
-Type of `s` is `Status`, not string/int.
 
-Access is namespaced: `EnumName.Variant`.
+- Type is the enum (`Status`), not string/int.
+- Access via `EnumName.Variant`.
+- Singleton guarantee: all references to a variant point to the same instance.
 
-Singleton guarantee: Each enum variant is a unique, immutable singleton object. Any reference to `Status.Paid` in the program points to the same instance in memory, so equality checks are O(1) identity comparisons (`Status.Paid is Status.Paid` → true).
+## 20.4 Introspection & Methods
 
-This also means you can safely use enum members as map/set keys without worrying about duplicate construction.
-
-### 22.4 Introspection & Methods
 ```goblin
-/// Instance methods
-s.name()         → "Paid"
-s.value()        → backing value or s.name() for symbolic enums
-s.ordinal()      → 0‑based declaration index
-str(s)           → "Status.Paid"
+s.name()      → "Paid"
+s.value()     → backing or name()
+s.ordinal()   → 0-based index
+str(s)        → "Status.Paid"
 
-/// Type methods
 Status.values()  → [Status.Pending, Status.Paid, Status.Shipped]
 Status.names()   → ["Pending","Paid","Shipped"]
-Status.from_name("Paid")          → Status.Paid
-Status.try_from_name("X")         → nil
-Http.from_value(404)              → Http.NotFound
-Http.try_from_value(201)          → nil
-```
-`from_*` throws `EnumError` on failure; `try_from_*` returns `nil`.
-
-### 22.5 Operators & Type Rules
-Allowed comparisons: `==`, `!=`, `is`, `is not` between the same enum type.
-
-Ordering (`<` etc.): allowed **only** for int‑backed enums (including `seq`) and **only** within the same enum type.
-
-Cross‑type comparisons (e.g., `Status.Paid == "Paid"`): `TypeError`. Cast explicitly if needed.
-
-Arithmetic / `++` / `--` / postfix math: not allowed on enums.
-
-Maps/sets: enum members are valid keys (use bracket notation for keys):
-
-```goblin
-prices = {}
-prices[Suit.Clubs] = 1.25
+Status.from_name("Paid")      → Status.Paid
+Status.try_from_name("X")     → nil
+Http.from_value(404)          → Http.NotFound
+Http.try_from_value(201)      → nil
 ```
 
-### 22.6 Patterning (Simple)
-No special switch construct. Use standard conditionals or map dispatch:
+## 20.5 Operators & Type Rules
+
+- **Comparisons:** `==`, `!=`, `is`, `is not` (same enum type only).
+- **Ordering** (`<`, `>`) allowed only for int-backed enums.
+- Cross-type comparisons → `TypeError`.
+- No arithmetic, increment/decrement, or postfix math.
+- Valid as map/set keys.
+
+## 20.6 Control Flow
 
 ```goblin
 if s is Status.Pending
@@ -2987,60 +2287,55 @@ else
     "investigate"
 ```
 
-### 22.7 Interop (JSON/YAML/CSV)
-Default surface is string name to keep files human‑readable, with opt‑ins mirroring money/datetime.
+No special switch/syntax; use conditionals or map dispatch.
 
-**Write options (additive to §14.2.2):**
+## 20.7 Interop (JSON/YAML/CSV)
+
+Default: string name (`"Enum.Variant"`) for readability. Options:
+
 ```goblin
 write_json(path, v, { enum: "name" | "value" | "object" = "name" })
-```
-
-**Read options:**
-```goblin
 read_json(path, { enum: "off" | "name" | "value" | "object" | "auto" = "off" })
 ```
 
-**Modes:**
-- **"name"**: write/read `"Status.Paid"` (qualified) to disambiguate across enums. On read with `enum:"name"`, strings of the form `"Enum.Variant"` decode if the enum exists; bare `"Variant"` is not decoded.
+- **"name":** `"Status.Paid"` (qualified).
+- **"value":** backing value only (requires `enum_schema` for decode).
+- **"object":** canonical object:
 
-- **"value"**: write the backing value only (int/string); decode requires target enum context:
-  ```goblin
-  orders = read_json("orders.json", { enum: "value", enum_schema: { "status": "Status" } })
-  ```
-  Unknown keys in `enum_schema` are ignored.
-
-- **"object"** (canonical object):
-  ```json
-  {"_type":"enum","enum":"Status","name":"Paid","value":"Paid","ordinal":1}
-  ```
-
-- **"auto"**: try "object" → qualified "Enum.Variant" → leave raw.
-
-YAML/CSV behave like JSON "name" mode by default. No auto‑decode unless options specify.
-
-**Stability note:** If stability across versions matters, prefer `"object"` or `"name"` modes in JSON. `"value"` mode ties you to the numeric plan (seq or explicit).
-
-### 22.8 Casting & Formatting
-```goblin
-str(Status.Paid)     → "Status.Paid"
-Status.Paid.name()   → "Paid"
-Status.Paid.value()  → "Paid"   /// for symbolic enums equals name()
-fmt(Status.Paid, "") → "Status.Paid"   /// fmt defers to str()
+```json
+{"_type":"enum","enum":"Status","name":"Paid","value":"Paid","ordinal":1}
 ```
 
-### 22.9 Ranges & Loops
+- **"auto":** best-effort decode.
+
+YAML/CSV behave like "name" mode by default.
+
+## 20.8 Casting & Formatting
+
+```goblin
+str(Status.Paid)       → "Status.Paid"
+Status.Paid.name()     → "Paid"
+Status.Paid.value()    → "Paid"
+fmt(Status.Paid, "")   → "Status.Paid"
+```
+
+## 20.9 Iteration
+
 ```goblin
 for v in Status
     say v.name()
 ```
-Enum types are iterable in declaration order.
 
-### 22.10 Errors
-`EnumError` (unknown name/value, duplicate value in int/string enums), plus `TypeError` where noted.
+Enums are iterable in declaration order.
 
-**Development Tools:** Lint tools should warn if `seq` gaps exceed 100 to catch potential mistakes (e.g., `Low = 1, High = 1000`) that could break ordering logic.
+## 20.10 Errors
 
-### 22.11 Examples
+- **EnumError:** unknown name/value, duplicates in int/string enums.
+- **TypeError:** invalid comparisons or operations.
+- **Dev tools:** warn if `seq` gaps exceed 100 (potential mistake).
+
+## 20.11 Examples
+
 ```goblin
 enum Status
     Pending
@@ -3055,7 +2350,6 @@ if order.status is Status.Pending
 else
     "continue"
 
-/// Int-backed with sequential auto-increment
 enum Priority as int seq
     Low = 1
     Medium       /// 2
@@ -3067,16 +2361,12 @@ end
 assert Priority.Low < Priority.High
 assert Priority.Critical.value() == 10
 
-/// Non-sequential example showing seq flexibility
 enum Level as int seq
     Beginner = 1
     Advanced = 10
     Expert       /// 11
 end
 
-say Level.Expert.value()  /// 11
-
-/// String-backed
 enum Suit as string
     Clubs = "C"
     Diamonds = "D"
@@ -3084,33 +2374,24 @@ enum Suit as string
     Spades = "S"
 end
 
-/// JSON roundtrip
 write_json("order.json", order, { enum: "name" })
 back = read_json("order.json", { enum: "name" })
-say back.status                    /// Status.Pending
-
-/// From strings/values
-Status.from_name("Paid")          /// Status.Paid
-Http.from_value(404)              /// Http.NotFound
-
-/// Predicate helpers for value ranges
-is_client_error(code: Http) = code.value() in 400..499
-is_server_error(code: Http) = code.value() in 500..599
+say back.status  /// Status.Pending
 ```
 
-# 23. Gmark — Project‑Local Stable References
+# 21. Gmark — Project-Local Stable References
 
-## 23.1 What is a gmark?
+## 21.1 What is a gmark?
 
-A gmark is a stable, human‑readable handle that uniquely identifies a piece of content within a project (e.g., a blog post, page, product). Gmarks are intended for internal linking and sorting, and are independent of filenames/paths so glam can move files around without breaking references.
+A **gmark** is a stable, human-readable handle that uniquely identifies a piece of content within a project (e.g., blog post, page, product). Gmarks provide **internal linking and stable ordering** that survive file moves/renames, so glams can reorganize content without breaking references.
 
-* **Name:** a string key (e.g., `"post/how-to-play"` or `"how-to-play"`)
-* **Ord:** a project‑wide integer used for stable ordering (newest at the end by default)
-* **ID (opaque):** optional unique token for registry internals; not user‑facing
+- **Name** — string key (`"post/how-to-play"`, `"how-to-play"`)
+- **Ord** — project-wide integer for stable ordering (newest at the end by default)
+- **ID (opaque)** — unique token for registry internals; not user-facing
 
-## 23.2 Persistence
+## 21.2 Persistence
 
-The registry lives at `.goblin/gmarks.lock` (JSON). It tracks:
+Registry lives at `.goblin/gmarks.lock` (JSON):
 
 ```json
 {
@@ -3122,270 +2403,215 @@ The registry lives at `.goblin/gmarks.lock` (JSON). It tracks:
 }
 ```
 
-* Written atomically on mutation
-* Loaded read‑only during `--deterministic` builds (unless an explicit write is allowed by policy)
+- Written atomically on mutation
+- Read-only during `--deterministic` builds (unless explicitly allowed by policy)
 
-## 23.3 Creating/ensuring a gmark
+## 21.3 Creating/Ensuring a gmark
 
 ```goblin
-/// Auto-increment ord (default)
-gmark("post/how-to-play")           /// => { name:"post/how-to-play", ord: 138 }
-
-/// Manual ord (explicit position)
-gmark("post/how-to-play", ord: 42)  /// => { name:"post/how-to-play", ord: 42 }
+gmark("post/how-to-play")            /// auto-increment ord
+gmark("post/how-to-play", ord: 42)   /// manual ord
 ```
 
 **Rules:**
-* If `ord:` omitted → auto uses `last_ord + 1`
-* If `ord:` is provided:
-   * If the ord is unused → assign it
-   * If the ord is already taken → `GmarkConflictError` (no silent reshuffle)
-* Re‑calling `gmark(name, …)` is idempotent: returns existing record unless you change the ord (see §23.5)
+- Omit `ord:` → uses `last_ord + 1`
+- Provide `ord:` → must be free, else `GmarkConflictError`
+- Re-calling with same name is idempotent (returns existing record unless ord differs)
 
-## 23.4 Naming rules
+## 21.4 Naming Rules
 
-* **Allowed:** letters, numbers, `_`, `-`, `/`, `.`
-* No leading/trailing slashes; no empty segments; max length 256
-* Names are case‑sensitive
-* Must not be a reserved word (§19)
-* Invalid names → `GmarkInvalidError`
+- Allowed: letters, digits, `_`, `-`, `/`, `.`
+- No leading/trailing slashes; no empty segments
+- Max length: 256
+- Case-sensitive
+- Must not be a reserved word (§19)
+- Invalid names → `GmarkInvalidError`
 
-## 23.5 Updating ord (manual positioning)
-
-```goblin
-gmark_set_ord("post/how-to-play", 200)   /// move to ord 200 (must be free)
-```
-
-* If target ord taken → `GmarkConflictError`
-* Does not renumber others. Use CLI tooling (outside the language) to batch‑rebalance if you want compact ords
-
-## 23.6 Introspection & lookup
+## 21.5 Updating ord
 
 ```goblin
-gmark_info("post/how-to-play")  /// -> { name, ord, id, created, updated } or nil
-gmarks()                        /// -> array<{ name, ord, id }> sorted by ord
-next_ord()                      /// -> last_ord + 1 (does not allocate)
-gmarks_filter(prefix: string)   /// -> array<{ name, ord, id }> sorted by ord
-                                /// e.g., gmarks_filter("post/") returns only "post/*"
+gmark_set_ord("post/how-to-play", 200)
 ```
 
-## 23.7 Linking from content
+- Target ord must be unused → else `GmarkConflictError`
+- Does not renumber other marks
+- Bulk rebalancing is CLI-only (see §21.12)
 
-Glam decide how a gmark resolves to URLs/paths. Core provides the stable key; a CMS glam might offer:
+## 21.6 Introspection & Lookup
+
+```goblin
+gmark_info("post/how-to-play")  /// -> { name, ord, id, created, updated } | nil
+gmarks()                        /// -> [{ name, ord, id }] sorted by ord
+next_ord()                      /// -> last_ord + 1 (peek only, does not allocate)
+gmarks_filter("post/")          /// -> only "post/*", ord-sorted
+```
+
+## 21.7 Linking from Content
+
+Glams resolve gmarks into URLs/paths; core only provides stable keys:
 
 ```goblin
 blog::href(gmark: "post/how-to-play")   /// "/posts/how-to-play"
 blog::link(text: "How to Play", gmark: "post/how-to-play")
 ```
 
-## 23.8 Sorting & querying
+## 21.8 Sorting & Querying
 
-`gmarks()` returns ord‑sorted entries for simple chronological lists.
-Glam can maintain additional indices (by tag/date/category) but ord remains the single, portable, stable sequence number for "publish order".
+- `gmarks()` → ord-sorted chronological list
+- Glams may add their own indices (tags/dates/etc.)
+- `ord` remains the canonical project-wide sequence
 
-## 23.9 Determinism & policy
+## 21.9 Determinism & Policy
 
-In `--deterministic` builds, writes to `.goblin/gmarks.lock` are blocked unless the project policy explicitly allows it. Attempting to allocate a new gmark/ord then → `DeterminismError`.
+- In `--deterministic` builds, gmark writes are blocked unless explicitly allowed
+- Allocation attempt without permission → `DeterminismError`
+- Reads are always allowed
 
-Reads are always allowed.
-
-Projects can explicitly allow gmark writes during `--deterministic` builds:
+Example config to allow gmark writes:
 
 ```yaml
-# goblin.config.yaml
 glam:
   allow_state_writes:
-    - "gmark"  # allow only gmark registry mutations during deterministic builds
+    - "gmark"
 ```
 
 When enabled, the runtime:
-* appends a JSONL audit entry to `.goblin/gmarks.audit.log` for each mutation (`ensure`, `set_ord`, `rebalance`)
-* includes `{ before, after, ts, actor: "goblin", op, lock_checksum }`
-* preserves atomicity and lock integrity (mutex + fsync)
+- Appends JSONL audit entries to `.goblin/gmarks.audit.log`
+- Each entry includes `{ before, after, ts, actor, op, lock_checksum }`
+- Preserves integrity via mutex + fsync
 
-## 23.10 Errors
+## 21.10 Errors
 
-* `GmarkConflictError` — duplicate name or ord in the project
-* `GmarkNotFoundError` — referenced gmark doesn't exist
-* `GmarkInvalidError` — bad name format or reserved collision
-* `GmarkPersistenceError` — registry file can't be read/written
+- `GmarkConflictError` — duplicate name or ord
+- `GmarkNotFoundError` — name not in registry
+- `GmarkInvalidError` — illegal format or reserved collision
+- `GmarkPersistenceError` — registry file unreadable/unwritable
+- `DeterminismError` — allocation blocked in deterministic mode
 
-## 23.11 Examples
+## 21.11 Examples
 
 **Auto vs manual:**
 
 ```goblin
-post = gmark("post/hello-world")           /// ord auto → 138
-pin  = gmark("post/welcome", ord: 1)       /// manual pin to top
+post = gmark("post/hello-world")         /// auto → ord 138
+pin  = gmark("post/welcome", ord: 1)     /// manual pin
 ```
 
-**Stable lists:**
+**Stable list:**
 
 ```goblin
-for m in gmarks()           /// already sorted by ord
+for m in gmarks()
     say m.name || "@" || str(m.ord)
 ```
 
-**Move a post later:**
+**Move later:**
 
 ```goblin
 target = next_ord() + 10
 gmark_set_ord("post/hello-world", target)
 ```
 
-## 23.12 Rebalance & prefix demo
+## 21.12 Rebalance & Prefix Demo
 
 ```goblin
-/// Rebalance ords after a migration (CLI)
-# shell: glam gmark rebalance
+# CLI: glam gmark rebalance
 
-/// Build a blog index from "post/*"
 for m in gmarks_filter("post/")
-    say blog::link(text: m.name.replace("post/","").title(), gmark: m.name)
+    say blog::link(
+        text: m.name.replace("post/","").title(),
+        gmark: m.name
+    )
 ```
 
-# 24. Morph — Temporary Type Adaptation
+# 22. Morph — Temporary Type Adaptation (Core)
 
-## 24.1 Purpose
+## 22.1 Purpose
 
-morph lets you temporarily treat an object as another class just long enough to call one method, then copy any changed fields back — all transactionally and privacy‑safe. It never breaks encapsulation: it only uses public getters/setters.
+`morph` allows a value of one class to temporarily be treated as another class for the duration of a **single method call**, syncing overlapping fields before and after.
 
-Typical uses: reuse a method that already exists on a different class (discount calculators, formatters, geometry transforms) without writing adapters or duplicating logic.
+- **Reuse**: call an existing method without adapters/duplication.
+- **Transactional**: all updates happen atomically; rollback on error.
+- **Privacy-safe**: only public accessors are used; no private state leaks.
+- **Deterministic**: no nondeterministic behavior beyond the target method.
 
----
-
-## 24.2 Signature
+## 22.2 Signature
 
 ```goblin
 result = morph(obj, TargetType, method_call)
 ```
 
-- **obj**: any instance (the "source").
-- **TargetType**: a class identifier.
-- **method_call**: exactly one method call that must exist on TargetType (e.g., `rotate(90)`, `apply_discount(10%)`, `to_string()`).
+- **obj** — source instance.
+- **TargetType** — class to borrow method from.
+- **method_call** — exactly one method call (must exist on TargetType).
+- Returns the result of the call; `obj` remains its original type.
 
-Returns whatever the target method returns. The original obj keeps its class.
+## 22.3 Accessor Conventions
 
----
+Morph uses only public getter/setter pairs with a shared field name:
 
-## 24.3 Accessor Convention (Privacy‑Safe Sync)
+- `x()` / `set_x(v)`
+- `is_x()` / `set_x(v)` (booleans only)
 
-Morph never touches private fields (`#x`). It syncs via accessors:
+Only fields with *both* a getter and setter on *both* classes participate.
 
-- **Getter**: `x()` (for booleans, `x()` or `is_x()`)
-- **Setter**: `set_x(v)`
+## 22.4 Process
 
-A field x participates in morph syncing only if both a getter and a setter exist on both classes (source and target). Accessor names are matched by the logical field name (x).
+1. **Validate** TargetType is a class and method is public.
+2. **Find shared fields** by matching compatible accessor names.
+3. **Instantiate** a temporary TargetType:
+   - Call `init()` with no args if available.
+   - Or call `from_map(map)` if provided.
+   - Otherwise require a zero-arg constructor.
+4. **Copy in** source fields → temp target.
+5. **Invoke** the method on the temp target.
+6. **Copy out** updated fields → source object.
+   - Type re-validated.
+   - If mismatch, rollback entirely.
+7. **Return** the method result.
 
-Examples:
-- `price()` / `set_price(v)`
-- `name()` / `set_name(v)`
-- `active()` or `is_active()` / `set_active(v)`
+## 22.5 Type Compatibility
 
----
+- **Primitives**: must match exactly (`int↔int`, etc.).
+- **Money**: allowed only if currencies match; precision reconciled per money policy.
+- **Datetime types**: same kind (`date↔date`, `datetime↔datetime`, etc.).
+- **Arrays/Maps**: allowed if declared element types match.
+- **Enums/Classes**: must be the same type.
+- **nil**: only if setter accepts it.
 
-## 24.4 What Morph Actually Does (Step‑by‑Step)
+## 22.6 Scope & Visibility
 
-### 1. Resolve & Validate
-- Ensure TargetType is a class and method_call names a public instance method on it.
-- Build the shared field map = intersection of fields that have compatible accessors on both types.
-- Pre‑validate types for all shared fields (see §24.5). If any mismatch → error, no mutation.
+- Only **public methods** may be called.
+- Only **public accessors** are copied.
+- Morph never inspects or mutates private (`#`) state.
 
-### 2. Construct a Temporary Target
-Create a new TargetType instance with default construction:
-- If TargetType has `init(...)`, call `init()` with no args.
-- If it requires args, that target class must also provide a zero‑arg init or a `from_map(map)` factory.
-- If `from_map(map)` exists, it is preferred and may be used by morph to instantiate.
+## 22.7 Performance
 
-### 3. Copy In (Source → Temp Target)
-For each shared field f: `temp.set_f( obj.f() )`.
+- Shared field maps may be cached per `(SourceType, TargetType)`.
+- Complexity is proportional to number of shared fields.
 
-### 4. Call the Method
-- Invoke the requested method on the temp target.
-- If the method throws, wrap as `MorphActionError(cause)` and abort with no mutation.
+## 22.8 Errors
 
-### 5. Copy Out (Temp Target → Source)
-- Re‑validate types of all shared fields after the call.
-- Write back atomically: `obj.set_f( temp.f() )` for each shared field.
-- If any write‑back fails type checks, rollback (no fields written) and raise `MorphFieldError`.
+- **MorphTypeError** — invalid target, method not found.
+- **MorphFieldError(field, expected, actual)** — incompatible field type.
+- **MorphCurrencyError(field, from_cur, to_cur)** — mismatched money.
+- **MorphActionError(cause)** — method threw an error.
 
-### 6. Return
-Return the method's return value. obj remains the original class.
+All morph errors are transactional: source object remains unchanged.
 
-**Determinism**: morph itself is pure aside from field writes. Any I/O inside the target method follows normal sandbox rules.
+## 22.9 Examples
 
----
-
-## 24.5 Type Compatibility Rules
-
-Field values are validated both on copy‑in and copy‑out:
-
-- **Primitives**: `int ↔ int`, `float ↔ float`, `bool ↔ bool`, `string ↔ string`.
-  No implicit widening/narrowing.
-
-- **Money**: currencies must match (e.g., `USD ↔ USD`). Precision differences are allowed and canonicalized per active money policy (§10.0). Cross‑currency → `MorphCurrencyError`.
-
-- **Datetime types**: like‑type only (`date↔date`, `time↔time`, `datetime↔datetime`, `duration↔duration`). Zone differences for datetime are allowed; values carry their zones.
-
-- **Arrays / Maps**: allowed if both sides expose the same element/value types by contract; otherwise `MorphFieldError`.
-
-- **Classes/Enums**: must be the same type on both sides (no auto‑coercion).
-
-- **Nil**: only permitted if the setter accepts nil (implementation decides via type metadata).
-
----
-
-## 24.6 Visibility & Method Scope
-
-- The target method must be public.
-- Only public accessors are used. Morph never reflects into `#private` state.
-- If a target relies on private invariants, it must expose those via its public API (e.g., a `normalize()`).
-
----
-
-## 24.7 Performance Notes
-
-- Engines may cache the shared‑field accessor map by `(SourceType, TargetType)` to avoid repeated discovery.
-- Copy‑in/out is O(n_shared_fields). For large objects, prefer narrower accessors or expose an aggregate setter.
-
----
-
-## 24.8 Errors
-
-- **MorphTypeError** — target is not a class; or method not found/visible; or multiple methods implied.
-- **MorphFieldError(field, expected, actual)** — accessor missing or incompatible type on copy‑in/out.
-- **MorphCurrencyError(field, from_cur, to_cur)** — money currencies differ.
-- **MorphActionError(cause)** — target method threw; original cause is attached.
-
-All morph errors are transactional: the source object is unchanged.
-
----
-
-## 24.9 Examples
-
-### A. Geometry rotate without adapters
+**Geometry (rotate):**
 
 ```goblin
-class Dot = x: 0 :: y: 0
-    fn x() = #x
-    fn set_x(v) = #x = v
-    fn y() = #y  
-    fn set_y(v) = #y = v
+class Dot = x:0 :: y:0
+    fn x() = #x; fn set_x(v)=#x=v
+    fn y() = #y; fn set_y(v)=#y=v
 end
 
-class Shape = x: 0 :: y: 0
-    fn x() = #x
-    fn set_x(v) = #x = v
-    fn y() = #y
-    fn set_y(v) = #y = v
-
-    fn rotate(deg)
-        rad = deg * 3.1415926535 / 180
-        nx = #x * rad - #y * rad     /// simplified math, no trig
-        ny = #x * rad + #y * rad
-        #x = nx; #y = ny
-        self
-    end
+class Shape = x:0 :: y:0
+    fn x() = #x; fn set_x(v)=#x=v
+    fn y() = #y; fn set_y(v)=#y=v
+    fn rotate(deg) = (#x,#y) = (#x-deg, #y+deg); self
 end
 
 p = Dot: 1 :: 0
@@ -3393,74 +2619,56 @@ morph(p, Shape, rotate(90))
 say p.x(), p.y()
 ```
 
-### B. Discount using a method that lives on another class
+**Discount reuse:**
 
 ```goblin
-class Book = title: "{title}" :: price: $0
-    fn set_title(v) = #title = v
-    fn set_price(v) = #price = v
+class Book = title:"" :: price:$0
+    fn set_price(v)=#price=v
 end
 
-class Card = name: "{name}" :: price: money(0)
-    fn set_name(v) = #name = v
-    fn set_price(v) = #price = v
-
-    fn apply_discount(rate)   /// rate can be 10% etc.
-        #price = #price * (1 - rate)
-        #price
-    end
+class Card = name:"" :: price:$0
+    fn set_price(v)=#price=v
+    fn apply_discount(rate) = #price=#price*(1-rate); #price
 end
 
-set @policy site_default
 b = Book: "Guide" :: $29.99
 morph(b, Card, apply_discount(10%))
-say b.price()             /// USD 26.99 (policy applies for precision)
+say b.price()    /// $26.99
 ```
 
-### C. Boolean accessors
+**Boolean accessors:**
 
 ```goblin
-class A = active: false
-    fn active() = #active
-    fn set_active(v) = #active = v
+class A = active:true
+    fn active()=#active
+    fn set_active(v)=#active=v
 end
 
-class B = enabled: false
-    /// Both forms are recognized as getter for boolean:
-    fn is_active() = #enabled
-    fn set_active(v) = #enabled = v
-
-    fn toggle() = #enabled = not #enabled
+class B = enabled:false
+    fn is_active()=#enabled
+    fn set_active(v)=#enabled=v
+    fn toggle()=#enabled=not #enabled
 end
 
 a = A: true
 morph(a, B, toggle())
-say a.active()    /// false
+say a.active()   /// false
 ```
 
----
-
-## 24.10 Testing Hooks
-
-Golden tests are encouraged:
+## 22.10 Testing Hooks
 
 ```goblin
-test "morph discount keeps type and updates price"
-    set @policy site_default
-    b = Book: "Gloomhaven" :: $100.00
+test "morph discount works"
+    b = Book: "Gloomhaven" :: $100
     r = morph(b, Card, apply_discount(25%))
-    assert b.price() == $75.00
-    assert r == $75.00
+    assert b.price() == $75
+    assert r == $75
 end
 ```
 
----
+## 22.11 Determinism
 
-## 24.11 Determinism
-
-morph does not enable I/O. Any side‑effects are those performed by the target method and are governed by the usual sandbox/permission model (core or glam).
-
----
+Morph itself is deterministic. Any nondeterminism comes only from the target method and is controlled by sandbox/permissions.
 
 ## 25. Banish — Project-Local Feature Blocking
 
