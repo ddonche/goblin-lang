@@ -1,4 +1,4 @@
-# Goblin Language AI Cheat Sheet v1.5.2
+# Goblin Language AI Cheat Sheet v1.5.3
 *Complete syntax reference for AI assistants - Reorganized for Documentation Flow*
 
 ## GETTING STARTED
