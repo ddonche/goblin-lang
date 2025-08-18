@@ -4232,41 +4232,50 @@ a + b >> c    /// Same as a + (b >> c)
 
 ## 30.4 Using the Results
 
-Divmod results work the same way for both operator and function forms when you destructure them, but they display differently when printed:
+Divmod results can be used in multiple ways, from full destructuring to extracting just the piece you need:
 
-**Destructuring (identical for both forms):**
+**Full result display:**
 ```goblin
-quotient, remainder = 17 >> 5               /// q=3, r=2
-q2, r2 = div_rem(17, 5)                    /// q=3, r=2 (same values)
+say 17 >> 5                    /// Prints: "3 r 2" (readable format)
+say div_rem(17, 5)            /// Prints: "(3, 2)" (tuple format)
+```
+
+**Extracting specific parts with `q` and `r` operators:**
+```goblin
+say q 17 >> 5                 /// 3 (just the quotient)  
+say r 17 >> 5                 /// 2 (just the remainder)
+
+/// Perfect for when you only need one part
+stacks = q items >> stack_size        /// How many full stacks?
+extras = r items >> stack_size        /// How many items left over?
+each_pays = q bill >> people          /// How much does each person pay?
+
+/// Note: if you only need the quotient, you can also use floor division
+stacks = items // stack_size          /// Same as q items >> stack_size
+each_pays = bill // people            /// Same as q bill >> people
+```
+
+**Destructuring (when you need both values):**
+```goblin
+quotient, remainder = 17 >> 5          /// q=3, r=2
+q2, r2 = div_rem(17, 5)               /// q=3, r=2 (same values)
 
 gold_each, leftover = total_gold >> players
 hours, minutes = total_minutes >> 60
 ```
 
-**Display differences:**
-```goblin
-/// Operator form: prints in readable "q r r" format
-say 17 >> 5                    /// Prints: "3 r 2"
-say total_gold >> players      /// Prints: "25 r 3" 
+**Grammar and precedence:**
+The `q` and `r` operators are soft unary operators that work specifically with divmod expressions:
+- `q <expr>` extracts the first element (quotient) if `<expr>` is a divmod pair
+- `r <expr>` extracts the second element (remainder) if `<expr>` is a divmod pair  
+- Same precedence as unary `-` or `not`
+- Outside divmod context, `q` and `r` are just normal identifiers
 
-/// Function form: prints as regular tuple
-say div_rem(17, 5)            /// Prints: "(3, 2)"
-say div_rem(total_gold, players) /// Prints: "(25, 3)"
-```
-
-**Direct access (works for both):**
-```goblin
-result = 17 >> 5
-say "Quotient: " || result.0   /// 3
-say "Remainder: " || result.1  /// 2
-
-func_result = div_rem(17, 5)
-say "Quotient: " || func_result.0  /// 3 (same data)
-```
-
-**When to use which:**
-- Use `>>` for user-facing output where readability matters
-- Use `div_rem()` for internal calculations or APIs that expect tuples
+**When to use which approach:**
+- Use `q expr` or `r expr` when you only need one part (most common)
+- Use full `expr >> expr` for user-facing display
+- Use destructuring when you need both values for calculations
+- Use `div_rem()` for APIs that expect standard tuples
 
 ## 30.5 Money and Fixed-Scale Numbers
 
@@ -4315,11 +4324,19 @@ say usd_bill >> 3             /// Prints: "$16.66 r $0.02"
 
 ## 30.6 Error Conditions
 
-Divmod can fail in several specific ways, each with clear error types:
+Divmod can fail in several specific ways. The `q` and `r` operators add one additional error case:
 
 **DivisionByZero** — You tried to divide by zero:
 ```goblin
 say 10 >> 0                    /// DivisionByZero error
+say q 10 >> 0                  /// DivisionByZero error (same underlying operation)
+```
+
+**TypeError** — Using `q` or `r` on non-divmod expressions:
+```goblin
+say q 42                       /// TypeError: expected divmod pair
+say r "hello"                  /// TypeError: expected divmod pair
+say q (10 + 5)                /// TypeError: expected divmod pair (15 is not a divmod result)
 ```
 
 **ScaleMismatch** — Fixed-scale types don't match:
@@ -4327,13 +4344,14 @@ say 10 >> 0                    /// DivisionByZero error
 usd_amount = $50.00
 eur_amount = €30.00
 /// result = usd_amount >> eur_amount     /// ScaleMismatch error
+/// quotient = q usd_amount >> eur_amount /// ScaleMismatch error
 ```
 
 **MoneyDivisionError** — Using regular division instead of divmod:
 ```goblin
 price = $100.00
 /// result = price / 3                    /// MoneyDivisionError
-/// Use price >> 3 or price // 3 instead
+/// Use price >> 3, q price >> 3, or price // 3 instead
 ```
 
 **Overflow** — Result too large for the number type:
@@ -4472,6 +4490,7 @@ func_result = div_rem(a, b)   /// Returns (3, 2)
 ```
 
 The readable "quotient r remainder" format makes it easy to verify these mathematical properties and creates clear, unambiguous output for users. This is especially valuable in games where players need to understand resource distribution, damage calculations, or any situation where showing both the main result and the leftover matters.
+
 §34 — Pipelines, Optional Chaining, and Error Blocks
 34.0 Overview
 
