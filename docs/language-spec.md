@@ -2670,34 +2670,35 @@ end
 
 Morph itself is deterministic. Any nondeterminism comes only from the target method and is controlled by sandbox/permissions.
 
-## 25. Banish — Project-Local Feature Blocking
+# 23. Banish — Project-Local Feature Blocking
 
-### 25.1 Purpose & Scope
-**Goal**: Give projects a simple, portable safety brake to block specific language features.
+## 23.1 Purpose & Scope
 
-**Scope**: Project-local only. Banish rules live in the repo and travel with it.
+Banish provides projects with a simple, portable safety brake to block specific language features.
 
-**Effect**: Any usage of a banished feature raises `BanishError` at compile time (hard error).
+* **Scope**: project-local only. Rules live in the repo and travel with it.
+* **Effect**: any usage of a banished feature raises `BanishError` at compile time (hard error).
+* **Guarantee**: banish never rewrites or alters code — it only blocks.
 
-### 25.2 Feature IDs (Namespaces)
-Feature IDs are stable strings used by tools and the compiler. They are namespaced for clarity:
+---
 
-- `core.<keyword>` — core language constructs (e.g., `core.morph`, `core.judge.inline`)
-- `op.<operator>` — operators and forms (e.g., `op.pipe_join`, `op.divmod`, `op.postfix.inc`)
-- `type.<type>` — types/literals (e.g., `type.money`, `type.percent`, `type.datetime`)
-- `builtin.<function>` — built-ins and std helpers (e.g., `builtin.tax`, `builtin.write_json`)
-- `glam.<ns>.<symbol>` — glam capabilities by namespace (e.g., `glam.html.raw`, `glam.shopify.product.export`)
+## 23.2 Feature IDs (Namespaces)
 
-**Notes:**
-- Feature IDs reference **usage**, not availability. Banish never rewrites code; it only blocks.
-- Core safety invariants are not features and cannot be banished (see §25.7).
+Feature IDs are stable strings used by tools and the compiler. They always reference **usage**, not availability.
 
-### 25.3 Config File
-**Location**: project root `.goblin.banish.toml`. Subdirectories are ignored.
+* `core.<keyword>` — core language constructs (e.g., `core.morph`, `core.judge.inline`)
+* `op.<operator>` — operators/forms (e.g., `op.pipe_join`, `op.divmod`, `op.postfix.inc`)
+* `type.<type>` — types/literals (e.g., `type.money`, `type.percent`, `type.datetime`)
+* `builtin.<function>` — built-ins and std helpers (e.g., `builtin.tax`, `builtin.write_json`)
+* `glam.<ns>.<symbol>` — glam capabilities (e.g., `glam.html.raw`, `glam.shopify.product.export`)
+
+---
+
+## 23.3 Config File
+
+Config lives at `.goblin.banish.toml` in the project root. Subdirectories are ignored.
 
 ```toml
-# .goblin.banish.toml
-
 [[banish]]
 feature = "core.morph"
 reason  = "Temporary safety: known issue in v1.5.x"
@@ -2707,429 +2708,173 @@ feature = "op.pipe_join"
 reason  = "Creative constraint: prefer explicit concatenation"
 ```
 
-- **feature** — required string (one of the IDs above)
-- **reason** — required string (human explanation that shows in errors)
+* **feature** — required string (from §23.2).
+* **reason** — required human explanation (shown in errors).
 
-**Audit log**: Banish and unbanish actions append JSON Lines to `dist/banish.log`:
+**Audit log**: every banish/unbanish appends JSONL to `dist/banish.log`:
 
 ```json
 {"ts":"2025-08-13T15:21:08Z","op":"banish","feature":"core.morph","reason":"Temporary safety"}
 {"ts":"2025-08-13T15:22:44Z","op":"unbanish","feature":"core.morph"}
 ```
 
-### 25.4 CLI
-```bash
-goblin banish <feature_id> --reason "<text>"   # add/replace entry
-goblin unbanish <feature_id>                   # remove entry
-goblin banish --list                           # show active bans
+---
+
+## 23.4 CLI
+
+```goblin
+goblin banish <feature_id> --reason "<text>"   /// add or replace an entry
+goblin unbanish <feature_id>                   /// remove an entry
+goblin banish --list                           /// show active bans
 ```
 
 **Notes:**
-- `--reason` is required for `banish` to promote transparency.
-- All commands operate on `.goblin.banish.toml` in the repo root.
-- Each command appends an entry to `dist/banish.log` (see §25.3).
 
-### 25.5 Compiler & Tooling Behavior
-On any compile/run/lint step, Goblin loads `.goblin.banish.toml`.
+* `--reason` is mandatory for `banish` (promotes transparency).
+* All commands operate on `.goblin.banish.toml`.
+* Each command appends to `dist/banish.log`.
 
-If the AST / resolved symbols contain a banished feature, emit `BanishError` with source location.
+---
 
-LSP/IDE surfaces the same diagnostics in-editor.
+## 23.5 Compiler & Tooling Behavior
 
-**Banner Notice (project status)**: When any banishments exist, Goblin prints a one-liner on CLI startup:
+On compile/run/lint, Goblin loads `.goblin.banish.toml`.
+
+* If AST/resolved symbols include a banished feature → raise `BanishError` with source location.
+* LSP/IDE shows identical diagnostics in-editor.
+
+**Banner notice (status):** When any banishments exist, Goblin prints:
+
 ```
 ⚠ This project has N banished features (run `goblin banish --list`).
 ```
 
-### 25.6 Errors
-Add to §18 (Errors & Warnings):
+---
 
-**BanishError**: Thrown when code uses a banished feature.
+## 23.6 Errors
+
+* **BanishError** — raised when code uses a banished feature.
 
 Message style (Goblin voice allowed):
-```
+
+```text
 🚫 Feature '{feature}' has been banished from this project (line {line}, col {col}).
     Reason: {reason}
     Unbanish with: goblin unbanish {feature}
 ```
 
-**Examples:**
+**Example:**
+
 ```goblin
 morph(book, Card, apply_discount(10%))
-/// → BanishError: Feature 'core.morph' has been banished...
+/// → BanishError: Feature 'core.morph' has been banished…
 ```
 
-### 25.7 Self-Protection & Non-banishable Items
-Certain core guarantees cannot be banished:
+---
 
-- The banish mechanism itself (banish, config loading, diagnostics).
-- Core sandbox/permissions and determinism gates.
-- Money safety invariants (e.g., "/ on money is illegal").
-- Lockfile integrity checks.
+## 23.7 Self-Protection — Non-Banishable Features (Exhaustive, v1.5)
 
-Attempting to banish these emits a config-time `ValueError`:
+The following feature IDs are permanently unbanishable.
+Attempting to include one in `.goblin.banish.toml` raises a config-time `ValueError`:
+
 ```
 "The goblins won't let you banish '{feature}'"
 ```
 
-### 25.8 MVP Constraints (v1)
+### Banish infrastructure & config
+
+```goblin
+core.banish                 /// the banish mechanism & diagnostics
+core.config                 /// config parsing & enforcement
+core.errors                 /// core error classes & raising
+core.contracts              /// global contract registry & resolution
+core.capability_resolution  /// via/prefer/default dispatch semantics
+```
+
+### Sandbox & determinism guarantees
+
+```goblin
+core.sandbox                /// FS/NET allowlists, ENV gating
+core.determinism            /// --deterministic enforcement
+core.rng.seed               /// deterministic RNG seeding
+core.trusted_time           /// trusted time chain, verification, cache control
+```
+
+### Money safety invariants
+
+```goblin
+core.money.invariants       /// conservation/precision/remainder tracking
+core.money.policy           /// enforcement of active money policy
+core.money.ops.guard        /// illegal ops guard (e.g. "/" on money)
+```
+
+### Lockfile & build integrity
+
+```goblin
+core.lockfile               /// lockfile parsing & enforcement
+core.lockfile.hmac          /// HMAC/signature verification
+core.build.reproducibility  /// reproducible build guarantees
+```
+
+### Language integrity (syntax, types, reserved words)
+
+```goblin
+core.parser                 /// grammar, tokenization, precedence
+core.reserved_words         /// canonical reserved words set (§19)
+core.type_system            /// base types: int, float, bool, string, money, percent, date, time, datetime, duration, enum
+```
+
+### Runtime auditability & security rails
+
+```goblin
+core.jsonl_logging          /// standardized JSONL logs around capability calls
+core.logging.safety         /// logging of restricted/state-changing actions
+core.permissions            /// permission model (FS/NET/ENV)
+core.policy.visibility      /// policy-based visibility restrictions (imports, etc.)
+```
+
+---
+
+## 23.8 MVP Constraints (v1)
+
 To keep the first release simple and reliable:
 
-- Project-local only (no user-global overlays).
-- Hard errors only (no warn-only/severity levels).
-- Flat list of banishes (feature, reason).
-- No dependency scanning (rules apply to app code).
-- No expiry/version gates (manual unbanish when you're ready).
+* Project-local only (no user-global overlays).
+* Hard errors only (no warn-only/severity levels).
+* Flat list of banishes (feature + reason).
+* No dependency scanning (rules apply to app code only).
+* No expiry/version gates (manual unbanish when ready).
 
-**Future (non-MVP) ideas**: severity levels, version-gated unbanish (e.g., "until ≥1.6"), dependency scope (deps|all), presets, and advisory imports (GQA).
-
-### 25.9 Examples
-
-**Banish morph for safety:**
-```bash
-goblin banish core.morph --reason "Edge-case bug; waiting for fix"
-```
-
-**Creative constraint:**
-```bash
-goblin banish op.pipe_join --reason "Practice explicit string building"
-```
-
-**List:**
-```bash
-goblin banish --list
-# core.morph  — Edge-case bug; waiting for fix
-# op.pipe_join — Practice explicit string building
-```
-
-**Unbanish:**
-```bash
-goblin unbanish core.morph
-```
+**Future (non-MVP) ideas:** severity levels, version-gated unbanish (e.g. “until ≥1.6”), dependency scope (deps|all), presets, advisory imports (GQA).
 
 ---
 
+## 23.9 Examples
+
+```goblin
+goblin banish core.morph --reason "Edge-case bug; waiting for fix"   /// banish morph for safety
+goblin banish op.pipe_join --reason "Practice explicit string building"  /// creative constraint
+goblin banish --list   /// show active bans
+goblin unbanish core.morph   /// unbanish morph
+```
 **Design note**: Goblins banish things. This feature is the emergency brake: rarely used, always ready. It favors safety, clarity, and auditability without changing program semantics or requiring language patches.
-# 26. HTML Glam (v1.0)
 
-The HTML Glam renders HTML/CSS from Goblin data using the same template (`::`) ergonomics you already use for cards, products, etc. It keeps business logic in Goblin and outsources HTML‑specific concerns (escaping, head metadata, assets, layouts, partials) to a deterministic, sandboxed glam.
+## 24. Policies — Project "Loadouts"
 
-You typically load it like:
+### 24.1 Purpose
 
-```goblin
-use html@^1.0 as web
-```
-(Examples below use `html::...` in signatures; feel free to alias to `web::...` in your scripts.)
-
-## 26.1 Core Concepts
-
-**Goblin templates in, HTML out.** You pass data maps or template records built with `::`. The glam returns strings (HTML) or writes files to `dist/` per permissions.
-
-**Auto‑escape by default.** Text nodes and attributes are HTML‑escaped unless explicitly marked raw.
-
-**Composable.** Use `render_many` for arrays, `layout` for full pages, and `partials` to DRY up shared fragments.
-
-**Deterministic.** FS‑only by default; no network. Works in `--deterministic` builds.
-
-## 26.2 Contracts (Public API)
-
-```goblin
-/// Render a single node or component to HTML (string)
-html::render(tpl: map, data: map|nil = nil, opts: map|nil = nil) -> string
-
-/// Render many: map each element through tpl and join
-html::render_many(tpl: map, rows: array<map>, opts: map|nil = nil) -> string
-
-/// Return a named partial's rendered HTML (string)
-html::partial(name: string, data: map|nil = nil) -> string
-
-/// Wrap content with a layout (doctype, head/meta, body)
-html::layout(wrapper: string|map, opts: map = {}) -> string
-
-/// Declare / write CSS with optional fingerprinting; returns the href
-html::write_css(path: string, theme: string|map = "default", opts: map|nil = nil) -> string
-
-/// Register / fingerprint an asset (css/js/img). Returns href string.
-html::asset(path: string, opts: map|nil = nil) -> string
-
-/// Write a rendered HTML string to a file under dist/
-html::write_static(path: string, html: string, opts: map|nil = nil) -> nil
-
-/// Escape helpers
-html::raw(s: string) -> string         /// mark as safe (opt‑in)
-html::esc(s: string) -> string         /// force escape
-```
-
-**Common `opts` keys:**
-- `join: string` (`render_many` joiner; default `""`)
-- `minify: bool` (`layout` / `render`; default `false`)
-- `indent: int` (pretty print; default `2` when not minifying)
-- `attrs: map<string,string|bool>` (extra attributes for a node)
-- `lang: string` (`layout` `<html lang="">"; default `"en"`)
-- `meta: bool|map` (control metadata injection; see §26.8)
-- `title: string` (`layout` `<title>`)
-- `css: array<string>` (`layout` CSS links; paths go through `asset()`)
-
-## 26.3 Data Shapes (What `tpl` Looks Like)
-
-You can pass either a canonical html node map or your own domain template that your renderer understands.
-
-**Canonical node map (lowest level):**
-```goblin
-node = {
-  tag: "div",
-  class: "card",          /// optional
-  id: "product-123",      /// optional
-  attrs: { "data-stock": "7", disabled: false },  /// bool true prints key only
-  content: "<p>safe html or nested render output</p>"  /// string (already rendered)
-}
-html::render(node)
-```
-
-**Domain template (preferred):**
-```goblin
-@card = id: "{id}" :: title: "{title}" :: price: "{price}" :: stock: 0
-html::render(@card, product)     /// renderer for @card composes canonical nodes
-```
-
-Glam implementations SHOULD ship built‑ins for common nodes (`div`, `h1..h6`, `p`, `img`, `a`, `button`) to keep templates concise.
-
-## 26.4 Escaping & Safety
-
-**Auto‑escape:** text and attribute values are escaped (`& < > " '`) by default.
-
-`html::raw(s)` opts out — use sparingly and only for trusted content.
-
-`html::esc(s)` forces escaping when you're unsure.
-
-**Errors:**
-- `ValueError("untrusted raw content")` when glam is configured to forbid `raw()` in deterministic mode.
-
-## 26.5 Partials
-
-Partials are small HTML fragments resolved by name.
-
-**Resolution order (first match wins):**
-1. **Project overrides:** `partials/` in your project root
-   - Example: `partials/meta/og_tags.html`, `partials/head.html`, `partials/footer.html`
-2. **Glam defaults:** `glams/html/partials/...`
-
-**Load & render:**
-```goblin
-head = html::partial("head", { title: "Shop" })
-badge = html::partial("badge", { type: "low", text: "Low stock" })
-```
-
-Partials can interpolate `{vars}` from data and may nest other partials.
-
-## 26.6 Assets & CSS
-
-`html::asset("styles.css")` → returns fingerprinted href like `/assets/styles.4f9a7.css`
-
-`html::write_css("dist/styles.css", "shop-theme")` writes CSS and returns href
-
-Both register links so `layout()` can auto‑inject `<link rel="stylesheet" ...>` tags
-
-**`opts` for `write_css` / `asset`:**
-- `fingerprint: bool` (default `true`)
-- `subdir: string` (default `"assets"`)
-- `copy: bool` (for asset to copy inputs under `dist/`; default `true`)
-
-## 26.7 Permissions (Manifest)
-
-The html glam ships with FS‑only permissions:
-
-```yaml
-# glams/html/glam.yaml (excerpt)
-requires:
-  fs: ["dist/","assets/","partials/"]
-permissions:
-  mode: "fs"
-```
-
-Writes outside `dist/` → `PermissionError`. In `--deterministic` builds, behavior is unchanged; all paths must be inside allowlists.
-
-## 26.8 Metadata Injection (Layouts + Meta Partials)
-
-`html::layout(wrapper, opts)` wraps your content and injects sane defaults:
-
-```html
-<!DOCTYPE html>
-<html lang="{lang}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{opts.title or "Untitled"}</title>
-  {css_links}
-  {meta_tags}
-</head>
-<body>
-  {content}
-</body>
-</html>
-```
-
-**CSS links:** collected from `opts.css` and previously registered assets.
-
-**Meta tags:** concatenation of meta partials loaded from:
-- **Project:** `partials/meta/*.html`
-- **Glam defaults:** `glams/html/partials/meta/*.html`
-
-Disable with `opts.meta: false`, or pass a map to control which meta partials to include:
-
-```goblin
-html::layout(page, { title: "Shop", meta: { include: ["og_tags","twitter_card"], exclude:["favicon"] } })
-```
-
-## 26.9 Full Example — "Adventurer's Emporium"
-
-**Goal:** Render a product grid page, with auto metadata, CSS links, badges, and buy button behavior. Clean business logic in `.gbln`; HTML fuss handled by the glam.
-
-```goblin
-# shop.gbln
-set @policy site_default
-use html@^1.0 as web
-
-/// --- Data ---------------------------------------------------------------
-products = [
-  { id: "p1", title: "Magic Sword",    price: $29.99, stock: 8 },
-  { id: "p2", title: "Healing Potion", price: $5.50,  stock: 2 },
-  { id: "p3", title: "Dragon Shield",  price: $89.00, stock: 0 }
-]
-
-/// --- Templates (domain-level) -------------------------------------------
-@page = title: "{title}" :: css: ["styles.css"] :: content: ""
-
-@card = id: "{id}" :: title: "{title}" :: price: "{price}" :: stock: 0
-
-/// --- Renderers ----------------------------------------------------------
-/// Return HTML for a product card. Inside we build canonical nodes and let glam render.
-fn render_card(p)
-    /// title
-    title_node = { tag: "h2", content: web::esc(p.title) }
-
-    /// price (format money as string; keep business rules here)
-    price_str = "$" | fmt(float(p.price), ",.2f")
-    price_node = { tag: "p", class: "price", content: web::esc(price_str) }
-
-    /// badges
-    badge_html = judge
-        p.stock == 0: web::partial("badge", { type: "soldout", text: "Sold out" })
-        p.stock < 5:  web::partial("badge", { type: "low",     text: "Low stock" })
-        else: ""
-
-    /// button
-    btn_attrs = judge
-        p.stock == 0: { type: "submit", disabled: true }
-        else:         { type: "submit" }
-    btn_node = { tag: "button", attrs: btn_attrs, content: "Buy Now" }
-
-    /// card container
-    card_node = {
-      tag: "div",
-      class: "card",
-      id: p.id,
-      content: 
-        web::render(title_node) |
-        web::render(price_node) |
-        badge_html |
-        web::render(btn_node)
-    }
-
-    web::render(card_node)
-end
-
-/// --- Page assembly ------------------------------------------------------
-cards = []
-for p in products
-    cards.push(render_card(p))
-end
-
-grid_node = { tag: "div", class: "grid", content: join(cards, "") }
-grid_html = web::render(grid_node)
-
-page = page: title: "Adventurer's Emporium" :: css: ["styles.css"] :: content: grid_html
-
-html_out = web::layout(
-  web::partial("base"),              /// wrapper (can be a partial or a map)
-  { title: page.title, css: page.css, content: page.content }
-)
-
-/// --- Assets & output ----------------------------------------------------
-href_css = web::write_css("dist/styles.css", "shop-theme")   /// returns href; also auto-linked by layout
-
-mkdirp("dist")
-web::write_static("dist/index.html", html_out)
-say "Wrote dist/index.html"
-```
-
-**`partials/` (project overrides are optional):**
-
-```
-partials/
-  base.html                 # optional: outer shell (if not provided, glam uses its default)
-  badge.html                # optional; otherwise use glam default
-  meta/
-    og_tags.html            # optional meta fragment
-    twitter_card.html       # optional meta fragment
-    favicon.html            # optional meta fragment
-```
-
-**`badge.html` example (project override):**
-
-```html
-<span class="badge {type}">{text}</span>
-```
-
-**Glam default CSS (theme) example (implementation-defined):**
-
-`web::write_css("dist/styles.css", "shop-theme")` writes a minimal, dark UI:
-
-```css
-:root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI"; }
-body { margin: 0; padding: 2rem; background: #0b0f14; color: #e6edf3; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px,1fr)); gap: 1rem; }
-.card { background: #10161d; border: 1px solid #1f2937; border-radius: 16px; padding: 1rem; }
-.card h2 { margin: 0 0 .5rem 0; font-size: 1.125rem; }
-.price { margin: .25rem 0 1rem 0; font-weight: 600; }
-.badge { display: inline-block; margin-right: .5rem; padding: .125rem .5rem; border-radius: 999px; font-size: .75rem; }
-.badge.low { background: #332700; color: #ffd166; border: 1px solid #ffcc4d; }
-.badge.soldout { background: #2a0e12; color: #ff6b6b; border: 1px solid #ff6b6b; }
-button { padding: .5rem .75rem; border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: #e6edf3; }
-button[disabled] { opacity: .5; cursor: not-allowed; }
-```
-
-## 26.10 Errors & Warnings
-
-- **`ValueError`** — bad node shape, invalid partial name, malformed attrs
-- **`TypeError`** — wrong argument types for API
-- **`PermissionError`** — attempts to write outside allowlisted paths
-- **`GlamError("html", cap, cause)`** — any unexpected glam failure
-- **`UnusedHtmlWarning`** — glam MAY warn if you compute HTML and never use/write it (lint‑style)
-
-## 26.11 Notes & Best Practices
-
-- Keep money math in Goblin (§10–§11). Pass strings to HTML only at render time.
-- Prefer partials for boilerplate head/meta and badges/footers.
-- Use `render_many` for clean list rendering without explicit loops when you like, but loops are fine when conditional glue is needed.
-- Only use `html::raw` for trusted fragments (e.g., sanitized CMS).
-
-With this, you can keep `.gbln` scripts clean, predictable, and auditable — while shipping production‑ready HTML with zero repetition.
-
----
-
-## 27. Policies — Project "Loadouts"
-
-### 27.1 Purpose
 Policies are named "loadouts" that centralize behavior for key features. Define them once, then apply them:
-- Project‑wide (via policies.gbln site default)
-- Per file (header)
-- Inline (within any block)
 
-Policies replace scattered directives. Environment/config knobs (e.g., currency map, time server) stay in goblin.config.yaml; policies can override them selectively.
+* Project‑wide (via `policies.gbln` site default)
+* Per file (header)
+* Inline (within any block)
 
-### 27.2 Where Policies Live
+Policies replace scattered directives. Environment/config knobs (e.g., currency map, time server) stay in `goblin.config.yaml`; policies can override them selectively.
+
+### 24.2 Where Policies Live
+
 Create a special, auto‑loaded file at the project root:
+
 ```
 policies.gbln
 ```
@@ -3153,23 +2898,27 @@ It's always available (no import). Define named templates there using standard t
     modules: { mode: "vault" }
 ```
 
-### 27.3 Applying Policies
+### 24.3 Applying Policies
+
 Policies are applied with a single statement:
+
 ```goblin
 set @policy site_default
 ```
 
 **Scopes:**
-- **File header**: first non‑blank/comment statement → applies file‑wide.
-- **Inline**: anywhere in code; applies to the current block and inner scopes.
 
-**Precedence**: inline > file > project default (either "site_default" or the first policy declared with default: true, if you add that convention later).
+* **File header**: first non‑blank/comment statement → applies file‑wide.
+* **Inline**: anywhere in code; applies to the current block and inner scopes.
 
-**Partial fills**: Any key not set in a policy inherits from project config (goblin.config.yaml). Nothing is silently guessed.
+**Precedence**: inline > file > project default (either `site_default` or the first policy declared with `default: true`, if that convention is added later).
 
-### 27.4 Categories & Fields
+**Partial fills**: Any key not set in a policy inherits from project config (`goblin.config.yaml`). Nothing is silently guessed.
 
-#### 27.4.1 Money
+### 24.4 Categories & Fields
+
+#### 24.4.1 Money
+
 ```goblin
 money: {
   currency: "USD",            /// default currency (string ISO code)
@@ -3185,125 +2934,44 @@ money: {
 ```
 
 **Behavior:**
-- Applies to money construction, promotion, *, tax/with_tax, convert, glam return values that are money.
-- Policy overrides default money behavior from goblin.config.yaml; unset fields inherit from config.
-- Compat mode affects ONLY how amounts are emitted to external systems (exports, invoices, APIs). Internal math always uses perfect Goblin math.
-- When compat.mode != "none", Goblin tracks both:
-    - Correct Ledger (pure Goblin math)
-    - Broken Ledger (external system's result per compat.mode)
-  Differences are recorded in theft ledger (even if money is lost instead of gained).
 
-**Shame Level Semantics:**
-- `silent` — emit no commentary; still logs theft ledger internally if track_theft = true.
-- `educational` — provide step-by-step breakdown of calculations for debugging/teaching.
-- `passive_aggressive` — provide summary of discrepancy with light snark.
-- `brutal` — provide aggressively snarky discrepancy report.
-- lost-money variants — passive_aggressive/brutal text adapted for when compat mode causes the *user* to lose money instead of gain.
+* Applies to money construction, promotion, `*`, `tax/with_tax`, `convert`, glam return values that are money.
+* Overrides default money behavior from `goblin.config.yaml`; unset fields inherit from config.
+* Compat mode affects **only** how amounts are emitted to external systems (exports, invoices, APIs). Internal math always uses perfect Goblin math.
+* When compat.mode ≠ `none`, Goblin tracks both:
 
-**Shame Level Examples:**
+  * Correct Ledger (pure Goblin math)
+  * Broken Ledger (external system's result per compat.mode)
+    Differences are recorded in theft ledger (even if money is lost instead of gained).
 
-`shame_level: "passive_aggressive"`
-```
-# ═══════════════════════════════════════════════════════════════
-# GOBLIN PRECISION AUDIT
-# ═══════════════════════════════════════════════════════════════
-# Correct total: USD 1,247.66 (mathematically accurate)
-# Your total: USD 1,247.83 (rounded to match your expectations)
-# Discrepancy: USD 0.17 (tracked in goblin ledger)
-#
-# Note: Your system's rounding caused this difference.
-# The goblins maintain perfect records for your reference.
-# 🧌 Where Every Cent Counts
-# ═══════════════════════════════════════════════════════════════
-```
+**Shame Levels:**
 
-`shame_level: "brutal"`
-```
-# ═══════════════════════════════════════════════════════════════
-# 🧌 GOBLIN FINANCIAL CRIMES UNIT REPORT 🧌
-# ═══════════════════════════════════════════════════════════════
-# CORRECT AMOUNT: USD 1,247.66 (what honest math produces)
-# YOUR AMOUNT: USD 1,247.83 (what your broken system thinks)
-# THEFT AMOUNT: USD 0.17 (you ripped someone off)
-#
-# 🚨 FINANCIAL MALPRACTICE DETECTED 🚨
-# Your rounding errors have resulted in USD 0.17 being stolen
-# from someone. The goblins are disappointed in your life choices.
-# 
-# Maybe consider upgrading from "calculator math" to "actual math"?
-# We'll be here with perfect arithmetic when you're ready to evolve.
-#
-# Sincerely,
-# The Goblin Financial Accuracy Department
-# "We count coins so you don't have to steal them"
-# ═══════════════════════════════════════════════════════════════
-```
+* `silent` — no commentary; still logs internally if `track_theft = true`.
+* `educational` — step-by-step breakdowns.
+* `passive_aggressive` — summary with light snark.
+* `brutal` — aggressively snarky discrepancy report.
+* Lost-money variants adapt text when compat causes *user* to lose money.
 
-`shame_level: "passive_aggressive"` (Lost Money)
-```
-# ═══════════════════════════════════════════════════════════════
-# GOBLIN PRECISION AUDIT
-# ═══════════════════════════════════════════════════════════════
-# Correct total: USD 1,247.83 (mathematically accurate)
-# Your total: USD 1,247.66 (rounded to match your expectations)
-# Money lost: USD 0.17 (vanished into the rounding void)
-#
-# Note: Your system's rounding caused you to lose money.
-# The goblins tried to warn you, but here we are.
-# 🧌 Where Every Cent Counts (Even The Ones You Lose)
-# ═══════════════════════════════════════════════════════════════
-```
+**Logging:** Theft ledger is always recorded internally when `track_theft = true`, even if shame\_level = `silent`. Emitted as structured log entries at `warn` level by default.
 
-`shame_level: "brutal"` (Lost Money)
-```
-# ═══════════════════════════════════════════════════════════════
-# 🧌 GOBLIN FINANCIAL INCOMPETENCE REPORT 🧌
-# ═══════════════════════════════════════════════════════════════
-# CORRECT AMOUNT: USD 1,247.83 (what competent math produces)
-# YOUR AMOUNT: USD 1,247.66 (what your broken system lost)
-# MONEY EVAPORATED: USD 0.17 (poof! gone forever!)
-#
-# 💸 FINANCIAL SELF-HARM DETECTED 💸
-# Congratulations! Your rounding errors just made USD 0.17 
-# disappear into the mathematical void. The goblins would cry,
-# but we're too busy counting our precisely-tracked coins.
-#
-# Pro tip: Money doesn't usually vanish by itself.
-# That takes special incompetence that only humans can achieve.
-#
-# Tragically yours,
-# The Goblin "We Told You So" Department  
-# "Watching humans lose money since 2025"
-# ═══════════════════════════════════════════════════════════════
-```
+#### 24.4.2 Modules
 
-**Logging Note:**
-When `compat.track_theft = true`, Goblin always records the theft ledger internally, even if `shame_level = "silent"`.  
-By default, this is emitted as a structured log entry at `warn` level on export, containing:
-  - correct_amount
-  - broken_amount
-  - discrepancy
-  - mode
-  - timestamp
-
-Logging level is configurable via goblin.config.yaml. This ensures project maintainers are aware of all discrepancies, even when suppressed in output sent to external systems.
-
-#### 27.4.2 Modules
 ```goblin
 modules: {
   mode: "expose"       /// expose | vault
 }
 ```
 
-Mirrors module visibility (§28). If a file sets modules.mode, it behaves as if it had a pragma header (see §28).
+* Mirrors module visibility (§25). If a file sets `modules.mode`, it behaves as if it had a pragma header.
+* Importing uses `import "./path" as X`; call sites use `X::symbol` (module) and `glam::symbol` (glam). Namespaces never collide.
 
-**Namespacing & calls**: importing uses `import "./path" as X` and call sites use `X::symbol` (module) and `glam::symbol` (glam); the namespaces don't collide.
+**Errors:**
 
-**Errors (visibility)**:
-- Attempt to import a vault file or call a vault symbol → `ModuleVisibilityError`.
-- If a policy sets a file to vault and you still try to import → `PolicyVisibilityError`.
+* Import vault file or call vault symbol → `ModuleVisibilityError`.
+* File policy vault + attempted import → `PolicyVisibilityError`.
 
-#### 27.4.3 Strings
+#### 24.4.3 Strings
+
 ```goblin
 strings: {
   trim: true,          /// l/r trim for inputs to selected helpers
@@ -3312,9 +2980,10 @@ strings: {
 }
 ```
 
-Hints honored by core helpers and glams where sensible. HTML glam still auto‑escapes; escape:true is additive for non‑HTML sinks.
+Hints honored by core helpers and glams where sensible. HTML glam still auto‑escapes; escape\:true is additive for non‑HTML sinks.
 
-#### 27.4.4 Datetime
+#### 24.4.4 Datetime
+
 ```goblin
 datetime: {
   prefer_trusted: false,  /// when true, now()/today() prefer trusted chain
@@ -3323,31 +2992,33 @@ datetime: {
 }
 ```
 
-**Config fallback**: trusted‑time URL, TTLs, HMAC key, etc., stay in goblin.config.yaml.
+Config fallback: trusted‑time URL, TTLs, HMAC key, etc., remain in `goblin.config.yaml`.
 
-### 27.5 Syntax Notes
-- **Nested structures in templates**: Allowed on RHS: `{ … }` and `[ … ]` (same literals as §6).
-- `set @policy …` is a statement (no value). Re‑applying later replaces the current effective policy for subsequent statements in that scope.
-- Linters should warn if a file has both a `# @module …` pragma and a conflicting `modules.mode` via policy.
+### 24.5 Syntax Notes
 
-### 27.6 Errors
-- `PolicyNotFoundError("name")` — unknown policy name in set @policy.
-- `PolicyValueError(path, reason)` — invalid field (e.g., negative precision).
-- `PolicyScopeError` — header set @policy is not first statement when a strict build/lint requires it.
-- `PolicyVisibilityError` — import/use blocked by an active policy (e.g., modules.mode: "vault").
+* Nested structures allowed on RHS (`{ … }`, `[ … ]`).
+* `set @policy …` is a statement (no value). Re‑applying replaces current effective policy for subsequent scope.
+* Linters should warn if file has both a `# @module …` pragma and a conflicting `modules.mode` via policy.
 
-### 27.7 Examples
+### 24.6 Errors
 
-**Quick before/after:**
+* `PolicyNotFoundError("name")` — unknown policy name.
+* `PolicyValueError(path, reason)` — invalid field (e.g., negative precision).
+* `PolicyScopeError` — header set @policy not first statement when strict build/lint requires.
+* `PolicyVisibilityError` — import/use blocked by active policy.
 
-Before:
+### 24.7 Examples
+
+**Before:**
+
 ```goblin
 default money USD precision: 2 policy: truncate
 price = $80
 say price + 10%
 ```
 
-After:
+**After:**
+
 ```goblin
 set @policy site_default
 price = $80
@@ -3355,28 +3026,32 @@ say price + 10%
 ```
 
 **Inline tighten:**
+
 ```goblin
 set @policy strict_money
 tax_amount = tax($405.95, 8.25%)   /// raises in strict if sub-precision appears
 ```
 
 **Modules via policy:**
+
 ```goblin
 set @policy sealed_mods    /// this file acts like # @module vault
 ```
 
+# 25. Modules — Project-Local Imports
+
+## 25.1 Purpose
+
+Modules let you split code across files and reuse it without glam. They’re project‑local, namespaced, and governed by the **Modules policy** (§24). You can run in "open by default" mode or lock things down and explicitly expose only what you need.
+
 ---
 
-## 28. Modules — Project‑Local Imports
+## 25.2 Import Basics
 
-### 28.1 Purpose
-Modules let you split code across files and reuse it without glam. They're project‑local, namespaced, and governed by the Modules policy (see §27). You can run in "open by default" mode or lock things down and explicitly expose only what you need.
-
-### 28.2 Import basics
-- Any .gbln file can be imported (no special folders).
-- Paths resolve relative to the importing file.
-- The .gbln suffix is optional.
-- Each import requires an alias; access via Alias::name.
+* Any `.gbln` file can be imported (no special folders).
+* Paths resolve **relative to the importing file**.
+* The `.gbln` suffix is optional.
+* Each import **requires an alias**; access via `Alias::name`.
 
 ```goblin
 import "./helpers" as H
@@ -3385,35 +3060,46 @@ say H::slug("Deviant Moon")
 
 Namespace access: `Alias::symbol` (keep `.` for method/property access only).
 
-### 28.3 Visibility via policy (open vs. locked)
-Visibility is driven by the active Modules policy:
-- **expose** (easy mode): top‑level declarations are importable unless marked `vault`.
-- **vault** (locked mode): nothing is importable unless marked `expose`.
+---
 
-You set policy the same way as elsewhere:
-- **Project‑wide default** in policies.gbln (e.g., `modules: { mode: "expose" }` or `modules: { mode: "vault" }`).
-- **File‑level**: first non‑comment line
-  ```goblin
-  set @policy my_modules_policy
-  ```
-- **Scoped/inline**:
-  ```goblin
-  fn build()
-      set @policy locked_modules   /// modules: { mode: "vault" }
-      ...
-  end
-  ```
+## 25.3 Visibility via Policy (open vs. locked)
+
+Visibility is driven by the active **Modules policy** (§24):
+
+* **expose** (easy mode): top‑level declarations are importable **unless** marked `vault`.
+* **vault** (locked mode): nothing is importable **unless** marked `expose`.
+
+Apply policy the same ways as elsewhere:
+
+* **Project‑wide default** in `policies.gbln` (e.g., `modules: { mode: "expose" }` or `modules: { mode: "vault" }`).
+* **File‑level**: first non‑comment statement.
+
+```goblin
+set @policy my_modules_policy
+```
+
+* **Scoped/inline**:
+
+```goblin
+fn build()
+    set @policy locked_modules   /// modules: { mode: "vault" }
+    ...
+end
+```
 
 **Precedence**: inner scope > file header > project default.
 
-**Errors**:
-If a file is effectively vault because of policy and you try to import a symbol not marked expose, that import fails. Use error taxonomy in §28.8.
+**Errors**: If a file is effectively `vault` because of policy and you try to import a symbol not marked `expose`, that import fails (see §25.9 for error taxonomy).
 
-### 28.4 Symbol‑level modifiers
-Independently of file policy, mark specific declarations:
+---
+
+## 25.4 Symbol‑Level Modifiers
+
+Mark specific declarations regardless of file policy:
+
 ```goblin
 expose fn new_id() = uuid()            /// importable
-vault  fn seed()   = 12345              /// never importable
+vault  fn seed()   = 12345             /// never importable
 
 expose class Product = title: "{t}" :: price: $0
 vault  enum Mode
@@ -3425,57 +3111,80 @@ expose @row = title: "{t}" :: price: "{p}"
 ```
 
 **Rules:**
-- In **expose** files: everything is importable except symbols marked `vault`.
-- In **vault** files: nothing is importable except symbols marked `expose`.
-- Conflicting redeclarations (same name with different visibility) → `ModuleVisibilityError` at definition time.
 
-### 28.5 Execution & caching
-- A module's top‑level code executes once on its first import; subsequent imports use the cached exports.
-- Side‑effects follow sandbox rules; in `--deterministic` builds, disallowed FS/NET fail as usual.
+* In **expose** files: everything is importable **except** symbols marked `vault`.
+* In **vault** files: nothing is importable **except** symbols marked `expose`.
+* Conflicting redeclarations (same name with different visibility) → `ModuleVisibilityError` at definition time.
 
-### 28.6 Aliases & collisions
-- Duplicate `import … as Alias` in one file → `ModuleNameConflictError`.
-- Duplicate symbol definitions inside a module → normal duplicate‑definition error at load time.
+---
 
-### 28.7 Cycles (MVP)
-Import cycles are disallowed in v1.5. Detecting A → B → A raises:
-```
+## 25.5 Execution & Caching
+
+* A module’s top‑level code **executes once** on its first import; subsequent imports use the cached exports.
+* Side‑effects follow sandbox rules; in `--deterministic` builds, disallowed FS/NET fail as usual.
+
+---
+
+## 25.6 Aliases & Collisions
+
+* Duplicate `import … as Alias` in one file → `ModuleNameConflictError`.
+* Duplicate symbol definitions inside a module → normal duplicate‑definition error at load time.
+
+---
+
+## 25.7 Cycles (MVP)
+
+Import cycles are disallowed in v1.5. Detecting `A → B → A` raises:
+
+```text
 ModuleCycleError("A <-> B")
 ```
 
 (A future release may relax this with deferred bindings.)
 
-### 28.8 Interop (modules vs. glam)
-- **Modules**: `import "./x" as X` → `X::symbol`.
-- **Glam**: `use glam@ver as g` and `via g::cap`.
+---
 
-Namespaces won't collide; both use `Alias::symbol`, but aliases originate from different mechanisms.
+## 25.8 Interop (Modules vs. Glam)
 
-### 28.9 Errors
-- `ModuleNotFoundError` — bad path or unreadable file.
-- `ModuleNameConflictError` — duplicate alias in the importer.
-- `ModuleCycleError` — cyclic import detected.
-- `ModuleVisibilityError` — symbol hidden by its declaration (vault) or not exposed under a vault file.
-- `PolicyVisibilityError` — import denied because the active policy makes the target effectively vault and the symbol isn't expose.
+* **Modules**: `import "./x" as X` → `X::symbol`.
+* **Glam**: `use glam@ver as g` and `via g::cap`.
+
+Namespaces don’t collide; both use `Alias::symbol`, but aliases originate from different mechanisms.
+
+---
+
+## 25.9 Errors
+
+* `ModuleNotFoundError` — bad path or unreadable file.
+* `ModuleNameConflictError` — duplicate alias in the importer.
+* `ModuleCycleError` — cyclic import detected.
+* `ModuleVisibilityError` — symbol hidden by its declaration (`vault`) or not exposed under a `vault` file.
+* `PolicyVisibilityError` — import denied because the active policy makes the target effectively `vault` and the symbol isn’t `expose`.
 
 (Goblin‑flair messages allowed per §18.)
 
-### 28.10 Examples
+---
 
-#### A. Open by default (easy reuse)
+## 25.10 Examples
+
+### A. Open by default (easy reuse)
+
 **policies.gbln**
+
 ```goblin
 @policy = "easy_modules"
     modules: { mode: "expose" }
 ```
 
 **strings.gbln**
+
 ```goblin
 fn slug(s) = s.lower().replace(" ", "-")     /// importable (expose file)
-vault fn only_here() = 7                     /// force hidden
+vault fn only_here() = 7                       /// force hidden
 ```
 
 **post.gbln**
+
 ```goblin
 set @policy easy_modules
 import "./strings" as S
@@ -3484,14 +3193,17 @@ say S::slug("Deviant Moon")    /// "deviant-moon"
 S::only_here()                 /// ModuleVisibilityError
 ```
 
-#### B. Locked file with explicit exposes
+### B. Locked file with explicit exposes
+
 **policies.gbln**
+
 ```goblin
 @policy = "locked_modules"
     modules: { mode: "vault" }
 ```
 
 **ids.gbln**
+
 ```goblin
 set @policy locked_modules
 
@@ -3500,14 +3212,17 @@ fn seed() = 12345              /// hidden (implicit vault under file vault)
 ```
 
 **main.gbln**
+
 ```goblin
 import "./ids" as IDs
 say IDs::new_id()
 IDs::seed()                    /// ModuleVisibilityError (or PolicyVisibilityError if policy blocks file)
 ```
 
-#### C. Mixed sections
+### C. Mixed sections
+
 **tools.gbln**
+
 ```goblin
 set @policy easy_modules       /// expose section
 fn slug(s) = s.lower().replace(" ", "-")
@@ -3519,62 +3234,74 @@ fn secret() = "g0b1in"
 
 Importer can use `slug` and `checksum`, not `secret`.
 
-### 28.11 Reserved words (delta)
-Add to §19:
-```
-import, expose, vault
-```
+## 26. Blob Type & Binary Data
 
-(Keep as contextual inside import statements. Names in strings/fields are unaffected.)
+### 26.1 Purpose
 
----
-29. Blob Type & Binary Data
-29.1 Purpose
-The blob type handles raw binary data for images, files, cryptographic operations, and binary protocols. Unlike strings (UTF-8), blobs store arbitrary bytes.
-29.2 Construction
-goblin/// From file
+The `blob` type handles raw binary data for images, files, cryptographic operations, and binary protocols. Unlike strings (UTF-8), blobs store arbitrary bytes.
+
+### 26.2 Construction
+
+```goblin
+/// From file
 data = read_bytes("image.png")
 
 /// Empty blob
 empty = blob()
 
 /// From encodings
-pdf_data = from_base64("JVBERi0xLjQK...")
-signature = from_hex("deadbeef1234567890abcdef")
+pdf_data   = from_base64("JVBERi0xLjQK...")
+signature  = from_hex("deadbeef1234567890abcdef")
 
 /// From UTF-8 string
 utf8_bytes = blob("Hello, world!")
+```
 
-29.3 Operations
-goblin/// Length and slicing
+### 26.3 Operations
+
+```goblin
+/// Length and slicing
 len(data), data.len()
 data[0:100]     /// first 100 bytes
 data[10:]       /// from byte 10 to end
 data[:-4]       /// all but last 4 bytes
 
- /// Concatenation
-  blob_concat(a, b)   /// explicit helper (canonical)
-  a + b               /// operator overload (exactly equivalent to blob_concat)
+/// Concatenation
+blob_concat(a, b)   /// explicit helper (canonical)
+a + b               /// operator overload (equivalent to blob_concat)
+```
 
-29.4 Encoding Conversions
-goblin/// Base64 (RFC 4648)
+### 26.4 Encoding Conversions
+
+```goblin
+/// Base64 (RFC 4648)
 to_base64(data) → string
-from_base64(s)  → blob (ValueError if invalid)
+from_base64(s)  → blob   /// ValueError if invalid
 
 /// Hexadecimal (lowercase output, case-insensitive input)
-to_hex(data)    → string  
-from_hex(s)     → blob (ValueError if invalid)
+to_hex(data)    → string
+from_hex(s)     → blob   /// ValueError if invalid
 
 /// UTF-8 (strict)
-str(blob_data)  → string (ValueError if invalid UTF-8)
+str(blob_data)  → string /// ValueError if invalid UTF-8
 blob(text)      → blob
-29.5 JSON Serialization
+```
+
+### 26.5 JSON Serialization
+
 Default: blobs are not auto-serialized.
+
 Options:
-goblinwrite_json(path, value, { blob: "base64" | "hex" | "error" = "error" })
+
+```goblin
+write_json(path, value, { blob: "base64" | "hex" | "error" = "error" })
 read_json(path, { blob: "off" | "base64" | "hex" | "auto" = "off" })
-29.6 Examples
-goblin/// Read image, encode for web
+```
+
+### 26.6 Examples
+
+```goblin
+/// Read image, encode for web
 img = read_bytes("logo.png")
 data_url = "data:image/png;base64," | to_base64(img)
 
@@ -3589,22 +3316,31 @@ if is_binary("document.pdf")
 else
     content = blob(read_text("document.txt"))
 end
+```
+# 27. Cryptographic Hashing & HMAC
 
-PATCH 6: NEW SECTION 30 - Insert after Section 29 (Blob Type)
-30. Cryptographic Hashing & HMAC
-30.1 Core Functions
-goblinhash(data: string|blob, algorithm: string = "sha256") → string
+## 27.1 Core Functions
+
+```goblin
+hash(data: string|blob, algorithm: string = "sha256") → string
 hmac(data: string|blob, key: string|blob, algorithm: string = "sha256") → string
-Supported algorithms:
+```
 
-"sha256" (default, recommended)
-"sha512"
-"sha1" (legacy, emits warning)
-"md5" (legacy, emits strong warning)
+* **Algorithms supported**:
 
-Output is lowercase hex string.
-30.2 Use Cases
-goblin/// File integrity verification
+  * `"sha256"` (default, recommended)
+  * `"sha512"`
+  * `"sha1"` (legacy; emits warning)
+  * `"md5"` (legacy; emits strong warning)
+
+* **Output**: lowercase hex string.
+
+---
+
+## 27.2 Use Cases
+
+```goblin
+/// File integrity verification
 content = read_bytes("document.pdf")
 checksum = hash(content)
 say "SHA256: {checksum}"
@@ -3625,22 +3361,33 @@ for path in glob("**/*.jpg")
         files_seen[h] = path
     end
 end
-30.3 Security Notes
+```
 
-Not for passwords: Use proper password hashing (bcrypt, scrypt, Argon2) via security glam
-Timing attacks: Hash comparison is not constant-time
-Key management: Keep HMAC keys secure; rotate regularly
+---
 
-30.4 Algorithm Warnings
-goblin/// Emits: "SHA1 is cryptographically weak; consider SHA256"
+## 27.3 Security Notes
+
+* **Not for passwords**: Use password hashing (bcrypt, scrypt, Argon2) via security glam.
+* **Timing attacks**: Hash comparison is not constant-time.
+* **Key management**: Keep HMAC keys secure; rotate regularly.
+
+---
+
+## 27.4 Algorithm Warnings
+
+```goblin
+/// Emits: "SHA1 is cryptographically weak; consider SHA256"
 legacy_hash = hash(data, "sha1")
 
 /// Emits: "MD5 is broken for security; use only for non-cryptographic checksums"
 checksum = hash(data, "md5")
+```
 
-30.5 Streaming API (incremental hashing/HMAC)
+---
 
-goblin
+## 27.5 Streaming API (incremental hashing/HMAC)
+
+```goblin
 # Hash (incremental)
 h = hash.start("sha256")
 h.update(part1)                /// part1: blob|string
@@ -3652,92 +3399,80 @@ s = hmac.start(key: "secret", algorithm: "sha256")
 s.update(part1)
 s.update(part2)
 sig = s.finish()               /// signature: lowercase hex string
+```
 
-Rules:
-- .start(algo) returns a stateful context; .update(x) accepts blob or string; .finish() returns lowercase hex.
-- Streaming output must match one-shot hash(...) / hmac(...) for the same data.
-- Provide golden-vector tests for streaming and one-shot forms (identical results).
+**Rules:**
 
-  31. Runes (v1.2, KIC by default)
-31.0 Lore
+* `.start(algo)` returns a stateful context.
+* `.update(x)` accepts blob or string.
+* `.finish()` returns lowercase hex.
+* Streaming output must match one-shot `hash(...)` / `hmac(...)` for identical data.
+* Golden-vector tests required for equivalence of streaming vs. one-shot forms.
 
-The goblins hide their steps inside the message.
-To the untrained eye it’s just scratches; to a goblin it’s a map.
+  ## 28. Runes (v1.2, KIC by default)
 
-31.1 Purpose
+### 28.0 Lore
 
-runes is a built-in, symmetric, lore-flavored cipher for quick secrecy and puzzles.
-Default (v1.2): the movement key is hidden inside the ciphertext via Key-in-Ciphertext (KIC).
+The goblins hide their steps inside the message. To the untrained eye it’s just scratches; to a goblin it’s a map.
 
-Runes is obfuscation-first. For strong cryptography, wrap with HMAC or AEAD (see §31.10).
+### 28.1 Purpose
 
-31.2 Grid
+`runes` is a built-in, symmetric, lore-flavored cipher for quick secrecy and puzzles. Default (v1.2): the movement key is hidden inside the ciphertext via **Key-in-Ciphertext (KIC)**.
+
+Runes is obfuscation-first. For strong cryptography, wrap with HMAC or AEAD (see §28.10).
+
+### 28.2 Grid
 
 Fixed 6×6 “banded” grid, wraparound moves:
 
+```
 Row0: A  B  D  E  F  G
 Row1: 0  1  2  3  4  Z
 Row2: H  I  J  K  L  M
 Row3: 5  6  7  8  9  .
 Row4: N  O  P  Q  R  S
 Row5: T  U  V  W  X  Y
+```
 
-31.3 Key
+### 28.3 Key
 
 Key = list of (direction, distance) pairs (length 1–6).
 
-Directions: 0..8 (0=stay, 1=N, 2=NE, …, 8=NW)
+* **Directions:** 0..8 (0=stay, 1=N, 2=NE, …, 8=NW)
+* **Distance:** 0..6 (wraparound)
 
-Distance: 0..6 (wraparound)
+If a single pair is given (e.g., `"1,3"`), it repeats for all characters.
 
-If a single pair is given (e.g., "1,3"), it repeats for all characters.
+Default key if omitted: `1,1;2,1;3,1;4,1;5,1;6,1;7,1;8,1`.
 
-Default key if omitted: 1,1;2,1;3,1;4,1;5,1;6,1;7,1;8,1.
+### 28.4 Normalization
 
-(§31.9 allows optional per-character variation via Pack/Seed.)
+* Plaintext uppercased.
+* Spaces → `.` (dot).
+* Allowed plaintext: A–Z (no C), digits 0–9, `.`
+* Default mapping: `C → K` (configurable; unsupported glyphs dropped unless mapped).
 
-31.4 Normalization
+### 28.5 API & CLI
 
-Plaintext uppercased.
+**Language API (KIC on by default):**
 
-Spaces → . (dot).
-
-Allowed plaintext: A–Z (no C), digits 0–9, dot ..
-
-Default mapping: C → K.
-Configurable: e.g., C → S.
-Unsupported glyphs are dropped unless a mapping is specified.
-
-31.5 API & CLI
-Language
-
-KIC is on by default.
-
+```goblin
 ct = runes.encrypt("meet at dawn", key: "1,3")    /// headerless, key hidden in ct
 pt = runes.decrypt(ct)                            /// auto-recovers key
-
-
-Sealed KIC (passphrase):
 
 ct = runes.encrypt("meet at dawn", key: "1,3", passphrase: "riddleme")
 pt = runes.decrypt(ct, passphrase: "riddleme")
 
-
-Seeded grids (§31.9):
-
 ct = runes.encrypt("meet at dawn", key: "1,3", seed: 87)
 pt = runes.decrypt(ct, seed: 87)
 
-
-Sealed with seed:
-
 ct = runes.encrypt("meet at dawn", key: "1,3", seed: 87, passphrase: "riddleme")
 pt = runes.decrypt(ct, seed: 87, passphrase: "riddleme")
+```
 
-CLI
+**CLI:**
 
-Canonical positional form (short):
-
+```
 # Encrypt: goblin runes.encrypt "<message>" [:: <key>] [:: <seed>]
 # Decrypt: goblin runes.decrypt "<ciphertext>" [:: <key>] [:: <seed>]
 
@@ -3745,325 +3480,498 @@ goblin runes.encrypt "treasure at oak"                   # default key + fixed g
 goblin runes.encrypt "treasure at oak" :: 1,3            # custom key
 goblin runes.encrypt "treasure at oak" :: 1,3 :: 87      # custom key + seeded grid
 goblin runes.decrypt "T8X@1X1G#3KN4X7"                   # auto-recover key
+```
 
+Long-form flags (`--key`, `--seed`, `--passphrase`, `--no-kic`) remain valid. `--no-kic` reverts to legacy header mode.
 
-Long-form flags (--key, --seed, --passphrase, --no-kic) remain valid.
+### 28.6 Key-in-Ciphertext (KIC v1)
 
---no-kic reverts to legacy header mode.
+**Marker set:** `@, #, %, _, -, $` (then repeat).
 
-31.6 Key-in-Ciphertext (KIC v1)
-31.6.1 Marker set
+**Serialization:**
 
-Reserved cycle: @, #, %, _, -, $ (then repeat).
+* Pairs (d,s) → hex-like digits (0–9,A–F).
+* Multiple pairs joined with `F`.
+* Example: `"1,3" → 13`; `"1,1;2,2;3,1" → 11F22F31`
 
-31.6.2 Key serialization
+**Insertion schedule:**
 
-Pairs (d,s) encoded as hex-like digits (0–9, A–F).
-Multiple pairs joined with F.
+* After every 3 symbols, insert marker+key-char.
+* If carrier ends with key-chars left, append them at tail.
+* On decode: extract marker pairs, reconstruct key, then decrypt.
 
-Examples:
+**Sealed KIC:** key serialized, AEAD-encrypted with passphrase, then embedded.
 
-"1,3"                → 13
-"1,1;2,2;3,1"        → 11F22F31
+### 28.7 Golden Test Vectors
 
+* **Simple pair:**
 
-(Triples from Pack mode (§31.9): d s g → d s <gid in base16>, joined with F.)
+  * PT: `HELLO.W0RLD`
+  * Key: `1,3 → 13`
+  * Base ct: `T8XX1GKN4X7`
+  * KIC ct:  `T8X@1X1G#3KN4X7`
 
-31.6.3 Insertion schedule
+* **Multi-pair:**
 
-Walk ciphertext left→right.
+  * PT: `SECRET.PRAETOR` (`C→K`)
+  * Key: `1,1;2,2;3,1 → 11F22F31`
+  * Base ct: `.SLXSUMFSTSU6M`
+  * KIC ct:  `.SL@1XSU#1MFS%FTSU_26M-2$F@3#1`
 
-After every 3 carrier symbols, insert marker + next key-char.
+### 28.8 Pack & Seed Interop
 
-If carrier ends with key-chars remaining, append them (marker+char) at the tail.
+* Pack mode (triples) and Seed mode (pairs) serialize and embed via KIC.
+* Seed camouflage: `SEED=<seed>|KEY=<key>` embedded.
+* Sealed: key+seed AEAD-encrypted together.
 
-Decoding:
+### 28.9 Seeded Grids
 
-Scan for markers. Each marker+next char = embedded key.
+* Seed: integer 1..1000.
+* Base symbols: `A B D E F G 0 1 2 3 4 Z H I J K L M 5 6 7 8 9 . N O P Q R S T U V W X Y`
+* Shuffle: Fisher–Yates with PRNG seeded by `HMAC-SHA256("RUNES-SEED-v1", seed)`.
+* Reshape into 6×6 grid.
+* Omit seed → fixed grid. Provide seed → both sides must match.
 
-Remove them, reconstruct key, then decrypt cleaned carrier.
+### 28.10 Safety Banner
 
-Sealed KIC:
+Runes is for lore, puzzles, and light secrecy. For tamper-evident or strong confidentiality, wrap with HMAC or AEAD (e.g., ChaCha20-Poly1305).
 
-Serialize key, AEAD-encrypt with passphrase, embed result via same schedule.
+### 28.11 Self-Test
 
-On decode: extract, AEAD-decrypt, recover movement key.
+`runes.selftest()` (and CLI) validates:
 
-31.7 Golden Test Vectors
-31.7.1 Simple pair
-Plaintext: HELLO.W0RLD
-Key: 1,3 → 13
-Base ct: T8XX1GKN4X7
-KIC ct:  T8X@1X1G#3KN4X7
+* Fixed grid + KIC, simple and multi-pair
+* Seeded grid smoke test
+* Passes if encrypt→decrypt roundtrips correctly
 
-31.7.2 Multi-pair
-Plaintext: SECRET.PRAETOR  (C mapped → K)
-Key: 1,1;2,2;3,1 → 11F22F31
-Base ct: .SLXSUMFSTSU6M
-KIC ct:  .SL@1XSU#1MFS%FTSU_26M-2$F@3#1
+### 28.12 Implementation Constants
 
-31.8 Pack & Seed Interop
+* **Marker cycle:** `@ # % _ - $`
+* **Cadence:** every 3 symbols insert marker+char; append remainder.
+* **Key serialization:** pairs `ds`, joined with `F`.
+* **PRF (seed):** `HMAC-SHA256("RUNES-SEED-v1" || seed)`
+* **PRF (sealed KIC):** `PBKDF2-HMAC-SHA256(passphrase, salt="RUNES-KIC-AEAD", iters=100k)` → 32-byte key
+* **AEAD:** ChaCha20-Poly1305
 
-Pack mode (triples) and Seed mode (pairs) serialize normally and embed via KIC.
+### 28.13 Quick CLI Note
 
-Seed camouflage: SEED=<seed>|KEY=<key> embedded.
-
-Sealed: key+seed AEAD-encrypted together; decrypt requires passphrase only.
-
-31.9 Seeded Grids
-
-Deterministic infinite grids without packs.
-
-Seed: integer 1..1000 (expandable later).
-
-Base symbols:
-A B D E F G 0 1 2 3 4 Z H I J K L M 5 6 7 8 9 . N O P Q R S T U V W X Y
-
-Shuffle: Fisher–Yates with PRNG seeded by:
-HMAC-SHA256("RUNES-SEED-v1", seed_int_be)
-
-Reshape into 6×6 grid.
-
-Rules:
-
-Omit seed → fixed grid (§31.2).
-
-Provide seed → both sides must match.
-
-KIC embeds seed if present (camouflage or sealed).
-
-31.10 Safety Banner
-
-Runes is for lore, puzzles, and light secrecy.
-For tamper-evident or strong confidentiality, wrap with HMAC or AEAD (e.g., ChaCha20-Poly1305).
-
-31.11 Self-Test
-
-runes.selftest() (and CLI: goblin runes.selftest) validates an implementation:
-
-Fixed grid + KIC
-
-Input: HELLO.W0RLD
-
-Key: 1,3 → 13
-
-Output: T8X@1X1G#3KN4X7
-
-Fixed grid + KIC + multi-pair
-
-Input: SECRET.PRAETOR
-
-Key: 1,1;2,2;3,1 → 11F22F31
-
-Output: .SL@1XSU#1MFS%FTSU_26M-2$F@3#1
-
-Seeded grid (smoke)
-
-Seed: 87, Key: 1,3
-
-Input: MEET.AT.DAWN
-
-Verify: decrypt(encrypt(x, key, seed), seed) == x
-
-Self-test passes if all three succeed.
-
-31.12 Implementation Constants
-
-Marker cycle: @ # % _ - $
-
-KIC cadence: after every 3 symbols, insert marker+char; append remainder.
-
-Key serialization: pairs ds; joined with F.
-
-PRF (seed): HMAC-SHA256("RUNES-SEED-v1" || seed_int_be)
-
-PRF (sealed KIC): PBKDF2-HMAC-SHA256(passphrase, salt="RUNES-KIC-AEAD", iters=100k) → 32-byte key
-
-AEAD: ChaCha20-Poly1305 (reference choice).
-
-Quick CLI Note
+```
 goblin runes.encrypt "treasure at oak"
+```
 
+→ quick, reproducible cipher (default key + fixed grid). Add `:: 1,3` for custom key; add `:: 87` for seeded grid.
 
-→ quick, reproducible cipher (default key + fixed grid).
-Add :: 1,3 for custom key; add :: 87 for seeded grid.
+## 29. List Utilities
 
-§32 — List Utilities
-32.0 Overview
+### 29.0 Overview
 
-Goblin lists are ordered, 0-based, and homogenous by convention (mixed types allowed but some ops forbid mixing). Random forms respect the global RNG seed (deterministic when provided).
+Goblin lists are ordered, 0-based sequences. By convention, they are homogenous, though mixed-type lists are permitted (some operations may reject mixed types).
 
-Indexing sugar:
+Randomized verbs use the runtime RNG and respect the global seed for deterministic reproducibility.
 
-at <I> → element at index I (0-based).
+**Indexing sugar:**
 
-first → index 0.
+* `at <I>` → element at index I (0-based)
+* `first` → alias for index 0
+* `last` → alias for the final element
 
-last → final element.
+**Mutability conventions:**
 
-Mutability conventions:
+* **Non-destructive verbs:** `pick`, `shuffle`, `sort`
+* **Destructive verbs:** `reap`, `usurp`, `replace`, `insert`, `add`
 
-Non-destructive: pick, shuffle, sort.
+**Reserved words in this section:**
 
-Destructive: reap, usurp, replace, insert, add.
+* **Hard:** `pick`, `reap`, `usurp`, `len`, `shuffle`, `sort`, `add`, `insert`, `replace`
+* **Soft (contextual only inside list verbs):** `from`, `at`, `first`, `last`, `to`, `into`, `in`, `with`, `dups`
 
-Reserved words in this section:
+---
 
-Hard: pick, reap, usurp, len, shuffle, sort, add, insert, replace.
+### 29.1 pick — non-destructive selection
 
-Soft (only recognized inside list verbs): from, at, first, last, to, into, in, with, dups.
+`pick` is your go-to for sampling from lists without consuming them. Think of it as "looking" at random items in a bag without actually taking them out. Perfect for previewing enemies to fight, checking what loot might drop, or getting random elements while keeping the original list intact.
 
-32.1 pick — non-destructive selection
+The key insight: `pick` never changes your original list. It's read-only randomness.
 
-Return element(s) from a list without modifying it.
+**Forms:**
 
-Forms
+```
+pick <list>                     /// Random single element
+pick <N> from <list>            /// N random elements, no duplicates
+pick <N> dups from <list>       /// N random elements, duplicates allowed
+pick first from <list>          /// First element (deterministic)
+pick last from <list>           /// Last element (deterministic)
+pick at <I> from <list>         /// Element at specific index
+```
 
-pick <list>
-pick <N> from <list>
-pick <N> dups from <list>
-pick first from <list>
-pick last from <list>
-pick at <I> from <list>
+**Returns:**
 
+* Single element for scalar forms (`pick <list>`, `pick first`, etc.)
+* List of length N for `pick <N> ...` forms
 
-Returns
+**When to use `pick`:**
+- Previewing random content without consuming it
+- Selecting enemies for an encounter while keeping the spawn pool intact
+- Rolling random events that can happen multiple times
+- Getting samples for display purposes
 
-Element for single-slot forms.
+**Errors:** `EmptyPickError | PickCountError | PickIndexError | PickTypeError`
 
-List of length N for pick <N> ….
+**Examples:**
 
-Errors
-EmptyPickError | PickCountError | PickIndexError | PickTypeError
+```goblin
+enemies = ["goblin","orc","troll","dragon"]
+say pick enemies                /// "troll" (random, enemies unchanged)
+say pick 2 from enemies         /// ["dragon","goblin"] (2 random, no repeats)
+say pick 3 dups from enemies    /// ["orc","orc","goblin"] (allows repeats)
+say enemies                     /// Still ["goblin","orc","troll","dragon"]
 
-Examples
+/// Perfect for event systems that don't consume events
+random_events = ["ambush","treasure","merchant","trap"]
+next_event = pick random_events /// Preview without removing
+```
 
-names = ["Alice","Bob","Charlie","Dana"]
-say pick names                  /// "Charlie"
-say pick 2 from names           /// ["Dana","Alice"]
-say pick 5 dups from [1,2,3]    /// [2,2,3,1,2]
-say pick first from names       /// "Alice"
-say pick at 2 from names        /// "Charlie"
+---
 
-32.2 reap — destructive selection
+### 29.2 reap — destructive selection
 
-Remove element(s) and return them. Mutates the list.
+`reap` is the opposite of `pick` — it permanently removes and returns elements from your list. Think of it as "harvesting" or "consuming" items. When you reap something, it's gone forever (unless you put it back manually).
 
-Forms
+This is essential for consumable game mechanics: drawing cards, using up inventory items, removing defeated enemies, or any time you need something to be permanently taken out of play.
 
-reap from <list>
-reap <N> from <list>
-reap first|last from <list>
-reap at <I> from <list>
+**Forms:**
 
+```
+reap from <list>                /// Remove and return random element
+reap <N> from <list>            /// Remove and return N random elements
+reap first|last from <list>     /// Remove and return first/last element
+reap at <I> from <list>         /// Remove and return element at index
+```
 
-Errors
-ReapEmptyError | ReapCountError | ReapIndexError | ReapTypeError
+**Returns:**
+* Single element for scalar forms
+* List of N elements for `reap <N> from <list>`
 
-32.3 usurp — destructive replace
+**When to use `reap`:**
+- Drawing cards from a deck (cards leave the deck)
+- Using consumable items from inventory
+- Removing defeated enemies from the battlefield
+- Processing a work queue where items get consumed
+- Any time something should be permanently removed
 
-Replace slot(s) with new values, return (old,new) pairs.
+**Errors:** `ReapEmptyError | ReapCountError | ReapIndexError | ReapTypeError`
 
-Forms
+**Examples:**
 
-usurp at <I> in <list> with <V>
-usurp from <list> with <V>
-usurp <N> from <list> with <Vs>
+```goblin
+deck = ["ace","king","queen","jack","ten"]
+hand = reap 2 from deck
+say hand                        /// ["queen","ace"] (drawn cards)
+say deck                        /// ["king","jack","ten"] (cards gone from deck)
 
+/// Perfect for inventory consumption
+potions = ["health","mana","stamina","poison"]
+used_potion = reap from potions /// Randomly use a potion
+say "Used: " || used_potion     /// "mana"
+say "Remaining: " || potions    /// ["health","stamina","poison"]
 
-Errors
-UsurpIndexError | UsurpEmptyError | UsurpCountError | UsurpArityError | UsurpTypeError
+/// Queue processing
+tasks = ["upload","process","notify"]
+current_task = reap first from tasks /// Take next task
+```
 
-32.4 replace — overwrite at index
+---
 
-Mutates without return.
+### 29.3 usurp — destructive replace
 
-Form
+`usurp` replaces elements in your list and tells you what got replaced. It's perfect for state changes where you need to track what happened — like equipment breaking, items degrading, or status effects changing.
 
+Unlike simple assignment, `usurp` returns a tuple showing you both the old and new values, making it excellent for logging, undo systems, or any time you need to know what changed.
+
+**Forms:**
+
+```
+usurp at <I> in <list> with <V>     /// Replace element at specific index
+usurp from <list> with <V>          /// Replace random element
+usurp <N> from <list> with <Vs>     /// Replace N random elements
+```
+
+**Returns:**
+* `(old_value, new_value)` tuple for single replacements
+* List of `(old, new)` tuples for multiple replacements
+
+**When to use `usurp`:**
+- Equipment durability systems (sword becomes broken_sword)
+- Status effect changes (healthy becomes poisoned)
+- Item upgrades where you need to track what changed
+- Any replacement where you need an audit trail
+
+**Errors:** `UsurpIndexError | UsurpEmptyError | UsurpCountError | UsurpArityError | UsurpTypeError`
+
+**Examples:**
+
+```goblin
+weapons = ["iron_sword","steel_axe","magic_bow"]
+/// Weapon breaks during combat
+(old, new) = usurp at 0 in weapons with "broken_iron_sword"
+say "Your " || old || " became " || new
+/// "Your iron_sword became broken_iron_sword"
+say weapons /// ["broken_iron_sword","steel_axe","magic_bow"]
+
+/// Multiple random degradation
+armor_pieces = ["helm","chest","legs","boots"]
+damaged = ["cracked_helm","torn_chest"]
+changes = usurp 2 from armor_pieces with damaged
+say changes /// [("helm","cracked_helm"), ("legs","torn_chest")]
+```
+
+---
+
+### 29.4 replace — overwrite at index
+
+`replace` is the simple, no-frills way to overwrite a list element. Unlike `usurp`, it doesn't return the old value — it just makes the change and moves on. Use this when you know exactly what index you want to change and you don't care about tracking the old value.
+
+**Form:**
+
+```
 replace at <I> in <list> with <V>
+```
 
+**When to use `replace`:**
+- Simple assignments where you don't need the old value
+- Performance-critical code (slightly faster than `usurp`)
+- Updating known positions in arrays
 
-Errors
-ReplaceIndexError | ReplaceTypeError
+**Errors:** `ReplaceIndexError | ReplaceTypeError`
 
-32.5 add — append / concat
+**Examples:**
 
-Forms
+```goblin
+player_stats = [100, 50, 25]     /// [health, mana, stamina]
+replace at 0 in player_stats with 85
+say player_stats                 /// [85, 50, 25]
 
-add <value> to <list>
-add <list2> to <list1>
+/// Updating game state
+map_tiles = ["grass","water","mountain","forest"]
+replace at 1 in map_tiles with "ice"
+say map_tiles                    /// ["grass","ice","mountain","forest"]
+```
 
+---
 
-Errors
-AddTypeError
+### 29.5 add — append / concat
 
-32.6 insert — insert at index
+`add` puts new elements at the end of your list. You can add single values or merge entire lists together. This is your bread-and-butter operation for building lists incrementally — collecting loot, adding players to a game, or accumulating results.
 
-Form
+**Forms:**
 
+```
+add <value> to <list>           /// Append single value
+add <list2> to <list1>          /// Concatenate list2 onto list1
+```
+
+**When to use `add`:**
+- Collecting items into inventory
+- Building result lists
+- Adding players to a lobby
+- Accumulating any kind of data over time
+
+**Errors:** `AddTypeError`
+
+**Examples:**
+
+```goblin
+loot = ["gold_coin"]
+add "magic_ring" to loot
+say loot                        /// ["gold_coin","magic_ring"]
+
+/// Merging lists
+treasure_chest = ["ruby","emerald"]
+add treasure_chest to loot
+say loot                        /// ["gold_coin","magic_ring","ruby","emerald"]
+
+/// Building results
+high_scores = []
+add 1250 to high_scores
+add 980 to high_scores
+say high_scores                 /// [1250, 980]
+```
+
+---
+
+### 29.6 insert — insert at index
+
+`insert` pushes a new element into your list at a specific position, shifting everything else to the right. This is perfect for maintaining sorted lists, inserting items at priority positions, or any time you need precise control over element placement.
+
+**Form:**
+
+```
 insert <value> at <I> into <list>
+```
 
+**When to use `insert`:**
+- Maintaining sorted or priority-ordered lists
+- Inserting items at the beginning or middle of queues
+- Building lists where position matters
 
-Errors
-InsertIndexError | InsertTypeError
+**Errors:** `InsertIndexError | InsertTypeError`
 
-32.7 len — list length
+**Examples:**
+
+```goblin
+priority_tasks = ["urgent","normal"]
+insert "critical" at 0 into priority_tasks
+say priority_tasks              /// ["critical","urgent","normal"]
+
+/// Building a sorted list manually
+scores = [100, 80, 60]
+insert 90 at 1 into scores
+say scores                      /// [100, 90, 80, 60]
+```
+
+---
+
+### 29.7 len — list length
+
+Returns the number of elements in a list. Simple but essential for bounds checking, loop conditions, and game logic that depends on collection sizes.
+
+```
 len <list> → int
+```
 
-32.8 shuffle — random permutation
+**Examples:**
+
+```goblin
+party = ["warrior","mage","rogue"]
+say len party                   /// 3
+
+if len party < 4
+  say "Party needs more members"
+end
+```
+
+---
+
+### 29.8 shuffle — random permutation
+
+`shuffle` creates a new list with the same elements in random order. The original list stays unchanged. Essential for randomizing turn order, shuffling decks, or creating random arrangements while preserving the original data.
+
+```
 shuffle <list> → new_list
+```
 
+**When to use `shuffle`:**
+- Randomizing turn order in games
+- Shuffling card decks
+- Creating random arrangements for procedural generation
+- Any time you need a random permutation
 
-Errors
-ShuffleTypeError
+**Errors:** `ShuffleTypeError`
 
-32.9 sort — sorted copy
+**Examples:**
+
+```goblin
+original_deck = ["A","K","Q","J","10"]
+shuffled_deck = shuffle original_deck
+say shuffled_deck               /// ["Q","10","A","K","J"] (random order)
+say original_deck               /// ["A","K","Q","J","10"] (unchanged)
+
+/// Initiative order for combat
+party = ["tank","healer","dps1","dps2"]
+turn_order = shuffle party
+say "Combat order: " || turn_order
+```
+
+---
+
+### 29.9 sort — sorted copy
+
+`sort` creates a new list with elements arranged in ascending order. Like `shuffle`, it leaves the original unchanged. Handles numbers, strings, and mixed types with clear rules about what gets sorted how.
+
+```
 sort <list> → new_list
+```
 
+**Rules:**
+* Ascending order, stable sort (equal elements maintain relative order)
+* Numbers: mathematical comparison (1, 2, 10, 20)
+* Strings: lexicographic/alphabetical (apple, banana, cherry)
+* Mixed types: throws error (can't compare apples to oranges)
 
-Errors
-SortTypeError
+**When to use `sort`:**
+- Creating leaderboards
+- Organizing inventory alphabetically
+- Preparing data for display
+- Any time you need ordered results
 
-Rules
+**Errors:** `SortTypeError`
 
-Ascending, stable.
+**Examples:**
 
-Numeric → numeric compare.
+```goblin
+scores = [85, 92, 78, 96, 88]
+leaderboard = sort scores
+say leaderboard                 /// [78, 85, 88, 92, 96]
+say scores                      /// [85, 92, 78, 96, 88] (unchanged)
 
-String → lexicographic.
+names = ["zoe","alice","bob","charlie"]
+alphabetical = sort names
+say alphabetical                /// ["alice","bob","charlie","zoe"]
 
-Mixed → error.
+/// Mixed types fail safely
+mixed = [5, "hello", 3]
+/// sort mixed would throw SortTypeError
+```
 
-32.10 Determinism
+---
 
-Random verbs (pick, reap from … (random), usurp from … (random), shuffle) must use the runtime RNG and honor the global seed.
+### 29.10 Determinism
 
-32.11 Range Integration
+All random verbs (`pick`, `reap` random, `usurp` random, `shuffle`) use the runtime RNG and honor the global seed.
 
-Ranges (A..B) are list literals. All list verbs apply directly to ranges.
+This means if you run your program with `--seed 42`, all random list operations will produce identical results every time. Perfect for debugging, testing, and creating reproducible gameplay experiences.
 
-Examples
+**Examples:**
 
-say pick 1..100
-say pick 5 from 1..100
-say pick 5 dups from 1..100
-say reap from 10..20
-say len 50..75
-say shuffle 1..6
+```goblin
+/// With --seed 1337, these always produce the same results
+enemies = ["goblin","orc","troll"]
+say pick enemies                /// Always the same enemy with same seed
+say shuffle enemies             /// Always the same shuffle pattern
+```
 
+---
 
-Notes
+### 29.11 Range Integration
 
-Ranges immutable; destructive verbs materialize mutable copy.
+Ranges (A..B) are treated as list literals. All list verbs apply directly to ranges, making them incredibly useful for working with number sequences.
 
-len returns B − A + 1.
+**Examples:**
 
-32.12 Functional Aliases
+```goblin
+say pick 1..100                 /// Random number from 1 to 100
+say pick 5 from 1..20           /// 5 random numbers, no duplicates
+say len 10..50                  /// 41 (50-10+1)
+say shuffle 1..6                /// Shuffled dice roll outcomes
 
-Readable sugar ≡ call form.
+/// Ranges are immutable, so destructive verbs copy first
+numbers = 1..10
+subset = reap 3 from numbers    /// Creates mutable copy, then reaps
+```
 
-Examples
+**Notes:**
+* Ranges are immutable; destructive verbs automatically copy to a mutable list
+* `len` returns B − A + 1 for ranges
 
+---
+
+### 29.12 Functional Aliases
+
+Every readable sugar form has an equivalent functional syntax. Use whichever style fits your codebase better.
+
+**Examples:**
+
+```
 pick names                ≡ pick(names)
 pick 2 from names         ≡ pick_n(names, 2)
 pick 5 dups from xs       ≡ pick_n_dups(xs, 5)
@@ -4081,197 +3989,489 @@ shuffle xs                ≡ shuffle_copy(xs)
 sort xs                   ≡ sort_copy(xs)
 len xs                    ≡ length(xs)
 len 1..100                ≡ length_range(1,100)
+```
 
-32.13 Mini Game Recipes
-1. Randomly kill 3 enemies (distinct, removed from play)
+---
+
+### 29.13 Mini Game Recipes
+
+Real-world patterns for common game programming scenarios. These examples show the verbs in action solving actual game development problems.
+
+**1. Combat: Remove defeated enemies**
+
+```goblin
 enemies = ["goblin","orc","slime","bat","skeleton","bandit"]
 
+/// Kill 3 enemies randomly (they're removed from battle)
 killed = reap 3 from enemies
-say "💀 Killed: " || killed
-say "👣 Remaining: " || enemies
+say "Defeated: " || killed      /// ["bat","goblin","slime"]
+say "Still fighting: " || enemies /// ["orc","skeleton","bandit"]
+```
 
-2. Draw cards vs burn random cards
-deck = ["A♠","K♠","Q♠","J♠","10♠"]
+**2. Card game: Drawing vs burning cards**
 
+```goblin
+deck = ["AS","KS","QS","JS","10S"]
+
+/// Deal 2 cards to hand (cards leave deck)
 hand = [reap first from deck, reap first from deck]
-say "✋ Hand: " || hand
-say "📦 Deck: " || deck
+say "Hand: " || hand            /// ["AS","KS"]
+say "Deck: " || deck            /// ["QS","JS","10S"]
 
+/// Burn 2 random cards (lost forever)
 burned = reap 2 from deck
-say "🔥 Burned: " || burned
-say "📦 Deck now: " || deck
+say "Burned: " || burned        /// ["10S","QS"]
+say "Deck now: " || deck        /// ["JS"]
+```
 
-3. Randomly damage N items in inventory
+**3. Equipment durability: Items break during use**
+
+```goblin
 inventory = ["Sword","Shield","Bow","Helmet","Boots"]
-replacements = ["Sword (Damaged)","Shield (Cracked)"]
+damaged_versions = ["Cracked_Sword","Dented_Shield"]
 
-pairs = usurp 2 from inventory with replacements
-say pairs
-say "🎒 Inventory: " || inventory
+/// 2 random items take damage
+damage_results = usurp 2 from inventory with damaged_versions
+say damage_results              /// [("Sword","Cracked_Sword"), ("Shield","Dented_Shield")]
+say "Inventory: " || inventory  /// ["Cracked_Sword","Dented_Shield","Bow","Helmet","Boots"]
+```
 
-4. Random loot without repeats
+**4. Loot system: Items are consumed when taken**
+
+```goblin
 loot_table = ["gold","gem","potion","map","ring"]
+
+/// Take random loot (removed from table so it can't drop again)
 drop = reap from loot_table
-say "🎁 Drop: " || drop
-say "📜 Loot left: " || loot_table
+say "Found: " || drop           /// "gem"
+say "Remaining loot: " || loot_table /// ["gold","potion","map","ring"]
+```
 
-5. Gacha pulls (allow duplicates)
-pool = ["common","common","common","rare","rare","epic"]
+**5. Gacha/lottery: Pulls with replacement**
 
-pulls = pick 10 dups from pool
-say "🧪 Pulls: " || pulls
-say "Pool unchanged: " || pool
+```goblin
+gacha_pool = ["common","common","common","rare","rare","epic"]
 
-6. Random party order (initiative)
-party = ["Lamar","Tanisha","Marcus","Ingrid"]
-initiative = shuffle party
-say "🎲 Initiative: " || initiative
+/// 10 pulls with duplicates allowed (pool unchanged)
+pulls = pick 10 dups from gacha_pool
+say "Pulled: " || pulls         /// ["common","rare","common","common","epic","rare","common","common","rare","common"]
+say "Pool unchanged: " || gacha_pool /// ["common","common","common","rare","rare","epic"]
+```
 
-7. Trap: remove 1 random item
-bag = ["Key","Rope","Torch","Pickaxe"]
-lost = reap from bag
-say "🕳️ Lost to trap: " || lost
-say "🎒 Bag now: " || bag
+**6. Turn-based games: Random initiative order**
 
-8. Weapon break (swap-in broken variant)
-weapons = ["Dagger","Axe","Spear"]
-(old, new) = usurp at 1 in weapons with "Axe (Broken)"
-say "💥 " || old || " → " || new
-say weapons
+```goblin
+party = ["Warrior","Mage","Rogue","Cleric"]
+initiative_order = shuffle party
+say "Turn order: " || initiative_order /// ["Rogue","Cleric","Warrior","Mage"]
+```
 
-9. Event preview vs trigger
-events = ["Ambush","Treasure","Merchant","Rest"]
+**7. Traps: Random item loss**
 
-say "Peek: " || pick events
-say "Trigger: " || reap from events
-say "Queue left: " || events
+```goblin
+backpack = ["Rope","Torch","Pickaxe","Rations"]
 
-10. “Cull the horde” with cap
-horde = ["A","B","C"]
-n = 5
-if n > len horde
-  n = len horde
+/// Trap destroys random item
+lost_item = reap from backpack
+say "Lost to trap: " || lost_item /// "Torch"
+say "Remaining gear: " || backpack /// ["Rope","Pickaxe","Rations"]
+```
+
+**8. Weapon degradation: Track what broke**
+
+```goblin
+equipped_weapons = ["Iron_Dagger","Steel_Axe","Magic_Bow"]
+
+/// One weapon breaks in combat
+(broken_weapon, replacement) = usurp at 1 in equipped_weapons with "Broken_Steel_Axe"
+say broken_weapon || " broke and became " || replacement
+/// "Steel_Axe broke and became Broken_Steel_Axe"
+say equipped_weapons /// ["Iron_Dagger","Broken_Steel_Axe","Magic_Bow"]
+```
+
+**9. Event systems: Preview vs consume**
+
+```goblin
+event_queue = ["Ambush","Treasure","Merchant","Rest"]
+
+/// Preview next event without consuming it
+preview = pick event_queue
+say "Next event might be: " || preview /// "Merchant"
+
+/// Actually trigger an event (removes it from queue)
+triggered = reap from event_queue
+say "Event triggered: " || triggered /// "Treasure"
+say "Remaining events: " || event_queue /// ["Ambush","Merchant","Rest"]
+```
+
+**10. Enemy spawning: Capped removal**
+
+```goblin
+enemy_horde = ["zombie","zombie","zombie"]
+max_spawn = 5
+
+/// Safely spawn up to max_spawn enemies
+spawn_count = max_spawn
+if spawn_count > len enemy_horde
+  spawn_count = len enemy_horde
 end
-culled = reap n from horde
-say culled, horde
+spawned = reap spawn_count from enemy_horde
+say "Spawned: " || spawned      /// ["zombie","zombie","zombie"]
+say "Horde remaining: " || enemy_horde /// []
+```
 
+**Design patterns:**
+* `reap` for permanent consumption (cards drawn, items used, enemies defeated)
+* `pick` for sampling without consumption (previews, random selection pools)
+* `usurp` for state changes with audit trails (equipment breaking, status effects)
+* Random operations respect `--seed` for reproducible gameplay and debugging
 
-Notes
+# 30. Divmod
 
-reap = destructive grab, great for consumable effects.
+## 30.0 Overview
 
-pick = non-destructive peek/preview.
+Divmod gives you both the quotient and remainder from division in a single operation. Instead of doing division and then modulo separately, you get both results at once. What makes Goblin's divmod special is that it has its own readable output format that makes division results crystal clear.
 
-usurp = destructive swap-in.
+This is incredibly useful for splitting quantities evenly with leftovers — like dividing loot among party members, calculating how many full stacks of items you have plus extras, or figuring out time conversions.
 
-Random ops always honor the global seed (--seed 1337 reproducible).
+**Two ways to use it:**
+* **Operator:** `>>` — returns a pair but **prints in Goblin form** (`quotient r remainder`)
+* **Function alias:** `div_rem(a, b)` — returns a regular tuple `(quotient, remainder)`
 
-§33 — Divmod
-33.0 Overview
+The key difference: when you print or display the `>>` result, Goblin shows it in human-readable "quotient r remainder" format, making it perfect for user-facing output.
 
-Goblin provides a first-class division-with-remainder:
+```goblin
+say 47 >> 4         /// Prints: "11 r 3" (11 with remainder 3)
+q, r = 47 >> 4      /// q=11, r=3 (still destructures normally)
 
-Operator: >> — returns quotient and remainder together.
+/// Compare with function form
+result = div_rem(47, 4)  /// Returns tuple (11, 3)
+say result              /// Prints: "(11, 3)" (regular tuple format)
+```
 
-Function (alias): div_rem(a, b) — identical semantics (optional alias).
+This makes divmod results incredibly readable in game output:
 
-Both forms produce a structured pair (q, r) and support destructuring, as used elsewhere in the spec (e.g., q, r = price >> 3). 
+```goblin
+treasure = 157
+party_size = 4
+say "Treasure split: " || treasure >> party_size
+/// Prints: "Treasure split: 39 r 1" 
+/// (39 gold each, 1 leftover)
+```
 
-33.1 Typing
+## 30.1 What Types Work
 
-Defined for integers and fixed-scale numeric types (e.g., money/decimal with integral storage).
+Divmod works with integers and fixed-scale numbers like money or decimals that have integral storage. Both the operator and function have identical type requirements — the only difference is how they display results.
 
-Conceptual signature
+**Conceptual signatures:**
 
-div_rem : (IntLike a) => (a, a) -> (a, a)   -- optional alias
-(>>)     : (IntLike a) => (a, a) -> (a, a)
+```
+div_rem : (IntLike a) => (a, a) -> (a, a)   /// Returns tuple (q, r)
+(>>)     : (IntLike a) => (a, a) -> (a, a)   /// Returns pair, prints as "q r r"
+```
 
+**IntLike includes:**
+- Regular integers (1, 42, -17)
+- Fixed-scale numbers like money ($10.50) where the scale matches
+- Decimal types with integral storage
 
-IntLike includes built-in integers and fixed-scale numerics (money/decimal) where the scale matches (see Errors).
+Both forms return the same mathematical result, but `>>` has special display formatting while `div_rem` returns a standard tuple.
 
-Result is a pair (q, r) of the same numeric kind.
+```goblin
+/// Integer divmod
+items = 23
+stack_size = 8
+say items >> stack_size        /// Prints: "2 r 7" (2 full stacks, 7 extras)
+stacks, extras = items >> stack_size  /// stacks=2, extras=7
 
-33.2 Semantics
+/// Money divmod with readable output
+bill = $47.50
+people = 3
+say bill >> people            /// Prints: "$15.83 r $0.01"
+per_person, leftover = bill >> people /// ($15.83, $0.01)
+```
 
-Goblin uses floor division semantics (as shown in §2.2 examples). 
+## 30.2 How It Works (Floor Division Semantics)
 
-For a, b with b ≠ 0:
+Goblin uses **floor division** for divmod, which means the quotient is always rounded down to the nearest integer. This keeps behavior consistent and predictable, especially with negative numbers.
 
-q = floor(a / b)
+For any `a >> b` where `b ≠ 0`:
 
-r = a − q*b
+```
+quotient = floor(a / b)
+remainder = a − quotient * b
+```
 
-Remainder r has the sign of the divisor b.
+**Key properties:**
+* **Remainder sign:** The remainder always has the same sign as the divisor (or is zero)
+* **Reconstruction:** You can always rebuild the original: `a = quotient * b + remainder`
+* **Bounded remainder:** The remainder is always smaller than the divisor: `|remainder| < |divisor|`
 
-Invariants
+The "quotient r remainder" format makes these relationships crystal clear in output:
 
-a = q*b + r
+```goblin
+say -17 >> 5   /// Prints: "-4 r 3" 
+/// Meaning: -17 = (-4) * 5 + 3 = -20 + 3 = -17 ✓
 
-0 ≤ |r| < |b|
+say 17 >> -5   /// Prints: "-4 r -3"
+/// Meaning: 17 = (-4) * (-5) + (-3) = 20 + (-3) = 17 ✓
+```
 
-33.3 Grammar & Precedence
+## 30.3 Syntax and Precedence
 
->> is left-associative and sits in the multiplicative tier with * / % (already specified in §2.1/§2.2). 
+The `>>` operator fits right into Goblin's arithmetic alongside multiplication and division. It's left-associative and has the same precedence as `*`, `/`, and `%`.
 
-(No new grammar beyond what §2 provides; this section consolidates semantics and typing.)
+```goblin
+/// These expressions group the same way
+a * b >> c    /// Same as (a * b) >> c
+a >> b >> c   /// Same as (a >> b) >> c
 
-33.4 Destructuring & Access
+/// Precedence with addition/subtraction  
+a + b >> c    /// Same as a + (b >> c)
+```
 
-Tuple destructuring is supported:
+## 30.4 Using the Results
 
-q, r = 17 >> 5      /// q=3, r=2
-q2, r2 = div_rem(17, 5)  /// same result (if alias is enabled)
+Divmod results work the same way for both operator and function forms when you destructure them, but they display differently when printed:
 
+**Destructuring (identical for both forms):**
+```goblin
+quotient, remainder = 17 >> 5               /// q=3, r=2
+q2, r2 = div_rem(17, 5)                    /// q=3, r=2 (same values)
 
-You can pass the pair through APIs or extract components via pattern matching, as shown in money examples. 
+gold_each, leftover = total_gold >> players
+hours, minutes = total_minutes >> 60
+```
 
-33.5 Money / Fixed-Scale Notes
+**Display differences:**
+```goblin
+/// Operator form: prints in readable "q r r" format
+say 17 >> 5                    /// Prints: "3 r 2"
+say total_gold >> players      /// Prints: "25 r 3" 
 
-Divmod works for money when the scale is compatible with the divisor (your money rules show price // 3 and price >> 3; / on money is an error). 
+/// Function form: prints as regular tuple
+say div_rem(17, 5)            /// Prints: "(3, 2)"
+say div_rem(total_gold, players) /// Prints: "(25, 3)"
+```
 
-For incompatible scales, emit a typed error (see Errors).
+**Direct access (works for both):**
+```goblin
+result = 17 >> 5
+say "Quotient: " || result.0   /// 3
+say "Remainder: " || result.1  /// 2
 
-33.6 Errors
+func_result = div_rem(17, 5)
+say "Quotient: " || func_result.0  /// 3 (same data)
+```
 
-DivisionByZero — divisor is zero.
+**When to use which:**
+- Use `>>` for user-facing output where readability matters
+- Use `div_rem()` for internal calculations or APIs that expect tuples
 
-ScaleMismatch — fixed-scale types with incompatible scale/base.
+## 30.5 Money and Fixed-Scale Numbers
 
-MoneyDivisionError — / used with money (already defined in §10.7). 
+Divmod works great with money, and the `>>` operator's readable format is especially nice for financial calculations. Regular division (`/`) is forbidden with money to prevent precision loss, but divmod (`>>`) and floor division (`//`) are both allowed.
 
-(Overflow follows your global integer policy.)
+```goblin
+restaurant_bill = $47.85
+people = 3
 
-33.7 Examples (canonical)
+/// Floor division gives you just the quotient
+per_person = restaurant_bill // people     /// $15.95
 
-Numbers (consistent with §2.2):
+/// Divmod gives you both parts with readable output
+say restaurant_bill >> people              /// Prints: "$15.95 r $0.00"
+per_person, leftover = restaurant_bill >> people  /// ($15.95, $0.00)
 
-10.75 / 3  → 3.5833333333
-10.75 // 3 → 3
-10.75 >> 3 → (3, 1.75)
--7 // 3    → -3
--7 >> 3    → (-3, 2)
+/// Regular division is FORBIDDEN
+/// per_person = restaurant_bill / people  /// MoneyDivisionError!
+```
 
+The readable format makes financial splits crystal clear:
 
-Money (consistent with §10.7, §17 Examples):
+```goblin
+group_bill = $127.50
+diners = 4
+say "Bill split: " || group_bill >> diners
+/// Prints: "Bill split: $31.87 r $0.02"
+/// Immediately clear: $31.87 each, 2 cents leftover
+```
 
-price = $10.75
-q = price // 3      /// USD 3.00
-q, r = price >> 3   /// (USD 3.00, USD 1.75)
-price / 3           /// MoneyDivisionError
+**Scale compatibility rules:**
+* Both numbers must have compatible scales (same currency, same decimal places)
+* You can't mix different money types or mix money with plain integers
+* The result maintains the same scale as the inputs
+* The readable format preserves currency symbols and formatting
 
+```goblin
+/// Valid - same currency
+usd_bill = $50.00
+say usd_bill >> 3             /// Prints: "$16.66 r $0.02"
 
-33.8 Conformance (sketch)
+/// Invalid - mixed currencies would throw ScaleMismatch
+/// eur_bill = €40.00
+/// mixed_result = usd_bill >> eur_bill  /// Error!
+```
 
-Identity: a == (a >> b).0 * b + (a >> b).1 and abs(r) < abs(b)
+## 30.6 Error Conditions
 
-Sign law: sign(r) == sign(b) or r == 0
+Divmod can fail in several specific ways, each with clear error types:
 
-Equivalence: div_rem(a,b) (if present) equals a >> b
+**DivisionByZero** — You tried to divide by zero:
+```goblin
+say 10 >> 0                    /// DivisionByZero error
+```
 
-Negatives: confirm the four (-/+) examples above
+**ScaleMismatch** — Fixed-scale types don't match:
+```goblin
+usd_amount = $50.00
+eur_amount = €30.00
+/// result = usd_amount >> eur_amount     /// ScaleMismatch error
+```
 
-Money: valid when scale compatible; / → MoneyDivisionError
+**MoneyDivisionError** — Using regular division instead of divmod:
+```goblin
+price = $100.00
+/// result = price / 3                    /// MoneyDivisionError
+/// Use price >> 3 or price // 3 instead
+```
 
+**Overflow** — Result too large for the number type:
+```goblin
+/// Follows global integer policy for handling overflow
+```
+
+## 30.7 Real-World Examples
+
+The readable output format makes divmod perfect for user-facing game messages and financial displays:
+
+**Splitting loot among party members:**
+```goblin
+treasure = 1247
+party_size = 4
+
+say "Loot distribution: " || treasure >> party_size
+/// Prints: "Loot distribution: 311 r 3"
+/// Clear message: 311 gold each, 3 goes to guild bank
+
+gold_each, bank_leftover = treasure >> party_size
+```
+
+**Converting time units:**
+```goblin
+total_seconds = 7265
+
+say "Duration breakdown:"
+minutes_result = total_seconds >> 60
+say "Minutes: " || minutes_result          /// Prints: "Minutes: 121 r 5"
+
+hours_result = 121 >> 60  
+say "Hours: " || hours_result              /// Prints: "Hours: 2 r 1"
+
+/// Final: 2 hours, 1 minute, 5 seconds
+```
+
+**Inventory management with clear stacking info:**
+```goblin
+loose_arrows = 87
+arrows_per_quiver = 30
+
+say "Arrow organization: " || loose_arrows >> arrows_per_quiver
+/// Prints: "Arrow organization: 2 r 27"
+/// Clear: 2 full quivers, 27 loose arrows
+
+full_quivers, loose_count = loose_arrows >> arrows_per_quiver
+```
+
+**Restaurant bill splitting with precise financial display:**
+```goblin
+bill = $67.84
+people = 4
+
+say "Bill split: " || bill >> people
+/// Prints: "Bill split: $16.96 r $0.00"
+/// Perfect: exactly $16.96 each, no leftover
+
+/// Compare with messier division
+say "Each pays: " || bill // people       /// Just: "$16.96"
+/// Missing info: is there leftover? How much?
+```
+
+**Pagination with clear page info:**
+```goblin
+total_items = 147
+items_per_page = 10
+
+say "Pagination: " || total_items >> items_per_page
+/// Prints: "Pagination: 14 r 7"
+/// Clear: 14 full pages, 7 items on final page
+
+pages, items_on_last = total_items >> items_per_page
+total_pages = if items_on_last > 0 then pages + 1 else pages end
+```
+
+**Resource allocation in games:**
+```goblin
+wood_collected = 156
+wood_per_building = 25
+
+say "Building capacity: " || wood_collected >> wood_per_building
+/// Prints: "Building capacity: 6 r 6"
+/// Clear: can build 6 buildings, 6 wood leftover
+
+buildings_possible, wood_remaining = wood_collected >> wood_per_building
+```
+
+**Damage distribution:**
+```goblin
+total_damage = 73
+armor_reduction = 8
+
+say "Damage calculation: " || total_damage >> armor_reduction
+/// Prints: "Damage calculation: 9 r 1"
+/// 9 full points of damage get through, 1 point absorbed
+
+effective_damage, absorbed = total_damage >> armor_reduction
+```
+
+## 30.8 Mathematical Properties and Output Format
+
+Divmod follows strict mathematical rules, and the readable output format helps verify these properties:
+
+**Reconstruction property:**
+```goblin
+/// You can always rebuild the original number
+a = 47
+b = 5
+say a >> b                     /// Prints: "9 r 2"
+/// Verify: 9 * 5 + 2 = 45 + 2 = 47 ✓
+```
+
+**Remainder bounds (visible in output):**
+```goblin
+/// Remainder is always smaller than the divisor
+say 47 >> 5                   /// "9 r 2" - remainder 2 < divisor 5 ✓
+say 23 >> 7                   /// "3 r 2" - remainder 2 < divisor 7 ✓
+```
+
+**Sign consistency (clear in readable format):**
+```goblin
+say 17 >> 5                   /// "3 r 2"   - positive remainder, positive divisor
+say 17 >> -5                  /// "-4 r -3" - negative remainder, negative divisor  
+say -17 >> 5                  /// "-4 r 3"  - positive remainder, positive divisor
+say -17 >> -5                 /// "3 r -2"  - negative remainder, negative divisor
+```
+
+**Function equivalence:**
+```goblin
+/// Both forms give same mathematical result
+a, b = 23, 7
+op_result = a >> b            /// Prints as "3 r 2"
+func_result = div_rem(a, b)   /// Returns (3, 2)
+/// Same values, different display formats
+```
+
+The readable "quotient r remainder" format makes it easy to verify these mathematical properties and creates clear, unambiguous output for users. This is especially valuable in games where players need to understand resource distribution, damage calculations, or any situation where showing both the main result and the leftover matters.
 §34 — Pipelines, Optional Chaining, and Error Blocks
 34.0 Overview
 
