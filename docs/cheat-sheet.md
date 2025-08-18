@@ -218,6 +218,9 @@ assert cond, "msg"
 warn "message"
 ```
 
+Grumble mode (goblin-flavored error text): OFF by default. Enable via config:
+goblin.config.yaml → errors: { grumble: true }   /// otherwise errors are plain/neutral
+
 ### Functions
 
 #### Definition
@@ -530,6 +533,16 @@ end
 /// Transform object temporarily using another class's method
 result = morph(book, Card, apply_discount(10%))
 /// book keeps its type, but discount method from Card is applied
+
+/// Rules (quick):
+/// - Call shape: result = morph(obj, TargetType, one_method_call)
+/// - One-method rule: exactly one public instance method on TargetType
+/// - Accessors: only public getters/setters are synced:
+///     x()/set_x(v), is_x()/set_x(v) for booleans
+///   A field syncs only if BOTH types expose matching accessors
+/// - Type safety: no implicit coercions; money requires same currency
+/// - Determinism: morph itself is pure aside from field writes; target method obeys sandbox
+/// - Errors: MorphTypeError, MorphFieldError, MorphCurrencyError, MorphActionError
 ```
 
 #### Gmarks (Stable References)
@@ -541,6 +554,24 @@ pin_ref = gmark("post/welcome", ord: 1)   /// manual position
 /// Query
 gmarks()                    /// all gmarks, sorted by ord
 gmark_info("post/welcome")  /// details for specific gmark
+
+/// More helpers
+next_ord()                   /// peek next auto ord (no allocation)
+gmarks_filter("post/")       /// only gmarks with that prefix, ord-sorted
+gmark_set_ord("post/x", 200) /// move a mark to an unused ord (error if taken)
+
+/// Deterministic builds
+/// - Writes to gmark registry are blocked under --deterministic
+/// - Allow explicitly in config:
+///   goblin.config.yaml:
+///     glam:
+///       allow_state_writes: ["gmark"]
+
+/// CLI maintenance
+# compact ords to 1..N (stable order preserved)
+goblin gmark rebalance
+
+See also: CLI `goblin gmark rebalance` to compact ords to 1..N after migrations.
 ```
 
 #### Policies (Project Configuration)
@@ -557,8 +588,26 @@ set @policy site_default
 
 #### Banish (Feature Blocking)
 ```goblin
-/// Block language features project-wide via .goblin.banish.toml
-/// Usage of banished features → BanishError at compile time
+/// Project-local feature blocker via .goblin.banish.toml
+/// Usage of a banished feature → BanishError at compile time
+
+# Feature IDs (namespaces)
+# core.<keyword>, op.<operator>, type.<type>, builtin.<function>, glam.<ns>.<symbol>
+
+# Config (.goblin.banish.toml)
+# [[banish]]
+# feature = "core.morph"
+# reason  = "Temporary safety"
+
+# CLI
+# goblin banish <feature_id> --reason "<text>"
+# goblin unbanish <feature_id>
+# goblin banish --list
+
+# Banner (when any bans exist)
+# ⚠ This project has N banished features (run `goblin banish --list`).
+
+# Non-banishable invariants (self-protection): sandbox/determinism, money safety, lockfile integrity
 ```
 
 ### Collections & Utilities
@@ -668,7 +717,10 @@ EnumError, GlamError, ContractError, PermissionError, AmbiguityError,
 LockfileError, DeterminismError, MorphTypeError, MorphFieldError, 
 ModuleNotFoundError, PolicyNotFoundError, BanishError, DatetimeCompatWarning,
 GLAM_NO_PROVIDER, GLAM_FANOUT_UNSUPPORTED, GLAM_PARTIAL_FAILURE,
-GLAM_DEST_INVALID, GLAM_TIMEOUT, GLAM_OVERWRITE_DENIED, GLAM_AMBIGUOUS_PROVIDER
+GLAM_DEST_INVALID, GLAM_TIMEOUT, GLAM_OVERWRITE_DENIED, GLAM_AMBIGUOUS_PROVIDER,
+GmarkConflictError, GmarkNotFoundError, GmarkInvalidError, GmarkPersistenceError,
+MorphCurrencyError, MorphActionError,
+DeleteThresholdExceeded
 ```
 
 ### List Operation Errors
