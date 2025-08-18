@@ -4502,333 +4502,1103 @@ Optional chaining (?.) — safe navigation for null/undefined.
 
 Structured error handling (attempt / rescue / ensure) — block form exception handling.
 
-34.1 Pipeline Operator (|>)
+# 31. Pipelines, Optional Chaining, and Error Handling
 
-Meaning:
-a |> f(x) desugars to f(a, x).
+## 31.1 Pipeline Operator (`|>`)
 
-Associativity:
-Left-to-right.
+The pipeline operator `|>` lets you chain function calls in a way that reads like a data transformation recipe. Instead of nested function calls that read inside-out, pipelines read left-to-right like you're following data through a processing pipeline.
 
-a |> f() |> g(y)      # g(f(a), y)
+**The core magic:**
 
+```goblin
+player_data |> parse_json() |> validate_stats() |> save_to_db()
+/// Much clearer than: save_to_db(validate_stats(parse_json(player_data)))
+```
 
-Precedence:
+**How it works:**
+```goblin
+a |> f(x)   /// Becomes: f(a, x) - 'a' gets passed as first argument
+```
 
-Binds looser than arithmetic (+, *)
+This means the value on the left becomes the first parameter to the function on the right. Perfect for data processing chains where each step transforms the previous result.
 
-Binds tighter than string joins (| then ||), comparisons, and logical operators
+**Chaining multiple operations:**
+```goblin
+player_score 
+  |> apply_bonus(multiplier: 2.0)     /// apply_bonus(player_score, multiplier: 2.0)
+  |> clamp_to_max(10000)              /// clamp_to_max(result_from_above, 10000)
+  |> format_display()                 /// format_display(final_clamped_score)
+```
 
-Binds looser than function call, member access, indexing, and optional chaining (?.)
+**Associativity:** Left-to-right, so:
+```goblin
+a |> f() |> g(y)   /// Same as: g(f(a), y)
+```
 
-Arity rule:
-The RHS must accept the piped value as its first argument. If not → ArityMismatch.
+### Precedence Rules
 
-Lambda escape hatch:
+Pipeline binds with specific precedence to avoid surprises:
 
-val |> (s -> between(lower: 0, upper: s, value: val2))
+```goblin
+/// Arithmetic happens first, then pipeline
+score + bonus |> format()        /// Same as: format(score + bonus)
 
+/// Pipeline happens before string operations  
+result |> process() || " points"  /// Same as: process(result) || " points"
 
-Null handling:
-Pipelines do not short-circuit; they pass null downstream. Combine with ?? or ?. if needed.
+/// Function calls and property access happen before pipeline
+obj.method() |> transform()       /// Same as: transform(obj.method())
+data?.value |> validate()         /// Same as: validate(data?.value)
+```
 
-34.2 Optional Chaining (?.)
+### Function Signature Requirements
 
-Meaning:
-Safely access a property or call a method; if the left-hand side is null or undefined, evaluation short-circuits to null.
+The function on the right side must accept the piped value as its **first argument**. If it can't, you get an `ArityMismatch` error:
 
-a?.b          # null if a is null/undefined
-a?.b()?.c     # null if a is null, or if b() is null
+```goblin
+/// This works - process() can take player_data as first arg
+player_data |> process(options: fast_mode)
 
+/// This fails - Math.sqrt() expects a number as first arg, not player_data
+player_data |> Math.sqrt()   /// ArityMismatch error
+```
 
-Scope of short-circuit:
+### Lambda Escape Hatch
 
-obj?.prop → skip property read if obj is null/undefined.
+When you need to pipe into a function that doesn't take your value as the first parameter, use a lambda to rearrange things:
 
-obj?.method(args) → skip the entire call if obj is null/undefined (arguments not evaluated in that context).
+```goblin
+damage_amount |> (dmg -> apply_damage(target: enemy, amount: dmg, type: fire))
+/// The lambda lets you put 'dmg' wherever it needs to go
 
-Chains short-circuit at the first null.
+temperature |> (temp -> clamp(min: 0, max: 100, value: temp))
+/// Rearrange parameters to fit the function signature
+```
 
-Errors:
+### Null Handling
 
-Does not swallow exceptions: if the access/call is performed and throws, the error propagates normally.
+**Important:** Pipelines don't automatically handle nulls - they pass them right through:
 
-Applies equally to both null and undefined.
+```goblin
+null |> process() |> format()   /// process(null) gets called, might crash!
 
-34.3 attempt / rescue / ensure
+/// If you need null safety, combine with other operators:
+player?.inventory |> sort_items() |> display()   /// Safe: stops at null
+result |> process() ?? "default"                  /// Safe: fallback for null results
+```
 
-Form:
+### Real-World Pipeline Examples
 
-result =
-  attempt
-      risky()
-      "ok"
-  rescue Timeout as e
-      backoff(); "retrying"
-  ensure
-      close_handles()
-  end
+**Game data processing:**
+```goblin
+raw_save_data
+  |> decompress()
+  |> parse_save_format()  
+  |> validate_player_data()
+  |> migrate_to_current_version()
+  |> load_into_game()
+```
 
+**Damage calculation pipeline:**
+```goblin
+base_damage
+  |> apply_weapon_mods()
+  |> apply_character_stats() 
+  |> apply_enemy_resistances()
+  |> apply_critical_hit()
+  |> display_damage_number()
+```
 
-Semantics:
+**User input processing:**
+```goblin
+user_input
+  |> trim_whitespace()
+  |> validate_command()
+  |> parse_arguments() 
+  |> execute_command()
+  |> format_response()
+```
 
-Run the attempt block.
+---
 
-If it throws, match the first rescue arm by error type.
+## 31.2 Optional Chaining (`?.`)
 
-ensure always runs, regardless of success/failure.
+Optional chaining is your safety net for navigating potentially null or undefined data. Instead of writing defensive null checks everywhere, `?.` lets you safely drill into object properties and call methods, automatically stopping if anything along the way is null.
 
-If no rescue matches, the error propagates after ensure.
+**The basic idea:**
+```goblin
+player?.inventory?.weapons?.primary?.damage
+/// Instead of: if player && player.inventory && player.inventory.weapons && ...
+```
 
-Return value = last expression of whichever branch executes.
+**How it works:**
+- If the left side is `null` or `undefined`, the whole expression becomes `null`
+- If the left side has a value, access proceeds normally
+- Chains short-circuit at the first null, so no further evaluation happens
 
-Features:
+**Safe property access:**
+```goblin
+user?.profile?.avatar?.url     /// null if user, profile, or avatar is null
+config?.graphics?.resolution   /// null if config or graphics is null
+```
 
-Multiple rescue clauses allowed; first match wins.
+**Safe method calls:**
+```goblin
+player?.save()                /// Only calls save() if player exists
+enemy?.take_damage(50)        /// Only calls method if enemy exists
+connection?.close()?.then()   /// Chains safely through multiple calls
+```
 
-Bare raise rethrows the current error with its original stack.
+**Short-circuit behavior:**
+```goblin
+/// If 'obj' is null, expensive_calculation() never runs
+result = obj?.method(expensive_calculation())
 
-No implicit propagation sugar (no Rust-style ?). Explicitly omit rescue or use raise.
+/// Compare to unsafe version:
+/// result = obj.method(expensive_calculation())  /// Crashes if obj is null!
+```
 
-34.4 Interactions & Gotchas
+**Error handling:**
+Optional chaining only handles `null` and `undefined` - if the property access or method call actually runs and throws an error, that error still propagates:
 
-Pipelines + Optional Chaining
+```goblin
+player?.inventory?.break_item()   /// If break_item() throws ItemNotFound, you still get that error
+```
 
+### Combining with Pipelines
+
+Optional chaining works great with pipelines for safe data processing:
+
+```goblin
 user
-  |> fetch_profile()
-  |> (_.address?.city)
-  |> (c -> c ?? "Unknown")
+  |> fetch_profile()       /// Returns profile or null
+  |> (profile -> profile?.address?.city)   /// Safely extract city
+  |> (city -> city ?? "Unknown")           /// Provide fallback
+```
 
+### Real-World Optional Chaining Examples
 
-Pipelines + Error Blocks
-Pipelines don’t catch. Use inside attempt as needed.
+**Safe game state access:**
+```goblin
+/// Safely check if player has a specific item
+has_key = player?.inventory?.items?.find(item -> item.type == "key")
 
+/// Safe UI updates
+player?.ui?.health_bar?.update(new_health)
+
+/// Safe network operations  
+response?.data?.player_stats?.level
+```
+
+**Configuration management:**
+```goblin
+/// Safely read nested config with fallbacks
+graphics_quality = config?.graphics?.quality ?? "medium"
+sound_volume = settings?.audio?.volume ?? 0.5
+debug_mode = flags?.development?.debug ?? false
+```
+
+---
+
+## 31.3 `attempt` / `rescue` / `ensure`
+
+Goblin's error handling is built around explicit, readable error management. No hidden exceptions or surprise crashes - you clearly state what might go wrong and how to handle it.
+
+**The basic structure:**
+```goblin
+result = 
+  attempt
+    risky_operation()
+    "success!"
+  rescue NetworkError as e
+    log("Network failed: " || e.message)
+    "offline_mode"
+  rescue ValidationError as e
+    log("Bad data: " || e.message) 
+    "default_data"
+  ensure
+    cleanup_resources()
+  end
+```
+
+### How It Works
+
+**attempt block:** Contains code that might throw errors. If it completes successfully, its last expression becomes the result.
+
+**rescue blocks:** Handle specific error types. First matching rescue wins. The variable after `as` gives you access to the error object.
+
+**ensure block:** Always runs, whether the attempt succeeded or failed. Perfect for cleanup like closing files, releasing locks, or updating metrics.
+
+**Return values:** The result is the last expression from whichever branch actually executes (attempt or rescue).
+
+### Multiple Rescue Blocks
+
+You can handle different error types differently:
+
+```goblin
+save_result =
+  attempt
+    player_data |> validate() |> compress() |> write_to_disk()
+    "saved_successfully"
+  rescue ValidationError as e
+    log("Invalid player data: " || e.message)
+    "validation_failed" 
+  rescue DiskFullError as e
+    log("Disk full, trying cloud save")
+    attempt_cloud_save(player_data)
+  rescue NetworkError as e  
+    log("Cloud save failed, using local cache")
+    write_to_cache(player_data)
+  ensure
+    update_save_metrics()
+  end
+```
+
+### Error Propagation
+
+If no rescue block matches the error type, the error propagates up after the ensure block runs:
+
+```goblin
 attempt
-    data |> parse() |> validate()
-rescue ParseError
-    log("bad input"); raise
+  dangerous_operation()   /// Throws UnhandledErrorType
+rescue KnownError as e
+  handle_known_error(e)   /// This won't match
+ensure  
+  cleanup()               /// This still runs
+end
+/// UnhandledErrorType propagates to caller after cleanup
+```
+
+### Rethrowing Errors
+
+Use bare `raise` to rethrow the current error while preserving the original stack trace:
+
+```goblin
+attempt
+  critical_operation()
+rescue TransientError as e
+  log("Retrying after transient error")
+  backoff_delay()
+  raise   /// Rethrow original error with original stack
+rescue FatalError as e
+  log("Fatal error, giving up") 
+  raise   /// Rethrow fatal error
+end
+```
+
+### Real-World Error Handling Examples
+
+**File operations with cleanup:**
+```goblin
+config_data =
+  attempt
+    file_handle = open_config_file()
+    file_handle |> read_all() |> parse_json()
+  rescue FileNotFound
+    log("Config missing, using defaults")
+    default_config()
+  rescue ParseError as e
+    log("Corrupt config: " || e.message)
+    backup_config()
+  ensure
+    file_handle?.close()   /// Always close if it was opened
+  end
+```
+
+**Network operations with retries:**
+```goblin
+player_stats =
+  attempt
+    fetch_player_data(player_id) |> validate_stats()
+  rescue NetworkTimeout as e
+    log("Request timed out, retrying...")
+    retry_with_backoff()
+    raise   /// Let caller handle persistent timeouts
+  rescue ValidationError as e
+    log("Server returned bad data")
+    cached_player_stats(player_id)   /// Use cache as fallback
+  ensure
+    close_network_connection()
+  end
+```
+
+**Game state management:**
+```goblin
+save_result =
+  attempt
+    game_state |> serialize() |> compress() |> write_save_file()
+    update_ui("Game saved successfully")
+    true
+  rescue SerializationError as e
+    show_error("Failed to prepare save data") 
+    false
+  rescue DiskError as e
+    show_error("Could not write save file")
+    false
+  ensure
+    release_save_lock()   /// Always release the save file lock
+    update_save_timestamp()
+  end
+```
+
+---
+
+## 31.4 Powerful Combinations
+
+These features work together to create robust, readable data processing pipelines:
+
+### Pipelines + Optional Chaining
+
+Safe data transformation chains:
+
+```goblin
+user_profile =
+  raw_user_data
+  |> parse_json()
+  |> (data -> data?.profile)     /// Safely extract profile
+  |> validate_profile()
+  |> (profile -> profile?.settings?.theme ?? "default")
+```
+
+### Pipelines + Error Handling
+
+Robust data processing with clear error management:
+
+```goblin
+processed_data =
+  attempt
+    input_data 
+      |> validate_format()
+      |> transform_data()
+      |> apply_business_rules()
+      |> save_to_database()
+  rescue ValidationError as e
+    log("Invalid input: " || e.message)
+    fallback_data()
+  rescue DatabaseError as e 
+    log("Database error: " || e.message)
+    cache_for_retry(input_data)
+    temp_storage_data()
+  ensure
+    metrics.record("data_processing_attempt")
+  end
+```
+
+### Optional Chaining in Error Blocks
+
+Safe error introspection:
+
+```goblin
+attempt
+  risky_network_call()
+rescue NetworkError as e
+  /// Safely access error details that might not exist
+  error_code = e?.details?.status_code ?? "unknown"
+  retry_after = e?.headers?.retry_after ?? 60
+  log("Network error " || error_code || ", retrying in " || retry_after || "s")
 ensure
-    metrics.increment("parse_attempt")
+  connection?.close()   /// Safe cleanup
 end
+```
 
+### Method Chaining vs Pipelines
 
-Optional Chaining in rescue/ensure
-Works normally:
+Choose the right tool for the job:
 
-rescue e
-    say e?.message ?? "unknown error"
+```goblin
+/// Method chaining: good for fluent object APIs
+query_result = database
+  .table("players") 
+  .where("level > 10")
+  .order_by("score")
+  .limit(100)
 
+/// Pipelines: good for data transformation chains
+final_scores = raw_scores
+  |> filter_valid_scores()
+  |> apply_bonuses()
+  |> normalize_to_scale()
+  |> round_to_integers()
+```
 
-Method chaining vs pipelines
+---
 
-obj.method1().method2()       # traditional
-obj |> method1() |> method2() # pipeline style
+## 31.5 Error Types and Edge Cases
 
+**ArityMismatch** — The most common pipeline error:
+```goblin
+/// This fails because Math.sqrt expects (number), not (string, number)
+"hello" |> Math.sqrt(4)   /// ArityMismatch: cannot pipe string to sqrt
+```
 
-Pipelines are preferred when mixing functions and methods, or when long chains improve readability.
+**Null propagation behavior:**
+```goblin
+/// Optional chaining stops at null, returns null
+null?.anything?.else   /// null (safe)
 
-34.5 Errors
+/// Pipelines pass null through, might cause errors
+null |> process()      /// Calls process(null), might crash
 
-ArityMismatch — RHS of pipeline cannot accept piped argument.
+/// Combine for safety:
+value?.property |> transform() ?? "default"
+```
 
-All other thrown exceptions propagate normally (unless rescued).
+**Exception handling specifics:**
+```goblin
+/// Optional chaining doesn't catch exceptions from successful calls
+obj?.method_that_throws()   /// Still throws if obj exists and method fails
 
-?. never raises on null/undefined, always collapses to null.
+/// Use attempt/rescue for exception handling:
+attempt
+  obj?.method_that_throws()
+rescue SomeError as e
+  handle_error(e)
+end
+```
 
-§35 — Play & Randomization Helpers
+This combination of features makes Goblin excellent for robust data processing, safe navigation of complex objects, and clear error handling - all essential for game development where you're constantly dealing with user input, network data, and complex game state.
 
-35.0 Overview
-Goblin bakes in tabletop-style dice, weighted sampling, and frequency helpers. Random operations honor the global RNG seed (deterministic if seeded).
+# 32. Play & Randomization Helpers
 
-Grammar note:
-A new literal form dice_expr is recognized inside roll and roll_detail.
-Form:
+## 32.1 Overview
 
-dice_expr ::= INT "d" INT [("+"|"-") INT]?
+Goblin brings the tabletop experience directly into your code with proper dice rolling, weighted loot tables, and statistical helpers. Whether you're building a roguelike, a card game, or just need some controlled randomness, these tools give you the authentic feel of rolling real dice and drawing from carefully balanced probability tables.
 
+All random operations respect the global RNG seed, so you can have deterministic randomness for testing, speedruns, or any time you need reproducible results. Run with `--seed 1337` and your dice will always roll the same sequence.
 
-Examples: 1d10, 2d6+1, 4d8-2
+**New dice syntax:** Inside `roll` and `roll_detail` functions, you can use natural tabletop notation:
 
-Outside roll and roll_detail, dice_expr is not valid.
+```
+dice_expr ::= INT "d" INT [ ("+" | "-") INT ]?
+```
 
-35.1 roll — dice evaluation
+This means expressions like `1d10`, `2d6+1`, `4d8-2` work exactly like you'd write them on paper. Outside of dice functions, this is just regular syntax (so `2d6` would be multiplication), but inside dice context it becomes magical.
 
-Rolls a dice expression and returns the total.
+```goblin
+/// Natural dice notation that feels like tabletop
+damage = roll 2d6+3        /// Roll 2 six-sided dice, add 3
+initiative = roll 1d20     /// Classic d20 roll
+fireball = roll 8d6        /// Massive damage roll
+```
 
-Forms:
+---
 
-roll dice_expr
-roll(dice_expr)
+## 32.2 `roll` and `roll_detail` — Universal Random Number Generation
 
+**Important:** `roll` is Goblin's primary random number generator, not just for dice! The "dice" notation is used because it's a familiar, readable way to express random ranges that everyone understands. You can use ANY numbers - `7d38+9`, `1d1000`, `25d4-12` - whatever ranges you need.
 
-Examples:
+Think of `roll` as the replacement for `rand()`, `randint()`, `random.choice()` and similar functions in other languages, but with a much more intuitive syntax.
 
-say roll 2d6+1          /// e.g., 9
-r = roll_detail 4d8-2
-say r.dice, r.sum       /// [3,8,1,4], 16
-say r.total             /// 14
+**Simple rolling with `roll`:**
+```goblin
+roll dice_expr      /// Natural syntax: roll 2d6+1
+roll(dice_expr)     /// Function syntax: roll(2d6+1)
+```
 
+**Detailed rolling with `roll_detail`:**
+Gets you the full breakdown - individual random values, the sum before modifiers, and the final total after modifiers.
 
-Results:
+### Multiple Ways to Generate Random Numbers in Goblin
 
-roll → total only (Int)
+Goblin gives you several approaches to random number generation, each with different strengths:
 
-roll_detail → record: { dice: [..], sum: int, total: int }
+**`roll` - Best for most cases:**
+```goblin
+roll 1d100              /// 1-100, clear and intuitive
+roll 2d6+3              /// Bell curve distribution, 5-15
+roll 1d20-10            /// -9 to +10, with offset
+```
 
-dice: list of raw rolls
+**`pick` with ranges - Alternative for simple cases:**
+```goblin
+pick 1..100             /// 1-100, exactly like roll 1d100
+pick 0..255             /// 0-255, good for RGB values
+pick -50..50            /// -50 to +50, symmetric range
+```
 
-sum: pre-modifier sum
+**When to use which:**
 
-total: sum after modifier
+- **Use `roll`** when you want bell curves (multiple dice), need modifiers, or want the self-documenting dice notation
+- **Use `pick`** when you have a simple flat range and want the most concise syntax
 
-Errors:
+```goblin
+/// These are equivalent for flat distributions:
+player_id = roll 1d999999        /// Dice notation - self-documenting
+player_id = pick 1..999999       /// Range notation - more concise
 
-DICE_PARSE — invalid form (e.g., 2d7q+1)
+/// But roll gives you more power:
+ability_score = roll 3d6         /// Bell curve, most results 10-11
+damage_burst = roll 5d4+2        /// Multiple dice with modifier
 
-DICE_BOUNDS — nonpositive dice count or sides
+/// And pick integrates with other list operations:
+random_element = pick ["fire", "ice", "lightning"]
+random_from_list = pick enemy_spawn_points
+```
 
-35.2 freq — frequency map
+**Pro tip:** You can combine them in the same program based on what reads clearest in context!
 
-Count elements in a list and return a {value:count} map.
+The notation `XdY+Z` is just a clear way to express "generate X random numbers from 1 to Y, sum them, then add Z". You're not limited to traditional gaming dice:
 
-Form:
+- `1d10` → one random number from 1-10 (replaces `randint(1, 10)`)
+- `1d100` → one random number from 1-100 (replaces `randint(1, 100)`)
+- `3d4` → three random numbers from 1-4, summed (bell curve distribution)
+- `1d1000-500` → random number from -499 to 500 
+- `10d2` → sum of 10 coin flips (1 or 2), giving you 10-20
+- `1d256` → random byte value equivalent
 
+```goblin
+/// Generate random game values using intuitive notation
+player_id = roll 1d999999           /// Random player ID: 1-999999
+spawn_delay = roll 1d5000+1000      /// Random delay: 1001-6000 milliseconds  
+damage_variance = roll 1d20-10      /// Random modifier: -9 to +10
+rgb_red = roll 1d256-1              /// Red color component: 0-255
+temperature = roll 1d200-100        /// Temperature: -99 to +100 degrees
+```
+
+### Why This Beats Traditional Random Functions
+
+Traditional random functions are often confusing and inconsistent:
+
+```python
+# Other languages - confusing and inconsistent
+random.randint(1, 6)        # 1-6 inclusive? exclusive?
+random.uniform(0, 1)        # 0-1 exclusive? inclusive?
+random.choice(range(1, 7))  # Verbose for simple ranges
+random.gauss(50, 10)        # Hard to understand the distribution
+```
+
+Goblin's dice notation is self-documenting and consistent:
+
+```goblin
+/// Goblin - clear and intuitive
+roll 1d6              /// Obviously 1-6, always inclusive
+roll 1d100            /// Obviously 1-100, no confusion
+roll 3d6+5            /// Obviously bell curve around 15.5, easy to understand
+roll 2d10-2           /// Obviously 0-18 with slight bell curve
+```
+
+### Random Number Generation Patterns
+
+**Simple random integers (replacing randint):**
+```goblin
+/// Instead of randint(1, 100)
+random_percent = roll 1d100
+
+/// Instead of randint(0, 255)  
+color_component = roll 1d256-1
+
+/// Instead of randint(-50, 50)
+position_offset = roll 1d101-51
+```
+
+**Bell curve distributions (multiple dice):**
+```goblin
+/// Bell curve centered around 10.5 (replaces complex gaussian)
+character_stat = roll 3d6           /// 3-18, most results near 10-11
+
+/// Bell curve for damage with high variance
+explosion_damage = roll 10d10       /// 10-100, clustered around 55
+
+/// Subtle randomness with tight bell curve
+minor_variation = roll 5d2          /// 5-10, heavily weighted toward 7-8
+```
+
+**Bounded random with offsets:**
+```goblin
+/// Random price with minimum base cost
+item_price = roll 1d500+100         /// 101-600 gold
+
+/// Random spawn time with delay
+next_wave = roll 1d30+10            /// 11-40 seconds
+
+/// Random level generation
+dungeon_rooms = roll 2d8+5          /// 7-21 rooms, slightly favors middle
+```
+
+### Real-World Non-Gaming Examples
+
+**Network and timing:**
+```goblin
+/// Connection timeout with jitter
+timeout_ms = roll 1d2000+3000       /// 3001-5000ms
+
+/// Retry backoff with randomization  
+backoff_delay = roll 1d1000+500     /// 501-1500ms
+
+/// Load balancing random selection
+server_choice = roll 1d5            /// Pick server 1-5
+```
+
+**Procedural generation:**
+```goblin
+/// Terrain height variation
+terrain_height = roll 3d20+20       /// 23-80, bell curve around 50
+
+/// Building floor count
+building_floors = roll 1d40+5       /// 6-45 floors
+
+/// Cloud density
+cloud_coverage = roll 2d50          /// 2-100, weighted toward middle
+```
+
+**AI and behavior:**
+```goblin
+/// NPC reaction variation
+mood_modifier = roll 1d20-10        /// -9 to +10 mood change
+
+/// AI decision making with weighted randomness
+aggression_level = roll 3d4         /// 3-12, most NPCs around 7-8
+
+/// Patrol route variation
+route_deviation = roll 1d6-3        /// -2 to +3 waypoint offset
+```
+
+### Advanced Random Patterns
+
+**Multiple independent values:**
+```goblin
+/// Generate RGB color
+rgb_color = {
+  red: roll 1d256-1,        /// 0-255
+  green: roll 1d256-1,      /// 0-255  
+  blue: roll 1d256-1        /// 0-255
+}
+
+/// Random 2D position
+spawn_position = {
+  x: roll 1d800+100,        /// 101-900
+  y: roll 1d600+50          /// 51-650
+}
+```
+
+**Detailed breakdown for analysis:**
+```goblin
+/// When you need to see the individual random components
+price_breakdown = roll_detail 3d100+50
+say "Base prices: " || price_breakdown.dice    /// [67, 23, 89] 
+say "Subtotal: " || price_breakdown.sum        /// 179
+say "Final price: " || price_breakdown.total   /// 229 (179 + 50)
+
+/// Useful for debugging random generation
+terrain_detail = roll_detail 5d10+20
+say "Height samples: " || terrain_detail.dice  /// See individual height points
+say "Terrain roughness: " || standard_deviation(terrain_detail.dice)
+```
+
+### Error Handling
+
+The same error rules apply regardless of what numbers you use:
+
+**DICE_BOUNDS** — Any invalid parameters:
+```goblin
+/// roll 0d1000     /// DICE_BOUNDS: need at least 1 roll
+/// roll 1d0        /// DICE_BOUNDS: need at least 1-sided "die"  
+/// roll -5d100     /// DICE_BOUNDS: negative count
+```
+
+The beauty of Goblin's `roll` is that it makes random number generation intuitive and self-documenting, whether you're making games, simulations, or any application that needs controlled randomness.
+
+---
+
+## 32.3 `freq` — Frequency Analysis
+
+When you're balancing drop rates, analyzing player behavior, or just curious about distributions, `freq` counts how often each element appears in a list and gives you a clean frequency map.
+
+```goblin
 freq list → map
+```
 
+Perfect for analyzing loot drops, player choices, or any data where you need to see patterns.
 
-Examples:
+**Basic frequency counting:**
+```goblin
+loot_drops = ["sword","potion","potion","gold","sword","potion","ring"]
+drop_rates = freq loot_drops
+say drop_rates    /// {"sword":2, "potion":3, "gold":1, "ring":1}
 
-say freq ["a","b","a","c","a","b"]  
-/// {"a":3, "b":2, "c":1}
+/// Analyze the results
+most_common = drop_rates["potion"]    /// 3
+say "Potions dropped " || most_common || " times"
+```
 
-say mode ["orc","goblin","orc","slime","orc","slime"]  
-/// ["orc"]
+**Analyzing dice rolls:**
+```goblin
+/// Roll a bunch of d6s and see the distribution
+results = []
+for i in 1..100
+  add roll 1d6 to results
+end
 
-35.3 mode — statistical mode(s)
+distribution = freq results
+say distribution    /// {"1":16, "2":18, "3":15, "4":17, "5":19, "6":15}
 
-Return list of most frequent element(s).
+/// Check if dice are fair
+for value, count in distribution
+  percentage = (count * 100.0) / 100
+  say value || ": " || percentage || "%"
+end
+```
 
-Form:
+**Player behavior analysis:**
+```goblin
+player_actions = ["attack","defend","attack","spell","attack","defend","run"]
+action_freq = freq player_actions
+say action_freq    /// {"attack":3, "defend":2, "spell":1, "run":1}
 
+/// AI can adapt based on player patterns
+if action_freq["attack"] > action_freq["defend"]
+  say "Player is aggressive, use defensive strategy"
+end
+```
+
+---
+
+## 32.4 `mode` — Finding the Most Common
+
+`mode` tells you which elements appear most frequently in your data. Unlike `freq` which gives you all the counts, `mode` directly answers "what's the most common thing?"
+
+```goblin
 mode list → list
+```
 
+Returns a list because there might be ties (multiple elements with the same highest frequency).
 
-Examples:
+**Finding dominant strategies:**
+```goblin
+enemy_types = ["orc","goblin","orc","slime","orc","slime","dragon","orc"]
+most_common = mode enemy_types
+say most_common    /// ["orc"] - orcs appear 4 times, more than anything else
 
-say mode ["orc","goblin","orc","slime","orc","slime"]
-/// ["orc"]
-
-say mode ["a","b","b","a"]  
-/// ["a","b"]     # multimodal
-
-35.4 sample_weighted — weighted random choice
-
-Randomly select items with bias. Accepts either (value, weight) pairs or a weight map.
-
-Forms:
-
-sample_weighted list        # list of (value, weight) pairs
-sample_weighted map         # {"value": weight, ...}
-
-
-Weights:
-
-must be ≥ 0
-
-relative only (no normalization needed)
-
-Examples:
-
-loot = [("potion", 10), ("ring", 3), ("sword", 1)]
-say sample_weighted loot
-
-loot_map = {"potion":10, "ring":3, "sword":1}
-say sample_weighted loot_map
-
-
-Errors:
-
-WEIGHT_TYPE — weight not numeric
-
-WEIGHT_EMPTY — no positive weights
-
-35.5 Recipes
-
-Percentile dice (d100):
-
-d1 = roll 1d10    /// 1–10
-d2 = roll 1d10    /// 1–10
-percent = (d1-1)*10 + (d2-1)   # 0–99
-if percent == 0
-  percent = 100
+/// Adapt spawning based on what's been seen
+if most_common[0] == "orc"
+  say "Too many orcs lately, spawn something different"
 end
-say "🎲 Percentile: " || percent
+```
 
+**Handling ties:**
+```goblin
+balanced_data = ["warrior","mage","warrior","mage","rogue"]
+common_classes = mode balanced_data
+say common_classes    /// ["warrior","mage"] - both appear twice
 
-Skill check (d10-themed):
-
-check = roll 1d10
-if check >= 8
-  say "✅ Success!"
+if len common_classes > 1
+  say "Tied between: " || common_classes
 else
-  say "❌ Fail!"
+  say "Clear winner: " || common_classes[0]
+end
+```
+
+**Player preference analysis:**
+```goblin
+weapon_choices = ["sword","bow","sword","staff","bow","sword","axe","bow"]
+preferred = mode weapon_choices
+say "Player prefers: " || preferred[0]    /// "sword" (appears 3 times)
+
+/// Game can suggest similar weapons
+recommend_weapon_type(preferred[0])
+```
+
+---
+
+## 32.5 `sample_weighted` — Weighted Random Selection
+
+Sometimes you need randomness, but not all outcomes should be equally likely. `sample_weighted` lets you create biased probability tables where some items are more likely to appear than others. Perfect for loot tables, random encounters, or any system where rarity matters.
+
+**Two input formats:**
+
+```goblin
+sample_weighted list_of_pairs    /// [("item", weight), ...]
+sample_weighted weight_map       /// {"item": weight, ...}
+```
+
+Weights are relative - a weight of 10 is twice as likely as a weight of 5. You don't need to normalize to 100 or anything, just make the ratios match what you want.
+
+**Classic loot table:**
+```goblin
+/// Traditional (value, weight) pairs
+loot_table = [
+  ("common_potion", 50),    /// 50/64 = ~78% chance
+  ("rare_gem", 10),         /// 10/64 = ~16% chance  
+  ("epic_sword", 3),        /// 3/64 = ~5% chance
+  ("legendary_ring", 1)     /// 1/64 = ~1.5% chance
+]
+
+dropped_item = sample_weighted loot_table
+say "Found: " || dropped_item
+```
+
+**Map-based weights (cleaner for complex tables):**
+```goblin
+encounter_table = {
+  "weak_goblin": 40,
+  "orc_warrior": 25,  
+  "elite_troll": 8,
+  "dragon": 2,
+  "treasure_chest": 15,
+  "empty_room": 30
+}
+
+encounter = sample_weighted encounter_table
+say "You encounter: " || encounter
+```
+
+**Dynamic weight adjustment:**
+```goblin
+/// Adjust weights based on player level
+base_monster_weights = {"slime": 10, "orc": 5, "dragon": 1}
+
+/// Higher level players face tougher enemies
+if player_level > 10
+  base_monster_weights["dragon"] = 5    /// Dragons become more common
+  base_monster_weights["slime"] = 2     /// Slimes become rare
 end
 
+next_enemy = sample_weighted base_monster_weights
+```
 
-Yahtzee-style:
+**Rarity system with clear progression:**
+```goblin
+/// Item rarity follows a clear progression
+item_rarities = {
+  "common": 1000,      /// Very common
+  "uncommon": 300,     /// 3x less likely than common  
+  "rare": 80,          /// 4x less likely than uncommon
+  "epic": 15,          /// 5x less likely than rare
+  "legendary": 2       /// 7x less likely than epic
+}
 
-rolls = roll_detail 5d6
-say "🎲 Dice: " || rolls.dice
-say "Total: " || rolls.total
+item_rarity = sample_weighted item_rarities
+item = generate_item(rarity: item_rarity)
+```
 
+### Weight Requirements
 
-Card draws (with reap/shuffle):
+**All weights must be ≥ 0:**
+```goblin
+/// This works
+valid_weights = [("option_a", 0), ("option_b", 5)]   /// option_a never chosen
 
-deck = ["A♠","K♠","Q♠","J♠","10♠"]
-shuffle deck              # permute deck
-hand = [reap first from deck, reap first from deck]
-say "✋ Hand: " || hand
-say "📦 Deck left: " || deck
+/// This fails  
+/// bad_weights = [("option_a", -1), ("option_b", 5)]   /// WEIGHT_TYPE error
+```
 
+**Must have at least one positive weight:**
+```goblin
+/// This fails
+/// all_zero = [("option_a", 0), ("option_b", 0)]   /// WEIGHT_EMPTY error
+```
 
-35.6 Error Codes (summary)
+---
 
-DICE_PARSE
+## 32.6 Game Design Recipes
 
-DICE_BOUNDS
+Real patterns you'll use constantly in game development:
 
-WEIGHT_TYPE
+**Percentile dice (classic d100 as two d10s):**
+```goblin
+/// Old-school percentile dice: roll two d10s
+d10_tens = roll 1d10        /// 1-10 for tens place
+d10_ones = roll 1d10        /// 1-10 for ones place
 
-WEIGHT_EMPTY
+/// Convert to 0-99, then adjust so 00 = 100
+percentile = (d10_tens - 1) * 10 + (d10_ones - 1)
+if percentile == 0
+  percentile = 100
+end
 
-✨ This makes dice rolls native Goblin literals, not strings — so players see results they trust, and engineers get clean syntax.
+say "Rolled " || percentile || "%"
 
-36. Release Checklist
+/// Use for percentage-based checks
+if percentile <= player.luck_stat
+  say "Lucky! Something good happens"
+end
+```
+
+**Skill checks with degrees of success:**
+```goblin
+skill_check = roll 1d20 + skill_modifier
+difficulty = 15
+
+if skill_check >= difficulty + 10
+  say "Critical success!"
+elif skill_check >= difficulty + 5  
+  say "Great success!"
+elif skill_check >= difficulty
+  say "Success"
+elif skill_check >= difficulty - 5
+  say "Partial success"
+else
+  say "Failure"
+end
+```
+
+**Yahtzee-style scoring:**
+```goblin
+/// Roll 5 dice and analyze the results
+yahtzee_roll = roll_detail 5d6
+dice_values = yahtzee_roll.dice
+say "Rolled: " || dice_values
+
+/// Count frequencies for scoring
+counts = freq dice_values
+max_count = max(counts.values())
+
+scoring = if max_count == 5 then "YAHTZEE!"
+         elif max_count == 4 then "Four of a kind"  
+         elif max_count == 3 then "Three of a kind"
+         else "No multiples"
+         end
+say scoring
+```
+
+**Weighted random encounters based on region:**
+```goblin
+/// Different encounter tables for different areas
+forest_encounters = {
+  "peaceful_deer": 30,
+  "wolf_pack": 20,
+  "bandit_ambush": 15,
+  "ancient_tree": 10,
+  "treasure_cache": 5
+}
+
+dungeon_encounters = {
+  "skeleton_warrior": 35,
+  "treasure_chest": 25,
+  "trap": 20,
+  "boss_monster": 5,
+  "secret_passage": 15
+}
+
+current_area = "forest"
+encounter_table = if current_area == "forest" then forest_encounters
+                 else dungeon_encounters
+                 end
+
+encounter = sample_weighted encounter_table
+handle_encounter(encounter)
+```
+
+**Critical hit system with confirmation:**
+```goblin
+attack_roll = roll 1d20
+target_ac = enemy.armor_class
+
+if attack_roll >= target_ac
+  /// Normal hit, check for critical
+  if attack_roll == 20 or attack_roll >= (target_ac + 10)
+    /// Potential critical, confirm with second roll
+    confirm_roll = roll 1d20
+    if confirm_roll >= target_ac
+      /// Confirmed critical hit
+      damage = roll 2 * weapon_damage_dice  /// Double damage dice
+      say "CRITICAL HIT! " || damage || " damage!"
+    else
+      /// Failed to confirm, just normal hit
+      damage = roll weapon_damage_dice
+      say "Hit for " || damage || " damage"
+    end
+  else
+    /// Regular hit
+    damage = roll weapon_damage_dice  
+    say "Hit for " || damage || " damage"
+  end
+else
+  say "Miss!"
+end
+```
+
+**Procedural loot generation:**
+```goblin
+/// Generate loot based on enemy type and player luck
+function generate_loot(enemy_type, luck_modifier)
+  base_loot = {
+    "nothing": 40,
+    "coins": 30,
+    "potion": 20,
+    "equipment": 8,
+    "rare_item": 2
+  }
+  
+  /// Luck improves chances
+  base_loot["rare_item"] += luck_modifier
+  base_loot["equipment"] += luck_modifier / 2
+  base_loot["nothing"] -= luck_modifier
+  
+  /// Powerful enemies drop better loot
+  if enemy_type == "boss"
+    base_loot["rare_item"] *= 3
+    base_loot["equipment"] *= 2
+    base_loot["nothing"] = 0
+  end
+  
+  loot_type = sample_weighted base_loot
+  return create_item(type: loot_type, quality: roll 1d100)
+end
+
+player_loot = generate_loot("orc_chieftain", player.luck)
+```
+
+---
+
+## 32.7 Error Handling
+
+Goblin gives you clear error messages when random operations go wrong:
+
+**DICE_PARSE** — Your dice notation isn't valid:
+```goblin
+/// roll 2d6x+1      /// DICE_PARSE: 'x' isn't valid in dice expressions
+/// roll abc         /// DICE_PARSE: not a valid dice expression
+/// roll 2d6++1      /// DICE_PARSE: double '+' operator
+```
+
+**DICE_BOUNDS** — Your dice parameters don't make sense:
+```goblin
+/// roll 0d6         /// DICE_BOUNDS: need at least 1 die
+/// roll 2d0         /// DICE_BOUNDS: dice need at least 1 side  
+/// roll -3d6        /// DICE_BOUNDS: negative dice count
+/// roll 2d-4        /// DICE_BOUNDS: negative sides
+```
+
+**WEIGHT_TYPE** — Weights must be numbers:
+```goblin
+bad_loot = [("sword", "heavy"), ("potion", 5)]
+/// sample_weighted bad_loot    /// WEIGHT_TYPE: "heavy" isn't numeric
+```
+
+**WEIGHT_EMPTY** — Need at least one positive weight:
+```goblin
+empty_table = [("nothing", 0), ("void", 0)]  
+/// sample_weighted empty_table    /// WEIGHT_EMPTY: no positive weights
+```
+
+These tools give you everything you need to add authentic randomness and probability to your games. From simple dice rolls to complex weighted systems, Goblin makes randomness feel natural and controllable, just like rolling dice at a real tabletop.
+
+# Appendix — Release Checklist (v1.5)
 
 ## ✅ Must-Have for v1.5
 
 ### Goblin Core
 
-**gmarks basics** (see §23.9)
-- gmarks_filter(prefix) implementation & tests
-- Deterministic-build write policy gate + .goblin/gmarks.audit.log
+**gmarks basics** (see §23.9)  
+- `gmarks_filter(prefix)` implementation & tests  
+- Deterministic-build write policy gate + `.goblin/gmarks.audit.log`  
 
-**Blob/JSON interop glue** (see §29.5)
-- Ensure JSON/YAML leave blobs alone by default (no auto-encode)
-- Example helpers to base64 when needed
+**Blob/JSON interop glue** (see §29.5)  
+- Ensure JSON/YAML leave blobs alone by default (no auto-encode)  
+- Example helpers to base64 when needed  
 
-**Hashing & HMAC** (see §30)
-- hash(data: string|blob, algorithm="sha256") -> string
-- hmac(data: string|blob, key: string|blob, algorithm="sha256") -> string
-- Supported algos: sha256, sha1, md5 (warn), sha512
-- Streaming over blobs; tests with known vectors
+**Hashing & HMAC** (see §30)  
+- `hash(data: string|blob, algorithm="sha256") -> string`  
+- `hmac(data: string|blob, key: string|blob, algorithm="sha256") -> string`  
+- Supported algorithms: `sha256`, `sha512`, `sha1` (warn), `md5` (strong warn)  
+- Streaming over blobs; tests with known vectors  
 
-### Baseline Glam
-
-- regex glam: regex::test, regex::findall, regex::replace (+ flags)
-- fs.glob glam: fs::glob(pattern) -> array<string>, fs::walk(dir, pattern="**/*")
-- retry/backoff glam: retry::with_backoff(fn, attempts=3, base_ms=250, jitter=true)
-- http glam polish: http::request(method, url, headers={}, body=""), deterministic-mode safeguards
+**Divmod operator** (see §33)  
+- `>>` operator returns Goblin-flair `q r r` format  
+- Function alias `div_rem(a, b)` → tuple form  
+- Golden-vector tests for integers, negatives, money/fixed-scale types  
+- Errors: `DivisionByZero`, `ScaleMismatch`, `MoneyDivisionError`  
 
 ---
 
@@ -4836,26 +5606,33 @@ WEIGHT_EMPTY
 
 ### Core Horde-Readiness
 
-- Pure function runner mode (--stdin / --stdout)
-- Warm VM / preload mode (goblin serve --preload)
-- Determinism hardening knobs (--seed, block wall clock, etc.)
-- Resource limits (--cpu-ms, --mem-mb, --max-steps)
-- Correlation & idempotency (request_id, --idempotency-key)
-- Structured exit codes
-- Audit log enrichment with IDs/keys
-- Clock/testing hook (freeze_time)
+- Pure function runner mode (`--stdin / --stdout`)  
+- Warm VM / preload mode (`goblin serve --preload`)  
+- Determinism hardening knobs (`--seed`, block wall clock, etc.)  
+- **Random ops reproducibility**: `roll`, `pick`, `shuffle`, `sample_weighted` deterministic under `--seed`  
+- Resource limits (`--cpu-ms`, `--mem-mb`, `--max-steps`)  
+- Correlation & idempotency (`request_id`, `--idempotency-key`)  
+- Structured exit codes  
+- Audit log enrichment with IDs/keys  
+- Clock/testing hook (`freeze_time`)  
 
 ### Glam / Host-Side Horde-Readiness
 
-- scheduler glam: scheduler::cron(spec, task) (executes scripts/caps on a schedule)
-- s3::upload / netlify::deploy glam
-- metrics::emit glam
-- horde examples (Rust worker pool + Kubernetes YAML)
+- `scheduler::cron(spec, task)` (executes scripts/caps on schedule)  
+- `s3::upload` / `netlify::deploy` glam  
+- `metrics::emit` glam  
+- Horde examples (Rust worker pool + Kubernetes YAML)  
 
 ### Other Optional Core Enhancements
 
-- glam gmark rebalance (CLI) implementation
-- Extra blob helpers (beyond base64/hex) if needed for niche formats
+- glam gmark rebalance (CLI) implementation  
+- Extra blob helpers (beyond base64/hex) if needed for niche formats  
+- **Divmod sugar helpers**: `q 10 >> 3`, `r 10 >> 3` (ergonomic accessors)  
+- **Play/Random helpers** (see §32):  
+  - `roll`, `roll_detail`  
+  - `freq`, `mode`  
+  - `sample_weighted`  
+  - Game-design recipes validated against golden seeds  
 
 ---
 
