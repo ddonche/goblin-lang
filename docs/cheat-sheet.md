@@ -544,6 +544,63 @@ tax(price, 8.5%) → $6.80        /// helper function
 with_tax(price, 8.5%) → $86.80  /// price + tax
 ```
 
+### 11.x Percent Variables
+
+Percent values can be bound to variables for reuse. This removes magic numbers and ensures consistency.
+
+#### Form
+
+```goblin
+rate = 8.5%
+final = rate of base
+```
+
+* Define once, use everywhere.
+* Reads like English (`sales_tax_rate of price`).
+* Impossible to confuse `0.08` vs `0.085`.
+
+#### Examples
+
+```goblin
+sales_tax_rate = 8.5%
+
+fn calculate_tax(price)
+    sales_tax_rate of price
+end
+
+fn monthly_report()
+    total_tax = sales_tax_rate of total_sales
+end
+
+/// Update rate once:
+sales_tax_rate = 9.0%
+```
+
+With judge:
+
+```goblin
+tax_rate = judge
+    user.state == "CA": 10.25%
+    user.state == "TX": 6.25%
+    user.state == "OR": 0%
+    else: 8.5%
+end
+
+final_price = base_price + (tax_rate of base_price)
+```
+
+Also works with `%s` for scalable rules:
+
+```goblin
+discount = judge
+    order.total >= $1000: 20%s
+    order.total >= $500:  15%s
+    else: 0%s
+end
+
+final_price = order.total - (discount of order.total)
+```
+
 ## ADVANCED FEATURES
 
 ### Modules & Imports
