@@ -185,6 +185,7 @@ result = judge: cond1: expr1 :: cond2: expr2 :: else: exprN
 ```goblin
 /// For loops
 for i in 1..5        /// ranges
+for i in 1..5 step 2 /// ranges with custom step
 for v in array       /// arrays
 for i, v in array    /// with index
 for k, v in map      /// maps
@@ -739,7 +740,7 @@ ShuffleTypeError, SortTypeError, AddTypeError
 
 #### Hard Keywords (cannot be shadowed)
 ```
-if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, stop, assert,
+if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, step, stop, assert,
 class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
 date, time, datetime, duration, morph, vault, judge, banish, unbanish, expose, set, settle, 
 pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted
