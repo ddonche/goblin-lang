@@ -285,6 +285,32 @@ end
 /// 15,20,25,30
 ```
 
+### 5.2.x Repeat
+
+`repeat N` runs a block a fixed number of times with **no counter variable**.
+
+#### Form
+```goblin
+repeat N
+    ...
+end
+Examples
+goblin
+Copy
+Edit
+repeat 3
+    say "Loading..."
+end
+/// Loading...
+/// Loading...
+/// Loading...
+
+repeat 10
+    create_test_user()
+end
+Expresses pure intent (“repeat N times”).
+
+No loop counter noise.
 
 #### Error Handling
 ```goblin
