@@ -228,6 +228,64 @@ Notes:
 jump N strides the iteration by N.
 Works on ranges (numbers, dates, datetimes) and indexed collections (arrays, maps via index order).
 
+### Jump (staged strides)
+
+`jump N until P` lets a loop change stride mid-flight, using **piecewise step schedules**.
+
+#### Form
+
+```goblin
+for i in RANGE
+    jump N until CONDITION
+    jump M until OTHER
+    jump K              /// optional final fixed stride
+    ...
+end
+```
+
+* Each `jump` defines the stride for a segment.
+* The `until` condition says when to stop using that stride and switch to the next.
+* If you omit a final `jump`, the loop falls back to stride `1`.
+
+#### Semantics
+
+1. Begin at the range’s lower bound.
+2. For a segment `jump N until P`:
+
+   * Emit values at step `N` while `P(i)` is **false**.
+   * The first value that would make `P(i)` true is **not emitted**; instead, the loop switches to the next segment.
+3. When switching segments, alignment snaps forward so that the new stride starts on the correct multiple (based on the range’s start).
+4. After the last `until …`, stride = `1` by default, unless overridden with a final `jump`.
+
+#### Examples
+
+Count by twos until you pass 10, then by threes until you pass 20, then finish by ones:
+
+```goblin
+for i in 1..25
+    jump 2 until i > 10
+    jump 3 until i > 20
+    ...
+end
+/// 1,3,5,7,9
+/// 12,15,18
+/// 21,22,23,24,25
+```
+
+Ramp stride upward:
+
+```goblin
+for i in 1..30
+    jump 1 until i >= 5
+    jump 2 until i >= 15
+    jump 5
+end
+/// 1,2,3,4
+/// 6,8,10,12,14
+/// 15,20,25,30
+```
+
+
 #### Error Handling
 ```goblin
 /// Structured form
