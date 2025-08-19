@@ -178,7 +178,7 @@ join A with S    /// → "joined"
 
 ### Reserved Words updates
 
-* **Hard keywords (add):** `split`, `join`
+* **Hard  (add):** `split`, `join`
 * **Soft keywords (add):** `on`   /// `with` already present
 
 (No regex is involved in either form.)
@@ -1039,12 +1039,12 @@ ShuffleTypeError, SortTypeError, AddTypeError
 if, elif, else, for, in, while, repeat, unless, attempt, rescue, ensure, return, skip, jump, until, stop, assert,
 class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
 date, time, datetime, duration, morph, vault, judge, banish, unbanish, expose, set, settle, 
-pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted
+pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted, split, join
 ```
 
 #### Soft Keywords (context-dependent)
 ```
-from, at, first, last, to, into, with, dups, seq, as, where, raw, trim_lead
+from, at, first, last, to, into, with, dups, seq, as, where, raw, trim_lead, on
 ```
 
 /// `in` is hard for loops/list-DSL; no general boolean `in` operator.
