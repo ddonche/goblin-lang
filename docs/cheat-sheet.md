@@ -909,7 +909,7 @@ ShuffleTypeError, SortTypeError, AddTypeError
 
 #### Hard Keywords (cannot be shadowed)
 ```
-if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, jump, until, stop, assert,
+if, elif, else, for, in, while, repeat, unless, attempt, rescue, ensure, return, skip, jump, until, stop, assert,
 class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
 date, time, datetime, duration, morph, vault, judge, banish, unbanish, expose, set, settle, 
 pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted
