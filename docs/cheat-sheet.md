@@ -107,6 +107,27 @@ nil                /// null/undefined
 .upper() .lower() .title() .slug()  /// methods
 ```
 
+## Strings
+
+"abc"                /// double-quoted string
+'abc'                /// single-quoted string
+"""abc"""            /// multi-line string
+'''abc'''            /// multi-line string (alt)
+
+"line1\nline2"       /// escapes: \n, \t, \", \', \\, \uXXXX
+"Hello {name}"       /// interpolation
+"{{literal}}"        /// literal braces
+
+raw "abc"            /// raw string (no escapes/interp)
+raw """abc"""        /// raw multi-line string
+trim_lead """  
+    line1
+    line2
+"""                  /// trims common indent
+trim_lead raw """  
+    {not interpolated}
+"""                  /// modifiers can stack
+
 #### Collections
 ```goblin
 [1, 2, 3]         /// array
@@ -967,7 +988,7 @@ pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, s
 
 #### Soft Keywords (context-dependent)
 ```
-from, at, first, last, to, into, with, dups, seq, as, where
+from, at, first, last, to, into, with, dups, seq, as, where, raw, trim_lead
 ```
 
 /// `in` is hard for loops/list-DSL; no general boolean `in` operator.
