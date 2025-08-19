@@ -77,6 +77,10 @@ is / is not  /// same-variant checks for enums and type predicates
 "a" | "b"  → "ab"                 /// no-space join
 "a" || "b" → "a b"                /// space join
 
+///Between
+- x between a..b    → inclusive range check
+- x !between a..b   → negated range check
+
 /// Pipeline
 x |> f(y)  → f(x, y)              /// left-to-right chaining
 
@@ -179,6 +183,35 @@ unless cond
 else
     ...
 end
+
+### Between / !Between
+
+Human‑friendly range comparisons. Equivalent to x >= a and x <= b (or the inverse).
+
+Form
+if expr between range
+    ...
+end
+
+
+if expr !between range
+    ...
+end
+Examples
+if age between 13..19
+    say "Teenager"
+end
+
+
+if score !between 0..100
+    error "Invalid score"
+end
+
+Works with inclusive (..) and exclusive (...) ranges.
+
+Use in the Conditionals section alongside if / elif / else.
+
+No new keywords required (negation via !).
 
 /// Judge (expression form)
 result = judge
