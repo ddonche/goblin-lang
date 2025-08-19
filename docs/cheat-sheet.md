@@ -111,6 +111,7 @@ nil                /// null/undefined
 /// Ranges
 1..5              /// inclusive (1,2,3,4,5)
 1...5             /// exclusive (1,2,3,4)
+/// Stride with `jump`: for i in 1..10 jump 2  → 1,3,5,7,9
 ```
 
 #### Date/Time (No naive timestamps)
@@ -134,6 +135,15 @@ floor_dt(dt, "day"), ceil_dt(dt, "hour")    /// truncation/rounding
 /// Trusted time (opt-in via policy/glam)
 trusted_now()                               /// server > cache > local per policy
 ensure_time_verified("receipt timestamp")   /// verify time source or error/warn
+
+/// Iterating calendar ranges with stride
+for d in date("2025-01-01")..date("2025-01-31") jump 7d
+    say "Week starting {d}"
+end
+
+for ts in datetime("2025-08-12 08:00", tz:"UTC")...datetime("2025-08-12 12:00", tz:"UTC") jump 30m
+    process(ts)
+end
 ```
 
 #### Binary Data
@@ -182,13 +192,27 @@ result = judge: cond1: expr1 :: cond2: expr2 :: else: exprN
 ```
 
 #### Loops
+#### Loops
 ```goblin
 /// For loops
-for i in 1..5        /// ranges
-for i in 1..5 step 2 /// ranges with custom step
-for v in array       /// arrays
-for i, v in array    /// with index
-for k, v in map      /// maps
+for i in 1..5                 /// ranges (inclusive)
+for v in array                /// arrays (values)
+for i, v in array             /// arrays (with index)
+for k, v in map               /// maps (key/value)
+
+/// Striding with `jump` (unified)
+for i in 0..10 jump 2
+    say i                     /// 0, 2, 4, 6, 8, 10
+end
+
+names = ["Alice","Bob","Charlie","Diana","Ethan","Fiona","George"]
+for i, name in names jump 3
+    say name                  /// Alice, Diana, George
+end
+
+for name in names jump 2
+    say name                  /// Alice, Charlie, Ethan
+end
 
 /// While
 while cond
@@ -199,6 +223,10 @@ end
 skip    /// continue
 stop    /// break
 ```
+Notes:
+
+jump N strides the iteration by N.
+Works on ranges (numbers, dates, datetimes) and indexed collections (arrays, maps via index order).
 
 #### Error Handling
 ```goblin
@@ -740,7 +768,7 @@ ShuffleTypeError, SortTypeError, AddTypeError
 
 #### Hard Keywords (cannot be shadowed)
 ```
-if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, step, stop, assert,
+if, elif, else, for, in, while, unless, attempt, rescue, ensure, return, skip, jump, stop, assert,
 class, fn, enum, use, import, export, via, test, true, false, nil, int, float, bool, money, pct,
 date, time, datetime, duration, morph, vault, judge, banish, unbanish, expose, set, settle, 
 pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted
