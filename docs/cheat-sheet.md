@@ -130,6 +130,60 @@ trim_lead raw """
 
 Modifiers like raw, trim_lead, etc. can be written in any order — they are not sequential, but declarative.
 
+## Strings — Split & Join
+
+Human‑readable forms for the most common text operations.
+
+### Split
+
+```goblin
+words = split message on " "      /// ["hello", "world"]
+parts = split csv_line on ","      /// CSV fields (no regex)
+lines = split text on "\n"        /// manual line split
+```
+
+**Semantics**
+
+* Returns an **array of strings**.
+* Delimiter must be a **string**; otherwise **TypeError**.
+* Empty delimiter → **ValueError**.
+* Consecutive delimiters keep empty fields (no magic trimming).
+
+### Join
+
+```goblin
+line  = join fields with ","        /// e.g., ["a","b"] → "a,b"
+path  = join ["usr","local","bin"] with "/"  /// "/"-joined path
+
+/// Ensure all elements are strings (explicit conversion when needed)
+line2 = join [str(id), name, str(price)] with ","
+```
+
+**Semantics**
+
+* Joins an **array of strings** with a **string** separator.
+* Any non‑string element → **TypeError** (be explicit with `str()`).
+* Empty array → "". Single element → that element.
+
+---
+
+### Quick Reference additions
+
+```
+split S on D     /// → [parts]
+join A with S    /// → "joined"
+```
+
+---
+
+### Reserved Words updates
+
+* **Hard keywords (add):** `split`, `join`
+* **Soft keywords (add):** `on`   /// `with` already present
+
+(No regex is involved in either form.)
+
+
 #### Collections
 ```goblin
 [1, 2, 3]         /// array
