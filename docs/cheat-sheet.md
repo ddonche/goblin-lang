@@ -128,6 +128,8 @@ trim_lead raw """
     {not interpolated}
 """                  /// modifiers can stack
 
+Modifiers like raw, trim_lead, etc. can be written in any order — they are not sequential, but declarative.
+
 #### Collections
 ```goblin
 [1, 2, 3]         /// array
