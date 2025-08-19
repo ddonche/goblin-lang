@@ -214,6 +214,23 @@ for name in names jump 2
     say name                  /// Alice, Charlie, Ethan
 end
 
+## 5.2.x For … Where …
+
+for … where … adds an inline filter to a for loop (no nested if).
+
+Form
+for var in collection where condition
+    ...
+end
+Example
+for score in scores where score >= 90
+    say "Excellent: {score}"
+end
+
+Filters elements before running the body.
+
+Sugar for for … in … + if condition guard.
+
 /// While
 while cond
     ...
@@ -917,7 +934,7 @@ pick, reap, usurp, len, shuffle, sort, add, insert, replace, roll, freq, mode, s
 
 #### Soft Keywords (context-dependent)
 ```
-from, at, first, last, to, into, with, dups, seq, as
+from, at, first, last, to, into, with, dups, seq, as, where
 ```
 
 /// `in` is hard for loops/list-DSL; no general boolean `in` operator.
