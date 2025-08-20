@@ -1492,15 +1492,12 @@ from, at, first, last, to, into, with, dups, seq, as, where, raw, trim_lead, on,
 int, float, bool, money, pct, date, time, datetime, duration,
 len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted,
 set, settle, pick, reap, usurp,
-split, join, map,
-upper, lower, title, slug, trim, trim_lead, trim_trail, escape, unescape, reverse,
-mixed, minimize, remove,
+split, join, map, format,
+upper, lower, title, slug, trim, trim_lead, trim_trail, escape, unescape, reverse, mixed, minimize, remove,
 before, after, before_last, after_last, between, lines, words, chars,
-find_all, match, find, has, count,
+find_all, match, find, has, count, parse_bool,
 sum, avg, min, max,
-drop, cut,
-strip_lead, strip_trail
-
+drop, cut, strip_lead, strip_trail
 
 ---
 
