@@ -187,21 +187,23 @@ result = trim reverse upper text
 ### String/Text Operations (Core)
 
 #### Zero-arg (paren-optional via dot)
+
 ```goblin
 upper, lower, mixed, title, slug
 trim, trim_lead, trim_trail
-escape, unescape, 
+escape, unescape,
 minimize
 length (alias: len), reverse
 ```
 
 **Examples**
+
 ```goblin
 "daniel".upper        /// "DANIEL"
 "  hi".trim_lead      /// "hi"
 "daniel".reverse      /// "leinad"
 "daniel".length       /// 6
-"daniel".mixed        /// "dAniEL" (random) 
+"daniel".mixed        /// "dAniEL" (random)
 
 s = "Daniel is awesome"
 s.minimize            /// "Danielisawesome"
@@ -212,16 +214,18 @@ unescape "line\\n"    /// "line\n"
 ```
 
 #### Trimming & stripping (lead/trail family)
+
 ```goblin
 trim s                        /// whitespace both ends
 trim_lead s                   /// whitespace at start
 trim_trail s                  /// whitespace at end
 strip_lead  "pre"   from s    /// drop leading substring if present
 strip_trail ".txt"  from s    /// drop trailing substring if present
-minimize                      /// strip white space
+minimize s                    /// remove ALL whitespace characters
 ```
 
 #### Everyday text sugar
+
 ```goblin
 before ":"         in s
 after  ":"         in s
@@ -234,11 +238,42 @@ words s            /// split on whitespace
 chars s            /// characters as an array (code points)
 ```
 
-#### Replace / remove / drop (strings are immutable)
+#### Literal find & replace (non-regex)
+
 ```goblin
-replace "old" with "new" in s     /// returns new string
-remove  "," from s                /// == replace "," with "" in s
-drop    "," from s                /// alias for remove (copy)
+has "needle" in s            /// bool
+find "needle" in s           /// first start index (0-based) or nil
+find_all "needle" in s       /// [start indices], non-overlapping
+count "needle" in s          /// occurrence count
+
+replace "old" with "new" in s        /// replaces ALL occurrences
+replace_first "old" with "new" in s  /// only the first occurrence
+```
+
+**Method-style mirrors**
+
+```goblin
+s.has("needle")
+s.find("needle")
+s.find_all("needle")
+s.count("needle")
+s.replace("old","new")           /// all
+s.replace_first("old","new")     /// first only
+```
+
+**Semantics**
+
+* Searches are **literal** (no regex) and **case-sensitive**.
+* Indices are **Unicode code-point** positions.
+* `find_all` is **non-overlapping** (e.g., "banana" + "ana" → \[1]).
+
+#### Replace / remove / drop (strings are immutable)
+
+```goblin
+replace "old" with "new" in s          /// returns new string; replaces ALL
+replace_first "old" with "new" in s    /// first only
+remove  "," from s                      /// == replace "," with "" in s
+drop    "," from s                      /// alias for remove (copy)
 ```
 
 ### String Literals
@@ -248,11 +283,11 @@ drop    "," from s                /// alias for remove (copy)
 """abc"""            /// multi-line string
 '''abc'''            /// multi-line string (alt)
 
-"line1\nline2"       /// escapes: \n, \t, \", \', \\, \uXXXX
+"line1\nline2"       /// escapes: \n, \t, ", ', \\, \uXXXX
 "Hello {name}"       /// interpolation
 "{{literal}}"        /// literal braces
 
-#### Literals: raw & trim_lead at parse time
+#### Literals: raw & trim\_lead at parse time
 
 ```goblin
 p = raw "C:\path\file.txt"
@@ -267,28 +302,30 @@ block = trim_lead """
 
 **Important:** `x.raw` where `x` is a variable is not allowed (raw is parse-time). Use `escape`/`unescape` at runtime.
 
-raw "abc"            /// raw string (no escapes/interp)
-raw """abc"""        /// raw multi-line string
-trim_lead """  
+```
+raw "abc"                 /// raw string (no escapes/interp)
+raw """abc"""             /// raw multi-line string
+trim_lead """
     line1
     line2
-"""                  /// trims common indent
-trim_lead raw """  
+"""                       /// trims common indent
+trim_lead raw """
     {not interpolated}
-"""                  /// modifiers can stack
+"""                       /// modifiers can stack
+```
 
-Modifiers like raw, trim_lead, etc. can be written in any order — they are not sequential, but declarative.
+Modifiers like `raw`, `trim_lead`, etc. can be written in any order — they are declarative, not sequential.
 
 ## Strings — Split & Join
 
-Human‑readable forms for the most common text operations.
+Human-readable forms for the most common text operations.
 
 ### Split
 
 ```goblin
-words = split message on " "      /// ["hello", "world"]
-parts = split csv_line on ","      /// CSV fields (no regex)
-lines = split text on "\n"        /// manual line split
+words = split message on " "       /// ["hello", "world"]
+parts = split csv_line on ","       /// CSV fields (no regex)
+lines = split text on "\n"         /// manual line split
 ```
 
 **Semantics**
@@ -301,8 +338,8 @@ lines = split text on "\n"        /// manual line split
 ### Join
 
 ```goblin
-line  = join fields with ","        /// e.g., ["a","b"] → "a,b"
-path  = join ["usr","local","bin"] with "/"  /// "/"-joined path
+line  = join fields with ","              /// e.g., ["a","b"] → "a,b"
+path  = join ["usr","local","bin"] with "/"
 
 /// Ensure all elements are strings (explicit conversion when needed)
 line2 = join ["{id}", name, "{price}"] with ","
@@ -311,25 +348,31 @@ line2 = join ["{id}", name, "{price}"] with ","
 **Semantics**
 
 * Joins an **array of strings** with a **string** separator.
-* Any non‑string element → **TypeError** (be explicit with `str()`).
-* Empty array → "". Single element → that element.
+* Any non-string element → **TypeError** (be explicit with `str()`).
+* Empty array → "" ; single element → that element.
 
 ---
 
 ### Quick Reference additions
 
 ```
-split S on D     /// → [parts]
-join A with S    /// → "joined"
+split S on D                /// → [parts]
+join A with S               /// → "joined"
+
+has "x" in S                /// → bool
+find "x" in S               /// → index | nil
+find_all "x" in S           /// → [indices]
+count "x" in S              /// → int
+replace "a" with "b" in S   /// → replace ALL
+replace_first "a" with "b" in S
 ```
 
 ---
 
-(No regex is involved in either form.)
-
 ### Regex (lean core; full power via glam)
 
 **Core 20/80**
+
 ```goblin
 find_all like PATTERN in s
 match     like PATTERN in s
@@ -339,18 +382,21 @@ replace   like PATTERN with NEW in s
 **Pattern subset:** `. [] () | ^ $ + * ? {m,n} \d \w \s`
 
 Use raw for backslashes when helpful:
+
 ```goblin
 emails = find_all like raw "[\\w.]+@[\\w.]+" in text
 clean  = replace   like raw "\\s+" with " " in text
 ```
 
 **Full PCRE → regex glam (opt-in, not core)**
+
 ```goblin
 use glam regex as re
 re.findall("(?<=\\$)\\d+(?:\\.\\d{2})?", text)
 ```
 
 #### Collections
+
 ```goblin
 [1, 2, 3]         /// array
 {key: "val", price: 1.5}  /// map
@@ -364,6 +410,7 @@ re.findall("(?<=\\$)\\d+(?:\\.\\d{2})?", text)
 #### Collection Operations
 
 **Non-destructive (copy)**
+
 ```goblin
 replace X with Y in arr
 drop    X from arr
@@ -374,15 +421,17 @@ sort names              /// sorted copy
 ```
 
 **Destructive (mutate in place)**
+
 ```goblin
 usurp X with Y in arr          /// replace in place
 cut   X from arr               /// remove in place
 cut   at i from arr            /// remove by index
-reap from names         /// remove & return random
-reap 2 from names       /// remove & return 2 random
-add "Item" to names     /// append
-insert "Item" at 2 into names   /// insert at position
+reap from names                /// remove & return random
+reap 2 from names              /// remove & return 2 random
+add "Item" to names            /// append
+insert "Item" at 2 into names  /// insert at position
 ```
+
 
 **Common reductions (method-style mirrors; paren-optional)**
 ```goblin
@@ -1303,11 +1352,14 @@ int, float, bool, money, pct, date, time, datetime, duration,
 len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted,
 set, settle, pick, reap, usurp,
 split, join, map,
-upper, lower, mixed, title, slug, trim, minimize,  trim_lead, trim_trail, escape, unescape, reverse,
+upper, lower, title, slug, trim, trim_lead, trim_trail, escape, unescape, reverse,
+mixed, minimize, remove,
 before, after, before_last, after_last, between, lines, words, chars,
-find_all, match,
+find_all, match, find, has, count,
 sum, avg, min, max,
-drop, cut
+drop, cut,
+strip_lead, strip_trail
+
 
 ---
 
