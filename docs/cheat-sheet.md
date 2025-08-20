@@ -188,7 +188,7 @@ result = trim reverse upper text
 
 #### Zero-arg (paren-optional via dot)
 ```goblin
-upper, lower, title, slug
+upper, lower, mixed, title, slug
 trim, trim_lead, trim_trail
 escape, unescape
 length (alias: len), reverse
@@ -200,6 +200,7 @@ length (alias: len), reverse
 "  hi".trim_lead      /// "hi"
 "daniel".reverse      /// "leinad"
 "daniel".length       /// 6
+"daniel".mixed        /// "dAniEL" (random) 
 
 s = "C:\path\file.txt"
 s.escape              /// "C:\\path\\file.txt"
@@ -1297,7 +1298,7 @@ int, float, bool, money, pct, date, time, datetime, duration,
 len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted,
 set, settle, pick, reap, usurp,
 split, join, map,
-upper, lower, title, slug, trim, trim_lead, trim_trail, escape, unescape, reverse,
+upper, lower, mixed, title, slug, trim, trim_lead, trim_trail, escape, unescape, reverse,
 before, after, before_last, after_last, between, lines, words, chars,
 find_all, match,
 sum, avg, min, max,
