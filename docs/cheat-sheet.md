@@ -128,6 +128,83 @@ nil                /// null/undefined
 // zero-arg → parens optional
 "dan".upper   "dan".lower   "dan".title   "dan".slug
 ```
+## Casting
+
+Goblin supports two ways to cast values:
+
+* **Prefix-style:** `int x`, `float x`, `str x`, `bool x`
+* **Method-style:** `x.int`, `x.float`, `x.str`, `x.bool`
+  *(parens optional for zero-arg ops)*
+
+Casting **never mutates** the original value; it returns a new value or throws.
+
+### Quick rules
+
+* **Numbers**
+
+  ```goblin
+  int 3.9        /// 3   (truncate toward 0)
+  (-3.9).int     /// -3
+  float 3        /// 3.0
+  "42".int       /// 42
+  "3.14".float   /// 3.14
+  "  7 ".int     /// ❌ ValueError (no auto-trim) → use .trim first
+  ```
+* **Strings**
+
+  ```goblin
+  str 42         /// "42"
+  3.5.str        /// "3.5"
+  true.str       /// "true"
+  nil.str        /// ""        /// interpolation uses same rule
+  [1,2].str      /// "[1,2]"   /// stable literal form
+  {k:"v"}.str    /// "{k:\"v\"}"
+  ```
+* **Booleans**
+
+  * `bool x` checks **truthiness** (presence/emptiness), not the word “true/false”.
+  * Use `parse_bool` to **interpret** specific strings.
+
+  ```goblin
+  bool ""        /// false     (empty string)
+  bool " "       /// true      (non-empty)
+  bool 0         /// false
+  bool 5         /// true
+  "".bool        /// false
+
+  parse_bool "true"   /// true    (also "false","yes","no","1","0"; case-insensitive)
+  parse_bool "maybe"  /// ❌ ValueError
+  ```
+* **Dates & Times (constructors, not generic casts)**
+
+  ```goblin
+  date "2025-08-12"
+  time "14:30:00"
+  datetime "2025-08-12 14:30" tz:"UTC"
+  duration 3600               /// seconds
+  ```
+* **Money & Percent**
+
+  * Prefer **literals**: `$1.50`, `EUR 2.00`, `8.5%`, `10%s`.
+  * Casting from arbitrary strings to money/percent is **not** in core (use literals or a glam parser).
+
+### Errors
+
+* **ValueError** for invalid textual forms
+  `int "12a"` → ValueError
+* **TypeError** for unsupported conversions
+  `int [1,2,3]` → TypeError
+* **Design note:** Casting is explicit; no auto-trim, no locale guessing, no silent rounding beyond `int` truncation.
+
+### Cheat-ready examples
+
+```goblin
+id = "42".int
+price_text = 3.5.str
+is_blank = (text.trim.len == 0).bool      /// true if empty after trim
+flag = parse_bool user_input.trim         /// strict boolean from input
+when = datetime "2025-01-01 09:00" tz:"UTC"
+```
 
 ### Calling Operations
 
