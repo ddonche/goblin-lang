@@ -38,6 +38,10 @@ name = "Frank"
 age = 45
 price = $1.50
 ```
+- no dots in variable names (conflicts with operations)
+- no immutable variables or constants
+- use convention of all caps for intended constants (which can still change!)
+- goblin should check for multiple uses of same uppercase variable names and warn
 
 ## LANGUAGE GUIDE
 
