@@ -190,7 +190,8 @@ result = trim reverse upper text
 ```goblin
 upper, lower, mixed, title, slug
 trim, trim_lead, trim_trail
-escape, unescape
+escape, unescape, 
+minimize
 length (alias: len), reverse
 ```
 
@@ -201,6 +202,9 @@ length (alias: len), reverse
 "daniel".reverse      /// "leinad"
 "daniel".length       /// 6
 "daniel".mixed        /// "dAniEL" (random) 
+
+s = "Daniel is awesome"
+s.minimize            /// "Danielisawesome"
 
 s = "C:\path\file.txt"
 s.escape              /// "C:\\path\\file.txt"
@@ -214,6 +218,7 @@ trim_lead s                   /// whitespace at start
 trim_trail s                  /// whitespace at end
 strip_lead  "pre"   from s    /// drop leading substring if present
 strip_trail ".txt"  from s    /// drop trailing substring if present
+minimize                      /// strip white space
 ```
 
 #### Everyday text sugar
@@ -1298,7 +1303,7 @@ int, float, bool, money, pct, date, time, datetime, duration,
 len, shuffle, sort, add, insert, replace, roll, freq, mode, sample_weighted,
 set, settle, pick, reap, usurp,
 split, join, map,
-upper, lower, mixed, title, slug, trim, trim_lead, trim_trail, escape, unescape, reverse,
+upper, lower, mixed, title, slug, trim, minimize,  trim_lead, trim_trail, escape, unescape, reverse,
 before, after, before_last, after_last, between, lines, words, chars,
 find_all, match,
 sum, avg, min, max,
