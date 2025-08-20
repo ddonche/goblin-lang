@@ -967,6 +967,66 @@ Http.from_value(404)          /// Http.NotFound
 
 ### Money System
 
+## Formatting (Numbers, Money, Percent)
+
+Short version: use either method-style with args or the English **with** form. Not `format x, "spec"`.
+
+### ✅ Correct ways
+
+```goblin
+/// Method-style (preferred when there’s an arg)
+formatted_display = treasure_hoard.format(",.2f")
+
+/// English form (special prefix)
+formatted_display = format treasure_hoard with ",.2f"
+
+/// Interpolation with format (nice for UI)
+msg = "Treasure: {treasure_hoard:,.2f}"
+```
+
+### Mini-spec (lean, 80/20)
+
+* `,` → thousands grouping
+* `.Nf` → fixed decimals (N places)
+* `+` → always show sign
+* `%` → percent view (×100 and add `%`)
+* `¤` → include currency symbol (money only)
+* `CUR` → include ISO code (money only)
+
+You can combine flags in any order; these are equivalent: `",.2f"` and `".2f,"`.
+
+### Examples
+
+```goblin
+12345.6.format(",.2f")            /// "12,345.60"
+
+treasure_hoard = $1234567.89
+treasure_hoard.format(",.2f")     /// "1,234,567.89"   (no symbol)
+treasure_hoard.format("¤,.2f")    /// "$1,234,567.89" (with symbol)
+treasure_hoard.format("CUR,.2f")  /// "USD 1,234,567.89"
+
+tax_rate = 12.5%
+tax_rate.format(".1%")            /// "12.5%"
+
+(-42).format("+,.0f")             /// "-42" (shows sign; grouping has no effect here)
+```
+
+### Your snippet, cleaned up
+
+```goblin
+/// A goblin's dream come true
+treasure_hoard = $1234567.89
+formatted_display = treasure_hoard.format(",.2f")  /// "1,234,567.89"
+tax_rate = 12.5%
+after_tax = treasure_hoard - (tax_rate of treasure_hoard)  /// money stays exact
+```
+
+### Errors
+
+* Bad/unknown spec → **ValueError** (`invalid format specifier 'x'`)
+* Using `¤`/`CUR` on non-money → **TypeError**
+
+
 #### Money Types & Literals
 ```goblin
 /// Money
