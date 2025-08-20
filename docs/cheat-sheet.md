@@ -148,7 +148,7 @@ Casting **never mutates** the original value; it returns a new value or throws.
   float 3        /// 3.0
   "42".int       /// 42
   "3.14".float   /// 3.14
-  "  7 ".int     /// ❌ ValueError (no auto-trim) → use .trim first
+  "  7 ".int     /// ⚠ ValueError (no auto-trim) → use .trim first
   ```
 * **Strings**
 
@@ -162,7 +162,7 @@ Casting **never mutates** the original value; it returns a new value or throws.
   ```
 * **Booleans**
 
-  * `bool x` checks **truthiness** (presence/emptiness), not the word “true/false”.
+  * `bool x` checks **truthiness** (presence/emptiness), not the word "true/false".
   * Use `parse_bool` to **interpret** specific strings.
 
   ```goblin
@@ -173,7 +173,7 @@ Casting **never mutates** the original value; it returns a new value or throws.
   "".bool        /// false
 
   parse_bool "true"   /// true    (also "false","yes","no","1","0"; case-insensitive)
-  parse_bool "maybe"  /// ❌ ValueError
+  parse_bool "maybe"  /// ⚠ ValueError
   ```
 * **Dates & Times (constructors, not generic casts)**
 
@@ -263,6 +263,108 @@ result = trim reverse upper text
 
 **Note:** You may still call a callable value held in a variable with `()`. The "no function-style" rule only bans the global `op(value)` spelling; it does not ban calling a variable that holds an op.
 
+#### Prefix-Style Calls (What They're For)
+
+**Scope**
+- Prefix-style calls are reserved for a small set of built-in TEXT operations and other English-surface helpers (e.g., trim, upper, slug).
+- They are NOT used for math (sum, min, round, floor, ceil, abs) and NOT available to user-defined ops.
+
+**Why**
+- Keeps code readable without encouraging ambiguous chains like `sum max nums`.
+- Math and user ops stay method-style (or pipeline) for clarity and auditability.
+
+**Allowed (built-in text ops only)**
+```goblin
+text = "  Hello World  "
+clean = trim upper slug text               /// "hello-world"
+/// identical with pipeline:
+clean = text |> .trim |> .upper |> .slug
+```
+
+**Common prefixable text ops:**
+`trim`, `trim_lead`, `trim_trail`, `upper`, `lower`, `title`, `slug`, `escape`, `unescape`, `reverse`
+
+**Chaining rule**
+- Prefix chaining is only for zero-arg built-in text ops. If an op needs arguments, use method-style.
+
+**Disallowed for prefix**
+```goblin
+/// Math ops → method-style only
+total   = numbers.sum                      /// ✅
+small   = numbers.min                      /// ✅
+rounded = 3.7.round                        /// ✅
+/// total = sum numbers                    /// ❌
+/// r     = round 3.7                      /// ❌
+
+/// Bitwise ops → method-style only
+x = 5.bit_and(3)                           /// ✅
+/// x = bit_and 5 3                        /// ❌
+
+/// User-defined ops (op) → no prefix form
+op double(x) return x * 2
+val1 = 10.double                           /// ✅ method-style
+/// val2 = double 10                       /// ❌ no prefix for user ops
+```
+
+**Summary rules**
+- Prefix-style = built-in text ops only; zero-arg prefix chains OK.
+- All math, bitwise, and user-defined ops → method-style (or pipeline).
+- Prefer pipeline for readable multi-step flows:
+```goblin
+value = "  mix CASE  "
+result = value |> .trim |> .lower |> .slug
+```
+
+§9.y Why Goblin Doesn’t Use `op(value)`
+
+Goblin intentionally avoids the traditional function-call surface `op(value)` to keep the language visually consistent and audit-friendly.
+
+### Design goals
+
+* **One consistent look**: either `value.op` (method-style) or, for a small set of built-ins, `op value` (prefix for TEXT).
+* **Fewer parentheses** and fewer mixed calling conventions to scan during code reviews and audits.
+* **Clear left-to-right data flow**, especially with the pipeline operator.
+
+### What to do instead
+
+**Method-style (canonical)**
+
+```goblin
+total    = numbers.sum
+rounded  = 3.7.round
+masked   = "Hello".lower
+```
+
+**Pipeline (for step-by-step flows)**
+
+```goblin
+result = "  Hello World  "
+       |> .trim
+       |> .upper
+       |> .slug
+```
+
+**Prefix (TEXT built-ins only)**
+
+```goblin
+clean = trim upper slug "  Hello World  "   /// "hello-world"
+```
+
+### Common pitfalls (and fixes)
+
+```goblin
+/// sum([1,2,3])      /// ❌ not Goblin
+total = [1,2,3].sum  /// ✅ method-style
+
+/// round(3.7)        /// ❌ not Goblin
+r = 3.7.round        /// ✅ method-style
+
+/// double(10)        /// ❌ for user ops
+op double(x) return x * 2
+r = 10.double        /// ✅ method-style
+```
+
+
 ## Strings
 
 ### String/Text Operations (Core)
@@ -346,7 +448,7 @@ s.replace_first("old","new")     /// first only
 
 * Searches are **literal** (no regex) and **case-sensitive**.
 * Indices are **Unicode code-point** positions.
-* `find_all` is **non-overlapping** (e.g., "banana" + "ana" → \[1]).
+* `find_all` is **non-overlapping** (e.g., "banana" + "ana" → [1]).
 
 #### Replace / remove / drop (strings are immutable)
 
@@ -368,7 +470,7 @@ drop    "," from s                      /// alias for remove (copy)
 "Hello {name}"       /// interpolation
 "{{literal}}"        /// literal braces
 
-#### Literals: raw & trim\_lead at parse time
+#### Literals: raw & trim_lead at parse time
 
 ```goblin
 p = raw "C:\path\file.txt"
@@ -592,7 +694,7 @@ end
 
 ### Between / !Between
 
-Human‑friendly range comparisons. Equivalent to x >= a and x <= b (or the inverse).
+Humanâ€'friendly range comparisons. Equivalent to x >= a and x <= b (or the inverse).
 
 Form
 if expr between range
@@ -711,7 +813,7 @@ end
    * Emit values at step `N` while `P(i)` is **false**.
    * The first value that would make `P(i)` true is **not emitted**; instead, the loop switches to the next segment.
 3. When switching segments, alignment snaps forward so that the new stride starts on the correct multiple (based on the range's start).
-4. After the last `until …`, stride = `1` by default, unless overridden with a final `jump`.
+4. After the last `until â€¦`, stride = `1` by default, unless overridden with a final `jump`.
 
 #### Examples
 
@@ -974,7 +1076,7 @@ Short version: use either method-style with args or the English **with** form. N
 ### ✅ Correct ways
 
 ```goblin
-/// Method-style (preferred when there’s an arg)
+/// Method-style (preferred when there's an arg)
 formatted_display = treasure_hoard.format(",.2f")
 
 /// English form (special prefix)
