@@ -1,6 +1,26 @@
 # Goblin Language AI Cheat Sheet v1.5.4
 *Complete syntax reference for AI assistants - Reorganized for Documentation Flow*
 
+Cheat sheet = AI sync file
+
+Short, canonical rules
+High-signal, no nuance
+Source of truth for any AI working on Goblin
+If there's ever a conflict, cheat sheet wins
+
+Full docs = Human expansion
+
+Can be detailed, narrative, educational
+Can cover gotchas, edge cases, examples
+Can be "poetic" and explanatory
+But never contradicts the cheat sheet rules
+
+Workflow:
+
+Cheat sheet first - establishes the canonical rules
+Docs expand - add detail, context, examples, warnings
+Any conflicts - cheat sheet always wins
+
 ## GETTING STARTED
 
 ### Basic Syntax Overview
