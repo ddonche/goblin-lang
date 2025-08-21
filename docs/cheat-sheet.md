@@ -1688,6 +1688,13 @@ InsertIndexError, InsertTypeError,
 ShuffleTypeError, SortTypeError, AddTypeError
 ```
 
+### Errors I don't know where they go
+```
+PickCountError — `!dups` but requested count > available candidates  
+PickRangeError — empty candidate set after range/digit/unique constraints  
+PickTypeError — invalid source/type (e.g., digit shorthand on non-numeric)
+```
+
 ## EXAMPLES
 
 ### Tiny end-to-end examples
@@ -1740,15 +1747,13 @@ from, at, first, last, to, into, with, dups, seq, as, where, raw, trim_lead, on,
 #### Built-ins (shadowable operations/types)
 int, float, bool, money, pct, date, time, datetime, duration,
 len, shuffle, sort, add, insert, replace, roll, roll_detail, freq, mode, sample_weighted,
-set, settle, pick, reap, usurp,
+set, settle, pick, reap, usurp, unique,
 split, join, map, format,
 upper, lower, title, slug, trim, trim_lead, trim_trail, escape, unescape, reverse, mixed, minimize, remove,
 before, after, before_last, after_last, between, lines, words, chars,
 find_all, match, find, has, count, parse_bool,
 sum, avg, min, max,
 drop, cut, strip_lead, strip_trail
-
-pick N from collection – select multiple random elements
 
 ---
 
