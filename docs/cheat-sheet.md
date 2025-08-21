@@ -1,4 +1,4 @@
-# Goblin Language AI Cheat Sheet v1.5.4
+# Goblin Language AI Cheat Sheet v1.5.5
 *Complete syntax reference for AI assistants - Reorganized for Documentation Flow*
 
 Cheat sheet = AI sync file
@@ -1075,36 +1075,44 @@ greet name:"Bob"
 
 ### Object-Oriented Programming
 
-#### Class Definition (Two Styles)
+#### Classes
 
-**Template Style:**
+### Definition
 ```goblin
-class Pet = name: "{name}" :: age: 0 :: species: "dog"
+/// Template style definition (preferred)
+class Pet = name: "{name}" :: age: 0
     op speak()
-        "Hi, I'm {name}, a {age}-year-old {species}."
+        "Hi, I'm {name}, age {age}"
     end
 end
 ```
+- No `new`, no `init` — just declare the class and its fields/ops.
+- Template bindings (`::`) set defaults and order.
 
-**Function Style:**
+### Instantiation (Template-Only)
 ```goblin
-class Pet(name: string, age: int = 0, species: string = "dog")
-    op speak()
-        "Hi, I'm {name}, a {age}-year-old {species}."
-    end
-end
+fido = Pet: "Fido" :: 3
+rex  = Pet: name: "Rex" :: age: 5   /// named bindings
+```
+- **Only template form is allowed.**
+- `Pet("Fido",3)` ❌ not Goblin.
+- `Pet.new("Fido",3)` ❌ not Goblin.
+
+### Usage
+```goblin
+say fido.speak()        /// "Hi, I'm Fido, age 3"
+fido.set_age(4)         /// auto-generated setter
+say fido.speak()        /// "Hi, I'm Fido, age 4"
 ```
 
-#### Instantiation
-```goblin
-/// Template style
-pet = Pet: "Fido" :: 3 :: "cat"
+### Rule
+- **Declare → Bind → Operate**
+- Classes are defined with fields + ops.
+- Objects are instantiated with **template binding only**.
+- You then operate on the object variable itself via `.ops`. 
 
-/// Function style  
-pet = Pet("Fido", 3, "cat")
-pet = Pet("Rex", species: "wolf")    /// named args
-pet = Pet("Max", :: "cat")           /// skip middle arg
-```
+This keeps Goblin consistent: **no function-style calls anywhere.**
+
 
 #### Access & Privacy
 ```goblin
