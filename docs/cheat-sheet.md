@@ -644,7 +644,71 @@ say max(scores)   /// 96
 names = ["goblin","orc","troll"]
 say map upper, names   /// ["GOBLIN","ORC","TROLL"]
 ```
+### 🎲 Pick — Random Selection
 
+**Syntax:**
+- `pick from collection` → 1 random element
+- `pick n from collection` → n random elements (no duplicates)
+- `pick n from collection with dups` → n random elements, duplicates allowed
+- `pick from start..end` → 1 random number in range
+- `pick n from start..end` → n random numbers in range
+- `pick x_y` → pick x random numbers, each y digits long  
+   - `pick 1_6` → one 6-digit number  
+   - `pick 5_4` → five 4-digit numbers  
+- `pick x_y from start..end` → digit-length constrained by range  
+   - `pick 2_3 from 400..499` → two 3-digit numbers in the 400–499 range
+
+**Notes:**
+- Use `with dups` when repeats are allowed (same as `reap`).
+- Underscore `_` syntax mirrors dice notation (`NdM`).  
+  > Example: `2d6` = roll 2 six-sided dice. `2_3` = pick 2 random 3-digit numbers.
+- Works with maps too: `pick from {key: value, ...}` chooses a random key/value pair.
+
+**Examples:**
+```goblin
+pick from loot_table               /// 1 random loot item
+pick 3 from loot_table with dups   /// 3 items, repeats allowed
+pick from 1..100                   /// random number 1–100
+pick 5 from 1..100                 /// 5 random numbers 1–100
+pick 1_6                           /// 123456 (any 6-digit number)
+pick 2_3 from 400..499             /// [456, 432] (3-digit, starts with 4)
+pick 3 from users with dups        /// may return same user twice
+pick 5_4 join with ", "            /// "4829, 7710, 5500, 1234, 9083"
+```
+
+### 🌾 Reap — Destructive Random Selection
+
+**Syntax:**
+- `reap from collection` → remove & return 1 random element
+- `reap n from collection` → remove & return n random elements (no duplicates)
+- `reap n from collection with dups` → return n elements, allowing repeats (collection shrinks only once per unique)
+- `reap from start..end` → remove & return 1 random number in range
+- `reap n from start..end` → remove & return n random numbers in range
+- `reap x_y` → reap x random numbers, each y digits long  
+   - `reap 1_6` → one 6-digit number  
+   - `reap 5_4` → five 4-digit numbers  
+- `reap x_y from start..end` → digit-length constrained by range  
+   - `reap 2_3 from 400..499` → two 3-digit numbers in the 400–499 range
+
+**Notes:**
+- Default is **without dups**; use `with dups` for sampling with replacement.
+- Underscore `_` syntax mirrors dice notation (`NdM`).  
+  > Example: `2d6` = roll 2 six-sided dice. `2_3` = reap 2 random 3-digit numbers.
+- Collection actually shrinks when reaping (unless `with dups`).
+
+**Examples:**
+```goblin
+deck = ["ace", "king", "queen", "jack"]
+
+reap from deck                  /// "queen" (deck now ["ace","king","jack"])
+reap 2 from deck                /// ["ace","jack"] (deck now ["king"])
+reap 3 from users with dups     /// may return same user twice
+reap from 1..100                /// removes & returns a random number
+reap 5 from 1..100              /// removes 5 unique numbers
+reap 1_6                        /// 123456 (any 6-digit number)
+reap 2_3 from 400..499          /// [456, 432] (3-digit, starts with 4)
+reap 5_4 join with ", "         /// "4829, 7710, 5500, 1234, 9083"
+```
 
 **Common reductions (method-style mirrors; paren-optional)**
 ```goblin
