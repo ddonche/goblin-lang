@@ -644,9 +644,14 @@ say max(scores)   /// 96
 names = ["goblin","orc","troll"]
 say map upper, names   /// ["GOBLIN","ORC","TROLL"]
 ```
-## 🎲 Pick / 🌾 Reap / ✨ Unique — Random Selection & Deduplication
+## 🎲 Pick / 🌾 Reap / ✨ Unique — Random Selection, Destructiveness & Duplication
 
-This section covers **random selection** (non-destructive with `pick`, destructive with `reap`) and the universal **`unique`** modifier/op.
+This section defines random selection with `pick` (non-destructive) and `reap` (destructive), and clarifies duplication at two scopes:
+
+- **Result-level duplication** (are there repeats among the returned items?)  
+  Controlled by **`with dups`** (allow repeats across results) or **`!dups`** (no repeats across results).
+- **Item-internal duplication** (does a single generated item contain repeats?)  
+  Controlled by **`unique`** (e.g., digits inside an `x_y` number are all distinct).
 
 ---
 
@@ -654,96 +659,108 @@ This section covers **random selection** (non-destructive with `pick`, destructi
 
 **Pick (non-destructive)**
 - `pick from collection` → 1 random element
-- `pick n from collection` → n random elements (no duplicates by default)
-- `pick n from collection with dups` → n random elements, duplicates allowed
+- `pick n from collection` → n random elements (**default: !dups** for finite collections)
+- `pick n from collection with dups` → n elements, repeats allowed across results
+- `pick n from collection !dups` → n elements, no repeats across results (explicit)
 - `pick from start..end` → 1 random number in range
-- `pick n from start..end` → n random numbers in range
-- `pick x_y` → x random integers, each y digits long  
-  - `pick 1_6` → one 6-digit integer (100000–999999)  
-  - `pick 5_4` → five 4-digit integers (1000–9999)
-- `pick x_y from start..end` → same, but constrained by range intersection  
-  - `pick 2_3 from 400..499` → two 3-digit numbers in 400–499
-- `pick … join with "sep"` → join results into string  
-  - `pick 5_4 join with ", "` → `"4829, 7710, 5500, 1234, 9083"`
+- `pick n from start..end [with dups|!dups]` → n numbers in range
+- `pick x_y [with dups|!dups]` → pick **x** random integers, each **y** digits long
+  - `pick 1_6` → one 6-digit integer (100000–999999)
+  - `pick 5_4` → five 4-digit integers
+- `pick x_y from start..end [with dups|!dups]` → same, constrained by range intersection
+  - `pick 2_3 from 400..499 !dups`
+- Post-processing: `… join with "sep"` converts the result array to a string
 
 **Reap (destructive)**
-- Mirrors `pick` syntax exactly, but **removes** the selected values from the source (when the source is a collection/range).
-  - `reap from deck`, `reap 2 from deck`, `reap 3 from deck with dups`
-  - `reap 1_6`, `reap 2_3 from 400..499`, `reap 5_4 join with ", "`
+- Mirrors `pick`, but **removes** selected values from the source (when source is a collection/range):
+  - `reap from deck`, `reap 2 from deck !dups`, `reap 3 from deck with dups`
+  - `reap 1_6`, `reap 2_3 from 400..499 !dups`, `reap 5_4 join with ", "`
 
-**Unique (universal)**
-- `unique <collection>` → return a deduped copy
-- `<collection> |> unique` → pipeline usage
-- As a **modifier**: may follow `pick`, `reap`, `drop`, or similar ops:
-  - `pick 10 from users with dups unique`  
-  - `reap 10 from deck with dups unique`  
-  - `drop 5 from queue unique`  
-- On digit shorthand (`x_y`), `unique` applies **inside each number**:
-  - `pick 1_5 unique` → one 5-digit number, no repeated digits  
-  - `pick 3_4 unique` → three 4-digit numbers, each with digits distinct
-  - To dedupe the *set of numbers themselves*, chain or pipe `unique`:  
-    - `pick 5_4 unique |> unique`
+**Unique (item-internal)**
+- On digit shorthand (`x_y`), `unique` means **the digits inside each generated number are all distinct**.
+  - `pick 1_5 unique` → one 5-digit number with no repeating digits
+  - `pick 3_4 unique` → three 4-digit numbers, each internally digit-unique
+- To also remove duplicates **across** the generated numbers, combine:
+  - `pick 3_4 unique !dups`  
+  - or `pick 3_4 unique |> unique` (pipeline `unique` dedupes the result set)
+
+**Standalone / pipeline `unique` (non-destructive op)**
+- `unique <collection>` → returns a deduped copy of the collection (result-level)
+- `<collection> |> unique` → pipeline form
 
 ---
 
-### Semantics
+### Semantics & Defaults
 
-**`pick`**
-- Non-destructive: never alters the source.
-- Default for finite collections: no duplicates unless `with dups` specified.
-- For ranges: numbers are sampled uniformly.
+**Result-level duplication**
+- `with dups` → sampling **with replacement**: the same element/number may appear multiple times in the **result set**.
+- `!dups` → sampling **without replacement**: all items in the result set are distinct.
+- **Defaults**
+  - Finite collections: `pick n from collection` defaults to **`!dups`**.
+  - Numeric spaces (ranges, `x_y`): **default is `with dups`** (duplicates across results may occur), since the space is large and replacement is common. Use `!dups` when you require distinct outputs.
 
-**`reap`**
-- Destructive: removes selected values from the source.
-- `with dups` means the same element may be *selected* multiple times; the source only shrinks once per unique removal. Returned list may contain repeats.
+**Item-internal duplication**
+- `unique` on `x_y` affects **digits inside each number** (does *not* affect the result set).  
+  Example: `pick 5_3 unique` can yield `[123, 340, 507, 198, 246]`; digits don’t repeat *within* each number, but two numbers in the list might still be equal unless you also say `!dups`.
 
-**`unique`**
-- Always means **deduplicate the result**.  
-- Default behavior: non-destructive (copy).  
-- As a modifier: constrains the result of a verb (selection).  
-- With digit shorthand (`x_y`), applies internally (digit-level uniqueness).  
-- With destructive ops: does not alter destructiveness, only duplicates in the result.
+**Reap**
+- Destructive: the source shrinks by the number of **unique items actually removed**.  
+  With `with dups`, the same source element selected multiple times only reduces the source **once**; the returned list may still include repeats unless `!dups` is specified.
+- `reap … !dups` returns a set of distinct items and removes exactly those from the source.
+
+**Maps as sources**
+- Be explicit about what you’re picking:
+  - `pick from m.keys`, `pick from m.values`
+- Weighted selection remains a separate op (outside this spec).
+
+**Digit ranges**
+- For `x_y`:  
+  - `y = 1` ⇒ digits from `0..9`  
+  - `y > 1` ⇒ implicit range `10^(y-1) .. (10^y - 1)` (no leading zeros)
+- With `from A..B`, candidates = intersection of that implicit digit range with `[A..B]`.
 
 ---
 
 ### Errors
 
-- `PickCountError` — requesting more unique results than available without `with dups`
-- `PickRangeError` — intersection with range leaves no candidates
-- `PickTypeError` — invalid source/type (e.g., digit shorthand on non-numeric)
-- Existing `Reap*` / `Drop*` errors apply unchanged
+- `PickCountError` — requesting `!dups` when the candidate set is too small
+- `PickRangeError` — `x_y from A..B` leaves no candidates after intersection (or `unique` internal constraint makes per-item generation impossible)
+- `PickTypeError` — invalid source/type (e.g., applying digit rules to non-numeric)
+- Existing `Reap*`/`Drop*` errors apply unchanged
 
 ---
 
 ### Examples
 
 ```goblin
-/// Basic pick
-pick from loot_table                  /// 1 random loot item
-pick 3 from loot_table with dups      /// 3 items, repeats allowed
-pick from 1..100                      /// random number 1–100
-pick 5 from 1..100                    /// 5 random numbers 1–100
+/// Collections (default !dups)
+pick 5 from names                 /// 5 distinct names
+pick 5 from names with dups       /// repeats allowed across results
+pick 5 from names !dups           /// explicit no-repeats
+
+/// Ranges (default with dups)
+pick 5 from 1..100                /// 5 numbers, repeats allowed by default
+pick 5 from 1..100 !dups          /// 5 distinct numbers in range
 
 /// Digit shorthand
-pick 1_6                              /// 6-digit number (e.g., 123456)
-pick 2_3 from 400..499                /// [456, 432] (3-digit, starts with 4)
-pick 5_4 join with ", "               /// "4829, 7710, 5500, 1234, 9083"
+pick 1_6                          /// e.g., 123456 (digits may repeat within other forms)
+pick 5_4                          /// five 4-digit numbers (results may repeat)
+pick 5_4 !dups                    /// five distinct 4-digit numbers
+pick 1_5 unique                   /// one 5-digit number, no repeated digits (e.g., 13452)
+pick 3_4 unique !dups             /// three 4-digit numbers, digits unique inside each, and all results distinct
+pick 2_3 from 400..499 !dups      /// two distinct 3-digit numbers between 400 and 499
 
-/// Unique (digit-level and result-level)
-pick 1_5 unique                       /// 5-digit number, no repeating digits
-pick 3_4 unique                       /// three 4-digit numbers, digits distinct inside each
-pick 3_4 unique |> unique             /// digits distinct + dedupe numbers themselves
+/// Joining / post-processing
+pick 5_4 !dups join with ", "     /// "4829, 7710, 5500, 1234, 9083"
 
-/// Reap (destructive mirror)
-reap from deck                        /// remove & return 1 random card
-reap 2 from deck                      /// remove & return 2 distinct cards
-reap 3 from users with dups unique    /// destructive; return deduped set
-reap 2_3 from 400..499                /// two 3-digit numbers in 400–499
+/// Reap mirrors pick (destructive)
+reap 2 from deck !dups            /// remove & return 2 distinct cards
+reap 3 from users with dups       /// may return repeats; source shrinks once per unique
+reap 1_6 unique                   /// 6-digit number w/ unique digits (numeric generation; no collection to shrink)
 
-/// Standalone unique
-unique ["a","b","a","c"]              /// ["a","b","c"]
-users |> map lower |> unique          /// pipeline dedupe
-sum unique [1,2,2,3,3,3,4]            /// 1+2+3+4 = 10
+/// Standalone unique (result-level dedupe op)
+unique ["a","b","a","c"]          /// ["a","b","c"]
+users |> map lower |> unique      /// dedupe after mapping
 ```
 
 **Common reductions (method-style mirrors; paren-optional)**
