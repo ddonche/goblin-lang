@@ -634,6 +634,16 @@ reap 2 from names              /// remove & return 2 random
 add "Item" to names            /// append
 insert "Item" at 2 into names  /// insert at position
 ```
+```goblin
+scores = [85, 92, 78, 96, 88]
+say sum(scores)   /// 439
+say avg(scores)   /// 87.8
+say min(scores)   /// 78
+say max(scores)   /// 96
+
+names = ["goblin","orc","troll"]
+say map upper, names   /// ["GOBLIN","ORC","TROLL"]
+```
 
 
 **Common reductions (method-style mirrors; paren-optional)**
