@@ -1,4 +1,4 @@
-# Goblin — Language Specification v1.5.3 "Treasure Hoarder"
+# Goblin — Language Specification v1.5.6 "Treasure Hoarder"
 
 ## Philosophy
 
@@ -1342,41 +1342,49 @@ Strings are treated as lists of characters in Goblin (§6). Helper sugar applies
 
 # 15. Date & Time (Core)
 
+Goblin’s temporal system is explicit, safe, and policy-driven.
+
+* **Types:** `date`, `time`, `datetime`, `duration`. No implicit coercions.
+* **No naive timestamps.** A `datetime` always has a zone (from literal, `tz:` arg, or policy default).
+* **Policy snapshot.** Policy is captured immutably at load or on `set @policy`; ops read O(1) fields.
+
+---
+
 ## 15.1 Types
 
-```goblin
-date      /// calendar day (no time, no zone)
-time      /// clock time (no date, no zone)
-datetime  /// date + time + zone (zone required; defaults from policy)
-duration  /// elapsed seconds (no zone)
-```
+* `date` — calendar day (no time, no zone)
+* `time` — clock time (no date, no zone)
+* `datetime` — date + time + zone (zone **required**; defaults from policy)
+* `duration` — elapsed seconds (no zone)
 
-No implicit coercions between these types.
+**Rule:** No implicit coercions between these types.
 
-## 15.2 Policy & Defaults (Project-wide)
+---
 
-Datetime semantics follow the active policy (§27). Default scaffold (no network required):
+## 15.2 Policy & Defaults (Project‑wide)
+
+**Default scaffold:**
 
 ```goblin
 @policy = "project_default"
     datetime: {
-        tz: local_tz(),            /// machine zone at startup
-        prefer_trusted: false,     /// do not require server time
-        policy: "allow",           /// local fallback is OK
-        leap_mode: "clamp",        /// leap second handling (see §15.13)
-        time_arith: "error",       /// "error" | "wrap" | "shift" (see §15.8)
-        tzdata_version: ""         /// empty = engine default; else pin, e.g. "2025a"
-        debug: false               /// policy breadcrumbs & why_dt() detail
+        tz: local_tz(),          /// machine zone at startup
+        prefer_trusted: false,   /// do not require server time
+        policy: "allow",        /// local fallback is OK
+        leap_mode: "clamp",     /// leap second handling (see §15.13)
+        time_arith: "error",    /// "error" | "wrap" | "shift" (see §15.8)
+        tzdata_version: "",     /// empty = engine default; else pin e.g. "2025a"
+        debug: false             /// policy breadcrumbs & why_dt() detail
     }
 ```
 
-TZ accepts IANA names ("America/Denver"), "UTC", or fixed offsets ("+00:00", "-07:00").
+**TZ accepts** IANA names (e.g., `"America/Denver"`), `"UTC"`, or fixed offsets (e.g., `"+00:00"`, `"-07:00"`).
 
-Affects constructors without explicit `tz:` and `now()`/`today()`.
+**Performance:** Engines expose each policy domain as an immutable snapshot captured at script load or on `set @policy`. Datetime ops read O(1) fields (no map lookups/allocations). Common flags may be lowered to IR constants.
 
-**Performance requirement**: Engines expose each policy domain as an immutable snapshot captured at script load or `set @policy`. Datetime ops read O(1) fields (no map lookups/allocations). Common flags may be lowered to IR constants.
+---
 
-## 15.3 Trusted Time (Server → Cache → Local) — Opt-in
+## 15.3 Trusted Time (Server → Cache → Local) — Opt‑in
 
 Goblin core never calls the network; trusted time requires a glam with network permission.
 
@@ -1398,32 +1406,21 @@ set @policy trusted_minimal
 
 ### 15.3.2 API
 
-```goblin
-trusted_now()        → datetime
-trusted_today()      → date
-last_trusted_sync()  → datetime | nil
-time_status()        → {
-  source: "server"|"cache"|"local",
-  verified: bool, age_s: int,
-  offset_s: float, drift_s: float,
-  tzdata: { local_version: string, server_version: string | nil, mismatch: bool }
-}
-ensure_time_verified(reason="")  /// raise/warn per policy
-clear_time_cache()               → nil
-```
+* `trusted_now()        → datetime`
+* `trusted_today()      → date`
+* `last_trusted_sync()  → datetime | nil`
+* `time_status()        → { source: "server"|"cache"|"local", verified: bool, age_s: int, offset_s: float, drift_s: float, tzdata: { local_version: string, server_version: string | nil, mismatch: bool } }`
+* `ensure_time_verified(reason="")`  /// raise/warn per policy
+* `clear_time_cache()   → nil`
 
-**Behavior**
+**Behavior:** trusted\_\* uses server → signed monotonic cache → local per policy. In **strict**, missing/invalid trust ⇒ `TimeSourceError`. In **warn**, emit `TimeSourceWarning`. If server reports a tzdata version and it differs from local, `time_status().tzdata.mismatch = true`; `ensure_time_verified` fails in strict.
 
-`trusted_*` uses server → signed monotonic cache → local per policy.
-
-In `strict`, missing/invalid trust → `TimeSourceError`. In `warn`, emit `TimeSourceWarning`.
-
-If server reports a tzdata version and it differs from local, `time_status().tzdata.mismatch = true`; `ensure_time_verified` fails in `strict`.
+---
 
 ## 15.4 Construction & Parsing
 
 ```goblin
-d  = date("2025-08-12")                         /// YYYY-MM-DD
+d  = date("2025-08-12")                          /// YYYY-MM-DD
 t  = time("14:30:05")                            /// HH:MM[:SS[.SSS]]
 dt = datetime("2025-08-12 14:30", tz: "UTC")     /// localized to tz
 dt2= datetime("2025-08-12T14:30:00-06:00")       /// ISO-8601 w/ offset
@@ -1437,60 +1434,48 @@ parse_time(s, fmt="HH:mm[:ss[.SSS]]")
 parse_datetime(s, fmt="YYYY-MM-DD HH:mm[:ss[.SSS]]", tz=nil)
 ```
 
-Tokens: `YYYY MM DD HH mm ss SSS ZZ` (ZZ = ±HH:MM).
-If the string has Z/offset, it overrides defaults.
-Malformed → `ValueError`.
+Tokens: `YYYY MM DD HH mm ss SSS ZZ` (`ZZ` = ±HH\:MM).
+
+**Override rule:** If the string has `Z`/offset, it **overrides** `tz:` and policy defaults. Malformed → `ValueError`.
+
+---
 
 ## 15.5 Duration Literals
 
-```goblin
-1s  90s  5m  1h  2d  3w  6mo  1y
+```
+1s 90s 5m 1h 2d 3w 6mo 1y
 ```
 
-Units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days), `w` (weeks), `mo` (months = 30d), `y` (years = 365d).
-`duration(n_seconds)` also available.
+Units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days), `w` (weeks), `mo` (months = 30d), `y` (years = 365d). Also `duration(n_seconds)`.
 
-**Disambiguation**
+**Disambiguation:** `m` always minutes; `mo` months. Passing minutes to a calendar adder (e.g., `add_months(d, 3m)`) → `ValueError("minutes given where months expected; use 'mo' for months")`.
 
-`m` always minutes; `mo` months.
-
-Passing minutes to a calendar adder (e.g., `add_months(d, 3m)`) →
-`ValueError("minutes given where months expected; use 'mo' for months")`.
+---
 
 ## 15.6 Now/Today & Zone Helpers
 
-```goblin
-now()          → datetime   /// local or trusted per policy (prefer_trusted)
-today()        → date
-utcnow()       → datetime   /// always UTC; uses trusted chain if configured
-local_tz()     → string
-to_tz(dt, "UTC")            /// change zone (wall-clock adjusts)
-```
+* `now()     → datetime`   /// local or trusted per policy (prefer\_trusted)
+* `today()   → date`
+* `utcnow()  → datetime`   /// always UTC; uses trusted chain if configured
+* `local_tz() → string`
+* `to_tz(dt, "UTC")`      /// change zone (wall-clock adjusts)
+
+---
 
 ## 15.7 Formatting & Accessors
 
-```goblin
-.iso()                    /// ISO-8601
-.format("YYYY-MM-DD")     /// token format
-str(x)                    /// alias for .iso()
+* `.iso()` (ISO‑8601), `.format("YYYY-MM-DD")`, `str(x)` = ISO
+* **Never** emit named zone abbreviations—only numeric `ZZ`.
 
-/// Accessors (read-only)
-dt.year dt.month dt.day
-dt.hour dt.minute dt.second dt.millisecond
-dt.weekday   /// 1..7 (Mon=1)
-dt.yearday   /// 1..366
-dt.date()    → date
-dt.time()    → time
-dt.tz()      → string
-dt.epoch()   → float   /// seconds since Unix epoch (UTC)
-```
+**Accessors (read‑only):** `year month day hour minute second millisecond weekday(1..7 Mon=1) yearday(1..366) date() time() tz():string epoch():float`
 
-Formatting never emits named zone abbreviations—only numeric ZZ.
+---
 
 ## 15.8 Arithmetic & Comparisons
 
+**Date/DateTime arithmetic**
+
 ```goblin
-/// Datetime & date arithmetic
 datetime + duration  → datetime
 datetime - duration  → datetime
 date     + duration  → date       /// duration must be whole days
@@ -1501,76 +1486,63 @@ datetime - datetime  → duration
 date     - date      → duration
 
 /// Comparisons
-< <= > >= == !=  on like-types only  /// cross-type → TypeError
+< <= > >= == != on like-types only  /// cross-type → TypeError
 ```
 
 **Time arithmetic requires explicit intent**
 
-```goblin
-time ± duration → TimeArithmeticError
-"time arithmetic requires explicit helper: use wrap_time(...) or shift_time(...)"
-```
+* `time ± duration` → `TimeArithmeticError` (default).
+* Policy desugaring (project toggle):
 
-**Helpers:**
+  * `time_arith: "wrap"`  — allow `time ± duration`, desugar to `wrap_time` (mod 24h)
+  * `time_arith: "shift"` — desugar to `shift_time` (carry days)
 
-```goblin
-wrap_time(t: time, dur: duration)  → time
-/// Wrap modulo 24h: wrap_time(time("23:30"), 1h) → 00:30
+**Helpers:** `wrap_time(t, dur) → time`, `shift_time(t, dur) → { days: int, time: time }`
 
-shift_time(t: time, dur: duration) → { days: int, time: time }
-/// Carry overflow/underflow: shift_time(time("23:30"), 1h) → { days: 1, time: 00:30 }
-```
-
-**Optional policy desugaring (project toggle):**
-
-`time_arith: "wrap"` — allow `time ± duration`, desugar to `wrap_time`.
-
-`time_arith: "shift"` — desugar to `shift_time`.
-
-`time_arith: "error"` (default) — keep forbidden.
+---
 
 ## 15.9 Truncation / Rounding
 
-```goblin
-floor_dt(dt, "year"|"month"|"week"|"day"|"hour"|"minute"|"second")
-ceil_dt(dt,  "year"|"month"|"week"|"day"|"hour"|"minute"|"second")
-```
+`floor_dt(dt, unit)` / `ceil_dt(dt, unit)` where unit ∈ `year|month|week|day|hour|minute|second`.
 
-Weeks floor to Monday 00:00 in the instance's TZ.
+* Weeks floor to **Monday 00:00** in the instance's TZ.
 
-## 15.10 Calendar-Safe Adders (field changes, clamped)
+---
 
-```goblin
-add_days(d|dt, n)    → same type
-add_months(d|dt, n)  → same type    /// Jan 31 + 1 → Feb 28/29
-add_years(d|dt, n)   → same type    /// Feb 29 + 1 → Feb 28
-```
+## 15.10 Calendar‑Safe Adders (field changes, clamped)
 
-**Rule of thumb:**
+`add_days(d|dt, n)`, `add_months(d|dt, n)`, `add_years(d|dt, n)`
 
-Use duration (`+ 1mo`, `+ 1y`) for elapsed time (30/365 days).
+* Jan 31 + 1 → Feb 28/29
+* Feb 29 + 1 → Feb 28
 
-Use adders for calendar changes (clamped). Goblin never guesses.
+**Rule of thumb:** Use `duration` (`+ 1mo`, `+ 1y`) for elapsed time (30/365 days). Use adders for calendar changes. Goblin never guesses.
+
+---
 
 ## 15.11 Ranges
 
+**Dates (inclusive by default)**
+
 ```goblin
-/// Dates (inclusive by default)
 for d in date("2025-08-01")..date("2025-08-05")           /// default step=1d
 for d in date("2025-08-01")..date("2025-08-05") step 2d
+```
 
-/// Datetimes (exclusive by default)
+**Datetimes (exclusive by default)**
+
+```goblin
 for ts in dt_start...dt_end                                /// default step=1h
 for ts in dt_start...dt_end step 30m
 ```
 
-`..` = inclusive; `...` = exclusive.
+`..` = inclusive; `...` = exclusive. `step` must be a `duration`. Optional `inclusive:`/`exclusive:` flags may override defaults.
 
-`step` must be a duration. Optional `inclusive:`/`exclusive:` flags may override defaults.
+---
 
 ## 15.12 Interop & Serialization (JSON/YAML/CSV)
 
-Default writing & reading: strings (no auto-decode).
+**Default read/write:** strings (no auto‑decode).
 
 **JSON options:**
 
@@ -1579,7 +1551,7 @@ write_json(path, value, { datetime: "string" | "object" = "string" })
 read_json(path,  { datetime: "off" | "string" | "object" | "auto" = "auto" })
 ```
 
-**"object" (typed) form:**
+**Typed “object” form:**
 
 ```json
 {"_type":"datetime","value":"2025-08-12T14:30:00-06:00"}
@@ -1588,66 +1560,57 @@ read_json(path,  { datetime: "off" | "string" | "object" | "auto" = "auto" })
 {"_type":"duration","seconds":3600}
 ```
 
-"auto" tries object → strict ISO → passthrough.
-
-YAML/CSV mirror string mode; use parse helpers to opt in.
-
-When deserializing into a typed target (e.g., class field), strict ISO strings are accepted as that type even if `datetime:"off"`.
+* `auto` tries object → strict ISO → passthrough.
+* YAML/CSV mirror string mode; use parse helpers to opt in.
+* When deserializing into a typed target (e.g., class field), strict ISO strings are accepted as that type even if `datetime:"off"`.
 
 **Naive boundary adapters**
 
-```goblin
-naive_to_datetime(epoch_s: float, tz: string) → datetime    /// attach zone
-datetime_to_naive_utc(dt: datetime)           → float       /// epoch seconds, UTC
-datetime_to_naive_local(dt: datetime)         → float       /// epoch seconds, local
-```
+* `naive_to_datetime(epoch_s: float, tz: string) → datetime`    /// attach zone
+* `datetime_to_naive_utc(dt: datetime)           → float`       /// epoch seconds, UTC
+* `datetime_to_naive_local(dt: datetime)         → float`       /// epoch seconds, local
 
-Errors: malformed → `ValueError`.
+Malformed → `ValueError`.
+
+---
 
 ## 15.13 Leap Seconds
 
-Goblin uses POSIX/Unix epoch (no leap seconds).
-Parsing "HH:MM:60" is allowed in UTC only for historical data.
+Goblin uses POSIX/Unix epoch (no leap seconds). Parsing `HH:MM:60` is allowed **in UTC only** for historical data.
 
 ```goblin
 @policy = "leap"
     datetime: { leap_mode: "clamp" | "smear" = "clamp" }
 ```
 
-`clamp`: parse as "HH:MM:59" + 1s; formatting never emits :60.
+* **clamp:** parse as `HH:MM:59` + 1s; formatting never emits `:60`.
+* **smear:** spread the leap second across the last second of the day. Formatting always normalizes per `leap_mode`.
 
-`smear`: spread the leap second across the last second of the day.
-Formatting always normalizes per leap_mode.
+---
 
 ## 15.14 Introspection & Debugging
 
-```goblin
-dt_policy() → {
-  tz: string, prefer_trusted: bool, policy: string, leap_mode: string,
-  time_arith: string, tzdata_version: string, source: string|nil,
-  cache_path: string|nil, ttl: duration, cache_ttl: duration, skew_tolerance: duration,
-  debug: bool
-}
+* `dt_policy() → { tz, prefer_trusted, policy, leap_mode, time_arith, tzdata_version, source: string|nil, cache_path: string|nil, ttl: duration, cache_ttl: duration, skew_tolerance: duration, debug: bool }`
+* `why_dt(op: string) → string`  /// Human‑readable explanation of how a datetime operation was interpreted (policy fields, parsing/adder/range decisions).
 
-why_dt(op: string) → string
-/// Human-readable explanation of how a datetime operation was interpreted,
-/// including policy fields and parsing/adder/range decisions.
-```
+When `datetime.debug:true`, `@policy` changes append JSON lines with scope and diffs to `dist/policy.log`.
 
-When `datetime.debug:true`, `@policy` changes append JSON lines to `dist/policy.log` with scope and diffs.
+---
 
 ## 15.15 Errors & Warnings
 
-- **ValueError** — malformed input or invalid operation
-- **TypeError** — cross-type comparisons/ops
-- **OverflowError** — out of range
-- **TimezoneError** — unknown tz
-- **TimeSourceError** — strict trusted time failure
-- **TimeSourceWarning** — trusted fallback in warn mode
-- **TimeArithmeticError** — time ± duration attempted without helper
-- **DatetimeCompatWarning** — behavior differs under datetime_compat profile (see below)
+* `ValueError` — malformed input or invalid operation
+* `TypeError` — cross‑type comparisons/ops
+* `OverflowError` — out of range
+* `TimezoneError` — unknown tz
+* `TimeSourceError` — strict trusted time failure
+* `TimeSourceWarning` — trusted fallback in warn mode
+* `TimeArithmeticError` — `time ± duration` attempted without helper
+* `DatetimeCompatWarning` — behavior differs under `datetime_compat` profile
 
-## 15.16 Compatibility & Migration (Non-normative)
+---
+
+## 15.16 Compatibility & Migration (Non‑normative)
 
 A prebuilt compat profile eases migration from naive ecosystems:
 
@@ -1656,15 +1619,13 @@ A prebuilt compat profile eases migration from naive ecosystems:
     datetime: { time_arith: "wrap", policy: "warn", leap_mode: "clamp" }
 ```
 
-Emits `DatetimeCompatWarning` where behavior differs from canon (implicit wrapping, naive parse).
-
-Use lints/codemods to replace `time ± duration` with `wrap_time`/`shift_time`, add explicit tz, and swap elapsed/calendar math as needed. Tighten to `time_arith:"error"` and `policy:"strict"` once warnings are zero.
+Emits `DatetimeCompatWarning` where behavior differs from canon (implicit wrapping, naive parse). Use lints/codemods to replace `time ± duration` with `wrap_time`/`shift_time`, add explicit `tz`, and swap elapsed/calendar math as needed. Tighten to `time_arith:"error"` and `policy:"strict"` once warnings are zero.
 
 ---
 
-## Design Charter (recap)
+### Design Charter (recap)
 
-No naive timestamps; explicit policy; trusted time is opt-in; strict parsing/formatting; calendar-safe adders; explicit human time math; clear ranges; clean serialization; deterministic core; surfaced tzdata; O(1) policy snapshots; first-class introspection; presets & adapters; smooth migration.
+No naive timestamps; explicit policy; trusted time is opt‑in; strict parsing/formatting; calendar‑safe adders; explicit human‑time math; clear ranges; clean serialization; deterministic core; surfaced tzdata; O(1) policy snapshots; first‑class introspection; presets & adapters; smooth migration.
 
 # 16. Errors & Warnings
 
