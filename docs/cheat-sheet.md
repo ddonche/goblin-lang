@@ -1135,6 +1135,30 @@ end
 
 /// `::` is the binding separator used in templates, template-style classes, and inline judge.
 
+Placeholders
+- ::          → implicit skip (use default for this slot)
+- :: nc       → explicit "no change" (use default, more readable)
+
+Best practice:
+- For 1–2 skips: use :: 
+- For 3+ consecutive skips: prefer :: nc
+
+@card = name:"{title}" :: price:.99 :: qty:1 :: condition:"new"
+
+"King of Cups"                  /// all defaults
+"Queen of Cups" :: 2            /// qty only
+"Joker" :: nc :: nc :: "used"   /// explicit “no change”
+
+Soft Keywords (context-dependent)
+Add: nc (reserved only in template placeholder context).
+
+Errors
+
+nc outside a placeholder → UnknownNameError (regular identifier).
+
+:: nc anywhere but in template bindings → ParseOnlyError.
+
+
 #### Basic Templates
 ```goblin
 @card = title: "{title}" :: price: .99 :: qty: 1
