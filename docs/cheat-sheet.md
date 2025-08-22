@@ -1,4 +1,4 @@
-# Goblin Language AI Cheat Sheet v1.5.5
+# Goblin Language AI Cheat Sheet v1.5.6
 *Complete syntax reference for AI assistants - Reorganized for Documentation Flow*
 
 Cheat sheet = AI sync file
@@ -1246,100 +1246,223 @@ Http.from_value(404)          /// Http.NotFound
 
 ## FINANCIAL PROGRAMMING
 
-### Money System
+# Money & Currency (Cheat Sheet replacement)
 
-## Formatting (Numbers, Money, Percent)
+> Money is a **first-class type**. Exact decimal math, explicit currencies, policy-driven precision/rounding, and a global per-currency remainder ledger.
 
-Short version: use either method-style with args or the English **with** form. Not `format x, "spec"`.
+---
 
-### ✅ Correct ways
+## Literals & Constructors
 
 ```goblin
-/// Method-style (preferred when there's an arg)
-formatted_display = treasure_hoard.format(",.2f")
-
-/// English form (special prefix)
-formatted_display = format treasure_hoard with ",.2f"
-
-/// Interpolation with format (nice for UI)
-msg = "Treasure: {treasure_hoard:,.2f}"
+$25.99, €19.50, £22.00, ¥2500      /// symbol literals
+25.99 USD, 35.00 CAD, US$30.00     /// codes / prefixed
+-$100.00, $-50.00                  /// negatives
+money(15.75), money(15.75, EUR)    /// constructor (uses default currency unless specified)
 ```
 
-### Mini-spec (lean, 80/20)
+---
 
-* `,` → thousands grouping
-* `.Nf` → fixed decimals (N places)
+## Formatting (numbers • money • percent)
+
+Short version: use method style **or** the English form. (Not `format x, "spec"`.)
+
+```goblin
+n.format(",.2f")
+format n with ",.2f"
+"Treasure: {treasure_hoard:,.2f}"
+```
+
+**Mini-spec (80/20):**
+
+* `,` → use thousands grouping (actual separator comes from policy)
+* `.Nf` → fixed N decimals
 * `+` → always show sign
 * `%` → percent view (×100 and add `%`)
 * `¤` → include currency symbol (money only)
 * `CUR` → include ISO code (money only)
 
-You can combine flags in any order; these are equivalent: `",.2f"` and `".2f,"`.
-
-### Examples
+Examples
 
 ```goblin
-12345.6.format(",.2f")            /// "12,345.60"
-
-treasure_hoard = $1234567.89
-treasure_hoard.format(",.2f")     /// "1,234,567.89"   (no symbol)
-treasure_hoard.format("¤,.2f")    /// "$1,234,567.89" (with symbol)
-treasure_hoard.format("CUR,.2f")  /// "USD 1,234,567.89"
-
-tax_rate = 12.5%
-tax_rate.format(".1%")            /// "12.5%"
-
-(-42).format("+,.0f")             /// "-42" (shows sign; grouping has no effect here)
+12345.6.format(",.2f")         /// "12,345.60"
+$1234567.89.format(",.2f")     /// "1,234,567.89"
+$1234567.89.format("¤,.2f")    /// "$1,234,567.89"
+$1234567.89.format("CUR,.2f")  /// "USD 1,234,567.89"
+12.5%.format(".1%")            /// "12.5%"
+42.format("+,.0f")             /// "+42"
 ```
 
-### Your snippet, cleaned up
+Errors: bad/unknown spec → `ValueError`; using `¤/CUR` on non-money → `TypeError`.
+
+---
+
+## Policy (defaults & knobs)
+
+Set once; applies everywhere (can be overridden by scope).
 
 ```goblin
-/// A goblin's dream come true
-treasure_hoard = $1234567.89
-formatted_display = treasure_hoard.format(",.2f")  /// "1,234,567.89"
-tax_rate = 12.5%
-after_tax = treasure_hoard - (tax_rate of treasure_hoard)  /// money stays exact
+set @policy finance_defaults
+  money: {
+    currency: "USD",          /// default for money()
+    precision: 2,             /// decimals for canonical display/export
+    rounding: "bankers",      /// half-even (also: half-up, half-down, floor, ceil)
+    policy: "strict",         /// precision-loss handling: truncate | warn | strict | defer
+    rounding_timing: "per_tx",      /// when to round: per_tx | per_period | at_settlement
+    rounding_period: "month",       /// if per_period: day | week | month | quarter | year
+    period_anchor: "calendar",      /// calendar | rolling
+    settlement_events: [],          /// if at_settlement: ["export","post","payout", ...]
+    max_carry_duration: "P1Y",      /// ISO8601 safety valve for defer/periodic
+    thousands: ",", decimal: "."    /// display separators only (does not affect math)
+  }
+end
 ```
 
-### Errors
+**Rounding timing (what “when” means):**
 
-* Bad/unknown spec → **ValueError** (`invalid format specifier 'x'`)
-* Using `¤`/`CUR` on non-money → **TypeError**
+* **per\_tx**: round after each money result (POS, invoices, taxes).
+* **per\_period**: carry exact inside the period, round once at close (interest, metered billing).
+* **at\_settlement**: carry exact until event (export/post/payout), then round (trading/batch).
 
+**Mode interaction:**
 
-#### Money Types & Literals
+* **truncate / warn**: dust goes to **global per-currency ledger** at the chosen timing.
+* **strict**: if rounding would be required before timing, throw `MoneyPrecisionError` (use `>>` or change timing/mode).
+* **defer**: keep full precision until timing; on round apply sub-mode: **bake-in** | **escrow** | **carry-forward**.
+
+---
+
+## Allowed / Forbidden ops
+
 ```goblin
-/// Money
-$1.50, USD 1.50, €2.00, £3.00, ¥100    /// literals
+$25.00 + $15.50      /// $40.50 (same currency)
+$100.00 - $25.00     /// $75.00
+$20.00 * 2           /// $40.00
+$100.00 // 3         /// $33.33         (quotient only, policy/timing governs rounding)
+$100.00 % 3          /// $0.01          (remainder only)
+$100.00 >> 3         /// ($33.33, $0.01) (quotient, remainder)
+m += $5.00; m *= 1.1 /// compound ok
+price++; price--     /// add/subtract 1 major unit (e.g., $1 for USD)
 ```
 
-#### Precision & Policy
+Forbidden (be explicit):
+
 ```goblin
-/// Money follows active policy for precision/rounding
-set @policy strict_money    /// precision: 2, policy: "strict"
-
-price = $10.75
-q, r = price >> 3           /// (USD 3.00, USD 1.75)
-shares = divide_evenly(price, 3)  /// [USD 3.59, USD 3.58, USD 3.58]
-
-/// Remainder tracking
-remainders_total()          /// current remainder ledger
-drip_remainders(threshold: $0.05, commit: true)  /// payout accumulated
+$100.00 / 3          /// MoneyDivisionError (use // or >>)
+$100.00 + €85.00     /// CurrencyError (convert explicitly)
+m /= 2; m %= 3       /// MoneyDivisionError
 ```
 
-#### Currency Rules
+---
+
+## Splitting helpers (fair & conservative)
+
 ```goblin
-/// Same currency operations allowed
-$10 + $5    → $15
-$10 * 2     → $20
-$10 // 3    → $3 (quotient only)
-$10 >> 3    → ($3, $1)  /// quotient + remainder
-
-/// Forbidden
-$10 / 3     → MoneyDivisionError  /// use // or >> instead
-$10 + €5    → CurrencyError       /// no auto-conversion
+divide_evenly($10.75, 3)        /// [$3.59, $3.58, $3.58]  (deterministic extra cents)
+divide_evenly_escrow($100, 7)   /// {shares: [...], escrow: $0.04}
+allocate_round_robin($0.07, 5)  /// [$0.02, $0.02, $0.01, $0.01, $0.01]
+allocate_money($1000, [50,30,20])  /// [$500, $300, $200]
 ```
+
+---
+
+## Remainder ledger (global, per currency)
+
+```goblin
+clear_remainders()
+q, r = $10.75 >> 3             /// (3.58, 0.01)
+remainders_total()             /// {USD: $0.01}
+remainders_report()            /// breakdown by source
+drip_remainders(threshold: $1.00, commit: true)
+```
+
+---
+
+## Currency conversion (explicit only)
+
+```goblin
+convert($100.00, to: EUR, rate: 0.91)    /// EUR 91.00
+convert(€45.00, to: USD, rate: 1.10)     /// USD 49.50
+/// Any sub-precision from conversion is handled per policy/timing in the TARGET currency.
+```
+
+---
+
+## Percent × Money
+
+```goblin
+price = $80.00
+price + (10% of price)   /// $88.00
+price - (15% of price)   /// $68.00
+price.with_tax(8.5%)     /// $86.80
+price.tax(8.5%)          /// $6.80
+```
+
+---
+
+## Rounding timing: quick contrasts
+
+**Per-transaction (POS):**
+
+```goblin
+set @policy pos
+  money: { precision: 2, rounding: "bankers", policy: "warn", rounding_timing: "per_tx" }
+end
+
+total = $12.49 + $0.99    /// $13.48  (rounded now; any dust logged)
+```
+
+**Per-period (daily interest posting):**
+
+```goblin
+set @policy daily_compound
+  money: { precision: 2, rounding: "bankers",
+           policy: "defer", rounding_timing: "per_period",
+           rounding_period: "day", period_anchor: "calendar" }
+end
+
+minute_rate = apr / 365 / 1440
+accrued = $0.00
+repeat 1440
+  accrued += balance * minute_rate   /// carry exact during the day
+end
+balance += settle(accrued)           /// round once/day (apply defer sub-mode)
+```
+
+**At settlement (export/payout):**
+
+```goblin
+set @policy batch
+  money: { precision: 2, rounding: "bankers",
+           policy: "defer", rounding_timing: "at_settlement",
+           settlement_events: ["export"], max_carry_duration: "P90D" }
+end
+
+payout = sum(earnings)               /// carry exact
+"payout.csv".write_csv({ amount: settle(payout, submode: "escrow") })
+```
+
+---
+
+## Common hiccups
+
+* `price++` adds **\$1.00** (major unit), not one cent → use `price += $0.01`.
+* `remainders_total()` is **global per currency**, not per operation.
+* In **strict**, prefer `>>` (divmod) then decide where the remainder goes.
+
+**Errors**
+
+* `MoneyDivisionError` (used `/` or `/=` on money)
+* `CurrencyError` (mixed currencies without explicit `convert`)
+* `MoneyPrecisionError` / `MoneyPrecisionWarning` (per policy)
+* `ValueError` (bad format spec), `TypeError` (`¤/CUR` on non-money)
+
+---
+
+## Tiny “opt-out” note
+
+If this seems overkill for your use case, you can stick to plain decimals/floats + manual rounding. You’ll lose conservation guarantees and currency safety, but it’s simpler. Goblin’s money type exists for when **auditability, fairness, and cross-system parity** matter.
+
 
 ### Percent System (CIPO)
 
