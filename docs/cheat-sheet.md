@@ -2037,6 +2037,194 @@ roll 2d6+1         /// dice roll
 /// Note: `auto` in read_json infers format from input; not supported in write_json for explicitness.
 ```
 
+# Patch: Files, Printing & I/O — Extensions
+
+This patch adds APIs and clarifies defaults for file I/O and data formats, using **method-style on paths** and a small set of **built-ins**.
+
+---
+
+## New Built-ins & Defaults
+
+### Built-ins
+
+```goblin
+cwd()            /// → string absolute path of current working directory
+chdir(path)      /// change current working directory
+
+now()            /// → datetime (UTC, trusted source)
+uuid()           /// → string (RFC 4122 v4)
+```
+
+### JSON/YAML option defaults (explicit)
+
+* **Write defaults:** `money: "object"`, `datetime: "string"`, `enum: "name"`
+* **Read defaults:** `money: "off"`, `datetime: "off"`, `enum: "off"`
+
+  * On **read**, `"auto"` is allowed for `money` and `enum` (try known encodings; else leave as-is).
+
+---
+
+## New Path/Filesystem Operations
+
+### Path methods (method-style on strings)
+
+```goblin
+"path".exists          /// → bool (file or directory exists)
+"path".is_binary       /// → bool (heuristic: NUL bytes OR clearly non-text)
+```
+
+### Filesystem helpers (built-ins)
+
+```goblin
+mkdirp(path)           /// create directory and parents; no error if already exists
+listdir(path=".")      /// → array<string> (names within path, not recursive)
+glob(pattern)          /// → array<string> (supports *, ?, [], {a,b,c})
+join(parts...)         /// → string (OS-safe join; does not canonicalize ..)
+```
+
+**Notes**
+
+* Relative paths resolve against `cwd()`.
+* `glob` matches relative to `cwd()` (or to a leading directory in the pattern).
+* `join` performs safe concatenation with the platform separator; it does not normalize.
+
+---
+
+## CSV Read (in addition to existing write)
+
+```goblin
+"file.csv".read_csv
+  /// → array<map<string,string>>
+  /// - First row is header; headers become map keys (strings)
+  /// - All cell values are strings (no auto typing, no trimming)
+  /// - RFC 4180 quoting; \r\n or \n accepted; BOM tolerated
+```
+
+*Example*
+
+```goblin
+rows = "sales.csv".read_csv
+sum  = rows.map(r => money(r.amount.float, "USD")).sum
+```
+
+---
+
+## In-Memory JSON (string ⇄ value)
+
+```goblin
+json_stringify(value, opts={})
+  /// → string
+  /// opts: { money?: "object"|"string"|"units",
+  ///         datetime?: "string"|"object",
+  ///         enum?: "name"|"value"|"object" }
+
+json_parse(text, opts={})
+  /// → value
+  /// opts: { money?: "off"|"object"|"string"|"units"|"auto",
+  ///         datetime?: "off"|"string"|"object",
+  ///         enum?: "off"|"name"|"value"|"object" }
+```
+
+*Examples*
+
+```goblin
+s = json_stringify({price: $19.99}, {money: "string"})
+v = json_parse(s, {money: "string"})   /// v.price is money USD 19.99
+```
+
+---
+
+## Error Catalog Additions
+
+```goblin
+FileNotFoundError      /// path does not exist when required
+PermissionError        /// OS denied access to the path
+```
+
+**Raised by**
+
+* `"path".read_text`, `"path".read_bytes`, `"path".read_json/yaml/csv`
+* `"path".write_text/bytes/json/yaml/csv`
+* `mkdirp(path)`, `listdir(path)`
+
+**Other errors (already defined):**
+
+* `ValueError` (invalid UTF-8; malformed JSON/YAML/CSV; invalid money object)
+* `MoneyPrecisionError` (when strict precision checks are enabled)
+
+---
+
+## Quick Reference (additions)
+
+**Filesystem**
+
+* `cwd()` → string
+* `chdir(path)`
+* `"path".exists` → bool
+* `"path".is_binary` → bool
+* `mkdirp(path)`
+* `listdir(path=".")` → array<string>
+* `glob(pattern)` → array<string>
+* `join(parts...)` → string
+
+**CSV**
+
+* `"path".read_csv` → array\<map\<string,string>>
+* `"path".write_csv(rows, {money?: "string"})`
+
+**JSON (in-memory)**
+
+* `json_stringify(value, opts)` → string
+* `json_parse(text, opts)` → value
+
+**Utilities**
+
+* `now()` → datetime (UTC)
+* `uuid()` → string (v4)
+
+**JSON/YAML Defaults**
+
+* **Write:** `money:"object"`, `datetime:"string"`, `enum:"name"`
+* **Read:** `money:"off"`, `datetime:"off"`, `enum:"off"`
+
+---
+
+## Mini Examples
+
+```goblin
+/// Text
+content = "notes.txt".read_text
+"out.txt".write_text(content.upper)
+
+/// Binary
+img = "photo.jpg".read_bytes
+"backup.jpg".write_bytes(img)
+
+/// JSON
+cfg = "config.json".read_json({money: "auto"})
+"config.json".write_json(cfg, {money: "object", datetime: "string"})
+
+/// YAML
+settings = "settings.yaml".read_yaml({money: "string"})
+"settings.yaml".write_yaml(settings, {money: "string"})
+
+/// CSV
+rows = "users.csv".read_csv
+"out.csv".write_csv(rows)
+
+/// FS helpers
+chdir("apps/site")
+files = glob("logs/*.log")
+if files.len > 0 and files[0].exists
+    say "First log: {files[0]}"
+end
+
+/// Utilities
+id  = uuid()
+when = now()
+```
+
+
 ## ERROR REFERENCE
 
 ### Standard Error Catalog
