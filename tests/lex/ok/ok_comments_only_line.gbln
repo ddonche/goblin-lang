@@ -1,0 +1,2 @@
+/// this file contains only line comments
+/// lexer should treat these as inert and produce no errors

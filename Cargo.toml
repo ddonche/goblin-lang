@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "crates/goblin-source",
+    "crates/goblin-diagnostics",
+    "crates/goblin-lexer",
+    "crates/goblin-ast",
+    "crates/goblin-parser",
+    "crates/goblin-interpreter",
+    "crates/goblin-cli",
+]
+resolver = "2"

@@ -1,0 +1,8 @@
+﻿OK
+# EXPECT
+# - Intent: `@policy` lexes as AT_IDENT; `#balance` lexes as HASH_IDENT. Keywords remain keywords.
+- Key behaviors: 
+  - `set` ? KEYWORD(set); `@policy` ? AT_IDENT("@policy"); `Billing` ? IDENT.
+  - `class`/`end` ? KEYWORDs; inside, `#balance` ? HASH_IDENT followed by `=` NUMBER.
+- Notes: No class semantics asserted here�this is purely a lexing shape check.
+

@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Detect missing closing quote for a basic double-quoted string.
+- Primary error message should mention: "unterminated string" or "expected closing quote".
+- Span should highlight: from the opening quote in `name = "Alice` through the end of line (or to EOF).
+- Recovery: Lexer should continue so that `next = 42` is still lexed normally (if recovery is supported).
+

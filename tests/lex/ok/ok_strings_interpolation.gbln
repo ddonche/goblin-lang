@@ -1,0 +1,6 @@
+name = "Alice"
+greet = "Hello {name}"
+slugged = "User slug: {name.slug}"
+mathy = "2 + 2 = {2 + 2}"
+braces = "Literal braces: {{ and }}"
+raw_braces = raw "Raw braces still need doubling: {{ and }}"

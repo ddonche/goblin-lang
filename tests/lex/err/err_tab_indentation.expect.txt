@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Tabs used for indentation are illegal; emit an indentation error.
+- Primary error message should mention: "tab" and "indentation".
+- Span should highlight: the tab at the start of the second line.
+- Recovery: After reporting, the lexer may continue or stop per your spec (note which).
+

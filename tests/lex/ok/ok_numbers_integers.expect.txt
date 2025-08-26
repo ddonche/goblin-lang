@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Plain integer literals (including a prefixed minus) lex cleanly.
+- Key behaviors: Decimal digits only; leading minus is parsed as operator + number (not part of the literal).
+- Notes: No separators, bases, or floats here�those are separate fixtures.
+

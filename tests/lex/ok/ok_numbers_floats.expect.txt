@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Standard decimal floats (no leading/trailing dot forms) lex cleanly.
+- Key behaviors: Digits on both sides of the decimal point; leading minus is operator + number.
+- Notes: No exponents or separators here�kept simple on purpose.
+

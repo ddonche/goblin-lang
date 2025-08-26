@@ -1,0 +1,9 @@
+m1 = """
+Line one
+Line two
+"""
+
+m2 = '''
+Alt form
+Multiple lines
+'''

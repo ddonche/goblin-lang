@@ -1,0 +1,4 @@
+name = "Alice"
+greet = 'Hello'
+empty_a = ""
+empty_b = ''

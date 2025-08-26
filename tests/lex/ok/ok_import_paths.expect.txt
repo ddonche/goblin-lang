@@ -1,0 +1,8 @@
+﻿OK
+# EXPECT
+# - Intent: Module imports accept either a quoted module name (STRING) or a `./` relative path (PATH).
+- Key behaviors:
+  - `import "math" as M` ? KEYWORD(import) STRING("math") KEYWORD(as) IDENT(M).
+  - `import "./helpers" as H` ? KEYWORD(import) PATH("./helpers") KEYWORD(as) IDENT(H).
+- Notes: Resolver enforces root (`modules/`), no `..`, optional `.gbln` suffix�those are not lexer concerns.
+

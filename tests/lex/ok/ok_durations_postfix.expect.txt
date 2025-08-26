@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: NUMBER followed by valid duration unit tokenizes as NUMBER + DURATION_UNIT(unit).
+- Key behaviors: Units allowed: s, m, h, d, w, mo, y. Greedy rule: `mo` beats `m`.
+- Notes: No validation of values here (e.g., 0s is fine). `m` means minutes; months must be `mo`.
+

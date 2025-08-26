@@ -1,0 +1,10 @@
+﻿OK
+# EXPECT
+# - Intent: `raw` and `trim_lead` as **prefix modifiers** on string literals are recognized; order can stack. 
+- Key behaviors:
+  - `raw "..."` sets the raw flag on the STRING token; backslashes are inert inside.
+  - `trim_lead <string>` sets the trim_lead flag on the STRING token.
+  - `raw trim_lead <string>` (any order) sets both flags.
+  - `"literal".raw` and `"literal".trim_lead` are normalized at lex time to the same flagged STRING as the prefix forms.
+- Notes: `x.raw` where `x` is a variable is **invalid** and will be covered in an ERR case later.
+

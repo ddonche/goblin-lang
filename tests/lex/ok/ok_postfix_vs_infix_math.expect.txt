@@ -1,0 +1,10 @@
+﻿OK
+# EXPECT
+# - Intent: Distinguish postfix specials from their infix counterparts.
+- Key behaviors:
+  - `9**` ? NUMBER then POSTFIX_SQUARE.
+  - `9 ** 2` ? NUMBER, POW, NUMBER (infix exponentiation).
+  - `25//` ? NUMBER then POSTFIX_SQRT.
+  - `25 // 4` ? NUMBER, INT_DIV, NUMBER (infix integer division).
+- Notes: Adjacency to the number (no whitespace) is what makes the postfix tokens.
+

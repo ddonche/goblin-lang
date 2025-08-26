@@ -1,0 +1,8 @@
+﻿OK
+# EXPECT
+# - Intent: IDENT tokens may end with `!` or `?`.
+- Key behaviors:
+  - `.pct!` and `.pct?` are IDENTs following `.` (method-style).
+  - Standalone names ending in `?` or `!` (`flag?`, `cast!`) are also IDENT.
+- Notes: No call semantics�pure token shape.
+

@@ -1,0 +1,8 @@
+﻿OK
+# EXPECT
+# - Intent: `|` joins without inserting a space; `||` joins with exactly one space.
+- Key behaviors:
+  - Whitespace around the operator is ignored for tokenization: all `first|second`, `first |second`, `first | second` ? `JOIN_NOSPACE`.
+  - Both `hello||world` and `hi || there` ? `JOIN_SPACE`.
+- Notes: This is purely operator shape; no string semantics asserted here.
+

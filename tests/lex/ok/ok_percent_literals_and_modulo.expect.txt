@@ -1,0 +1,10 @@
+﻿OK
+# EXPECT
+# - Intent: Distinguish percent-literal family from modulo.
+- Key behaviors:
+  - `12.5%` ? NUMBER then PERCENT_LITERAL (postfix).
+  - `15%s`  ? NUMBER then PERCENT_SELF (postfix sugar).
+  - `20%o amount` ? NUMBER then PERCENT_OF_OTHER token, followed by IDENT `amount`.
+  - `10 % 3` ? modulo operator `%` (whitespace breaks attachment to the number).
+- Notes: No precedence/semantics asserted here�pure token-shape check per notes.
+

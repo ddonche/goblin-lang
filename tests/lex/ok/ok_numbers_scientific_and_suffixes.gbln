@@ -1,0 +1,14 @@
+# integers with explicit suffix
+n_i  = 42i
+
+# floats in scientific notation
+f1   = 1e6
+f2   = 2.5e-3
+
+# float with explicit suffix
+f_s  = 10f
+
+# big numbers (suffix b works on ints and floats)
+b1   = 123b
+b2   = 5.0b
+b3   = 1e6b

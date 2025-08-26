@@ -1,0 +1,4 @@
+//// 
+  this file contains only a Goblin block comment
+  lines here are inert even if they look like code: x = 1 |> f
+////

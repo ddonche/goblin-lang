@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Valid escape sequences in non-raw strings are accepted.
+- Key behaviors: \n, \t, \", \', \\, and \uXXXX (exactly 4 hex) are recognized.
+- Notes: Raw strings are not used here; escapes should be interpreted, not literal.
+

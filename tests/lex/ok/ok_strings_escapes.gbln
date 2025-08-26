@@ -1,0 +1,5 @@
+a = "line\nbreak"
+b = "tab\tstop"
+c = "quote: \" '"
+d = 'backslash: \\'
+e = "unicode A: \u0041"

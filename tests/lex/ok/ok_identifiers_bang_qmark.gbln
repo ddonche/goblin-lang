@@ -1,0 +1,4 @@
+strict = "8.5%".pct!
+safe   = "8.5%".pct?
+flag?  = true
+cast!  = 10

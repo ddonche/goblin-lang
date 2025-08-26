@@ -1,0 +1,10 @@
+﻿OK
+# EXPECT
+# - Intent: After `use IDENT`, an `@` followed immediately by a version string lexes as a single VERSION token.
+- Key behaviors:
+  - `use glam@^1.6.0 as G` ? KEYWORD(use) IDENT(glam) `@` VERSION("^1.6.0") KEYWORD(as) IDENT(G).
+  - `use math@1.2.3` ? KEYWORD(use) IDENT(math) `@` VERSION("1.2.3").
+  - `use thing@~2` ? VERSION("~2") is allowed.
+  - `use lib@1.2.3-beta+build42 as Lib` ? prerelease/build tags included in VERSION.
+- Notes: The `^` and `~` characters are **part of VERSION only in this context**; elsewhere they are not operators. Lexer does not validate version semantics�just token shape.
+

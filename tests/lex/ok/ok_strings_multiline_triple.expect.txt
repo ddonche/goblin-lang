@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Triple-quoted strings lex as single string tokens spanning multiple physical lines.
+- Key behaviors: Newlines and indentation inside the quotes are preserved literally; closing delimiter ends the string.
+- Notes: No escapes used here; raw/triple interactions are covered separately.
+

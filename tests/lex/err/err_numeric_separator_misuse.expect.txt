@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Reject underscores in numeric literals (except the N_M pick shorthand).
+- Primary error message should mention: "invalid number literal" or "numeric separator not allowed".
+- Span should highlight: the underscore region in each bad number.
+- Recovery: Lexer continues so later lines are still tokenized (note if your impl stops).
+

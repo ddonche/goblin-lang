@@ -1,0 +1,3 @@
+a = "oops \q"
+b = "bad unicode \u12G4"
+c = "too short \u123"

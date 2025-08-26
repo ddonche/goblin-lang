@@ -1,0 +1,10 @@
+﻿OK
+# EXPECT
+# - Intent: `.` is for member/property and method calls on values; built-ins are IDENTs.
+- Key behaviors:
+  - `text.upper` ? IDENT `text` `.` IDENT `upper` (no args).
+  - `text.upper()` ? IDENT `text` `.` IDENT `upper` `(` `)`.
+  - `items.len` / `items.len()` behave the same.
+  - Module access uses `::` (e.g., `Math::sqrt(9)`), which lexes as NAMESPACE, not `.`.
+- Notes: Lexer does not enforce �module vs method� rules; it only emits tokens. Parser will reject `Module.method(...)` if used.
+

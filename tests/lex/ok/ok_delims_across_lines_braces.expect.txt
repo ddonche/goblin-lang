@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Physical newlines inside `{}` do NOT emit statement-breaking NEWLINEs.
+- Key behaviors: The entries `a: 1,` and `b: 2` are part of a single logical construct; closing `}` ends it.
+- Notes: `after = ok` is a new top-level statement after the brace closes.
+

@@ -1,0 +1,9 @@
+﻿OK
+# EXPECT
+# - Intent: Demonstrate both skip forms inside template binding chains: bare `::` and `:: nc`.
+- Key behaviors:
+  - Lexer always emits NAMESPACE for `::`. 
+  - Immediately after `::`, `nc` is tokenized as KEYWORD(nc) (template skip placeholder).
+  - `@four` is AT_IDENT; keys like `a:`, `b:`, etc. are standard IDENT `:` NUMBER pairs.
+- Notes: Spacing around `::` is normal in templates and does not affect tokenization. Validity of skip positions is a parser concern.
+

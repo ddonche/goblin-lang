@@ -1,0 +1,8 @@
+sym_pos   = $12.34
+sym_neg   = $-5.00
+
+code_pos  = 950.50 USD
+code_neg  = -20 EUR
+
+country_1 = US$30.00
+country_2 = -CA$12.00

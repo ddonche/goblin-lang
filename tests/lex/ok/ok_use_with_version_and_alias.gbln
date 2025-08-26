@@ -1,0 +1,4 @@
+use glam@^1.6.0 as G
+use math@1.2.3
+use thing@~2
+use lib@1.2.3-beta+build42 as Lib

@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Token shapes for optional chaining and nullish coalescing are recognized.
+- Key behaviors: `?.` ? OPT_CHAIN; `??` ? NULLISH. Ordinary `.` and `=` behave as usual.
+- Notes: No short-circuit semantics asserted here�pure lexing shape check.
+

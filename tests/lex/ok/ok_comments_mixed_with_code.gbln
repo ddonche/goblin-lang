@@ -1,0 +1,3 @@
+alpha = 1   /// trailing comment after code
+/// full-line comment
+beta = alpha

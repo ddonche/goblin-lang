@@ -1,0 +1,19 @@
+a...b
+a..b
+A::B
+x?.y ?? "nil"
+2 ** 3 ^^ 2
+9++  16//
+10 >> 3
+left |> .op || " world" |"!"
+x += 1; y -= 2; z *= 3; w /= 4; r %= 5; p **= 2
+eq = (a == b); ne = (a != b); le = (a <= b); ge = (a >= b)
+seq = (a === b); sne = (a !== b)
+lt = a < b; gt = a > b; assign = a = b
+join1 = "a" | "b"
+join2 = "a" || "b"
+group = ( [ { 1, 2, 3 } ] )
+arrow = x -> y
+at = @flag
+amp = a && b; bang = !a
+check = a is b; negcheck = a is not b

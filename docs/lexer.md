@@ -1,54 +1,3 @@
-# Lexer Notes — v1.18 (Part 1: Global Rules, Comments, Operators)
-
-## Global rules
-
-* **Longest-match, multi-char first** for operators/punct.
-* **Statement breaks**: emit `NEWLINE` at line ends except when:
-
-  * inside `()[]{}` (implicit continuation),
-  * the *next* logical line begins with `|>` (pipeline carry).
-* **Indentation**: 4 spaces per level; emit `INDENT`/`DEDENT`. Tabs → `IndentationError`. Mixed widths → `IndentationError`.
-* **EOF**: emit final `NEWLINE` and pending `DEDENT`s.
-* **Errors**: unknown byte, bad escapes/`\uXXXX`, unterminated string/block comment → `LexError`.
-
-  * Note: other domain/runtime errors (`FileNotFoundError`, `PermissionError`, `SerializationError`, `MoneyPrecisionError`, `TimezoneError`, etc.) are **not** lexer errors and, when referenced, simply lex as `IDENT`.
-
-## Comments
-
-* Line: `///` → `LINE_COMMENT` (to EOL; inert).
-* Block: `//// ... ////` → `BLOCK_COMMENT_START` / `BLOCK_COMMENT_END` (non-nesting; inert even if contents “look like” code). `////` inside strings is text.
-
-## Tokens: Operators & Punct (multi-char first)
-
-"..." RANGE\_EXCL (also doubles as variadic marker in parameter lists)
-".."  RANGE\_INCL
-"::"  NAMESPACE / BINDING\_SEP / TEMPLATE\_SKIP
-"|>"  PIPE (pipeline operator, left-associative)
-"||"  JOIN\_SPACE
-"|"   JOIN\_NOSPACE
-"??"  NULLISH
-"?."  OPT\_CHAIN (optional chaining, left-associative; nil short-circuit is semantic)
-"**"  POW                 // exponentiation
-"^^"  EXPLAIN\_POW          // explain-power operator (binary)
-">>"  DIVMOD              // quotient+remainder pair
-"++"  POST\_INC\_MONEY      // postfix only
-"--"  POST\_DEC\_MONEY      // postfix only
-"//"  INT\_DIV             // integer div (also money flavor)
-"%s"  PERCENT\_SELF        // percent-of-self sugar
-"%o"  PERCENT\_OF\_OTHER    // percent-of-other sugar
-"=="  EQ   "!=" NE  "<=" LE  ">=" GE
-"===" STRICT\_EQ   "!==" STRICT\_NE
-"<"   LT   ">"  GT  "="  ASSIGN
-"+=" "-=" "\*=" "/=" "%="
-"**="                       // compound exponent assign
-"+" "-" "\*" "/" "%" ":" "," "." ";" "@" "->" "(" ")" "\[" "]" "{" "}"
-"&&"  AND\_ALIAS             // alias for and
-"!"   NOT\_ALIAS             // alias for not
-
-> Note: `::` is **overloaded** — namespace separator, binding separator, and skip marker in templates. Lexer always emits `NAMESPACE`; parser disambiguates.
-
-\#########################################################################################################################################################
-
 # Lexer Notes — v1.18 (Part 2: Keywords, Built-ins, Identifiers)
 
 ## Keywords
@@ -69,14 +18,10 @@ end
 blob
 ```
 
-* **`morph`**: hard keyword, not shadowable. It is a language form, not a user-defined function. Always lexes as `KEYWORD(morph)`.
-
+* **`morph`**: hard keyword, not shadowable. Always lexes as `KEYWORD(morph)`.
 * **`set`**: hard keyword. Introduces configuration statements, including `set @policy …`.
-
 * **`in`**: hard keyword, reserved for loop constructs only. Not valid as a boolean operator.
-
-* as → already listed as a soft keyword, but note: in import … as it’s a hard keyword usage. Lexer emits KEYWORD(as); parser decides.
-
+* `as` → soft keyword normally, but in import/use contexts a hard usage; lexer emits `KEYWORD(as)` and parser decides.
 * File/string methods: .read\_text, .write\_text, .append\_text, .read\_bytes, .write\_bytes, .is\_binary, .read\_json, .write\_json, .read\_yaml, .write\_yaml, .read\_csv, .write\_csv.
 
 ### Soft Keywords (context-dependent)
@@ -91,10 +36,10 @@ as where raw trim_lead on like and between unique
 * `between` sugar: parser expands to chained comparisons.
 * `dups` and `unique` are modifiers for pick shorthand.
 * **Note:** `as` is used in enum declarations (e.g., `enum X as int`). Lexer still emits `KEYWORD(as)`; parser resolves meaning.
-* Also used in rescue … as e bindings. Lexer still emits KEYWORD(as); parser scopes the bound identifier to the rescue arm.
+* Also used in `rescue … as e` bindings. Lexer emits KEYWORD(as); parser scopes the bound identifier to the rescue arm.
 * like, before, after, before\_last, after\_last, between, words, chars, lines, split, join, match
-* ./ path anchors (lexer treats "./" at the start of an import string as part of STRING, not keyword; note only in parser).
-* modules is not a keyword; it’s a directory literal. Nothing to add here.
+* `./` path anchors (lexer treats "./" at the start of an import string as part of STRING; enforcement is parser/resolver).
+* `modules` is not a keyword; it’s a directory literal.
 
 ## Built-ins
 
@@ -102,8 +47,7 @@ as where raw trim_lead on like and between unique
 * Built-ins like `freq`, `mode`, `sample_weighted` remain shadowable.
 * **`blob` is a hard keyword** (constructor for blob literals) and is **not shadowable**.
 * save\_remainders, load\_remainders, divide\_evenly, divide\_evenly\_escrow, allocate\_round\_robin, allocate
-* Tokenization: pct( → IDENT pct + (; no special token.
-  Add the following identifiers (all lex as `IDENT`):
+* Tokenization: `pct(` → IDENT `pct` + `(`; no special token.
 * Constructors / helpers: `now`, `today`, `utcnow`, `parse_date`, `parse_time`, `parse_datetime`
 * Zone & conversion: `to_tz`, `local_tz`
 * Calendar adders: `add_months`, `add_years`
@@ -116,12 +60,11 @@ as where raw trim_lead on like and between unique
 * has, find, find\_all, count, replace, replace\_first, remove
 * Gmark API (method-style on strings): gmark, gmark\_info, gmark\_set\_ord
 * Gmarks service (project-scope): gmarks, all, filter, next\_ord
-* Note: these are names only for the lexer; method calls still tokenize as IDENT after . and service calls as IDENT / IDENT::op per normal rules.
+* Note: these are names only for the lexer; method calls still tokenize as IDENT after `.` and service calls as IDENT / IDENT::op per normal rules.
 * Add: state.allow\_writes (policy map key; lexes as IDENT inside policy objects).
-* (You already note @policy lexes as AT\_IDENT; no new token type.)
-* goblin (CLI namespace exposed for banish/unbanish/list; parsed as IDENT)
-* banish, unbanish (appear as IDENT when invoked through CLI context, separate from keywords inside code)
-* settle (money: snap/settlement helper referenced by policy timing)
+* `goblin` (CLI namespace exposed for banish/unbanish/list; parsed as IDENT)
+* banish, unbanish (appear as IDENT in code; keywords in CLI context only)
+* settle (money helper referenced by policy timing)
 * Contracts & introspection: contract, glam\_contracts, glams, glam\_symbols, glam\_permissions
 
 ### Text utilities
@@ -149,12 +92,7 @@ as where raw trim_lead on like and between unique
 
 ### Numeric operations
 
-* round
-* floor
-* ceil
-* abs
-* pow
-* sqrt
+* round, floor, ceil, abs, pow, sqrt
 
 ### Types
 
@@ -175,64 +113,158 @@ as where raw trim_lead on like and between unique
 * `IDENT`: `[A-Za-z_][A-Za-z0-9_]*[!?]?`
 * `AT_IDENT`: `@` + same pattern (dataset/policy names, templates). Example: `@policy` lexes as `AT_IDENT('@policy')`.
 
-  * `VERSION`: contextual token, only after `@` in a `use` statement.
+  * `VERSION`: contextual token, only after `@` in a `use` statement (see Part 4 Glams). Lexer emits a single `VERSION` token there.
 * `HASH_IDENT`: `#` + same ident pattern (used for private fields in classes).
 * Context-sensitive:
 
   * `raw` / `trim_lead` are `KEYWORD` only when directly prefixing a string literal (possibly both, any order). Otherwise lex as `IDENT`.
 * **Enum variants:** inside an `enum` declaration, variant names (e.g., `Pending`, `North`, `Low`) are lexed as `IDENT`. Parser attaches them to the enum scope.
 * **Methods with `!`/`?`:** IDENT rule supports trailing `!` or `?` (e.g., `pct!`, `pct?`) for strict/optional conversions.
-* **Error names as identifiers:** Spec error types like
-
-  * `FileNotFoundError`, `PermissionError`, `SerializationError`, `MoneyPrecisionError`, `TimezoneError`,
-  * `MorphTypeError`, `MorphFieldError`, `MorphCurrencyError`, `MorphActionError`,
-  * `GmarkConflictError`, `GmarkNotFoundError`, `GmarkInvalidError`, `GmarkPersistenceError`,
-  * `DeterminismError`, `BanishError`,
-  * `PolicyNotFoundError`, `PolicyValueError`, `PolicyScopeError`, `PolicyVisibilityError`,
-  * `NameError`, `TypeError`.
-  * EmptyPickError, PickCountError, PickIndexError, PickTypeError, DiceBoundsError, WeightError.
-  * ReapEmptyError, ReapCountError, ReapIndexError, ReapTypeError
-  * UsurpIndexError, UsurpCountError, UsurpArityError, UsurpTypeError
-  * ReplaceIndexError, ReplaceTypeError
-  * InterpolationError, FieldMismatchError, TemplateError, ParseOnlyError, IdentifierError
-  * CurrencyError, PermissionError
-  * UnknownNameError
-  * `TimeArithmeticError`
-  * `TimeSourceError`
-  * `TimeSourceWarning`
-  * `ValueError`
-  * FileNotFoundError
-  * BanishError
-  * GlamError, ContractError, AmbiguityError, LockfileError, GlamNotFoundError, OpNotExposedError, IdentityMismatchError, CapabilityDeniedError, ReadOnlyPathError
-  * (`TimezoneError` already exists)
-  * ModulePathError, ModuleNotFoundError, ModuleNameConflictError, ModuleCycleError, ModuleVisibilityError, PolicyVisibilityError, OpNotExposedError, CapabilityDeniedError, ReadOnlyPathError
-  * ArityMismatchError
-  * NetworkError, ValidationError, DiskFullError, TransientError, FatalError, DatabaseError, NetworkTimeout
-* Constants by convention: identifiers in ALL CAPS (e.g., MAX\_HEALTH) are allowed. Lexer treats them as IDENT, but reassignment may trigger warnings at runtime.
+* **Error names as identifiers:** All listed error type names lex as IDENT (no special tokens).
+* Constants by convention: identifiers in ALL CAPS (e.g., `MAX_HEALTH`) are allowed. Lexer treats them as IDENT, but reassignment may trigger warnings at runtime.
 * `allow_state_writes` is a valid @policy key (lexes as AT\_IDENT).
-* "8.5%".pct! → STRING . IDENT('pct!')
-* "8.5%".pct? → STRING . IDENT('pct?')
-* Regex patterns are just STRING (often raw STRING).
-* like is a soft keyword that signals regex context.
-* Lexer does not tokenize regex operators (\[], \d, etc.); those are parser/runtime concerns.
-* cwd, chdir, mkdirp, listdir, glob, join (already listed under FS, but confirm).
-* Reserved verbs (in CLI, still IDENTs): spawn, build, export, push, lint, test, info, help, rummage
-* AT\_IDENT: @policy is already covered; in set @policy NAME, NAME may be IDENT or STRING (lexer emits either).
+* `"8.5%".pct!` → STRING `.` IDENT(`pct!`)
+* `"8.5%".pct?` → STRING `.` IDENT(`pct?`)
+* Regex patterns are just STRING (often raw STRING). Lexer does not tokenize regex operators.
+* `like` is a soft keyword that signals regex context (parser-level).
+* Reserved verbs (in CLI, still IDENTs): spawn, build, export, push, lint, test, info, help
+* AT\_IDENT: `@policy` is already covered; in `set @policy NAME`, NAME may be IDENT or STRING (lexer emits either).
 * Policy map keys (e.g., display\_precision, max\_precision, rounding, policy, rounding\_timing, currency, defer\_mode, thousands, decimal, compat, mode, track\_theft, shame\_level, tz, prefer\_trusted, time\_arith, leap\_mode, tzdata\_version, source, ttl, cache\_ttl, skew\_tolerance, cache\_path, cache\_signing\_key, debug, strings, modules, money) all lex as standard IDENT inside maps; no special tokens.
-* Durations inside policy values (e.g., ttl: 60s, cache\_ttl: 24h) use the existing duration literal rules (NUMBER + DURATION\_UNIT), no new tokens.
-* use glam\@ver as alias —
-* use → KEYWORD(use)
-* IDENT (glam name)
-* @ + version string → lexed as AT\_VERSION (new token type; distinct from AT\_IDENT)
-* as → KEYWORD(as)
-* IDENT (alias)
-* alias::Symbol → lexes as IDENT 'alias', ::, IDENT 'Symbol'.
-* via is already a soft keyword (confirmed earlier). In glam contexts, it remains KEYWORD(via); no new token.
-* Manifest/contract schema keys (fs.read, fs.write, env, network, etc.) → standard IDENT inside maps; lexer does not special-case.
+* Durations inside policy values (e.g., `ttl: 60s`, `cache_ttl: 24h`) use the existing duration literal rules.
 
-> Note: `HASH_IDENT` is how private fields (e.g., `#balance`) are tokenized inside classes. Access outside class raises errors at runtime, not in the lexer.
+# Lexer Notes — v1.18 (Part 2: Keywords, Built-ins, Identifiers)
 
-\#########################################################################################################################################################
+## Keywords
+
+### Hard Keywords (cannot be shadowed)
+
+```
+if elif else for in while repeat unless
+attempt rescue ensure raise say warn error
+return skip jump until stop assert
+class fn op enum use import export via test
+true false nil contract prefer
+judge morph vault banish unbanish expose
+pick roll roll_detail reap usurp replace add insert map
+nc self set
+of
+end
+blob
+```
+
+* **`morph`**: hard keyword, not shadowable. Always lexes as `KEYWORD(morph)`.
+* **`set`**: hard keyword. Introduces configuration statements, including `set @policy …`.
+* **`in`**: hard keyword, reserved for loop constructs only. Not valid as a boolean operator.
+* `as` → soft keyword normally, but in import/use contexts a hard usage; lexer emits `KEYWORD(as)` and parser decides.
+* File/string methods: .read\_text, .write\_text, .append\_text, .read\_bytes, .write\_bytes, .is\_binary, .read\_json, .write\_json, .read\_yaml, .write\_yaml, .read\_csv, .write\_csv.
+
+### Soft Keywords (context-dependent)
+
+```
+from at first last to into with dups seq
+as where raw trim_lead on like and between unique
+```
+
+* Soft keywords may lex as `KEYWORD` but parser decides semantics.
+* Special rule: `raw` / `trim_lead` prefixing string literal → mark flags on STRING token.
+* `between` sugar: parser expands to chained comparisons.
+* `dups` and `unique` are modifiers for pick shorthand.
+* **Note:** `as` is used in enum declarations (e.g., `enum X as int`). Lexer still emits `KEYWORD(as)`; parser resolves meaning.
+* Also used in `rescue … as e` bindings. Lexer emits KEYWORD(as); parser scopes the bound identifier to the rescue arm.
+* like, before, after, before\_last, after\_last, between, words, chars, lines, split, join, match
+* `./` path anchors (lexer treats "./" at the start of an import string as part of STRING; enforcement is parser/resolver).
+* `modules` is not a keyword; it’s a directory literal.
+
+## Built-ins
+
+* (int, float, bool, money, pct, etc.) are **shadowable** → always lex as `IDENT`.
+* Built-ins like `freq`, `mode`, `sample_weighted` remain shadowable.
+* **`blob` is a hard keyword** (constructor for blob literals) and is **not shadowable**.
+* save\_remainders, load\_remainders, divide\_evenly, divide\_evenly\_escrow, allocate\_round\_robin, allocate
+* Tokenization: `pct(` → IDENT `pct` + `(`; no special token.
+* Constructors / helpers: `now`, `today`, `utcnow`, `parse_date`, `parse_time`, `parse_datetime`
+* Zone & conversion: `to_tz`, `local_tz`
+* Calendar adders: `add_months`, `add_years`
+* Time arithmetic helpers: `wrap_time`, `shift_time`
+* Trusted time: `trusted_now`, `trusted_today`, `time_status`, `ensure_time_verified`
+* Naive helpers: `datetime_to_naive_utc`, `datetime_to_naive_local`, `naive_to_datetime`
+* str, to\_hex, from\_hex, to\_base64, from\_base64, read\_bytes, write\_bytes, concat
+* cwd, chdir, mkdirp, listdir, glob, join
+* json\_parse, json\_stringify
+* has, find, find\_all, count, replace, replace\_first, remove
+* Gmark API (method-style on strings): gmark, gmark\_info, gmark\_set\_ord
+* Gmarks service (project-scope): gmarks, all, filter, next\_ord
+* Note: these are names only for the lexer; method calls still tokenize as IDENT after `.` and service calls as IDENT / IDENT::op per normal rules.
+* Add: state.allow\_writes (policy map key; lexes as IDENT inside policy objects).
+* `goblin` (CLI namespace exposed for banish/unbanish/list; parsed as IDENT)
+* banish, unbanish (appear as IDENT in code; keywords in CLI context only)
+* settle (money helper referenced by policy timing)
+* Contracts & introspection: contract, glam\_contracts, glams, glam\_symbols, glam\_permissions
+
+### Text utilities
+
+* has, find, find\_all, count
+* replace, replace\_first, remove
+* before, after, before\_last, after\_last, between
+* lines, words, chars
+* split, join
+* escape, unescape
+* reverse, mixed, minimize
+* trim, trim\_lead, trim\_trail
+* upper, lower, title, slug
+* format
+* parse\_bool
+* match (regex)
+
+### Collection utilities
+
+* shuffle, sort, settle
+* pick, reap, usurp
+* add, insert, map
+* sum, avg, min, max, mode, freq, sample\_weighted
+* cut, unique
+
+### Numeric operations
+
+* round, floor, ceil, abs, pow, sqrt
+
+### Types
+
+* int, float, bool, big, money, pct
+* date, time, datetime, duration
+
+### I/O, filesystem, printing, serialization helpers
+
+* File/text: read\_text, write\_text, append\_text, read\_bytes, write\_bytes, is\_binary, .exists
+* JSON/YAML/CSV: read\_json, write\_json, json\_parse, json\_stringify, read\_yaml, write\_yaml, read\_csv, write\_csv
+* FS/path: cwd, chdir, mkdirp, listdir, glob, join
+* Printing/errors: say, warn, error
+
+---
+
+## Identifiers
+
+* `IDENT`: `[A-Za-z_][A-Za-z0-9_]*[!?]?`
+* `AT_IDENT`: `@` + same pattern (dataset/policy names, templates). Example: `@policy` lexes as `AT_IDENT('@policy')`.
+
+  * `VERSION`: contextual token, only after `@` in a `use` statement (see Part 4 Glams). Lexer emits a single `VERSION` token there.
+* `HASH_IDENT`: `#` + same ident pattern (used for private fields in classes).
+* Context-sensitive:
+
+  * `raw` / `trim_lead` are `KEYWORD` only when directly prefixing a string literal (possibly both, any order). Otherwise lex as `IDENT`.
+* **Enum variants:** inside an `enum` declaration, variant names (e.g., `Pending`, `North`, `Low`) are lexed as `IDENT`. Parser attaches them to the enum scope.
+* **Methods with `!`/`?`:** IDENT rule supports trailing `!` or `?` (e.g., `pct!`, `pct?`) for strict/optional conversions.
+* **Error names as identifiers:** All listed error type names lex as IDENT (no special tokens).
+* Constants by convention: identifiers in ALL CAPS (e.g., `MAX_HEALTH`) are allowed. Lexer treats them as IDENT, but reassignment may trigger warnings at runtime.
+* `allow_state_writes` is a valid @policy key (lexes as AT\_IDENT).
+* `"8.5%".pct!` → STRING `.` IDENT(`pct!`)
+* `"8.5%".pct?` → STRING `.` IDENT(`pct?`)
+* Regex patterns are just STRING (often raw STRING). Lexer does not tokenize regex operators.
+* `like` is a soft keyword that signals regex context (parser-level).
+* Reserved verbs (in CLI, still IDENTs): spawn, build, export, push, lint, test, info, help
+* AT\_IDENT: `@policy` is already covered; in `set @policy NAME`, NAME may be IDENT or STRING (lexer emits either).
+* Policy map keys (e.g., display\_precision, max\_precision, rounding, policy, rounding\_timing, currency, defer\_mode, thousands, decimal, compat, mode, track\_theft, shame\_level, tz, prefer\_trusted, time\_arith, leap\_mode, tzdata\_version, source, ttl, cache\_ttl, skew\_tolerance, cache\_path, cache\_signing\_key, debug, strings, modules, money) all lex as standard IDENT inside maps; no special tokens.
+* Durations inside policy values (e.g., `ttl: 60s`, `cache_ttl: 24h`) use the existing duration literal rules.
 
 # Lexer Notes — v1.18 (Part 3: Literals)
 
@@ -431,25 +463,29 @@ Inside string mode:
 9. \| ||                  // string joining
 10. |>                   // pipeline (left-assoc)
 11. ??                   // null-coalescing
-12. \== != < <= > >= === !== is is not   // comparisons
+12. \=== !=== == !== != < <= > >=  is  is not   // comparisons & identity family (Goblin: `!` negates the following operator)
 13. and or (with alias &&)              // logical ops
 
 // Notes:
 // - `|>` is left-associative and comes after arithmetic but before joins.
 // - `?.` is left-associative; short-circuits only on nil (semantics). Short-circuit argument rule: if E?.m(args…) short-circuits because E is nil, argument expressions are not evaluated.
-// - Percent application binds tightly (group 6). Use parentheses for clarity in complex bases.
+// - Percent application binds tightly (group 4). Use parentheses for clarity in complex bases.
 // - `%` as modulo lives in group 7. `10%` (literal) ≠ `10 % 5` (modulo).
-// - `%` as percent literal is lexical; modulo is an operator token.
 // - `**` and `//` have both postfix and infix forms; spacing disambiguates.
 // - Exponentiation is right-associative.
 // - Bitwise ops exist only as method calls, no lexer tokens.
+// - Goblin operator families:
+//     '=' assignment;  '!=' not-assignment
+//     '==' value equality;  '!==' not value equality
+//     '===' strict identity; '!===\` not strict identity
+//   Longest-match applies: '!===' > '!==' > '!=' > '!' and '===' > '==' > '='.
 
-* Pipeline desugaring (syntax sugar only): A |> f(x, y: k) desugars to f(A, x, y: k). Evaluation order: evaluate left operand, then resolve the callable on the right, then evaluate its arguments, then invoke.
-* Right-hand callable requirement: the right side of |> must resolve to something callable that accepts the piped value as its first parameter, otherwise an ArityMismatchError (or a type error) is raised.
-* Keep the existing precedence (joins |/|| bind tighter than |>), as already defined in Part 4. §25 examples should respect that ordering.
-* raise form: raise is a hard keyword. The bare form (raise with no argument) is valid inside a rescue arm and rethrows the current error; there is no special token beyond KEYWORD(raise) (semantics handled later).
-* In glam contexts, alias::symbol uses the same :: token. No change in lexing.
-* @ver is new: introduce AT\_VERSION token class, emitted when @ prefixes a semver/range string in a use statement.
+* Pipeline desugaring (syntax sugar only): `A |> f(x, y: k)` desugars to `f(A, x, y: k)`. Evaluation order: evaluate left operand, then resolve the callable on the right, then evaluate its arguments, then invoke.
+* Right-hand callable requirement: the right side of `|>` must resolve to something callable that accepts the piped value as its first parameter, otherwise an ArityMismatchError (or a type error) is raised.
+* Keep the existing precedence (joins `|/||` bind tighter than `|>`), as already defined in Part 4. §25 examples should respect that ordering.
+* `raise` form: hard keyword. The bare form (raise with no argument) is valid inside a rescue arm and rethrows the current error; there is no special token beyond `KEYWORD(raise)` (semantics handled later).
+* In glam contexts, `alias::symbol` uses the same `::` token. No change in lexing.
+* `@ver` is new: introduce `AT_VERSION`/`VERSION` token class, emitted when `@` prefixes a semver/range string in a `use` statement.
 * **Loop stride:** Only `jump` is a hard keyword.
 * `step` is *not* a keyword; lexes as `IDENT` if encountered. Parser rejects in loop headers.
 * **Method calls:** `.iso()`, `.format(...)`, `.epoch()` → `.` `IDENT` with call punctuation.
@@ -471,11 +507,9 @@ Inside string mode:
   * **alias required**: `import "./helpers" as H`.
 * Access always via **`Alias::symbol`**. Dot `.` is for methods/properties on values, **not** for module access.
 
-\#########################################################################################################################################################
+---
 
-# Lexer Notes — v1.18 (Part 4)
-
-## Glams & Contracts (token shapes only)
+# Lexer Notes — v1.18 (Part 4: Glams & Contracts)
 
 ### `use` (glam loading & version pins)
 
@@ -512,28 +546,6 @@ Inside string mode:
 
 ---
 
-## Lambdas
-
-* `->` → `ARROW` (idents around it are normal).
-
-## Operations
-
-* Defined with hard keyword `op`. Two declaration forms:
-
-  * `op name(params) ... end` (block form)
-  * `op name(params) = expr` (one-liner)
-* Return rules: last expression returned unless `return` used explicitly.
-* **Calling forms (only two allowed):**
-
-  1. Method-style: `value.op(...)` (universal for unary; multi-param requires receiver as first param).
-  2. Prefix-style: `op value` (restricted to built-in text ops; lexer emits IDENT + STRING).
-* **Zero-arg ops:** may be called as `value.op` or `value.op()`.
-* **Variadic params:** use `...` marker (same token as RANGE\_EXCL, disambiguated in parser).
-* **Namespaces/Glams:** external calls use `Module::op(args)` or `Glam::op(args)`. Lexer reuses `::` token.
-* **Pipelines:** segments must be `.op` or `Module::op(...)`. Each stage receives previous result as first argument.
-
----
-
 ## Token Inventory (flat)
 
 **Keywords (hard):**
@@ -542,30 +554,17 @@ if, elif, else, for, in, while, repeat, unless, attempt, rescue, ensure, return,
 **Keywords (soft / context):**
 from, at, first, last, to, into, with, dups, seq, as, where, raw, trim\_lead, on, like, and, between, unique, like, before, after, before\_last, after\_last, between, words, chars, lines, split, join, match
 
-* `between` / `!between` are parser sugar for chained comparisons.
-
-  * Lexer emits `KEYWORD(between)`; `!between` is tokenized as `!` plus `KEYWORD(between)`.
-* `where` is parser sugar in loop headers. Lexer always emits `KEYWORD(where)`, parser applies it as a filter.
-
-## Token Inventory
-
-* Uses existing forms:
-* `KEYWORD(date|time|datetime)` + `STRING`
-* `IDENT('tz')` `:` `STRING`
-* `NUMBER` + `DURATION_UNIT`
-* Built-ins as `IDENT`
+* `between` / `!between` are parser sugar for chained comparisons. Lexer emits `KEYWORD(between)`; `!between` is tokenized as `!` plus `KEYWORD(between)`.
+* `where` is parser sugar in loop headers. Lexer emits `KEYWORD(where)`.
 
 **Identifiers:**
 IDENT, AT\_IDENT (@ident), HASH\_IDENT (#ident)
 
-* Enum variants lex as IDENT inside `enum` declarations.
-* IDENT allows trailing `!` or `?` (e.g., `pct!`, `pct?`).
-
 **Literals:**
 STRING (flags: raw, trim\_lead); MONEY; NUMBER (int/float with optional suffix i/f, big suffix b); DATE\_LITERAL; TIME\_LITERAL; DATETIME\_LITERAL; DURATION\_UNIT (`s`,`m`,`h`,`d`,`w`,`mo`,`y`); PERCENT\_LITERAL; PERCENT\_SELF; PERCENT\_OF\_OTHER; BLOB\_LITERAL; PATH; PICK\_DIGIT\_SHORTHAND; DICE\_LITERAL
 
-**Operators & punct:**
-`...`, `..`, `::`, `|>`, `||`, `|`, `??`, `?.`, `**`, `^^`, `>>`, `++`, `--`, `//`, `%s`, `%o`, `==`, `!=`, `<=`, `>=`, `===`, `!==`, `<`, `>`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `+`, `-`, `*`, `/`, `%`, `:`, `,`, `.`, `;`, `@`, `->`, `(`, `)`, `[`, `]`, `{`, `}`, `&&`, `!`, `is`, `is not`
+**Operators & punct (updated):**
+`...`, `..`, `::`, `|>`, `||`, `|`, `??`, `?.`, `**`, `^^`, `>>`, `++`, `--`, `//`, `%s`, `%o`, `==`, `!==`, `===`, `!===`, `!=`, `<=`, `>=`, `<`, `>`, `=`, `+=`, `-=`, `*=`, `/=`, `%=` , `**=`, `+`, `-`, `*`, `/`, `%`, `:`, `,`, `.`, `;`, `@`, `->`, `(`, `)`, `[`, `]`, `{`, `}`, `&&`, `!`, `is`, `is not`
 
 **Postfix specials:**
 POST\_INC\_MONEY (`++`), POST\_DEC\_MONEY (`--`), POSTFIX\_SQUARE (`**` after number), POSTFIX\_SQRT (`//` after number)
@@ -589,10 +588,8 @@ ARROW (`->`), PIPE (`|>`), NAMESPACE (`::`)
 * **File extension:** source files use `.gbln` as canonical extension.
 * **Operation definition:**
 
-  * Declared with `op`.
   * Block form: `op name(params) ... end` (last expression returned unless `return` is used).
   * One-liner form: `op name(params) = expr`.
-  * `return` exits immediately, overriding the implicit return.
 * **Operation calls:** Only two call forms are valid:
 
   * **Method-style:** `value.op(...)` (receiver as first argument).
@@ -633,24 +630,89 @@ ARROW (`->`), PIPE (`|>`), NAMESPACE (`::`)
 
   * Percent literal `NUMBER%` is lexical (part of the literal), not an operator.
   * Percent-of-other (`% of E` / `%o E`) binds tightly (see group 4).
-  * Percent-of-self (`%s`) is a parse-time desugaring, not a precedence operator:
-    E\_lhs … N%s  ⇒  E\_lhs … (N% of E\_lhs …)
-    Example: `total - 15%s`  ⇒  `total - (15% of total)`
+  * Percent-of-self (`%s`) is a parse-time desugaring, not a precedence operator.
 * **Pipeline `|>`:** intentionally lower than addition and joins:
   `2 + 3 |> .to_string`  ⇒  `(2 + 3) |> .to_string`
-* **Loop keywords:** `jump` and `until` are hard keywords. Lexer always emits them as KEYWORD tokens; parser enforces that they only appear inside loop headers. Outside of loop constructs, they will cause a syntax error.
+* **Loop keywords:** `jump` and `until` are hard keywords. Lexer emits them as KEYWORD tokens; parser enforces placement.
 * **Time anchoring:** `.wrap` (used for anchoring times across midnight) is not a keyword. It lexes as IDENT following DOT (method-style).
-* nc is only valid immediately after :: as a template skip placeholder; otherwise SyntaxError.
-* Quoted keys ("key":) are invalid in bindings/templates (IDENT only).
-* Enum variants are always IDENT in source; the lexer does not distinguish symbolic vs backed. Parser handles .value resolution.
+* `nc` is only valid immediately after `::` as a template skip placeholder; otherwise `SyntaxError`.
+* Quoted keys (`"key":`) are invalid in bindings/templates (IDENT only).
+* Enum variants are always IDENT in source; the lexer does not distinguish symbolic vs backed. Parser handles `.value` resolution.
 * Money postfix `++`/`--` increment/decrement by **one major unit** (currency base step).
-* “% self is parser sugar for %s; lexer emits % then KEYWORD(self).”
-* Pipelines: sugar only; no implicit nil-handling—nil flows through unless guarded with ?. or ??.
+* Pipelines: sugar only; no implicit nil-handling—nil flows through unless guarded with `?.` or `??`.
 * Optional chaining: guards only against nil; any error from a non-nil evaluation propagates.
-* Lambda in pipeline: A |> (v -> g(v, ...)) is permitted; the -> is the existing ARROW token.
-* Gmark persistence paths like .goblin/gmarks.lock and .goblin/gmarks.audit.log are string/path literals only; the lexer does not treat them specially. All Gmark APIs are method/service identifiers; no new operators or keywords are introduced.
+* Lambda in pipeline: `A |> (v -> g(v, ...))` is permitted; the `->` is the existing ARROW token.
+* Gmark persistence paths like `.goblin/gmarks.lock` are string/path literals only; the lexer does not treat them specially.
 * Banish rules are not new tokens. The feature IDs (core.morph, op.pipe\_join, etc.) are always lexed as plain IDENT + DOT + IDENT.
-* Config files (.goblin.banish.toml) are outside lexer scope; the lexer never special-cases them.
+* Config files (`.goblin.banish.toml`) are outside lexer scope; the lexer never special-cases them.
 * Diagnostics (BanishError) are surfaced later (compile/lint), not at lex time.
-* set @policy … end introduces no new tokens beyond existing: KEYWORD(set), AT\_IDENT('@policy'), IDENT|STRING (policy name), map punctuation, and KEYWORD(end).
+* `set @policy … end` introduces no new tokens beyond existing: `KEYWORD(set)`, `AT_IDENT('@policy')`, `IDENT|STRING` (policy name), map punctuation, and `KEYWORD(end)`.
 * Policy application & precedence (inline > file header > project default) are parser/semantic concerns; not lexer-level.
+
+Comparison Semantics (Goblin)
+
+= — assignment
+
+!= — not-assignment (binding/state check)
+
+LHS must be an lvalue (identifier/field/index).
+
+Undefined LHS → NameError.
+
+== — value equality (numeric unification: 3 == 3.0 → true)
+
+Undefined on either side → NameError.
+
+=== — strict identity (same instance)
+
+Undefined on either side → NameError.
+
+!== — not value equality (safe)
+
+If either side is undefined → nil (indeterminate).
+
+Else → true/false normally.
+
+!=== — not strict identity (safe)
+
+If either side is undefined → nil.
+
+Else → true/false normally.
+
+Truth table highlights
+
+Defined x = 10:
+
+x != 10 → false (state: assigned 10)
+
+x != 20 → true (state: not assigned 20)
+
+x !== 10 → false (value equal)
+
+x !== 20 → true (value not equal)
+
+Undefined y:
+
+y != 10 → NameError
+
+y !== 10 → nil
+
+y !=== 10 → nil
+
+Identity:
+
+obj = {}; z = obj; w = {}
+obj === z    // true
+obj !=== z   // false
+obj === w    // false
+obj !=== w   // true
+u !=== 5     // nil (u undefined)
+(u !=== 5) ?? false  // => false
+
+Parser/diagnostics (later)
+
+Enforce != LHS is an lvalue; otherwise SyntaxError with fix-it: “Use !==.”
+
+!==/!=== yielding nil: optional lint in strict mode—“Comparison involved undefined; result is nil.”
+
+Undefined on ==/=== → NameError (unchanged).

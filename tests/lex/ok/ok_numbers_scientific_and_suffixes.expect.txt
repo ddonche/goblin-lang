@@ -1,0 +1,10 @@
+﻿OK
+# EXPECT
+# - Intent: Accept numeric suffixes (i/f/b) and scientific notation per v1.18.
+- Key behaviors:
+  - `42i` ? integer with explicit int suffix.
+  - `1e6`, `2.5e-3` ? float forms with exponent.
+  - `10f` ? float with explicit float suffix.
+  - `123b`, `5.0b`, `1e6b` ? big-number suffix `b` on int/float/exponent forms.
+- Notes: No underscores here (they are disallowed in v1 except the digit-pick shorthand).
+

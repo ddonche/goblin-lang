@@ -1,0 +1,4 @@
+set @policy Billing
+class Account
+    #balance = 0
+end

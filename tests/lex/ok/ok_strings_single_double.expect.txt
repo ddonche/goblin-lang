@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Both single- and double-quoted strings lex cleanly; empty strings are allowed.
+- Key behaviors: Quotes must match; contents may be empty; no escape sequences used here.
+- Notes: This fixture avoids triple/raw strings and escapes�those are covered separately.
+

@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Detect missing closing `////` for a block comment.
+- Primary error message should mention: "unterminated block comment".
+- Span should highlight: from the opening `////` through EOF.
+- Recovery: Lexer reaches EOF after reporting the LexError.
+

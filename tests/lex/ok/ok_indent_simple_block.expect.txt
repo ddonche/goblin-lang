@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: One 4-space indented block between two top-level lines parses without errors.
+- Key behaviors: 4-space indent opens a block; returning to column 0 closes it; EOF is calm.
+- Notes: No tabs, no trailing spaces, no delimiters�pure indent/dedent behavior.
+

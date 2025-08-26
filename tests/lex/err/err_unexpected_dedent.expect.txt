@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Dedenting to a level that wasn�t previously opened (here 8 ? 4) is illegal.
+- Primary error message should mention: "unexpected dedent" or "inconsistent indentation".
+- Span should highlight: the leading spaces of the line `b`.
+- Recovery: Lexer should report and continue (note your chosen behavior).
+

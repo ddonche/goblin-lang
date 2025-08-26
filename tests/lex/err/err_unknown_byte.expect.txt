@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Non-text/unknown byte triggers a LexError.
+- Primary error message should mention: "unknown byte" (or similar).
+- Span should highlight: the offending byte position (between `a` and `b`).
+- Recovery: Lexer reaches EOL/EOF after reporting.
+

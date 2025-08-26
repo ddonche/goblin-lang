@@ -1,0 +1,9 @@
+﻿OK
+# EXPECT
+# - Intent: `NUMBER '_' NUMBER` lexes as PICK_DIGIT_SHORTHAND; optional modifiers are recognized.
+- Key behaviors:
+  - `5_4`, `3_2`, `2_8` ? PICK_DIGIT_SHORTHAND.
+  - `unique` lexes as KEYWORD(unique).
+  - `!dups` lexes as `!` followed by KEYWORD(dups).
+- Notes: No randomness semantics here�pure token shapes per v1.18.
+

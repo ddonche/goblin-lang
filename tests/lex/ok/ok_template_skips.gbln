@@ -1,0 +1,6 @@
+# Skips in templates: bare :: vs :: nc
+@four = a: 1 :: b: 2 :: c: 3 :: d: 4
+
+x = @four: 10 :: :: 30            /// set a,c; b stays 2
+y = @four: 10 :: nc :: 30         /// same result; more readable for longer runs
+z = @four: 10 :: nc :: nc :: 40   /// set a,d; b,c unchanged

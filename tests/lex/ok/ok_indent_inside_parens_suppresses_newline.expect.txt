@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Physical newlines inside `()` do NOT create statement breaks.
+- Key behaviors: No implicit NEWLINE tokens between `1 +`, `2 +`, and `3`; the closing `)` ends the logical line.
+- Notes: The following line `outside = done` is a new statement at top level.
+

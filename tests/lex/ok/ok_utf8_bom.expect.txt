@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Lexer accepts a leading UTF-8 BOM and proceeds normally.
+- Key behaviors: No diagnostics; tokens begin with IDENT `alpha` etc. The BOM is ignored.
+- Notes: CRLF line endings included here too.
+

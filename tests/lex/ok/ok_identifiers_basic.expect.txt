@@ -1,0 +1,6 @@
+﻿OK
+# EXPECT
+# - Intent: Common ASCII identifiers lex cleanly.
+- Key behaviors: Letters/underscore may start; digits allowed after first char; underscores allowed.
+- Notes: No unicode, no keywords, no operators mixed in here.
+

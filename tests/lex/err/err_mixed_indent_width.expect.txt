@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Indentation must be consistent (e.g., 4 spaces per level). A 2-space indent after a 4-space indent is illegal.
+- Primary error message should mention: "mixed indentation width" or "inconsistent indent".
+- Span should highlight: the leading spaces of the line `beta`.
+- Recovery: Lexer should either treat `beta` as invalid indent and continue, or stop�note which behavior your spec requires.
+

@@ -1,0 +1,7 @@
+﻿ERR
+# EXPECT (ERROR CASE)
+# - Intent: Reject invalid escapes in non-raw strings.
+- Primary error message should mention: "bad escape" or "invalid escape".
+- Span should highlight: the backslash + following chars for each bad escape (`\q`, `\u12G4`, `\u123`).
+- Recovery: Lexer continues after reporting; remaining lines/tokenization proceed normally (note if your impl stops).
+

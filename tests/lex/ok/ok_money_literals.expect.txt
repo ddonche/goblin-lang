@@ -1,0 +1,9 @@
+﻿OK
+# EXPECT
+# - Intent: Accept valid MONEY literal shapes per v1.18.
+- Key behaviors:
+  - Symbol-leading: `$12.34`, `$-5.00` ? MONEY (sign may appear after symbol).
+  - Code-trailing: `950.50 USD`, `-20 EUR` ? MONEY (space required; ISO3 = [A-Z]{3}).
+  - Country+symbol: `US$30.00`, `-CA$12.00` ? MONEY.
+- Notes: No validation of currency codes or amounts here; lexer just recognizes shapes.
+

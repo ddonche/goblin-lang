@@ -1,0 +1,8 @@
+text = "hello"
+u1 = text.upper
+u2 = text.upper()
+len1 = items.len
+len2 = items.len()
+
+# contrast with module access (uses ::, not .)
+r = Math::sqrt(9)

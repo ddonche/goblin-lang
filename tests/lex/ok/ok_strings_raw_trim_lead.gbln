@@ -1,0 +1,10 @@
+p1 = raw "C:\\Users\\Alice\\notes.txt"
+p2 = trim_lead """
+    line one
+      line two
+"""
+p3 = raw trim_lead '''
+    keep this indentation literally
+'''
+p4 = "SELECT * FROM users".raw
+p5 = "Hello".trim_lead

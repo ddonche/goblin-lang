@@ -1,0 +1,11 @@
+﻿OK
+# EXPECT
+# - Intent: Cover most operator/punct token shapes with minimal context.
+- Key behaviors:
+  - Longest-match: `...` over `..`; `::` as single token; `?.` and `??` as distinct tokens.
+  - Postfix forms present (`9++`, `16//`) alongside infix forms.
+  - Join operators `|` and `||`, pipeline `|>`, arrow `->`, and `@` punct are recognized.
+  - Comparison families `==`, `!=`, `<=`, `>=`, and strict `===`, `!==`.
+  - Words `is` / `is not` appear as their specified operator tokens.
+- Notes: This is a **lexing shape** check only�no evaluation semantics.
+

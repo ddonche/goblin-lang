@@ -1,0 +1,3 @@
+////
+  starts a Goblin block comment but never closes
+  the lexer should report an unterminated block comment

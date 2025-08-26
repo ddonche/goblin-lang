@@ -1,0 +1,9 @@
+﻿OK
+# EXPECT
+# - Intent: Non-raw strings support interpolation `{ ... }` and literal-brace escapes `{{` / `}}`.
+- Key behaviors:
+  - `greet`, `slugged`, `mathy` contain `INTERP_START`/`INTERP_END` with normal lexing inside.
+  - `braces` emits `LITERAL_BRACE_OPEN` and `LITERAL_BRACE_CLOSE` for `{{` and `}}`.
+  - `raw_braces`: even in raw strings, `{{`/`}}` remain the way to get literal braces; backslashes are inert.
+- Notes: Zero-arg method inside interpolation (`name.slug`) is allowed per notes.
+
