@@ -8,13 +8,19 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use goblin_lexer::{lex, TokenKind};
+use goblin_lexer::{TokenKind, lex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode { OkMode, ErrMode }
+enum Mode {
+    OkMode,
+    ErrMode,
+}
 
 #[derive(Debug)]
-struct ExpectSummary { mode: Mode, entries: usize }
+struct ExpectSummary {
+    mode: Mode,
+    _entries: usize,
+}
 
 #[derive(Debug)]
 struct TestCase {
@@ -25,7 +31,7 @@ struct TestCase {
 
 fn main() {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
-    if args.len() >= 1 && args[0] == "lex" {
+    if !args.is_empty() && args[0] == "lex" {
         args.remove(0);
         if args.len() == 1 && args[0] == "--check" {
             std::process::exit(run_lex_check());
@@ -72,20 +78,39 @@ fn run_lex_check() -> i32 {
                     invalid += 1;
                     println!(
                         "ERROR invalid oracle: {}: {}",
-                        path_from(exp_path, root).unwrap_or_else(|| exp_path.clone()).display(),
+                        path_from(exp_path, root)
+                            .unwrap_or_else(|| exp_path.clone())
+                            .display(),
                         e
                     );
                 }
                 Ok(sum) => {
-                    if let Some(hint) = t.dir_mode_hint { if hint != sum.mode { mismatch += 1; } }
+                    // collapsed-if version Clippy wants
+                    if let Some(hint) = t.dir_mode_hint
+                        && hint != sum.mode
+                    {
+                        mismatch += 1;
+                    }
 
                     match sum.mode {
-                        Mode::ErrMode => {
-                            // TEMP POLICY: mark ERR oracles as PASS (we'll wire comparison later)
-                            passed += 1;
-                            println!("PASS   {}  (ERR oracle not compared yet)", rel.display());
-                            let _ = lexed; // silence unused warning
-                        }
+                        Mode::ErrMode => match lexed {
+                            Ok(_) => {
+                                failed += 1;
+                                println!(
+                                    "FAIL   {}  (expected ERR, lexer returned OK)",
+                                    rel.display()
+                                );
+                            }
+                            Err(diags) => {
+                                passed += 1;
+                                println!(
+                                    "PASS   {}  (ERR as expected; {} diagnostic{})",
+                                    rel.display(),
+                                    diags.len(),
+                                    if diags.len() == 1 { "" } else { "s" }
+                                );
+                            }
+                        },
                         Mode::OkMode => {
                             // Parse expected token sequence (OK mode)
                             match parse_ok_tokens(exp_path) {
@@ -93,7 +118,9 @@ fn run_lex_check() -> i32 {
                                     invalid += 1;
                                     println!(
                                         "ERROR invalid oracle entries: {}: {}",
-                                        path_from(exp_path, root).unwrap_or_else(|| exp_path.clone()).display(),
+                                        path_from(exp_path, root)
+                                            .unwrap_or_else(|| exp_path.clone())
+                                            .display(),
                                         e
                                     );
                                 }
@@ -101,7 +128,10 @@ fn run_lex_check() -> i32 {
                                     if expected.is_empty() {
                                         // Treat empty OK expectations as pass while lexer grows
                                         passed += 1;
-                                        println!("PASS   {}  (oracle has no token entries yet)", rel.display());
+                                        println!(
+                                            "PASS   {}  (oracle has no token entries yet)",
+                                            rel.display()
+                                        );
                                         continue;
                                     }
 
@@ -110,11 +140,15 @@ fn run_lex_check() -> i32 {
                                             failed += 1;
                                             println!(
                                                 "FAIL   {}  (lexer errors: {}; expected OK)",
-                                                rel.display(), diags.len()
+                                                rel.display(),
+                                                diags.len()
                                             );
                                         }
                                         Ok(tokens) => {
-                                            let actual = tokens.iter().map(as_expect_form).collect::<Vec<_>>();
+                                            let actual = tokens
+                                                .iter()
+                                                .map(as_expect_form)
+                                                .collect::<Vec<_>>();
                                             match compare_expect(&expected, &actual) {
                                                 None => {
                                                     passed += 1;
@@ -126,11 +160,19 @@ fn run_lex_check() -> i32 {
                                                     println!("        {}", diff);
                                                     println!(
                                                         "        expected: [{}]",
-                                                        expected.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")
+                                                        expected
+                                                            .iter()
+                                                            .map(|e| e.to_string())
+                                                            .collect::<Vec<_>>()
+                                                            .join(", ")
                                                     );
                                                     println!(
                                                         "        actual:   [{}]",
-                                                        actual.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")
+                                                        actual
+                                                            .iter()
+                                                            .map(|e| e.to_string())
+                                                            .collect::<Vec<_>>()
+                                                            .join(", ")
                                                     );
                                                 }
                                             }
@@ -156,11 +198,17 @@ fn run_lex_check() -> i32 {
 
 fn collect_tests(dir: &Path, hint: Option<Mode>) -> Vec<TestCase> {
     let mut out = Vec::new();
-    if !dir.exists() { return out; }
+    if !dir.exists() {
+        return out;
+    }
     walk(dir, &mut |p| {
         if p.extension() == Some(OsStr::new("gbln")) {
             let expect = expect_for(p);
-            out.push(TestCase { source: p.to_path_buf(), expect, dir_mode_hint: hint });
+            out.push(TestCase {
+                source: p.to_path_buf(),
+                expect,
+                dir_mode_hint: hint,
+            });
         }
     });
     out
@@ -172,7 +220,11 @@ fn walk(dir: &Path, f: &mut impl FnMut(&Path)) {
         if let Ok(rd) = fs::read_dir(&d) {
             for entry in rd.filter_map(|e| e.ok()) {
                 let p = entry.path();
-                if p.is_dir() { stack.push(p); } else { f(&p); }
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    f(&p);
+                }
             }
         }
     }
@@ -184,13 +236,20 @@ fn expect_for(src: &Path) -> Option<PathBuf> {
     let stem = p.file_name()?.to_owned();
     let parent = src.parent()?;
     let candidate = parent.join(format!("{}.expect.txt", stem.to_string_lossy()));
-    if candidate.exists() { Some(candidate) } else { None }
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 fn read_expect_summary(path: &Path) -> Result<ExpectSummary, String> {
     let mut text = read_to_string(path).map_err(|e| e.to_string())?;
-    if text.as_bytes().starts_with(&[0xEF, 0xBB, 0xBF]) { text = text.split_off(3); }
-    else if text.chars().next() == Some('\u{feff}') { text = text.trim_start_matches('\u{feff}').to_string(); }
+    if text.as_bytes().starts_with(&[0xEF, 0xBB, 0xBF]) {
+        text = text.split_off(3);
+    } else if text.starts_with('\u{feff}') {
+        text = text.trim_start_matches('\u{feff}').to_string();
+    }
     let mut lines = text.lines().map(|l| l.trim());
     let mode = loop {
         match lines.next() {
@@ -198,66 +257,161 @@ fn read_expect_summary(path: &Path) -> Result<ExpectSummary, String> {
             Some(l) if l.is_empty() || l.starts_with('#') => continue,
             Some(l) => {
                 let up = l.to_ascii_uppercase();
-                if up == "OK" { break Mode::OkMode; }
-                if up == "ERR" { break Mode::ErrMode; }
-                return Err(format!("first non-comment line must be OK or ERR, got: {}", l));
+                if up == "OK" {
+                    break Mode::OkMode;
+                }
+                if up == "ERR" {
+                    break Mode::ErrMode;
+                }
+                return Err(format!(
+                    "first non-comment line must be OK or ERR, got: {}",
+                    l
+                ));
             }
         }
     };
     let mut entries = 0usize;
-    for l in lines { if l.is_empty() || l.starts_with('#') || l.starts_with('@') { continue; } entries += 1; }
-    Ok(ExpectSummary { mode, entries })
+    for l in lines {
+        if l.is_empty() || l.starts_with('#') || l.starts_with('@') {
+            continue;
+        }
+        entries += 1;
+    }
+    Ok(ExpectSummary {
+        mode,
+        _entries: entries,
+    })
 }
 
 // === Oracle parsing for OK mode ===
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ExpectTok { Kind(String), Op(String) }
+enum ExpectTok {
+    Kind(String),
+    Op(String),
+}
 
-impl ToString for ExpectTok {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for ExpectTok {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExpectTok::Kind(k) => k.clone(),
-            ExpectTok::Op(s) => format!("`{}`", s),
+            ExpectTok::Kind(k) => f.write_str(k),
+            ExpectTok::Op(op) => {
+                f.write_str("`")?;
+                f.write_str(op)?;
+                f.write_str("`")
+            }
         }
+    }
+}
+
+fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
+    match &tok.kind {
+        TokenKind::Op(s) => ExpectTok::Op(s.clone()),
+        TokenKind::Ident => ExpectTok::Kind("IDENT".into()),
+        TokenKind::AtIdent => ExpectTok::Kind("AT_IDENT".into()),
+        TokenKind::HashIdent => ExpectTok::Kind("HASH_IDENT".into()),
+        TokenKind::Int => ExpectTok::Kind("INT".into()),
+        TokenKind::Float => ExpectTok::Kind("FLOAT".into()),
+        TokenKind::String => ExpectTok::Kind("STRING".into()),
+        TokenKind::Money => ExpectTok::Kind("MONEY".into()),
+        TokenKind::Newline => ExpectTok::Kind("NEWLINE".into()),
+        TokenKind::Indent => ExpectTok::Kind("INDENT".into()),
+        TokenKind::Dedent => ExpectTok::Kind("DEDENT".into()),
+        TokenKind::Eof => ExpectTok::Kind("EOF".into()),
+    }
+}
+
+fn compare_expect(expected: &[ExpectTok], actual: &[ExpectTok]) -> Option<String> {
+    // subsequence match: expected must appear in order within actual
+    let mut i = 0usize; // expected
+    let mut j = 0usize; // actual
+    while i < expected.len() && j < actual.len() {
+        if expected[i] == actual[j] {
+            i += 1;
+            j += 1;
+        } else {
+            j += 1;
+        }
+    }
+    if i == expected.len() {
+        None
+    } else {
+        Some(format!(
+            "could not match expected token {}: {}",
+            i, expected[i]
+        ))
     }
 }
 
 fn parse_ok_tokens(path: &Path) -> Result<Vec<ExpectTok>, String> {
     let mut text = read_to_string(path).map_err(|e| e.to_string())?;
-    if text.as_bytes().starts_with(&[0xEF, 0xBB, 0xBF]) { text = text.split_off(3); }
+    if text.as_bytes().starts_with(&[0xEF, 0xBB, 0xBF]) {
+        text = text.split_off(3);
+    }
 
     let mut lines = text.lines();
+
     // find first non-blank/comment and ensure it's OK
     let mut mode_ok = false;
-    while let Some(l) = lines.next() {
+    for l in lines.by_ref() {
         let t = l.trim();
-        if t.is_empty() || t.starts_with('#') { continue; }
-        if t.eq_ignore_ascii_case("OK") { mode_ok = true; break; }
-        if t.eq_ignore_ascii_case("ERR") { return Err("ERR oracle not supported in compare yet".into()); }
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t.eq_ignore_ascii_case("OK") {
+            mode_ok = true;
+            break;
+        }
+        if t.eq_ignore_ascii_case("ERR") {
+            return Err("ERR oracle not supported in compare yet".into());
+        }
         return Err(format!("expected OK or ERR, got: {}", t));
     }
-    if !mode_ok { return Err("empty expect file".into()); }
+    if !mode_ok {
+        return Err("empty expect file".into());
+    }
 
     let mut out = Vec::new();
     for raw in lines {
         let mut l = raw.trim().to_string();
-        if l.is_empty() || l.starts_with('#') || l.starts_with('@') { continue; }
+        if l.is_empty() || l.starts_with('#') || l.starts_with('@') {
+            continue;
+        }
         // treat prose bullets as comments in OK mode
-        if l.starts_with('-') { continue; }
+        if l.starts_with('-') {
+            continue;
+        }
 
         // Drop inline comments (# ...) when not inside backticks or parens
-        if !l.starts_with('`') && !l.contains('(') {
-            if let Some(idx) = l.find('#') { l.truncate(idx); l = l.trim().to_string(); }
+        if !l.starts_with('`')
+            && !l.contains('(')
+            && let Some(idx) = l.find('#')
+        {
+            l.truncate(idx);
+            l = l.trim().to_string();
         }
-        if l.is_empty() { continue; }
+
+        if l.is_empty() {
+            continue;
+        }
 
         // Drop span suffix like " @1:1-1:4"
-        if let Some(idx) = l.find(" @") { l.truncate(idx); l = l.trim().to_string(); }
+        if let Some(idx) = l.find(" @") {
+            l.truncate(idx);
+            l = l.trim().to_string();
+        }
+
+        // --- recognize EOF line explicitly ---
+        if l.eq_ignore_ascii_case("EOF") {
+            out.push(ExpectTok::Kind("EOF".into()));
+            continue;
+        }
 
         // Backticked operator/punct
-        if l.starts_with('`') {
-            if let Some(end) = l[1..].find('`') { out.push(ExpectTok::Op(l[1..1+end].to_string())); continue; }
-            return Err(format!("unclosed backtick in: {}", l));
+        if let Some(rest) = l.strip_prefix('`')
+            && let Some(end) = rest.find('`')
+        {
+            out.push(ExpectTok::Op(rest[..end].to_string()));
+            continue;
         }
 
         // Kind(value) -> we only care about kind now
@@ -273,34 +427,13 @@ fn parse_ok_tokens(path: &Path) -> Result<Vec<ExpectTok>, String> {
     Ok(out)
 }
 
-fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
-    match &tok.kind {
-        TokenKind::Op(s)    => ExpectTok::Op(s.clone()),
-        TokenKind::Ident    => ExpectTok::Kind("IDENT".into()),
-        TokenKind::AtIdent  => ExpectTok::Kind("AT_IDENT".into()),
-        TokenKind::HashIdent=> ExpectTok::Kind("HASH_IDENT".into()),
-        TokenKind::Int      => ExpectTok::Kind("INT".into()),
-        TokenKind::Float    => ExpectTok::Kind("FLOAT".into()),
-        TokenKind::String   => ExpectTok::Kind("STRING".into()),
-        TokenKind::Money    => ExpectTok::Kind("MONEY".into()),
-        TokenKind::Newline  => ExpectTok::Kind("NEWLINE".into()),
-        TokenKind::Indent   => ExpectTok::Kind("INDENT".into()),
-        TokenKind::Dedent   => ExpectTok::Kind("DEDENT".into()),
-        TokenKind::Eof      => ExpectTok::Kind("EOF".into()),
+#[allow(dead_code)]
+fn mode_str(m: Mode) -> &'static str {
+    match m {
+        Mode::OkMode => "OK",
+        Mode::ErrMode => "ERR",
     }
 }
-
-fn compare_expect(expected: &[ExpectTok], actual: &[ExpectTok]) -> Option<String> {
-    // subsequence match: expected must appear in order within actual
-    let mut i = 0usize; // expected
-    let mut j = 0usize; // actual
-    while i < expected.len() && j < actual.len() {
-        if expected[i] == actual[j] { i += 1; j += 1; } else { j += 1; }
-    }
-    if i == expected.len() { None } else { Some(format!("could not match expected token {}: {}", i, expected[i].to_string())) }
-}
-
-fn mode_str(m: Mode) -> &'static str { match m { Mode::OkMode => "OK", Mode::ErrMode => "ERR" } }
 
 fn read_to_string(path: &Path) -> io::Result<String> {
     let mut f = fs::File::open(path)?;
@@ -309,18 +442,42 @@ fn read_to_string(path: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-fn path_from(path: &Path, base: &Path) -> Option<PathBuf> { pathdiff::diff_paths(path, base) }
+fn path_from(path: &Path, base: &Path) -> Option<PathBuf> {
+    pathdiff::diff_paths(path, base)
+}
 
 mod pathdiff {
     use std::path::{Component, Path, PathBuf};
     pub fn diff_paths(path: &Path, base: &Path) -> Option<PathBuf> {
         let mut ita = base.components();
         let mut itb = path.components();
-        loop { match (ita.clone().next(), itb.clone().next()) { (Some(ca), Some(cb)) if comp_eq(&ca, &cb) => { ita.next(); itb.next(); } _ => break } }
+        loop {
+            match (ita.clone().next(), itb.clone().next()) {
+                (Some(ca), Some(cb)) if comp_eq(&ca, &cb) => {
+                    ita.next();
+                    itb.next();
+                }
+                _ => break,
+            }
+        }
         let mut result = PathBuf::new();
-        for c in ita { if let Component::Normal(_) = c { result.push(".."); } }
-        for c in itb { result.push(c.as_os_str()); }
+        for c in ita {
+            if let Component::Normal(_) = c {
+                result.push("..");
+            }
+        }
+        for c in itb {
+            result.push(c.as_os_str());
+        }
         Some(result)
     }
-    fn comp_eq(a: &Component<'_>, b: &Component<'_>) -> bool { use Component::*; match (a, b) { (Prefix(pa), Prefix(pb)) => pa.kind() == pb.kind(), (RootDir, RootDir) | (CurDir, CurDir) | (ParentDir, ParentDir) => true, (Normal(a), Normal(b)) => a == b, _ => false } }
+    fn comp_eq(a: &Component<'_>, b: &Component<'_>) -> bool {
+        use Component::*;
+        match (a, b) {
+            (Prefix(pa), Prefix(pb)) => pa.kind() == pb.kind(),
+            (RootDir, RootDir) | (CurDir, CurDir) | (ParentDir, ParentDir) => true,
+            (Normal(a), Normal(b)) => a == b,
+            _ => false,
+        }
+    }
 }

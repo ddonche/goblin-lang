@@ -63,15 +63,20 @@ pub struct LabeledSpan {
 }
 
 impl LabeledSpan {
-    pub fn new(span: Span) -> Self { Self { span, label: None } }
-    pub fn with_label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
+    pub fn new(span: Span) -> Self {
+        Self { span, label: None }
+    }
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub category: &'static str, // stable slug, e.g. "bad-escape"
     pub severity: Severity,
-    pub message: String,        // one-line summary, no trailing period
+    pub message: String, // one-line summary, no trailing period
     pub primary_span: Span,
     pub secondary_spans: Vec<LabeledSpan>,
     pub notes: Vec<String>,
@@ -79,7 +84,12 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn new(severity: Severity, category: &'static str, message: impl Into<String>, primary_span: Span) -> Self {
+    pub fn new(
+        severity: Severity,
+        category: &'static str,
+        message: impl Into<String>,
+        primary_span: Span,
+    ) -> Self {
         Self {
             category,
             severity,
@@ -99,9 +109,18 @@ impl Diagnostic {
         Self::new(Severity::Warning, category, message, primary_span)
     }
 
-    pub fn with_secondary(mut self, sec: LabeledSpan) -> Self { self.secondary_spans.push(sec); self }
-    pub fn with_note(mut self, note: impl Into<String>) -> Self { self.notes.push(note.into()); self }
-    pub fn with_help(mut self, help: impl Into<String>) -> Self { self.help.push(help.into()); self }
+    pub fn with_secondary(mut self, sec: LabeledSpan) -> Self {
+        self.secondary_spans.push(sec);
+        self
+    }
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
+        self
+    }
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help.push(help.into());
+        self
+    }
 }
 
 /// Minimal pretty printer that follows the guide's first line format.

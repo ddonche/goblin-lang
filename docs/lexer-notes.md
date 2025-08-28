@@ -47,6 +47,12 @@
 
 > Note: `::` is **overloaded** — namespace separator, binding separator, and skip marker in templates. Lexer always emits `NAMESPACE`; parser disambiguates.
 
+Goblin splits the `=` family into three clean families:
+
+- `=` / `!=` - Assignment state
+- `==` / `!==` - Value equality  
+- `===` / `!===` - Strict identity
+
 \#########################################################################################################################################################
 
 # Lexer Notes — v1.18 (Part 2: Keywords, Built-ins, Identifiers)
@@ -431,7 +437,7 @@ Inside string mode:
 9. \| ||                  // string joining
 10. |>                   // pipeline (left-assoc)
 11. ??                   // null-coalescing
-12. \== != < <= > >= === !== is is not   // comparisons
+12. \== != < <= > >= === !== !=== is is not   // comparisons
 13. and or (with alias &&)              // logical ops
 
 // Notes:
@@ -443,6 +449,12 @@ Inside string mode:
 // - `**` and `//` have both postfix and infix forms; spacing disambiguates.
 // - Exponentiation is right-associative.
 // - Bitwise ops exist only as method calls, no lexer tokens.
+
+Goblin splits the `=` family into three clean families:
+
+- `=` / `!=` - Assignment state
+- `==` / `!==` - Value equality  
+- `===` / `!===` - Strict identity
 
 * Pipeline desugaring (syntax sugar only): A |> f(x, y: k) desugars to f(A, x, y: k). Evaluation order: evaluate left operand, then resolve the callable on the right, then evaluate its arguments, then invoke.
 * Right-hand callable requirement: the right side of |> must resolve to something callable that accepts the piped value as its first parameter, otherwise an ArityMismatchError (or a type error) is raised.
@@ -565,7 +577,7 @@ IDENT, AT\_IDENT (@ident), HASH\_IDENT (#ident)
 STRING (flags: raw, trim\_lead); MONEY; NUMBER (int/float with optional suffix i/f, big suffix b); DATE\_LITERAL; TIME\_LITERAL; DATETIME\_LITERAL; DURATION\_UNIT (`s`,`m`,`h`,`d`,`w`,`mo`,`y`); PERCENT\_LITERAL; PERCENT\_SELF; PERCENT\_OF\_OTHER; BLOB\_LITERAL; PATH; PICK\_DIGIT\_SHORTHAND; DICE\_LITERAL
 
 **Operators & punct:**
-`...`, `..`, `::`, `|>`, `||`, `|`, `??`, `?.`, `**`, `^^`, `>>`, `++`, `--`, `//`, `%s`, `%o`, `==`, `!=`, `<=`, `>=`, `===`, `!==`, `<`, `>`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `+`, `-`, `*`, `/`, `%`, `:`, `,`, `.`, `;`, `@`, `->`, `(`, `)`, `[`, `]`, `{`, `}`, `&&`, `!`, `is`, `is not`
+`...`, `..`, `::`, `|>`, `||`, `|`, `??`, `?.`, `**`, `^^`, `>>`, `++`, `--`, `//`, `%s`, `%o`, `==`, `!=`, `<=`, `>=`, `===`, `!==`, `!===`, `<`, `>`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `+`, `-`, `*`, `/`, `%`, `:`, `,`, `.`, `;`, `@`, `->`, `(`, `)`, `[`, `]`, `{`, `}`, `&&`, `!`, `is`, `is not`
 
 **Postfix specials:**
 POST\_INC\_MONEY (`++`), POST\_DEC\_MONEY (`--`), POSTFIX\_SQUARE (`**` after number), POSTFIX\_SQRT (`//` after number)
