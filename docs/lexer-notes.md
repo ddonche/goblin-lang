@@ -23,17 +23,16 @@
 "..." RANGE\_EXCL (also doubles as variadic marker in parameter lists)
 ".."  RANGE\_INCL
 "::"  NAMESPACE / BINDING\_SEP / TEMPLATE\_SKIP
-"|>"  PIPE (pipeline operator, left-associative)
 "||"  JOIN\_SPACE
 "|"   JOIN\_NOSPACE
 "??"  NULLISH
-"?."  OPT\_CHAIN (optional chaining, left-associative; nil short-circuit is semantic)
-"**"  POW                 // exponentiation
-"^^"  EXPLAIN\_POW          // explain-power operator (binary)
-">>"  DIVMOD              // quotient+remainder pair
+"?>>"  OPT\_CHAIN (optional chaining, left-associative; nil short-circuit is semantic)
+"**"  POW                 // exponentiation; also POSTFIX SQUARE
+">>"  MEMBER ASSIGNMENT FIELD CHECK // user >> is_active
+"><"  DIVMOD              // quotient+remainder pair
 "++"  POST\_INC\_MONEY      // postfix only
 "--"  POST\_DEC\_MONEY      // postfix only
-"//"  INT\_DIV             // integer div (also money flavor)
+"//"  INT\_DIV             // integer div (also money flavor); also POSTFIX SQRT
 "%s"  PERCENT\_SELF        // percent-of-self sugar
 "%o"  PERCENT\_OF\_OTHER    // percent-of-other sugar
 "=="  EQ   "!=" NE  "<=" LE  ">=" GE
@@ -41,9 +40,17 @@
 "<"   LT   ">"  GT  "="  ASSIGN
 "+=" "-=" "\*=" "/=" "%="
 "**="                       // compound exponent assign
-"+" "-" "\*" "/" "%" ":" "," "." ";" "@" "->" "(" ")" "\[" "]" "{" "}"
+"+" "-" "\*" "/" "%" ":" "," "." ";" "@" "=>" "(" ")" "\[" "]" "{" "}"
 "&&"  AND\_ALIAS             // alias for and
+"<>"  OR\_ALIAS              // alias for or
 "!"   NOT\_ALIAS             // alias for not
+"!"   POST FACTORIAL
+"^"   POST CEIL 
+"_"   POST FLOOR
+"@"   class name identifier
+"#"   private variable identifier
+"=>"  lambda
+"&"   definedness operator
 
 > Note: `::` is **overloaded** — namespace separator, binding separator, and skip marker in templates. Lexer always emits `NAMESPACE`; parser disambiguates.
 
@@ -68,14 +75,14 @@ return skip jump until stop assert
 class fn op enum use import export via test
 true false nil contract prefer
 judge morph vault banish unbanish expose
-pick roll roll_detail reap usurp replace add insert map
+pick roll roll_detail reap usurp replace override add insert map
 nc self set
 of
 end
 blob
 ```
 
-* **`morph`**: hard keyword, not shadowable. It is a language form, not a user-defined function. Always lexes as `KEYWORD(morph)`.
+* **`morph`**: hard keyword, not shadowable. It is a language form, not a user-defined function. Always lexes as `KEYWORD(morph)`. replace and override used in morph; replace is also for collections
 
 * **`set`**: hard keyword. Introduces configuration statements, including `set @policy …`.
 
@@ -106,6 +113,7 @@ as where raw trim_lead on like and between unique
 
 * (int, float, bool, money, pct, etc.) are **shadowable** → always lex as `IDENT`.
 * Built-ins like `freq`, `mode`, `sample_weighted` remain shadowable.
+* Input - prompting the user for input from the CLI
 * **`blob` is a hard keyword** (constructor for blob literals) and is **not shadowable**.
 * save\_remainders, load\_remainders, divide\_evenly, divide\_evenly\_escrow, allocate\_round\_robin, allocate
 * Tokenization: pct( → IDENT pct + (; no special token.
@@ -166,6 +174,7 @@ as where raw trim_lead on like and between unique
 
 * int, float, bool, big, money, pct
 * date, time, datetime, duration
+* i, f, b, s, m, h, d, w, mo, y
 
 ### I/O, filesystem, printing, serialization helpers
 
@@ -242,6 +251,54 @@ as where raw trim_lead on like and between unique
 
 # Lexer Notes — v1.18 (Part 3: Literals)
 
+Patch:
+Definedness Operator (&)
+
+Form: &LValue
+Precedence: Unary (same tier as !, not, unary +/-)
+Associativity: Right-to-left
+
+Meaning:
+The & operator tests whether an lvalue path is bound at runtime.
+It answers the question: “does this variable/member/index exist?”
+
+Works with identifiers, member access (obj.field), indexing (arr[i]), and optional chaining (?>>).
+
+Returns true if the binding exists, even if the value is nil.
+
+Returns false if the binding does not exist (e.g. undefined variable, missing field, absent index).
+
+Does not evaluate the value; only checks binding existence.
+
+Applying !&expr yields the logical opposite: “is this path not bound?”
+
+Errors:
+
+& requires an lvalue. &(x + 1) → SyntaxError: & requires a variable/field/index.
+
+Examples:
+
+if &config.database_url
+    connect_to_db(config.database_url)
+end
+
+if !&session.user_id
+    redirect_to_login()
+end
+
+for key in dynamic.keys()
+    if &dynamic[key]
+        process_field(key, dynamic[key])
+    end
+end
+
+
+📛 Name:
+I suggest calling it the Definedness Operator in the spec.
+Short-hand description: &expr → “is expr defined?”
+
+That way you’ve got clear semantics (definedness) but the shorthand is just &.
+
 ## Numbers
 
 * Integers: `0` | `[1-9][0-9]*` with optional explicit suffix `i`
@@ -256,6 +313,7 @@ as where raw trim_lead on like and between unique
 * Big: “Any with big → big.” (promotion rule).
 * Money: backed by big engine with project-defined policy (precision, rounding, ledgering).
 * Percent: `%o` = sugar for `% of expr` (parser expands).
+* User can set separator of choice for numbers (_ , . etc)
 
 ### Add/confirm literal forms
 
@@ -416,45 +474,50 @@ Inside string mode:
 * `//` → integer division
 * `%` → modulo (unless postfix literal % attached)
 * `**` → power operator
-* `^^` → explain-power operator
 * `9**`  → `POSTFIX_SQUARE`
 * `16//` → `POSTFIX_SQRT`
-* `>>` → divmod operator, returns quotient+remainder pair
+* `><` → divmod operator, returns quotient+remainder pair
 * `++` / `--` → postfix only; defined for money as well
+* `%` -> spaces on either side is modulo
+* `!` -> POSTFIX FACTORIAL
+* `^` -> POSTFIX CEIL
+* `_` -> POSTFIX FLOOR
 
 ## Operator Precedence (for parser, recorded here)
 
 1. ()                    // grouping
-2. ., (), \[], ?.         // member, call, index, opt chain (all left-assoc)
+2. ., (), \[], ?>>         // member, call, index, opt chain (all left-assoc)
 3. \*\*, //, ++, --        // postfix square/sqrt/inc/dec
 4. % of, %o              // percent-of-other application (binds tight, parenthetical-like)
-5. \*\*, ^^ (right)        // exponentiation, show-work pow
+5. \*\* (right)        // exponentiation
 6. unary + - not !       // unary operators
 7. * / % // >>           // multiplication/division/modulo/divmod
 8. * * ```
                      // addition, subtraction
        ```
 9. \| ||                  // string joining
-10. |>                   // pipeline (left-assoc)
+10. |>                   // pipeline (left-assoc) DEPRECATED DO NOT USE
 11. ??                   // null-coalescing
-12. \== != < <= > >= === !== !=== is is not   // comparisons
+12. comparisons: = !=, == !==, === !===, < <= > >=, is, is not
 13. and or (with alias &&)              // logical ops
+14. &                     // definedness operator
 
 // Notes:
-// - `|>` is left-associative and comes after arithmetic but before joins.
-// - `?.` is left-associative; short-circuits only on nil (semantics). Short-circuit argument rule: if E?.m(args…) short-circuits because E is nil, argument expressions are not evaluated.
+// - `?>>` is left-associative; short-circuits only on nil (semantics). Short-circuit argument rule: if E?>>m(args…) short-circuits because E is nil, argument expressions are not evaluated.
 // - Percent application binds tightly (group 6). Use parentheses for clarity in complex bases.
 // - `%` as modulo lives in group 7. `10%` (literal) ≠ `10 % 5` (modulo).
 // - `%` as percent literal is lexical; modulo is an operator token.
-// - `**` and `//` have both postfix and infix forms; spacing disambiguates.
+// - `**` and `//` and `!` have both postfix and infix forms; spacing disambiguates.
 // - Exponentiation is right-associative.
 // - Bitwise ops exist only as method calls, no lexer tokens.
 
 Goblin splits the `=` family into three clean families:
 
-- `=` / `!=` - Assignment state
-- `==` / `!==` - Value equality  
-- `===` / `!===` - Strict identity
+= / != → assignment state
+
+== / !== → value equality
+
+=== / !=== → strict identity
 
 * Pipeline desugaring (syntax sugar only): A |> f(x, y: k) desugars to f(A, x, y: k). Evaluation order: evaluate left operand, then resolve the callable on the right, then evaluate its arguments, then invoke.
 * Right-hand callable requirement: the right side of |> must resolve to something callable that accepts the piped value as its first parameter, otherwise an ArityMismatchError (or a type error) is raised.
@@ -506,7 +569,7 @@ Goblin splits the `=` family into three clean families:
 ### Contracts (capability interfaces)
 
 * **Form:** `contract Name(params...) -> RetType ... end`
-* **Tokens:** `KEYWORD(contract)` `IDENT` `(` *param tokens* `)` `ARROW(->)` *ret‑type tokens* ... `KEYWORD(end)`.
+* **Tokens:** `KEYWORD(contract)` `IDENT` `(` *param tokens* `)` `ARROW(=>)` *ret‑type tokens* ... `KEYWORD(end)`.
 * **Semantics:** Parser validates signature/declared errors; lexer just emits tokens.
 
 ### Events (provided by events GLAM, not core)
@@ -520,13 +583,13 @@ Goblin splits the `=` family into three clean families:
 
 ### No operator/precedence changes
 
-* §31 introduces no new operators; it reuses existing `::` (NAMESPACE) and `->` (ARROW).
+* §31 introduces no new operators; it reuses existing `::` (NAMESPACE) and `=>` (ARROW).
 
 ---
 
 ## Lambdas
 
-* `->` → `ARROW` (idents around it are normal).
+* `=>` → `ARROW` (idents around it are normal).
 
 ## Operations
 
@@ -549,7 +612,7 @@ Goblin splits the `=` family into three clean families:
 ## Token Inventory (flat)
 
 **Keywords (hard):**
-if, elif, else, for, in, while, repeat, unless, attempt, rescue, ensure, return, skip, jump, until, stop, assert, class, fn, op, enum, use, import, export, via, test, true, false, nil, judge, morph, vault, banish, unbanish, expose, pick, roll, roll\_detail, reap, usurp, replace, add, insert, map, nc, self, of, end, blob
+if, elif, else, for, in, while, repeat, unless, attempt, rescue, ensure, return, skip, jump, until, stop, assert, class, fn, op, enum, use, import, export, via, test, true, false, nil, judge, morph, override, vault, banish, unbanish, expose, pick, roll, roll\_detail, reap, usurp, replace, add, insert, map, nc, self, of, end, blob
 
 **Keywords (soft / context):**
 from, at, first, last, to, into, with, dups, seq, as, where, raw, trim\_lead, on, like, and, between, unique, like, before, after, before\_last, after\_last, between, words, chars, lines, split, join, match
@@ -577,7 +640,8 @@ IDENT, AT\_IDENT (@ident), HASH\_IDENT (#ident)
 STRING (flags: raw, trim\_lead); MONEY; NUMBER (int/float with optional suffix i/f, big suffix b); DATE\_LITERAL; TIME\_LITERAL; DATETIME\_LITERAL; DURATION\_UNIT (`s`,`m`,`h`,`d`,`w`,`mo`,`y`); PERCENT\_LITERAL; PERCENT\_SELF; PERCENT\_OF\_OTHER; BLOB\_LITERAL; PATH; PICK\_DIGIT\_SHORTHAND; DICE\_LITERAL
 
 **Operators & punct:**
-`...`, `..`, `::`, `|>`, `||`, `|`, `??`, `?.`, `**`, `^^`, `>>`, `++`, `--`, `//`, `%s`, `%o`, `==`, `!=`, `<=`, `>=`, `===`, `!==`, `!===`, `<`, `>`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `+`, `-`, `*`, `/`, `%`, `:`, `,`, `.`, `;`, `@`, `->`, `(`, `)`, `[`, `]`, `{`, `}`, `&&`, `!`, `is`, `is not`
+`...`, `..`, `::`, `||`, `|`, `??`, `?>>`, `**`, `>>`, `><`, `++`, `--`, `//`, `%s`, `%o`, `==`, `!=`, `<=`, `>=`, `===`, `!==`, `!===`, `<`, `>`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `+`, `-`, `*`, 
+`/`, `%`, `:`, `,`, `.`, `;`, `@`, `#`, `=>`, `(`, `)`, `[`, `]`, `{`, `}`, `&&`, `!`, `is`, `is not`
 
 **Postfix specials:**
 POST\_INC\_MONEY (`++`), POST\_DEC\_MONEY (`--`), POSTFIX\_SQUARE (`**` after number), POSTFIX\_SQRT (`//` after number)
@@ -592,7 +656,7 @@ NEWLINE, INDENT, DEDENT, EOF
 STR\_TEXT, INTERP\_START (`{`), INTERP\_END (`}`), LITERAL\_BRACE\_OPEN (`{{`), LITERAL\_BRACE\_CLOSE (`}}`)
 
 **Other:**
-ARROW (`->`), PIPE (`|>`), NAMESPACE (`::`)
+ARROW (`->`), LAMBDA (`=>`), NAMESPACE (`::`)
 
 ---
 
@@ -657,7 +721,7 @@ ARROW (`->`), PIPE (`|>`), NAMESPACE (`::`)
 * Enum variants are always IDENT in source; the lexer does not distinguish symbolic vs backed. Parser handles .value resolution.
 * Money postfix `++`/`--` increment/decrement by **one major unit** (currency base step).
 * “% self is parser sugar for %s; lexer emits % then KEYWORD(self).”
-* Pipelines: sugar only; no implicit nil-handling—nil flows through unless guarded with ?. or ??.
+* Pipelines: sugar only; no implicit nil-handling—nil flows through unless guarded with ?>> or ??.
 * Optional chaining: guards only against nil; any error from a non-nil evaluation propagates.
 * Lambda in pipeline: A |> (v -> g(v, ...)) is permitted; the -> is the existing ARROW token.
 * Gmark persistence paths like .goblin/gmarks.lock and .goblin/gmarks.audit.log are string/path literals only; the lexer does not treat them specially. All Gmark APIs are method/service identifiers; no new operators or keywords are introduced.

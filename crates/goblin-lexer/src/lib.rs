@@ -25,10 +25,20 @@ pub enum TokenKind {
     Newline,
     Indent,
     Dedent,
-    /// Exact operator/punct as a string (e.g., "+", "**", "|>", "?.", "(")
+    /// Exact operator/punct as a string (e.g., "+", "**", "?.", "(")
     Op(String),
     Money,
     Eof,
+}
+
+impl TokenKind {
+    /// Constructor alias for operator tokens.
+    /// Lets us write `TokenKind::Operator("+")` while the enum variant remains `Op`.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Operator<S: Into<String>>(s: S) -> Self {
+        TokenKind::Op(s.into())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,175 +237,6 @@ fn eat_bin_digits_us(bytes: &[u8], i: &mut usize, col: &mut u32) -> bool {
     saw_digit && !last_us && consumed > 0
 }
 
-/// Lex a number starting at `*i`. Advances `*i`/`*col`, pushes tokens,
-/// and performs the money/duration/percent suffix handling.
-/// Returns `true` if a number was consumed (always true when called from digit arm).
-fn lex_number(
-    bytes: &[u8],
-    source: &str,
-    file: &str,
-    i: &mut usize,
-    line: u32,
-    col: &mut u32,
-    tokens: &mut Vec<Token>,
-) -> bool {
-    let start_i = *i;
-    let start_col = *col;
-
-    // ----- base-prefixed ints: 0x / 0o / 0b -----
-    if *i < bytes.len() && bytes[*i] == b'0' && *i + 1 < bytes.len() {
-        let p = bytes[*i + 1];
-        if p == b'x' || p == b'X' {
-            let mut j = *i + 2; let mut c = *col + 2;
-            if eat_hex_digits_us(bytes, &mut j, &mut c) {
-                let lit = String::from_utf8_lossy(&bytes[*i..j]).into_owned();
-                let span = Span::new(file, *i, j, line, start_col, line, c);
-                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                *i = j; *col = c;
-                return true;
-            }
-        } else if p == b'o' || p == b'O' {
-            let mut j = *i + 2; let mut c = *col + 2;
-            if eat_oct_digits_us(bytes, &mut j, &mut c) {
-                let lit = String::from_utf8_lossy(&bytes[*i..j]).into_owned();
-                let span = Span::new(file, *i, j, line, start_col, line, c);
-                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                *i = j; *col = c;
-                return true;
-            }
-        } else if p == b'b' || p == b'B' {
-            let mut j = *i + 2; let mut c = *col + 2;
-            if eat_bin_digits_us(bytes, &mut j, &mut c) {
-                let lit = String::from_utf8_lossy(&bytes[*i..j]).into_owned();
-                let span = Span::new(file, *i, j, line, start_col, line, c);
-                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                *i = j; *col = c;
-                return true;
-            }
-        }
-    }
-
-    // ----- decimal scan (underscores allowed) -----
-    let mut is_float = false;
-
-    // integer part
-    while *i < bytes.len() {
-        let b = bytes[*i];
-        if b.is_ascii_digit() || b == b'_' { *i += 1; *col += 1; } else { break; }
-    }
-
-    // fractional part
-    if *i + 1 < bytes.len() && bytes[*i] == b'.' && bytes[*i + 1].is_ascii_digit() {
-        is_float = true;
-        *i += 1; *col += 1; // '.'
-        while *i < bytes.len() {
-            let b = bytes[*i];
-            if b.is_ascii_digit() || b == b'_' { *i += 1; *col += 1; } else { break; }
-        }
-    }
-
-    // exponent
-    if *i < bytes.len() && (bytes[*i] == b'e' || bytes[*i] == b'E') {
-        let save_i = *i; let save_col = *col;
-        *i += 1; *col += 1; // e/E
-        if *i < bytes.len() && (bytes[*i] == b'+' || bytes[*i] == b'-') { *i += 1; *col += 1; }
-        let mut saw_exp_digit = false;
-        while *i < bytes.len() {
-            let b = bytes[*i];
-            if b.is_ascii_digit() { saw_exp_digit = true; *i += 1; *col += 1; }
-            else if b == b'_' { *i += 1; *col += 1; }
-            else { break; }
-        }
-        if saw_exp_digit { is_float = true; } else { *i = save_i; *col = save_col; }
-    }
-
-    // emit number
-    let text = &source.as_bytes()[start_i..*i];
-    let lit = String::from_utf8_lossy(text).into_owned();
-    let span_num = Span::new(file, start_i, *i, line, start_col, line, *col);
-    let kind_num = if is_float { TokenKind::Float } else { TokenKind::Int };
-    tokens.push(Token { kind: kind_num, span: span_num, value: Some(lit) });
-
-    // ----- money merge: <number><spaces><ISO3> -----
-    {
-        let save_i = *i;
-        let save_col = *col;
-
-        // skip spaces
-        let mut j = *i; let mut jcol = *col; let mut saw_space = false;
-        while j < bytes.len() && bytes[j] == b' ' { j += 1; jcol += 1; saw_space = true; }
-
-        let is_upper = |b: u8| b.is_ascii_uppercase();
-
-        if saw_space && j + 2 < bytes.len()
-            && is_upper(bytes[j]) && is_upper(bytes[j + 1]) && is_upper(bytes[j + 2])
-            && (j + 3 == bytes.len() || !bytes[j + 3].is_ascii_alphabetic())
-        {
-            // remove number token we just pushed
-            let _ = tokens.pop();
-
-            let money_end = j + 3;
-            let merged = &source.as_bytes()[start_i..money_end];
-            let canon = String::from_utf8_lossy(merged).into_owned();
-            let span = Span::new(file, start_i, money_end, line, start_col, line, jcol + 3);
-            tokens.push(Token { kind: TokenKind::Money, span, value: Some(canon) });
-
-            *i = money_end; *col = jcol + 3;
-            return true;
-        } else {
-            *i = save_i; *col = save_col;
-        }
-    }
-
-    // ----- duration postfix (greedy) -----
-    if *i < bytes.len() {
-        let unit_start_i = *i; let unit_start_col = *col;
-        let is_alpha_us = |b: u8| b.is_ascii_alphabetic();
-
-        match bytes[*i] {
-            b'm' => {
-                if *i + 1 < bytes.len() && bytes[*i + 1] == b'o' {
-                    let span = Span::new(file, unit_start_i, unit_start_i + 2, line, unit_start_col, line, unit_start_col + 2);
-                    tokens.push(Token { kind: TokenKind::Op("mo".to_string()), span, value: None });
-                    *i += 2; *col += 2;
-                } else if *i + 1 >= bytes.len() || !is_alpha_us(bytes[*i + 1]) {
-                    let span = Span::new(file, unit_start_i, unit_start_i + 1, line, unit_start_col, line, unit_start_col + 1);
-                    tokens.push(Token { kind: TokenKind::Op("m".to_string()), span, value: None });
-                    *i += 1; *col += 1;
-                }
-            }
-            b's' | b'h' | b'd' | b'w' | b'y' => {
-                if *i + 1 >= bytes.len() || !is_alpha_us(bytes[*i + 1]) {
-                    let ch = bytes[*i] as char;
-                    let span = Span::new(file, unit_start_i, unit_start_i + 1, line, unit_start_col, line, unit_start_col + 1);
-                    tokens.push(Token { kind: TokenKind::Op(ch.to_string()), span, value: None });
-                    *i += 1; *col += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // ----- percent family -----
-    if *i < bytes.len() && bytes[*i] == b'%' {
-        if *i + 1 < bytes.len() && bytes[*i + 1] == b's' {
-            let span = Span::new(file, *i, *i + 2, line, *col, line, *col + 2);
-            tokens.push(Token { kind: TokenKind::Op("%s".to_string()), span, value: None });
-            *i += 2; *col += 2;
-        } else if *i + 1 < bytes.len() && bytes[*i + 1] == b'o' {
-            let span = Span::new(file, *i, *i + 2, line, *col, line, *col + 2);
-            tokens.push(Token { kind: TokenKind::Op("%o".to_string()), span, value: None });
-            *i += 2; *col += 2;
-        } else {
-            let span = Span::new(file, *i, *i + 1, line, *col, line, *col + 1);
-            tokens.push(Token { kind: TokenKind::Op("%".to_string()), span, value: None });
-            *i += 1; *col += 1;
-        }
-    }
-
-    true
-}
-
 /// Eats digits with optional single underscores BETWEEN digits (e.g., 1_234),
 /// returning (new_index, had_separator_misuse)
 #[allow(dead_code)]
@@ -558,7 +399,7 @@ fn handle_indent_at_line_start(
 /// - recognize physical newlines (CRLF or LF)
 /// - emit a final NEWLINE + EOF
 /// - recognize single-char punct/ops: `()[]{},;` (dot handled with longest-match below)
-/// - recognize pipe family with longest match: `|>`, then `||`, else `|`
+/// - recognize pipe family with longest match: then `||`, else `|`
 /// - recognize optional chain/nullish with preference `?.` then `??`, else `?`
 /// - recognize ASCII identifiers /[A-Za-z_][A-Za-z0-9_]*[!|?]?/
 /// - also recognize `@`- and `#`-prefixed identifiers with the same trailing `!|?` rule
@@ -866,18 +707,195 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Otherwise it's an operator: "/=" or "/"
                 if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token { kind: TokenKind::Op("/=".to_string()), span, value: None });
+                    tokens.push(Token { kind: TokenKind::Operator("/=".to_string()), span, value: None });
                     i += 2; col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token { kind: TokenKind::Op("/".to_string()), span, value: None });
+                    tokens.push(Token { kind: TokenKind::Operator("/".to_string()), span, value: None });
                     i += 1; col += 1;
                 }
             }
 
             // Numbers (decimal int/float with exponent, or base-prefixed integers)
+            // Numbers (decimal, float, base-prefixed, with percent/duration/money)
             b'0'..=b'9' => {
-                let _ = lex_number(bytes, source, file, &mut i, line, &mut col, &mut tokens);
+                let start_i = i;
+                let start_col = col;
+                let mut is_float = false;
+
+                // Base-prefixed integers: 0x / 0o / 0b
+                if i + 1 < bytes.len() && bytes[i] == b'0' {
+                    match bytes[i + 1] {
+                        b'x' | b'X' => {
+                            let mut j = i + 2;
+                            let mut c = col + 2;
+                            if eat_hex_digits_us(bytes, &mut j, &mut c) {
+                                let lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                                let span = Span::new(file, i, j, line, col, line, c);
+                                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
+                                i = j; col = c;
+                                break;
+                            }
+                        }
+                        b'o' | b'O' => {
+                            let mut j = i + 2;
+                            let mut c = col + 2;
+                            if eat_oct_digits_us(bytes, &mut j, &mut c) {
+                                let lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                                let span = Span::new(file, i, j, line, col, line, c);
+                                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
+                                i = j; col = c;
+                                break;
+                            }
+                        }
+                        b'b' | b'B' => {
+                            let mut j = i + 2;
+                            let mut c = col + 2;
+                            if eat_bin_digits_us(bytes, &mut j, &mut c) {
+                                let lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                                let span = Span::new(file, i, j, line, col, line, c);
+                                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
+                                i = j; col = c;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                let mut saw_digit = false;
+                let mut last_was_underscore = false;
+
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    match b {
+                        b'0'..=b'9' => {
+                            saw_digit = true;
+                            last_was_underscore = false;
+                            i += 1; col += 1;
+                        }
+                        b'_' => {
+                            if !saw_digit || last_was_underscore {
+                                let sp = Span::new(file, i, i, line, col, line, col);
+                                return Err(vec![Diagnostic::error(
+                                    "lexer",
+                                    "invalid underscore placement",
+                                    sp,
+                                )]);
+                            }
+                            last_was_underscore = true;
+                            i += 1; col += 1;
+                        }
+                        _ => break,
+                    }
+                }
+
+                if last_was_underscore {
+                    let sp = Span::new(file, i, i, line, col, line, col);
+                    return Err(vec![Diagnostic::error(
+                        "lexer",
+                        "underscore cannot trail a number",
+                        sp,
+                    )]);
+                }
+
+                // Fractional part
+                if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
+                    is_float = true;
+                    i += 1; col += 1;
+                    let mut saw_digit = false;
+                    let mut last_was_underscore = false;
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        match b {
+                            b'0'..=b'9' => {
+                                saw_digit = true;
+                                last_was_underscore = false;
+                                i += 1; col += 1;
+                            }
+                            b'_' => {
+                                if !saw_digit || last_was_underscore {
+                                    let sp = Span::new(file, i, i, line, col, line, col);
+                                    return Err(vec![Diagnostic::error(
+                                        "lexer",
+                                        "invalid underscore in fractional part",
+                                        sp,
+                                    )]);
+                                }
+                                last_was_underscore = true;
+                                i += 1; col += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if last_was_underscore {
+                        let sp = Span::new(file, i, i, line, col, line, col);
+                        return Err(vec![Diagnostic::error(
+                            "lexer",
+                            "underscore cannot trail fractional part",
+                            sp,
+                        )]);
+                    }
+                }
+
+                // Exponent
+                if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+                    let save_i = i;
+                    let save_col = col;
+                    i += 1; col += 1;
+                    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                        i += 1; col += 1;
+                    }
+
+                    let mut saw_digit = false;
+                    let mut last_was_underscore = false;
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        match b {
+                            b'0'..=b'9' => {
+                                saw_digit = true;
+                                last_was_underscore = false;
+                                i += 1; col += 1;
+                            }
+                            b'_' => {
+                                if !saw_digit || last_was_underscore {
+                                    let sp = Span::new(file, i, i, line, col, line, col);
+                                    return Err(vec![Diagnostic::error(
+                                        "lexer",
+                                        "invalid underscore in exponent",
+                                        sp,
+                                    )]);
+                                }
+                                last_was_underscore = true;
+                                i += 1; col += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+
+                    if !saw_digit {
+                        i = save_i;
+                        col = save_col;
+                    } else {
+                        is_float = true;
+                    }
+
+                    if last_was_underscore {
+                        let sp = Span::new(file, i, i, line, col, line, col);
+                        return Err(vec![Diagnostic::error(
+                            "lexer",
+                            "underscore cannot trail exponent",
+                            sp,
+                        )]);
+                    }
+                }
+
+                // Emit number
+                let text = &source.as_bytes()[start_i..i];
+                let lit = String::from_utf8_lossy(text).into_owned();
+                let span = Span::new(file, start_i, i, line, start_col, line, col);
+                let kind = if is_float { TokenKind::Float } else { TokenKind::Int };
+                tokens.push(Token { kind, span, value: Some(lit) });
             }
 
             // Raw strings starting with r" / r' / r""" / r''' (case-insensitive 'r')
@@ -1123,7 +1141,14 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             b'"'  => out.push('"'),
                             b'\'' => out.push('\''),
                             b'0'  => out.push('\0'),
-                            other => out.push(other as char),
+                            invalid => {
+                                let sp = Span::new(file, i, i + 2, line, col, line, col + 2);
+                                return Err(vec![Diagnostic::error(
+                                    "LexError",
+                                    &format!("Invalid escape sequence: \\{}", invalid as char),
+                                    sp,
+                                )]);
+                            }
                         }
                         i += 2;
                         col += 2;
@@ -1176,21 +1201,13 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 if i + 2 < bytes.len() && bytes[i + 1] == b'.' && bytes[i + 2] == b'.' {
                     // "..." (exclusive range)
                     let span = Span::new(file, i, i + 3, line, col, line, col + 3);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("...".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("...".to_string()), span, value: None });
                     i += 3;
                     col += 3;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'.' {
                     // ".." (inclusive range)
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("..".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("..".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 }
@@ -1240,11 +1257,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // 3) Plain dot
                 else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op(".".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator(".".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1254,20 +1267,12 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Longest match: '::' then ':'
                 if i + 1 < bytes.len() && bytes[i + 1] == b':' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("::".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("::".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op(":".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator(":".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1505,11 +1510,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         line,
                         start_col + 1,
                     );
-                    tokens.push(Token {
-                        kind: TokenKind::Op("$".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("$".to_string()), span, value: None });
                     // i/col already advanced by 1 above
                 }
             }
@@ -1530,7 +1531,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 }
                 let span = Span::new(file, i, i + 1, line, col, line, col + 1);
                 tokens.push(Token {
-                    kind: TokenKind::Op(ch.to_string()),
+                    kind: TokenKind::Operator(ch.to_string()),
                     span,
                     value: None,
                 });
@@ -1543,40 +1544,24 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Longest-match first
                 if i + 2 < bytes.len() && bytes[i + 1] == b'=' && bytes[i + 2] == b'=' {
                     let span = Span::new(file, i, i + 3, line, col, line, col + 3);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("===".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("===".to_string()), span, value: None });
                     i += 3;
                     col += 3;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("==".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("==".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
                     // fat arrow =>
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("=>".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("=>".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     // assignment =
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("=".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1591,80 +1576,48 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     && bytes[i + 3] == b'='
                 {
                     let span = Span::new(file, i, i + 4, line, col, line, col + 4);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("!===".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("!===".to_string()), span, value: None });
                     i += 4;
                     col += 4;
                 } else if i + 2 < bytes.len() && bytes[i + 1] == b'=' && bytes[i + 2] == b'=' {
                     let span = Span::new(file, i, i + 3, line, col, line, col + 3);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("!==".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("!==".to_string()), span, value: None });
                     i += 3;
                     col += 3;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("!=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("!=".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("!".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("!".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
             }
 
-            // Less-than family: <<=, <<, <=, <
+            // Less-than family: <<=, <<, <=, <>, <
             b'<' => {
                 // Longest-match first
-                if i + 2 < bytes.len() && bytes[i + 1] == b'<' && bytes[i + 2] == b'=' {
-                    let span = Span::new(file, i, i + 3, line, col, line, col + 3);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("<<=".to_string()),
-                        span,
-                        value: None,
-                    });
-                    i += 3;
-                    col += 3;
-                } else if i + 1 < bytes.len() && bytes[i + 1] == b'<' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'<' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("<<".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("<<".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("<=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("<=".to_string()), span, value: None });
+                    i += 2;
+                    col += 2;
+                } else if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
+                    tokens.push(Token { kind: TokenKind::Operator("<>".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("<".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("<".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1673,40 +1626,25 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             // Greater-than family: >>=, >>, >=, >
             b'>' => {
                 // Longest-match first
-                if i + 2 < bytes.len() && bytes[i + 1] == b'>' && bytes[i + 2] == b'=' {
-                    let span = Span::new(file, i, i + 3, line, col, line, col + 3);
-                    tokens.push(Token {
-                        kind: TokenKind::Op(">>=".to_string()),
-                        span,
-                        value: None,
-                    });
-                    i += 3;
-                    col += 3;
-                } else if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op(">>".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator(">>".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op(">=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator(">=".to_string()), span, value: None });
+                    i += 2;
+                    col += 2;
+                } else if i + 1 < bytes.len() && bytes[i + 1] == b'<' {
+                    // NEW: divmod
+                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
+                    tokens.push(Token { kind: TokenKind::Operator("><".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op(">".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator(">".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1714,34 +1652,26 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
 
             // Ampersand family: && (and-alias), &= (compound assign), &
             b'&' => {
-                // Longest-match first
                 if i + 1 < bytes.len() && bytes[i + 1] == b'&' {
+                    // '&&' (logical-and alias)
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("&&".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("&&".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    // '&=' — explicitly not supported
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("&=".to_string()),
+
+                    // Return a diagnostics vector directly (matches your lexer Result error type)
+                    return Err(vec![Diagnostic::error(
+                        "lex",
+                        "Unsupported operator '&=' (reserved '&' cannot be combined with '=')",
                         span,
-                        value: None,
-                    });
-                    i += 2;
-                    col += 2;
+                    )]);
                 } else {
+                    // Single '&' — reserved token (parser will decide semantics later)
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("&".to_string()),
-                        span,
-                        value: None,
-                    });
-                    i += 1;
-                    col += 1;
+                    tokens.push(Token { kind: TokenKind::Operator("&".to_string()), span, value: None });
                 }
             }
 
@@ -1750,39 +1680,23 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Longest-match first
                 if i + 2 < bytes.len() && bytes[i + 1] == b'*' && bytes[i + 2] == b'=' {
                     let span = Span::new(file, i, i + 3, line, col, line, col + 3);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("**=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("**=".to_string()), span, value: None });
                     i += 3;
                     col += 3;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'*' {
                     // Power operator (parser decides postfix vs infix)
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("**".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("**".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("*=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("*=".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("*".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("*".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1792,29 +1706,17 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             b'+' => {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'+' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("++".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("++".to_string()), span, value: None, });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("+=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("+=".to_string()), span, value: None, });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("+".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("+".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1822,41 +1724,19 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
 
             // Minus family: -> (arrow), -- (postfix money dec), -=, -
             b'-' => {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
-                    // Arrow ->
+                if i + 1 < bytes.len() && bytes[i + 1] == b'-' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("->".to_string()),
-                        span,
-                        value: None,
-                    });
-                    i += 2;
-                    col += 2;
-                } else if i + 1 < bytes.len() && bytes[i + 1] == b'-' {
-                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("--".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("--".to_string()), span, value: None, });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("-=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("-=".to_string()), span, value: None, });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("-".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("-".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1867,11 +1747,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Compound assign wins anywhere
                 if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("%=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("%=".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 }
@@ -1880,31 +1756,19 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     if i + 1 < bytes.len() && bytes[i + 1] == b's' {
                         // %s (percent-of-self sugar)
                         let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                        tokens.push(Token {
-                            kind: TokenKind::Op("%s".to_string()),
-                            span,
-                            value: None,
-                        });
+                        tokens.push(Token { kind: TokenKind::Operator("%s".to_string()), span, value: None });
                         i += 2;
                         col += 2;
                     } else if i + 1 < bytes.len() && bytes[i + 1] == b'o' {
                         // %o (percent-of-other sugar)
                         let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                        tokens.push(Token {
-                            kind: TokenKind::Op("%o".to_string()),
-                            span,
-                            value: None,
-                        });
+                        tokens.push(Token { kind: TokenKind::Operator("%o".to_string()), span, value: None });
                         i += 2;
                         col += 2;
                     } else {
                         // Bare '%' immediately after a number → percent literal
                         let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                        tokens.push(Token {
-                            kind: TokenKind::Op("%".to_string()),
-                            span,
-                            value: None,
-                        });
+                        tokens.push(Token { kind: TokenKind::Operator("%".to_string()), span, value: None });
                         i += 1;
                         col += 1;
                     }
@@ -1912,11 +1776,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Otherwise it's modulo
                 else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("%".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("%".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1928,31 +1788,19 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'^' {
                     // "^^" explain-power operator (binary)
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("^^".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("^^".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     // "^=" compound assign
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("^=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("^=".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     // bare "^"
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("^".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("^".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
@@ -1962,92 +1810,60 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             b'~' => {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("~=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("~=".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("~".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("~".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
             }
 
-            // '|' family: '|>', '||', '|=', '|'
+            // '|' family: ||', '|=', '|'
             b'|' => {
                 // Longest-match among |>  ||  |=  |
-                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'|' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("|>".to_string()),
-                        span,
-                        value: None,
-                    });
-                    i += 2;
-                    col += 2;
-                } else if i + 1 < bytes.len() && bytes[i + 1] == b'|' {
-                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("||".to_string()),
-                        span,
-                        value: None,
-                    });
-                    i += 2;
-                    col += 2;
-                } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
-                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("|=".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("||".to_string()), span, value: None });
                     i += 2;
                     col += 2;
                 } else {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token {
-                        kind: TokenKind::Op("|".to_string()),
-                        span,
-                        value: None,
-                    });
+                    tokens.push(Token { kind: TokenKind::Operator("|".to_string()), span, value: None });
                     i += 1;
                     col += 1;
                 }
             }
 
-            // '?' family: '?.', '??', '?'
+            // Nullish / optional member
             b'?' => {
-                let start_col = col;
-                if i + 1 < bytes.len() && bytes[i + 1] == b'.' {
-                    let span = Span::new(file, i, i + 2, line, start_col, line, start_col + 2);
+                if i + 1 < bytes.len() && bytes[i + 1] == b'?' {
+                    // '??' nullish coalescing
+                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
                     tokens.push(Token {
-                        kind: TokenKind::Op("?.".to_string()),
+                        kind: TokenKind::Operator("??".to_string()),
                         span,
                         value: None,
                     });
                     i += 2;
                     col += 2;
-                } else if i + 1 < bytes.len() && bytes[i + 1] == b'?' {
-                    let span = Span::new(file, i, i + 2, line, start_col, line, start_col + 2);
+                } else if i + 2 < bytes.len() && bytes[i + 1] == b'>' && bytes[i + 2] == b'>' {
+                    // '?>>' optional chaining (safe navigation)
+                    let span = Span::new(file, i, i + 3, line, col, line, col + 3);
                     tokens.push(Token {
-                        kind: TokenKind::Op("??".to_string()),
+                        kind: TokenKind::Operator("?>>".to_string()),
                         span,
                         value: None,
                     });
-                    i += 2;
-                    col += 2;
+                    i += 3;
+                    col += 3;
                 } else {
-                    let span = Span::new(file, i, i + 1, line, start_col, line, start_col + 1);
+                    // lone '?': reserved operator or error
+                    let span = Span::new(file, i, i + 1, line, col, line, col + 1);
                     tokens.push(Token {
-                        kind: TokenKind::Op("?".to_string()),
+                        kind: TokenKind::Operator("?".to_string()),
                         span,
                         value: None,
                     });
@@ -2061,6 +1877,12 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 let prefix = bytes[i];
                 let start_i = i;
                 let start_col = col;
+
+                // '@' must be followed by an identifier start (class name)
+                if i + 1 >= bytes.len() || !is_ident_start(bytes[i + 1]) {
+                    let span = Span::new(file, i, i + 1, line, col, line, col + 1);
+                    return Err(vec![Diagnostic::error("LexError", "Expected identifier after '@'.", span)]);
+                }
 
                 // Version chars used when we see @ followed by a digit
                 let is_ver_char = |b: u8| b.is_ascii_alphanumeric();
@@ -2141,6 +1963,19 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             b if is_ident_start(b) => {
                 let start_i = i;
                 let start_col = col;
+
+                // Special-case: standalone '_' acts as a postfix operator (e.g., 3.14_)
+                if bytes[i] == b'_' {
+                    let next = bytes.get(i + 1).copied();
+                    let continues_ident = matches!(next, Some(b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_'));
+                    if !continues_ident {
+                        let span = Span::new(file, i, i + 1, line, col, line, col + 1);
+                        tokens.push(Token { kind: TokenKind::Operator("_".to_string()), span, value: None });
+                        i += 1;
+                        col += 1;
+                        continue; // don't run the normal ident scanner
+                    }
+                }
 
                 // consume first ident char
                 i += 1;
@@ -2360,8 +2195,8 @@ fn emits_selected_ops_idents_numbers_and_eof() {
     use crate::*;
 
     let src = ".PCT! foo? 12 3.4 .5 .25e-2 1_000 0x2A 0XFF 0o755 0O7 0b1010_0110 0B1 \
-               x?.y ?? z .. ... | h |> t || u && v & w a -> b c => d . , : :: ; ( ) [ ] { } \
-               = == === => ! != !== !=== < <= > >= << >> <<= >>= += -= *= /= %= &= |= ^= ^ ~ \
+               x?>>y ?? z .. ... | h t || u && v & w a => b c => d . , : :: ; ( ) [ ] { } \
+               = == === => ! != !== !=== < <= > >= << >> <<= >>= += -= *= /= %= ^= ^ ~ \
                \"hi\\n\" 'ok\\'' \"A=\\x41\" \"smile=\\u{1F600}\" @user #topic @ping! #wow?\n\
                \"\"\"hello\\nworld\"\"\" '''x\ny'''\n\
                r\"C:\\Users\\bob\\file.txt\" r'raw\\no\\esc' \
@@ -2409,17 +2244,14 @@ fn emits_selected_ops_idents_numbers_and_eof() {
     assert!(has_int("0b1010_0110"));
     assert!(has_int("0B1"));
 
-    assert!(has_op("?."));
+    assert!(has_op("?>>"));
     assert!(has_op("??"));
     assert!(has_op(".."));
     assert!(has_op("..."));
-    assert!(has_op("|>"));
     assert!(has_op("||"));
     assert!(has_op("|"));
-    assert!(has_op("|="));
     assert!(has_op("&&"));
     assert!(has_op("&"));
-    assert!(has_op("->"));
     assert!(has_op("=>"));
     assert!(has_op("."));
     assert!(has_op(","));
