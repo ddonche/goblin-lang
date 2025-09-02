@@ -1,0 +1,4 @@
+# optional chaining
+if user ?>> profile ?>> settings
+    apply(user.profile.settings)
+end

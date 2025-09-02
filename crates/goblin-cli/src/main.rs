@@ -8,7 +8,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use goblin_lexer::{TokenKind, lex};
+use goblin_lexer::{lex, TokenKind};
+use goblin_parser::Parser;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -31,13 +32,23 @@ struct TestCase {
 
 fn main() {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
+
+    // `goblin-cli lex --check`
     if !args.is_empty() && args[0] == "lex" {
         args.remove(0);
         if args.len() == 1 && args[0] == "--check" {
             std::process::exit(run_lex_check());
         }
+        eprintln!("usage: goblin-cli lex --check");
+        std::process::exit(2);
     }
-    eprintln!("usage: goblin-cli lex --check");
+
+    // `goblin-cli parse <file>`
+    if args.len() == 2 && args[0] == "parse" {
+        std::process::exit(run_parse(Path::new(&args[1])));
+    }
+
+    eprintln!("usage: goblin-cli lex --check\n       goblin-cli parse <file>");
     std::process::exit(2);
 }
 
@@ -194,6 +205,51 @@ fn run_lex_check() -> i32 {
     );
 
     if invalid > 0 || failed > 0 { 1 } else { 0 }
+}
+
+fn run_parse(path: &Path) -> i32 {
+    // read the file
+    let src = match read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("read error: {}: {}", path.display(), e);
+            return 1;
+        }
+    };
+
+    // lex it
+    let lexed = lex(&src, &path.display().to_string());
+    let tokens = match lexed {
+        Ok(toks) => toks,
+        Err(diags) => {
+            eprintln!(
+                "LEX FAILED ({} diagnostic{})",
+                diags.len(),
+                if diags.len() == 1 { "" } else { "s" }
+            );
+            return 1;
+        }
+    };
+
+    // parse it
+    let mut parser = Parser::new(&tokens);
+    match parser.parse_module() {
+        Ok(_module) => {
+            println!("PARSE OK");
+            0
+        }
+        Err(diags) => {
+            eprintln!(
+                "PARSE FAILED ({} diagnostic{})",
+                diags.len(),
+                if diags.len() == 1 { "" } else { "s" }
+            );
+            for (idx, d) in diags.iter().enumerate() {
+                eprintln!("  [{}] {d:#?}", idx + 1);
+            }
+            1
+        }
+    }
 }
 
 fn collect_tests(dir: &Path, hint: Option<Mode>) -> Vec<TestCase> {

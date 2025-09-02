@@ -1,0 +1,5 @@
+a = true
+b = false
+c = nil
+d = (user >> active) == true
+e = !false

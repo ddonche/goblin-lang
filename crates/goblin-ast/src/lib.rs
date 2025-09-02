@@ -1,14 +1,22 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+//! Abstract Syntax Tree (AST) for Goblin.
+
+use goblin_diagnostics::Span;
+
+#[derive(Debug, Clone)]
+pub struct Module {
+    pub items: Vec<Stmt>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+#[derive(Debug, Clone)]
+pub enum Stmt {
+    Expr(Expr),
 }
+
+#[derive(Debug, Clone)]
+pub enum Expr {
+    /// An identifier with its source span.
+    Ident(String, Span),
+    /// A numeric literal (int/float/money) with its source span.
+    Number(String, Span),
+}
+

@@ -1,0 +1,4 @@
+a = arr[0]
+b = grid[1][2] * 10
+c = (user >> profile)["name"]
+d = user >> profile["first"].title()

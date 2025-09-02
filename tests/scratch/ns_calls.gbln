@@ -1,0 +1,2 @@
+slug = H::slugify("Hello World")
+t    = T::title_case: " some title "

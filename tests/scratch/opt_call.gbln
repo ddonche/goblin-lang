@@ -1,0 +1,4 @@
+a = user?.save()
+b = user?.profile?.refresh
+c = thing?.op: 1, 2
+d = (user?.profile).len()

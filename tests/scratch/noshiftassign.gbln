@@ -1,0 +1,2 @@
+a = 1 << 3
+b = 1 <<= 3   /// should NOT be a single operator anymore (expect parse/lex error)

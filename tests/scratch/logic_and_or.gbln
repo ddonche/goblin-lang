@@ -1,0 +1,3 @@
+a = true && false <> true
+b = true <> false && false
+c = (false <> false) ?? true

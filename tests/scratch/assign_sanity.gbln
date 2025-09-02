@@ -1,0 +1,6 @@
+a = 1
+a += 2
+b = a
+a <<= 1
+q //= 3
+user >> profile = "basic"

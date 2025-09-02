@@ -1,0 +1,3 @@
+ok1 = x && y
+res1 = &x
+bad1 = x &= y

@@ -1,0 +1,5 @@
+a = 10 * 2 + 3      /// (+ not parsed yet; just checks we consume the left mult)
+b = 9 // 2
+c = 7 % 4
+d = 10 >< 3
+e = 8 / 4 * 2

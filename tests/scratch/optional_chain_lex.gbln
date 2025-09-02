@@ -1,0 +1,2 @@
+a = &user?.profile
+b = user?.profile?.settings

@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 goblin_lexer = { package = "goblin-lexer", path = "../goblin-lexer" }
+goblin-diagnostics = { path = "../goblin-diagnostics" }
+goblin-parser = { path = "../goblin-parser" } 
 

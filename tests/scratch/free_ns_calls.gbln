@@ -1,0 +1,5 @@
+a = sum(1, 2, 3)
+b = now()
+c = H::slugify("Hello World")
+d = H::version()    /// zero-arg namespaced call with parens
+e = H::ping         /// zero-arg namespaced call without parens

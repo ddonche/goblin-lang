@@ -1,0 +1,18 @@
+/// basic
+if &config.database_url
+    say "DB configured"
+end
+
+/// negated
+if !&session.user_id
+    redirect_to_login()
+end
+
+/// optional chaining
+if &user?.profile?.settings
+    apply(user.profile.settings)
+end
+
+/// should be syntax errors (non-lvalues)
+&(x + 1)
+&(call())
