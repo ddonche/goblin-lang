@@ -1,2 +1,2 @@
-slug = H::slugify("Hello World")
-t    = T::title_case: " some title "
+﻿x::y(1, 2)
+x::y >> z(3)

@@ -4,25 +4,44 @@ use goblin_lexer::{Token, TokenKind};
 
 #[derive(Debug, Clone)]
 enum PExpr {
-    Ident(String),
-    Int(String),
-    Float(String),
-    Str(String),
-    Postfix(Box<PExpr>, String),
-    Binary(Box<PExpr>, String, Box<PExpr>),
-    Member(Box<PExpr>, String),
-    Call(Box<PExpr>, String, Vec<PExpr>),
-    OptCall(Box<PExpr>, String, Vec<PExpr>),
-    Index(Box<PExpr>, Box<PExpr>),
     Array(Vec<PExpr>),
-    Object(Vec<(String, PExpr)>),
-    FreeCall(String, Vec<PExpr>),
-    NsCall(String, String, Vec<PExpr>),
-    Prefix(String, Box<PExpr>),
     Assign(Box<PExpr>, Box<PExpr>),
-    IsBound(Box<PExpr>),
+    Binary(Box<PExpr>, String, Box<PExpr>),
     Bool(bool),
+    Call(Box<PExpr>, String, Vec<PExpr>),
+    Float(String),
+    FloatWithUnit(String, String),
+    FreeCall(String, Vec<PExpr>),
+    Ident(String),
+    Index(Box<PExpr>, Box<PExpr>),
+    Int(String),
+    IntWithUnit(String, String),
+    IsBound(Box<PExpr>),
+    Member(Box<PExpr>, String),
     Nil,
+    NsCall(String, String, Vec<PExpr>),
+    Object(Vec<(String, PExpr)>),
+    OptCall(Box<PExpr>, String, Vec<PExpr>),
+    OptMember(Box<PExpr>, String),
+    Postfix(Box<PExpr>, String),
+    Prefix(String, Box<PExpr>),
+    Slice(Box<PExpr>, Option<Box<PExpr>>, Option<Box<PExpr>>),
+    Slice3(Box<PExpr>, Option<Box<PExpr>>, Option<Box<PExpr>>, Option<Box<PExpr>>),
+    Str(String),  
+
+    ClassDecl {
+        name: String,
+        fields: Vec<(String, PExpr)>,
+        actions: Vec<PAction>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct PAction {
+    name: String,
+    params: Vec<String>,
+    body: Vec<PExpr>,
+    is_single: bool,
 }
 
 pub type ParseResult<T> = Result<T, Vec<Diagnostic>>;
@@ -32,8 +51,203 @@ pub struct Parser<'t> {
     i: usize,
 }
 
+fn is_block_starter_name(name: &str) -> bool {
+    matches!(name, "if" | "for" | "while" | "repeat" | "judge")
+}
+
 impl<'t> Parser<'t> {
     pub fn new(toks: &'t [Token]) -> Self { Self { toks, i: 0 } }
+
+    fn span_from_tokens(toks: &[goblin_lexer::Token], start_i: usize, end_i: usize) -> Span {
+        if toks.is_empty() {
+            return Span::new("<empty>", 0, 0, 0, 0, 0, 0);
+        }
+        let start_tok = toks.get(start_i.min(toks.len()-1));
+        let end_tok = toks.get(end_i.min(toks.len()-1));
+        
+        match (start_tok, end_tok) {
+            (Some(s), Some(e)) => {
+                Span::new(
+                    s.span.file.clone(),
+                    s.span.start,
+                    e.span.end,
+                    s.span.line_start,
+                    e.span.line_end,
+                    s.span.col_start,
+                    e.span.col_end,
+                )
+            }
+            (Some(s), None) => s.span.clone(),
+            _ => Span::new("<unknown>", 0, 0, 0, 0, 0, 0),
+        }
+    }
+
+    fn lower_expr_preview(pe: PExpr, sp: Span) -> ast::Expr {
+        match pe {
+            PExpr::Ident(name) => ast::Expr::Ident(name, sp),
+            PExpr::Int(s) | PExpr::Float(s) | PExpr::IntWithUnit(s, _) | PExpr::FloatWithUnit(s, _) => {
+                ast::Expr::Number(s, sp)
+            }
+            other => {
+                let txt = format!("{:?}", other);
+                ast::Expr::Ident(txt, sp)
+            }
+        }
+    }
+
+    fn lower_expr(&mut self, pe: PExpr) -> ast::Expr {
+        let sp = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i);
+        Self::lower_expr_preview(pe, sp)
+    }
+
+    fn try_parse_class_decl(&mut self) -> Option<Result<PExpr, String>> {
+        if !self.peek_op("@") {
+            return None;
+        }
+        
+        let save = self.i;
+        if self.eat_op("@") {
+            if let Some(_) = self.peek_ident() {
+                self.i = save;
+                Some(self.parse_class_decl())
+            } else {
+                self.i = save;
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn skip_action_block(&mut self) -> Result<(), String> {
+        use goblin_lexer::TokenKind;
+
+        let mut depth = 1;
+        loop {
+            let Some(tok) = self.toks.get(self.i) else {
+                return Err("unexpected end of input while parsing action block".to_string());
+            };
+
+            // Close on 'end' or '}'.
+            match &tok.kind {
+                TokenKind::Ident if tok.value.as_deref() == Some("end") => {
+                    self.i += 1;
+                    depth -= 1;
+                    if depth == 0 { break; }
+                    continue;
+                }
+                TokenKind::Op(op) if op == "}" => {
+                    self.i += 1;
+                    depth -= 1;
+                    if depth == 0 { break; }
+                    continue;
+                }
+                _ => {}
+            }
+
+            // Nest when we see another block-starter keyword.
+            if let Some(s) = self.peek_ident() {
+                if is_block_starter_name(s) {
+                    self.eat_ident();
+                    depth += 1;
+                    continue;
+                }
+            }
+
+            // Otherwise, advance.
+            self.i += 1;
+        }
+        Ok(())
+    }
+
+    fn parse_field_chain_line(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+        let mut out = Vec::new();
+
+        loop {
+            let Some(key) = self.eat_object_key() else {
+                if out.is_empty() {
+                    return Err("expected field name in class header".to_string());
+                } else {
+                    break;
+                }
+            };
+
+            if !self.eat_op(":") {
+                return Err("expected ':' after field name".to_string());
+            }
+
+            let val = self.parse_assign()?;
+            out.push((key, val));
+
+            if self.eat_op("::") {
+                if self.peek_newline_or_eof() {
+                    break;
+                }
+                continue;
+            }
+
+            break;
+        }
+
+        Ok(out)
+    }
+
+    fn parse_action_after_keyword(&mut self, kw: &str) -> Result<PAction, String> {
+        use goblin_lexer::TokenKind;
+
+        let Some(name) = self.eat_ident() else {
+            return Err(format!("expected {} name", kw));
+        };
+
+        let mut params = Vec::new();
+        if self.eat_op("(") {
+            if !self.peek_op(")") {
+                loop {
+                    let Some(p) = self.eat_ident() else {
+                        return Err("expected parameter name".to_string());
+                    };
+                    params.push(p);
+                    if self.eat_op(",") {
+                        if self.peek_op(")") { break; }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            if !self.eat_op(")") {
+                return Err("expected ')' after parameter list".to_string());
+            }
+        }
+
+        // Single-line action: `act foo = expr`
+        if self.eat_op("=") {
+            let expr = self.parse_assign()?;
+            return Ok(PAction { name, params, body: vec![expr], is_single: true });
+        }
+
+        // Multi-line action body: ends with either `end` or `}`
+        let mut body = Vec::new();
+        self.eat_semi_separators();
+
+        loop {
+            if let Some(tok) = self.toks.get(self.i) {
+                let is_end = matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
+                let is_rbrace = matches!(tok.kind, TokenKind::Op(ref s) if s == "}");
+                if is_end || is_rbrace {
+                    self.i += 1;
+                    break;
+                }
+            } else {
+                return Err(format!("unterminated {} '{}': missing '}}' or 'end'", kw, name));
+            }
+
+            let expr = self.parse_assign()?;
+            body.push(expr);
+            self.eat_semi_separators();
+        }
+
+        Ok(PAction { name, params, body, is_single: false })
+    }
 
     #[inline]
     fn peek(&self) -> Option<&Token> { self.toks.get(self.i) }
@@ -71,8 +285,6 @@ impl<'t> Parser<'t> {
 
     #[inline]
     fn eat_ident(&mut self) -> Option<String> {
-        // Clone the value while only immutably borrowing self,
-        // then advance the cursor after the borrow ends.
         let val = {
             if let Some(t) = self.peek() {
                 if let goblin_lexer::TokenKind::Ident = t.kind {
@@ -90,6 +302,166 @@ impl<'t> Parser<'t> {
         val
     }
 
+    // Consume consecutive NEWLINE tokens.
+    fn skip_newlines(&mut self) {
+        use goblin_lexer::TokenKind;
+        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, TokenKind::Newline)) {
+            self.i += 1;
+        }
+    }
+
+    // Do we see a block closer at the current position?  (either '}' or the ident 'end')
+    fn peek_block_close(&self) -> bool {
+        use goblin_lexer::TokenKind;
+
+        if let Some(tok) = self.toks.get(self.i) {
+            match &tok.kind {
+                TokenKind::Op(op) if op == "}" => true,
+                // `Ident` is a unit variant; the text is in `tok.value`
+                TokenKind::Ident => tok.value.as_deref() == Some("end"),
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    // If present, consume a block closer. Returns true if one was consumed.
+    fn eat_block_close(&mut self) -> bool {
+        if self.eat_op("}") {
+            return true;
+        }
+        if let Some("end") = self.peek_ident() {
+            let _ = self.eat_ident();
+            return true;
+        }
+        false
+    }
+
+    // Require a block closer right here (after optional newlines). Helpful error if missing.
+    fn expect_block_close(&mut self, ctx: &'static str) -> Result<(), String> {
+        self.skip_newlines();
+        if self.eat_block_close() {
+            Ok(())
+        } else {
+            Err(format!("expected '}}' or 'end' to close {}", ctx))
+        }
+    }
+
+    // Optional: also treat semicolons as statement separators when scanning blocks.
+    fn skip_stmt_separators(&mut self) {
+        use goblin_lexer::TokenKind;
+        loop {
+            match self.toks.get(self.i) {
+                Some(tok) if matches!(tok.kind, TokenKind::Newline) => { self.i += 1; }
+                Some(tok) if matches!(tok.kind, TokenKind::Op(ref s) if s == ";") => { self.i += 1; }
+                _ => break,
+            }
+        }
+    }
+
+    // Generic "read statements until '}' or 'end'". Use this for bodies of fn/if/while/class/etc.
+    // It preserves your existing statement parser and newline tolerance.
+    fn parse_stmt_block(&mut self) -> Result<Vec<ast::Stmt>, String> {
+        let mut out = Vec::new();
+        loop {
+            self.skip_stmt_separators();
+            if self.peek_block_close() {
+                let _ = self.eat_block_close(); // guaranteed true
+                break;
+            }
+            // EOF before closer = hard error
+            if self.toks.get(self.i).is_none() {
+                return Err("unexpected end of file: expected '}' or 'end' to close block".into());
+            }
+            out.push(self.parse_stmt()?);
+        }
+        Ok(out)
+    }
+
+    fn peek_newline_or_eof(&self) -> bool {
+        use goblin_lexer::TokenKind;
+        match self.toks.get(self.i) {
+            Some(tok) => matches!(tok.kind, TokenKind::Newline | TokenKind::Eof),
+            None => true,
+        }
+    }
+
+    fn parse_kv_bind_list(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+        let mut fields = Vec::new();
+        loop {
+            self.skip_newlines();
+
+            let Some(key) = self.eat_object_key() else {
+                break;
+            };
+
+            if !self.eat_op(":") {
+                return Err("expected ':' after field name in class header".to_string());
+            }
+
+            let value = self.parse_assign()?;
+            fields.push((key, value));
+
+            self.skip_newlines();
+            if self.eat_op("::") {
+                continue;
+            }
+            break;
+        }
+        Ok(fields)
+    }
+
+    fn parse_class_decl(&mut self) -> Result<PExpr, String> {
+        use goblin_lexer::TokenKind;
+
+        if !self.eat_op("@") {
+            return Err("expected '@' to start class declaration".to_string());
+        }
+
+        let Some(name) = self.eat_ident() else {
+            return Err("expected class name after '@'".to_string());
+        };
+
+        if !self.eat_op("=") {
+            return Err(format!("expected '=' after class name '{}'", name));
+        }
+
+        let fields = self.parse_field_chain_line()?;
+        self.eat_semi_separators();
+
+        let mut actions = Vec::new();
+
+        loop {
+            self.eat_semi_separators();
+
+            // Close class body with either `end` or `}`
+            if let Some(tok) = self.toks.get(self.i) {
+                let is_end = matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
+                let is_rbrace = matches!(tok.kind, TokenKind::Op(ref s) if s == "}");
+                if is_end || is_rbrace {
+                    self.i += 1;
+                    break;
+                }
+            } else {
+                return Err(format!("unterminated class '{}': missing '}}' or 'end'", name));
+            }
+
+            // Expect 'act' or 'action'
+            let Some(kw) = self.eat_ident() else {
+                return Err("expected 'act' or 'action' or 'end' in class body".to_string());
+            };
+            if kw != "act" && kw != "action" {
+                return Err(format!("expected 'act' or 'action' or 'end', found '{}'", kw));
+            }
+
+            let action = self.parse_action_after_keyword(&kw)?;
+            actions.push(action);
+        }
+
+        Ok(PExpr::ClassDecl { name, fields, actions })
+    }
+
     fn eat_object_key(&mut self) -> Option<String> {
         if let Some(t) = self.peek() {
             match t.kind {
@@ -105,30 +477,8 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn is_lvalue(expr: &PExpr) -> bool {
-        match expr {
-            PExpr::Ident(_)        => true,
-            PExpr::Member(_, _)    => true,
-            // If you have indexing in the AST, uncomment the next line:
-            // PExpr::Index(_, _)  => true,
-            _ => false,
-        }    
-    }
-
-    #[inline]
-    fn peek_string_lit(&self) -> Option<&str> {
-        self.peek().and_then(|t| {
-            if let goblin_lexer::TokenKind::String = t.kind {
-                t.value.as_deref()
-            } else {
-                None
-            }
-        })
-    }
-
     #[inline]
     fn eat_string_lit(&mut self) -> Option<String> {
-        // Borrow-safe: capture value first, then advance.
         let val = {
             if let Some(t) = self.peek() {
                 if let goblin_lexer::TokenKind::String = t.kind {
@@ -146,7 +496,6 @@ impl<'t> Parser<'t> {
         val
     }
 
-    // Borrow-safe bump: compute index first, then get by index
     #[inline]
     fn bump(&mut self) -> Option<&Token> {
         let idx = self.i;
@@ -178,16 +527,13 @@ impl<'t> Parser<'t> {
         self.eat_layout();
 
         while !self.is_eof() {
-            // Skip anything that cannot start an expression (temporary, while the parser is tiny)
             loop {
                 match self.peek().map(|t| &t.kind) {
                     Some(k) if Self::is_expr_start(k) => break,
                     Some(TokenKind::Eof) | None => break,
-                    // also swallow layout that might slip through
                     Some(TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) => {
                         self.i += 1;
                     }
-                    // punctuation/operators/etc. — skip for now
                     _ => {
                         self.i += 1;
                     }
@@ -195,17 +541,33 @@ impl<'t> Parser<'t> {
             }
 
             if self.is_eof() { break; }
-            items.push(self.parse_stmt()?);
+            
+            match self.parse_stmt() {
+                Ok(stmt) => items.push(stmt),
+                Err(msg) => {
+                    let sp = if let Some(tok) = self.peek() {
+                        tok.span.clone()
+                    } else {
+                        Span::new("<eof>", 0, 0, 0, 0, 0, 0)
+                    };
+                    return Err(vec![Diagnostic::error("ParseError", &msg, sp)]);
+                }
+            }
             self.eat_layout();
         }
 
         Ok(ast::Module { items })
     }
 
-    fn parse_stmt(&mut self) -> ParseResult<ast::Stmt> {
-        self.eat_layout(); // be tolerant
-        let e = self.parse_expr()?;
-        Ok(ast::Stmt::Expr(e))
+    fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
+        if let Some(res) = self.try_parse_class_decl() {
+            let p = res?;
+            return Ok(ast::Stmt::Expr(self.lower_expr(p)));
+        }
+
+        let expr_pe = self.parse_assign()?;
+        let expr = self.lower_expr(expr_pe);
+        Ok(ast::Stmt::Expr(expr))
     }
 
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {
@@ -227,75 +589,97 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_primary(&mut self) -> Result<PExpr, String> {
-        // Parenthesized grouping: (expr)
         if self.peek_op("(") {
-            let _ = self.eat_op("("); // consume '('
-            let expr = self.parse_assign()?; // full precedence inside parens
+            let _ = self.eat_op("(");
+            let expr = self.parse_assign()?;
             if !self.eat_op(")") {
                 return Err("expected ')' to close parenthesized expression".to_string());
             }
             return Ok(expr);
         }
 
-        // Array literal: [expr, expr, ...] with optional trailing comma
         if self.eat_op("[") {
-            // empty []
-            if self.eat_op("]") {
-                return Ok(PExpr::Array(vec![]));
-            }
+            while matches!(self.toks.get(self.i), Some(tok)
+                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+            { self.i += 1; }
 
-            let mut items = Vec::new();
-            loop {
-                items.push(self.parse_assign()?);
-                if self.eat_op("]") {
+            let mut elems = Vec::new();
+
+            if !self.peek_op("]") {
+                loop {
+                    let v = self.parse_assign()?;
+                    elems.push(v);
+
+                    if self.eat_op(",") {
+                        while matches!(self.toks.get(self.i), Some(tok)
+                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                        { self.i += 1; }
+                        if self.peek_op("]") { break; }
+                        continue;
+                    }
                     break;
                 }
-                if !self.eat_op(",") {
-                    return Err("expected ',' or ']' in array literal".to_string());
-                }
-                // allow trailing comma
-                if self.eat_op("]") {
-                    break;
-                }
             }
 
-            return Ok(PExpr::Array(items));
+            while matches!(self.toks.get(self.i), Some(tok)
+                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+            { self.i += 1; }
+
+            if !self.eat_op("]") {
+                return Err("expected ']' to close array".to_string());
+            }
+            return Ok(PExpr::Array(elems));
         }
 
-        // Object literal: { key: value, ... } with optional trailing comma
         if self.eat_op("{") {
-            // empty {}
-            if self.eat_op("}") {
-                return Ok(PExpr::Object(vec![]));
-            }
+            while matches!(self.toks.get(self.i), Some(tok)
+                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+            { self.i += 1; }
 
-            let mut pairs: Vec<(String, PExpr)> = Vec::new();
-            loop {
-                let Some(key) = self.eat_object_key() else {
-                    return Err("expected identifier or string key in object literal".to_string());
-                };
-                if !self.eat_op(":") {
-                    return Err("expected ':' after object key".to_string());
-                }
-                let value = self.parse_assign()?;
-                pairs.push((key, value));
+            let mut props: Vec<(String, PExpr)> = Vec::new();
 
-                if self.eat_op("}") {
+            if !self.peek_op("}") {
+                loop {
+                    let Some(key) = self.eat_object_key() else {
+                        return Err("expected object key".to_string());
+                    };
+
+                    while matches!(self.toks.get(self.i), Some(tok)
+                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                    { self.i += 1; }
+
+                    if !self.eat_op(":") {
+                        return Err("expected ':' after object key".to_string());
+                    }
+
+                    while matches!(self.toks.get(self.i), Some(tok)
+                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                    { self.i += 1; }
+
+                    let value = self.parse_assign()?;
+                    props.push((key, value));
+
+                    if self.eat_op(",") {
+                        while matches!(self.toks.get(self.i), Some(tok)
+                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                        { self.i += 1; }
+                        if self.peek_op("}") { break; }
+                        continue;
+                    }
                     break;
                 }
-                if !self.eat_op(",") {
-                    return Err("expected ',' or '}' in object literal".to_string());
-                }
-                // allow trailing comma
-                if self.eat_op("}") {
-                    break;
-                }
             }
 
-            return Ok(PExpr::Object(pairs));
+            while matches!(self.toks.get(self.i), Some(tok)
+                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+            { self.i += 1; }
+
+            if !self.eat_op("}") {
+                return Err("expected '}' to close object".to_string());
+            }
+            return Ok(PExpr::Object(props));
         }
 
-        // Capture the token first (avoid borrow issues), then bump `self.i`.
         let (kind, val_opt) = match self.peek() {
             Some(t) => (t.kind.clone(), t.value.clone()),
             None => return Err("expected expression, found EOF".to_string()),
@@ -306,134 +690,59 @@ impl<'t> Parser<'t> {
                 let name = val_opt.unwrap_or_default();
                 self.i += 1;
 
-                // Namespaced call: Name::op(...)
-                if self.eat_op("::") {
-                    let Some(op) = self.eat_ident() else {
-                        return Err("expected identifier after '::'".to_string());
-                    };
-
-                    // ( ... ) form
-                    if self.eat_op("(") {
-                        if self.eat_op(")") {
-                            return Ok(PExpr::NsCall(name, op, vec![]));
-                        } else {
-                            let args = self.parse_args_paren()?;
-                            return Ok(PExpr::NsCall(name, op, args));
-                        }
-                    }
-
-                    // Paren-less single-line: Name::op: a, b
-                    if self.eat_op(":") {
-                        let args = self.parse_args_colon()?;
-                        return Ok(PExpr::NsCall(name, op, args));
-                    }
-
-                    // Zero-arg without parens
-                    return Ok(PExpr::NsCall(name, op, vec![]));
-                }
-
-                // Free call: name(...)
-                if self.eat_op("(") {
-                    if self.eat_op(")") {
-                        return Ok(PExpr::FreeCall(name, vec![]));
-                    } else {
-                        let args = self.parse_args_paren()?;
-                        return Ok(PExpr::FreeCall(name, args));
-                    }
-                }
-
-                // Free call: name: a, b   (paren-less)
-                if self.eat_op(":") {
-                    let args = self.parse_args_colon()?;
-                    return Ok(PExpr::FreeCall(name, args));
-                }
-
-                // Not a call → map literals to real nodes
                 match name.as_str() {
-                    "true"  => Ok(PExpr::Bool(true)),
+                    "true" => Ok(PExpr::Bool(true)),
                     "false" => Ok(PExpr::Bool(false)),
-                    "nil"   => Ok(PExpr::Nil),
+                    "nil" => Ok(PExpr::Nil),
                     _ => Ok(PExpr::Ident(name)),
                 }
             }
+
             goblin_lexer::TokenKind::Int => {
                 let lit = val_opt.unwrap_or_default();
                 self.i += 1;
+
+                if let Some(t) = self.peek() {
+                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) {
+                        let unit = t.value.clone().unwrap_or_default();
+                        self.i += 1;
+                        return Ok(PExpr::IntWithUnit(lit, unit));
+                    }
+                }
+
                 Ok(PExpr::Int(lit))
             }
+
             goblin_lexer::TokenKind::Float => {
                 let lit = val_opt.unwrap_or_default();
                 self.i += 1;
+
+                if let Some(t) = self.peek() {
+                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) {
+                        let unit = t.value.clone().unwrap_or_default();
+                        self.i += 1;
+                        return Ok(PExpr::FloatWithUnit(lit, unit));
+                    }
+                }
+
                 Ok(PExpr::Float(lit))
             }
+
             goblin_lexer::TokenKind::String => {
                 let lit = val_opt.unwrap_or_default();
                 self.i += 1;
                 Ok(PExpr::Str(lit))
             }
+
             _ => Err("expected expression".to_string()),
         }
     }
 
-    fn parse_postfix(&mut self) -> Result<PExpr, String> {
-        // Start at prefix level (handles unary prefix if you add it later)
-        let mut lhs = self.parse_prefix()?;
-
-        loop {
-            // --- indexing: value[expr] ---
-            if self.eat_op("[") {
-                if self.eat_op("]") {
-                    return Err("expected expression inside '[]'".to_string());
-                }
-                let idx = self.parse_assign()?; // full expression as index
-                if !self.eat_op("]") {
-                    return Err("expected ']' after index expression".to_string());
-                }
-                lhs = PExpr::Index(Box::new(lhs), Box::new(idx));
-                continue;
-            }
-
-            // --- member access: value >> field ---
-            if self.eat_op(">>") {
-                let Some(name) = self.eat_ident() else {
-                    return Err("expected identifier after '>>'".to_string());
-                };
-                lhs = PExpr::Member(Box::new(lhs), name);
-                continue;
-            }
-
-            // --- calls: .foo(...) or ?.foo(...) ---
-            if self.peek_op(".") || self.peek_op("?.") {
-                lhs = self.parse_call_from(lhs)?;
-                continue;
-            }
-
-            // --- postfix operators (factorial/ceil/floor/etc.) ---
-            if self.eat_op("!") {
-                lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());
-                continue;
-            }
-            if self.eat_op("^") {
-                lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());
-                continue;
-            }
-            if self.eat_op("_") {
-                lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());
-                continue;
-            }
-
-            // Done with postfix chain
-            break;
-        }
-
-        Ok(lhs)
-    }
-
     fn parse_assign(&mut self) -> Result<PExpr, String> {
-        // Right-assoc assignment, lowest precedence
-        let lhs = self.parse_coalesce()?;  // <— was parse_or()
+        // lowest precedence; parse LHS
+        let lhs = self.parse_coalesce()?; // uses your existing precedence stack
 
-        // Detect any assignment op (longest-first). Note: no >>= support.
+        // detect assignment operators (longest-first)
         let op = if self.eat_op("//=") {
             Some("//=")
         } else if self.eat_op("+=") {
@@ -455,11 +764,27 @@ impl<'t> Parser<'t> {
         if let Some(op) = op {
             match lhs {
                 PExpr::Ident(_) | PExpr::Member(_, _) => {
-                    let rhs = self.parse_assign()?; // right-associative (a = b = c)
-                    if op == "=" {
-                        Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+                    // multi-line assignment block:
+                    //   name =
+                    //       <expr…>
+                    //   end / }
+                    if self.peek_newline_or_eof() {
+                        self.skip_newlines();
+                        let rhs = self.parse_assign()?; // allow full precedence on RHS
+                        self.expect_block_close("assignment")?;
+                        if op == "=" {
+                            Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+                        } else {
+                            Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
+                        }
                     } else {
-                        Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
+                        // single-line assignment
+                        let rhs = self.parse_assign()?; // right-assoc (a = b = c)
+                        if op == "=" {
+                            Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+                        } else {
+                            Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
+                        }
                     }
                 }
                 _ => Err("left side of assignment must be an identifier or member".to_string()),
@@ -469,376 +794,110 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn parse_and(&mut self) -> Result<PExpr, String> {
-        // AND binds tighter than OR, but looser than joins/additive/etc.
-        let mut lhs = self.parse_join()?; // was parse_additive() before we added joins
+    fn parse_coalesce(&mut self) -> Result<PExpr, String> {
+        // Nullish coalescing layer (above OR)
+        let mut lhs = self.parse_or()?;
 
-        while self.eat_op("&&") {
-            let rhs = self.parse_join()?;
-            lhs = PExpr::Binary(Box::new(lhs), "&&".to_string(), Box::new(rhs));
+        while self.eat_op("??") {
+            let rhs = self.parse_or()?;
+            lhs = PExpr::Binary(Box::new(lhs), "??".into(), Box::new(rhs));
         }
 
         Ok(lhs)
     }
 
     fn parse_or(&mut self) -> Result<PExpr, String> {
-        // OR binds looser than AND, tighter than ?? (handled by parse_nullish)
-        let mut lhs = self.parse_and()?; // was parse_join() or parse_compare()
+        let mut lhs = self.parse_and()?;
 
-        while self.eat_op("<>") {
-            let rhs = self.parse_and()?;
-            lhs = PExpr::Binary(Box::new(lhs), "<>".to_string(), Box::new(rhs));
+        loop {
+            // alias for OR
+            if self.eat_op("<>") {
+                let rhs = self.parse_and()?;
+                lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
+                continue;
+            }
+            // textual 'or'
+            if self.peek_ident() == Some("or") {
+                let _ = self.eat_ident();
+                let rhs = self.parse_and()?;
+                lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
+                continue;
+            }
+            break;
+        }
+
+        Ok(lhs)
+    }
+    
+    fn parse_and(&mut self) -> Result<PExpr, String> {
+        let mut lhs = self.parse_compare()?;
+
+        loop {
+            // alias for AND
+            if self.eat_op("&&") {
+                let rhs = self.parse_compare()?;
+                lhs = PExpr::Binary(Box::new(lhs), "and".into(), Box::new(rhs));
+                continue;
+            }
+            // textual 'and'
+            if self.peek_ident() == Some("and") {
+                let _ = self.eat_ident();
+                let rhs = self.parse_compare()?;
+                lhs = PExpr::Binary(Box::new(lhs), "and".into(), Box::new(rhs));
+                continue;
+            }
+            break;
         }
 
         Ok(lhs)
     }
 
-    fn parse_power(&mut self) -> Result<PExpr, String> {
-        // right-assoc: a ** b ** c == a ** (b ** c)
-        let mut lhs = self.parse_prefix()?;
+    fn parse_compare(&mut self) -> Result<PExpr, String> {
+        let mut lhs = self.parse_additive()?; // or parse_range() if that's your next layer
 
-        // accept either ** or ^^
-        let op = if self.eat_op("**") {
-            Some("**")
-        } else if self.eat_op("^^") {
-            Some("^^")
-        } else {
-            None
-        };
+        loop {
+            // textual: is / is not
+            if self.peek_ident() == Some("is") {
+                let _ = self.eat_ident();
+                let neg = self.peek_ident() == Some("not");
+                if neg { let _ = self.eat_ident(); }
+                let rhs = self.parse_additive()?;
+                let op = if neg { "is not" } else { "is" };
+                lhs = PExpr::Binary(Box::new(lhs), op.into(), Box::new(rhs));
+                continue;
+            }
 
-        if let Some(op) = op {
-            let rhs = self.parse_power()?; // recurse for right-assoc
+            if self.eat_op("===") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
+            if self.eat_op("!==") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
+            if self.eat_op("==")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("!=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("<=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op(">=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("<")   { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<".into(),   Box::new(rhs)); continue; }
+            if self.eat_op(">")   { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">".into(),   Box::new(rhs)); continue; }
+
+            break;
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_range(&mut self) -> Result<PExpr, String> {
+        let mut lhs = self.parse_join()?;
+
+        loop {
+            let op = if self.eat_op("...") { "..." }
+            else if self.eat_op("..") { ".." }
+            else { break };
+
+            let rhs = self.parse_join()?;
             lhs = PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs));
         }
 
         Ok(lhs)
     }
 
-    fn parse_divmod(&mut self) -> Result<PExpr, String> {
-        // PREVIOUSLY: let mut lhs = self.parse_member()? / self.parse_postfix()? / self.parse_prefix()?;
-        let mut lhs = self.parse_power()?;  // ← start from power now
-
-        loop {
-            if self.eat_op("*") {
-                let rhs = self.parse_power()?;
-                lhs = PExpr::Binary(Box::new(lhs), "*".to_string(), Box::new(rhs));
-            } else if self.eat_op("/") {
-                let rhs = self.parse_power()?;
-                lhs = PExpr::Binary(Box::new(lhs), "/".to_string(), Box::new(rhs));
-            } else if self.eat_op("//") {
-                let rhs = self.parse_power()?;
-                lhs = PExpr::Binary(Box::new(lhs), "//".to_string(), Box::new(rhs));
-            } else if self.eat_op("%") {
-                let rhs = self.parse_power()?;
-                lhs = PExpr::Binary(Box::new(lhs), "%".to_string(), Box::new(rhs));
-            } else if self.eat_op("><") {
-                let rhs = self.parse_power()?;
-                lhs = PExpr::Binary(Box::new(lhs), "><".to_string(), Box::new(rhs));
-            } else {
-                break;
-            }
-        }
-
-        Ok(lhs)
-    }
-
-    fn parse_member(&mut self) -> Result<PExpr, String> {
-        // dot-calls bind tighter than member, so build on parse_call()
-        let mut lhs = self.parse_call()?;
-
-        loop {
-            if self.eat_op(">>") {
-                if let Some(name) = self.eat_ident() {
-                    lhs = PExpr::Member(Box::new(lhs), name);
-                    // NEW: allow chaining calls right after member
-                    lhs = self.parse_call_from(lhs)?;
-                    continue;
-                }
-                if let Some(key) = self.eat_string_lit() {
-                    lhs = PExpr::Member(Box::new(lhs), key);
-                    // NEW: allow chaining calls right after member
-                    lhs = self.parse_call_from(lhs)?;
-                    continue;
-                }
-                return Err("expected identifier or string after '>>'".to_string());
-            } else {
-                break;
-            }
-        }
-
-        Ok(lhs)
-    }
-
-    #[inline]
-    fn parse_expr_tiny(&mut self) -> Result<PExpr, String> {
-        // or ( <>)  >  divmod (><)  >  member (>>)  >  postfix (! ^ _ )  >  primary
-        self.parse_or()
-    }
-
-    fn parse_call(&mut self) -> Result<PExpr, String> {
-        // Tighter than member (>>), built on postfix
-        let mut lhs = self.parse_postfix()?;
-
-        loop {
-            // Namespaced: H::op(...), H::op: ...
-            if matches!(&lhs, PExpr::Ident(_)) && self.peek_op("::") {
-                let ns = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
-                let _ = self.eat_op("::");
-
-                let Some(opname) = self.eat_ident() else {
-                    return Err("expected identifier after '::'".to_string());
-                };
-
-                if self.eat_op("(") {
-                    if self.eat_op(")") {
-                        lhs = PExpr::NsCall(ns, opname, vec![]);
-                    } else {
-                        let args = self.parse_args_paren()?;
-                        lhs = PExpr::NsCall(ns, opname, args);
-                    }
-                } else if self.eat_op(":") {
-                    let args = self.parse_args_colon()?;
-                    lhs = PExpr::NsCall(ns, opname, args);
-                } else {
-                    lhs = PExpr::NsCall(ns, opname, vec![]);
-                }
-                continue;
-            }
-
-            // Free call: name(...), name: ...
-            if matches!(&lhs, PExpr::Ident(_)) && (self.peek_op("(") || self.peek_op(":")) {
-                let name = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
-
-                if self.eat_op("(") {
-                    if self.eat_op(")") {
-                        lhs = PExpr::FreeCall(name, vec![]);
-                    } else {
-                        let args = self.parse_args_paren()?;
-                        lhs = PExpr::FreeCall(name, args);
-                    }
-                } else if self.eat_op(":") {
-                    let args = self.parse_args_colon()?;
-                    lhs = PExpr::FreeCall(name, args);
-                }
-                continue;
-            }
-
-            // Dot-calls (now delegated)
-            if self.peek_op(".") {
-                lhs = self.parse_call_from(lhs)?;
-                continue;
-            }
-
-            break;
-        }
-
-        Ok(lhs)
-    }
-
-    fn parse_args_paren(&mut self) -> Result<Vec<PExpr>, String> {
-        let mut args = Vec::new();
-
-        // Empty: already confirmed caller saw '(' and next isn't ')'
-        loop {
-            // parse one expression (use full precedence stack)
-            let expr = self.parse_or()?; 
-            args.push(expr);
-
-            // comma or close
-            if self.eat_op(",") {
-                // continue to next arg
-                continue;
-            } else if self.eat_op(")") {
-                break;
-            } else {
-                return Err("expected ',' or ')' in argument list".to_string());
-            }
-        }
-
-        Ok(args)
-    }
-
-    fn parse_args_colon(&mut self) -> Result<Vec<PExpr>, String> {
-        // Parse one or more arguments separated by commas, no closing delimiter.
-        let mut args = Vec::new();
-        // at least one expr
-        args.push(self.parse_assign()?);
-        while self.eat_op(",") {
-            args.push(self.parse_assign()?);
-        }
-        Ok(args)
-    }
-
-    // Strict lvalue parser used ONLY after '&' to avoid recursive loops.
-    // Accepts: ident ( '.' field | '?.' field | '[' expr ']' )*
-    // Accepts: ident ( '.' field | '?.' field | '[' expr ']' )*
-    fn parse_lvalue_after_amp(&mut self) -> Result<PExpr, String> {
-        let Some(name) = self.eat_ident() else {
-            return Err("SyntaxError: '&' requires a variable/field/index".into());
-        };
-        let mut expr = PExpr::Ident(name);
-
-        loop {
-            if self.eat_op("?.") {
-                let Some(field) = self.eat_ident() else {
-                    return Err("SyntaxError: expected field name after '?.'".into());
-                };
-                expr = PExpr::Member(Box::new(expr), field);
-            } else if self.eat_op(".") {
-                let Some(field) = self.eat_ident() else {
-                    return Err("SyntaxError: expected field name after '.'".into());
-                };
-                expr = PExpr::Member(Box::new(expr), field);
-            } else if self.eat_op("[") {
-                let key = self.parse_expr_tiny()?;  // you already have this
-                if !self.eat_op("]") {
-                    return Err("SyntaxError: missing ']' in index".into());
-                }
-                expr = PExpr::Index(Box::new(expr), Box::new(key)); // if you don’t have Index, omit this case
-            } else {
-                break;
-            }
-        }
-        Ok(expr)
-    }
-
-    fn parse_unary(&mut self) -> Result<PExpr, String> {
-        // NEW: & definedness (prefix). Parse ONLY an lvalue chain to avoid recursion loops.
-        if self.eat_op("&") {
-            let target = self.parse_lvalue_after_amp()?;
-            return Ok(PExpr::IsBound(Box::new(target)));
-        }
-
-        // existing logical NOT so !&expr works naturally
-        if self.eat_op("!") {
-            let rhs = self.parse_unary()?;
-            return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
-        }
-
-        // unary plus
-        if self.eat_op("+") {
-            let rhs = self.parse_unary()?;
-            return Ok(PExpr::Prefix("+".into(), Box::new(rhs)));
-        }
-
-        // unary minus
-        if self.eat_op("-") {
-            let rhs = self.parse_unary()?;
-            return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
-        }
-
-        // … any other prefix cases you already support …
-
-        // fall through to your normal postfix/primary pipeline
-        self.parse_postfix()
-    }
-    
-    fn parse_prefix(&mut self) -> Result<PExpr, String> {
-        // NEW: & definedness
-        if self.eat_op("&") {
-            let target = self.parse_lvalue_after_amp()?;
-            return Ok(PExpr::IsBound(Box::new(target)));
-        }
-
-        if self.eat_op("-") {
-            let rhs = self.parse_prefix()?;
-            return Ok(PExpr::Prefix("-".to_string(), Box::new(rhs)));
-        }
-        if self.eat_op("+") {
-            let rhs = self.parse_prefix()?;
-            return Ok(PExpr::Prefix("+".to_string(), Box::new(rhs)));
-        }
-        if self.eat_op("!") {
-            let rhs = self.parse_prefix()?;
-            return Ok(PExpr::Prefix("!".to_string(), Box::new(rhs)));
-        }
-
-        // fall through to the next tighter layer
-        self.parse_member()
-    }
-
-    fn parse_call_from(&mut self, mut lhs: PExpr) -> Result<PExpr, String> {
-        loop {
-            // method-style: .name(...) / .name: ... / zero-arg .name
-            if self.eat_op(".") {
-                let Some(name) = self.eat_ident() else {
-                    return Err("expected identifier after '.'".to_string());
-                };
-                if self.eat_op("(") {
-                    if self.eat_op(")") {
-                        lhs = PExpr::Call(Box::new(lhs), name, vec![]);
-                    } else {
-                        let args = self.parse_args_paren()?;
-                        lhs = PExpr::Call(Box::new(lhs), name, args);
-                    }
-                } else if self.eat_op(":") {
-                    let args = self.parse_args_colon()?;
-                    lhs = PExpr::Call(Box::new(lhs), name, args);
-                } else {
-                    lhs = PExpr::Call(Box::new(lhs), name, vec![]);
-                }
-                continue;
-            }
-
-            // OPTIONAL method-style: ?.name(...) / ?.name: ... / zero-arg ?.name
-            if self.eat_op("?.") {
-                let Some(name) = self.eat_ident() else {
-                    return Err("expected identifier after '?.'".to_string());
-                };
-                if self.eat_op("(") {
-                    if self.eat_op(")") {
-                        lhs = PExpr::OptCall(Box::new(lhs), name, vec![]);
-                    } else {
-                        let args = self.parse_args_paren()?;
-                        lhs = PExpr::OptCall(Box::new(lhs), name, args);
-                    }
-                } else if self.eat_op(":") {
-                    let args = self.parse_args_colon()?;
-                    lhs = PExpr::OptCall(Box::new(lhs), name, args);
-                } else {
-                    lhs = PExpr::OptCall(Box::new(lhs), name, vec![]);
-                }
-                continue;
-            }
-
-            // member access (fields only): receiver >> field
-            if self.eat_op(">>") {
-                let Some(field) = self.eat_ident() else {
-                    return Err("expected identifier after '>>'".to_string());
-                };
-                lhs = PExpr::Member(Box::new(lhs), field);
-                continue;
-            }
-
-            break;
-        }
-        Ok(lhs)
-    }
-
-    fn parse_additive(&mut self) -> Result<PExpr, String> {
-        // Additive family (left-assoc): +, -
-        // Precedence so far:
-        // postfix → .call → >> member → prefix → mult(parse_divmod) → (here) additive → or
-        let mut lhs = self.parse_divmod()?;
-
-        loop {
-            if self.eat_op("+") {
-                let rhs = self.parse_divmod()?;
-                lhs = PExpr::Binary(Box::new(lhs), "+".to_string(), Box::new(rhs));
-            } else if self.eat_op("-") {
-                let rhs = self.parse_divmod()?;
-                lhs = PExpr::Binary(Box::new(lhs), "-".to_string(), Box::new(rhs));
-            } else {
-                break;
-            }
-        }
-
-        Ok(lhs)
-    }
-
     fn parse_join(&mut self) -> Result<PExpr, String> {
-        // Joins bind looser than arithmetic, tighter than comparisons.
-        // We’ll wire it into the chain on the next step.
         let mut lhs = self.parse_additive()?;
 
         loop {
@@ -857,64 +916,411 @@ impl<'t> Parser<'t> {
         Ok(lhs)
     }
 
-    fn parse_nullish(&mut self) -> Result<PExpr, String> {
-        // Looser than logical (<> / &&), tighter than assignment
-        let mut lhs = self.parse_or()?;  // you already have parse_or() for <> / &&
-
-        while self.eat_op("??") {
-            let rhs = self.parse_or()?;
-            lhs = PExpr::Binary(Box::new(lhs), "??".to_string(), Box::new(rhs));
-        }
-
-        Ok(lhs)
-    }
-
-    fn parse_coalesce(&mut self) -> Result<PExpr, String> {
-        // coalesce is looser than logical OR
-        let mut lhs = self.parse_or()?;
-
-        while self.eat_op("??") {
-            let rhs = self.parse_or()?;
-            lhs = PExpr::Binary(Box::new(lhs), "??".to_string(), Box::new(rhs));
-        }
-
-        Ok(lhs)
-    }
-
-    fn parse_compare(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_range()?; // was parse_additive()
+    fn parse_additive(&mut self) -> Result<PExpr, String> {
+        let mut lhs = self.parse_multiplicative()?;
 
         loop {
-            if self.eat_op("===") {
-                let rhs = self.parse_range()?; // and all RHS in this function
-                lhs = PExpr::Binary(Box::new(lhs), "===".to_string(), Box::new(rhs));
-            } else if self.eat_op("!==") {
-                let rhs = self.parse_range()?;
-                lhs = PExpr::Binary(Box::new(lhs), "!==".to_string(), Box::new(rhs));
-            } else if self.eat_op("==") {
-                let rhs = self.parse_range()?;
-                lhs = PExpr::Binary(Box::new(lhs), "==".to_string(), Box::new(rhs));
-            } else if self.eat_op("!=") {
-                let rhs = self.parse_range()?;
-                lhs = PExpr::Binary(Box::new(lhs), "!=".to_string(), Box::new(rhs));
-            } else if self.eat_op("<=") {
-                let rhs = self.parse_range()?;
-                lhs = PExpr::Binary(Box::new(lhs), "<=".to_string(), Box::new(rhs));
-            } else if self.eat_op(">=") {
-                let rhs = self.parse_range()?;
-                lhs = PExpr::Binary(Box::new(lhs), ">=".to_string(), Box::new(rhs));
-            } else if self.eat_op("<") {
-                let rhs = self.parse_range()?;
-                lhs = PExpr::Binary(Box::new(lhs), "<".to_string(), Box::new(rhs));
-            } else if self.eat_op(">") {
-                let rhs = self.parse_range()?;
-                lhs = PExpr::Binary(Box::new(lhs), ">".to_string(), Box::new(rhs));
+            if self.eat_op("+") {
+                let rhs = self.parse_multiplicative()?;
+                lhs = PExpr::Binary(Box::new(lhs), "+".to_string(), Box::new(rhs));
+            } else if self.eat_op("-") {
+                let rhs = self.parse_multiplicative()?;
+                lhs = PExpr::Binary(Box::new(lhs), "-".to_string(), Box::new(rhs));
             } else {
                 break;
             }
         }
 
         Ok(lhs)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<PExpr, String> {
+        // One level tighter than additive
+        let mut lhs = self.parse_power()?;
+
+        loop {
+            let op = if self.eat_op("><") { "><" }      // divmod
+                     else if self.eat_op("//") { "//" } // integer division
+                     else if self.eat_op("*")  { "*"  }
+                     else if self.eat_op("/")  { "/"  }
+                     else if self.eat_op("%")  { "%"  }
+                     else { break };
+
+            let rhs = self.parse_power()?;
+            lhs = PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs));
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_power(&mut self) -> Result<PExpr, String> {
+        let lhs = self.parse_unary()?;
+
+        if self.eat_op("**") {
+            let rhs = self.parse_power()?;
+            return Ok(PExpr::Binary(Box::new(lhs), "**".to_string(), Box::new(rhs)));
+        }
+
+        if self.eat_op("^^") {
+            let rhs = self.parse_power()?;
+            return Ok(PExpr::Binary(Box::new(lhs), "^^".to_string(), Box::new(rhs)));
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_unary(&mut self) -> Result<PExpr, String> {
+        // expression-form: judge … (must close with 'end' or '}')
+        if let Some("judge") = self.peek_ident() {
+            let _ = self.eat_ident(); // consume 'judge'
+            self.skip_newlines();
+
+            // key: expr pairs (your existing newline/colon tolerant routine)
+            let pairs = self.parse_kv_bind_list()?;
+
+            self.skip_newlines();
+            self.expect_block_close("judge")?;
+
+            return Ok(PExpr::Object(pairs));
+        }
+
+        // prefix &  (definedness) — parse only an lvalue chain after '&'
+        if self.eat_op("&") {
+            let target = self.parse_lvalue_after_amp()?;
+            return Ok(PExpr::IsBound(Box::new(target)));
+        }
+
+        // logical-not alias
+        if self.eat_op("!") {
+            let rhs = self.parse_unary()?;
+            return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
+        }
+
+        // unary plus/minus
+        if self.eat_op("+") {
+            let rhs = self.parse_unary()?;
+            return Ok(PExpr::Prefix("+".into(), Box::new(rhs)));
+        }
+        if self.eat_op("-") {
+            let rhs = self.parse_unary()?;
+            return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
+        }
+
+        // hand off to your postfix/member pipeline
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> Result<PExpr, String> {
+        let mut lhs = self.parse_member()?;
+
+        loop {
+            // indexing / slicing
+            if self.eat_op("[") {
+                while matches!(self.toks.get(self.i), Some(tok)
+                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                { self.i += 1; }
+
+                if self.eat_op("]") {
+                    return Err("expected expression inside '[]'".to_string());
+                }
+
+                let mut start: Option<PExpr> = None;
+                if !self.peek_op(":") {
+                    // NOTE: must produce PExpr + String error
+                    start = Some(self.parse_assign()?);
+                    while matches!(self.toks.get(self.i), Some(tok)
+                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                    { self.i += 1; }
+                }
+
+                // slice?
+                if self.eat_op(":") {
+                    while matches!(self.toks.get(self.i), Some(tok)
+                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                    { self.i += 1; }
+
+                    let mut end: Option<PExpr> = None;
+                    if !self.peek_op("]") && !self.peek_op(":") {
+                        end = Some(self.parse_assign()?);
+                        while matches!(self.toks.get(self.i), Some(tok)
+                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                        { self.i += 1; }
+                    }
+
+                    let mut step: Option<PExpr> = None;
+                    if self.eat_op(":") {
+                        while matches!(self.toks.get(self.i), Some(tok)
+                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                        { self.i += 1; }
+
+                        if !self.peek_op("]") {
+                            step = Some(self.parse_assign()?);
+                            while matches!(self.toks.get(self.i), Some(tok)
+                                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                            { self.i += 1; }
+                        }
+                    }
+
+                    if !self.eat_op("]") {
+                        return Err("expected ']' after slice".to_string());
+                    }
+
+                    lhs = if step.is_some() {
+                        PExpr::Slice3(
+                            Box::new(lhs),
+                            start.map(Box::new),
+                            end.map(Box::new),
+                            step.map(Box::new),
+                        )
+                    } else {
+                        PExpr::Slice(
+                            Box::new(lhs),
+                            start.map(Box::new),
+                            end.map(Box::new),
+                        )
+                    };
+                    continue;
+                }
+
+                while matches!(self.toks.get(self.i), Some(tok)
+                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                { self.i += 1; }
+
+                if !self.eat_op("]") {
+                    return Err("expected ']' after index expression".to_string());
+                }
+                let idx = start.expect("index expression parsed");
+                lhs = PExpr::Index(Box::new(lhs), Box::new(idx));
+                continue;
+            }
+
+            // postfix operators
+            if self.eat_op("++") { lhs = PExpr::Postfix(Box::new(lhs), "++".to_string()); continue; }
+            if self.eat_op("--") { lhs = PExpr::Postfix(Box::new(lhs), "--".to_string()); continue; }
+            if self.eat_op("**") { lhs = PExpr::Postfix(Box::new(lhs), "**".to_string()); continue; } // square
+            if self.eat_op("//") { lhs = PExpr::Postfix(Box::new(lhs), "//".to_string()); continue; } // sqrt (postfix form)
+            if self.eat_op("?")  { lhs = PExpr::IsBound(Box::new(lhs)); continue; }
+            if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());  continue; }
+            if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());  continue; }
+            if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());  continue; }
+
+            break;
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_member(&mut self) -> Result<PExpr, String> {
+        let mut lhs = self.parse_primary()?;
+
+        loop {
+            if self.eat_op(">>") {
+                if let Some(name) = self.eat_ident() {
+                    lhs = PExpr::Member(Box::new(lhs), name);
+                    continue;
+                } else if let Some(key) = self.eat_string_lit() {
+                    lhs = PExpr::Member(Box::new(lhs), key);
+                    continue;
+                } else {
+                    return Err("expected identifier or string after '>>'".to_string());
+                }
+            }
+
+            if self.eat_op("?>>") {
+                if self.eat_op("(") {
+                    let mut args = Vec::new();
+                    while matches!(self.toks.get(self.i), Some(tok)
+                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                    { self.i += 1; }
+
+                    if !self.peek_op(")") {
+                        loop {
+                            let arg = self.parse_assign()?;
+                            args.push(arg);
+                            if self.eat_op(",") {
+                                while matches!(self.toks.get(self.i), Some(tok)
+                                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                                { self.i += 1; }
+                                if self.peek_op(")") { break; }
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    if !self.eat_op(")") {
+                        return Err("expected ')' to close optional call".to_string());
+                    }
+                    lhs = match lhs {
+                        PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
+                        other => PExpr::OptCall(Box::new(other), String::new(), args),
+                    };
+                    continue;
+                } else {
+                    let Some(name) = self.eat_ident() else {
+                        return Err("expected identifier after '?>>'".to_string());
+                    };
+                    lhs = PExpr::OptMember(Box::new(lhs), name);
+                    continue;
+                }
+            }
+
+            if self.eat_op(":") {
+                let mut args = Vec::new();
+                while matches!(self.toks.get(self.i), Some(tok)
+                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                { self.i += 1; }
+
+                if self.peek_newline_or_eof() {
+                    return Err("expected argument after ':'".to_string());
+                }
+
+                loop {
+                    let arg = self.parse_assign()?;
+                    args.push(arg);
+                    if self.eat_op(",") {
+                        while matches!(self.toks.get(self.i), Some(tok)
+                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                        { self.i += 1; }
+                        if self.peek_newline_or_eof() { break; }
+                        continue;
+                    }
+                    break;
+                }
+
+                lhs = match lhs {
+                    PExpr::Member(obj, name) => PExpr::Call(obj, name, args),
+                    PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
+                    PExpr::Ident(name) => PExpr::FreeCall(name, args),
+                    other => {
+                        return Err(format!("invalid colon-call target: {:?}", other));
+                    }
+                };
+                continue;
+            }
+
+            if self.eat_op("(") {
+                let mut args = Vec::new();
+                while matches!(self.toks.get(self.i), Some(tok)
+                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                { self.i += 1; }
+
+                if !self.peek_op(")") {
+                    loop {
+                        let arg = self.parse_assign()?;
+                        args.push(arg);
+                        if self.eat_op(",") {
+                            while matches!(self.toks.get(self.i), Some(tok)
+                                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
+                            { self.i += 1; }
+                            if self.peek_op(")") { break; }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                if !self.eat_op(")") {
+                    return Err("expected ')' after argument list".to_string());
+                }
+
+                lhs = match lhs {
+                    PExpr::Member(obj, name) => PExpr::Call(obj, name, args),
+                    PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
+                    PExpr::Ident(name) => PExpr::FreeCall(name, args),
+                    other => PExpr::Call(Box::new(other), String::new(), args),
+                };
+                continue;
+            }
+
+            if matches!(&lhs, PExpr::Ident(_)) && self.peek_op("::") {
+                let ns = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
+                let _ = self.eat_op("::");
+
+                let Some(opname) = self.eat_ident() else {
+                    return Err("expected identifier after '::'".to_string());
+                };
+
+                if self.eat_op("(") {
+                    let args = if self.eat_op(")") {
+                        vec![]
+                    } else {
+                        self.parse_args_paren()?
+                    };
+                    lhs = PExpr::NsCall(ns, opname, args);
+                } else if self.eat_op(":") {
+                    let args = self.parse_args_colon()?;
+                    lhs = PExpr::NsCall(ns, opname, args);
+                } else {
+                    lhs = PExpr::NsCall(ns, opname, vec![]);
+                }
+                continue;
+            }
+
+            break;
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_lvalue_after_amp(&mut self) -> Result<PExpr, String> {
+        let Some(name) = self.eat_ident() else {
+            return Err("SyntaxError: '&' requires a variable/field/index".into());
+        };
+        let mut expr = PExpr::Ident(name);
+
+        loop {
+            if self.eat_op("?>>") {
+                let Some(field) = self.eat_ident() else {
+                    return Err("SyntaxError: expected field name after '?>>'".into());
+                };
+                expr = PExpr::OptMember(Box::new(expr), field);
+                continue;
+            }
+            if self.eat_op(">>") {
+                let Some(field) = self.eat_ident() else {
+                    return Err("SyntaxError: expected field name after '>>'".into());
+                };
+                expr = PExpr::Member(Box::new(expr), field);
+                continue;
+            }
+            if self.eat_op("[") {
+                // NOTE: must produce PExpr + String error
+                let key = self.parse_assign()?;
+                if !self.eat_op("]") { return Err("SyntaxError: missing ']' in index".into()); }
+                expr = PExpr::Index(Box::new(expr), Box::new(key));
+                continue;
+            }
+            break;
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_args_paren(&mut self) -> Result<Vec<PExpr>, String> {
+        let mut args = Vec::new();
+
+        loop {
+            let expr = self.parse_assign()?;
+            args.push(expr);
+
+            if self.eat_op(",") {
+                continue;
+            } else if self.eat_op(")") {
+                break;
+            } else {
+                return Err("expected ',' or ')' in argument list".to_string());
+            }
+        }
+
+        Ok(args)
+    }
+
+    fn parse_args_colon(&mut self) -> Result<Vec<PExpr>, String> {
+        let mut args = Vec::new();
+        args.push(self.parse_assign()?);
+        while self.eat_op(",") {
+            args.push(self.parse_assign()?);
+        }
+        Ok(args)
     }
 
     fn eat_semi_separators(&mut self) {
@@ -922,10 +1328,9 @@ impl<'t> Parser<'t> {
             if self.eat_op(";") {
                 continue;
             }
-            // Also swallow NEWLINE tokens from the lexer
             match self.peek() {
                 Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline) => {
-                    self.i += 1; // consume newline
+                    self.i += 1;
                     continue;
                 }
                 _ => {}
@@ -933,79 +1338,38 @@ impl<'t> Parser<'t> {
             break;
         }
     }
-
-    fn parse_range(&mut self) -> Result<PExpr, String> {
-        // Ranges sit above joins; joins sit above additive.
-        let mut lhs = self.parse_join()?;
-
-        loop {
-            if self.eat_op("...") {
-                let rhs = self.parse_join()?;
-                lhs = PExpr::Binary(Box::new(lhs), "...".to_string(), Box::new(rhs));
-            } else if self.eat_op("..") {
-                let rhs = self.parse_join()?;
-                lhs = PExpr::Binary(Box::new(lhs), "..".to_string(), Box::new(rhs));
-            } else {
-                break;
-            }
-        }
-
-        Ok(lhs)
-    }
-
-    fn is_assign_target(e: &PExpr) -> bool {
-        matches!(e, PExpr::Ident(_) | PExpr::Member(_, _))
-    }
-
-    fn eat_any_assign(&mut self) -> Option<&'static str> {
-        // Longest-first where relevant; tokens are already disambiguated by the lexer.
-        for op in ["<<=", ">>=", "//=", "+=", "-=", "*=", "/=", "%=", "="] {
-            if self.eat_op(op) { return Some(op); }
-        }
-        None
-    }
-
-
-
 }
 
-// --- temporary preview entry for expressions (keeps current parser untouched) ---
 pub(crate) fn parse_expr_preview(tokens: &[goblin_lexer::Token]) -> Result<PExpr, String> {
     let mut p = Parser::new(tokens);
-    let expr = p.parse_assign()?; // was parse_or()
-    Ok(expr)
-}    
+    p.parse_assign()
+}
 
 pub(crate) fn parse_program_preview(tokens: &[goblin_lexer::Token]) -> Result<Vec<PExpr>, String> {
     let mut p = Parser::new(tokens);
-    let mut exprs = Vec::new();
+    let mut out = Vec::new();
 
     while p.i < p.toks.len() {
         p.eat_semi_separators();
-        if p.i >= p.toks.len() {
-            break;
-        }
+        p.skip_newlines();
+        if p.i >= p.toks.len() { break; }
 
-        let expr = p.parse_assign()?;
-
-        // Must be followed by a statement terminator we consume,
-        // or by a closing delimiter. Anything else is an error.
-        let before = p.i;
-        p.eat_semi_separators();
-        if p.i == before {
-            if let Some(t) = p.peek() {
-                let end_block = match &t.kind {
-                    goblin_lexer::TokenKind::Op(s) => s == ")" || s == "]" || s == "}",
-                    _ => false,
-                };
-                if !end_block {
-                    return Err("expected newline or ';' between expressions".to_string());
-                }
+        if p.peek_op("@") {
+            if let Some(res) = p.try_parse_class_decl() {
+                let node = res?;
+                out.push(node);
+                p.eat_semi_separators();
+                p.skip_newlines();
+                continue;
             }
         }
 
-        exprs.push(expr);
+        let expr = p.parse_assign()?;
+        out.push(expr);
+
+        p.eat_semi_separators();
+        p.skip_newlines();
     }
 
-    Ok(exprs)
+    Ok(out)
 }

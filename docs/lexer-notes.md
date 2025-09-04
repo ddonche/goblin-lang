@@ -6,7 +6,6 @@
 * **Statement breaks**: emit `NEWLINE` at line ends except when:
 
   * inside `()[]{}` (implicit continuation),
-  * the *next* logical line begins with `|>` (pipeline carry).
 * **Indentation**: 4 spaces per level; emit `INDENT`/`DEDENT`. Tabs → `IndentationError`. Mixed widths → `IndentationError`.
 * **EOF**: emit final `NEWLINE` and pending `DEDENT`s.
 * **Errors**: unknown byte, bad escapes/`\uXXXX`, unterminated string/block comment → `LexError`.
@@ -496,7 +495,6 @@ Inside string mode:
                      // addition, subtraction
        ```
 9. \| ||                  // string joining
-10. |>                   // pipeline (left-assoc) DEPRECATED DO NOT USE
 11. ??                   // null-coalescing
 12. comparisons: = !=, == !==, === !===, < <= > >=, is, is not
 13. and or (with alias &&)              // logical ops
@@ -519,7 +517,6 @@ Goblin splits the `=` family into three clean families:
 
 === / !=== → strict identity
 
-* Pipeline desugaring (syntax sugar only): A |> f(x, y: k) desugars to f(A, x, y: k). Evaluation order: evaluate left operand, then resolve the callable on the right, then evaluate its arguments, then invoke.
 * Right-hand callable requirement: the right side of |> must resolve to something callable that accepts the piped value as its first parameter, otherwise an ArityMismatchError (or a type error) is raised.
 * Keep the existing precedence (joins |/|| bind tighter than |>), as already defined in Part 4. §25 examples should respect that ordering.
 * raise form: raise is a hard keyword. The bare form (raise with no argument) is valid inside a rescue arm and rethrows the current error; there is no special token beyond KEYWORD(raise) (semantics handled later).
@@ -535,7 +532,6 @@ Goblin splits the `=` family into three clean families:
 * **Implicit continuation**:
 
   * within any open `(` `[` `{`
-  * **or** when the next physical line begins with optional spaces then `|>`: treat the previous newline as soft (suppress statement break before the `PIPE`).
 
 ## Module paths (token shapes only)
 
@@ -712,8 +708,6 @@ ARROW (`->`), LAMBDA (`=>`), NAMESPACE (`::`)
   * Percent-of-self (`%s`) is a parse-time desugaring, not a precedence operator:
     E\_lhs … N%s  ⇒  E\_lhs … (N% of E\_lhs …)
     Example: `total - 15%s`  ⇒  `total - (15% of total)`
-* **Pipeline `|>`:** intentionally lower than addition and joins:
-  `2 + 3 |> .to_string`  ⇒  `(2 + 3) |> .to_string`
 * **Loop keywords:** `jump` and `until` are hard keywords. Lexer always emits them as KEYWORD tokens; parser enforces that they only appear inside loop headers. Outside of loop constructs, they will cause a syntax error.
 * **Time anchoring:** `.wrap` (used for anchoring times across midnight) is not a keyword. It lexes as IDENT following DOT (method-style).
 * nc is only valid immediately after :: as a template skip placeholder; otherwise SyntaxError.
@@ -721,9 +715,7 @@ ARROW (`->`), LAMBDA (`=>`), NAMESPACE (`::`)
 * Enum variants are always IDENT in source; the lexer does not distinguish symbolic vs backed. Parser handles .value resolution.
 * Money postfix `++`/`--` increment/decrement by **one major unit** (currency base step).
 * “% self is parser sugar for %s; lexer emits % then KEYWORD(self).”
-* Pipelines: sugar only; no implicit nil-handling—nil flows through unless guarded with ?>> or ??.
 * Optional chaining: guards only against nil; any error from a non-nil evaluation propagates.
-* Lambda in pipeline: A |> (v -> g(v, ...)) is permitted; the -> is the existing ARROW token.
 * Gmark persistence paths like .goblin/gmarks.lock and .goblin/gmarks.audit.log are string/path literals only; the lexer does not treat them specially. All Gmark APIs are method/service identifiers; no new operators or keywords are introduced.
 * Banish rules are not new tokens. The feature IDs (core.morph, op.pipe\_join, etc.) are always lexed as plain IDENT + DOT + IDENT.
 * Config files (.goblin.banish.toml) are outside lexer scope; the lexer never special-cases them.

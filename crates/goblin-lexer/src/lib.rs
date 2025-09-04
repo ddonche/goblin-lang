@@ -121,29 +121,43 @@ fn consume_block_comment(
             return Err(vec![Diagnostic::error("LexError", "Unterminated block comment (//// ... ////).", sp)]);
         }
 
-        // advance, tracking newlines
+        // advance, tracking newlines (i/line/col are &mut)
         match bytes[*i] {
             b'\r' => {
-                let nl_start = *i;
-                let nl_col = *col;
-                if *i + 1 < bytes.len() && bytes[*i + 1] == b'\n' { *i += 2; } else { *i += 1; }
-                let line_start = *i;
-                let span_nl = Span::new(file, nl_start, line_start, *line, nl_col, *line, nl_col);
-                tokens.push(Token { kind: TokenKind::Newline, span: span_nl, value: None });
+                // Treat CRLF as a single newline; lone CR as newline too. No indent scanning.
+                let start = *i;
+                if *i + 1 < bytes.len() && bytes[*i + 1] == b'\n' {
+                    *i += 2; // consume \r\n
+                } else {
+                    *i += 1; // consume \r
+                }
+                let sp = Span::new(file, start, *i, *line, *col, *line + 1, 1);
+                tokens.push(Token {
+                    kind: TokenKind::Newline,
+                    span: sp,
+                    value: None,
+                });
                 *line += 1;
                 *col = 1;
+                continue;
             }
             b'\n' => {
-                let nl_start = *i;
-                let nl_col = *col;
+                // Emit a Newline token and advance one byte. No indent scanning.
+                let sp = Span::new(file, *i, *i + 1, *line, *col, *line, *col + 1);
+                tokens.push(Token {
+                    kind: TokenKind::Newline,
+                    span: sp,
+                    value: None,
+                });
                 *i += 1;
-                let line_start = *i;
-                let span_nl = Span::new(file, nl_start, line_start, *line, nl_col, *line, nl_col);
-                tokens.push(Token { kind: TokenKind::Newline, span: span_nl, value: None });
                 *line += 1;
                 *col = 1;
+                continue;
             }
-            _ => { *i += 1; *col += 1; }
+            _ => {
+                *i += 1;
+                *col += 1;
+            }
         }
     }
 
@@ -297,101 +311,25 @@ fn consume_linebreak(bytes: &[u8], i: usize) -> (usize, bool) {
 
 fn handle_indent_at_line_start(
     bytes: &[u8],
-    file: &str,
-    line: u32,
+    _file: &str,
+    _line: u32,
     line_start: usize,
-    indent_stack: &mut Vec<u32>,
-    tokens: &mut Vec<Token>,
+    _indent_stack: &mut Vec<u32>,
+    _tokens: &mut Vec<Token>,
 ) -> Result<usize, Vec<Diagnostic>> {
+    // Indentation-agnostic:
+    // - Skip any leading spaces/tabs on the physical line after a newline
+    // - Do NOT emit Indent/Dedent
+    // - Do NOT enforce multiples of 4 or ban tabs
     let mut j = line_start;
-    let mut spaces: u32 = 0;
-    let mut first_tab_i: Option<usize> = None;
-    let mut first_tab_col: Option<u32> = None;
-
     while j < bytes.len() {
         match bytes[j] {
-            b' ' => {
-                spaces += 1;
-                j += 1;
-            }
-            b'\t' => {
-                if first_tab_i.is_none() {
-                    first_tab_i = Some(j);
-                    let tab_col = 1 + (j - line_start) as u32; // 1-based
-                    first_tab_col = Some(tab_col);
-                }
-                j += 1;
-            }
+            b' ' | b'\t' => { j += 1; }
+            // stop before actual line terminators; the caller handles newline emission already
+            b'\r' | b'\n' => break,
             _ => break,
         }
     }
-
-    // If the logical line is blank or a pure comment, skip all indent checks/changes.
-    if is_blank_or_comment_line(bytes, line_start) {
-        return Ok(j);
-    }
-
-    // Tabs at indentation are illegal
-    if let (Some(ti), Some(tc)) = (first_tab_i, first_tab_col) {
-        let sp = Span::new(file, ti, ti + 1, line + 1, tc, line + 1, tc + 1);
-        return Err(vec![Diagnostic::error(
-            "IndentationError",
-            "Tabs are not allowed for indentation; use 4 spaces.",
-            sp,
-        )]);
-    }
-
-    // Indentation must be a multiple of 4
-    if spaces % 4 != 0 {
-        let sp = Span::new(
-            file,
-            line_start,
-            line_start + spaces as usize,
-            line + 1,
-            1,
-            line + 1,
-            1 + spaces,
-        );
-        return Err(vec![Diagnostic::error(
-            "IndentationError",
-            "Indentation must be a multiple of 4 spaces.",
-            sp,
-        )]);
-    }
-
-    // Emit INDENT/DEDENT to reach target level
-    let lvl = spaces / 4;
-    let current = *indent_stack.last().unwrap();
-
-    if lvl > current {
-        // Push exactly the target level (do NOT synthesize intermediates).
-        tokens.push(Token {
-            kind: TokenKind::Indent,
-            span: Span::new(file, j, j, line + 1, 1, line + 1, 1),
-            value: None,
-        });
-        indent_stack.push(lvl);
-    } else if lvl < current {
-        // Dedenting to a level that never existed is an error.
-        if !indent_stack.contains(&lvl) {
-            let sp = Span::new(file, j, j, line + 1, 1, line + 1, 1);
-            return Err(vec![Diagnostic::error(
-                "IndentationError",
-                "Unexpected dedent: no matching indentation level.",
-                sp,
-            )]);
-        }
-        // Pop and emit DEDENTs until we reach the target level.
-        while *indent_stack.last().unwrap() > lvl {
-            indent_stack.pop();
-            tokens.push(Token {
-                kind: TokenKind::Dedent,
-                span: Span::new(file, j, j, line + 1, 1, line + 1, 1),
-                value: None,
-            });
-        }
-    }
-
     Ok(j) // caller updates i/line/col
 }
 
@@ -523,81 +461,21 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
         None
     }
 
-    // --- Initial line indent (emit INDENTs if file starts indented) ---
+    // --- Initial line indent (ignored; no INDENT/DEDENT) ---
     if i < bytes.len() && bytes[i] != b'\r' && bytes[i] != b'\n' {
         let mut j = 0usize;
         let mut jcol = 1u32;
-        let mut spaces = 0u32;
-        let mut first_tab_i: Option<usize> = None;
-        let mut first_tab_col: Option<u32> = None;
 
+        // Skip any leading spaces/tabs at the start of the file.
         while j < bytes.len() {
-            let b = bytes[j];
-            match b {
-                b' ' => {
-                    spaces += 1;
-                    j += 1;
-                    jcol += 1;
-                }
-                b'\t' => {
-                    if first_tab_i.is_none() {
-                        first_tab_i = Some(j);
-                        first_tab_col = Some(jcol);
-                    }
-                    // keep consuming so we point *at least* at the first bad tab
-                    j += 1;
-                    jcol += 1;
-                }
+            match bytes[j] {
+                b' ' | b'\t' => { j += 1; jcol += 1; }
+                b'\r' | b'\n' => break,
                 _ => break,
             }
         }
 
-        if let (Some(ti), Some(tc)) = (first_tab_i, first_tab_col) {
-            let sp = Span::new(file, ti, ti + 1, line, tc, line, tc + 1);
-            return Err(vec![Diagnostic::error(
-                "IndentationError",
-                "Tabs are not allowed for indentation; use 4 spaces.",
-                sp,
-            )]);
-        }
-
-        // Mixed indent width: require multiple of 4 spaces at file start
-        if spaces % 4 != 0 {
-            // At file start, byte 0 to byte j covers the leading indent we just scanned.
-            // If you have a `line` variable here (you likely do from earlier Span::new), use it.
-            // Otherwise, replace both `line` below with `1`.
-            let sp = Span::new(
-                file,
-                0, // byte start of line 1
-                j, // byte index where indent scan stopped
-                line,
-                1, // start: (line, col 1)
-                line,
-                1 + spaces, // end: (line, col 1 + spaces)
-            );
-            return Err(vec![Diagnostic::error(
-                "IndentationError",
-                "Indentation must be a multiple of 4 spaces.",
-                sp,
-            )]);
-        }
-
-        // tabs are illegal; multiple-of-4 required (wire diagnostics if you want)
-        if spaces % 4 == 0 && j < bytes.len() && bytes[j] != b'\r' && bytes[j] != b'\n' {
-            let mut lvl = 4;
-            while lvl <= spaces {
-                let sp = Span::new(file, i, i, line, 1, line, 1);
-                tokens.push(Token {
-                    kind: TokenKind::Indent,
-                    span: sp,
-                    value: None,
-                });
-                indent_stack.push(lvl);
-                lvl += 4;
-            }
-        }
-
-        // Start the loop at first token on line 1
+        // Start lexing at the first non-ws column. No Indent/Dedent. No 4-space rule.
         i = j;
         col = jcol;
     }
@@ -734,7 +612,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let span = Span::new(file, i, j, line, col, line, c);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
                                 i = j; col = c;
-                                break;
+                                continue; // <-- don't fall through to the generic advance
                             }
                         }
                         b'o' | b'O' => {
@@ -745,7 +623,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let span = Span::new(file, i, j, line, col, line, c);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
                                 i = j; col = c;
-                                break;
+                                continue; // <-- here too
                             }
                         }
                         b'b' | b'B' => {
@@ -756,7 +634,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let span = Span::new(file, i, j, line, col, line, c);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
                                 i = j; col = c;
-                                break;
+                                continue; // <-- and here
                             }
                         }
                         _ => {}

@@ -1,0 +1,3 @@
+﻿math::stats::mean(1,2,3,)
+io::fs::read: path, mode,
+core::collections::map >> get(key)

@@ -1,5 +1,3 @@
-a = 2 ** 3 ** 2     /// right-assoc: 2 ** (3 ** 2)
-b = (2 ** 3) ** 2   /// grouping beats right-assoc
-c = 9**             /// postfix square stays handled by postfix layer
-d = 16//            /// postfix sqrt (unchanged)
-e = 2 ** 3 * 4      /// ** binds tighter than *
+﻿2 ** 3 ** 2    // 2 ** (3 ** 2) = 2 ** 9
+a ** b ** c
+x::y(1) ** z(2, 3)

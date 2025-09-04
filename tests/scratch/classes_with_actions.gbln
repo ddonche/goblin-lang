@@ -1,0 +1,19 @@
+﻿@Player = name: "{name}" :: health: 100 :: level: 1
+    act take_damage(amount)
+        health = health - amount
+        if health <= 0
+            say "{name} has fallen!"
+        end
+    end
+
+    action level_up()
+        level = level + 1
+        health = 100
+        say "{name} reached level {level}!"
+    end
+
+    act hp() = health
+end
+
+alice = Player: name: "Alice" :: level: 3
+bob   = Player: "Bob" :: 150

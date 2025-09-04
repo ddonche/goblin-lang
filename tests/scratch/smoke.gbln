@@ -1,0 +1,36 @@
+print("hello, goblin")
+
+obj >> f : a, b, c
+obj ?>> f : 1, 2
+A::max : 1, 2, 3
+
+arr[0]
+arr[1:4]
+arr[1:10:2]
+
+n++
+n**
+n//
+m!
+k^
+q_
+
+10 >< 3
+
+a <> b and not c
+x ?? y
+x is y
+x is not y
+
+grade =
+    judge
+        score >= 90: "A"
+        score >= 80: "B"
+        else:        "F"
+    }
+
+msg =
+    judge
+        name: "hi " || name
+        else: "hi"
+    end

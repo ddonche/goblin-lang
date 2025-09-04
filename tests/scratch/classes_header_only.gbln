@@ -1,0 +1,5 @@
+﻿@Player = name: "{name}" :: health: 100 :: level: 1
+end
+
+alice = Player: name: "Alice" :: level: 3
+bob   = Player: "Bob" :: 150

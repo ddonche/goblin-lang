@@ -1,0 +1,17 @@
+﻿//// basic divmod ////
+10 >< 3
+
+//// mixed with / and % (all left-assoc at this tier) ////
+10 / 3 >< 5
+a * b >< c % d
+
+//// power binds tighter than divmod ////
+2 ** 3 >< 2
+
+//// calls/namespaces as operands ////
+x::y(1) >< z(2)
+
+//// a few extras ////
+(a >< b) % 2
+a >< b * c
+a * (b >< c)
