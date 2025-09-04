@@ -176,7 +176,7 @@ impl<'t> Parser<'t> {
                 return Err("expected ':' after field name".to_string());
             }
 
-            let val = self.parse_assign()?;
+            let val = self.parse_coalesce()?;
             out.push((key, val));
 
             if self.eat_op("::") {
@@ -221,7 +221,7 @@ impl<'t> Parser<'t> {
 
         // Single-line action: `act foo = expr`
         if self.eat_op("=") {
-            let expr = self.parse_assign()?;
+            let expr = self.parse_coalesce()?;
             return Ok(PAction { name, params, body: vec![expr], is_single: true });
         }
 
@@ -241,7 +241,7 @@ impl<'t> Parser<'t> {
                 return Err(format!("unterminated {} '{}': missing '}}' or 'end'", kw, name));
             }
 
-            let expr = self.parse_assign()?;
+            let expr = self.parse_coalesce()?;
             body.push(expr);
             self.eat_semi_separators();
         }
@@ -416,7 +416,7 @@ impl<'t> Parser<'t> {
                 return Err("expected ':' after field name in class header".to_string());
             }
 
-            let value = self.parse_assign()?;
+            let value = self.parse_coalesce()?;
             fields.push((key, value));
 
             self.skip_newlines();
@@ -614,7 +614,7 @@ impl<'t> Parser<'t> {
     fn parse_primary(&mut self) -> Result<PExpr, String> {
         if self.peek_op("(") {
             let _ = self.eat_op("(");
-            let expr = self.parse_assign()?;
+            let expr = self.parse_coalesce()?;
             if !self.eat_op(")") {
                 return Err("expected ')' to close parenthesized expression".to_string());
             }
@@ -630,7 +630,7 @@ impl<'t> Parser<'t> {
 
             if !self.peek_op("]") {
                 loop {
-                    let v = self.parse_assign()?;
+                    let value = self.parse_coalesce()?;
                     elems.push(v);
 
                     if self.eat_op(",") {
@@ -893,6 +893,7 @@ impl<'t> Parser<'t> {
             if self.eat_op("===") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
             if self.eat_op("!==") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
             if self.eat_op("==")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("=")   { return Err("assignments are only allowed as statements".to_string()); }
             if self.eat_op("!=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!=".into(),  Box::new(rhs)); continue; }
             if self.eat_op("<=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<=".into(),  Box::new(rhs)); continue; }
             if self.eat_op(">=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
@@ -1050,7 +1051,7 @@ impl<'t> Parser<'t> {
                 let mut start: Option<PExpr> = None;
                 if !self.peek_op(":") {
                     // NOTE: must produce PExpr + String error
-                    start = Some(self.parse_assign()?);
+                    start = Some(self.parse_coalesce()?);
                     while matches!(self.toks.get(self.i), Some(tok)
                         if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
                     { self.i += 1; }
@@ -1064,7 +1065,7 @@ impl<'t> Parser<'t> {
 
                     let mut end: Option<PExpr> = None;
                     if !self.peek_op("]") && !self.peek_op(":") {
-                        end = Some(self.parse_assign()?);
+                        end = Some(self.parse_coalesce()?);
                         while matches!(self.toks.get(self.i), Some(tok)
                             if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
                         { self.i += 1; }
@@ -1158,7 +1159,7 @@ impl<'t> Parser<'t> {
 
                     if !self.peek_op(")") {
                         loop {
-                            let arg = self.parse_assign()?;
+                            let arg = self.parse_coalesce()?;
                             args.push(arg);
                             if self.eat_op(",") {
                                 while matches!(self.toks.get(self.i), Some(tok)
@@ -1198,7 +1199,7 @@ impl<'t> Parser<'t> {
                 }
 
                 loop {
-                    let arg = self.parse_assign()?;
+                    let arg = self.parse_coalesce()?;
                     args.push(arg);
                     if self.eat_op(",") {
                         while matches!(self.toks.get(self.i), Some(tok)
@@ -1229,7 +1230,7 @@ impl<'t> Parser<'t> {
 
                 if !self.peek_op(")") {
                     loop {
-                        let arg = self.parse_assign()?;
+                        let arg = self.parse_coalesce()?;
                         args.push(arg);
                         if self.eat_op(",") {
                             while matches!(self.toks.get(self.i), Some(tok)
@@ -1307,7 +1308,7 @@ impl<'t> Parser<'t> {
             }
             if self.eat_op("[") {
                 // NOTE: must produce PExpr + String error
-                let key = self.parse_assign()?;
+                let key = self.parse_coalesce()?;
                 if !self.eat_op("]") { return Err("SyntaxError: missing ']' in index".into()); }
                 expr = PExpr::Index(Box::new(expr), Box::new(key));
                 continue;
@@ -1322,7 +1323,7 @@ impl<'t> Parser<'t> {
         let mut args = Vec::new();
 
         loop {
-            let expr = self.parse_assign()?;
+            let expr = self.parse_coalesce()?;
             args.push(expr);
 
             if self.eat_op(",") {
@@ -1339,9 +1340,9 @@ impl<'t> Parser<'t> {
 
     fn parse_args_colon(&mut self) -> Result<Vec<PExpr>, String> {
         let mut args = Vec::new();
-        args.push(self.parse_assign()?);
+        args.push(self.parse_coalesce()?);
         while self.eat_op(",") {
-            args.push(self.parse_assign()?);
+            args.push(self.parse_coalesce()?);;
         }
         Ok(args)
     }
@@ -1365,7 +1366,7 @@ impl<'t> Parser<'t> {
 
 pub(crate) fn parse_expr_preview(tokens: &[goblin_lexer::Token]) -> Result<PExpr, String> {
     let mut p = Parser::new(tokens);
-    p.parse_assign()
+    p.parse_coalesce()
 }
 
 pub(crate) fn parse_program_preview(tokens: &[goblin_lexer::Token]) -> Result<Vec<PExpr>, String> {
@@ -1387,7 +1388,7 @@ pub(crate) fn parse_program_preview(tokens: &[goblin_lexer::Token]) -> Result<Ve
             }
         }
 
-        let expr = p.parse_assign()?;
+        let expr = p.parse_coalesce()?;
         out.push(expr);
 
         p.eat_semi_separators();
