@@ -19,6 +19,8 @@ pub enum TokenKind {
     Ident,
     AtIdent,
     HashIdent,
+    Act,
+    Action,
     Int,
     Float,
     String,
@@ -2025,14 +2027,20 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     }
                 }
 
-                // Normal IDENT token
+                // Normal IDENT or reserved keyword token
                 let name = String::from_utf8_lossy(&bytes[start_i..i]).into_owned();
                 let span = Span::new(file, start_i, i, line, start_col, line, col);
-                tokens.push(Token {
-                    kind: TokenKind::Ident,
-                    span,
-                    value: Some(name),
-                });
+                let kind = match name.as_str() {
+                    "act" => TokenKind::Act,
+                    "action" => TokenKind::Action,
+                    _ => TokenKind::Ident,
+                };
+                let value = if matches!(&kind, TokenKind::Ident) {
+                    Some(name)
+                } else {
+                    None
+                };
+                tokens.push(Token { kind, span, value });
             }
 
             _ => {

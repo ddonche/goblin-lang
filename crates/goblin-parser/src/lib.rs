@@ -439,6 +439,12 @@ impl<'t> Parser<'t> {
             return Err("expected class name after '@'".to_string());
         };
 
+        let name_tok_idx = self.i - 1;
+        if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            self.i = name_tok_idx;
+            return Err(format!("class name '{}' must start with an uppercase letter", name));
+        }
+
         if !self.eat_op("=") {
             return Err(format!("expected '=' after class name '{}'", name));
         }
@@ -464,14 +470,21 @@ impl<'t> Parser<'t> {
             }
 
             // Expect 'act' or 'action'
-            let Some(kw) = self.eat_ident() else {
-                return Err("expected 'act' or 'action' or 'end' in class body".to_string());
+            let kw = match self.toks.get(self.i).map(|t| &t.kind) {
+                Some(TokenKind::Act) => {
+                    self.i += 1;
+                    "act"
+                }
+                Some(TokenKind::Action) => {
+                    self.i += 1;
+                    "action"
+                }
+                _ => {
+                    return Err("expected 'act' or 'action' or 'end' in class body".to_string());
+                }
             };
-            if kw != "act" && kw != "action" {
-                return Err(format!("expected 'act' or 'action' or 'end', found '{}'", kw));
-            }
 
-            let action = self.parse_action_after_keyword(&kw)?;
+            let action = self.parse_action_after_keyword(kw)?;
             actions.push(action);
         }
 
@@ -606,6 +619,14 @@ impl<'t> Parser<'t> {
             TokenKind::Int | TokenKind::Float | TokenKind::Money => {
                 let text = t.value.clone().unwrap_or_default();
                 Ok(ast::Expr::Number(text, sp))
+            }
+            TokenKind::Act | TokenKind::Action => {
+                let kw = if matches!(t.kind, TokenKind::Act) { "act" } else { "action" };
+                Err(vec![Diagnostic::error(
+                    "ParseError",
+                    &format!("Unexpected keyword '{}'.", kw),
+                    sp,
+                )])
             }
             _ => Err(vec![Diagnostic::error("ParseError", "Expected expression.", sp)]),
         }

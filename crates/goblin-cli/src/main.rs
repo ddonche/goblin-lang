@@ -366,6 +366,8 @@ fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
         TokenKind::AtIdent => ExpectTok::Kind("AT_IDENT".into()),
         TokenKind::HashIdent => ExpectTok::Kind("HASH_IDENT".into()),
         TokenKind::Int => ExpectTok::Kind("INT".into()),
+        TokenKind::Act => ExpectTok::Kind("ACT".into()),
+        TokenKind::Action => ExpectTok::Kind("ACTION".into()),
         TokenKind::Float => ExpectTok::Kind("FLOAT".into()),
         TokenKind::String => ExpectTok::Kind("STRING".into()),
         TokenKind::Money => ExpectTok::Kind("MONEY".into()),
