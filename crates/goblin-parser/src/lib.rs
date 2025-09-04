@@ -630,8 +630,8 @@ impl<'t> Parser<'t> {
 
             if !self.peek_op("]") {
                 loop {
-                    let value = self.parse_coalesce()?;
-                    elems.push(v);
+                    let elem = self.parse_coalesce()?;
+                    elems.push(elem);
 
                     if self.eat_op(",") {
                         while matches!(self.toks.get(self.i), Some(tok)
