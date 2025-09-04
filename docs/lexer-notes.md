@@ -496,21 +496,58 @@ Inside string mode:
 
 ## Operator Precedence (for parser, recorded here)
 
-1. ()                    // grouping
-2. ., (), \[], ?>>         // member, call, index, opt chain (all left-assoc)
-3. \*\*, //, ++, --        // postfix square/sqrt/inc/dec
-4. % of, %o              // percent-of-other application (binds tight, parenthetical-like)
-5. \*\* (right)        // exponentiation
-6. unary + - not !       // unary operators
-7. * / % // >>           // multiplication/division/modulo/divmod
-8. * * ```
-                     // addition, subtraction
-       ```
-9. \| ||                  // string joining
-11. ??                   // null-coalescing
-12. comparisons: = !=, == !==, === !===, < <= > >=, is, is not
-13. and or (with alias && <>)              // logical ops
-14. &                     // definedness operator
+or (alias <>)
+
+and (alias &&)
+
+?? (nullish)
+
+Comparisons (non-assoc when mixed):
+
+Assignment-state: =, !=
+
+Value equality: ==, !==
+
+Strict identity: ===, !===
+
+Relational: <, <=, >, >=
+
+Type-ish: is, is not
+
++, -
+
+*, /, %, // (int div), >< (divmod)
+
+** (right-associative exponentiation)
+
+Prefix unary: +, -, !, not, & (definedness)
+
+Postfix application (left → right): ., (), [], ?>> step
+
+Postfix specials (only as postfix): ! (factorial), ^ (ceil), _ (floor), ++, --, postfix square ** / postfix sqrt // (when immediately after a number literal)
+
+Percent family (tight binding): numeric percent literal 12.5%, %s, %o <expr> / % of <expr>
+
+Joins: |, ||
+
+Disambiguation rule (keeps both “assignment as statement” and = as comparison)
+
+Assignment is statement-only: parse LValue '=' Expr as an AssignStmt only when it appears in statement position (e.g., at the start of a simple statement or after a newline/then/else etc.).
+
+Inside expressions, = and != are parsed as comparison operators in tier 4.
+
+If you really need an assignment where an expression is expected (rare), require a different form (don’t allow it), which keeps Goblin simple and unambiguous.
+
+Tiny examples
+
+Statement assignment:
+x = y + 1 → AssignStmt(x, y + 1)
+
+Expression comparison:
+if (x = y) and (y == z) ... → (x = y) is a comparison, not an assignment.
+
+Ambiguous-looking code is resolved by position:
+foo(x = y) → x = y is a comparison argument.
 
 // Notes:
 // - `?>>` is left-associative; short-circuits only on nil (semantics). Short-circuit argument rule: if E?>>m(args…) short-circuits because E is nil, argument expressions are not evaluated.
