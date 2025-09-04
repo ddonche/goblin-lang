@@ -1,0 +1,47 @@
+diff --git a/crates/goblin-ast/src/lib.rs b/crates/goblin-ast/src/lib.rs
+@@
+ pub enum Stmt {
+     Expr(Expr),
+     Class(ClassDecl),
++    Action(ActionDecl),
+ }
+
+@@
+ pub struct ActionDecl {
+     pub name: String,
+     pub params: Vec<String>,
+     pub body: Vec<Stmt>,
+     pub is_single: bool,
+ }
+
+@@
+ pub enum ActionBody {
+     Expr(Expr),
+     Block(Vec<Stmt>),
+ }
+
+diff --git a/crates/goblin-parser/src/lib.rs b/crates/goblin-parser/src/lib.rs
+@@
+     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
+         let pa = self.parse_action_after_keyword(kw)?;
+         let body = pa
+             .body
+             .into_iter()
+             .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
+             .collect();
+         let act = ast::ActionDecl {
+             name: pa.name,
+             params: pa.params,
+             body,
+             is_single: pa.is_single,
+         };
+         Ok(ast::Stmt::Action(act))
+     }
+
+@@
+         if let Some(kw) = self.peek_ident() {
+             if kw == "act" || kw == "action" {
+                 let kw = self.eat_ident().unwrap();
+                 return self.parse_free_action(&kw);
+             }
+         }

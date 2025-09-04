@@ -249,6 +249,22 @@ impl<'t> Parser<'t> {
         Ok(PAction { name, params, body, is_single: false })
     }
 
+    fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
+        let pa = self.parse_action_after_keyword(kw)?;
+        let body = pa
+            .body
+            .into_iter()
+            .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
+            .collect();
+        let act = ast::ActionDecl {
+            name: pa.name,
+            params: pa.params,
+            body,
+            is_single: pa.is_single,
+        };
+        Ok(ast::Stmt::Action(act))
+    }
+
     #[inline]
     fn peek(&self) -> Option<&Token> { self.toks.get(self.i) }
 
@@ -563,6 +579,13 @@ impl<'t> Parser<'t> {
         if let Some(res) = self.try_parse_class_decl() {
             let p = res?;
             return Ok(ast::Stmt::Expr(self.lower_expr(p)));
+        }
+
+        if let Some(kw) = self.peek_ident() {
+            if kw == "act" || kw == "action" {
+                let kw = self.eat_ident().unwrap();
+                return self.parse_free_action(&kw);
+            }
         }
 
         let expr_pe = self.parse_assign()?;

@@ -11,6 +11,7 @@ pub struct Module {
 pub enum Stmt {
     Expr(Expr),
     Class(ClassDecl),
+    Action(ActionDecl),
 }
 
 #[derive(Debug, Clone)]
