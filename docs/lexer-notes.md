@@ -32,11 +32,13 @@
 "++"  POST\_INC\_MONEY      // postfix only
 "--"  POST\_DEC\_MONEY      // postfix only
 "//"  INT\_DIV             // integer div (also money flavor); also POSTFIX SQRT
+"%"   MODULUS              // infix
+"%"   PERCENT of 100       // postfix
 "%s"  PERCENT\_SELF        // percent-of-self sugar
 "%o"  PERCENT\_OF\_OTHER    // percent-of-other sugar
-"=="  EQ   "!=" NE  "<=" LE  ">=" GE
-"===" STRICT\_EQ   "!==" STRICT\_NE
-"<"   LT   ">"  GT  "="  ASSIGN
+"=="  EQ   "!==" NE  "<=" LE  ">=" GE
+"===" STRICT\_EQ   "!===" STRICT\_NE
+"<"   LT   ">"  GT  "="  ASSIGN "!=" Not assigned
 "+=" "-=" "\*=" "/=" "%="
 "**="                       // compound exponent assign
 "+" "-" "\*" "/" "%" ":" "," "." ";" "@" "=>" "(" ")" "\[" "]" "{" "}"
@@ -50,6 +52,7 @@
 "#"   private variable identifier
 "=>"  lambda
 "&"   definedness operator
+";;"  fang operator          // alias for burn
 
 > Note: `::` is **overloaded** — namespace separator, binding separator, and skip marker in templates. Lexer always emits `NAMESPACE`; parser disambiguates.
 
@@ -71,11 +74,11 @@ Goblin splits the `=` family into three clean families:
 if elif else for in while repeat unless
 attempt rescue ensure raise say warn error
 return skip jump until stop assert
-class fn op enum use import export via test
+class act action enum use import export via test
 true false nil contract prefer
 judge morph vault banish unbanish expose
 pick roll roll_detail reap usurp replace override add insert map
-nc self set
+nc self set burn 
 of
 end
 blob
@@ -155,10 +158,10 @@ as where raw trim_lead on like and between unique
 ### Collection utilities
 
 * shuffle, sort, settle
-* pick, reap, usurp
+* pick, reap, usurp, replace
 * add, insert, map
 * sum, avg, min, max, mode, freq, sample\_weighted
-* cut, unique
+* unique, dups
 
 ### Numeric operations
 
@@ -173,7 +176,10 @@ as where raw trim_lead on like and between unique
 
 * int, float, bool, big, money, pct
 * date, time, datetime, duration
-* i, f, b, s, m, h, d, w, mo, y
+* i, f, b postfix 
+* no money postfix, as it has $ and USD, etc. 
+* no % postfix, as it is its own postfix
+* datetime: s, m, h, d, w, mo, y
 
 ### I/O, filesystem, printing, serialization helpers
 
@@ -311,7 +317,7 @@ That way you’ve got clear semantics (definedness) but the shorthand is just &.
 * Big: default precision = 64 significant digits.
 * Big: “Any with big → big.” (promotion rule).
 * Money: backed by big engine with project-defined policy (precision, rounding, ledgering).
-* Percent: `%o` = sugar for `% of expr` (parser expands).
+* Percent: `%o` = sugar for `% of expr` (parser expands); `%s` = sugar for `% of self`
 * User can set separator of choice for numbers (_ , . etc)
 
 ### Add/confirm literal forms
@@ -319,7 +325,7 @@ That way you’ve got clear semantics (definedness) but the shorthand is just &.
 * Big numbers: explicit suffix `b` for integers and floats (e.g., `123b`, `5.0b`).
 * Money: code-trailing form `<ISO3> <number>` (e.g., `EUR 950.50`) is valid, in addition to symbol-leading and country+symbol forms.
 * Percent system:
-
+  * % postfix = % of 100  // % infix is modulus
   * Shorthand `%s` = percent-of-self.
   * Shorthand `%o` = percent-of-other.
   * Clarify `% of expr` form: parser handles expansion, but lexer must recognize `%o` token followed by expression.
@@ -423,6 +429,12 @@ Lex as `DATE_LITERAL`, `TIME_LITERAL`, `DATETIME_LITERAL` tokens with attached s
 * `blob "..."` → UTF-8 encode string → `BLOB_LITERAL` with attached bytes.
 * No implicit conversion between strings and blobs; must use explicit constructors or `.str` methods.
 
+## Classes 
+
+* declare a class with @Class_name `@` symbol 
+* class name should start with Capital letter 
+* multiline class should delimit with closing `end` or `}`
+
 ## Strings & interpolation
 
 **Literal forms**
@@ -497,7 +509,7 @@ Inside string mode:
 9. \| ||                  // string joining
 11. ??                   // null-coalescing
 12. comparisons: = !=, == !==, === !===, < <= > >=, is, is not
-13. and or (with alias &&)              // logical ops
+13. and or (with alias && <>)              // logical ops
 14. &                     // definedness operator
 
 // Notes:
@@ -587,21 +599,23 @@ Goblin splits the `=` family into three clean families:
 
 * `=>` → `ARROW` (idents around it are normal).
 
-## Operations
+## Actions
+* Functions are called "free actions" and methods are called "member actions" 
+* Defined with hard keyword `act` or `action`. Two declaration forms:
 
-* Defined with hard keyword `op`. Two declaration forms:
-
-  * `op name(params) ... end` (block form)
-  * `op name(params) = expr` (one-liner)
+  * `act name(params) ... end or }` (block form)
+  * `act name(params) = expr` (one-liner)
+  
 * Return rules: last expression returned unless `return` used explicitly.
-* **Calling forms (only two allowed):**
+* **Calling forms:**
 
-  1. Method-style: `value.op(...)` (universal for unary; multi-param requires receiver as first param).
-  2. Prefix-style: `op value` (restricted to built-in text ops; lexer emits IDENT + STRING).
-* **Zero-arg ops:** may be called as `value.op` or `value.op()`.
+  1. Method-style: `value.act(...)` (universal for unary; multi-param requires receiver as first param).
+  2. Prefix-style: `act value` (restricted to built-in text actions; lexer emits IDENT + STRING).
+  3. Function-style: act(value) 
+* **Zero-arg actions:** may be called as `value.act` or `value.act()`.
 * **Variadic params:** use `...` marker (same token as RANGE\_EXCL, disambiguated in parser).
-* **Namespaces/Glams:** external calls use `Module::op(args)` or `Glam::op(args)`. Lexer reuses `::` token.
-* **Pipelines:** segments must be `.op` or `Module::op(...)`. Each stage receives previous result as first argument.
+* **Namespaces/Glams:** external calls use `Module::act(args)` or `Glam::act(args)`. Lexer reuses `::` token.
+* **Pipelines:** segments must be `.act` or `Module::act(...)`. Each stage receives previous result as first argument.
 
 ---
 
@@ -659,29 +673,29 @@ ARROW (`->`), LAMBDA (`=>`), NAMESPACE (`::`)
 ## Misc
 
 * **File extension:** source files use `.gbln` as canonical extension.
-* **Operation definition:**
+* **Action definition:**
 
-  * Declared with `op`.
-  * Block form: `op name(params) ... end` (last expression returned unless `return` is used).
-  * One-liner form: `op name(params) = expr`.
+  * Declared with `act` or `action`.
+  * Block form: `act name(params) ... end or }` (last expression returned unless `return` is used).
+  * One-liner form: `act name(params) = expr`.
   * `return` exits immediately, overriding the implicit return.
-* **Operation calls:** Only two call forms are valid:
+* **Action calls:** three call forms are valid:
 
-  * **Method-style:** `value.op(...)` (receiver as first argument).
-  * **Prefix-style:** `op value` (English-like sugar for text ops only).
-  * No `op(value)` function-call form is permitted.
+  * **Method-style:** `value.act(...)` (receiver as first argument).
+  * **Prefix-style:** `act value` (English-like sugar for text actions only).
+  * **Function-style** `act(value)` function-call form is permitted.
 * **Parameters:**
 
   * Defaults bind in the parameter list.
   * Named args may be mixed with positionals.
   * Variadic params use `...` (same token as RANGE\_EXCL; parser disambiguates).
-  * Zero-arg ops may be called with or without `()` (e.g. `items.len` or `items.len()`).
-* **Unary vs multi-parameter ops:**
+  * Zero-arg actions may be called with or without `()` (e.g. `items.len` or `items.len()`).
+* **Unary vs multi-parameter actions:**
 
-  * Unary ops auto-methodize (e.g. `9.square`).
-  * Multi-parameter ops: first param acts as receiver in method-style.
-  * Otherwise, invoke via `Module::op(...)` or `Glam::op(...)`.
-* **Wrapping external ops:** Users may define wrapper ops if they want external `::` operations to be chainable in method-style.
+  * Unary acts auto-methodize (e.g. `9.square`).
+  * Multi-parameter acts: first param acts as receiver in method-style.
+  * Otherwise, invoke via `Module::act(...)` or `Glam::act(...)`.
+* **Wrapping external acts:** Users may define wrapper acts if they want external `::` actions to be chainable in method-style.
 * **Output sugar:** A line beginning with a string literal is equivalent to prefixing with `say`.
   Example: `"Hello"` → `say "Hello"`
 * **Variable scope:**
