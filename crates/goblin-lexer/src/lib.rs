@@ -50,6 +50,7 @@ pub struct Token {
 }
 
 #[inline]
+#[allow(dead_code)] // Needed for upcoming indentation-aware lexing to skip blank/comment-only lines
 fn is_blank_or_comment_line(bytes: &[u8], mut k: usize) -> bool {
     // skip horizontal whitespace
     while k < bytes.len() {

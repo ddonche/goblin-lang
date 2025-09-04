@@ -1342,7 +1342,7 @@ impl<'t> Parser<'t> {
         let mut args = Vec::new();
         args.push(self.parse_coalesce()?);
         while self.eat_op(",") {
-            args.push(self.parse_coalesce()?);;
+            args.push(self.parse_coalesce()?);
         }
         Ok(args)
     }
