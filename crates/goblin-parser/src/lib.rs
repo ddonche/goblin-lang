@@ -26,7 +26,12 @@ enum PExpr {
     Postfix(Box<PExpr>, String),
     Prefix(String, Box<PExpr>),
     Slice(Box<PExpr>, Option<Box<PExpr>>, Option<Box<PExpr>>),
-    Slice3(Box<PExpr>, Option<Box<PExpr>>, Option<Box<PExpr>>, Option<Box<PExpr>>),
+    Slice3(
+        Box<PExpr>,
+        Option<Box<PExpr>>,
+        Option<Box<PExpr>>,
+        Option<Box<PExpr>>,
+    ),
     Str(String),  
 
     ClassDecl {
@@ -44,6 +49,18 @@ struct PAction {
     is_single: bool,
 }
 
+
+#[derive(Debug, Clone)]
+enum PDecl {
+    Expr(PExpr),
+    Action(PAction),
+    Class {
+        name: String,
+        fields: Vec<(String, PExpr)>,
+        actions: Vec<PAction>,
+    },
+}
+
 pub type ParseResult<T> = Result<T, Vec<Diagnostic>>;
 
 pub struct Parser<'t> {
@@ -56,27 +73,27 @@ fn is_block_starter_name(name: &str) -> bool {
 }
 
 impl<'t> Parser<'t> {
-    pub fn new(toks: &'t [Token]) -> Self { Self { toks, i: 0 } }
+    pub fn new(toks: &'t [Token]) -> Self {
+        Self { toks, i: 0 }
+    }
 
     fn span_from_tokens(toks: &[goblin_lexer::Token], start_i: usize, end_i: usize) -> Span {
         if toks.is_empty() {
             return Span::new("<empty>", 0, 0, 0, 0, 0, 0);
         }
-        let start_tok = toks.get(start_i.min(toks.len()-1));
-        let end_tok = toks.get(end_i.min(toks.len()-1));
+        let start_tok = toks.get(start_i.min(toks.len() - 1));
+        let end_tok = toks.get(end_i.min(toks.len() - 1));
         
         match (start_tok, end_tok) {
-            (Some(s), Some(e)) => {
-                Span::new(
-                    s.span.file.clone(),
-                    s.span.start,
-                    e.span.end,
-                    s.span.line_start,
-                    e.span.line_end,
-                    s.span.col_start,
-                    e.span.col_end,
-                )
-            }
+            (Some(s), Some(e)) => Span::new(
+                s.span.file.clone(),
+                s.span.start,
+                e.span.end,
+                s.span.line_start,
+                e.span.line_end,
+                s.span.col_start,
+                e.span.col_end,
+            ),
             (Some(s), None) => s.span.clone(),
             _ => Span::new("<unknown>", 0, 0, 0, 0, 0, 0),
         }
@@ -84,10 +101,101 @@ impl<'t> Parser<'t> {
 
     fn lower_expr_preview(pe: PExpr, sp: Span) -> ast::Expr {
         match pe {
+
+            // Basic literals and identifiers
             PExpr::Ident(name) => ast::Expr::Ident(name, sp),
-            PExpr::Int(s) | PExpr::Float(s) | PExpr::IntWithUnit(s, _) | PExpr::FloatWithUnit(s, _) => {
-                ast::Expr::Number(s, sp)
+            PExpr::Int(s)
+            | PExpr::Float(s)
+            | PExpr::IntWithUnit(s, _)
+            | PExpr::FloatWithUnit(s, _) => ast::Expr::Number(s, sp),
+            PExpr::Bool(b) => ast::Expr::Bool(b, sp),
+            PExpr::Str(s) => ast::Expr::Str(s, sp),
+            PExpr::Nil => ast::Expr::Nil(sp),
+
+            // Collections
+            PExpr::Array(items) => {
+                let elems = items
+                    .into_iter()
+                    .map(|e| Self::lower_expr_preview(e, sp.clone()))
+                    .collect();
+                ast::Expr::Array(elems, sp)
             }
+           PExpr::Object(fields) => {
+                let fields = fields
+                    .into_iter()
+                    .map(|(k, v)| (k, Self::lower_expr_preview(v, sp.clone())))
+                    .collect();
+                ast::Expr::Object(fields, sp)
+            }
+
+            // Calls
+            PExpr::Call(expr, name, args) => {
+                let recv = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                let args = args
+                    .into_iter()
+                    .map(|a| Self::lower_expr_preview(a, sp.clone()))
+                    .collect();
+                ast::Expr::Call(recv, name, args, sp)
+            }
+            PExpr::FreeCall(name, args) => {
+                let args = args
+                    .into_iter()
+                    .map(|a| Self::lower_expr_preview(a, sp.clone()))
+                    .collect();
+                ast::Expr::FreeCall(name, args, sp)
+            }
+            PExpr::NsCall(ns, name, args) => {
+                let args = args
+                    .into_iter()
+                    .map(|a| Self::lower_expr_preview(a, sp.clone()))
+                    .collect();
+                ast::Expr::NsCall(ns, name, args, sp)
+            }
+            PExpr::OptCall(expr, name, args) => {
+                let recv = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                let args = args
+                    .into_iter()
+                    .map(|a| Self::lower_expr_preview(a, sp.clone()))
+                    .collect();
+                ast::Expr::OptCall(recv, name, args, sp)
+            }
+
+            // Member and indexing
+            PExpr::Member(expr, name) => {
+                let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                ast::Expr::Member(obj, name, sp)
+            }
+            PExpr::OptMember(expr, name) => {
+                let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                ast::Expr::OptMember(obj, name, sp)
+            }
+            PExpr::Index(expr, idx) => {
+                let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                let idx = Box::new(Self::lower_expr_preview(*idx, sp.clone()));
+                ast::Expr::Index(obj, idx, sp)
+            }
+
+            // Unary / postfix / binary / assignment
+            PExpr::Prefix(op, expr) => {
+                let expr = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                ast::Expr::Prefix(op, expr, sp)
+            }
+            PExpr::Postfix(expr, op) => {
+                let expr = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                ast::Expr::Postfix(expr, op, sp)
+            }
+            PExpr::Binary(lhs, op, rhs) => {
+                let lhs = Box::new(Self::lower_expr_preview(*lhs, sp.clone()));
+                let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
+                ast::Expr::Binary(lhs, op, rhs, sp)
+            }
+            PExpr::Assign(lhs, rhs) => {
+                let lhs = Box::new(Self::lower_expr_preview(*lhs, sp.clone()));
+                let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
+                ast::Expr::Assign(lhs, rhs, sp)
+            }
+
+            // Fallback for unimplemented constructs
             other => {
                 let txt = format!("{:?}", other);
                 ast::Expr::Ident(txt, sp)
@@ -133,13 +241,17 @@ impl<'t> Parser<'t> {
                 TokenKind::Ident if tok.value.as_deref() == Some("end") => {
                     self.i += 1;
                     depth -= 1;
-                    if depth == 0 { break; }
+                    if depth == 0 {
+                        break;
+                    }
                     continue;
                 }
                 TokenKind::Op(op) if op == "}" => {
                     self.i += 1;
                     depth -= 1;
-                    if depth == 0 { break; }
+                    if depth == 0 {
+                        break;
+                    }
                     continue;
                 }
                 _ => {}
@@ -208,7 +320,9 @@ impl<'t> Parser<'t> {
                     };
                     params.push(p);
                     if self.eat_op(",") {
-                        if self.peek_op(")") { break; }
+                        if self.peek_op(")") {
+                            break;
+                        }
                         continue;
                     }
                     break;
@@ -222,7 +336,12 @@ impl<'t> Parser<'t> {
         // Single-line action: `act foo = expr`
         if self.eat_op("=") {
             let expr = self.parse_coalesce()?;
-            return Ok(PAction { name, params, body: vec![expr], is_single: true });
+            return Ok(PAction {
+                name,
+                params,
+                body: vec![expr],
+                is_single: true,
+            });
         }
 
         // Multi-line action body: ends with either `end` or `}`
@@ -231,14 +350,18 @@ impl<'t> Parser<'t> {
 
         loop {
             if let Some(tok) = self.toks.get(self.i) {
-                let is_end = matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
+                let is_end =
+                    matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
                 let is_rbrace = matches!(tok.kind, TokenKind::Op(ref s) if s == "}");
                 if is_end || is_rbrace {
                     self.i += 1;
                     break;
                 }
             } else {
-                return Err(format!("unterminated {} '{}': missing '}}' or 'end'", kw, name));
+                return Err(format!(
+                    "unterminated {} '{}': missing '}}' or 'end'",
+                    kw, name
+                ));
             }
 
             let expr = self.parse_coalesce()?;
@@ -488,7 +611,121 @@ impl<'t> Parser<'t> {
             actions.push(action);
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions })
+        Ok(PExpr::ClassDecl {
+            name,
+            fields,
+            actions,
+        })
+    }
+
+    fn parse_decl(&mut self) -> Result<PDecl, String> {
+        if let Some(t) = self.peek() {
+            let kind = t.kind.clone();
+            let val = t.value.clone();
+            match kind {
+                TokenKind::Op(op) if op == "@" => {
+                    let class = self.parse_class_decl()?;
+                    if let PExpr::ClassDecl {
+                        name,
+                        fields,
+                        actions,
+                    } = class
+                    {
+                        return Ok(PDecl::Class {
+                            name,
+                            fields,
+                            actions,
+                        });
+                    }
+                }
+                TokenKind::Ident => {
+                    let kw = val.as_deref().unwrap_or("");
+                    match kw {
+                        "act" | "action" => {
+                            let _ = self.eat_ident();
+                            let act = self.parse_action_after_keyword(kw)?;
+                            return Ok(PDecl::Action(act));
+                        }
+                        "class" => {
+                            let _ = self.eat_ident();
+                            let class = self.parse_class_decl_keyword()?;
+                            if let PExpr::ClassDecl {
+                                name,
+                                fields,
+                                actions,
+                            } = class
+                            {
+                                return Ok(PDecl::Class {
+                                    name,
+                                    fields,
+                                    actions,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let expr = self.parse_assign()?;
+        Ok(PDecl::Expr(expr))
+    }
+
+    fn parse_class_decl_keyword(&mut self) -> Result<PExpr, String> {
+        use goblin_lexer::TokenKind;
+
+        let Some(name) = self.eat_ident() else {
+            return Err("expected class name after 'class'".to_string());
+        };
+
+        if !self.eat_op("=") {
+            return Err(format!("expected '=' after class name '{}'", name));
+        }
+
+        let fields = self.parse_field_chain_line()?;
+        self.eat_semi_separators();
+
+        let mut actions = Vec::new();
+
+        loop {
+            self.eat_semi_separators();
+
+            if let Some(tok) = self.toks.get(self.i) {
+                let is_end =
+                    matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
+                let is_rbrace = matches!(tok.kind, TokenKind::Op(ref s) if s == "}");
+                if is_end || is_rbrace {
+                    self.i += 1;
+                    break;
+                }
+            } else {
+                return Err(format!(
+                    "unterminated class '{}': missing '}}' or 'end'",
+                    name
+                ));
+            }
+
+            let Some(kw) = self.eat_ident() else {
+                return Err("expected 'act' or 'action' or 'end' in class body".to_string());
+            };
+            if kw != "act" && kw != "action" {
+                return Err(format!(
+                    "expected 'act' or 'action' or 'end', found '{}'",
+                    kw
+                ));
+            }
+
+            let action = self.parse_action_after_keyword(&kw)?;
+            actions.push(action);
+        }
+
+        Ok(PExpr::ClassDecl {
+            name,
+            fields,
+            actions,
+        })
     }
 
     fn eat_object_key(&mut self) -> Option<String> {
@@ -1388,6 +1625,27 @@ impl<'t> Parser<'t> {
 pub(crate) fn parse_expr_preview(tokens: &[goblin_lexer::Token]) -> Result<PExpr, String> {
     let mut p = Parser::new(tokens);
     p.parse_coalesce()
+}
+
+pub(crate) fn parse_program(tokens: &[goblin_lexer::Token]) -> Result<Vec<PDecl>, String> {
+    let mut p = Parser::new(tokens);
+    let mut out = Vec::new();
+
+    while p.i < p.toks.len() {
+        p.eat_semi_separators();
+        p.skip_newlines();
+        if p.i >= p.toks.len() {
+            break;
+        }
+
+        let decl = p.parse_decl()?;
+        out.push(decl);
+
+        p.eat_semi_separators();
+        p.skip_newlines();
+    }
+
+    Ok(out)
 }
 
 pub(crate) fn parse_program_preview(tokens: &[goblin_lexer::Token]) -> Result<Vec<PExpr>, String> {
