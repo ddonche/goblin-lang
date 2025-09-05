@@ -33,9 +33,10 @@ pub struct FieldDecl {
 #[derive(Debug, Clone)]
 pub struct ActionDecl {
     pub name: String,
-    pub params: Vec<String>,
-    pub body: Vec<Stmt>,  // a list of statements
-    pub is_single: bool,
+    pub params: Vec<Param>,
+    pub ret: Option<String>,
+    pub body: ActionBody,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-use goblin_ast as ast;
+﻿use goblin_ast as ast;
 use goblin_diagnostics::{Diagnostic, Span};
 use goblin_lexer::{Token, TokenKind};
 
@@ -66,6 +66,7 @@ pub type ParseResult<T> = Result<T, Vec<Diagnostic>>;
 pub struct Parser<'t> {
     toks: &'t [Token],
     i: usize,
+    in_stmt: bool,
 }
 
 fn is_block_starter_name(name: &str) -> bool {
@@ -74,8 +75,10 @@ fn is_block_starter_name(name: &str) -> bool {
 
 impl<'t> Parser<'t> {
     pub fn new(toks: &'t [Token]) -> Self {
-        Self { toks, i: 0 }
+        Self { toks, i: 0, in_stmt: false }
     }
+
+    
 
     fn span_from_tokens(toks: &[goblin_lexer::Token], start_i: usize, end_i: usize) -> Span {
         if toks.is_empty() {
@@ -374,17 +377,31 @@ impl<'t> Parser<'t> {
 
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
         let pa = self.parse_action_after_keyword(kw)?;
-        let body = pa
+
+        let body_stmts: Vec<ast::Stmt> = pa
             .body
             .into_iter()
             .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
             .collect();
+
+        let body = ast::ActionBody::Block(body_stmts);
+
+        let params: Vec<ast::Param> = pa.params
+            .into_iter()
+            .map(|pname| {
+                let sp = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i);
+                ast::Param { name: pname, type_name: None, default: None, span: sp }
+            })
+            .collect();
+
         let act = ast::ActionDecl {
             name: pa.name,
-            params: pa.params,
+            params,
             body,
-            is_single: pa.is_single,
+            span: Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i),
+            ret: None,
         };
+
         Ok(ast::Stmt::Action(act))
     }
 
@@ -502,19 +519,91 @@ impl<'t> Parser<'t> {
     // Generic "read statements until '}' or 'end'". Use this for bodies of fn/if/while/class/etc.
     // It preserves your existing statement parser and newline tolerance.
     fn parse_stmt_block(&mut self) -> Result<Vec<ast::Stmt>, String> {
-        let mut out = Vec::new();
-        loop {
-            self.skip_stmt_separators();
-            if self.peek_block_close() {
-                let _ = self.eat_block_close(); // guaranteed true
+        use goblin_lexer::TokenKind;
+
+        // BRACE MODE: `{ ... }`
+        if self.eat_op("{") {
+            let mut out = Vec::new();
+            loop {
+                self.skip_stmt_separators();
+                if self.peek_block_close() {
+                    let _ = self.eat_block_close(); // guaranteed true
+                    break;
+                }
+                if self.toks.get(self.i).is_none() {
+                    return Err("unexpected end of file: expected '}' or 'end' to close block".into());
+                }
+                out.push(self.parse_stmt()?);
+            }
+            return Ok(out);
+        }
+
+        // INDENT MODE: require newline then Indent to enter the block
+        // Consume one or more Newlines
+        let mut saw_nl = false;
+        while let Some(tok) = self.toks.get(self.i) {
+            if matches!(tok.kind, TokenKind::Newline) {
+                self.i += 1;
+                saw_nl = true;
+            } else {
                 break;
             }
-            // EOF before closer = hard error
-            if self.toks.get(self.i).is_none() {
-                return Err("unexpected end of file: expected '}' or 'end' to close block".into());
+        }
+        if !saw_nl {
+            return Err("expected newline to start block".to_string());
+        }
+
+        // Now require an Indent to enter the block
+        match self.toks.get(self.i) {
+            Some(tok) if matches!(tok.kind, TokenKind::Indent) => {
+                self.i += 1;
             }
+            _ => {
+                return Err("expected indentation to start block".to_string());
+            }
+        }
+
+        let mut out = Vec::new();
+        let mut depth: usize = 1;
+
+        loop {
+            // Handle layout changes up-front
+            match self.toks.get(self.i) {
+                Some(tok) if matches!(tok.kind, TokenKind::Indent) => {
+                    self.i += 1;
+                    depth += 1;
+                    continue;
+                }
+                Some(tok) if matches!(tok.kind, TokenKind::Dedent) => {
+                    self.i += 1;
+                    if depth == 0 {
+                        return Err("dedent below block start".to_string());
+                    }
+                    depth -= 1;
+
+                    // If we returned to the entry level, require a visible closer right here
+                    if depth == 0 {
+                        // allow blank lines before closer
+                        self.skip_newlines();
+                        if self.eat_block_close() {
+                            break;
+                        }
+                        return Err("expected '}' or 'end' to close block at this indentation".to_string());
+                    }
+                    continue;
+                }
+                Some(_) => {
+                    // normal statement
+                }
+                None => {
+                    return Err("unexpected end of file: expected '}' or 'end' to close block".into());
+                }
+            }
+
+            // Parse a statement inside the block
             out.push(self.parse_stmt()?);
         }
+
         Ok(out)
     }
 
@@ -838,7 +927,18 @@ impl<'t> Parser<'t> {
             }
         }
 
-        let expr_pe = self.parse_assign()?;
+        // Statement boundary: allow assignment here
+        let prev = self.in_stmt;
+        self.in_stmt = true;
+        let expr_pe = match self.parse_assign() {
+            Ok(e) => e,
+            Err(e) => {
+                self.in_stmt = prev;
+                return Err(e);
+            }
+        };
+        self.in_stmt = prev;
+
         let expr = self.lower_expr(expr_pe);
         Ok(ast::Stmt::Expr(expr))
     }
@@ -1042,17 +1142,41 @@ impl<'t> Parser<'t> {
             None
         };
 
+        // NEW: Assignments are only legal at statement boundaries.
+        if op.is_some() && !self.in_stmt {
+            return Err("assignment not allowed in expression; use a statement at block level".to_string());
+        }
+
         if let Some(op) = op {
             match lhs {
                 PExpr::Ident(_) | PExpr::Member(_, _) => {
                     // multi-line assignment block:
                     //   name =
-                    //       <expr…>
+                    //       <exprâ€¦>
                     //   end / }
                     if self.peek_newline_or_eof() {
                         self.skip_newlines();
-                        let rhs = self.parse_assign()?; // allow full precedence on RHS
-                        self.expect_block_close("assignment")?;
+                        let rhs = if self.eat_op("{") {
+                            // brace block: parse until '}'
+                            let mut last = None;
+                            loop {
+                                self.skip_stmt_separators();
+                                if self.peek_block_close() {
+                                    let _ = self.eat_block_close();
+                                    break;
+                                }
+                                if self.toks.get(self.i).is_none() {
+                                    return Err("unexpected end of file: expected '}' or 'end' to close assignment".into());
+                                }
+                                // expression statement inside block; take last as value
+                                last = Some(self.parse_assign()?);
+                            }
+                            last.ok_or_else(|| "empty assignment block".to_string())?
+                        } else {
+                            // single-line continuation after '='
+                            self.parse_assign()?
+                        };
+
                         if op == "=" {
                             Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
                         } else {
@@ -1151,7 +1275,6 @@ impl<'t> Parser<'t> {
             if self.eat_op("===") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
             if self.eat_op("!==") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
             if self.eat_op("==")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
-            if self.eat_op("=")   { return Err("assignments are only allowed as statements".to_string()); }
             if self.eat_op("!=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!=".into(),  Box::new(rhs)); continue; }
             if self.eat_op("<=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<=".into(),  Box::new(rhs)); continue; }
             if self.eat_op(">=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
@@ -1251,14 +1374,105 @@ impl<'t> Parser<'t> {
         Ok(lhs)
     }
 
+    fn parse_kv_bind_list_judge(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+        use goblin_lexer::TokenKind;
+
+        let mut out: Vec<(String, PExpr)> = Vec::new();
+
+        loop {
+            // Stop when we see a block closer 'end' or '}' (caller will consume it)
+            self.skip_newlines();
+            if self.peek_block_close() {
+                break;
+            }
+
+            // Capture everything from here up to the first ':' at nesting level 0
+            let start_i = self.i;
+            let mut depth_paren = 0i32;
+            let mut depth_brack = 0i32;
+            let mut depth_brace = 0i32;
+
+            let mut end_i: Option<usize> = None;
+            while let Some(tok) = self.toks.get(self.i) {
+                match &tok.kind {
+                    TokenKind::Op(op) if op == ":" => {
+                        if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
+                            end_i = Some(self.i);
+                            break;
+                        }
+                        // ':' inside nested ()/[]/{} – part of the expression
+                        self.i += 1;
+                    }
+
+                    TokenKind::Op(op) if op == "(" => { depth_paren += 1; self.i += 1; }
+                    TokenKind::Op(op) if op == ")" => { depth_paren -= 1; self.i += 1; }
+                    TokenKind::Op(op) if op == "[" => { depth_brack += 1; self.i += 1; }
+                    TokenKind::Op(op) if op == "]" => { depth_brack -= 1; self.i += 1; }
+                    TokenKind::Op(op) if op == "{" => { depth_brace += 1; self.i += 1; }
+                    TokenKind::Op(op) if op == "}" => { depth_brace -= 1; self.i += 1; }
+
+                    // Treat layout as whitespace while searching for the first ':' at top level
+                    TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+                        if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 =>
+                    {
+                        self.i += 1;
+                    }
+
+                    // Any other token – keep scanning
+                    _ => { self.i += 1; }
+                }
+            }
+
+            let Some(colon_i) = end_i else {
+                return Err("expected ':' after condition in judge".to_string());
+            };
+
+            // Build a readable key string from tokens [start_i .. colon_i)
+            // (We only need a stable textual key right now; evaluation will happen later.)
+            let mut parts: Vec<String> = Vec::new();
+            for t in &self.toks[start_i..colon_i] {
+                match &t.kind {
+                    TokenKind::Op(op) => parts.push(op.clone()),
+                    _ => parts.push(t.value.clone().unwrap_or_default()),
+                }
+            }
+            // Simple join with spaces; keeps operators recognizable
+            let key_text = parts.join(" ").trim().to_string();
+
+            // Consume the ':'
+            self.i = colon_i;
+            let _ = self.eat_op(":");
+
+            // Optional layout after ':'
+            while let Some(t) = self.peek() {
+                match t.kind {
+                    TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => { self.i += 1; }
+                    _ => break,
+                }
+            }
+
+            // Parse value expression
+            let val = self.parse_assign()?;
+            out.push((key_text, val));
+
+            // Allow trailing commas or line breaks between pairs
+            self.eat_semi_separators();
+            if self.peek_block_close() {
+                break;
+            }
+        }
+
+        Ok(out)
+    }
+
     fn parse_unary(&mut self) -> Result<PExpr, String> {
-        // expression-form: judge … (must close with 'end' or '}')
+        // expression-form: judge â€¦ (must close with 'end' or '}')
         if let Some("judge") = self.peek_ident() {
             let _ = self.eat_ident(); // consume 'judge'
             self.skip_newlines();
 
             // key: expr pairs (your existing newline/colon tolerant routine)
-            let pairs = self.parse_kv_bind_list()?;
+            let pairs = self.parse_kv_bind_list_judge()?;
 
             self.skip_newlines();
             self.expect_block_close("judge")?;
@@ -1266,7 +1480,7 @@ impl<'t> Parser<'t> {
             return Ok(PExpr::Object(pairs));
         }
 
-        // prefix &  (definedness) — parse only an lvalue chain after '&'
+        // prefix &  (definedness) â€' parse only an lvalue chain after '&'
         if self.eat_op("&") {
             let target = self.parse_lvalue_after_amp()?;
             return Ok(PExpr::IsBound(Box::new(target)));
@@ -1676,3 +1890,4 @@ pub(crate) fn parse_program_preview(tokens: &[goblin_lexer::Token]) -> Result<Ve
 
     Ok(out)
 }
+
