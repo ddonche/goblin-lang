@@ -526,24 +526,28 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // CRLF vs LF
                 let consumed = if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' { 2 } else { 1 };
                 i += consumed;
-                let line_start = i; // first byte of next physical line
+                let next_line_byte = i; // first byte of next physical line
 
                 if nest == 0 {
-                    // ---- dot-carry on the next physical line (no pipeline carry) ----
-                    // Only allow carry if there is a prior non-layout token
-                    let can_carry = tokens
-                        .iter()
-                        .rev()
-                        .any(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent));
+                    // Allow dot-carry only if the last *non-layout* token is on the same physical line
+                    // we just finished (i.e., do NOT carry across blank lines).
+                    let last_non_layout = tokens.iter().rfind(|t| {
+                        !matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent)
+                    });
+
+                    let can_carry = match last_non_layout {
+                        Some(t) => t.span.line_start == line,
+                        None => false,
+                    };
 
                     if can_carry {
-                        // Peek past leading spaces/tabs on the next line
-                        let mut j = line_start;
+                        // Peek past leading spaces/tabs on the next line for a leading dot
+                        let mut j = next_line_byte;
                         while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
                             j += 1;
                         }
 
-                        // dot-carry: next line starts with '.' followed by an identifier start
+                        // dot-carry: '.' followed by identifier start
                         if j < bytes.len()
                             && bytes[j] == b'.'
                             && j + 1 < bytes.len()
@@ -552,28 +556,24 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             // Suppress logical NEWLINE and indentation handling:
                             // continue lexing from the '.' as a physical continuation.
                             line += 1;
-                            col  = 1 + (j - line_start) as u32;
+                            col  = 1 + (j - next_line_byte) as u32;
                             i    = j;
                             continue;
                         }
                     }
 
-                    // ---- normal NEWLINE + (indent-agnostic) layout handling ----
-                    let span_nl = Span::new(file, nl_start, line_start, line, nl_col, line, nl_col);
+                    // Normal NEWLINE + (indent-agnostic) layout handling
+                    let span_nl = Span::new(file, nl_start, next_line_byte, line, nl_col, line, nl_col);
                     tokens.push(Token { kind: TokenKind::Newline, span: span_nl, value: None });
 
-                    // Skip leading spaces/tabs on the next line (indentation agnostic).
-                    // (Your helper should *not* emit Indent/Dedent if you want layout-agnostic parsing.)
-                    let j = handle_indent_at_line_start(bytes, file, line, line_start, &mut indent_stack, &mut tokens)?;
+                    let j = handle_indent_at_line_start(bytes, file, line, next_line_byte, &mut indent_stack, &mut tokens)?;
                     line += 1;
-                    col = 1 + (j - line_start) as u32;
+                    col = 1 + (j - next_line_byte) as u32;
                     i = j;
                     continue;
                 } else {
-                    // Inside (), [], {} → treat newline as whitespace (implicit continuation).
-                    // Keep behavior consistent with the rest of your lexer.
-                    let span = Span::new(file, nl_start, line_start, line, nl_col, line, nl_col);
-                    tokens.push(Token { kind: TokenKind::Newline, span, value: None });
+                    // Inside (), [], {} → implicit continuation: newline is whitespace only.
+                    // Do NOT emit a Newline token here.
                     line += 1;
                     col = 1;
 
@@ -587,10 +587,25 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             }
 
             // Slash: comments or operators
+            // Slash: comments or operators
             b'/' => {
                 // Block comment "//// ... ////"
                 if is_block_comment_open(bytes, i) {
                     consume_block_comment(bytes, file, &mut i, &mut line, &mut col, &mut tokens)?;
+                    continue;
+                }
+
+                // Line comment "/// ...": consume to end-of-line (do NOT eat the newline)
+                if i + 2 < bytes.len() && bytes[i + 1] == b'/' && bytes[i + 2] == b'/' {
+                    // advance past "///"
+                    i += 3;
+                    col += 3;
+                    // skip until CR or LF (leave the newline char for the NL arm)
+                    while i < bytes.len() && bytes[i] != b'\r' && bytes[i] != b'\n' {
+                        i += 1;
+                        col += 1;
+                    }
+                    // no token emitted for comments
                     continue;
                 }
 
