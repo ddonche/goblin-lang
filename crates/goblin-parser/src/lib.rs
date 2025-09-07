@@ -357,21 +357,75 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+
+        // Parse the header (name, params, maybe single-line `= expr`)
         let pa = self.parse_action_after_keyword(kw)?;
 
-        // If header produced the single-line (= expr) body, just lower it.
-        let body_stmts: Vec<ast::Stmt> = if !pa.body.is_empty() {
-            pa.body.into_iter().map(|pe| ast::Stmt::Expr(self.lower_expr(pe))).collect()
-        } else {
-            // Parse a *statement block* right here.
-            // Do NOT call expect_block_start(); parse_stmt_block() handles both:
-            //   - same-line '{ ... }'
-            //   - layout (newline + indent ... 'end' or '}')
-            self.parse_stmt_block()?
-        };
+        // If header produced the single-line body (`= expr`), just lower and return.
+        if !pa.body.is_empty() {
+            let body_stmts: Vec<ast::Stmt> = pa
+                .body
+                .into_iter()
+                .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
+                .collect();
+
+            let body = ast::ActionBody::Block(body_stmts);
+
+            let params: Vec<ast::Param> = pa.params.into_iter().map(|pname| {
+                let sp = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i);
+                ast::Param { name: pname, type_name: None, default: None, span: sp }
+            }).collect();
+
+            let act = ast::ActionDecl {
+                name: pa.name,
+                params,
+                body,
+                span: Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i),
+                ret: None,
+            };
+            return Ok(ast::Stmt::Action(act));
+        }
+
+        // ---- Friendly diagnostic for *next-line* brace (object literal by design) ----
+        // Detect:  action go \n { ... }   → error
+        // Allow:   action go { ... }      → OK (same line)
+        // Allow:   action go \n  <indent> → OK (layout)
+        let prev = self.toks.get(self.i.saturating_sub(1)); // last token of the header
+        if let Some(prev_tok) = prev {
+            let mut j = self.i;
+            // Look ahead through true statement separators only
+            while let Some(tok) = self.toks.get(j) {
+                match &tok.kind {
+                    TokenKind::Newline => { j += 1; continue; }
+                    TokenKind::Op(s) if s == ";" => { j += 1; continue; }
+                    _ => break,
+                }
+            }
+            if let Some(next) = self.toks.get(j) {
+                if matches!(next.kind, TokenKind::Op(ref s) if s == "{")
+                    && next.span.line_start > prev_tok.span.line_end
+                {
+                    return Err(
+                        "brace '{' on a new line starts an object literal in Goblin.\n\
+                         For an action block, put '{' on the same line as 'action NAME', \
+                         or use layout (indent) and close with 'end' or '}'."
+                        .to_string()
+                    );
+                }
+            }
+        }
+        // ---------------------------------------------------------------------------
+
+        // IMPORTANT: Do NOT call expect_block_start() here.
+        // parse_stmt_block() **itself** handles both forms and consumes the opener:
+        //   - same-line '{ ... }' (brace mode)
+        //   - newline + indent ... 'end' / '}' (layout mode)
+        let body_stmts = self.parse_stmt_block()?;
 
         let body = ast::ActionBody::Block(body_stmts);
 
+        // Lower params (unchanged)
         let params: Vec<ast::Param> = pa.params.into_iter().map(|pname| {
             let sp = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i);
             ast::Param { name: pname, type_name: None, default: None, span: sp }

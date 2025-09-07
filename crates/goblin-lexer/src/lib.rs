@@ -429,27 +429,20 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
 
     // Returns Some(pos_of_pipe) if the line (from j) is spaces then "|>".
     // We only check the opener; we’ll skip the rest of the physical line in the NL arms.
-    fn starts_with_pipe_carry(bytes: &[u8], mut j: usize) -> Option<usize> {
-        while j < bytes.len() {
-            match bytes[j] {
-                b' ' => j += 1,
-                b'\t' => return None, // tabs aren’t allowed for pipeline carry indentation
-                b'|' if j + 1 < bytes.len() && bytes[j + 1] == b'>' => return Some(j),
-                _ => return None,
-            }
-        }
+    fn starts_with_pipe_carry(_bytes: &[u8], _j: usize) -> Option<usize> {
+        // pipelines are not part of the language anymore
         None
     }
 
     // Returns Some(pos_of_dot) if the line (from j) is spaces then "." followed by an identifier start.
     // Tabs are not allowed for continuation indentation.
     fn starts_with_dot_carry(bytes: &[u8], mut j: usize) -> Option<usize> {
+        // allow leading spaces or tabs before the dot
         while j < bytes.len() {
             match bytes[j] {
-                b' ' => j += 1,
-                b'\t' => return None, // tabs disallowed for carry indentation
+                b' ' | b'\t' => j += 1,
                 b'.' => {
-                    // Require a single dot followed by identifier start: [A-Za-z_]
+                    // Require '.' followed by identifier start: [A-Za-z_]
                     if j + 1 < bytes.len() {
                         let n = bytes[j + 1];
                         if n.is_ascii_alphabetic() || n == b'_' {
@@ -501,7 +494,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Only treat as orphan if `|>` is at column 1 (no leading spaces).
                 let mut j = i;
                 let mut saw_space = false;
-                while j < bytes.len() && bytes[j] == b' ' {
+                while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
                     saw_space = true;
                     j += 1;
                 }
@@ -530,12 +523,13 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 let nl_start = i;
                 let nl_col = col;
 
-                // how many bytes to consume for the physical newline
+                // CRLF vs LF
                 let consumed = if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' { 2 } else { 1 };
                 i += consumed;
                 let line_start = i; // first byte of next physical line
 
                 if nest == 0 {
+                    // ---- dot-carry on the next physical line (no pipeline carry) ----
                     // Only allow carry if there is a prior non-layout token
                     let can_carry = tokens
                         .iter()
@@ -543,37 +537,52 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         .any(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent));
 
                     if can_carry {
-                        if let Some(pipe_pos) = starts_with_pipe_carry(bytes, line_start) {
-                            // suppress NEWLINE + layout, and continue lexing from the '|>'
-                            line += 1;
-                            col = 1 + (pipe_pos - line_start) as u32;
-                            i = pipe_pos;
-                            continue;
+                        // Peek past leading spaces/tabs on the next line
+                        let mut j = line_start;
+                        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                            j += 1;
                         }
-                        if let Some(dot_pos) = starts_with_dot_carry(bytes, line_start) {
+
+                        // dot-carry: next line starts with '.' followed by an identifier start
+                        if j < bytes.len()
+                            && bytes[j] == b'.'
+                            && j + 1 < bytes.len()
+                            && (bytes[j + 1].is_ascii_alphabetic() || bytes[j + 1] == b'_')
+                        {
+                            // Suppress logical NEWLINE and indentation handling:
+                            // continue lexing from the '.' as a physical continuation.
                             line += 1;
-                            col = 1 + (dot_pos - line_start) as u32;
-                            i = dot_pos;
+                            col  = 1 + (j - line_start) as u32;
+                            i    = j;
                             continue;
                         }
                     }
 
-                    // Normal NEWLINE + layout handling
+                    // ---- normal NEWLINE + (indent-agnostic) layout handling ----
                     let span_nl = Span::new(file, nl_start, line_start, line, nl_col, line, nl_col);
                     tokens.push(Token { kind: TokenKind::Newline, span: span_nl, value: None });
 
-                    // one call replaces the whole duplicated indentation block
+                    // Skip leading spaces/tabs on the next line (indentation agnostic).
+                    // (Your helper should *not* emit Indent/Dedent if you want layout-agnostic parsing.)
                     let j = handle_indent_at_line_start(bytes, file, line, line_start, &mut indent_stack, &mut tokens)?;
                     line += 1;
                     col = 1 + (j - line_start) as u32;
                     i = j;
                     continue;
                 } else {
-                    // Inside (), [], {}: implicit continuation – just emit NEWLINE
+                    // Inside (), [], {} → treat newline as whitespace (implicit continuation).
+                    // Keep behavior consistent with the rest of your lexer.
                     let span = Span::new(file, nl_start, line_start, line, nl_col, line, nl_col);
                     tokens.push(Token { kind: TokenKind::Newline, span, value: None });
                     line += 1;
                     col = 1;
+
+                    // Optionally skip leading spaces/tabs for nicer column tracking
+                    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+                        i += 1;
+                        col += 1;
+                    }
+                    continue;
                 }
             }
 
