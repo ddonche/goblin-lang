@@ -556,101 +556,8 @@ impl<'t> Parser<'t> {
     // Generic "read statements until '}' or 'end'". Use this for bodies of fn/if/while/class/etc.
     // It preserves your existing statement parser and newline tolerance.
     fn parse_stmt_block(&mut self) -> Result<Vec<ast::Stmt>, String> {
-        use goblin_lexer::TokenKind;
-
-        // BRACE MODE: `{ ... }`
-        if self.eat_op("{") {
-            let mut out = Vec::new();
-            loop {
-                self.skip_stmt_separators();
-                if self.peek_block_close() {
-                    let _ = self.eat_block_close(); // guaranteed true
-                    break;
-                }
-                if self.is_eof() {
-                    return Err("unexpected end of file: expected '}' or 'end' to close block".into());
-                }
-                out.push(self.parse_stmt()?);
-            }
-            return Ok(out);
-        }
-
-        // INDENT MODE: require newline, optionally followed by Indent
-        let mut saw_nl = false;
-        while let Some(tok) = self.toks.get(self.i) {
-            if matches!(tok.kind, TokenKind::Newline) {
-                self.i += 1;
-                saw_nl = true;
-            } else {
-                break;
-            }
-        }
-
-        // Fallback: accept physical line break if lexer didn’t emit Newline
-        if !saw_nl {
-            if let (Some(prev), Some(curr)) = (self.toks.get(self.i.saturating_sub(1)), self.toks.get(self.i)) {
-                if curr.span.line_start > prev.span.line_end {
-                    saw_nl = true;
-                }
-            }
-        }
-
-        // Optionally consume a single Indent
-        let mut depth: usize = 0;
-        if let Some(tok) = self.toks.get(self.i) {
-            if matches!(tok.kind, TokenKind::Indent) {
-                self.i += 1;
-                depth = 1;
-            }
-        }
-
-        if !saw_nl {
-            return Err("expected newline to start block".to_string());
-        }
-
-        let mut out = Vec::new();
-        loop {
-            match self.toks.get(self.i) {
-                Some(tok) if matches!(tok.kind, TokenKind::Indent) => {
-                    self.i += 1;
-                    depth += 1;
-                    continue;
-                }
-                Some(tok) if matches!(tok.kind, TokenKind::Dedent) => {
-                    self.i += 1;
-                    if depth == 0 {
-                        return Err("dedent below block start".into());
-                    }
-                    depth -= 1;
-                    if depth == 0 {
-                        // Require an explicit closer after layout ends
-                        self.skip_newlines();
-                        if self.peek_block_close() {
-                            let _ = self.eat_block_close();
-                            break;
-                        }
-                        return Err("missing 'end' (or '}') to close block".into());
-                    }
-                    continue;
-                }
-                Some(_) => { /* normal statement path */ }
-                None => {
-                    return Err("unexpected end of file: expected '}' or 'end' to close block".into());
-                }
-            }
-
-            // Also allow explicit closers
-            if depth == 0 && self.peek_block_close() {
-                let _ = self.eat_block_close();
-                break;
-            }
-
-            // Parse one statement in the block
-            out.push(self.parse_stmt()?);
-            self.skip_stmt_separators();
-        }
-
-        Ok(out)
+        // Use the unified block parser so layout/braced rules stay identical
+        self.parse_stmt_block_until(|_| false)
     }
 
     fn peek_newline_or_eof(&self) -> bool {
@@ -996,6 +903,36 @@ impl<'t> Parser<'t> {
         }
     }
 
+    fn forbid_next_line_brace(&mut self, header_line: u32, _header_col: u32, who: &str) -> Result<(), String> {
+        use goblin_lexer::TokenKind;
+
+        let saved_i = self.i;
+
+        // Skip ONLY newline tokens after the header.
+        let mut j = self.i;
+        while j < self.toks.len() && matches!(self.toks[j].kind, TokenKind::Newline) {
+            j += 1;
+        }
+
+        // If the next significant token is '{' on a later line, that's invalid.
+        if j < self.toks.len() {
+            self.i = j;
+            if self.peek_op("{") {
+                let brace_line = self.toks[j].span.line_start;
+                if brace_line > header_line {
+                    self.i = saved_i;
+                    return Err(format!(
+                        "brace '{{' must be on the same line as the {} header, or use layout (newline + indent) without a brace",
+                        who
+                    ));
+                }
+            }
+        }
+
+        self.i = saved_i;
+        Ok(())
+    }
+
     fn parse_if_stmt(&mut self) -> Result<ast::Stmt, String> {
         // We are at 'if <cond> <newline or {>'
         let if_tok_i = self.i; // index of 'if'
@@ -1076,24 +1013,44 @@ impl<'t> Parser<'t> {
     {
         use goblin_lexer::TokenKind;
 
-        // BRACE MODE: `{ ... }`
+        // ===== BRACED MODE: `{ ... }` (opener must be on the same line as the header)
         if self.eat_op("{") {
             let mut out = Vec::new();
             loop {
-                self.skip_stmt_separators();
-                if self.peek_block_close() {
-                    let _ = self.eat_block_close(); // guaranteed true
+                // Consume harmless layout markers that might appear inside a braced block
+                loop {
+                    let mut advanced = false;
+                    while let Some(tok) = self.toks.get(self.i) {
+                        match tok.kind {
+                            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
+                                self.i += 1;
+                                advanced = true;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if !advanced { break; }
+                }
+
+                // Braced blocks must close with '}' (never 'end')
+                if self.peek_ident() == Some("end") {
+                    return Err("braced block must close with '}' (not 'end')".into());
+                }
+                if self.peek_op("}") {
+                    let _ = self.eat_op("}");
                     break;
                 }
+
                 if self.is_eof() {
-                    return Err("unexpected end of file: expected '}' or 'end' to close block".into());
+                    return Err("unexpected end of file: expected '}' to close braced block".into());
                 }
+
                 out.push(self.parse_stmt()?);
             }
             return Ok(out);
         }
 
-        // INDENT MODE: require newline, optionally followed by Indent
+        // ===== LAYOUT MODE: newline + indent required; may close with `end` or `}`
         let mut saw_nl = false;
         while let Some(tok) = self.toks.get(self.i) {
             if matches!(tok.kind, TokenKind::Newline) {
@@ -1103,8 +1060,7 @@ impl<'t> Parser<'t> {
                 break;
             }
         }
-
-        // Fallback: accept physical line break if lexer didn’t emit Newline
+        // Fallback: physical line break if lexer didn’t emit Newline
         if !saw_nl {
             if let (Some(prev), Some(curr)) = (self.toks.get(self.i.saturating_sub(1)), self.toks.get(self.i)) {
                 if curr.span.line_start > prev.span.line_end {
@@ -1112,31 +1068,66 @@ impl<'t> Parser<'t> {
                 }
             }
         }
-
-        // Optionally consume a single Indent
-        let mut depth: usize = 0;
-        if let Some(tok) = self.toks.get(self.i) {
-            if matches!(tok.kind, TokenKind::Indent) {
-                self.i += 1;
-                depth = 1;
-            }
-        }
-
         if !saw_nl {
             return Err("expected newline to start block".to_string());
         }
 
-        let mut out = Vec::new();
-        loop {
-            // Always consume statement separators at block top
-            self.skip_stmt_separators();
+        // Establish header line’s leftmost column for soft-indent baseline
+        let header_line = if let Some(prev) = self.toks.get(self.i.saturating_sub(1)) {
+            prev.span.line_start
+        } else {
+            0
+        };
+        let mut header_col_min = u32::MAX;
+        let mut k = self.i.saturating_sub(1);
+        while let Some(tok) = self.toks.get(k) {
+            if tok.span.line_start == header_line {
+                if tok.span.col_start < header_col_min {
+                    header_col_min = tok.span.col_start;
+                }
+                if k == 0 { break; }
+                k -= 1;
+            } else {
+                break;
+            }
+        }
+        if header_col_min == u32::MAX {
+            header_col_min = 0;
+        }
 
-            // *** Key guard: in an open block, EOF => missing closer, not "expected expression"
+        // Enter layout block: prefer real Indent; otherwise accept soft indent by column
+        let mut out = Vec::new();
+        let mut depth: usize = 0;
+        let mut soft_mode = false;
+        let mut soft_cols: Vec<u32> = Vec::new();
+
+        if let Some(tok) = self.toks.get(self.i) {
+            if matches!(tok.kind, TokenKind::Indent) {
+                self.i += 1;
+                depth = 1;
+            } else {
+                // Soft indent: later line + deeper column than header min
+                let body_line = tok.span.line_start;
+                let body_col  = tok.span.col_start;
+                if body_line > header_line && body_col > header_col_min {
+                    depth = 1;
+                    soft_mode = true;
+                    soft_cols.push(body_col);
+                } else {
+                    return Err("expected indentation after header; either put '{' on the same line or indent the next line".into());
+                }
+            }
+        } else {
+            return Err("missing 'end' (or '}') to close block".into());
+        }
+
+        loop {
+            // In an open block, EOF => missing closer
             if self.is_eof() {
                 return Err("missing 'end' (or '}') to close block".into());
             }
 
-            // Layout changes
+            // Handle tokenized Indent/Dedent BEFORE skipping separators
             if let Some(tok) = self.toks.get(self.i) {
                 match tok.kind {
                     TokenKind::Indent => {
@@ -1146,53 +1137,128 @@ impl<'t> Parser<'t> {
                     }
                     TokenKind::Dedent => {
                         // consume all pending Dedents
+                        let mut ded_count = 0usize;
                         while let Some(t2) = self.toks.get(self.i) {
                             if matches!(t2.kind, TokenKind::Dedent) {
                                 self.i += 1;
+                                ded_count += 1;
                             } else {
                                 break;
                             }
                         }
-                        if depth == 0 {
+                        if ded_count > depth {
                             return Err("dedent below block start".to_string());
                         }
-                        depth -= 1;
+                        depth -= ded_count;
 
-                        // We just closed the innermost indentation level of this block.
-                        // At depth==0 we *require* an explicit closer (`end` or `}`).
+                        // At depth==0, check closer/stopper immediately
                         if depth == 0 {
                             self.skip_newlines();
+                            // Layout blocks may close with `end` or `}`
                             if self.peek_block_close() {
                                 let _ = self.eat_block_close();
+                                break;
+                            }
+                            if stop(self) {
                                 break;
                             }
                             return Err("missing 'end' (or '}') to close block".into());
                         }
                         continue;
                     }
-                    _ => { /* normal statement path */ }
+                    _ => { /* fall through to soft-mode or normal statement path */ }
                 }
             }
 
-            // Stop before aligned elif/else (or any caller-defined stopper)
-            if depth == 0 && stop(self) {
-                break;
+            // Soft indentation via column (if we started in soft_mode)
+            if soft_mode {
+                // Adjust depth based on raw newlines & next line's column
+                let mut saw_linebreak = false;
+                while let Some(tok) = self.toks.get(self.i) {
+                    if matches!(tok.kind, TokenKind::Newline) {
+                        self.i += 1;
+                        saw_linebreak = true;
+                    } else {
+                        break;
+                    }
+                }
+
+                if saw_linebreak {
+                    if self.is_eof() {
+                        return Err("missing 'end' (or '}') to close block".into());
+                    }
+
+                    // Closer at fresh line (valid at header level)
+                    if self.peek_block_close() {
+                        if depth == 1 {
+                            let _ = self.eat_block_close(); // accepts `end` or `}`
+                            break;
+                        }
+                        // deeper: reduce by columns below
+                    }
+
+                    if let Some(next) = self.toks.get(self.i) {
+                        let next_col = next.span.col_start;
+
+                        // Dedent(s) by column
+                        while depth > 0 && !soft_cols.is_empty() && next_col < *soft_cols.last().unwrap() {
+                            soft_cols.pop();
+                            depth -= 1;
+                            if depth == 0 {
+                                if self.peek_block_close() {
+                                    let _ = self.eat_block_close();
+                                    break;
+                                }
+                                if stop(self) {
+                                    break;
+                                }
+                                return Err("missing 'end' (or '}') to close block".into());
+                            }
+                        }
+
+                        if depth == 0 && (self.peek_block_close() || stop(self)) {
+                            if self.peek_block_close() {
+                                let _ = self.eat_block_close();
+                            }
+                            break;
+                        }
+
+                        // Indent by column
+                        if depth > 0 && (soft_cols.is_empty() || next_col > *soft_cols.last().unwrap()) {
+                            soft_cols.push(next_col);
+                            depth += 1;
+                            continue;
+                        }
+                    }
+                }
             }
 
-            // Also allow explicit closers
-            if depth == 0 && self.peek_block_close() {
-                let _ = self.eat_block_close();
-                break;
+            // Header level: stopper or closer
+            if depth == 0 {
+                if self.peek_block_close() {
+                    let _ = self.eat_block_close(); // layout accepts `end` or `}`
+                    break;
+                }
+                if stop(self) {
+                    break;
+                }
             }
 
-            // Parse one statement in the block
-            out.push(self.parse_stmt()?);
-
-            // After a statement, if we’re still inside the block and hit EOF, it’s a missing closer.
+            // Skip stmt separators, then parse a statement
             self.skip_stmt_separators();
-            if depth > 0 && self.is_eof() {
-                return Err("missing 'end' (or '}') to close block".into());
+
+            // After skipping separators, header-level closer/stopper may be present
+            if depth == 0 {
+                if self.peek_block_close() {
+                    let _ = self.eat_block_close();
+                    break;
+                }
+                if stop(self) {
+                    break;
+                }
             }
+
+            out.push(self.parse_stmt()?);
         }
 
         Ok(out)
@@ -1247,16 +1313,37 @@ impl<'t> Parser<'t> {
             }
         }
 
+        // Orphan closer guard: a statement cannot start with 'end' or '}'
+        // Braced blocks must close with '}', and layout blocks close with 'end' or '}' — but
+        // those closers are consumed inside the block parser, never as a standalone stmt.
+        if self.peek_ident() == Some("end") {
+            return Err("orphan 'end' at statement start; braced blocks close with '}', layout blocks close inside their block".to_string());
+        }
+        if self.peek_op("}") {
+            return Err("orphan '}' at statement start; closers are only valid inside a block body".to_string());
+        }
+
+        // Orphan tail guard: statement cannot start with 'elif' or 'else'
+        if let Some(k) = self.peek_ident() {
+            if k == "elif" || k == "else" {
+                return Err("orphan 'elif'/'else' at statement start; it must follow a matching 'if' at the same column".to_string());
+            }
+        }
+
         // IF / ELIF / ELSE (layout-aware; placeholder AST until full lowering exists)
         if self.peek_ident() == Some("if") {
-            // remember where the 'if' token sits (for column alignment)
+            // remember where the 'if' token sits (for column alignment & header-line check)
             let if_tok_i = self.i;
             let if_col = self.toks[if_tok_i].span.col_start;
+            let if_line = self.toks[if_tok_i].span.line_start;
 
             let _ = self.eat_ident(); // 'if'
 
             // parse condition (expr-only: no assignment)
             let _cond = self.parse_coalesce()?;
+
+            // braces must be same-line if used; otherwise use layout (newline + indent)
+            self.forbid_next_line_brace(if_line, if_col, "if")?;
 
             // parse the 'then' block, stopping before an aligned 'elif' or 'else'
             let _then = self.parse_stmt_block_until(|p| {
@@ -1265,10 +1352,22 @@ impl<'t> Parser<'t> {
 
             // zero or more aligned 'elif' blocks
             loop {
+                // allow separators between clauses, but don't drift columns
                 self.skip_stmt_separators();
+                self.eat_semi_separators();
+
                 if self.peek_ident_at_col("elif", if_col) {
+                    let elif_tok_i = self.i;
+                    let elif_line = self.toks[elif_tok_i].span.line_start;
+                    let elif_col  = self.toks[elif_tok_i].span.col_start;
+
                     let _ = self.eat_ident();        // 'elif'
                     let _c = self.parse_coalesce()?; // condition
+
+                    // no next-line '{'; layout must be indented
+                    self.forbid_next_line_brace(elif_line, elif_col, "elif")?;
+
+                    // block until another aligned tail or end of the if-chain
                     let _b = self.parse_stmt_block_until(|p| {
                         p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
                     })?;
@@ -1280,7 +1379,15 @@ impl<'t> Parser<'t> {
             // optional aligned 'else' block
             self.skip_stmt_separators();
             if self.peek_ident_at_col("else", if_col) {
+                let else_tok_i = self.i;
+                let else_line  = self.toks[else_tok_i].span.line_start;
+                let else_col   = self.toks[else_tok_i].span.col_start;
+
                 let _ = self.eat_ident(); // 'else'
+
+                // no next-line '{'; layout must be indented
+                self.forbid_next_line_brace(else_line, else_col, "else")?;
+
                 let _else = self.parse_stmt_block_until(|_| false)?;
             }
 
@@ -1290,9 +1397,65 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::Expr(expr));
         }
 
+        // --- WHILE starter ---
+        if self.peek_ident() == Some("while") {
+            // index/span of 'while' for header_line and overall span
+            let while_tok_i = self.i;
+            let header_line = self.toks[while_tok_i].span.line_start;
+            let header_col  = self.toks[while_tok_i].span.col_start;
+
+            let _ = self.eat_ident();           // consume 'while'
+            let _cond = self.parse_coalesce()?; // parse condition expression
+
+            // If a '{' is used, it must be on the same line as the header; otherwise use layout.
+            self.forbid_next_line_brace(header_line, header_col, "while")?;
+
+            // Parse the body block directly (same-line `{...}` or layout)
+            let _body = self.parse_stmt_block()?;
+
+            // Placeholder AST spanning the entire while-construct
+            let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
+            let expr = Self::lower_expr_preview(PExpr::Ident("while_block".into()), sp);
+            return Ok(ast::Stmt::Expr(expr));
+        }
+
+        // --- FOR starter ---
+        // Syntax: for <ident> in <expr>  then a block
+        if self.peek_ident() == Some("for") {
+            let for_tok_i   = self.i;
+            let header_line = self.toks[for_tok_i].span.line_start;
+            let header_col  = self.toks[for_tok_i].span.col_start;
+
+            let _ = self.eat_ident(); // 'for'
+
+            // Loop variable
+            let _var = self.eat_ident().ok_or("expected loop variable after 'for'")?;
+
+            // Require 'in'
+            if self.peek_ident() == Some("in") {
+                let _ = self.eat_ident(); // 'in'
+            } else {
+                return Err("expected 'in' after loop variable in 'for'".to_string());
+            }
+
+            // Iterable expression
+            let _iter = self.parse_coalesce()?;
+
+            // Enforce brace placement relative to the header line & require indent for layout
+            self.forbid_next_line_brace(header_line, header_col, "for")?;
+
+            // Parse the body block directly
+            let _body = self.parse_stmt_block()?;
+
+            // Placeholder AST spanning the entire for-construct
+            let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
+            let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
+            return Ok(ast::Stmt::Expr(expr));
+        }
+
         // free-arrow action: a >> foo : a, b, c
         if self.peek_ident() == Some("a") && self.peek_op(">>") {
-            let _ = self.eat_ident(); // 'a'
+            let _ = self.eat_ident();  // 'a'
             let _ = self.eat_op(">>"); // >>
             // name
             let name = self.eat_ident().ok_or("expected action name after 'a >> '")?;
@@ -1305,6 +1468,7 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::Expr(self.lower_expr(PExpr::FreeCall(name, params))));
         }
 
+        // @ClassName starter (use existing hook)
         if let Some(res) = self.try_parse_class_decl() {
             let p = res?;
             return Ok(ast::Stmt::Expr(self.lower_expr(p)));
