@@ -378,6 +378,11 @@ fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
         TokenKind::Indent => ExpectTok::Kind("INDENT".into()),
         TokenKind::Dedent => ExpectTok::Kind("DEDENT".into()),
         TokenKind::Eof => ExpectTok::Kind("EOF".into()),
+        TokenKind::Duration => ExpectTok::Kind("Duration".into()),
+        TokenKind::Blob     => ExpectTok::Kind("blob".into()),
+        TokenKind::Date     => ExpectTok::Kind("date".into()),
+        TokenKind::Time     => ExpectTok::Kind("time".into()),
+        TokenKind::DateTime => ExpectTok::Kind("datetime".into()),
     }
 }
 

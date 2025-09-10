@@ -32,7 +32,9 @@ enum PExpr {
         Option<Box<PExpr>>,
         Option<Box<PExpr>>,
     ),
-    Str(String),  
+    Str(String),
+    BlobStr(String), 
+    BlobNum(String),  
 
     ClassDecl {
         name: String,
@@ -1905,6 +1907,35 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_primary(&mut self) -> Result<PExpr, String> {
+        // --- blob literal special-case: blob "..." | blob 0xDEAD... ---
+        if let Some(t) = self.peek() {
+            if matches!(t.kind, goblin_lexer::TokenKind::Blob) {
+                // consume 'blob'
+                self.i += 1;
+                // allow newlines/spaces before payload
+                self.skip_newlines();
+
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => return Err("expected string or integer after 'blob'".to_string()),
+                };
+
+                return match k2 {
+                    goblin_lexer::TokenKind::String => {
+                        let lit = v2.unwrap_or_default();
+                        self.i += 1;
+                        Ok(PExpr::BlobStr(lit))
+                    }
+                    goblin_lexer::TokenKind::Int => {
+                        let lit = v2.unwrap_or_default();
+                        self.i += 1;
+                        Ok(PExpr::BlobNum(lit))
+                    }
+                    _ => Err("expected string or integer after 'blob'".to_string()),
+                };
+            }
+        }
+
         if self.peek_op("(") {
             let _ = self.eat_op("(");
             let expr = self.parse_coalesce()?;
@@ -2002,18 +2033,6 @@ impl<'t> Parser<'t> {
         };
 
         match kind {
-            goblin_lexer::TokenKind::Ident => {
-                let name = val_opt.unwrap_or_default();
-                self.i += 1;
-
-                match name.as_str() {
-                    "true" => Ok(PExpr::Bool(true)),
-                    "false" => Ok(PExpr::Bool(false)),
-                    "nil" => Ok(PExpr::Nil),
-                    _ => Ok(PExpr::Ident(name)),
-                }
-            }
-
             goblin_lexer::TokenKind::Int => {
                 let lit = val_opt.unwrap_or_default();
                 self.i += 1;
@@ -2048,6 +2067,17 @@ impl<'t> Parser<'t> {
                 let lit = val_opt.unwrap_or_default();
                 self.i += 1;
                 Ok(PExpr::Str(lit))
+            }
+
+            goblin_lexer::TokenKind::Ident => {
+                let name = val_opt.unwrap_or_default();
+                self.i += 1;
+                match name.as_str() {
+                    "true"  => Ok(PExpr::Bool(true)),
+                    "false" => Ok(PExpr::Bool(false)),
+                    "nil"   => Ok(PExpr::Nil),
+                    _       => Ok(PExpr::Ident(name)),
+                }
             }
 
             _ => Err("expected expression".to_string()),
