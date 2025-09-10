@@ -27,6 +27,11 @@ pub enum TokenKind {
     Newline,
     Indent,
     Dedent,
+    Duration,
+    Blob,
+    Date,
+    Time,
+    DateTime,
     /// Exact operator/punct as a string (e.g., "+", "**", "?.", "(")
     Op(String),
     Money,
@@ -621,7 +626,6 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 }
             }
 
-            // Numbers (decimal int/float with exponent, or base-prefixed integers)
             // Numbers (decimal, float, base-prefixed, with percent/duration/money)
             b'0'..=b'9' => {
                 let start_i = i;
@@ -639,7 +643,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let span = Span::new(file, i, j, line, col, line, c);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
                                 i = j; col = c;
-                                continue; // <-- don't fall through to the generic advance
+                                continue;
                             }
                         }
                         b'o' | b'O' => {
@@ -650,7 +654,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let span = Span::new(file, i, j, line, col, line, c);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
                                 i = j; col = c;
-                                continue; // <-- here too
+                                continue;
                             }
                         }
                         b'b' | b'B' => {
@@ -661,7 +665,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let span = Span::new(file, i, j, line, col, line, c);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
                                 i = j; col = c;
-                                continue; // <-- and here
+                                continue;
                             }
                         }
                         _ => {}
@@ -795,12 +799,63 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     }
                 }
 
-                // Emit number
+                // Get the base number
                 let text = &source.as_bytes()[start_i..i];
                 let lit = String::from_utf8_lossy(text).into_owned();
-                let span = Span::new(file, start_i, i, line, start_col, line, col);
-                let kind = if is_float { TokenKind::Float } else { TokenKind::Int };
-                tokens.push(Token { kind, span, value: Some(lit) });
+                let mut base_kind = if is_float { TokenKind::Float } else { TokenKind::Int };
+                let mut final_lit = lit;
+                let mut final_i = i;
+                let mut final_col = col;
+
+                // Check for immediate postfix units (no whitespace)
+                if i < bytes.len() {
+                    // Duration units (longest first: "mo" before "m")
+                    if i + 1 < bytes.len() && bytes[i] == b'm' && bytes[i + 1] == b'o' {
+                        final_lit.push_str("mo");
+                        final_i += 2; final_col += 2;
+                        base_kind = TokenKind::Duration;
+                    } else if i < bytes.len() {
+                        match bytes[i] {
+                            b's' => {
+                                final_lit.push('s');
+                                final_i += 1; final_col += 1;
+                                base_kind = TokenKind::Duration;
+                            }
+                            b'm' => {
+                                final_lit.push('m');
+                                final_i += 1; final_col += 1;
+                                base_kind = TokenKind::Duration;
+                            }
+                            b'h' => {
+                                final_lit.push('h');
+                                final_i += 1; final_col += 1;
+                                base_kind = TokenKind::Duration;
+                            }
+                            b'd' => {
+                                final_lit.push('d');
+                                final_i += 1; final_col += 1;
+                                base_kind = TokenKind::Duration;
+                            }
+                            b'w' => {
+                                final_lit.push('w');
+                                final_i += 1; final_col += 1;
+                                base_kind = TokenKind::Duration;
+                            }
+                            b'y' => {
+                                final_lit.push('y');
+                                final_i += 1; final_col += 1;
+                                base_kind = TokenKind::Duration;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Emit the token
+                let span = Span::new(file, start_i, final_i, line, start_col, line, final_col);
+                tokens.push(Token { kind: base_kind, span, value: Some(final_lit) });
+                i = final_i;
+                col = final_col;
             }
 
             // Raw strings starting with r" / r' / r""" / r''' (case-insensitive 'r')
@@ -2054,6 +2109,53 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Normal IDENT or reserved keyword token
                 let name = String::from_utf8_lossy(&bytes[start_i..i]).into_owned();
                 let span = Span::new(file, start_i, i, line, start_col, line, col);
+
+                // Check for blob keyword
+                if name == "blob" {
+                    // Look ahead for optional string literal
+                    let mut k = i;
+                    // Skip whitespace
+                    while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+                        k += 1;
+                    }
+                    
+                    if k < bytes.len() && (bytes[k] == b'"' || bytes[k] == b'\'') {
+                        // blob "string" form - emit blob keyword, let string be parsed next
+                        tokens.push(Token { 
+                            kind: TokenKind::Blob, 
+                            span, 
+                            value: Some("blob".to_string()) 
+                        });
+                        continue;
+                    } else {
+                        // bare blob
+                        tokens.push(Token { 
+                            kind: TokenKind::Blob, 
+                            span, 
+                            value: Some("blob".to_string()) 
+                        });
+                        continue;
+                    }
+                }
+
+                // Check for date/time keywords
+                match name.as_str() {
+                    "date" | "time" | "datetime" => {
+                        tokens.push(Token { 
+                            kind: match name.as_str() {
+                                "date" => TokenKind::Date,
+                                "time" => TokenKind::Time,
+                                "datetime" => TokenKind::DateTime,
+                                _ => unreachable!(),
+                            },
+                            span, 
+                            value: Some(name) 
+                        });
+                        continue;
+                    }
+                    _ => {}
+                }
+
                 let kind = match name.as_str() {
                     "act" => TokenKind::Act,
                     "action" => TokenKind::Action,

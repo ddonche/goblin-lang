@@ -12,8 +12,11 @@ templating systems.
 
 ## Status
 - [x] Language specification
+- [x] Lexer implementation
+- [ ] Parser implementation 
+- [ ] AST implementation 
 - [ ] Interpreter implementation  
-- [ ] Gears scaffolding system
+- [ ] Glam scaffolding system
 - [ ] Real-world testing with Game Goblin Supply
 
 See `spec/` for the complete language specification.
