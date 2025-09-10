@@ -227,6 +227,9 @@ fn run_parse(path: &Path) -> i32 {
                 diags.len(),
                 if diags.len() == 1 { "" } else { "s" }
             );
+            for (i, d) in diags.iter().enumerate() {
+                eprintln!("  [{}] {:#?}", i + 1, d);
+            }
             return 1;
         }
     };

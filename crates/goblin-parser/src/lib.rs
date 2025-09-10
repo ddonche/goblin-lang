@@ -71,7 +71,7 @@ pub struct Parser<'t> {
 }
 
 fn is_block_starter_name(name: &str) -> bool {
-    matches!(name, "if" | "for" | "while" | "repeat" | "judge")
+    matches!(name, "if" | "for" | "while" | "repeat" | "judge" | "judge_all")
 }
 
 impl<'t> Parser<'t> {
@@ -104,6 +104,109 @@ impl<'t> Parser<'t> {
             (Some(s), None) => s.span.clone(),
             _ => Span::new("<unknown>", 0, 0, 0, 0, 0, 0),
         }
+    }
+
+    #[inline]
+    fn token_is_op(&self, tok: &goblin_lexer::Token, s: &str) -> bool {
+        // In this codebase, operator tokens carry their exact lexeme in `value`.
+        // Comparing the string is sufficient and avoids enum pattern issues.
+        tok.value.as_deref() == Some(s)
+    }
+
+    /// Preview a literal list `[ ... ]` at the current index.
+    /// Returns Some(len) if it is a well-formed list literal (0 allowed),
+    /// or None if it's not a literal list here. Parser position is restored.
+    fn preview_list_len(&mut self) -> Option<usize> {
+        let save = self.i;
+
+        self.skip_newlines();
+        if !self.eat_op("[") {
+            self.i = save;
+            return None;
+        }
+        self.skip_newlines();
+
+        // Empty list: []
+        if self.eat_op("]") {
+            self.i = save;
+            return Some(0);
+        }
+
+        // Count elements separated by commas at top level
+        let mut count = 0usize;
+        loop {
+            // Parse one element; if this fails, it's not a literal list → bail
+            match self.parse_coalesce() {
+                Ok(_) => {}
+                Err(_) => {
+                    self.i = save;
+                    return None;
+                }
+            }
+            count += 1;
+
+            self.skip_newlines();
+            if self.eat_op("]") {
+                break;
+            }
+            if self.eat_op(",") {
+                self.skip_newlines();
+                continue;
+            }
+
+            // malformed list; not a clean literal
+            self.i = save;
+            return None;
+        }
+
+        self.i = save;
+        Some(count)
+    }
+
+    /// Preview an integer range `lo..hi` or `lo...hi` at the current index.
+    /// Returns Some((exclusive, lo, hi)) if it is a simple int range literal,
+    /// or None if it's not a plain int range here. Parser position is restored.
+    fn preview_int_range(&mut self) -> Option<(bool, i128, i128)> {
+        use goblin_lexer::TokenKind;
+
+        let save = self.i;
+
+        self.skip_newlines();
+        let lo = match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::Int) => {
+                if let Some(ref s) = t.value {
+                    if let Ok(v) = s.parse::<i128>() {
+                        self.i += 1; v
+                    } else { self.i = save; return None; }
+                } else { self.i = save; return None; }
+            }
+            _ => { self.i = save; return None; }
+        };
+
+        self.skip_newlines();
+        let exclusive = if self.eat_op("...") {
+            true
+        } else if self.eat_op("..") {
+            false
+        } else {
+            self.i = save;
+            return None;
+        };
+
+        self.skip_newlines();
+        let hi = match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::Int) => {
+                if let Some(ref s) = t.value {
+                    if let Ok(v) = s.parse::<i128>() {
+                        self.i += 1; v
+                    } else { self.i = save; return None; }
+                } else { self.i = save; return None; }
+            }
+            _ => { self.i = save; return None; }
+        };
+
+        self.i = save;
+        Some((exclusive, lo, hi))
     }
 
     fn lower_expr_preview(pe: PExpr, sp: Span) -> ast::Expr {
@@ -232,6 +335,33 @@ impl<'t> Parser<'t> {
         } else {
             None
         }
+    }
+
+    fn enforce_inline_brace_policy(&mut self, _header_line: u32, who: &str) -> Result<(), String> {
+        use goblin_lexer::TokenKind;
+
+        // Look ahead from self.i, skipping only NEWLINEs and ';' separators.
+        let mut j = self.i;
+        while let Some(tok) = self.toks.get(j) {
+            match tok.kind {
+                TokenKind::Newline => { j += 1; continue; }
+                TokenKind::Op(ref s) if s == ";" => { j += 1; continue; }
+                _ => break,
+            }
+        }
+
+        if let Some(tok) = self.toks.get(j) {
+            if let TokenKind::Op(ref s) = tok.kind {
+                if s == "{" {
+                    return Err(format!(
+                        "brace '{{' is not allowed after {} header; use layout (newline + indent) and close with '}}' or 'end'",
+                        who
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn skip_action_block(&mut self) -> Result<(), String> {
@@ -560,8 +690,137 @@ impl<'t> Parser<'t> {
     // Generic "read statements until '}' or 'end'". Use this for bodies of fn/if/while/class/etc.
     // It preserves your existing statement parser and newline tolerance.
     fn parse_stmt_block(&mut self) -> Result<Vec<ast::Stmt>, String> {
-        // Use the unified block parser so layout/braced rules stay identical
-        self.parse_stmt_block_until(|_| false)
+        use goblin_lexer::TokenKind;
+
+        // INLINE BRACE MODE: header ... { stmt }
+        // - '{' must be on the same line as the header (caller already forbids next-line brace)
+        // - must be SINGLE-LINE and must close with '}' (not 'end')
+        if self.eat_op("{") {
+            let brace_tok_i = self.i - 1;
+            let brace_line = self.toks[brace_tok_i].span.line_start;
+
+            // Allow `{}` inline (still must be same line)
+            if self.peek_block_close() {
+                let close_tok = &self.toks[self.i];
+                let close_line = close_tok.span.line_start;
+                if close_line != brace_line {
+                    return Err("inline braced block must be single-line; remove the newline or use a layout block".into());
+                }
+                // Must be a '}' (not 'end') for inline braced
+                if self.peek_op("}") {
+                    let _ = self.eat_op("}");
+                    return Ok(Vec::new());
+                } else {
+                    return Err("inline braced block must close with '}' on the same line".into());
+                }
+            }
+
+            // Parse exactly one statement inside the inline braces
+            let mut out = Vec::new();
+            out.push(self.parse_stmt()?);
+
+            // After the single stmt, require a block close on the SAME line and it must be '}'
+            if self.peek_block_close() {
+                let close_tok = &self.toks[self.i];
+                let close_line = close_tok.span.line_start;
+                if close_line != brace_line {
+                    return Err("inline braced block must be single-line; remove the newline or use a layout block".into());
+                }
+                if self.peek_op("}") {
+                    let _ = self.eat_op("}");
+                    return Ok(out);
+                } else {
+                    return Err("inline braced block must close with '}' on the same line".into());
+                }
+            }
+
+            // If there’s a newline before any closer, call it out explicitly
+            if let Some(tok) = self.toks.get(self.i) {
+                if matches!(tok.kind, TokenKind::Newline) {
+                    return Err("inline braced block must be single-line; remove the newline or use a layout block".into());
+                }
+            }
+
+            // Otherwise: we didn’t find a same-line '}'
+            return Err("unterminated inline braced block; expected '}' on the same line".into());
+        }
+
+        // LAYOUT MODE: require newline, optionally followed by Indent
+        let mut saw_nl = false;
+        while let Some(tok) = self.toks.get(self.i) {
+            if matches!(tok.kind, TokenKind::Newline) {
+                self.i += 1;
+                saw_nl = true;
+            } else {
+                break;
+            }
+        }
+
+        // Fallback: accept physical line break if lexer didn’t emit Newline
+        if !saw_nl {
+            if let (Some(prev), Some(curr)) = (self.toks.get(self.i.saturating_sub(1)), self.toks.get(self.i)) {
+                if curr.span.line_start > prev.span.line_end {
+                    saw_nl = true;
+                }
+            }
+        }
+
+        // Optionally consume a single Indent
+        let mut depth: usize = 0;
+        if let Some(tok) = self.toks.get(self.i) {
+            if matches!(tok.kind, TokenKind::Indent) {
+                self.i += 1;
+                depth = 1;
+            }
+        }
+
+        if !saw_nl {
+            return Err("expected indentation after header; either put '{' on the same line or indent the next line".to_string());
+        }
+
+        let mut out = Vec::new();
+        loop {
+            match self.toks.get(self.i) {
+                Some(tok) if matches!(tok.kind, TokenKind::Indent) => {
+                    self.i += 1;
+                    depth += 1;
+                    continue;
+                }
+                Some(tok) if matches!(tok.kind, TokenKind::Dedent) => {
+                    self.i += 1;
+                    if depth == 0 {
+                        return Err("dedent below block start".into());
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        // Require an explicit closer after layout ends
+                        self.skip_newlines();
+                        if self.peek_block_close() {
+                            let _ = self.eat_block_close();
+                            break;
+                        }
+                        return Err("missing 'end' (or '}') to close block".into());
+                    }
+                    continue;
+                }
+                Some(_) => { /* normal statement path */ }
+                None => {
+                    return Err("unexpected end of file: expected '}' or 'end' to close block".into());
+                }
+            }
+
+            // Also allow explicit closers at header depth
+            if depth == 0 && self.peek_block_close() {
+                let _ = self.eat_block_close();
+                break;
+            }
+
+            // Parse one statement in the block
+            out.push(self.parse_stmt()?);
+            self.skip_stmt_separators();
+        }
+
+        Ok(out)
     }
 
     fn peek_newline_or_eof(&self) -> bool {
@@ -1152,6 +1411,7 @@ impl<'t> Parser<'t> {
             } else { break; }
         }
         if header_col_min == u32::MAX { header_col_min = 0; }
+        let header_col = header_col_min; // use this for closer alignment diagnostics
 
         // Enter layout: real Indent preferred; otherwise soft by column
         let mut out = Vec::new();
@@ -1183,7 +1443,7 @@ impl<'t> Parser<'t> {
                 return Err("missing 'end' (or '}') to close block".into());
             }
 
-            // Tokenized indentation first
+            // ===== Tokenized indentation first
             if let Some(tok) = self.toks.get(self.i) {
                 match tok.kind {
                     TokenKind::Indent => { self.i += 1; depth += 1; continue; }
@@ -1223,7 +1483,7 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            // Soft indentation by column
+            // ===== Soft indentation by column
             if soft_mode {
                 let mut saw_linebreak = false;
                 while let Some(tok) = self.toks.get(self.i) {
@@ -1233,11 +1493,18 @@ impl<'t> Parser<'t> {
                 if saw_linebreak {
                     if self.is_eof() { return Err("missing 'end' (or '}') to close block".into()); }
 
+                    // NOTE: Previously this accepted a closer at depth == 1.
+                    // That allowed misaligned closers inside the body. Disallow that now.
                     if self.peek_block_close() {
-                        if depth == 1 {
-                            let _ = self.eat_block_close();
-                            ended_hard = true; // layout closed explicitly
-                            break;
+                        // Closer encountered while still indented -> misaligned closer error.
+                        if let Some(cl) = self.peek() {
+                            let closer = if cl.value.as_deref() == Some("}") { "}" } else { "end" };
+                            return Err(format!(
+                                "misaligned block closer '{}': expected column {}, found column {}",
+                                closer, header_col, cl.span.col_start
+                            ));
+                        } else {
+                            return Err("missing 'end' (or '}') to close block".into());
                         }
                     }
 
@@ -1249,6 +1516,7 @@ impl<'t> Parser<'t> {
                             soft_cols.pop();
                             depth -= 1;
                             if depth == 0 {
+                                // At header level now: only here may we see a closer or tail/stop.
                                 if self.peek_block_close() {
                                     let _ = self.eat_block_close();
                                     ended_hard = true; // layout closed explicitly
@@ -1291,6 +1559,20 @@ impl<'t> Parser<'t> {
                             continue;
                         }
                     }
+                }
+            }
+
+            // ===== Alignment enforcement before parsing a body statement
+            // If we're inside the body (depth > 0) and we see a closer, that's misaligned.
+            if depth > 0 && self.peek_block_close() {
+                if let Some(cl) = self.peek() {
+                    let closer = if cl.value.as_deref() == Some("}") { "}" } else { "end" };
+                    return Err(format!(
+                        "misaligned block closer '{}': expected column {}, found column {}",
+                        closer, header_col, cl.span.col_start
+                    ));
+                } else {
+                    return Err("missing 'end' (or '}') to close block".into());
                 }
             }
 
@@ -1389,136 +1671,168 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // IF / ELIF / ELSE
+        // IF  (layout-only; no opening '{' allowed after headers)
         if self.peek_ident() == Some("if") {
             let if_tok_i = self.i;
-            let if_col = self.toks[if_tok_i].span.col_start;
-            let if_line = self.toks[if_tok_i].span.line_start;
+            let if_line  = self.toks[if_tok_i].span.line_start;
+            let if_col   = self.toks[if_tok_i].span.col_start;
 
             let _ = self.eat_ident(); // 'if'
-            let _cond = self.parse_coalesce()?; // condition
-            let _ = self.eat_between_tail()?;
 
-            self.forbid_next_line_brace(if_line, if_col, "if")?;
+            // condition (no assignment in header)
+            let _cond = self.parse_coalesce()?;
 
-            // Parse 'then' block
+            // Forbid '{' after header (same line or next line)
+            self.enforce_inline_brace_policy(if_line, "if")?;
+
+            // THEN block: layout-only until aligned elif/else or hard closer ('}' or 'end')
             let _then = self.parse_stmt_block_until(|p| {
                 p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
             })?;
 
-            // If the 'then' block ended by explicit closer (`}` or `end`) in LAYOUT mode,
-            // tails are not allowed anymore.
+            // Track whether we've already seen an 'else' in this chain.
+            let mut else_seen = false;
+
+            // If the 'then' block hard-closed, tails are not allowed
             if self.block_closed_hard {
-                self.skip_stmt_separators();
                 if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                    return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".into());
+                    return Err(
+                        "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
+                    );
                 }
-                // Produce placeholder and return (no tails).
-                let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
-                let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
-                return Ok(ast::Stmt::Expr(expr));
             }
 
-            // zero or more aligned 'elif' blocks
-            let mut closed_hard_in_chain = false;
+            // Zero or more aligned 'elif' blocks
             loop {
                 self.skip_stmt_separators();
 
+                // No tails allowed after a hard-closed segment
+                if self.block_closed_hard {
+                    if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                        return Err(
+                            "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
+                        );
+                    }
+                }
+
+                // Duplicate 'else' guard at the chain level
+                if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
+                    return Err("duplicate 'else' in if block".to_string());
+                }
+
                 if self.peek_ident_at_col("elif", if_col) {
                     let elif_tok_i = self.i;
-                    let elif_line = self.toks[elif_tok_i].span.line_start;
-                    let elif_col  = self.toks[elif_tok_i].span.col_start;
+                    let elif_line  = self.toks[elif_tok_i].span.line_start;
 
                     let _ = self.eat_ident();        // 'elif'
                     let _c = self.parse_coalesce()?; // condition
 
-                    self.forbid_next_line_brace(elif_line, elif_col, "elif")?;
+                    // Forbid '{' after 'elif' header
+                    self.enforce_inline_brace_policy(elif_line, "elif")?;
 
                     let _b = self.parse_stmt_block_until(|p| {
                         p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
                     })?;
 
+                    // If this elif block hard-closed, no further tails allowed
                     if self.block_closed_hard {
-                        closed_hard_in_chain = true; // layout closer consumed inside the chain
-                        break;
+                        if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                            return Err(
+                                "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
+                            );
+                        }
                     }
 
                     continue;
                 }
+
                 break;
             }
 
-            // If an `elif` body closed the chain hard, tails cannot follow.
-            if closed_hard_in_chain {
-                self.skip_stmt_separators();
-                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                    return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".into());
-                }
-                let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
-                let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
-                return Ok(ast::Stmt::Expr(expr));
+            // Optional aligned 'else' block
+            self.skip_stmt_separators();
+
+            // If the chain has hard-closed already, 'else' is not allowed.
+            if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
+                return Err(
+                    "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
+                );
             }
 
-            // optional aligned 'else' block
-            self.skip_stmt_separators();
             if self.peek_ident_at_col("else", if_col) {
+                else_seen = true;
+
                 let else_tok_i = self.i;
                 let else_line  = self.toks[else_tok_i].span.line_start;
-                let else_col   = self.toks[else_tok_i].span.col_start;
 
                 let _ = self.eat_ident(); // 'else'
-                self.forbid_next_line_brace(else_line, else_col, "else")?;
 
-                let _else = self.parse_stmt_block_until(|_| false)?;
+                // Forbid '{' after 'else' header
+                self.enforce_inline_brace_policy(else_line, "else")?;
+
+                let _else = self.parse_stmt_block_until(|p| {
+                    p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
+                })?;
+
+                // After an 'else' block, any further tail is a duplicate else scenario
+                self.skip_stmt_separators();
+                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                    return Err("duplicate 'else' in if block".to_string());
+                }
+
+                // If this else hard-closed, tails after it would be meaningless
+                if self.block_closed_hard {
+                    if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                        return Err(
+                            "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
+                        );
+                    }
+                }
             }
 
-            // placeholder stmt that spans the whole if-construct
+            // placeholder spanning the whole if-construct (keeps your lowering pattern)
             let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
             let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
             return Ok(ast::Stmt::Expr(expr));
         }
 
-        // WHILE
+        // WHILE  (layout-only; no opening '{' allowed)
         if self.peek_ident() == Some("while") {
             let while_tok_i = self.i;
-            let header_line = self.toks[while_tok_i].span.line_start;
-            let header_col  = self.toks[while_tok_i].span.col_start;
+            let while_line  = self.toks[while_tok_i].span.line_start;
 
-            let _ = self.eat_ident();           // 'while'
-            let _cond = self.parse_coalesce()?; // condition
-            let _ = self.eat_between_tail()?;
+            let _ = self.eat_ident(); // 'while'
 
-            self.forbid_next_line_brace(header_line, header_col, "while")?;
-            let _body = self.parse_stmt_block()?;
+            // condition
+            let _cond = self.parse_coalesce()?;
+
+            // Forbid '{' after header
+            self.enforce_inline_brace_policy(while_line, "while")?;
+
+            // Body until hard closer
+            let _body = self.parse_stmt_block_until(|_| false)?;
 
             let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
             let expr = Self::lower_expr_preview(PExpr::Ident("while_block".into()), sp);
             return Ok(ast::Stmt::Expr(expr));
         }
 
-        // FOR
+        // FOR  (layout-only; no opening '{' allowed)
         if self.peek_ident() == Some("for") {
-            let for_tok_i   = self.i;
-            let header_line = self.toks[for_tok_i].span.line_start;
-            let header_col  = self.toks[for_tok_i].span.col_start;
+            let for_tok_i = self.i;
+            let for_line  = self.toks[for_tok_i].span.line_start;
 
             let _ = self.eat_ident(); // 'for'
 
-            // Loop variable
-            let _var = self.eat_ident().ok_or("expected loop variable after 'for'")?;
+            // --- your existing 'for' header parsing here (e.g., pattern + 'in' + expr) ---
+            // e.g.: let _iter = self.parse_for_header()?;
+            // ------------------------------------------------------------------------------
 
-            // Require 'in'
-            if self.peek_ident() == Some("in") {
-                let _ = self.eat_ident(); // 'in'
-            } else {
-                return Err("expected 'in' after loop variable in 'for'".to_string());
-            }
+            // Forbid '{' after header
+            self.enforce_inline_brace_policy(for_line, "for")?;
 
-            // Iterable expression
-            let _iter = self.parse_coalesce()?;
-
-            self.forbid_next_line_brace(header_line, header_col, "for")?;
-            let _body = self.parse_stmt_block()?;
+            // Body until hard closer
+            let _body = self.parse_stmt_block_until(|_| false)?;
 
             let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
             let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
@@ -1740,83 +2054,144 @@ impl<'t> Parser<'t> {
         }
     }
 
+    #[inline]
+    fn lhs_ends_with_dot_type_at(&self, eq_i: usize) -> bool {
+        use goblin_lexer::TokenKind;
+
+        if eq_i == 0 { return false; }
+        // j will walk left from the '=' position, skipping layout tokens
+        let mut j = eq_i;
+
+        // step 1: find the last *significant* token before '='
+        while j > 0 {
+            let t = &self.toks[j - 1];
+            match t.kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
+                    j -= 1;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+        if j == 0 { return false; }
+
+        // step 2: that token must be Ident("type")
+        let t_ident = &self.toks[j - 1];
+        if !matches!(t_ident.kind, TokenKind::Ident) || t_ident.value.as_deref() != Some("type") {
+            return false;
+        }
+
+        // step 3: before that, after skipping layout, we must have a '.' operator
+        let mut k = j - 1;
+        while k > 0 {
+            let t = &self.toks[k - 1];
+            match t.kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
+                    k -= 1;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+        if k == 0 { return false; }
+        let t_dot = &self.toks[k - 1];
+        t_dot.value.as_deref() == Some(".")
+    }
+
     fn parse_assign(&mut self) -> Result<PExpr, String> {
-        // lowest precedence; parse LHS
+        // Lowest precedence; parse LHS first.
         let lhs = self.parse_coalesce()?; // uses your existing precedence stack
 
-        // detect assignment operators (longest-first)
-        let op = if self.eat_op("//=") {
+        // ----- peek longest-first for an assignment operator (do not consume yet)
+        let peeked_op: Option<&'static str> = if self.peek_op("//=") {
             Some("//=")
-        } else if self.eat_op("+=") {
+        } else if self.peek_op("+=") {
             Some("+=")
-        } else if self.eat_op("-=") {
+        } else if self.peek_op("-=") {
             Some("-=")
-        } else if self.eat_op("*=") {
+        } else if self.peek_op("*=") {
             Some("*=")
-        } else if self.eat_op("/=") {
+        } else if self.peek_op("/=") {
             Some("/=")
-        } else if self.eat_op("%=") {
+        } else if self.peek_op("%=") {
             Some("%=")
-        } else if self.eat_op("=") {
+        } else if self.peek_op("=") {
             Some("=")
         } else {
             None
         };
 
-        // NEW: Assignments are only legal at statement boundaries.
-        if op.is_some() && !self.in_stmt {
+        // If there's no assignment operator coming, we're done.
+        if peeked_op.is_none() {
+            return Ok(lhs);
+        }
+
+        // Assignments are only legal at statement boundaries.
+        if !self.in_stmt {
             return Err("assignment not allowed in expression; use a statement at block level".to_string());
         }
 
-        if let Some(op) = op {
-            match lhs {
-                PExpr::Ident(_) | PExpr::Member(_, _) => {
-                    // multi-line assignment block:
-                    //   name =
-                    //       <exprâ€¦>
-                    //   end / }
-                    if self.peek_newline_or_eof() {
-                        self.skip_newlines();
-                        let rhs = if self.eat_op("{") {
-                            // brace block: parse until '}'
-                            let mut last = None;
-                            loop {
-                                self.skip_stmt_separators();
-                                if self.peek_block_close() {
-                                    let _ = self.eat_block_close();
-                                    break;
-                                }
-                                if self.toks.get(self.i).is_none() {
-                                    return Err("unexpected end of file: expected '}' or 'end' to close assignment".into());
-                                }
-                                // expression statement inside block; take last as value
-                                last = Some(self.parse_assign()?);
-                            }
-                            last.ok_or_else(|| "empty assignment block".to_string())?
-                        } else {
-                            // single-line continuation after '='
-                            self.parse_assign()?
-                        };
+        // Forbid writes to the meta postfix '.type' (not a user field; user fields are via `>> type`)
+        if self.lhs_ends_with_dot_type_at(self.i) {
+            return Err("cannot assign to meta '.type'; to set a user field named 'type', access it via '>> type'".into());
+        }
 
-                        if op == "=" {
-                            Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
-                        } else {
-                            Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
+        // ----- now consume exactly the operator we peeked
+        let op: &'static str = match peeked_op.unwrap() {
+            "//=" => { let _ = self.eat_op("//="); "//=" }
+            "+="  => { let _ = self.eat_op("+=");  "+="  }
+            "-="  => { let _ = self.eat_op("-=");  "-="  }
+            "*="  => { let _ = self.eat_op("*=");  "*="  }
+            "/="  => { let _ = self.eat_op("/=");  "/="  }
+            "%="  => { let _ = self.eat_op("%=");  "%="  }
+            "="   => { let _ = self.eat_op("=");   "="   }
+            _     => unreachable!(),
+        };
+
+        // LHS must be assignable.
+        match lhs {
+            PExpr::Ident(_) | PExpr::Member(_, _) => {
+                // Support right-associative chaining: a = b = c
+                // Also allow a newline right after '=' with an inline brace-block value.
+                if self.peek_newline_or_eof() {
+                    self.skip_newlines();
+                    let rhs = if self.eat_op("{") {
+                        // Brace block as an expression: take the last inner expression as the value.
+                        let mut last: Option<PExpr> = None;
+                        loop {
+                            self.skip_stmt_separators();
+                            if self.peek_block_close() {
+                                let _ = self.eat_block_close();
+                                break;
+                            }
+                            if self.toks.get(self.i).is_none() {
+                                return Err("unexpected end of file: expected '}' or 'end' to close assignment".into());
+                            }
+                            // Parse expression statements; use the last one as the value.
+                            last = Some(self.parse_assign()?);
                         }
+                        last.ok_or_else(|| "empty assignment block".to_string())?
                     } else {
-                        // single-line assignment
-                        let rhs = self.parse_assign()?; // right-assoc (a = b = c)
-                        if op == "=" {
-                            Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
-                        } else {
-                            Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
-                        }
+                        // Single-line continuation after '=' on the next non-empty line.
+                        self.parse_assign()?
+                    };
+
+                    if op == "=" {
+                        Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+                    } else {
+                        Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
+                    }
+                } else {
+                    // Single-line assignment (no immediate newline after operator).
+                    let rhs = self.parse_assign()?; // right-assoc
+                    if op == "=" {
+                        Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+                    } else {
+                        Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
                     }
                 }
-                _ => Err("left side of assignment must be an identifier or member".to_string()),
             }
-        } else {
-            Ok(lhs)
+            _ => Err("left side of assignment must be an identifier or member".to_string()),
         }
     }
 
@@ -2115,105 +2490,143 @@ impl<'t> Parser<'t> {
             return Ok(PExpr::Object(pairs));
         }
 
-        // expression-form: pick … (syntax-only; returns placeholder for now)
+        // expression-form: judge_all … (layout-only; must close with 'end' or '}')
+        if let Some("judge_all") = self.peek_ident() {
+            // Remember header position for diagnostics / next-line brace guard
+            let header_tok_i = self.i;
+            let header_line  = self.toks[header_tok_i].span.line_start;
+            let header_col   = self.toks[header_tok_i].span.col_start;
+
+            let _ = self.eat_ident(); // consume 'judge_all'
+
+            // Disallow same-line '{' after 'judge_all' (no opener braces here)
+            if self.peek_op("{") {
+                return Err("unexpected '{' after 'judge_all'; use layout (newline + indent) and close with 'end' or '}'".into());
+            }
+
+            // Disallow a '{' on the NEXT line (global 'no next-line brace after header' rule)
+            self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
+
+            // Parse entries using the existing judge list parser for now.
+            // It already supports nested expressions, ranges, 'from', dice, modifiers, etc.
+            self.skip_newlines();
+            let pairs = self.parse_kv_bind_list_judge()?;
+
+            self.skip_newlines();
+            self.expect_block_close("judge_all")?;
+
+            // For now we return the same shape as 'judge' (pairs object).
+            // Lowering can interpret optional leading weights in the key text later.
+            return Ok(PExpr::Object(pairs));
+        }
+
+        // typeof(expr) — explicit, never shadowed introspection
+        if self.peek_ident() == Some("typeof") {
+            let _ = self.eat_ident(); // 'typeof'
+            if self.eat_op("(") {
+                let inner = self.parse_coalesce()?; // or parse_expr as per your precedence
+                if !self.eat_op(")") {
+                    return Err("expected ')' after typeof(".into());
+                }
+                return Ok(PExpr::Ident("typeof_expr".into())); // placeholder AST; wire later
+            } else {
+                // Optional: allow typeof x without parens; comment this block out if you want only paren form
+                let _inner = self.parse_postfix()?; // tight binding
+                return Ok(PExpr::Ident("typeof_expr".into()));
+            }
+        }
+
+        // expression-form: pick … (no digit shorthand; friendly errors)
         if let Some("pick") = self.peek_ident() {
             use goblin_lexer::TokenKind;
             let _ = self.eat_ident(); // 'pick'
 
-            self.skip_newlines();
-
-            // Optional count or digit shorthand `x_y`
-            let mut saw_count = false;
-            let mut saw_digit_shorthand = false;
-
+            // Optional count (INT)
+            let mut count_opt: Option<usize> = None;
             if let Some(t) = self.peek() {
                 if matches!(t.kind, TokenKind::Int) {
-                    // eat first int
-                    self.i += 1;
-                    saw_count = true;
-
-                    self.skip_newlines();
-                    if self.eat_op("_") {
-                        // require second int
-                        self.skip_newlines();
-                        if let Some(t2) = self.peek() {
-                            if matches!(t2.kind, TokenKind::Int) {
-                                self.i += 1;
-                                saw_digit_shorthand = true;
-                            } else {
-                                return Err("expected digits after '_' in 'x_y' digit shorthand".to_string());
-                            }
-                        } else {
-                            return Err("expected digits after '_' in 'x_y' digit shorthand".to_string());
-                        }
+                    if let Some(ref s) = t.value {
+                        if let Ok(v) = s.parse::<usize>() { count_opt = Some(v); }
                     }
+                    self.i += 1;
                 }
             }
 
             // Optional: `from <expr or range>`
-            self.skip_newlines();
+            let mut source_kind: Option<&'static str> = None; // "collection" | "range"
+            let mut collection_len: Option<usize> = None;
+
             if self.peek_ident() == Some("from") {
                 let _ = self.eat_ident(); // 'from'
-                self.skip_newlines();
 
-                // Parse one expression; if followed by '..' or '...' parse RHS to consume a range
+                // ---- PREVIEW for friendly errors (do not consume tokens)
+                let save_after_from = self.i;
+
+                // 1) Literal list length (including empty [])
+                if let Some(len) = self.preview_list_len() {
+                    source_kind = Some("collection");
+                    collection_len = Some(len);
+                    if len == 0 {
+                        return Err("cannot pick from an empty collection []".into());
+                    }
+                } else if let Some((exclusive, lo, hi)) = self.preview_int_range() {
+                    source_kind = Some("range");
+                    if exclusive {
+                        // a...b is [a, b) -> empty if hi <= lo
+                        if hi <= lo {
+                            return Err("empty range in 'from a...b' (end must be greater than start)".into());
+                        }
+                    } else {
+                        // a..b is [a, b] -> empty if hi < lo
+                        if hi < lo {
+                            return Err("empty range in 'from a..b' (end must be >= start)".into());
+                        }
+                    }
+                }
+
+                // ---- actually consume the source expression (and optional range tail)
+                self.i = save_after_from;
                 let _src_lo = self.parse_coalesce()?;
-
-                self.skip_newlines();
                 if self.eat_op("...") || self.eat_op("..") {
-                    self.skip_newlines();
                     let _src_hi = self.parse_coalesce()?;
                 }
             }
 
-            // Zero or more modifiers:
-            //   with dups   |  !dups   |  unique   |  join with <expr>
-            loop {
-                self.skip_newlines();
+            // Modifiers: with dups | !dups | join with <expr>
+            let mut mod_with_dups = false;
+            let mut mod_no_dups   = false;
 
-                // with dups
+            loop {
                 if self.peek_ident() == Some("with") {
                     let save2 = self.i;
                     let _ = self.eat_ident(); // 'with'
-                    self.skip_newlines();
                     if self.peek_ident() == Some("dups") {
                         let _ = self.eat_ident(); // 'dups'
+                        mod_with_dups = true;
                         continue;
                     } else {
-                        // not actually "with dups" → rollback "with"
                         self.i = save2;
                     }
                 }
 
-                // !dups
                 if self.peek_op("!") {
                     let save2 = self.i;
                     let _ = self.eat_op("!");
                     if self.peek_ident() == Some("dups") {
                         let _ = self.eat_ident(); // 'dups'
+                        mod_no_dups = true;
                         continue;
                     } else {
                         self.i = save2;
                     }
                 }
 
-                // unique (digit-level uniqueness for x_y)
-                if self.peek_ident() == Some("unique") {
-                    let _ = self.eat_ident();
-                    continue;
-                }
-
-                // join with <expr>
                 if self.peek_ident() == Some("join") {
                     let _ = self.eat_ident(); // 'join'
-                    self.skip_newlines();
                     if self.peek_ident() != Some("with") {
                         return Err("expected 'with' after 'join'".to_string());
                     }
                     let _ = self.eat_ident(); // 'with'
-                    self.skip_newlines();
-
-                    // separator can be any expression (usually a string)
                     let _sep = self.parse_coalesce()?;
                     continue;
                 }
@@ -2221,69 +2634,90 @@ impl<'t> Parser<'t> {
                 break;
             }
 
-            // Placeholder expression; real lowering comes later
+            // Friendly "too many without dups" for literal collections
+            if let Some("collection") = source_kind {
+                // default: collections -> !dups unless 'with dups'
+                let no_dups_effective = if mod_with_dups { false } else if mod_no_dups { true } else { true };
+                if no_dups_effective {
+                    if let (Some(n), Some(len)) = (count_opt, collection_len) {
+                        if n > len {
+                            return Err(format!(
+                                "cannot pick {} distinct items from a collection of size {}; use 'with dups' or lower the count",
+                                n, len
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Placeholder; real lowering later
             return Ok(PExpr::Ident("pick_expr".into()));
         }
 
         // expression-form: roll / roll_detail (syntax-only; returns placeholder)
+        // expression-form: roll / roll_detail (no spaces allowed inside dice notation)
         if let Some(id) = self.peek_ident() {
             if id == "roll" || id == "roll_detail" {
                 use goblin_lexer::TokenKind;
                 let is_detail = id == "roll_detail";
                 let _ = self.eat_ident(); // 'roll' or 'roll_detail'
-                self.skip_newlines();
 
-                // Expect an integer count X
-                match self.peek() {
-                    Some(t) if matches!(t.kind, TokenKind::Int) => { self.i += 1; }
-                    _ => return Err("expected integer dice count before 'd' in 'roll'".to_string()),
-                }
+                // Expect integer count (X)
+                let count_tok_i = match self.peek() {
+                    Some(t) if matches!(t.kind, TokenKind::Int) => { let idx = self.i; self.i += 1; idx }
+                    _ => return Err("expected integer dice count before 'd' (e.g., roll 2d6)".to_string()),
+                };
 
-                self.skip_newlines();
+                // Next must be a single IDENT like "d6", "d100" — contiguous, no spaces
+                let die_tok_i = match self.peek_ident() {
+                    Some(s) if s.len() > 1 && s.starts_with('d') && s[1..].chars().all(|c| c.is_ascii_digit()) => {
+                        // Enforce *no space* between count and 'dNNN'
+                        let prev = &self.toks[count_tok_i].span;
+                        let cur  = &self.toks[self.i].span;
+                        if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
+                            return Err("dice must be contiguous; write '2d6', not '2 d 6'".into());
+                        }
+                        let idx = self.i; self.i += 1; idx
+                    }
+                    _ => return Err("expected contiguous dice like '2d6' (no spaces)".to_string()),
+                };
 
-                // Accept 'dY' in either form:
-                //   - ident "d" then INT
-                //   - ident "dNNN" (consume as a single ident)
-                // (Also tolerate an operator 'd' just in case)
-                let mut consumed_die = false;
+                // Optional contiguous +Z / -Z
+                let mut has_mod = false;
+                let mut mod_sign_i = 0usize;
+                if self.peek_op("+") || self.peek_op("-") {
+                    // Enforce no space between die token and '+'/'-'
+                    let prev = &self.toks[die_tok_i].span;
+                    let cur  = &self.toks[self.i].span;
+                    if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
+                        return Err("spaces are not allowed in dice modifiers; write '2d6+3'".into());
+                    }
+                    mod_sign_i = self.i;
+                    self.i += 1;
+                    has_mod = true;
 
-                if self.peek_ident() == Some("d") {
-                    let _ = self.eat_ident(); // 'd'
-                    self.skip_newlines();
+                    // Next must be an INT *contiguous* with the sign
                     match self.peek() {
-                        Some(t) if matches!(t.kind, TokenKind::Int) => { self.i += 1; consumed_die = true; }
-                        _ => return Err("expected integer die size after 'd'".to_string()),
-                    }
-                } else if let Some(id2) = self.peek_ident() {
-                    if id2.len() > 1 && id2.starts_with('d') && id2[1..].chars().all(|c| c.is_ascii_digit()) {
-                        let _ = self.eat_ident(); // 'dNNN'
-                        consumed_die = true;
-                    }
-                } else if self.eat_op("d") {
-                    // Defensive; most lexers won't classify 'd' as an operator
-                    self.skip_newlines();
-                    match self.peek() {
-                        Some(t) if matches!(t.kind, TokenKind::Int) => { self.i += 1; consumed_die = true; }
-                        _ => return Err("expected integer die size after 'd'".to_string()),
+                        Some(t) if matches!(t.kind, TokenKind::Int) => {
+                            let cur2 = &t.span;
+                            let prev2 = &self.toks[mod_sign_i].span;
+                            if !(cur2.line_start == prev2.line_end && cur2.col_start == prev2.col_end) {
+                                return Err("spaces are not allowed in dice modifiers; write '2d6+3'".into());
+                            }
+                            self.i += 1;
+                        }
+                        _ => return Err("expected integer after '+'/'-' in dice; write '2d6+3'".to_string()),
                     }
                 }
 
-                if !consumed_die {
-                    return Err("expected 'd' and die size in 'roll' (e.g., 2d6)".to_string());
+                // Also catch stray plus with nothing after (defensive)
+                if !has_mod && self.peek_op("+") {
+                    return Err("expected integer after '+' in dice; write '2d6+3'".into());
+                }
+                if !has_mod && self.peek_op("-") {
+                    return Err("expected integer after '-' in dice; write '2d6-1'".into());
                 }
 
-                self.skip_newlines();
-
-                // Optional +Z / -Z modifier
-                if self.eat_op("+") || self.eat_op("-") {
-                    self.skip_newlines();
-                    match self.peek() {
-                        Some(t) if matches!(t.kind, TokenKind::Int) => { self.i += 1; }
-                        _ => return Err("expected integer modifier after '+'/'-' in 'roll'".to_string()),
-                    }
-                }
-
-                // Placeholder expression; real lowering/logging later
                 let name = if is_detail { "roll_detail_expr" } else { "roll_expr" };
                 return Ok(PExpr::Ident(name.into()));
             }

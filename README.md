@@ -1,3 +1,7 @@
+<picture>
+  <img src="./assets/goblinlogogy.png" alt="Goblin" width="500">
+</picture>
+
 # Goblin Programming Language
 
 A programming language designed for e-commerce automation, 

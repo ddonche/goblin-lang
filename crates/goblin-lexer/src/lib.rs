@@ -684,7 +684,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let sp = Span::new(file, i, i, line, col, line, col);
                                 return Err(vec![Diagnostic::error(
                                     "lexer",
-                                    "invalid underscore placement",
+                                    "invalid '_' in numeric literal; underscores must appear between digits (e.g., 1_234), not at the start or doubled",
                                     sp,
                                 )]);
                             }
@@ -699,7 +699,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     let sp = Span::new(file, i, i, line, col, line, col);
                     return Err(vec![Diagnostic::error(
                         "lexer",
-                        "underscore cannot trail a number",
+                        "trailing '_' in numeric literal; underscores are only allowed between digits (e.g., 1_000), not at the end",
                         sp,
                     )]);
                 }
