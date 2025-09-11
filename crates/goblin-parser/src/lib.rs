@@ -420,7 +420,6 @@ impl<'t> Parser<'t> {
     /// Returns Some((exclusive, lo, hi)) if it is a simple int range literal,
     /// or None if it's not a plain int range here. Parser position is restored.
     fn preview_int_range(&mut self) -> Option<(bool, i128, i128)> {
-        use goblin_lexer::TokenKind;
 
         let save = self.i;
 
@@ -591,7 +590,6 @@ impl<'t> Parser<'t> {
     }
 
     fn enforce_inline_brace_policy(&mut self, _header_line: u32, who: &str) -> Result<(), String> {
-        use goblin_lexer::TokenKind;
 
         // Look ahead from self.i, skipping only NEWLINEs and ';' separators.
         let mut j = self.i;
@@ -618,7 +616,6 @@ impl<'t> Parser<'t> {
     }
 
     fn skip_action_block(&mut self) -> Result<(), String> {
-        use goblin_lexer::TokenKind;
 
         let mut depth = 1;
         loop {
@@ -696,7 +693,6 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_action_after_keyword(&mut self, kw: &str) -> Result<PAction, String> {
-        use goblin_lexer::TokenKind;
 
         let Some(name) = self.eat_ident() else {
             return Err(format!("expected {} name", kw));
@@ -744,7 +740,6 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
-        use goblin_lexer::TokenKind;
 
         // Parse the header (name, params, maybe single-line `= expr`)
         let pa = self.parse_action_after_keyword(kw)?;
@@ -884,7 +879,6 @@ impl<'t> Parser<'t> {
 
     // Consume consecutive NEWLINE tokens.
     fn skip_newlines(&mut self) {
-        use goblin_lexer::TokenKind;
         while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, TokenKind::Newline)) {
             self.i += 1;
         }
@@ -892,7 +886,6 @@ impl<'t> Parser<'t> {
 
     // Do we see a block closer at the current position?  (either '}' or the ident 'end')
     fn peek_block_close(&self) -> bool {
-        use goblin_lexer::TokenKind;
 
         if let Some(tok) = self.toks.get(self.i) {
             match &tok.kind {
@@ -930,7 +923,6 @@ impl<'t> Parser<'t> {
 
     // Optional: also treat semicolons as statement separators when scanning blocks.
     fn skip_stmt_separators(&mut self) {
-        use goblin_lexer::TokenKind;
         loop {
             match self.toks.get(self.i) {
                 Some(tok) if matches!(tok.kind, TokenKind::Newline) => { self.i += 1; }
@@ -943,7 +935,6 @@ impl<'t> Parser<'t> {
     // Generic "read statements until '}' or 'end'". Use this for bodies of fn/if/while/class/etc.
     // It preserves your existing statement parser and newline tolerance.
     fn parse_stmt_block(&mut self) -> Result<Vec<ast::Stmt>, String> {
-        use goblin_lexer::TokenKind;
 
         // INLINE BRACE MODE: header ... { stmt }
         // - '{' must be on the same line as the header (caller already forbids next-line brace)
@@ -1077,7 +1068,6 @@ impl<'t> Parser<'t> {
     }
 
     fn peek_newline_or_eof(&self) -> bool {
-        use goblin_lexer::TokenKind;
         match self.toks.get(self.i) {
             Some(tok) => matches!(tok.kind, TokenKind::Newline | TokenKind::Eof),
             None => true,
@@ -1085,7 +1075,6 @@ impl<'t> Parser<'t> {
     }
 
     fn peek_ident_at_col(&self, kw: &str, col: u32) -> bool {
-        use goblin_lexer::TokenKind;
         if let Some(tok) = self.toks.get(self.i) {
             match tok.kind {
                 TokenKind::Ident => tok.value.as_deref() == Some(kw) && tok.span.col_start == col,
@@ -1100,7 +1089,6 @@ impl<'t> Parser<'t> {
     /// Be tolerant if a caller already consumed the `Newline` (and/or `Indent`) tokens.
     /// We also use spans to detect a line break when tokens were eaten upstream.
     fn expect_block_start(&mut self) -> Result<(), String> {
-        use goblin_lexer::TokenKind;
 
         // Style 1: explicit braced body: `{`
         if self.eat_op("{") {
@@ -1215,7 +1203,6 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_class_decl(&mut self) -> Result<PExpr, String> {
-        use goblin_lexer::TokenKind;
 
         if !self.eat_op("@") {
             return Err("expected '@' to start class declaration".to_string());
@@ -1337,7 +1324,6 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_class_decl_keyword(&mut self) -> Result<PExpr, String> {
-        use goblin_lexer::TokenKind;
 
         let Some(name) = self.eat_ident() else {
             return Err("expected class name after 'class'".to_string());
@@ -1448,7 +1434,6 @@ impl<'t> Parser<'t> {
 
     #[inline]
     fn is_expr_start(kind: &TokenKind) -> bool {
-        use goblin_lexer::TokenKind;
 
         match kind {
             // common expr/stmt starters
@@ -1469,7 +1454,6 @@ impl<'t> Parser<'t> {
     }
 
     fn forbid_next_line_brace(&mut self, header_line: u32, _header_col: u32, who: &str) -> Result<(), String> {
-        use goblin_lexer::TokenKind;
 
         let saved_i = self.i;
 
@@ -1512,7 +1496,6 @@ impl<'t> Parser<'t> {
             let save = self.i;
             // Look ahead (don't consume anything that matters to block reader)
             while let Some(tok) = self.toks.get(self.i) {
-                use goblin_lexer::TokenKind;
                 match tok.kind {
                     TokenKind::Newline => { self.i += 1; continue; }
                     TokenKind::Op(ref s) if s == ";" => { self.i += 1; continue; }
@@ -1576,7 +1559,6 @@ impl<'t> Parser<'t> {
     where
         F: FnMut(&Parser<'_>) -> bool,
     {
-        use goblin_lexer::TokenKind;
 
         // Track how THIS call ended (don't let nested calls overwrite it)
         let mut ended_hard = false;
@@ -1894,7 +1876,6 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
-        use goblin_lexer::TokenKind;
 
         // First: dedicated keyword tokens (some lexers emit these)
         if let Some(t) = self.peek() {
@@ -2574,7 +2555,6 @@ impl<'t> Parser<'t> {
 
     #[inline]
     fn lhs_ends_with_dot_type_at(&self, eq_i: usize) -> bool {
-        use goblin_lexer::TokenKind;
 
         if eq_i == 0 { return false; }
         // j will walk left from the '=' position, skipping layout tokens
@@ -2889,7 +2869,6 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_kv_bind_list_judge(&mut self) -> Result<Vec<(String, PExpr)>, String> {
-        use goblin_lexer::TokenKind;
 
         let mut out: Vec<(String, PExpr)> = Vec::new();
 
@@ -3056,7 +3035,6 @@ impl<'t> Parser<'t> {
 
         // expression-form: pick … (no digit shorthand; friendly errors)
         if let Some("pick") = self.peek_ident() {
-            use goblin_lexer::TokenKind;
             let _ = self.eat_ident(); // 'pick'
 
             // Optional count (INT)
@@ -3176,7 +3154,6 @@ impl<'t> Parser<'t> {
         // expression-form: roll / roll_detail (no spaces allowed inside dice notation)
         if let Some(id) = self.peek_ident() {
             if id == "roll" || id == "roll_detail" {
-                use goblin_lexer::TokenKind;
                 let is_detail = id == "roll_detail";
                 let _ = self.eat_ident(); // 'roll' or 'roll_detail'
 

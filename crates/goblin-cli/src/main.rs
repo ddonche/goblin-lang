@@ -235,7 +235,7 @@ fn run_parse(path: &Path) -> i32 {
     };
 
     // parse it
-    let mut parser = Parser::new(&tokens);
+    let parser = Parser::new(&tokens);
     match parser.parse_module() {
         Ok(_module) => {
             println!("PARSE OK");
