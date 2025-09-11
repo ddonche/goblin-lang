@@ -11,6 +11,7 @@
 //! `@` / `#`-prefixed identifiers, `:` / `;` (with longest-match for `::`),
 //! logical AND `&&` (and single `&`), and arrows `->` / `=>`.
 //! Still a placeholder: many features are TODO; ERR reporting not wired yet.
+#![allow(dead_code)]
 
 use goblin_diagnostics::{Diagnostic, Span};
 

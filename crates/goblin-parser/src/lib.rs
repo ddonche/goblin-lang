@@ -1,4 +1,8 @@
-﻿use goblin_ast as ast;
+﻿#![allow(dead_code)]
+#![allow(unused_assignments)]
+#![allow(unused_variables)]
+
+use goblin_ast as ast;
 use goblin_diagnostics::{Diagnostic, Span};
 use goblin_lexer::{Token, TokenKind};
 
@@ -35,6 +39,10 @@ enum PExpr {
     Str(String),
     BlobStr(String), 
     BlobNum(String),  
+    Date(String),
+    Time(String),
+    DateTime { value: String, tz: Option<String> },
+    StrInterp(Vec<StrPart>),
 
     ClassDecl {
         name: String,
@@ -61,6 +69,23 @@ enum PDecl {
         fields: Vec<(String, PExpr)>,
         actions: Vec<PAction>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub enum StrPart {
+    Text(String),
+    LValue {
+        root: String,
+        segments: Vec<LvSeg>,
+        default_str: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum LvSeg {
+    Member { name: String, optional: bool }, // >>name or ?>>name
+    IndexNumber(String),                     // [123]  (kept as string; validate later)
+    IndexIdent(String),                      // [ident]
 }
 
 pub type ParseResult<T> = Result<T, Vec<Diagnostic>>;
@@ -108,11 +133,237 @@ impl<'t> Parser<'t> {
         }
     }
 
+    fn parse_interpolation_lvalue(&self, src: &str) -> Result<StrPart, String> {
+        // LVALUE := ident ( (">>" | "?>>") ident | "[" INDEX "]" )* [ "??" STRING ]?
+        // INDEX  := digits | ident
+        let bytes = src.as_bytes();
+        let mut i: usize = 0;
+        let n = bytes.len();
+
+        #[inline]
+        fn skip_ws(bytes: &[u8], i: &mut usize) {
+            while *i < bytes.len() {
+                match bytes[*i] {
+                    b' ' | b'\t' | b'\r' | b'\n' => *i += 1,
+                    _ => break,
+                }
+            }
+        }
+        #[inline]
+        fn peek(bytes: &[u8], i: usize, k: usize) -> Option<u8> {
+            let idx = i + k;
+            if idx < bytes.len() { Some(bytes[idx]) } else { None }
+        }
+        #[inline]
+        fn eat(bytes: &[u8], i: &mut usize, c: u8) -> bool {
+            if *i < bytes.len() && bytes[*i] == c { *i += 1; true } else { false }
+        }
+        #[inline]
+        fn is_alpha(c: u8) -> bool {
+            matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'_')
+        }
+        #[inline]
+        fn is_alnum(c: u8) -> bool {
+            matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+        }
+        fn parse_ident(bytes: &[u8], i: &mut usize) -> Result<String, String> {
+            if *i >= bytes.len() || !is_alpha(bytes[*i]) {
+                return Err("expected identifier".into());
+            }
+            let start = *i;
+            *i += 1;
+            while *i < bytes.len() && is_alnum(bytes[*i]) { *i += 1; }
+            Ok(std::str::from_utf8(&bytes[start..*i]).unwrap().to_string())
+        }
+
+        skip_ws(bytes, &mut i);
+        let root = parse_ident(bytes, &mut i)?;
+
+        let mut segments: Vec<LvSeg> = Vec::new();
+        let mut default_str: Option<String> = None;
+
+        loop {
+            skip_ws(bytes, &mut i);
+
+            // default tail: ?? 'string' or ?? "string"
+            if peek(bytes, i, 0) == Some(b'?') && peek(bytes, i, 1) == Some(b'?') {
+                i += 2;
+                skip_ws(bytes, &mut i);
+
+                // accept either quote
+                let quote = match peek(bytes, i, 0) {
+                    Some(b'\'') | Some(b'"') => { let q = bytes[i]; i += 1; q }
+                    _ => return Err("expected quote after ??".into()),
+                };
+
+                let start = i;
+                while i < n && bytes[i] != quote { i += 1; }
+                if i >= n { return Err("unterminated default string after ??".into()); }
+                let value = std::str::from_utf8(&bytes[start..i]).unwrap().to_string();
+                i += 1; // closing quote
+                skip_ws(bytes, &mut i);
+                if i != n { return Err("unexpected characters after default string".into()); }
+                default_str = Some(value);
+                break;
+            }
+
+            // optional member: ?>>name
+            if peek(bytes, i, 0) == Some(b'?') && peek(bytes, i, 1) == Some(b'>') && peek(bytes, i, 2) == Some(b'>') {
+                i += 3;
+                skip_ws(bytes, &mut i);
+                let name = parse_ident(bytes, &mut i)?;
+                segments.push(LvSeg::Member { name, optional: true });
+                continue;
+            }
+
+            // member: >>name
+            if peek(bytes, i, 0) == Some(b'>') && peek(bytes, i, 1) == Some(b'>') {
+                i += 2;
+                skip_ws(bytes, &mut i);
+                let name = parse_ident(bytes, &mut i)?;
+                segments.push(LvSeg::Member { name, optional: false });
+                continue;
+            }
+
+            // index: [number] or [ident]
+            if eat(bytes, &mut i, b'[') {
+                skip_ws(bytes, &mut i);
+                if i >= n { return Err("unterminated '[' in index".into()); }
+
+                // number?
+                if i < n && bytes[i].is_ascii_digit() {
+                    let start = i;
+                    i += 1;
+                    while i < n && (bytes[i].is_ascii_digit() || bytes[i] == b'_') { i += 1; }
+                    let num = std::str::from_utf8(&bytes[start..i]).unwrap().to_string();
+                    skip_ws(bytes, &mut i);
+                    if !eat(bytes, &mut i, b']') { return Err("expected ']' after numeric index".into()); }
+                    segments.push(LvSeg::IndexNumber(num));
+                    continue;
+                }
+
+                // ident?
+                if i < n && is_alpha(bytes[i]) {
+                    let name = parse_ident(bytes, &mut i)?;
+                    skip_ws(bytes, &mut i);
+                    if !eat(bytes, &mut i, b']') { return Err("expected ']' after identifier index".into()); }
+                    segments.push(LvSeg::IndexIdent(name));
+                    continue;
+                }
+
+                return Err("invalid index: expected number or identifier".into());
+            }
+
+            // nothing more to consume
+            break;
+        }
+
+        Ok(StrPart::LValue { root, segments, default_str })
+    }
+
+    fn validate_interpolation_braces(&self, s: &str) -> Result<(), String> {
+        // Error if there's any unmatched '{' after accounting for the literal sequence "{{/}}"
+        let bytes = s.as_bytes();
+        let mut i = 0usize;
+        let n = bytes.len();
+        let mut depth: usize = 0;
+
+        while i < n {
+            // Treat "{{/}}" as a literal '}' in TEXT context
+            if i + 4 < n && &bytes[i..i + 5] == b"{{/}}" {
+                i += 5;
+                continue;
+            }
+            match bytes[i] {
+                b'{' => { depth += 1; i += 1; }
+                b'}' => { if depth > 0 { depth -= 1; } i += 1; }
+                _ => { i += 1; }
+            }
+        }
+
+        if depth != 0 {
+            Err("unterminated '{' in interpolated string".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fmt_tok(tok: &goblin_lexer::Token) -> String {
+        use goblin_lexer::TokenKind as K;
+        match &tok.kind {
+            K::Ident    => format!("Ident({})", tok.value.as_deref().unwrap_or("")),
+            K::Int      => format!("Int({})", tok.value.as_deref().unwrap_or("")),
+            K::Float    => format!("Float({})", tok.value.as_deref().unwrap_or("")),
+            K::String   => "String(...)".into(),
+            K::Op(s)    => format!("Op({})", s),
+            K::Newline  => "Newline".into(),
+            K::Eof      => "EOF".into(),
+            other       => format!("{:?}", other),
+        }
+    }
+
+    fn got_here(&self) -> String {
+        match self.toks.get(self.i) {
+            Some(t) => Self::fmt_tok(t),
+            None => "EOF".into(),
+        }
+    }
+
+    fn err_expected_expr(&self, ctx: &str) -> String {
+        let here = self.got_here();
+        let prev = if self.i > 0 {
+            Self::fmt_tok(&self.toks[self.i - 1])
+        } else {
+            "BOF".into()
+        };
+        if ctx.is_empty() {
+            format!("expected expression; got {} after {}", here, prev)
+        } else {
+            format!("expected expression {} ; got {} after {}", ctx, here, prev)
+        }
+    }
+
     #[inline]
     fn token_is_op(&self, tok: &goblin_lexer::Token, s: &str) -> bool {
         // In this codebase, operator tokens carry their exact lexeme in `value`.
         // Comparing the string is sufficient and avoids enum pattern issues.
         tok.value.as_deref() == Some(s)
+    }
+
+    fn split_duration_lexeme(s: &str) -> Result<(String, String), String> {
+        // Accept units: mo, s, m, h, d, w, y  (longest-match for "mo")
+        if s.len() < 2 {
+            return Err("malformed duration literal".to_string());
+        }
+        let (base, unit) = if s.ends_with("mo") {
+            (&s[..s.len()-2], "mo")
+        } else {
+            // last char as unit
+            let u = &s[s.len()-1..];
+            (&s[..s.len()-1], u)
+        };
+        if base.is_empty() {
+            return Err("malformed duration literal".to_string());
+        }
+        // Minimal unit validation
+        match unit {
+            "s" | "m" | "h" | "d" | "w" | "y" | "mo" => Ok((base.to_string(), unit.to_string())),
+            _ => Err(format!("unknown duration unit '{}'", unit)),
+        }
+    }
+
+    fn apply_postfix_ops(&mut self, mut expr: PExpr) -> PExpr {
+        loop {
+            if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into()); continue; }
+            if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into()); continue; }
+            if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into()); continue; }
+            if self.eat_op("**") { expr = PExpr::Postfix(Box::new(expr), "**".into()); continue; }
+            if self.eat_op("//") { expr = PExpr::Postfix(Box::new(expr), "//".into()); continue; }
+            // postfix definedness: x?
+            if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr)); continue; }
+            break;
+        }
+        expr
     }
 
     /// Preview a literal list `[ ... ]` at the current index.
@@ -1920,47 +2171,100 @@ impl<'t> Parser<'t> {
                     None => return Err("expected string or integer after 'blob'".to_string()),
                 };
 
-                return match k2 {
+                let mut expr = match k2 {
                     goblin_lexer::TokenKind::String => {
                         let lit = v2.unwrap_or_default();
                         self.i += 1;
-                        Ok(PExpr::BlobStr(lit))
+                        PExpr::BlobStr(lit)
                     }
                     goblin_lexer::TokenKind::Int => {
                         let lit = v2.unwrap_or_default();
                         self.i += 1;
-                        Ok(PExpr::BlobNum(lit))
+                        PExpr::BlobNum(lit)
                     }
-                    _ => Err("expected string or integer after 'blob'".to_string()),
+                    _ => return Err("expected string or integer after 'blob'".to_string()),
                 };
+
+                // ---- POSTFIX LOOP ----
+                loop {
+                    // handle two-token ops first: // and **
+                    if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
+                        use goblin_lexer::TokenKind as K;
+                        if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
+                            if sa.as_str() == "/" && sb.as_str() == "/" {
+                                self.i += 2;
+                                expr = PExpr::Postfix(Box::new(expr), "//".into());
+                                continue;
+                            }
+                            if sa.as_str() == "*" && sb.as_str() == "*" {
+                                self.i += 2;
+                                expr = PExpr::Postfix(Box::new(expr), "**".into());
+                                continue;
+                            }
+                        }
+                    }
+                    // single-char postfix ops
+                    if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
+                    if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
+                    if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
+                    // postfix definedness: x?
+                    if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
+                    break;
+                }
+
+                return Ok(expr);
             }
         }
 
+        // --- Parenthesized ---
         if self.peek_op("(") {
             let _ = self.eat_op("(");
-            let expr = self.parse_coalesce()?;
+            let mut expr = self.parse_coalesce()?;
             if !self.eat_op(")") {
                 return Err("expected ')' to close parenthesized expression".to_string());
             }
+
+            // ---- POSTFIX LOOP ----
+            loop {
+                // handle two-token ops first: // and **
+                if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
+                    use goblin_lexer::TokenKind as K;
+                    if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
+                        if sa.as_str() == "/" && sb.as_str() == "/" {
+                            self.i += 2;
+                            expr = PExpr::Postfix(Box::new(expr), "//".into());
+                            continue;
+                        }
+                        if sa.as_str() == "*" && sb.as_str() == "*" {
+                            self.i += 2;
+                            expr = PExpr::Postfix(Box::new(expr), "**".into());
+                            continue;
+                        }
+                    }
+                }
+                // single-char postfix ops
+                if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
+                if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
+                if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
+                // postfix definedness: x?
+                if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
+                break;
+            }
+
             return Ok(expr);
         }
 
+        // --- Array literal ---
         if self.eat_op("[") {
-            while matches!(self.toks.get(self.i), Some(tok)
-                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-            { self.i += 1; }
+            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
 
             let mut elems = Vec::new();
-
             if !self.peek_op("]") {
                 loop {
                     let elem = self.parse_coalesce()?;
                     elems.push(elem);
-
                     if self.eat_op(",") {
-                        while matches!(self.toks.get(self.i), Some(tok)
-                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                        { self.i += 1; }
+                        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                         if self.peek_op("]") { break; }
                         continue;
                     }
@@ -1968,48 +2272,58 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            while matches!(self.toks.get(self.i), Some(tok)
-                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-            { self.i += 1; }
+            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+            if !self.eat_op("]") { return Err("expected ']' to close array".to_string()); }
 
-            if !self.eat_op("]") {
-                return Err("expected ']' to close array".to_string());
+            let mut expr = PExpr::Array(elems);
+
+            // ---- POSTFIX LOOP ----
+            loop {
+                // handle two-token ops first: // and **
+                if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
+                    use goblin_lexer::TokenKind as K;
+                    if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
+                        if sa.as_str() == "/" && sb.as_str() == "/" {
+                            self.i += 2;
+                            expr = PExpr::Postfix(Box::new(expr), "//".into());
+                            continue;
+                        }
+                        if sa.as_str() == "*" && sb.as_str() == "*" {
+                            self.i += 2;
+                            expr = PExpr::Postfix(Box::new(expr), "**".into());
+                            continue;
+                        }
+                    }
+                }
+                // single-char postfix ops
+                if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
+                if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
+                if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
+                // postfix definedness: x?
+                if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
+                break;
             }
-            return Ok(PExpr::Array(elems));
+
+            return Ok(expr);
         }
 
+        // --- Object literal ---
         if self.eat_op("{") {
-            while matches!(self.toks.get(self.i), Some(tok)
-                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-            { self.i += 1; }
+            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
 
             let mut props: Vec<(String, PExpr)> = Vec::new();
 
             if !self.peek_op("}") {
                 loop {
-                    let Some(key) = self.eat_object_key() else {
-                        return Err("expected object key".to_string());
-                    };
-
-                    while matches!(self.toks.get(self.i), Some(tok)
-                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                    { self.i += 1; }
-
-                    if !self.eat_op(":") {
-                        return Err("expected ':' after object key".to_string());
-                    }
-
-                    while matches!(self.toks.get(self.i), Some(tok)
-                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                    { self.i += 1; }
-
+                    let Some(key) = self.eat_object_key() else { return Err("expected object key".to_string()); };
+                    while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                    if !self.eat_op(":") { return Err("expected ':' after object key".to_string()); }
+                    while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                     let value = self.parse_assign()?;
                     props.push((key, value));
 
                     if self.eat_op(",") {
-                        while matches!(self.toks.get(self.i), Some(tok)
-                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                        { self.i += 1; }
+                        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                         if self.peek_op("}") { break; }
                         continue;
                     }
@@ -2017,22 +2331,48 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            while matches!(self.toks.get(self.i), Some(tok)
-                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-            { self.i += 1; }
+            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+            if !self.eat_op("}") { return Err("expected '}' to close object".to_string()); }
 
-            if !self.eat_op("}") {
-                return Err("expected '}' to close object".to_string());
+            let mut expr = PExpr::Object(props);
+
+            // ---- POSTFIX LOOP ----
+            loop {
+                // handle two-token ops first: // and **
+                if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
+                    use goblin_lexer::TokenKind as K;
+                    if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
+                        if sa.as_str() == "/" && sb.as_str() == "/" {
+                            self.i += 2;
+                            expr = PExpr::Postfix(Box::new(expr), "//".into());
+                            continue;
+                        }
+                        if sa.as_str() == "*" && sb.as_str() == "*" {
+                            self.i += 2;
+                            expr = PExpr::Postfix(Box::new(expr), "**".into());
+                            continue;
+                        }
+                    }
+                }
+                // single-char postfix ops
+                if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
+                if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
+                if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
+                // postfix definedness: x?
+                if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
+                break;
             }
-            return Ok(PExpr::Object(props));
+
+            return Ok(expr);
         }
 
+        // --- Lit / Ident dispatch ---
         let (kind, val_opt) = match self.peek() {
             Some(t) => (t.kind.clone(), t.value.clone()),
-            None => return Err("expected expression, found EOF".to_string()),
+            None => return Err(self.err_expected_expr("(found EOF)")),
         };
 
-        match kind {
+        let mut expr = match kind {
             goblin_lexer::TokenKind::Int => {
                 let lit = val_opt.unwrap_or_default();
                 self.i += 1;
@@ -2041,11 +2381,13 @@ impl<'t> Parser<'t> {
                     if t.kind == goblin_lexer::TokenKind::Op("unit".into()) {
                         let unit = t.value.clone().unwrap_or_default();
                         self.i += 1;
-                        return Ok(PExpr::IntWithUnit(lit, unit));
+                        PExpr::IntWithUnit(lit, unit)
+                    } else {
+                        PExpr::Int(lit)
                     }
+                } else {
+                    PExpr::Int(lit)
                 }
-
-                Ok(PExpr::Int(lit))
             }
 
             goblin_lexer::TokenKind::Float => {
@@ -2056,32 +2398,178 @@ impl<'t> Parser<'t> {
                     if t.kind == goblin_lexer::TokenKind::Op("unit".into()) {
                         let unit = t.value.clone().unwrap_or_default();
                         self.i += 1;
-                        return Ok(PExpr::FloatWithUnit(lit, unit));
+                        PExpr::FloatWithUnit(lit, unit)
+                    } else {
+                        PExpr::Float(lit)
                     }
+                } else {
+                    PExpr::Float(lit)
                 }
+            }
 
-                Ok(PExpr::Float(lit))
+            goblin_lexer::TokenKind::Duration => {
+                let lit = val_opt.unwrap_or_default(); // e.g., "5s", "2.5h", "1mo"
+                self.i += 1;
+                let (base, unit) = Self::split_duration_lexeme(&lit)?;
+                let is_floaty = base.contains('.') || base.contains('e') || base.contains('E');
+                if is_floaty { PExpr::FloatWithUnit(base, unit) } else { PExpr::IntWithUnit(base, unit) }
             }
 
             goblin_lexer::TokenKind::String => {
-                let lit = val_opt.unwrap_or_default();
+                // lvalue-only interpolation
+                let lit = self.toks[self.i].value.clone().unwrap_or_default();
                 self.i += 1;
-                Ok(PExpr::Str(lit))
+
+                if !lit.as_bytes().contains(&b'{') {
+                    PExpr::Str(lit)
+                } else {
+                    let b = lit.as_bytes();
+                    let mut parts: Vec<StrPart> = Vec::new();
+                    let mut text = String::new();
+                    let mut i: usize = 0;
+                    let n = b.len();
+
+                    while i < n {
+                        if i + 4 < n && &b[i..i + 5] == b"{{/}}" {
+                            text.push('}');
+                            i += 5;
+                            continue;
+                        }
+                        if b[i] == b'{' {
+                            if !text.is_empty() { parts.push(StrPart::Text(std::mem::take(&mut text))); }
+                            let mut depth: usize = 1;
+                            let start = i + 1; i += 1;
+                            while i < n && depth > 0 {
+                                match b[i] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} }
+                                i += 1;
+                            }
+                            if depth != 0 { return Err("unterminated '{' in interpolated string".to_string()); }
+                            let end = i - 1;
+                            let inner = &lit[start..end];
+                            let part = self.parse_interpolation_lvalue(inner)?;
+                            parts.push(part);
+                            continue;
+                        }
+                        text.push(b[i] as char);
+                        i += 1;
+                    }
+                    if !text.is_empty() { parts.push(StrPart::Text(text)); }
+                    PExpr::StrInterp(parts)
+                }
+            }
+
+            goblin_lexer::TokenKind::Date => {
+                self.i += 1;
+                self.skip_newlines();
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => return Err("expected string after 'date'".to_string()),
+                };
+                if !matches!(k2, goblin_lexer::TokenKind::String) {
+                    return Err("expected string after 'date'".to_string());
+                }
+                let lit = v2.unwrap_or_default();
+                self.i += 1;
+                PExpr::Date(lit)
+            }
+
+            goblin_lexer::TokenKind::Time => {
+                self.i += 1;
+                self.skip_newlines();
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => return Err("expected string after 'time'".to_string()),
+                };
+                if !matches!(k2, goblin_lexer::TokenKind::String) {
+                    return Err("expected string after 'time'".to_string());
+                }
+                let lit = v2.unwrap_or_default();
+                self.i += 1;
+                PExpr::Time(lit)
+            }
+
+            goblin_lexer::TokenKind::DateTime => {
+                self.i += 1;
+                self.skip_newlines();
+
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => return Err("expected string after 'datetime'".to_string()),
+                };
+                if !matches!(k2, goblin_lexer::TokenKind::String) {
+                    return Err("expected string after 'datetime'".to_string());
+                }
+                let value = v2.unwrap_or_default();
+                self.i += 1;
+
+                self.skip_newlines();
+                let mut tz: Option<String> = None;
+                if let Some(tz_tok) = self.peek() {
+                    if matches!(tz_tok.kind, goblin_lexer::TokenKind::Ident)
+                        && tz_tok.value.as_deref() == Some("tz")
+                    {
+                        self.i += 1;
+                        self.skip_newlines();
+                        if !self.eat_op(":") {
+                            return Err("expected ':' after tz".to_string());
+                        }
+                        self.skip_newlines();
+                        let (k3, v3) = match self.peek() {
+                            Some(t3) => (t3.kind.clone(), t3.value.clone()),
+                            None => return Err("expected string after tz:'".to_string()),
+                        };
+                        if !matches!(k3, goblin_lexer::TokenKind::String) {
+                            return Err("expected string after tz:'".to_string());
+                        }
+                        tz = Some(v3.unwrap_or_default());
+                        self.i += 1;
+                    }
+                }
+                PExpr::DateTime { value, tz }
             }
 
             goblin_lexer::TokenKind::Ident => {
                 let name = val_opt.unwrap_or_default();
                 self.i += 1;
                 match name.as_str() {
-                    "true"  => Ok(PExpr::Bool(true)),
-                    "false" => Ok(PExpr::Bool(false)),
-                    "nil"   => Ok(PExpr::Nil),
-                    _       => Ok(PExpr::Ident(name)),
+                    "true"  => PExpr::Bool(true),
+                    "false" => PExpr::Bool(false),
+                    "nil"   => PExpr::Nil,
+                    _       => PExpr::Ident(name),
                 }
             }
 
-            _ => Err("expected expression".to_string()),
+            _ => return Err(self.err_expected_expr("at start of primary")),
+        };
+
+        // ---- POSTFIX LOOP (applies to all primaries above) ----
+        loop {
+            // handle two-token ops first: // and **
+            if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
+                use goblin_lexer::TokenKind as K;
+                if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
+                    if sa.as_str() == "/" && sb.as_str() == "/" {
+                        self.i += 2;
+                        expr = PExpr::Postfix(Box::new(expr), "//".into());
+                        continue;
+                    }
+                    if sa.as_str() == "*" && sb.as_str() == "*" {
+                        self.i += 2;
+                        expr = PExpr::Postfix(Box::new(expr), "**".into());
+                        continue;
+                    }
+                }
+            }
+            // single-char postfix ops
+            if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
+            if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
+            if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
+            // postfix definedness: x?
+            if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
+            break;
         }
+
+        Ok(expr)
     }
 
     #[inline]
