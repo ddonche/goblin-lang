@@ -593,38 +593,60 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             }
 
             // Slash: comments or operators
-            // Slash: comments or operators
             b'/' => {
-                // Block comment "//// ... ////"
+                // 1) Block comment: "//// ... ////" (keep this first)
                 if is_block_comment_open(bytes, i) {
                     consume_block_comment(bytes, file, &mut i, &mut line, &mut col, &mut tokens)?;
                     continue;
                 }
 
-                // Line comment "/// ...": consume to end-of-line (do NOT eat the newline)
+                // 2) Line comment: "/// ..." (do NOT consume the newline)
                 if i + 2 < bytes.len() && bytes[i + 1] == b'/' && bytes[i + 2] == b'/' {
-                    // advance past "///"
+                    // skip the leading "///"
                     i += 3;
                     col += 3;
-                    // skip until CR or LF (leave the newline char for the NL arm)
                     while i < bytes.len() && bytes[i] != b'\r' && bytes[i] != b'\n' {
                         i += 1;
                         col += 1;
                     }
-                    // no token emitted for comments
+                    continue; // no token for comments
+                }
+
+                // 3) Integer-division / postfix-sqrt operator: "//"
+                if i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
+                    tokens.push(Token {
+                        kind: TokenKind::Op("//".to_string()),
+                        span,
+                        value: Some("//".to_string()),
+                    });
+                    i += 2;
+                    col += 2;
                     continue;
                 }
 
-                // Otherwise it's an operator: "/=" or "/"
+                // 4) Compound assign: "/="
                 if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token { kind: TokenKind::Operator("/=".to_string()), span, value: None });
-                    i += 2; col += 2;
-                } else {
-                    let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token { kind: TokenKind::Operator("/".to_string()), span, value: None });
-                    i += 1; col += 1;
+                    tokens.push(Token {
+                        kind: TokenKind::Op("/=".to_string()),
+                        span,
+                        value: Some("/=".to_string()),
+                    });
+                    i += 2;
+                    col += 2;
+                    continue;
                 }
+
+                // 5) Bare "/" operator
+                let span = Span::new(file, i, i + 1, line, col, line, col + 1);
+                tokens.push(Token {
+                    kind: TokenKind::Op("/".to_string()),
+                    span,
+                    value: Some("/".to_string()),
+                });
+                i += 1;
+                col += 1;
             }
 
             // Numbers (decimal, float, base-prefixed, with percent/duration/money)
@@ -1616,23 +1638,31 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'&' {
                     // '&&' (logical-and alias)
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-                    tokens.push(Token { kind: TokenKind::Operator("&&".to_string()), span, value: None });
+                    tokens.push(Token { 
+                        kind: TokenKind::Op("&&".to_string()), 
+                        span, 
+                        value: Some("&&".to_string()) 
+                    });
                     i += 2;
                     col += 2;
                 } else if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
                     // '&=' — explicitly not supported
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
-
-                    // Return a diagnostics vector directly (matches your lexer Result error type)
                     return Err(vec![Diagnostic::error(
                         "lex",
                         "Unsupported operator '&=' (reserved '&' cannot be combined with '=')",
                         span,
                     )]);
                 } else {
-                    // Single '&' — reserved token (parser will decide semantics later)
+                    // Single '&' — reserved token
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    tokens.push(Token { kind: TokenKind::Operator("&".to_string()), span, value: None });
+                    tokens.push(Token { 
+                        kind: TokenKind::Op("&".to_string()), 
+                        span, 
+                        value: Some("&".to_string()) 
+                    });
+                    i += 1;
+                    col += 1;
                 }
             }
 

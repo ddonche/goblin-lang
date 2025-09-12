@@ -95,6 +95,8 @@ pub struct Parser<'t> {
     i: usize,
     in_stmt: bool,
     block_closed_hard: bool,
+    rec_depth: usize,
+    last_progress_check: usize,
 }
 
 fn is_block_starter_name(name: &str) -> bool {
@@ -108,8 +110,145 @@ impl<'t> Parser<'t> {
             i: 0,
             in_stmt: false,
             block_closed_hard: false,
+            rec_depth: 0,
+            last_progress_check: 0,
         }
     } 
+
+    const MAX_RECURSION: usize = 1024;
+
+    #[inline]
+    fn with_depth<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>
+    ) -> Result<T, String> {
+        let start_i = self.i;
+        
+        // If we haven't made progress since last check, we're stuck
+        if start_i == self.last_progress_check {
+            return Err(format!("Parser stuck at token {}: {:?}", 
+                start_i, 
+                self.toks.get(start_i).map(|t| (&t.kind, &t.value))));
+        }
+        
+        self.rec_depth += 1;
+        if self.rec_depth > Self::MAX_RECURSION {
+            self.rec_depth -= 1;
+            return Err("expression too deeply nested".to_string());
+        }
+        let out = f(self);
+        self.rec_depth -= 1;
+        
+        // Update progress tracking
+        if self.i > start_i {
+            self.last_progress_check = self.i;
+        }
+        
+        out
+    }
+
+    // --- SHIMS: keep old call sites working ---
+    fn parse_primary(&mut self) -> Result<PExpr, String> {
+        self.parse_primary_impl()
+    }
+
+    fn parse_assign(&mut self) -> Result<PExpr, String> {
+        // Parse potential LHS first
+        let lhs = self.parse_coalesce()?;
+
+        // Detect assignment / compound-assign
+        let op: Option<&'static str> =
+            if self.peek_op("//=") { Some("//=") }
+            else if self.peek_op("+=") { Some("+=") }
+            else if self.peek_op("-=") { Some("-=") }
+            else if self.peek_op("*=") { Some("*=") }
+            else if self.peek_op("/=") { Some("/=") }
+            else if self.peek_op("%=") { Some("%=") }
+            else if self.peek_op("=")  { Some("=")  }
+            else { None };
+
+        if op.is_none() {
+            return Ok(lhs);
+        }
+
+        // Assignments only at statement level
+        if !self.in_stmt {
+            return Err("assignment not allowed in expression; use a statement at block level".to_string());
+        }
+        // Forbid assigning to meta .type
+        if self.lhs_ends_with_dot_type_at(self.i) {
+            return Err("cannot assign to meta '.type'; to set a user field named 'type', access it via '>> type'".into());
+        }
+
+        let op = op.unwrap();
+        let _ = self.eat_op(op);
+
+        // Allow newline(s) before RHS *and* support brace-block RHS even on the same line
+        self.skip_newlines();
+
+        // Brace-block RHS: parse block until '}' (or 'end' if you support that),
+        // returning the last expression inside the block.
+        if self.eat_op("{") {
+            let mut last: Option<PExpr> = None;
+
+            loop {
+                // consume blank lines between block exprs
+                self.skip_newlines();
+
+                // close?
+                if self.peek_block_close() {
+                    let _ = self.eat_block_close(); // handles '}' and/or 'end'
+                    break;
+                }
+                if self.is_eof() {
+                    return Err("unexpected end of file: expected '}' or 'end' to close assignment".into());
+                }
+
+                // parse the next expression in the block
+                last = Some(self.parse_coalesce()?);
+
+                // optional separators/newlines between expressions
+                self.skip_newlines();
+            }
+
+            let rhs = last.ok_or_else(|| "empty assignment block".to_string())?;
+            return if op == "=" {
+                Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+            } else {
+                Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
+            };
+        }
+
+        // Otherwise: normal RHS expression (disable nested assignment)
+        let prev_in_stmt = self.in_stmt;
+        self.in_stmt = false;
+        let rhs = self.parse_coalesce()?;
+        self.in_stmt = prev_in_stmt;
+
+        if op == "=" {
+            Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+        } else {
+            Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
+        }
+    }
+
+    fn parse_coalesce(&mut self) -> Result<PExpr, String> {
+        let mut lhs = self.parse_or()?;
+        while self.eat_op("??") {
+            let rhs = self.parse_or()?;
+            lhs = PExpr::Binary(Box::new(lhs), "??".into(), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn ensure_progress(&mut self, start_i: usize, context: &str) -> Result<(), String> {
+        if self.i <= start_i {
+            return Err(format!("parser stuck at token {} in {}: {:?}", 
+                start_i, context, 
+                self.toks.get(start_i).map(|t| &t.kind)));
+        }
+        Ok(())
+    }
 
     fn span_from_tokens(toks: &[goblin_lexer::Token], start_i: usize, end_i: usize) -> Span {
         if toks.is_empty() {
@@ -131,6 +270,159 @@ impl<'t> Parser<'t> {
             (Some(s), None) => s.span.clone(),
             _ => Span::new("<unknown>", 0, 0, 0, 0, 0, 0),
         }
+    }
+
+    #[inline]
+    /// Parse the restricted lvalue grammar used by unary `&` definedness checks.
+    /// Accepts:  Ident
+    ///         | LValue `>>` Ident
+    ///         | LValue `>>` "string-key"
+    ///         | LValue `?>>` Ident          (optional chaining)
+    ///         | LValue `[` expr `]`         (indexing; allows nesting)
+    fn parse_definedness_lvalue(&mut self) -> Result<PExpr, String> {
+        use goblin_lexer::TokenKind as K;
+
+        // allow newline(s) before the root after '&'
+        self.skip_newlines();
+
+        // Root must be an identifier
+        let mut expr = if let Some(name) = self.eat_ident() {
+            PExpr::Ident(name)
+        } else {
+            return Err("'&' requires a variable/field/index".to_string());
+        };
+
+        // zero or more of: >>name | >>"key" | ?>>name | [expr]
+        loop {
+            // tolerate newlines between segments
+            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
+
+            if self.eat_op(">>") {
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
+
+                if let Some(name) = self.eat_ident() {
+                    expr = PExpr::Member(Box::new(expr), name);
+                    continue;
+                } else if let Some(key) = self.eat_string_lit() {
+                    expr = PExpr::Member(Box::new(expr), key);
+                    continue;
+                } else {
+                    return Err("expected identifier or string after '>>'".to_string());
+                }
+            }
+
+            if self.eat_op("?>>") {
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
+
+                let Some(name) = self.eat_ident() else {
+                    return Err("expected identifier after '?>>'".to_string());
+                };
+                expr = PExpr::OptMember(Box::new(expr), name);
+                continue;
+            }
+
+            if self.eat_op("[") {
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
+
+                if self.peek_op("]") {
+                    return Err("expected expression inside '[]'".to_string());
+                }
+
+                let idx = self.parse_coalesce()?;
+
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
+                if !self.eat_op("]") {
+                    return Err("expected ']' after index expression".to_string());
+                }
+
+                expr = PExpr::Index(Box::new(expr), Box::new(idx));
+                continue;
+            }
+
+            break;
+        }
+
+        Ok(expr)
+    }
+
+    #[inline]
+    fn key_expr_is_side_effect_free(e: &PExpr) -> bool {
+        use PExpr::*;
+        match e {
+            // disallow anything that could invoke user code or assign
+            Call(..) | FreeCall(..) | NsCall(..) | OptCall(..) | Assign(..) => false,
+
+            // recurse through composites (note the .as_ref() since we have &PExpr)
+            Binary(l,_,r) => Self::key_expr_is_side_effect_free(l.as_ref()) && Self::key_expr_is_side_effect_free(r.as_ref()),
+            Prefix(_,x) | Postfix(x,_) | IsBound(x) => Self::key_expr_is_side_effect_free(x.as_ref()),
+            Index(x,y) => Self::key_expr_is_side_effect_free(x.as_ref()) && Self::key_expr_is_side_effect_free(y.as_ref()),
+            Member(x,_) | OptMember(x,_) => Self::key_expr_is_side_effect_free(x.as_ref()),
+
+            Slice(x,a,b) => {
+                if !Self::key_expr_is_side_effect_free(x.as_ref()) { return false; }
+                if let Some(bx) = a.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
+                if let Some(bx) = b.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
+                true
+            }
+            Slice3(x,a,b,c) => {
+                if !Self::key_expr_is_side_effect_free(x.as_ref()) { return false; }
+                if let Some(bx) = a.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
+                if let Some(bx) = b.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
+                if let Some(bx) = c.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
+                true
+            }
+
+            Array(xs)   => xs.iter().all(Self::key_expr_is_side_effect_free),
+            Object(kvs) => kvs.iter().all(|(_,v)| Self::key_expr_is_side_effect_free(v)),
+            StrInterp(ps) => ps.iter().all(|p| matches!(p, StrPart::Text(_) | StrPart::LValue{..})),
+
+            // harmless leaves in your PExpr
+            Ident(_) | Int(_) | Float(_) | IntWithUnit(_,_) | FloatWithUnit(_,_)
+            | Bool(_) | Nil | Str(_) | BlobStr(_) | BlobNum(_) | Date(_) | Time(_) | DateTime { .. } => true,
+
+            // conservative default for constructs that shouldn't appear in keys
+            ClassDecl { .. } => false,
+        }
+    }
+
+    fn apply_postfix_ops(&mut self, mut expr: PExpr) -> PExpr {
+        // decide if token after an op starts an expression; keeps "**" and "//" postfix
+        // from stealing binary uses like `a ** 2` or `a // 2`
+        let lookahead_starts_expr = |from: usize| -> bool {
+            use goblin_lexer::TokenKind as K;
+            let mut j = from;
+            while matches!(self.toks.get(j), Some(t) if matches!(t.kind, K::Newline)) { j += 1; }
+            match self.toks.get(j).map(|t| &t.kind) {
+                Some(K::Ident)
+                | Some(K::Int) | Some(K::Float) | Some(K::String)
+                | Some(K::Blob) | Some(K::Date) | Some(K::Time) | Some(K::DateTime) => true,
+                Some(K::Op(s)) if s == "(" || s == "[" || s == "{" || s == "+" || s == "-" || s == "!" || s == "&" => true,
+                _ => false,
+            }
+        };
+
+        let mut iterations = 0;
+        loop {
+            iterations += 1;
+            if iterations > 1000 { panic!("Stack overflow protection: too many postfix operations at token index {}", self.i); }
+
+            let start_i = self.i;
+
+            // postfix ** and // (disambiguate from binary by peeking next token)
+            if self.peek_op("**") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("**"); expr = PExpr::Postfix(Box::new(expr), "**".into()); continue; }
+            if self.peek_op("//") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("//"); expr = PExpr::Postfix(Box::new(expr), "//".into()); continue; }
+
+            // other postfix ops
+            if self.eat_op("++") { expr = PExpr::Postfix(Box::new(expr), "++".into()); continue; }
+            if self.eat_op("--") { expr = PExpr::Postfix(Box::new(expr), "--".into()); continue; }
+            if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));               continue; }
+            if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());   continue; }
+            if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());   continue; }
+            if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());   continue; }
+
+            if self.i == start_i { break; }
+        }
+        expr
     }
 
     fn parse_interpolation_lvalue(&self, src: &str) -> Result<StrPart, String> {
@@ -350,20 +642,6 @@ impl<'t> Parser<'t> {
             "s" | "m" | "h" | "d" | "w" | "y" | "mo" => Ok((base.to_string(), unit.to_string())),
             _ => Err(format!("unknown duration unit '{}'", unit)),
         }
-    }
-
-    fn apply_postfix_ops(&mut self, mut expr: PExpr) -> PExpr {
-        loop {
-            if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into()); continue; }
-            if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into()); continue; }
-            if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into()); continue; }
-            if self.eat_op("**") { expr = PExpr::Postfix(Box::new(expr), "**".into()); continue; }
-            if self.eat_op("//") { expr = PExpr::Postfix(Box::new(expr), "//".into()); continue; }
-            // postfix definedness: x?
-            if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr)); continue; }
-            break;
-        }
-        expr
     }
 
     /// Preview a literal list `[ ... ]` at the current index.
@@ -878,9 +1156,38 @@ impl<'t> Parser<'t> {
     }
 
     // Consume consecutive NEWLINE tokens.
+    #[inline]
     fn skip_newlines(&mut self) {
-        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, TokenKind::Newline)) {
+        use goblin_lexer::TokenKind as K;
+
+        let start_i = self.i;
+        let mut count: usize = 0;
+
+        while let Some(tok) = self.toks.get(self.i) {
+            if !matches!(tok.kind, K::Newline) {
+                break;
+            }
+            let before = self.i;
             self.i += 1;
+            count += 1;
+
+            // Progress guard
+            if self.i <= before {
+                panic!(
+                    "skip_newlines made no progress at i={} (tok: {:?})",
+                    before, tok
+                );
+            }
+
+            // Hard cap to prevent pathological spins
+            if count > 100_000 {
+                // CLONE the span to avoid moving out of &Token
+                let first_span = self.toks.get(start_i).map(|t| t.span.clone());
+                panic!(
+                    "skip_newlines consumed >100k newlines starting at i={}, first_span={:?}",
+                    start_i, first_span
+                );
+            }
         }
     }
 
@@ -1876,11 +2183,10 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
-
         // First: dedicated keyword tokens (some lexers emit these)
         if let Some(t) = self.peek() {
             match &t.kind {
-                TokenKind::Act => { self.i += 1; return self.parse_free_action("act"); }
+                TokenKind::Act    => { self.i += 1; return self.parse_free_action("act"); }
                 TokenKind::Action => { self.i += 1; return self.parse_free_action("action"); }
                 _ => {}
             }
@@ -1905,18 +2211,14 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // IF  (layout-only; no opening '{' allowed after headers)
+        // IF (layout-only; no opening '{' allowed after headers)
         if self.peek_ident() == Some("if") {
             let if_tok_i = self.i;
             let if_line  = self.toks[if_tok_i].span.line_start;
             let if_col   = self.toks[if_tok_i].span.col_start;
 
-            let _ = self.eat_ident(); // 'if'
-
-            // condition (no assignment in header)
-            let _cond = self.parse_coalesce()?;
-
-            // Forbid '{' after header (same line or next line)
+            let _ = self.eat_ident();                  // 'if'
+            let _cond = self.parse_coalesce()?;        // condition (no assignment in header)
             self.enforce_inline_brace_policy(if_line, "if")?;
 
             // THEN block: layout-only until aligned elif/else or hard closer ('}' or 'end')
@@ -1924,15 +2226,12 @@ impl<'t> Parser<'t> {
                 p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
             })?;
 
-            // Track whether we've already seen an 'else' in this chain.
             let mut else_seen = false;
 
             // If the 'then' block hard-closed, tails are not allowed
             if self.block_closed_hard {
                 if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                    return Err(
-                        "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
-                    );
+                    return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
                 }
             }
 
@@ -1940,16 +2239,12 @@ impl<'t> Parser<'t> {
             loop {
                 self.skip_stmt_separators();
 
-                // No tails allowed after a hard-closed segment
                 if self.block_closed_hard {
                     if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                        return Err(
-                            "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
-                        );
+                        return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
                     }
                 }
 
-                // Duplicate 'else' guard at the chain level
                 if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
                     return Err("duplicate 'else' in if block".to_string());
                 }
@@ -1958,25 +2253,19 @@ impl<'t> Parser<'t> {
                     let elif_tok_i = self.i;
                     let elif_line  = self.toks[elif_tok_i].span.line_start;
 
-                    let _ = self.eat_ident();        // 'elif'
-                    let _c = self.parse_coalesce()?; // condition
-
-                    // Forbid '{' after 'elif' header
+                    let _ = self.eat_ident();           // 'elif'
+                    let _c = self.parse_coalesce()?;    // condition
                     self.enforce_inline_brace_policy(elif_line, "elif")?;
 
                     let _b = self.parse_stmt_block_until(|p| {
                         p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
                     })?;
 
-                    // If this elif block hard-closed, no further tails allowed
                     if self.block_closed_hard {
                         if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                            return Err(
-                                "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
-                            );
+                            return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
                         }
                     }
-
                     continue;
                 }
 
@@ -1986,11 +2275,8 @@ impl<'t> Parser<'t> {
             // Optional aligned 'else' block
             self.skip_stmt_separators();
 
-            // If the chain has hard-closed already, 'else' is not allowed.
             if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
-                return Err(
-                    "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
-                );
+                return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
             }
 
             if self.peek_ident_at_col("else", if_col) {
@@ -1999,51 +2285,38 @@ impl<'t> Parser<'t> {
                 let else_tok_i = self.i;
                 let else_line  = self.toks[else_tok_i].span.line_start;
 
-                let _ = self.eat_ident(); // 'else'
-
-                // Forbid '{' after 'else' header
+                let _ = self.eat_ident();               // 'else'
                 self.enforce_inline_brace_policy(else_line, "else")?;
 
                 let _else = self.parse_stmt_block_until(|p| {
                     p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
                 })?;
 
-                // After an 'else' block, any further tail is a duplicate else scenario
                 self.skip_stmt_separators();
                 if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
                     return Err("duplicate 'else' in if block".to_string());
                 }
 
-                // If this else hard-closed, tails after it would be meaningless
                 if self.block_closed_hard {
                     if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                        return Err(
-                            "tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string()
-                        );
+                        return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
                     }
                 }
             }
 
-            // placeholder spanning the whole if-construct (keeps your lowering pattern)
             let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
             let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
             return Ok(ast::Stmt::Expr(expr));
         }
 
-        // WHILE  (layout-only; no opening '{' allowed)
+        // WHILE (layout-only; no opening '{' allowed)
         if self.peek_ident() == Some("while") {
             let while_tok_i = self.i;
             let while_line  = self.toks[while_tok_i].span.line_start;
 
-            let _ = self.eat_ident(); // 'while'
-
-            // condition
-            let _cond = self.parse_coalesce()?;
-
-            // Forbid '{' after header
+            let _ = self.eat_ident();                   // 'while'
+            let _cond = self.parse_coalesce()?;         // condition
             self.enforce_inline_brace_policy(while_line, "while")?;
-
-            // Body until hard closer
             let _body = self.parse_stmt_block_until(|_| false)?;
 
             let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
@@ -2051,21 +2324,14 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::Expr(expr));
         }
 
-        // FOR  (layout-only; no opening '{' allowed)
+        // FOR (layout-only; no opening '{' allowed)
         if self.peek_ident() == Some("for") {
             let for_tok_i = self.i;
             let for_line  = self.toks[for_tok_i].span.line_start;
 
-            let _ = self.eat_ident(); // 'for'
-
-            // --- your existing 'for' header parsing here (e.g., pattern + 'in' + expr) ---
-            // e.g.: let _iter = self.parse_for_header()?;
-            // ------------------------------------------------------------------------------
-
-            // Forbid '{' after header
+            let _ = self.eat_ident();                   // 'for'
+            // ... your for header parsing ...
             self.enforce_inline_brace_policy(for_line, "for")?;
-
-            // Body until hard closer
             let _body = self.parse_stmt_block_until(|_| false)?;
 
             let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
@@ -2088,7 +2354,7 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::Expr(self.lower_expr(p)));
         }
 
-        // Fallback for when lexer emits Ident("act"/"action")
+        // Fallback when lexer emits Ident("act"/"action")
         if let Some(kw) = self.peek_ident() {
             if kw == "act" || kw == "action" {
                 let kw = self.eat_ident().unwrap();
@@ -2096,12 +2362,14 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // Statement boundary: allow assignment here
-        let prev = self.in_stmt;
-        self.in_stmt = true;
+        // Statement boundary: allow assignment here (with progress-on-error)
+        let prev = self.in_stmt; self.in_stmt = true;
+        let stmt_start = self.i;
         let expr_pe = match self.parse_assign() {
             Ok(e) => e,
             Err(e) => {
+                // If parsing didn't consume anything, force progress so caller can't re-enter forever.
+                if self.i == stmt_start && !self.is_eof() { self.i += 1; }
                 self.in_stmt = prev;
                 return Err(e);
             }
@@ -2138,112 +2406,36 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn parse_primary(&mut self) -> Result<PExpr, String> {
+    fn parse_primary_impl(&mut self) -> Result<PExpr, String> {
         // --- blob literal special-case: blob "..." | blob 0xDEAD... ---
         if let Some(t) = self.peek() {
             if matches!(t.kind, goblin_lexer::TokenKind::Blob) {
-                // consume 'blob'
-                self.i += 1;
-                // allow newlines/spaces before payload
-                self.skip_newlines();
-
-                let (k2, v2) = match self.peek() {
-                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
-                    None => return Err("expected string or integer after 'blob'".to_string()),
-                };
-
-                let mut expr = match k2 {
-                    goblin_lexer::TokenKind::String => {
-                        let lit = v2.unwrap_or_default();
-                        self.i += 1;
-                        PExpr::BlobStr(lit)
-                    }
-                    goblin_lexer::TokenKind::Int => {
-                        let lit = v2.unwrap_or_default();
-                        self.i += 1;
-                        PExpr::BlobNum(lit)
-                    }
+                self.i += 1; self.skip_newlines();
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string or integer after 'blob'".to_string()) };
+                let expr = match k2 {
+                    goblin_lexer::TokenKind::String => { let lit = v2.unwrap_or_default(); self.i += 1; PExpr::BlobStr(lit) }
+                    goblin_lexer::TokenKind::Int    => { let lit = v2.unwrap_or_default(); self.i += 1; PExpr::BlobNum(lit) }
                     _ => return Err("expected string or integer after 'blob'".to_string()),
                 };
-
-                // ---- POSTFIX LOOP ----
-                loop {
-                    // handle two-token ops first: // and **
-                    if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
-                        use goblin_lexer::TokenKind as K;
-                        if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
-                            if sa.as_str() == "/" && sb.as_str() == "/" {
-                                self.i += 2;
-                                expr = PExpr::Postfix(Box::new(expr), "//".into());
-                                continue;
-                            }
-                            if sa.as_str() == "*" && sb.as_str() == "*" {
-                                self.i += 2;
-                                expr = PExpr::Postfix(Box::new(expr), "**".into());
-                                continue;
-                            }
-                        }
-                    }
-                    // single-char postfix ops
-                    if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
-                    if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
-                    if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
-                    // postfix definedness: x?
-                    if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
-                    break;
-                }
-
-                return Ok(expr);
+                return Ok(self.apply_postfix_ops(expr));
             }
         }
 
         // --- Parenthesized ---
         if self.peek_op("(") {
             let _ = self.eat_op("(");
-            let mut expr = self.parse_coalesce()?;
-            if !self.eat_op(")") {
-                return Err("expected ')' to close parenthesized expression".to_string());
-            }
-
-            // ---- POSTFIX LOOP ----
-            loop {
-                // handle two-token ops first: // and **
-                if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
-                    use goblin_lexer::TokenKind as K;
-                    if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
-                        if sa.as_str() == "/" && sb.as_str() == "/" {
-                            self.i += 2;
-                            expr = PExpr::Postfix(Box::new(expr), "//".into());
-                            continue;
-                        }
-                        if sa.as_str() == "*" && sb.as_str() == "*" {
-                            self.i += 2;
-                            expr = PExpr::Postfix(Box::new(expr), "**".into());
-                            continue;
-                        }
-                    }
-                }
-                // single-char postfix ops
-                if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
-                if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
-                if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
-                // postfix definedness: x?
-                if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
-                break;
-            }
-
-            return Ok(expr);
+            let expr = self.parse_coalesce()?;
+            if !self.eat_op(")") { return Err("expected ')' to close parenthesized expression".to_string()); }
+            return Ok(self.apply_postfix_ops(expr));
         }
 
         // --- Array literal ---
         if self.eat_op("[") {
             while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-
             let mut elems = Vec::new();
             if !self.peek_op("]") {
                 loop {
-                    let elem = self.parse_coalesce()?;
-                    elems.push(elem);
+                    let elem = self.parse_coalesce()?; elems.push(elem);
                     if self.eat_op(",") {
                         while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                         if self.peek_op("]") { break; }
@@ -2252,57 +2444,22 @@ impl<'t> Parser<'t> {
                     break;
                 }
             }
-
             while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
             if !self.eat_op("]") { return Err("expected ']' to close array".to_string()); }
-
-            let mut expr = PExpr::Array(elems);
-
-            // ---- POSTFIX LOOP ----
-            loop {
-                // handle two-token ops first: // and **
-                if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
-                    use goblin_lexer::TokenKind as K;
-                    if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
-                        if sa.as_str() == "/" && sb.as_str() == "/" {
-                            self.i += 2;
-                            expr = PExpr::Postfix(Box::new(expr), "//".into());
-                            continue;
-                        }
-                        if sa.as_str() == "*" && sb.as_str() == "*" {
-                            self.i += 2;
-                            expr = PExpr::Postfix(Box::new(expr), "**".into());
-                            continue;
-                        }
-                    }
-                }
-                // single-char postfix ops
-                if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
-                if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
-                if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
-                // postfix definedness: x?
-                if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
-                break;
-            }
-
-            return Ok(expr);
+            return Ok(self.apply_postfix_ops(PExpr::Array(elems)));
         }
 
         // --- Object literal ---
         if self.eat_op("{") {
             while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-
             let mut props: Vec<(String, PExpr)> = Vec::new();
-
             if !self.peek_op("}") {
                 loop {
                     let Some(key) = self.eat_object_key() else { return Err("expected object key".to_string()); };
                     while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                     if !self.eat_op(":") { return Err("expected ':' after object key".to_string()); }
                     while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                    let value = self.parse_assign()?;
-                    props.push((key, value));
-
+                    let value = self.parse_assign()?; props.push((key, value));
                     if self.eat_op(",") {
                         while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                         if self.peek_op("}") { break; }
@@ -2311,246 +2468,97 @@ impl<'t> Parser<'t> {
                     break;
                 }
             }
-
             while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
             if !self.eat_op("}") { return Err("expected '}' to close object".to_string()); }
-
-            let mut expr = PExpr::Object(props);
-
-            // ---- POSTFIX LOOP ----
-            loop {
-                // handle two-token ops first: // and **
-                if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
-                    use goblin_lexer::TokenKind as K;
-                    if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
-                        if sa.as_str() == "/" && sb.as_str() == "/" {
-                            self.i += 2;
-                            expr = PExpr::Postfix(Box::new(expr), "//".into());
-                            continue;
-                        }
-                        if sa.as_str() == "*" && sb.as_str() == "*" {
-                            self.i += 2;
-                            expr = PExpr::Postfix(Box::new(expr), "**".into());
-                            continue;
-                        }
-                    }
-                }
-                // single-char postfix ops
-                if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
-                if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
-                if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
-                // postfix definedness: x?
-                if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
-                break;
-            }
-
-            return Ok(expr);
+            return Ok(self.apply_postfix_ops(PExpr::Object(props)));
         }
 
         // --- Lit / Ident dispatch ---
-        let (kind, val_opt) = match self.peek() {
-            Some(t) => (t.kind.clone(), t.value.clone()),
-            None => return Err(self.err_expected_expr("(found EOF)")),
-        };
-
-        let mut expr = match kind {
+        let (kind, val_opt) = match self.peek() { Some(t) => (t.kind.clone(), t.value.clone()), None => return Err(self.err_expected_expr("(found EOF)")) };
+        let expr = match kind {
             goblin_lexer::TokenKind::Int => {
-                let lit = val_opt.unwrap_or_default();
-                self.i += 1;
-
+                let lit = val_opt.unwrap_or_default(); self.i += 1;
                 if let Some(t) = self.peek() {
-                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) {
-                        let unit = t.value.clone().unwrap_or_default();
-                        self.i += 1;
-                        PExpr::IntWithUnit(lit, unit)
-                    } else {
-                        PExpr::Int(lit)
-                    }
-                } else {
-                    PExpr::Int(lit)
-                }
+                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) { let unit = t.value.clone().unwrap_or_default(); self.i += 1; PExpr::IntWithUnit(lit, unit) }
+                    else { PExpr::Int(lit) }
+                } else { PExpr::Int(lit) }
             }
-
             goblin_lexer::TokenKind::Float => {
-                let lit = val_opt.unwrap_or_default();
-                self.i += 1;
-
+                let lit = val_opt.unwrap_or_default(); self.i += 1;
                 if let Some(t) = self.peek() {
-                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) {
-                        let unit = t.value.clone().unwrap_or_default();
-                        self.i += 1;
-                        PExpr::FloatWithUnit(lit, unit)
-                    } else {
-                        PExpr::Float(lit)
-                    }
-                } else {
-                    PExpr::Float(lit)
-                }
+                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) { let unit = t.value.clone().unwrap_or_default(); self.i += 1; PExpr::FloatWithUnit(lit, unit) }
+                    else { PExpr::Float(lit) }
+                } else { PExpr::Float(lit) }
             }
-
             goblin_lexer::TokenKind::Duration => {
-                let lit = val_opt.unwrap_or_default(); // e.g., "5s", "2.5h", "1mo"
-                self.i += 1;
+                let lit = val_opt.unwrap_or_default(); self.i += 1;
                 let (base, unit) = Self::split_duration_lexeme(&lit)?;
                 let is_floaty = base.contains('.') || base.contains('e') || base.contains('E');
                 if is_floaty { PExpr::FloatWithUnit(base, unit) } else { PExpr::IntWithUnit(base, unit) }
             }
-
             goblin_lexer::TokenKind::String => {
-                // lvalue-only interpolation
-                let lit = self.toks[self.i].value.clone().unwrap_or_default();
-                self.i += 1;
-
-                if !lit.as_bytes().contains(&b'{') {
-                    PExpr::Str(lit)
-                } else {
-                    let b = lit.as_bytes();
-                    let mut parts: Vec<StrPart> = Vec::new();
-                    let mut text = String::new();
-                    let mut i: usize = 0;
-                    let n = b.len();
-
+                let lit = self.toks[self.i].value.clone().unwrap_or_default(); self.i += 1;
+                if !lit.as_bytes().contains(&b'{') { PExpr::Str(lit) } else {
+                    let b = lit.as_bytes(); let mut parts: Vec<StrPart> = Vec::new(); let mut text = String::new(); let mut i: usize = 0; let n = b.len();
                     while i < n {
-                        if i + 4 < n && &b[i..i + 5] == b"{{/}}" {
-                            text.push('}');
-                            i += 5;
-                            continue;
-                        }
+                        if i + 4 < n && &b[i..i + 5] == b"{{/}}" { text.push('}'); i += 5; continue; }
                         if b[i] == b'{' {
                             if !text.is_empty() { parts.push(StrPart::Text(std::mem::take(&mut text))); }
-                            let mut depth: usize = 1;
-                            let start = i + 1; i += 1;
-                            while i < n && depth > 0 {
-                                match b[i] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} }
-                                i += 1;
-                            }
+                            let mut depth: usize = 1; let start = i + 1; i += 1;
+                            while i < n && depth > 0 { match b[i] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} } i += 1; }
                             if depth != 0 { return Err("unterminated '{' in interpolated string".to_string()); }
-                            let end = i - 1;
-                            let inner = &lit[start..end];
-                            let part = self.parse_interpolation_lvalue(inner)?;
-                            parts.push(part);
-                            continue;
+                            let end = i - 1; let inner = &lit[start..end]; let part = self.parse_interpolation_lvalue(inner)?; parts.push(part); continue;
                         }
-                        text.push(b[i] as char);
-                        i += 1;
+                        text.push(b[i] as char); i += 1;
                     }
                     if !text.is_empty() { parts.push(StrPart::Text(text)); }
                     PExpr::StrInterp(parts)
                 }
             }
-
             goblin_lexer::TokenKind::Date => {
-                self.i += 1;
-                self.skip_newlines();
-                let (k2, v2) = match self.peek() {
-                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
-                    None => return Err("expected string after 'date'".to_string()),
-                };
-                if !matches!(k2, goblin_lexer::TokenKind::String) {
-                    return Err("expected string after 'date'".to_string());
-                }
-                let lit = v2.unwrap_or_default();
-                self.i += 1;
-                PExpr::Date(lit)
+                self.i += 1; self.skip_newlines();
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string after 'date'".to_string()) };
+                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err("expected string after 'date'".to_string()); }
+                let lit = v2.unwrap_or_default(); self.i += 1; PExpr::Date(lit)
             }
-
             goblin_lexer::TokenKind::Time => {
-                self.i += 1;
-                self.skip_newlines();
-                let (k2, v2) = match self.peek() {
-                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
-                    None => return Err("expected string after 'time'".to_string()),
-                };
-                if !matches!(k2, goblin_lexer::TokenKind::String) {
-                    return Err("expected string after 'time'".to_string());
-                }
-                let lit = v2.unwrap_or_default();
-                self.i += 1;
-                PExpr::Time(lit)
+                self.i += 1; self.skip_newlines();
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string after 'time'".to_string()) };
+                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err("expected string after 'time'".to_string()); }
+                let lit = v2.unwrap_or_default(); self.i += 1; PExpr::Time(lit)
             }
-
             goblin_lexer::TokenKind::DateTime => {
-                self.i += 1;
-                self.skip_newlines();
-
-                let (k2, v2) = match self.peek() {
-                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
-                    None => return Err("expected string after 'datetime'".to_string()),
-                };
-                if !matches!(k2, goblin_lexer::TokenKind::String) {
-                    return Err("expected string after 'datetime'".to_string());
-                }
-                let value = v2.unwrap_or_default();
-                self.i += 1;
-
-                self.skip_newlines();
+                self.i += 1; self.skip_newlines();
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string after 'datetime'".to_string()) };
+                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err("expected string after 'datetime'".to_string()); }
+                let value = v2.unwrap_or_default(); self.i += 1; self.skip_newlines();
                 let mut tz: Option<String> = None;
                 if let Some(tz_tok) = self.peek() {
-                    if matches!(tz_tok.kind, goblin_lexer::TokenKind::Ident)
-                        && tz_tok.value.as_deref() == Some("tz")
-                    {
-                        self.i += 1;
+                    if matches!(tz_tok.kind, goblin_lexer::TokenKind::Ident) && tz_tok.value.as_deref() == Some("tz") {
+                        self.i += 1; self.skip_newlines();
+                        if !self.eat_op(":") { return Err("expected ':' after tz".to_string()); }
                         self.skip_newlines();
-                        if !self.eat_op(":") {
-                            return Err("expected ':' after tz".to_string());
-                        }
-                        self.skip_newlines();
-                        let (k3, v3) = match self.peek() {
-                            Some(t3) => (t3.kind.clone(), t3.value.clone()),
-                            None => return Err("expected string after tz:'".to_string()),
-                        };
-                        if !matches!(k3, goblin_lexer::TokenKind::String) {
-                            return Err("expected string after tz:'".to_string());
-                        }
-                        tz = Some(v3.unwrap_or_default());
-                        self.i += 1;
+                        let (k3, v3) = match self.peek() { Some(t3) => (t3.kind.clone(), t3.value.clone()), None => return Err("expected string after tz:'".to_string()) };
+                        if !matches!(k3, goblin_lexer::TokenKind::String) { return Err("expected string after tz:'".to_string()); }
+                        tz = Some(v3.unwrap_or_default()); self.i += 1;
                     }
                 }
                 PExpr::DateTime { value, tz }
             }
-
             goblin_lexer::TokenKind::Ident => {
-                let name = val_opt.unwrap_or_default();
-                self.i += 1;
-                match name.as_str() {
-                    "true"  => PExpr::Bool(true),
-                    "false" => PExpr::Bool(false),
-                    "nil"   => PExpr::Nil,
-                    _       => PExpr::Ident(name),
-                }
+                let name = val_opt.unwrap_or_default(); self.i += 1;
+                match name.as_str() { "true" => PExpr::Bool(true), "false" => PExpr::Bool(false), "nil" => PExpr::Nil, _ => PExpr::Ident(name) }
             }
-
+            // Catch-all for orphaned operators at primary position: consume + error (prevents loops).
+            goblin_lexer::TokenKind::Op(ref s) => {
+                let sp = self.toks[self.i].span.clone();
+                self.i += 1;
+                return Err(format!("expected expression, found operator '{}' at line {}, col {}", s, sp.line_start, sp.col_start));
+            }
             _ => return Err(self.err_expected_expr("at start of primary")),
         };
 
-        // ---- POSTFIX LOOP (applies to all primaries above) ----
-        loop {
-            // handle two-token ops first: // and **
-            if let (Some(a), Some(b)) = (self.toks.get(self.i), self.toks.get(self.i + 1)) {
-                use goblin_lexer::TokenKind as K;
-                if let (K::Op(sa), K::Op(sb)) = (&a.kind, &b.kind) {
-                    if sa.as_str() == "/" && sb.as_str() == "/" {
-                        self.i += 2;
-                        expr = PExpr::Postfix(Box::new(expr), "//".into());
-                        continue;
-                    }
-                    if sa.as_str() == "*" && sb.as_str() == "*" {
-                        self.i += 2;
-                        expr = PExpr::Postfix(Box::new(expr), "**".into());
-                        continue;
-                    }
-                }
-            }
-            // single-char postfix ops
-            if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());  continue; }
-            if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());  continue; }
-            if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());  continue; }
-            // postfix definedness: x?
-            if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));              continue; }
-            break;
-        }
-
-        Ok(expr)
+        Ok(self.apply_postfix_ops(expr))
     }
 
     #[inline]
@@ -2596,104 +2604,8 @@ impl<'t> Parser<'t> {
         t_dot.value.as_deref() == Some(".")
     }
 
-    fn parse_assign(&mut self) -> Result<PExpr, String> {
-        // Lowest precedence; parse LHS first.
-        let lhs = self.parse_coalesce()?; // uses your existing precedence stack
+    fn parse_coalesce_impl(&mut self) -> Result<PExpr, String> {
 
-        // ----- peek longest-first for an assignment operator (do not consume yet)
-        let peeked_op: Option<&'static str> = if self.peek_op("//=") {
-            Some("//=")
-        } else if self.peek_op("+=") {
-            Some("+=")
-        } else if self.peek_op("-=") {
-            Some("-=")
-        } else if self.peek_op("*=") {
-            Some("*=")
-        } else if self.peek_op("/=") {
-            Some("/=")
-        } else if self.peek_op("%=") {
-            Some("%=")
-        } else if self.peek_op("=") {
-            Some("=")
-        } else {
-            None
-        };
-
-        // If there's no assignment operator coming, we're done.
-        if peeked_op.is_none() {
-            return Ok(lhs);
-        }
-
-        // Assignments are only legal at statement boundaries.
-        if !self.in_stmt {
-            return Err("assignment not allowed in expression; use a statement at block level".to_string());
-        }
-
-        // Forbid writes to the meta postfix '.type' (not a user field; user fields are via `>> type`)
-        if self.lhs_ends_with_dot_type_at(self.i) {
-            return Err("cannot assign to meta '.type'; to set a user field named 'type', access it via '>> type'".into());
-        }
-
-        // ----- now consume exactly the operator we peeked
-        let op: &'static str = match peeked_op.unwrap() {
-            "//=" => { let _ = self.eat_op("//="); "//=" }
-            "+="  => { let _ = self.eat_op("+=");  "+="  }
-            "-="  => { let _ = self.eat_op("-=");  "-="  }
-            "*="  => { let _ = self.eat_op("*=");  "*="  }
-            "/="  => { let _ = self.eat_op("/=");  "/="  }
-            "%="  => { let _ = self.eat_op("%=");  "%="  }
-            "="   => { let _ = self.eat_op("=");   "="   }
-            _     => unreachable!(),
-        };
-
-        // LHS must be assignable.
-        match lhs {
-            PExpr::Ident(_) | PExpr::Member(_, _) => {
-                // Support right-associative chaining: a = b = c
-                // Also allow a newline right after '=' with an inline brace-block value.
-                if self.peek_newline_or_eof() {
-                    self.skip_newlines();
-                    let rhs = if self.eat_op("{") {
-                        // Brace block as an expression: take the last inner expression as the value.
-                        let mut last: Option<PExpr> = None;
-                        loop {
-                            self.skip_stmt_separators();
-                            if self.peek_block_close() {
-                                let _ = self.eat_block_close();
-                                break;
-                            }
-                            if self.toks.get(self.i).is_none() {
-                                return Err("unexpected end of file: expected '}' or 'end' to close assignment".into());
-                            }
-                            // Parse expression statements; use the last one as the value.
-                            last = Some(self.parse_assign()?);
-                        }
-                        last.ok_or_else(|| "empty assignment block".to_string())?
-                    } else {
-                        // Single-line continuation after '=' on the next non-empty line.
-                        self.parse_assign()?
-                    };
-
-                    if op == "=" {
-                        Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
-                    } else {
-                        Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
-                    }
-                } else {
-                    // Single-line assignment (no immediate newline after operator).
-                    let rhs = self.parse_assign()?; // right-assoc
-                    if op == "=" {
-                        Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
-                    } else {
-                        Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
-                    }
-                }
-            }
-            _ => Err("left side of assignment must be an identifier or member".to_string()),
-        }
-    }
-
-    fn parse_coalesce(&mut self) -> Result<PExpr, String> {
         // Nullish coalescing layer (above OR)
         let mut lhs = self.parse_or()?;
 
@@ -2707,38 +2619,32 @@ impl<'t> Parser<'t> {
 
     fn parse_or(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_and()?;
-
         loop {
-            // alias for OR
+            // alias "<>" or textual "or"
             if self.eat_op("<>") {
                 let rhs = self.parse_and()?;
                 lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
                 continue;
             }
-            // textual 'or'
             if self.peek_ident() == Some("or") {
-                let _ = self.eat_ident();
+                let _ = self.eat_ident(); // 'or'
                 let rhs = self.parse_and()?;
                 lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
                 continue;
             }
             break;
         }
-
         Ok(lhs)
     }
     
     fn parse_and(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_compare()?;
-
         loop {
-            // alias for AND
             if self.eat_op("&&") {
                 let rhs = self.parse_compare()?;
                 lhs = PExpr::Binary(Box::new(lhs), "and".into(), Box::new(rhs));
                 continue;
             }
-            // textual 'and'
             if self.peek_ident() == Some("and") {
                 let _ = self.eat_ident();
                 let rhs = self.parse_compare()?;
@@ -2747,25 +2653,21 @@ impl<'t> Parser<'t> {
             }
             break;
         }
-
         Ok(lhs)
     }
 
     fn parse_compare(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_additive()?; // or parse_range() if that's your next layer
-
+        let mut lhs = self.parse_additive()?;
         loop {
             // textual: is / is not
             if self.peek_ident() == Some("is") {
                 let _ = self.eat_ident();
-                let neg = self.peek_ident() == Some("not");
-                if neg { let _ = self.eat_ident(); }
+                let neg = self.peek_ident() == Some("not"); if neg { let _ = self.eat_ident(); }
                 let rhs = self.parse_additive()?;
                 let op = if neg { "is not" } else { "is" };
                 lhs = PExpr::Binary(Box::new(lhs), op.into(), Box::new(rhs));
                 continue;
             }
-
             if self.eat_op("===") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
             if self.eat_op("!==") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
             if self.eat_op("==")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
@@ -2774,10 +2676,8 @@ impl<'t> Parser<'t> {
             if self.eat_op(">=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
             if self.eat_op("<")   { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<".into(),   Box::new(rhs)); continue; }
             if self.eat_op(">")   { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">".into(),   Box::new(rhs)); continue; }
-
             break;
         }
-
         Ok(lhs)
     }
 
@@ -2817,54 +2717,41 @@ impl<'t> Parser<'t> {
 
     fn parse_additive(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_multiplicative()?;
-
         loop {
-            if self.eat_op("+") {
-                let rhs = self.parse_multiplicative()?;
-                lhs = PExpr::Binary(Box::new(lhs), "+".to_string(), Box::new(rhs));
-            } else if self.eat_op("-") {
-                let rhs = self.parse_multiplicative()?;
-                lhs = PExpr::Binary(Box::new(lhs), "-".to_string(), Box::new(rhs));
-            } else {
-                break;
-            }
+            if self.eat_op("+") { let rhs = self.parse_multiplicative()?; lhs = PExpr::Binary(Box::new(lhs), "+".into(), Box::new(rhs)); continue; }
+            if self.eat_op("-") { let rhs = self.parse_multiplicative()?; lhs = PExpr::Binary(Box::new(lhs), "-".into(), Box::new(rhs)); continue; }
+            break;
         }
-
         Ok(lhs)
     }
 
     fn parse_multiplicative(&mut self) -> Result<PExpr, String> {
-        // One level tighter than additive
+        // one level tighter than additive; keep power above this
         let mut lhs = self.parse_power()?;
-
         loop {
-            let op = if self.eat_op("><") { "><" }      // divmod
-                     else if self.eat_op("//") { "//" } // integer division
+            let op = if self.eat_op("><") { "><" }       // divmod
+                     else if self.eat_op("//") { "//" }  // integer division
                      else if self.eat_op("*")  { "*"  }
                      else if self.eat_op("/")  { "/"  }
                      else if self.eat_op("%")  { "%"  }
                      else { break };
-
             let rhs = self.parse_power()?;
             lhs = PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs));
         }
-
         Ok(lhs)
     }
 
     fn parse_power(&mut self) -> Result<PExpr, String> {
+        // bottom of binary ladder: must route through unary so '&' works
         let lhs = self.parse_unary()?;
-
         if self.eat_op("**") {
-            let rhs = self.parse_power()?;
+            let rhs = self.parse_power()?; // right-assoc
             return Ok(PExpr::Binary(Box::new(lhs), "**".to_string(), Box::new(rhs)));
         }
-
         if self.eat_op("^^") {
-            let rhs = self.parse_power()?;
+            let rhs = self.parse_power()?; // right-assoc
             return Ok(PExpr::Binary(Box::new(lhs), "^^".to_string(), Box::new(rhs)));
         }
-
         Ok(lhs)
     }
 
@@ -2959,214 +2846,85 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_unary(&mut self) -> Result<PExpr, String> {
-        // expression-form: judge â€¦ (must close with 'end' or '}')
-        // expression-form: judge … (layout-only; must close with 'end' or '}')
-        if let Some("judge") = self.peek_ident() {
-            // Remember header position for diagnostics / next-line brace guard
-            let header_tok_i = self.i;
-            let header_line  = self.toks[header_tok_i].span.line_start;
-            let header_col   = self.toks[header_tok_i].span.col_start;
+        // unary definedness: &LValue (right-assoc, same tier as other prefix ops)
+        if self.eat_op("&") {
+            // allow newline(s) after '&'
+            self.skip_newlines();
 
-            let _ = self.eat_ident(); // consume 'judge'
-
-            // Disallow same-line '{' after 'judge' (we don't use opener braces here)
-            if self.peek_op("{") {
-                return Err("unexpected '{' after 'judge'; use layout (newline + indent) and close with 'end' or '}'".into());
+            let i0 = self.i;
+            match self.parse_definedness_lvalue() {
+                Ok(lv) => return Ok(PExpr::IsBound(Box::new(lv))),
+                Err(_) => {
+                    // Don't loop forever if nothing consumed after '&'
+                    if self.i == i0 { /* we already ate '&' */ }
+                    return Err("'&' requires a variable/field/index".to_string());
+                }
             }
-
-            // Disallow a '{' on the NEXT line (keeps the global 'no next-line brace after header' rule)
-            self.forbid_next_line_brace(header_line, header_col, "judge")?;
-
-            // Parse judge entries (newline/colon tolerant), then require a closer
-            self.skip_newlines();
-            let pairs = self.parse_kv_bind_list_judge()?;
-
-            self.skip_newlines();
-            self.expect_block_close("judge")?;
-
-            return Ok(PExpr::Object(pairs));
-        }
-
-        // expression-form: judge_all … (layout-only; must close with 'end' or '}')
-        if let Some("judge_all") = self.peek_ident() {
-            // Remember header position for diagnostics / next-line brace guard
-            let header_tok_i = self.i;
-            let header_line  = self.toks[header_tok_i].span.line_start;
-            let header_col   = self.toks[header_tok_i].span.col_start;
-
-            let _ = self.eat_ident(); // consume 'judge_all'
-
-            // Disallow same-line '{' after 'judge_all' (no opener braces here)
-            if self.peek_op("{") {
-                return Err("unexpected '{' after 'judge_all'; use layout (newline + indent) and close with 'end' or '}'".into());
-            }
-
-            // Disallow a '{' on the NEXT line (global 'no next-line brace after header' rule)
-            self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
-
-            // Parse entries using the existing judge list parser for now.
-            // It already supports nested expressions, ranges, 'from', dice, modifiers, etc.
-            self.skip_newlines();
-            let pairs = self.parse_kv_bind_list_judge()?;
-
-            self.skip_newlines();
-            self.expect_block_close("judge_all")?;
-
-            // For now we return the same shape as 'judge' (pairs object).
-            // Lowering can interpret optional leading weights in the key text later.
-            return Ok(PExpr::Object(pairs));
         }
 
         // typeof(expr) — explicit, never shadowed introspection
         if self.peek_ident() == Some("typeof") {
             let _ = self.eat_ident(); // 'typeof'
             if self.eat_op("(") {
-                let inner = self.parse_coalesce()?; // or parse_expr as per your precedence
-                if !self.eat_op(")") {
-                    return Err("expected ')' after typeof(".into());
-                }
-                return Ok(PExpr::Ident("typeof_expr".into())); // placeholder AST; wire later
+                let _inner = self.parse_coalesce()?;
+                if !self.eat_op(")") { return Err("expected ')' after typeof(".into()); }
+                return Ok(PExpr::Ident("typeof_expr".into()));
             } else {
-                // Optional: allow typeof x without parens; comment this block out if you want only paren form
                 let _inner = self.parse_postfix()?; // tight binding
                 return Ok(PExpr::Ident("typeof_expr".into()));
             }
         }
 
-        // expression-form: pick … (no digit shorthand; friendly errors)
-        if let Some("pick") = self.peek_ident() {
-            let _ = self.eat_ident(); // 'pick'
+        // expression-form: judge …
+        if let Some("judge") = self.peek_ident() {
+            let header_tok_i = self.i;
+            let header_line  = self.toks[header_tok_i].span.line_start;
+            let header_col   = self.toks[header_tok_i].span.col_start;
 
-            // Optional count (INT)
-            let mut count_opt: Option<usize> = None;
-            if let Some(t) = self.peek() {
-                if matches!(t.kind, TokenKind::Int) {
-                    if let Some(ref s) = t.value {
-                        if let Ok(v) = s.parse::<usize>() { count_opt = Some(v); }
-                    }
-                    self.i += 1;
-                }
+            let _ = self.eat_ident(); // 'judge'
+            if self.peek_op("{") {
+                return Err("unexpected '{' after 'judge'; use layout (newline + indent) and close with 'end' or '}'".into());
             }
-
-            // Optional: `from <expr or range>`
-            let mut source_kind: Option<&'static str> = None; // "collection" | "range"
-            let mut collection_len: Option<usize> = None;
-
-            if self.peek_ident() == Some("from") {
-                let _ = self.eat_ident(); // 'from'
-
-                // ---- PREVIEW for friendly errors (do not consume tokens)
-                let save_after_from = self.i;
-
-                // 1) Literal list length (including empty [])
-                if let Some(len) = self.preview_list_len() {
-                    source_kind = Some("collection");
-                    collection_len = Some(len);
-                    if len == 0 {
-                        return Err("cannot pick from an empty collection []".into());
-                    }
-                } else if let Some((exclusive, lo, hi)) = self.preview_int_range() {
-                    source_kind = Some("range");
-                    if exclusive {
-                        // a...b is [a, b) -> empty if hi <= lo
-                        if hi <= lo {
-                            return Err("empty range in 'from a...b' (end must be greater than start)".into());
-                        }
-                    } else {
-                        // a..b is [a, b] -> empty if hi < lo
-                        if hi < lo {
-                            return Err("empty range in 'from a..b' (end must be >= start)".into());
-                        }
-                    }
-                }
-
-                // ---- actually consume the source expression (and optional range tail)
-                self.i = save_after_from;
-                let _src_lo = self.parse_coalesce()?;
-                if self.eat_op("...") || self.eat_op("..") {
-                    let _src_hi = self.parse_coalesce()?;
-                }
-            }
-
-            // Modifiers: with dups | !dups | join with <expr>
-            let mut mod_with_dups = false;
-            let mut mod_no_dups   = false;
-
-            loop {
-                if self.peek_ident() == Some("with") {
-                    let save2 = self.i;
-                    let _ = self.eat_ident(); // 'with'
-                    if self.peek_ident() == Some("dups") {
-                        let _ = self.eat_ident(); // 'dups'
-                        mod_with_dups = true;
-                        continue;
-                    } else {
-                        self.i = save2;
-                    }
-                }
-
-                if self.peek_op("!") {
-                    let save2 = self.i;
-                    let _ = self.eat_op("!");
-                    if self.peek_ident() == Some("dups") {
-                        let _ = self.eat_ident(); // 'dups'
-                        mod_no_dups = true;
-                        continue;
-                    } else {
-                        self.i = save2;
-                    }
-                }
-
-                if self.peek_ident() == Some("join") {
-                    let _ = self.eat_ident(); // 'join'
-                    if self.peek_ident() != Some("with") {
-                        return Err("expected 'with' after 'join'".to_string());
-                    }
-                    let _ = self.eat_ident(); // 'with'
-                    let _sep = self.parse_coalesce()?;
-                    continue;
-                }
-
-                break;
-            }
-
-            // Friendly "too many without dups" for literal collections
-            if let Some("collection") = source_kind {
-                // default: collections -> !dups unless 'with dups'
-                let no_dups_effective = if mod_with_dups { false } else if mod_no_dups { true } else { true };
-                if no_dups_effective {
-                    if let (Some(n), Some(len)) = (count_opt, collection_len) {
-                        if n > len {
-                            return Err(format!(
-                                "cannot pick {} distinct items from a collection of size {}; use 'with dups' or lower the count",
-                                n, len
-                            ));
-                        }
-                    }
-                }
-            }
-
-            // Placeholder; real lowering later
-            return Ok(PExpr::Ident("pick_expr".into()));
+            self.forbid_next_line_brace(header_line, header_col, "judge")?;
+            self.skip_newlines();
+            let pairs = self.parse_kv_bind_list_judge()?;
+            self.skip_newlines();
+            self.expect_block_close("judge")?;
+            return Ok(PExpr::Object(pairs));
         }
 
-        // expression-form: roll / roll_detail (syntax-only; returns placeholder)
-        // expression-form: roll / roll_detail (no spaces allowed inside dice notation)
+        // expression-form: judge_all …
+        if let Some("judge_all") = self.peek_ident() {
+            let header_tok_i = self.i;
+            let header_line  = self.toks[header_tok_i].span.line_start;
+            let header_col   = self.toks[header_tok_i].span.col_start;
+
+            let _ = self.eat_ident(); // 'judge_all'
+            if self.peek_op("{") {
+                return Err("unexpected '{' after 'judge_all'; use layout (newline + indent) and close with 'end' or '}'".into());
+            }
+            self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
+            self.skip_newlines();
+            let pairs = self.parse_kv_bind_list_judge()?;
+            self.skip_newlines();
+            self.expect_block_close("judge_all")?;
+            return Ok(PExpr::Object(pairs));
+        }
+
+        // roll / roll_detail (syntax-only; contiguous dice)
         if let Some(id) = self.peek_ident() {
             if id == "roll" || id == "roll_detail" {
                 let is_detail = id == "roll_detail";
-                let _ = self.eat_ident(); // 'roll' or 'roll_detail'
+                let _ = self.eat_ident();
 
-                // Expect integer count (X)
                 let count_tok_i = match self.peek() {
                     Some(t) if matches!(t.kind, TokenKind::Int) => { let idx = self.i; self.i += 1; idx }
                     _ => return Err("expected integer dice count before 'd' (e.g., roll 2d6)".to_string()),
                 };
 
-                // Next must be a single IDENT like "d6", "d100" — contiguous, no spaces
+                // contiguous dNNN
                 let die_tok_i = match self.peek_ident() {
                     Some(s) if s.len() > 1 && s.starts_with('d') && s[1..].chars().all(|c| c.is_ascii_digit()) => {
-                        // Enforce *no space* between count and 'dNNN'
                         let prev = &self.toks[count_tok_i].span;
                         let cur  = &self.toks[self.i].span;
                         if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
@@ -3177,11 +2935,10 @@ impl<'t> Parser<'t> {
                     _ => return Err("expected contiguous dice like '2d6' (no spaces)".to_string()),
                 };
 
-                // Optional contiguous +Z / -Z
+                // optional contiguous +Z / -Z
                 let mut has_mod = false;
                 let mut mod_sign_i = 0usize;
                 if self.peek_op("+") || self.peek_op("-") {
-                    // Enforce no space between die token and '+'/'-'
                     let prev = &self.toks[die_tok_i].span;
                     let cur  = &self.toks[self.i].span;
                     if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
@@ -3191,7 +2948,6 @@ impl<'t> Parser<'t> {
                     self.i += 1;
                     has_mod = true;
 
-                    // Next must be an INT *contiguous* with the sign
                     match self.peek() {
                         Some(t) if matches!(t.kind, TokenKind::Int) => {
                             let cur2 = &t.span;
@@ -3204,141 +2960,106 @@ impl<'t> Parser<'t> {
                         _ => return Err("expected integer after '+'/'-' in dice; write '2d6+3'".to_string()),
                     }
                 }
-
-                // Also catch stray plus with nothing after (defensive)
-                if !has_mod && self.peek_op("+") {
-                    return Err("expected integer after '+' in dice; write '2d6+3'".into());
-                }
-                if !has_mod && self.peek_op("-") {
-                    return Err("expected integer after '-' in dice; write '2d6-1'".into());
-                }
+                if !has_mod && self.peek_op("+") { return Err("expected integer after '+' in dice; write '2d6+3'".into()); }
+                if !has_mod && self.peek_op("-") { return Err("expected integer after '-' in dice; write '2d6-1'".into()); }
 
                 let name = if is_detail { "roll_detail_expr" } else { "roll_expr" };
                 return Ok(PExpr::Ident(name.into()));
             }
         }
 
-        // prefix &  (definedness) â€' parse only an lvalue chain after '&'
-        if self.eat_op("&") {
-            let target = self.parse_lvalue_after_amp()?;
-            return Ok(PExpr::IsBound(Box::new(target)));
-        }
+        // logical-not
+        if self.eat_op("!") { let rhs = self.parse_unary()?; return Ok(PExpr::Prefix("!".into(), Box::new(rhs))); }
+        // unary +/-
+        if self.eat_op("+") { let rhs = self.parse_unary()?; return Ok(PExpr::Prefix("+".into(), Box::new(rhs))); }
+        if self.eat_op("-") { let rhs = self.parse_unary()?; return Ok(PExpr::Prefix("-".into(), Box::new(rhs))); }
 
-        // logical-not alias
-        if self.eat_op("!") {
-            let rhs = self.parse_unary()?;
-            return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
-        }
-
-        // unary plus/minus
-        if self.eat_op("+") {
-            let rhs = self.parse_unary()?;
-            return Ok(PExpr::Prefix("+".into(), Box::new(rhs)));
-        }
-        if self.eat_op("-") {
-            let rhs = self.parse_unary()?;
-            return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
-        }
-
-        // hand off to your postfix/member pipeline
+        // hand off
         self.parse_postfix()
     }
 
     fn parse_postfix(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_member()?;
 
-        loop {
-            // indexing / slicing
-            if self.eat_op("[") {
-                while matches!(self.toks.get(self.i), Some(tok)
-                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                { self.i += 1; }
+        // helper: does the token *after* an operator look like an expression head?
+        // used to disambiguate postfix "**" / "//" from binary power/int-div.
+        let lookahead_starts_expr = |from: usize| -> bool {
+            use goblin_lexer::TokenKind as K;
+            let mut j = from;
+            while matches!(self.toks.get(j), Some(t) if matches!(t.kind, K::Newline)) { j += 1; }
+            match self.toks.get(j).map(|t| &t.kind) {
+                Some(K::Ident)
+                | Some(K::Int) | Some(K::Float) | Some(K::String)
+                | Some(K::Blob) | Some(K::Date) | Some(K::Time) | Some(K::DateTime) => true,
+                Some(K::Op(s)) if s == "(" || s == "[" || s == "{" || s == "+" || s == "-" || s == "!" || s == "&" => true,
+                _ => false,
+            }
+        };
 
-                if self.eat_op("]") {
-                    return Err("expected expression inside '[]'".to_string());
-                }
+        loop {
+            let start_i = self.i; // progress snapshot
+
+            // --- indexing / slicing ---
+            if self.eat_op("[") {
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                if self.eat_op("]") { return Err("expected expression inside '[]'".to_string()); }
 
                 let mut start: Option<PExpr> = None;
                 if !self.peek_op(":") {
-                    // NOTE: must produce PExpr + String error
                     start = Some(self.parse_coalesce()?);
-                    while matches!(self.toks.get(self.i), Some(tok)
-                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                    { self.i += 1; }
+                    while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                 }
 
                 // slice?
                 if self.eat_op(":") {
-                    while matches!(self.toks.get(self.i), Some(tok)
-                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                    { self.i += 1; }
-
+                    while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                     let mut end: Option<PExpr> = None;
                     if !self.peek_op("]") && !self.peek_op(":") {
                         end = Some(self.parse_coalesce()?);
-                        while matches!(self.toks.get(self.i), Some(tok)
-                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                        { self.i += 1; }
+                        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                     }
 
                     let mut step: Option<PExpr> = None;
                     if self.eat_op(":") {
-                        while matches!(self.toks.get(self.i), Some(tok)
-                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                        { self.i += 1; }
-
+                        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                         if !self.peek_op("]") {
                             step = Some(self.parse_assign()?);
-                            while matches!(self.toks.get(self.i), Some(tok)
-                                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                            { self.i += 1; }
+                            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                         }
                     }
 
-                    if !self.eat_op("]") {
-                        return Err("expected ']' after slice".to_string());
-                    }
+                    if !self.eat_op("]") { return Err("expected ']' after slice".to_string()); }
 
                     lhs = if step.is_some() {
-                        PExpr::Slice3(
-                            Box::new(lhs),
-                            start.map(Box::new),
-                            end.map(Box::new),
-                            step.map(Box::new),
-                        )
+                        PExpr::Slice3(Box::new(lhs), start.map(Box::new), end.map(Box::new), step.map(Box::new))
                     } else {
-                        PExpr::Slice(
-                            Box::new(lhs),
-                            start.map(Box::new),
-                            end.map(Box::new),
-                        )
+                        PExpr::Slice(Box::new(lhs), start.map(Box::new), end.map(Box::new))
                     };
                     continue;
                 }
 
-                while matches!(self.toks.get(self.i), Some(tok)
-                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                { self.i += 1; }
-
-                if !self.eat_op("]") {
-                    return Err("expected ']' after index expression".to_string());
-                }
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                if !self.eat_op("]") { return Err("expected ']' after index expression".to_string()); }
                 let idx = start.expect("index expression parsed");
                 lhs = PExpr::Index(Box::new(lhs), Box::new(idx));
                 continue;
             }
 
-            // postfix operators
+            // --- postfix ops ---
+            // Disambiguate "**" and "//": treat as *postfix* only when they are not followed by an expression head,
+            // so "a ** b" / "a // b" remain binary at higher precedence levels.
+            if self.peek_op("**") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("**"); lhs = PExpr::Postfix(Box::new(lhs), "**".to_string()); continue; }
+            if self.peek_op("//") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("//"); lhs = PExpr::Postfix(Box::new(lhs), "//".to_string()); continue; }
+
             if self.eat_op("++") { lhs = PExpr::Postfix(Box::new(lhs), "++".to_string()); continue; }
             if self.eat_op("--") { lhs = PExpr::Postfix(Box::new(lhs), "--".to_string()); continue; }
-            if self.eat_op("**") { lhs = PExpr::Postfix(Box::new(lhs), "**".to_string()); continue; } // square
-            if self.eat_op("//") { lhs = PExpr::Postfix(Box::new(lhs), "//".to_string()); continue; } // sqrt (postfix form)
-            if self.eat_op("?")  { lhs = PExpr::IsBound(Box::new(lhs)); continue; }
-            if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());  continue; }
-            if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());  continue; }
-            if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());  continue; }
+            if self.eat_op("?")  { lhs = PExpr::IsBound(Box::new(lhs));                     continue; }
+            if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());   continue; }
+            if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());   continue; }
+            if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());   continue; }
 
-            break;
+            // nothing matched; ensure progress or bail
+            if self.i == start_i { break; }
         }
 
         Ok(lhs)
@@ -3348,73 +3069,56 @@ impl<'t> Parser<'t> {
         let mut lhs = self.parse_primary()?;
 
         loop {
+            let start_i = self.i; // progress guard
+
+            // member: >> name | >> "string"
             if self.eat_op(">>") {
-                if let Some(name) = self.eat_ident() {
-                    lhs = PExpr::Member(Box::new(lhs), name);
-                    continue;
-                } else if let Some(key) = self.eat_string_lit() {
-                    lhs = PExpr::Member(Box::new(lhs), key);
-                    continue;
-                } else {
-                    return Err("expected identifier or string after '>>'".to_string());
-                }
+                if let Some(name) = self.eat_ident()      { lhs = PExpr::Member(Box::new(lhs), name); continue; }
+                if let Some(key)  = self.eat_string_lit() { lhs = PExpr::Member(Box::new(lhs), key ); continue; }
+                return Err("expected identifier or string after '>>'".to_string());
             }
 
+            // optional member / optional call: ?>> name | ?>>(args...)
             if self.eat_op("?>>") {
                 if self.eat_op("(") {
+                    // ?>>( ... )  — optional call on the LHS (name may be empty if not a prior member)
                     let mut args = Vec::new();
-                    while matches!(self.toks.get(self.i), Some(tok)
-                        if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                    { self.i += 1; }
-
+                    while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                     if !self.peek_op(")") {
                         loop {
-                            let arg = self.parse_coalesce()?;
-                            args.push(arg);
+                            args.push(self.parse_coalesce()?);
                             if self.eat_op(",") {
-                                while matches!(self.toks.get(self.i), Some(tok)
-                                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                                { self.i += 1; }
+                                while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                                 if self.peek_op(")") { break; }
                                 continue;
                             }
                             break;
                         }
                     }
-                    if !self.eat_op(")") {
-                        return Err("expected ')' to close optional call".to_string());
-                    }
+                    if !self.eat_op(")") { return Err("expected ')' to close optional call".to_string()); }
                     lhs = match lhs {
                         PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
-                        other => PExpr::OptCall(Box::new(other), String::new(), args),
+                        other                       => PExpr::OptCall(Box::new(other), String::new(), args),
                     };
                     continue;
                 } else {
-                    let Some(name) = self.eat_ident() else {
-                        return Err("expected identifier after '?>>'".to_string());
-                    };
+                    // ?>> name  — optional member
+                    let Some(name) = self.eat_ident() else { return Err("expected identifier after '?>>'".to_string()); };
                     lhs = PExpr::OptMember(Box::new(lhs), name);
                     continue;
                 }
             }
 
+            // colon-call: target : arg, arg, ...
             if self.eat_op(":") {
                 let mut args = Vec::new();
-                while matches!(self.toks.get(self.i), Some(tok)
-                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                { self.i += 1; }
-
-                if self.peek_newline_or_eof() {
-                    return Err("expected argument after ':'".to_string());
-                }
+                while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                if self.peek_newline_or_eof() { return Err("expected argument after ':'".to_string()); }
 
                 loop {
-                    let arg = self.parse_coalesce()?;
-                    args.push(arg);
+                    args.push(self.parse_coalesce()?);
                     if self.eat_op(",") {
-                        while matches!(self.toks.get(self.i), Some(tok)
-                            if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                        { self.i += 1; }
+                        while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                         if self.peek_newline_or_eof() { break; }
                         continue;
                     }
@@ -3422,63 +3126,48 @@ impl<'t> Parser<'t> {
                 }
 
                 lhs = match lhs {
-                    PExpr::Member(obj, name) => PExpr::Call(obj, name, args),
+                    PExpr::Member(obj, name)    => PExpr::Call(obj, name, args),
                     PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
-                    PExpr::Ident(name) => PExpr::FreeCall(name, args),
-                    other => {
-                        return Err(format!("invalid colon-call target: {:?}", other));
-                    }
+                    PExpr::Ident(name)          => PExpr::FreeCall(name, args),
+                    other                       => return Err(format!("invalid colon-call target: {:?}", other)),
                 };
                 continue;
             }
 
+            // paren-call: target(args...)
             if self.eat_op("(") {
                 let mut args = Vec::new();
-                while matches!(self.toks.get(self.i), Some(tok)
-                    if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                { self.i += 1; }
-
+                while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                 if !self.peek_op(")") {
                     loop {
-                        let arg = self.parse_coalesce()?;
-                        args.push(arg);
+                        args.push(self.parse_coalesce()?);
                         if self.eat_op(",") {
-                            while matches!(self.toks.get(self.i), Some(tok)
-                                if matches!(tok.kind, goblin_lexer::TokenKind::Newline))
-                            { self.i += 1; }
+                            while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                             if self.peek_op(")") { break; }
                             continue;
                         }
                         break;
                     }
                 }
-                if !self.eat_op(")") {
-                    return Err("expected ')' after argument list".to_string());
-                }
+                if !self.eat_op(")") { return Err("expected ')' after argument list".to_string()); }
 
                 lhs = match lhs {
-                    PExpr::Member(obj, name) => PExpr::Call(obj, name, args),
+                    PExpr::Member(obj, name)    => PExpr::Call(obj, name, args),
                     PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
-                    PExpr::Ident(name) => PExpr::FreeCall(name, args),
-                    other => PExpr::Call(Box::new(other), String::new(), args),
+                    PExpr::Ident(name)          => PExpr::FreeCall(name, args),
+                    other                       => PExpr::Call(Box::new(other), String::new(), args),
                 };
                 continue;
             }
 
+            // namespaced free call: Ns::func(...)
             if matches!(&lhs, PExpr::Ident(_)) && self.peek_op("::") {
                 let ns = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
                 let _ = self.eat_op("::");
-
-                let Some(opname) = self.eat_ident() else {
-                    return Err("expected identifier after '::'".to_string());
-                };
+                let Some(opname) = self.eat_ident() else { return Err("expected identifier after '::'".to_string()); };
 
                 if self.eat_op("(") {
-                    let args = if self.eat_op(")") {
-                        vec![]
-                    } else {
-                        self.parse_args_paren()?
-                    };
+                    let args = if self.eat_op(")") { vec![] } else { self.parse_args_paren()? };
                     lhs = PExpr::NsCall(ns, opname, args);
                 } else if self.eat_op(":") {
                     let args = self.parse_args_colon()?;
@@ -3489,44 +3178,11 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            break;
+            // nothing matched; ensure progress or exit
+            if self.i == start_i { break; }
         }
 
         Ok(lhs)
-    }
-
-    fn parse_lvalue_after_amp(&mut self) -> Result<PExpr, String> {
-        let Some(name) = self.eat_ident() else {
-            return Err("SyntaxError: '&' requires a variable/field/index".into());
-        };
-        let mut expr = PExpr::Ident(name);
-
-        loop {
-            if self.eat_op("?>>") {
-                let Some(field) = self.eat_ident() else {
-                    return Err("SyntaxError: expected field name after '?>>'".into());
-                };
-                expr = PExpr::OptMember(Box::new(expr), field);
-                continue;
-            }
-            if self.eat_op(">>") {
-                let Some(field) = self.eat_ident() else {
-                    return Err("SyntaxError: expected field name after '>>'".into());
-                };
-                expr = PExpr::Member(Box::new(expr), field);
-                continue;
-            }
-            if self.eat_op("[") {
-                // NOTE: must produce PExpr + String error
-                let key = self.parse_coalesce()?;
-                if !self.eat_op("]") { return Err("SyntaxError: missing ']' in index".into()); }
-                expr = PExpr::Index(Box::new(expr), Box::new(key));
-                continue;
-            }
-            break;
-        }
-
-        Ok(expr)
     }
 
     fn parse_args_paren(&mut self) -> Result<Vec<PExpr>, String> {
