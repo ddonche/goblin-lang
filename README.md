@@ -13,7 +13,7 @@ templating systems.
 ## Status
 - [x] Language specification
 - [x] Lexer implementation
-- [ ] Parser implementation 
+- [x] Parser implementation 
 - [ ] AST implementation 
 - [ ] Interpreter implementation  
 - [ ] Glam scaffolding system
