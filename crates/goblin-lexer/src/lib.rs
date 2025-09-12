@@ -180,6 +180,38 @@ fn is_dec_digit(b: u8) -> bool {
 }
 
 #[inline]
+fn match_type_suffix(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    if i >= bytes.len() { return None; }
+    match bytes[i] {
+        b'i' => {
+            if i + 5 <= bytes.len() && &bytes[i..i+5] == b"isize" { return Some((5, "isize")); }
+            if i + 2 <= bytes.len() && &bytes[i..i+2] == b"i8"    { return Some((2, "i8")); }
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"i16"   { return Some((3, "i16")); }
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"i32"   { return Some((3, "i32")); }
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"i64"   { return Some((3, "i64")); }
+            if i + 4 <= bytes.len() && &bytes[i..i+4] == b"i128"  { return Some((4, "i128")); }
+            None
+        }
+        b'u' => {
+            if i + 5 <= bytes.len() && &bytes[i..i+5] == b"usize" { return Some((5, "usize")); }
+            if i + 2 <= bytes.len() && &bytes[i..i+2] == b"u8"    { return Some((2, "u8")); }
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"u16"   { return Some((3, "u16")); }
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"u32"   { return Some((3, "u32")); }
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"u64"   { return Some((3, "u64")); }
+            if i + 4 <= bytes.len() && &bytes[i..i+4] == b"u128"  { return Some((4, "u128")); }
+            None
+        }
+        b'f' => {
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"f32"   { return Some((3, "f32")); }
+            if i + 3 <= bytes.len() && &bytes[i..i+3] == b"f64"   { return Some((3, "f64")); }
+            None
+        }
+        b'b' => Some((1, "b")), // big int / big decimal
+        _ => None,
+    }
+}
+
+#[inline]
 fn eat_hex_digits_us(bytes: &[u8], i: &mut usize, col: &mut u32) -> bool {
     let mut saw_digit = false;
     let mut last_us = false;
@@ -662,10 +694,18 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             let mut j = i + 2;
                             let mut c = col + 2;
                             if eat_hex_digits_us(bytes, &mut j, &mut c) {
-                                let lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
-                                let span = Span::new(file, i, j, line, col, line, c);
+                                // Attach optional numeric type suffix (i8/u32/.../f32/f64/b)
+                                let mut end = j;
+                                let mut end_col = c;
+                                let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                                if let Some((adv, suf)) = match_type_suffix(bytes, end) {
+                                    lit.push_str(suf);
+                                    end += adv;
+                                    end_col += adv as u32;
+                                }
+                                let span = Span::new(file, i, end, line, col, line, end_col);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                                i = j; col = c;
+                                i = end; col = end_col;
                                 continue;
                             }
                         }
@@ -673,10 +713,17 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             let mut j = i + 2;
                             let mut c = col + 2;
                             if eat_oct_digits_us(bytes, &mut j, &mut c) {
-                                let lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
-                                let span = Span::new(file, i, j, line, col, line, c);
+                                let mut end = j;
+                                let mut end_col = c;
+                                let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                                if let Some((adv, suf)) = match_type_suffix(bytes, end) {
+                                    lit.push_str(suf);
+                                    end += adv;
+                                    end_col += adv as u32;
+                                }
+                                let span = Span::new(file, i, end, line, col, line, end_col);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                                i = j; col = c;
+                                i = end; col = end_col;
                                 continue;
                             }
                         }
@@ -684,10 +731,17 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             let mut j = i + 2;
                             let mut c = col + 2;
                             if eat_bin_digits_us(bytes, &mut j, &mut c) {
-                                let lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
-                                let span = Span::new(file, i, j, line, col, line, c);
+                                let mut end = j;
+                                let mut end_col = c;
+                                let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                                if let Some((adv, suf)) = match_type_suffix(bytes, end) {
+                                    lit.push_str(suf);
+                                    end += adv;
+                                    end_col += adv as u32;
+                                }
+                                let span = Span::new(file, i, end, line, col, line, end_col);
                                 tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                                i = j; col = c;
+                                i = end; col = end_col;
                                 continue;
                             }
                         }
@@ -711,7 +765,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let sp = Span::new(file, i, i, line, col, line, col);
                                 return Err(vec![Diagnostic::error(
                                     "lexer",
-                                    "invalid '_' in numeric literal; underscores must appear between digits (e.g., 1_234), not at the start or doubled",
+                                    "invalid '_' in numeric literal: underscores must appear between digits (e.g., 1_234), not at the start or doubled",
                                     sp,
                                 )]);
                             }
@@ -726,99 +780,84 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     let sp = Span::new(file, i, i, line, col, line, col);
                     return Err(vec![Diagnostic::error(
                         "lexer",
-                        "trailing '_' in numeric literal; underscores are only allowed between digits (e.g., 1_000), not at the end",
+                        "numeric literal cannot end with '_'",
                         sp,
                     )]);
                 }
 
-                // Fractional part
-                if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
-                    is_float = true;
-                    i += 1; col += 1;
-                    let mut saw_digit = false;
-                    let mut last_was_underscore = false;
-                    while i < bytes.len() {
-                        let b = bytes[i];
-                        match b {
-                            b'0'..=b'9' => {
-                                saw_digit = true;
-                                last_was_underscore = false;
-                                i += 1; col += 1;
-                            }
-                            b'_' => {
-                                if !saw_digit || last_was_underscore {
-                                    let sp = Span::new(file, i, i, line, col, line, col);
-                                    return Err(vec![Diagnostic::error(
-                                        "lexer",
-                                        "invalid underscore in fractional part",
-                                        sp,
-                                    )]);
-                                }
-                                last_was_underscore = true;
-                                i += 1; col += 1;
-                            }
-                            _ => break,
-                        }
-                    }
-                    if last_was_underscore {
-                        let sp = Span::new(file, i, i, line, col, line, col);
-                        return Err(vec![Diagnostic::error(
-                            "lexer",
-                            "underscore cannot trail fractional part",
-                            sp,
-                        )]);
-                    }
-                }
-
-                // Exponent
-                if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-                    let save_i = i;
-                    let save_col = col;
-                    i += 1; col += 1;
-                    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-                        i += 1; col += 1;
-                    }
-
-                    let mut saw_digit = false;
-                    let mut last_was_underscore = false;
-                    while i < bytes.len() {
-                        let b = bytes[i];
-                        match b {
-                            b'0'..=b'9' => {
-                                saw_digit = true;
-                                last_was_underscore = false;
-                                i += 1; col += 1;
-                            }
-                            b'_' => {
-                                if !saw_digit || last_was_underscore {
-                                    let sp = Span::new(file, i, i, line, col, line, col);
-                                    return Err(vec![Diagnostic::error(
-                                        "lexer",
-                                        "invalid underscore in exponent",
-                                        sp,
-                                    )]);
-                                }
-                                last_was_underscore = true;
-                                i += 1; col += 1;
-                            }
-                            _ => break,
-                        }
-                    }
-
-                    if !saw_digit {
-                        i = save_i;
-                        col = save_col;
+                // Fractional part?
+                if i < bytes.len() && bytes[i] == b'.' {
+                    // Lookahead: if next is another '.', it's a range, not a float
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'.' {
+                        // integer token ends before the '.'
                     } else {
+                        // Consume '.' and fractional digits/underscores
                         is_float = true;
-                    }
+                        i += 1; col += 1;
+                        let mut saw_frac_digit = false;
+                        let mut last_us = false;
+                        while i < bytes.len() {
+                            match bytes[i] {
+                                b'0'..=b'9' => { saw_frac_digit = true; last_us = false; i += 1; col += 1; }
+                                b'_' => {
+                                    if !saw_frac_digit || last_us {
+                                        let sp = Span::new(file, i, i, line, col, line, col);
+                                        return Err(vec![Diagnostic::error(
+                                            "lexer",
+                                            "invalid '_' in fractional part",
+                                            sp,
+                                        )]);
+                                    }
+                                    last_us = true; i += 1; col += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        if last_us {
+                            let sp = Span::new(file, i, i, line, col, line, col);
+                            return Err(vec![Diagnostic::error(
+                                "lexer",
+                                "fractional part cannot end with '_'",
+                                sp,
+                            )]);
+                        }
 
-                    if last_was_underscore {
-                        let sp = Span::new(file, i, i, line, col, line, col);
-                        return Err(vec![Diagnostic::error(
-                            "lexer",
-                            "underscore cannot trail exponent",
-                            sp,
-                        )]);
+                        // Optional exponent: e|E [+-]? digits (underscore-separated ok)
+                        if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+                            let save_i = i;
+                            let save_col = col;
+                            i += 1; col += 1;
+
+                            if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                                i += 1; col += 1;
+                            }
+
+                            let mut saw_exp_digit = false;
+                            let mut last_us2 = false;
+                            while i < bytes.len() {
+                                match bytes[i] {
+                                    b'0'..=b'9' => { saw_exp_digit = true; last_us2 = false; i += 1; col += 1; }
+                                    b'_' => {
+                                        if !saw_exp_digit || last_us2 {
+                                            let sp = Span::new(file, i, i, line, col, line, col);
+                                            return Err(vec![Diagnostic::error(
+                                                "lexer",
+                                                "invalid '_' in exponent",
+                                                sp,
+                                            )]);
+                                        }
+                                        last_us2 = true; i += 1; col += 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            if !saw_exp_digit || last_us2 {
+                                // no exponent digits or trailing underscore; roll back to 'e'
+                                i = save_i; col = save_col;
+                            } else {
+                                is_float = true;
+                            }
+                        }
                     }
                 }
 
@@ -830,46 +869,54 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 let mut final_i = i;
                 let mut final_col = col;
 
-                // Check for immediate postfix units (no whitespace)
+                // Check for immediate postfix (no whitespace)
+                // 1) Prefer numeric type suffix if present (i8/u32/.../f32/f64/b)
+                // 2) Otherwise fall back to duration units
                 if i < bytes.len() {
-                    // Duration units (longest first: "mo" before "m")
-                    if i + 1 < bytes.len() && bytes[i] == b'm' && bytes[i + 1] == b'o' {
-                        final_lit.push_str("mo");
-                        final_i += 2; final_col += 2;
-                        base_kind = TokenKind::Duration;
-                    } else if i < bytes.len() {
-                        match bytes[i] {
-                            b's' => {
-                                final_lit.push('s');
-                                final_i += 1; final_col += 1;
-                                base_kind = TokenKind::Duration;
+                    if let Some((adv, suf)) = match_type_suffix(bytes, i) {
+                        final_lit.push_str(suf);
+                        final_i += adv;
+                        final_col += adv as u32;
+                    } else {
+                        // Duration units (longest first: "mo" before "m")
+                        if i + 1 < bytes.len() && bytes[i] == b'm' && bytes[i + 1] == b'o' {
+                            final_lit.push_str("mo");
+                            final_i += 2; final_col += 2;
+                            base_kind = TokenKind::Duration;
+                        } else if i < bytes.len() {
+                            match bytes[i] {
+                                b's' => {
+                                    final_lit.push('s');
+                                    final_i += 1; final_col += 1;
+                                    base_kind = TokenKind::Duration;
+                                }
+                                b'm' => {
+                                    final_lit.push('m');
+                                    final_i += 1; final_col += 1;
+                                    base_kind = TokenKind::Duration;
+                                }
+                                b'h' => {
+                                    final_lit.push('h');
+                                    final_i += 1; final_col += 1;
+                                    base_kind = TokenKind::Duration;
+                                }
+                                b'd' => {
+                                    final_lit.push('d');
+                                    final_i += 1; final_col += 1;
+                                    base_kind = TokenKind::Duration;
+                                }
+                                b'w' => {
+                                    final_lit.push('w');
+                                    final_i += 1; final_col += 1;
+                                    base_kind = TokenKind::Duration;
+                                }
+                                b'y' => {
+                                    final_lit.push('y');
+                                    final_i += 1; final_col += 1;
+                                    base_kind = TokenKind::Duration;
+                                }
+                                _ => {}
                             }
-                            b'm' => {
-                                final_lit.push('m');
-                                final_i += 1; final_col += 1;
-                                base_kind = TokenKind::Duration;
-                            }
-                            b'h' => {
-                                final_lit.push('h');
-                                final_i += 1; final_col += 1;
-                                base_kind = TokenKind::Duration;
-                            }
-                            b'd' => {
-                                final_lit.push('d');
-                                final_i += 1; final_col += 1;
-                                base_kind = TokenKind::Duration;
-                            }
-                            b'w' => {
-                                final_lit.push('w');
-                                final_i += 1; final_col += 1;
-                                base_kind = TokenKind::Duration;
-                            }
-                            b'y' => {
-                                final_lit.push('y');
-                                final_i += 1; final_col += 1;
-                                base_kind = TokenKind::Duration;
-                            }
-                            _ => {}
                         }
                     }
                 }
@@ -1212,7 +1259,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         let save_i = i;
                         let save_col = col;
                         i += 1;
-                        col += 1; // e/E
+                        col += 1;
                         if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
                             i += 1;
                             col += 1;
@@ -1229,13 +1276,23 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         }
                     }
 
-                    let lit = String::from_utf8_lossy(&source.as_bytes()[start_i..i]).into_owned();
-                    let span = Span::new(file, start_i, i, line, start_col, line, col);
+                    // Optional numeric suffix (f32/f64/b) right after the number
+                    let mut end_i = i;
+                    let mut end_col = col;
+                    let mut lit = String::from_utf8_lossy(&source.as_bytes()[start_i..i]).into_owned();
+                    if let Some((adv, suf)) = match_type_suffix(source.as_bytes(), end_i) {
+                        lit.push_str(suf);
+                        end_i += adv;
+                        end_col += adv as u32;
+                    }
+
+                    let span = Span::new(file, start_i, end_i, line, start_col, line, end_col);
                     tokens.push(Token {
                         kind: TokenKind::Float,
                         span,
                         value: Some(lit),
                     });
+                    i = end_i; col = end_col;
                 }
                 // 3) Plain dot
                 else {

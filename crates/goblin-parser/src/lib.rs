@@ -22,6 +22,7 @@ enum PExpr {
     IntWithUnit(String, String),
     IsBound(Box<PExpr>),
     Member(Box<PExpr>, String),
+    Money(String),
     Nil,
     NsCall(String, String, Vec<PExpr>),
     Object(Vec<(String, PExpr)>),
@@ -29,13 +30,8 @@ enum PExpr {
     OptMember(Box<PExpr>, String),
     Postfix(Box<PExpr>, String),
     Prefix(String, Box<PExpr>),
-    Slice(Box<PExpr>, Option<Box<PExpr>>, Option<Box<PExpr>>),
-    Slice3(
-        Box<PExpr>,
-        Option<Box<PExpr>>,
-        Option<Box<PExpr>>,
-        Option<Box<PExpr>>,
-    ),
+    Slice(Box<PExpr>, Option<Box<PExpr>>, Option<Box<PExpr>>),          
+    Slice3(Box<PExpr>, Option<Box<PExpr>>, Option<Box<PExpr>>, Option<Box<PExpr>>),
     Str(String),
     BlobStr(String), 
     BlobNum(String),  
@@ -49,6 +45,80 @@ enum PExpr {
         fields: Vec<(String, PExpr)>,
         actions: Vec<PAction>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NumSuffix {
+    I8, I16, I32, I64, I128, Isize,
+    U8, U16, U32, U64, U128, Usize,
+    F32, F64, Big, // Big = 'b' (big int/dec); only relevant to reject in int-range preview
+}
+
+#[inline]
+fn split_numeric_suffix<'a>(s: &'a str) -> (&'a str, Option<NumSuffix>) {
+    // Order matters: longest first
+    if let Some(rest) = s.strip_suffix("isize") { return (rest, Some(NumSuffix::Isize)); }
+    if let Some(rest) = s.strip_suffix("usize") { return (rest, Some(NumSuffix::Usize)); }
+    if let Some(rest) = s.strip_suffix("i128")  { return (rest, Some(NumSuffix::I128)); }
+    if let Some(rest) = s.strip_suffix("u128")  { return (rest, Some(NumSuffix::U128)); }
+    if let Some(rest) = s.strip_suffix("i64")   { return (rest, Some(NumSuffix::I64)); }
+    if let Some(rest) = s.strip_suffix("u64")   { return (rest, Some(NumSuffix::U64)); }
+    if let Some(rest) = s.strip_suffix("i32")   { return (rest, Some(NumSuffix::I32)); }
+    if let Some(rest) = s.strip_suffix("u32")   { return (rest, Some(NumSuffix::U32)); }
+    if let Some(rest) = s.strip_suffix("i16")   { return (rest, Some(NumSuffix::I16)); }
+    if let Some(rest) = s.strip_suffix("u16")   { return (rest, Some(NumSuffix::U16)); }
+    if let Some(rest) = s.strip_suffix("i8")    { return (rest, Some(NumSuffix::I8));  }
+    if let Some(rest) = s.strip_suffix("u8")    { return (rest, Some(NumSuffix::U8));  }
+    if let Some(rest) = s.strip_suffix("f32")   { return (rest, Some(NumSuffix::F32)); }
+    if let Some(rest) = s.strip_suffix("f64")   { return (rest, Some(NumSuffix::F64)); }
+    if let Some(rest) = s.strip_suffix('b')     { return (rest, Some(NumSuffix::Big)); }
+    (s, None)
+}
+
+#[inline]
+fn strip_numeric_underscores(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch != '_' { out.push(ch); }
+    }
+    out
+}
+
+/// Parse a *non-negative* integer literal string (possibly with base prefix and underscores)
+/// into i128, **after** removing any numeric type suffix. Returns None if:
+/// - it's marked Big (`...b`) or float-suffixed (`f32`/`f64`)
+/// - value doesn't fit in i128 (including large unsigned)
+#[inline]
+fn parse_int_literal_to_i128(s: &str) -> Option<i128> {
+    let (base, suf) = split_numeric_suffix(s);
+
+    // Reject float or big suffixes in "integer" context
+    match suf {
+        Some(NumSuffix::F32) | Some(NumSuffix::F64) | Some(NumSuffix::Big) => return None,
+        _ => {}
+    }
+
+    let base = strip_numeric_underscores(base);
+
+    // Detect radix by prefix
+    if let Some(hex) = base.strip_prefix("0x").or_else(|| base.strip_prefix("0X")) {
+        let u = u128::from_str_radix(hex, 16).ok()?;
+        i128::try_from(u).ok()
+    } else if let Some(bin) = base.strip_prefix("0b").or_else(|| base.strip_prefix("0B")) {
+        let u = u128::from_str_radix(bin, 2).ok()?;
+        i128::try_from(u).ok()
+    } else if let Some(oct) = base.strip_prefix("0o").or_else(|| base.strip_prefix("0O")) {
+        let u = u128::from_str_radix(oct, 8).ok()?;
+        i128::try_from(u).ok()
+    } else {
+        // Decimal
+        // Try unsigned first (to permit large u* that still fit i128)
+        if let Ok(u) = base.parse::<u128>() {
+            return i128::try_from(u).ok();
+        }
+        // Fall back to signed (still non-negative text)
+        base.parse::<i128>().ok()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +167,7 @@ pub struct Parser<'t> {
     block_closed_hard: bool,
     rec_depth: usize,
     last_progress_check: usize,
+    suspend_colon_call: usize,
 }
 
 fn is_block_starter_name(name: &str) -> bool {
@@ -112,6 +183,7 @@ impl<'t> Parser<'t> {
             block_closed_hard: false,
             rec_depth: 0,
             last_progress_check: 0,
+            suspend_colon_call: 0,
         }
     } 
 
@@ -351,6 +423,8 @@ impl<'t> Parser<'t> {
         match e {
             // disallow anything that could invoke user code or assign
             Call(..) | FreeCall(..) | NsCall(..) | OptCall(..) | Assign(..) => false,
+
+            & PExpr::Money(_) => true,
 
             // recurse through composites (note the .as_ref() since we have &PExpr)
             Binary(l,_,r) => Self::key_expr_is_side_effect_free(l.as_ref()) && Self::key_expr_is_side_effect_free(r.as_ref()),
@@ -694,18 +768,15 @@ impl<'t> Parser<'t> {
         Some(count)
     }
 
-    /// Preview an integer range `lo..hi` or `lo...hi` at the current index.
-    /// Returns Some((exclusive, lo, hi)) if it is a simple int range literal,
-    /// or None if it's not a plain int range here. Parser position is restored.
     fn preview_int_range(&mut self) -> Option<(bool, i128, i128)> {
-
         let save = self.i;
 
+        // low endpoint
         self.skip_newlines();
         let lo = match self.peek() {
             Some(t) if matches!(t.kind, TokenKind::Int) => {
                 if let Some(ref s) = t.value {
-                    if let Ok(v) = s.parse::<i128>() {
+                    if let Some(v) = parse_int_literal_to_i128(s) {
                         self.i += 1; v
                     } else { self.i = save; return None; }
                 } else { self.i = save; return None; }
@@ -713,6 +784,7 @@ impl<'t> Parser<'t> {
             _ => { self.i = save; return None; }
         };
 
+        // range operator
         self.skip_newlines();
         let exclusive = if self.eat_op("...") {
             true
@@ -723,11 +795,12 @@ impl<'t> Parser<'t> {
             return None;
         };
 
+        // high endpoint
         self.skip_newlines();
         let hi = match self.peek() {
             Some(t) if matches!(t.kind, TokenKind::Int) => {
                 if let Some(ref s) = t.value {
-                    if let Ok(v) = s.parse::<i128>() {
+                    if let Some(v) = parse_int_literal_to_i128(s) {
                         self.i += 1; v
                     } else { self.i = save; return None; }
                 } else { self.i = save; return None; }
@@ -2476,6 +2549,13 @@ impl<'t> Parser<'t> {
         // --- Lit / Ident dispatch ---
         let (kind, val_opt) = match self.peek() { Some(t) => (t.kind.clone(), t.value.clone()), None => return Err(self.err_expected_expr("(found EOF)")) };
         let expr = match kind {
+            // MONEY
+            goblin_lexer::TokenKind::Money => {
+                let lit = val_opt.unwrap_or_default();
+                self.i += 1;
+                PExpr::Money(lit)
+            }
+
             goblin_lexer::TokenKind::Int => {
                 let lit = val_opt.unwrap_or_default(); self.i += 1;
                 if let Some(t) = self.peek() {
@@ -2610,6 +2690,7 @@ impl<'t> Parser<'t> {
         let mut lhs = self.parse_or()?;
 
         while self.eat_op("??") {
+            self.skip_newlines();
             let rhs = self.parse_or()?;
             lhs = PExpr::Binary(Box::new(lhs), "??".into(), Box::new(rhs));
         }
@@ -2620,14 +2701,9 @@ impl<'t> Parser<'t> {
     fn parse_or(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_and()?;
         loop {
-            // alias "<>" or textual "or"
-            if self.eat_op("<>") {
-                let rhs = self.parse_and()?;
-                lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
-                continue;
-            }
             if self.peek_ident() == Some("or") {
-                let _ = self.eat_ident(); // 'or'
+                let _ = self.eat_ident();
+                self.skip_newlines();
                 let rhs = self.parse_and()?;
                 lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
                 continue;
@@ -2640,13 +2716,16 @@ impl<'t> Parser<'t> {
     fn parse_and(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_compare()?;
         loop {
-            if self.eat_op("&&") {
+            if self.peek_ident() == Some("and") {
+                let _ = self.eat_ident();
+                self.skip_newlines();
                 let rhs = self.parse_compare()?;
                 lhs = PExpr::Binary(Box::new(lhs), "and".into(), Box::new(rhs));
                 continue;
             }
-            if self.peek_ident() == Some("and") {
-                let _ = self.eat_ident();
+            // support && alias if your lexer emits it as Op("&&")
+            if self.eat_op("&&") {
+                self.skip_newlines();
                 let rhs = self.parse_compare()?;
                 lhs = PExpr::Binary(Box::new(lhs), "and".into(), Box::new(rhs));
                 continue;
@@ -2658,26 +2737,32 @@ impl<'t> Parser<'t> {
 
     fn parse_compare(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_additive()?;
+
         loop {
             // textual: is / is not
             if self.peek_ident() == Some("is") {
                 let _ = self.eat_ident();
-                let neg = self.peek_ident() == Some("not"); if neg { let _ = self.eat_ident(); }
+                let neg = self.peek_ident() == Some("not");
+                if neg { let _ = self.eat_ident(); }
+                self.skip_newlines();
                 let rhs = self.parse_additive()?;
                 let op = if neg { "is not" } else { "is" };
                 lhs = PExpr::Binary(Box::new(lhs), op.into(), Box::new(rhs));
                 continue;
             }
-            if self.eat_op("===") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
-            if self.eat_op("!==") { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
-            if self.eat_op("==")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
-            if self.eat_op("!=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!=".into(),  Box::new(rhs)); continue; }
-            if self.eat_op("<=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<=".into(),  Box::new(rhs)); continue; }
-            if self.eat_op(">=")  { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
-            if self.eat_op("<")   { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<".into(),   Box::new(rhs)); continue; }
-            if self.eat_op(">")   { let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">".into(),   Box::new(rhs)); continue; }
+
+            if self.eat_op("===")  { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
+            if self.eat_op("!==")  { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
+            if self.eat_op("==")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("!=")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("<=")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op(">=")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("<")    { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<".into(),   Box::new(rhs)); continue; }
+            if self.eat_op(">")    { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">".into(),   Box::new(rhs)); continue; }
+
             break;
         }
+
         Ok(lhs)
     }
 
@@ -2717,40 +2802,55 @@ impl<'t> Parser<'t> {
 
     fn parse_additive(&mut self) -> Result<PExpr, String> {
         let mut lhs = self.parse_multiplicative()?;
+
         loop {
-            if self.eat_op("+") { let rhs = self.parse_multiplicative()?; lhs = PExpr::Binary(Box::new(lhs), "+".into(), Box::new(rhs)); continue; }
-            if self.eat_op("-") { let rhs = self.parse_multiplicative()?; lhs = PExpr::Binary(Box::new(lhs), "-".into(), Box::new(rhs)); continue; }
-            break;
+            if self.eat_op("+") {
+                self.skip_newlines();
+                let rhs = self.parse_multiplicative()?;
+                lhs = PExpr::Binary(Box::new(lhs), "+".into(), Box::new(rhs));
+            } else if self.eat_op("-") {
+                self.skip_newlines();
+                let rhs = self.parse_multiplicative()?;
+                lhs = PExpr::Binary(Box::new(lhs), "-".into(), Box::new(rhs));
+            } else {
+                break;
+            }
         }
+
         Ok(lhs)
     }
 
     fn parse_multiplicative(&mut self) -> Result<PExpr, String> {
-        // one level tighter than additive; keep power above this
         let mut lhs = self.parse_power()?;
+
         loop {
-            let op = if self.eat_op("><") { "><" }       // divmod
-                     else if self.eat_op("//") { "//" }  // integer division
+            let op = if self.eat_op("><") { "><" }      // divmod
+                     else if self.eat_op("//") { "//" } // integer division
                      else if self.eat_op("*")  { "*"  }
                      else if self.eat_op("/")  { "/"  }
                      else if self.eat_op("%")  { "%"  }
                      else { break };
+
+            self.skip_newlines();
             let rhs = self.parse_power()?;
             lhs = PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs));
         }
+
         Ok(lhs)
     }
 
     fn parse_power(&mut self) -> Result<PExpr, String> {
-        // bottom of binary ladder: must route through unary so '&' works
         let lhs = self.parse_unary()?;
+
         if self.eat_op("**") {
-            let rhs = self.parse_power()?; // right-assoc
-            return Ok(PExpr::Binary(Box::new(lhs), "**".to_string(), Box::new(rhs)));
+            self.skip_newlines();
+            let rhs = self.parse_power()?;
+            return Ok(PExpr::Binary(Box::new(lhs), "**".into(), Box::new(rhs)));
         }
         if self.eat_op("^^") {
-            let rhs = self.parse_power()?; // right-assoc
-            return Ok(PExpr::Binary(Box::new(lhs), "^^".to_string(), Box::new(rhs)));
+            self.skip_newlines();
+            let rhs = self.parse_power()?;
+            return Ok(PExpr::Binary(Box::new(lhs), "^^".into(), Box::new(rhs)));
         }
         Ok(lhs)
     }
@@ -3071,14 +3171,85 @@ impl<'t> Parser<'t> {
         loop {
             let start_i = self.i; // progress guard
 
-            // member: >> name | >> "string"
+            // ---------- Indexing / Slicing ----------
+            if self.eat_op("[") {
+                // suspend colon-call parsing while inside brackets (so "1:5" isn't a colon-call)
+                self.suspend_colon_call += 1;
+
+                // allow newlines
+                while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+
+                // Disallow empty brackets: a[]
+                if self.peek_op("]") {
+                    self.suspend_colon_call -= 1;
+                    return Err("expected expression inside '[]'".to_string());
+                }
+
+                // Parse start / end / step using ":" separators
+                let mut start: Option<PExpr> = None;
+                let mut end:   Option<PExpr> = None;
+                let mut step:  Option<PExpr> = None;
+
+                // start is present iff the next token isn't ":" (or "]" which we rejected above)
+                if !self.peek_op(":") {
+                    start = Some(self.parse_coalesce()?);
+                }
+
+                // If we see a ':', we're in slice mode; otherwise it's an index
+                let is_slice = self.eat_op(":");
+                if is_slice {
+                    // optional end
+                    while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                    if !self.peek_op(":") && !self.peek_op("]") {
+                        end = Some(self.parse_coalesce()?);
+                    }
+
+                    // optional step after second ':'
+                    if self.eat_op(":") {
+                        while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                        if !self.peek_op("]") {
+                            step = Some(self.parse_coalesce()?);
+                        }
+                    }
+                }
+
+                // Close bracket
+                while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                if !self.eat_op("]") {
+                    self.suspend_colon_call -= 1;
+                    return Err("expected ']' to close index/slice".to_string());
+                }
+
+                // leave bracket mode
+                self.suspend_colon_call -= 1;
+
+                // Build node
+                lhs = if is_slice {
+                    // Slice or Slice3
+                    let s = start.map(Box::new);
+                    let e = end.map(Box::new);
+                    let p = step.map(Box::new);
+                    if p.is_some() {
+                        PExpr::Slice3(Box::new(lhs), s, e, p)
+                    } else {
+                        PExpr::Slice(Box::new(lhs), s, e)
+                    }
+                } else {
+                    // Plain index: require an index expr (i.e., start must exist)
+                    let idx = start.ok_or_else(|| "expected expression inside '[]'".to_string())?;
+                    PExpr::Index(Box::new(lhs), Box::new(idx))
+                };
+                continue;
+            }
+
+            // ---------- member: >> name | >> "string" ----------
             if self.eat_op(">>") {
                 if let Some(name) = self.eat_ident()      { lhs = PExpr::Member(Box::new(lhs), name); continue; }
                 if let Some(key)  = self.eat_string_lit() { lhs = PExpr::Member(Box::new(lhs), key ); continue; }
                 return Err("expected identifier or string after '>>'".to_string());
             }
 
-            // optional member / optional call: ?>> name | ?>>(args...)
+            // ---------- optional member / optional call: ?>> name | ?>>(args...) ----------
             if self.eat_op("?>>") {
                 if self.eat_op("(") {
                     // ?>>( ... )  — optional call on the LHS (name may be empty if not a prior member)
@@ -3109,8 +3280,8 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            // colon-call: target : arg, arg, ...
-            if self.eat_op(":") {
+            // ---------- colon-call: target : arg, arg, ... ----------
+            if self.suspend_colon_call == 0 && self.eat_op(":") {
                 let mut args = Vec::new();
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                 if self.peek_newline_or_eof() { return Err("expected argument after ':'".to_string()); }
@@ -3134,7 +3305,7 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            // paren-call: target(args...)
+            // ---------- paren-call: target(args...) ----------
             if self.eat_op("(") {
                 let mut args = Vec::new();
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
@@ -3160,7 +3331,7 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            // namespaced free call: Ns::func(...)
+            // ---------- namespaced free call: Ns::func(...) ----------
             if matches!(&lhs, PExpr::Ident(_)) && self.peek_op("::") {
                 let ns = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
                 let _ = self.eat_op("::");
@@ -3178,13 +3349,12 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            // nothing matched; ensure progress or exit
+            // ---------- nothing matched; ensure progress or exit ----------
             if self.i == start_i { break; }
         }
 
         Ok(lhs)
     }
-
     fn parse_args_paren(&mut self) -> Result<Vec<PExpr>, String> {
         let mut args = Vec::new();
 
