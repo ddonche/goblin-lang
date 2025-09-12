@@ -322,6 +322,46 @@ impl<'t> Parser<'t> {
         Ok(())
     }
 
+    // After finishing the module parse, complain if anything except NEWLINE/EOF remains.
+    fn ensure_no_trailing_tokens_after_parse(
+        &mut self,
+    ) -> Result<(), Vec<goblin_diagnostics::Diagnostic>> {
+        // Consume any trailing newlines your parser leaves
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, goblin_lexer::TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        match self.peek() {
+            None => Ok(()),
+            Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Eof) => Ok(()),
+            Some(tok) => {
+                let sp = tok.span.clone();
+                let what = match &tok.kind {
+                    goblin_lexer::TokenKind::Op(s)    => format!("operator '{}'", s),
+                    goblin_lexer::TokenKind::Ident    => tok.value.clone().unwrap_or_else(|| "identifier".to_string()),
+                    goblin_lexer::TokenKind::Int      => "integer literal".to_string(),
+                    goblin_lexer::TokenKind::Float    => "float literal".to_string(),
+                    goblin_lexer::TokenKind::String   => "string literal".to_string(),
+                    goblin_lexer::TokenKind::Duration => "duration literal".to_string(),
+                    goblin_lexer::TokenKind::Money    => "money literal".to_string(),
+                    goblin_lexer::TokenKind::Date     => "date literal".to_string(),
+                    goblin_lexer::TokenKind::Time     => "time literal".to_string(),
+                    goblin_lexer::TokenKind::DateTime => "datetime literal".to_string(),
+                    _                                  => format!("{:?}", tok.kind),
+                };
+                Err(vec![goblin_diagnostics::Diagnostic::error(
+                    "ParseError",
+                    &format!("unexpected token at top level: {}", what),
+                    sp,
+                )])
+            }
+        }
+    }
+
     fn span_from_tokens(toks: &[goblin_lexer::Token], start_i: usize, end_i: usize) -> Span {
         if toks.is_empty() {
             return Span::new("<empty>", 0, 0, 0, 0, 0, 0);
@@ -2219,10 +2259,31 @@ impl<'t> Parser<'t> {
     }
 
     pub fn parse_module(mut self) -> ParseResult<ast::Module> {
+        // --- front-gate: disallow '=' or ':' as the first non-newline token ---
+        {
+            // Look from the beginning; do not advance self.i.
+            let mut j = 0usize;
+            while let Some(t) = self.toks.get(j) {
+                if matches!(t.kind, TokenKind::Newline) { j += 1; } else { break; }
+            }
+            if let Some(first) = self.toks.get(j) {
+                if let TokenKind::Op(ref op) = first.kind {
+                    if op == "=" || op == ":" {
+                        return Err(vec![Diagnostic::error(
+                            "ParseError",
+                            &format!("`{}` cannot start a statement", op),
+                            first.span.clone(),
+                        )]);
+                    }
+                }
+            }
+        }
+
         let mut items = Vec::new();
         self.eat_layout();
 
         while !self.is_eof() {
+            // Skip non-expression junk at top level, but keep layout tokens flowing.
             loop {
                 match self.peek().map(|t| &t.kind) {
                     Some(k) if Self::is_expr_start(k) => break,
@@ -2231,13 +2292,14 @@ impl<'t> Parser<'t> {
                         self.i += 1;
                     }
                     _ => {
+                        // consume unexpected tokens quietly; stmt parse will error if needed
                         self.i += 1;
                     }
                 }
             }
 
             if self.is_eof() { break; }
-            
+
             match self.parse_stmt() {
                 Ok(stmt) => items.push(stmt),
                 Err(msg) => {
@@ -2251,6 +2313,9 @@ impl<'t> Parser<'t> {
             }
             self.eat_layout();
         }
+
+        // Ensure nothing but NEWLINE/EOF remains after the last statement
+        self.ensure_no_trailing_tokens_after_parse()?;
 
         Ok(ast::Module { items })
     }
@@ -2401,12 +2466,45 @@ impl<'t> Parser<'t> {
         if self.peek_ident() == Some("for") {
             let for_tok_i = self.i;
             let for_line  = self.toks[for_tok_i].span.line_start;
+            let for_col   = self.toks[for_tok_i].span.col_start;
 
-            let _ = self.eat_ident();                   // 'for'
-            // ... your for header parsing ...
+            let _ = self.eat_ident(); // 'for'
+            self.skip_newlines();
+
+            // Loop variable (simple identifier for now)
+            let loop_var = match self.peek() {
+                Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Ident) => {
+                    let v = t.value.clone().unwrap_or_default();
+                    self.i += 1;
+                    v
+                }
+                _ => return Err("expected loop variable after 'for'".to_string()),
+            };
+
+            self.skip_newlines();
+
+            // 'in'
+            if self.peek_ident() != Some("in") {
+                return Err("expected 'in' after loop variable in 'for' header".to_string());
+            }
+            let _ = self.eat_ident(); // 'in'
+            self.skip_newlines();
+
+            // Iterable expression (no assignment in header)
+            let _iter_expr = self.parse_coalesce()?;
+
+            // Forbid '{' after header (same line or next line) and require newline before block
             self.enforce_inline_brace_policy(for_line, "for")?;
-            let _body = self.parse_stmt_block_until(|_| false)?;
 
+            // THEN block: layout-only until aligned 'end' (or hard closer '}'/'end')
+            let _body = self.parse_stmt_block_until(|p| p.peek_ident_at_col("end", for_col))?;
+
+            // Consume aligned 'end' if present (layout closer)
+            if self.peek_ident_at_col("end", for_col) {
+                let _ = self.eat_ident(); // 'end'
+            }
+
+            // Placeholder lowering (keeps your current behavior)
             let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
             let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
             return Ok(ast::Stmt::Expr(expr));
@@ -2962,19 +3060,6 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // typeof(expr) — explicit, never shadowed introspection
-        if self.peek_ident() == Some("typeof") {
-            let _ = self.eat_ident(); // 'typeof'
-            if self.eat_op("(") {
-                let _inner = self.parse_coalesce()?;
-                if !self.eat_op(")") { return Err("expected ')' after typeof(".into()); }
-                return Ok(PExpr::Ident("typeof_expr".into()));
-            } else {
-                let _inner = self.parse_postfix()?; // tight binding
-                return Ok(PExpr::Ident("typeof_expr".into()));
-            }
-        }
-
         // expression-form: judge …
         if let Some("judge") = self.peek_ident() {
             let header_tok_i = self.i;
@@ -3009,6 +3094,92 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
             self.expect_block_close("judge_all")?;
             return Ok(PExpr::Object(pairs));
+        }
+
+        // PICK (expression form)
+        // Syntax: pick <count:int> from <expr> [with dups]
+        if self.peek_ident() == Some("pick") {
+            let pick_tok_i = self.i; // kept for potential future diagnostics
+            let _ = self.eat_ident(); // 'pick'
+            self.skip_newlines();
+
+            // <count>: integer literal (supports suffixes)
+            let count = match self.peek() {
+                Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
+                    let s = t.value.clone().unwrap_or_default();
+                    if let Some(v) = parse_int_literal_to_i128(&s) {
+                        self.i += 1;
+                        v
+                    } else {
+                        return Err("expected integer count after 'pick'".to_string());
+                    }
+                }
+                _ => return Err("expected integer count after 'pick'".to_string()),
+            };
+            if count < 0 {
+                return Err("pick count cannot be negative".to_string());
+            }
+            self.skip_newlines();
+
+            // 'from'
+            if self.peek_ident() != Some("from") {
+                return Err("expected 'from' after pick count".to_string());
+            }
+            let _ = self.eat_ident(); // 'from'
+            self.skip_newlines();
+
+            // <expr> (iterable/source expression)
+            let src_expr = self.parse_coalesce()?;
+            self.skip_newlines();
+
+            // Optional: 'with dups'
+            let mut with_dups = false;
+            if self.peek_ident() == Some("with") {
+                let _ = self.eat_ident(); // 'with'
+                self.skip_newlines();
+                if self.peek_ident() == Some("dups") {
+                    let _ = self.eat_ident(); // 'dups'
+                    with_dups = true;
+                    self.skip_newlines();
+                } else {
+                    return Err("expected 'dups' after 'with'".to_string());
+                }
+            }
+
+            // Compile-time sanity check: if src is a literal array and no 'with dups',
+            // ensure count <= number of DISTINCT literal elements.
+            if !with_dups {
+                if let PExpr::Array(ref elems) = src_expr {
+                    use std::collections::HashSet;
+                    let mut set: HashSet<String> = HashSet::new();
+                    let mut all_simple = true;
+                    for e in elems {
+                        match e {
+                            PExpr::Int(s) | PExpr::Float(s) | PExpr::Str(s) => {
+                                // Normalize underscores so 1_0 == 10
+                                let mut norm = String::with_capacity(s.len());
+                                for ch in s.chars() { if ch != '_' { norm.push(ch); } }
+                                set.insert(norm);
+                            }
+                            PExpr::Bool(b) => { set.insert(format!("b{}", b)); }
+                            _ => { all_simple = false; break; }
+                        }
+                    }
+                    if all_simple {
+                        let distinct = set.len() as i128;
+                        if count > distinct {
+                            return Err(format!(
+                                "too many distinct without 'with dups': requested {}, available {} (expect: FAIL)",
+                                count, distinct
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Placeholder expression node; matches how 'judge' returns directly from parse_unary.
+            // (If you later want postfix like `.map` after pick, we can thread this through parse_postfix.)
+            return Ok(PExpr::Ident("pick_expr".into()));
         }
 
         // roll / roll_detail (syntax-only; contiguous dice)
@@ -3098,6 +3269,44 @@ impl<'t> Parser<'t> {
 
         loop {
             let start_i = self.i; // progress snapshot
+
+            // --- allow call continuation across newline(s) ---
+            {
+                let mut k = self.i;
+                while matches!(self.toks.get(k), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { k += 1; }
+                if k != self.i {
+                    if let Some(tok) = self.toks.get(k) {
+                        if tok.kind == goblin_lexer::TokenKind::Op("(".into()) {
+                            self.i = k;
+                        }
+                    }
+                }
+            }
+
+            // --- function call: lhs(args...) ---
+            if self.eat_op("(") {
+                // Parse comma-separated arguments; allow newlines freely.
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                let mut args: Vec<PExpr> = Vec::new();
+                if !self.peek_op(")") {
+                    loop {
+                        let arg = self.parse_coalesce()?;
+                        args.push(arg);
+                        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                        if self.eat_op(",") {
+                            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                            if self.peek_op(")") { break; } // allow trailing comma
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                if !self.eat_op(")") { return Err("expected ')' to close call".to_string()); }
+
+                lhs = PExpr::Call(Box::new(lhs), "()".to_string(), args);
+                continue;
+            }
 
             // --- indexing / slicing ---
             if self.eat_op("[") {
