@@ -248,7 +248,7 @@ fn run_parse(path: &Path) -> i32 {
                 if diags.len() == 1 { "" } else { "s" }
             );
             for (idx, d) in diags.iter().enumerate() {
-                eprintln!("  [{}] {d:#?}", idx + 1);
+                eprintln!("  [{}] {}", idx + 1, format_diagnostic(d));
             }
             1
         }
@@ -300,6 +300,66 @@ fn expect_for(src: &Path) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+fn format_diagnostic(d: &goblin_diagnostics::Diagnostic) -> String {
+    let mut out = String::new();
+
+    // ---- headline ----
+    // Prefer "P####: ..." if the first line already contains it;
+    // otherwise, synthesize "CODE: message" using category + first line.
+    let first = d.message.lines().next().unwrap_or("");
+    if first.starts_with('P') && first.contains(':') {
+        out.push_str(first);
+    } else if !d.category.is_empty() {
+        out.push_str(&format!("{}: {}", d.category, first));
+    } else {
+        out.push_str(first);
+    }
+
+    // ---- location ----
+    let file = d
+        .primary_span
+        .file
+        .split(['/', '\\'])
+        .last()
+        .unwrap_or(&d.primary_span.file);
+    out.push_str(&format!(
+        " at {}:{}:{}",
+        file, d.primary_span.line_start, d.primary_span.col_start
+    ));
+
+    // ---- help text ----
+    // 1) Try explicit "help:" lines (old behavior).
+    // 2) If none, treat the 2nd paragraph (after a blank line) as help (new behavior).
+    let mut help_line: Option<String> = None;
+
+    for line in d.message.lines().skip(1) {
+        let t = line.trim();
+        if t.to_ascii_lowercase().starts_with("help:") {
+            help_line = Some(t["help:".len()..].trim().to_string());
+            break;
+        }
+    }
+
+    if help_line.is_none() {
+        // Split into paragraphs by blank line(s)
+        let mut parts = d.message.split("\n\n");
+        let _head = parts.next(); // first paragraph already printed
+        if let Some(p2) = parts.next() {
+            let h = p2.trim();
+            if !h.is_empty() {
+                help_line = Some(h.to_string());
+            }
+        }
+    }
+
+    if let Some(h) = help_line {
+        out.push_str("\n  help: ");
+        out.push_str(&h);
+    }
+
+    out
 }
 
 fn read_expect_summary(path: &Path) -> Result<ExpectSummary, String> {

@@ -1920,6 +1920,32 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 }
             }
 
+            // Semicolon family: ";;" (fang operator), ";" 
+            b';' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b';' {
+                    // ";;" fang operator (consume-on-call)
+                    let span = Span::new(file, i, i + 2, line, col, line, col + 2);
+                    tokens.push(Token {
+                        kind: TokenKind::Op(";;".to_string()),
+                        span,
+                        value: Some(";;".to_string()),
+                    });
+                    i += 2;
+                    col += 2;
+                } else {
+                    // Single ';' 
+                    let ch = bytes[i] as char;
+                    let span = Span::new(file, i, i + 1, line, col, line, col + 1);
+                    tokens.push(Token {
+                        kind: TokenKind::Operator(ch.to_string()),
+                        span,
+                        value: None,
+                    });
+                    i += 1;
+                    col += 1;
+                }
+            }
+
             // --- Combined AT/HASH identifiers (keep this; delete the later standalone `b'#'` arm) ---
             b'@' | b'#' => {
                 let prefix = bytes[i];

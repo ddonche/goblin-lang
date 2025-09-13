@@ -6,6 +6,9 @@ use goblin_ast as ast;
 use goblin_diagnostics::{Diagnostic, Span};
 use goblin_lexer::{Token, TokenKind};
 
+mod diagnostics_ext;
+pub use diagnostics_ext::{s, s_help, derr, derr_help, derr_expected_found};
+
 #[derive(Debug, Clone)]
 enum PExpr {
     Array(Vec<PExpr>),
@@ -187,7 +190,7 @@ impl<'t> Parser<'t> {
         }
     } 
 
-    const MAX_RECURSION: usize = 1024;
+    const MAX_RECURSION: usize = 64;
 
     #[inline]
     fn with_depth<T>(
@@ -195,27 +198,39 @@ impl<'t> Parser<'t> {
         f: impl FnOnce(&mut Self) -> Result<T, String>
     ) -> Result<T, String> {
         let start_i = self.i;
-        
-        // If we haven't made progress since last check, we're stuck
+
+        // Detect "stuck" progress to avoid infinite loops.
         if start_i == self.last_progress_check {
-            return Err(format!("Parser stuck at token {}: {:?}", 
-                start_i, 
-                self.toks.get(start_i).map(|t| (&t.kind, &t.value))));
+            return Err(s_help(
+                "P0101",
+                &format!(
+                    "The parser got stuck and can't continue near token {} (token: {:?}).",
+                    start_i,
+                    self.toks.get(start_i).map(|t| &t.kind)
+                ),
+                "Check for a missing 'end' or '}' above, an unclosed string/quote, or a stray character nearby. Close the block with 'end' or '}', or finish the string.",
+            ));
         }
-        
+
         self.rec_depth += 1;
         if self.rec_depth > Self::MAX_RECURSION {
             self.rec_depth -= 1;
-            return Err("expression too deeply nested".to_string());
+            return Err(s_help(
+                "P1001",
+                "This expression is too deeply nested and can't be parsed clearly.",
+                "Split it into smaller sub-expressions on separate lines, then combine the results (use fewer layers of parentheses).",
+            ));
         }
+
         let out = f(self);
+
         self.rec_depth -= 1;
-        
+
         // Update progress tracking
         if self.i > start_i {
             self.last_progress_check = self.i;
         }
-        
+
         out
     }
 
@@ -245,11 +260,19 @@ impl<'t> Parser<'t> {
 
         // Assignments only at statement level
         if !self.in_stmt {
-            return Err("assignment not allowed in expression; use a statement at block level".to_string());
+            return Err(s_help(
+                "P0301",
+                "You can't use assignment (=) inside an expression.",
+                "Put the assignment on its own line, then use the variable: result = calculate() then total = result * 2.",
+            ));
         }
         // Forbid assigning to meta .type
         if self.lhs_ends_with_dot_type_at(self.i) {
-            return Err("cannot assign to meta '.type'; to set a user field named 'type', access it via '>> type'".into());
+            return Err(s_help(
+                "P0302",
+                "You can't assign to `.type`; it's a special system property.",
+                "If you want a field named 'type', write: person >> type = \"admin\".",
+            ));
         }
 
         let op = op.unwrap();
@@ -273,7 +296,11 @@ impl<'t> Parser<'t> {
                     break;
                 }
                 if self.is_eof() {
-                    return Err("unexpected end of file: expected '}' or 'end' to close assignment".into());
+                    return Err(s_help(
+                        "P0201",
+                        "I reached the end of your file, but this block is still open.",
+                        "Add a closing '}' or 'end' to finish the block.",
+                    ));
                 }
 
                 // parse the next expression in the block
@@ -283,7 +310,11 @@ impl<'t> Parser<'t> {
                 self.skip_newlines();
             }
 
-            let rhs = last.ok_or_else(|| "empty assignment block".to_string())?;
+            let rhs = last.ok_or_else(|| s_help(
+                "P0202",
+                "You can't have an empty assignment block",
+                "Add a statement inside the block: value = 1",
+            ))?;
             return if op == "=" {
                 Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
             } else {
@@ -315,9 +346,14 @@ impl<'t> Parser<'t> {
 
     fn ensure_progress(&mut self, start_i: usize, context: &str) -> Result<(), String> {
         if self.i <= start_i {
-            return Err(format!("parser stuck at token {} in {}: {:?}", 
-                start_i, context, 
-                self.toks.get(start_i).map(|t| &t.kind)));
+            return Err(s_help(
+                "P0101",
+                &format!(
+                    "The parser got stuck and can't continue near token {} in {}.",
+                    start_i, context
+                ),
+                "Check for a missing 'end' or '}' above, an unclosed string, or a stray character. Example: add 'end' to close the block, or finish the string: \"name\".",
+            ));
         }
         Ok(())
     }
@@ -353,11 +389,12 @@ impl<'t> Parser<'t> {
                     goblin_lexer::TokenKind::DateTime => "datetime literal".to_string(),
                     _                                  => format!("{:?}", tok.kind),
                 };
-                Err(vec![goblin_diagnostics::Diagnostic::error(
-                    "ParseError",
-                    &format!("unexpected token at top level: {}", what),
+                Err(derr_help(
+                    "P0102",
+                    &format!("Found unexpected {} at the top level of your file", what),
+                    "Remove it, or add the missing 'end' or '}' above to close the previous block",
                     sp,
-                )])
+                ))
             }
         }
     }
@@ -401,7 +438,11 @@ impl<'t> Parser<'t> {
         let mut expr = if let Some(name) = self.eat_ident() {
             PExpr::Ident(name)
         } else {
-            return Err("'&' requires a variable/field/index".to_string());
+            return Err(s_help(
+                "P0401",
+                "You need a variable, field access, or array index after '&'",
+                "Examples: &user, &user>>name, &items[0]",
+            ));
         };
 
         // zero or more of: >>name | >>"key" | ?>>name | [expr]
@@ -419,7 +460,11 @@ impl<'t> Parser<'t> {
                     expr = PExpr::Member(Box::new(expr), key);
                     continue;
                 } else {
-                    return Err("expected identifier or string after '>>'".to_string());
+                    return Err(s_help(
+                        "P0402",
+                        "You need a field name or a quoted string after '>>'",
+                        "Example: user >> name or config >> \"api-key\"",
+                    ));
                 }
             }
 
@@ -427,7 +472,11 @@ impl<'t> Parser<'t> {
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
 
                 let Some(name) = self.eat_ident() else {
-                    return Err("expected identifier after '?>>'".to_string());
+                    return Err(s_help(
+                        "P0403",
+                        "You need a field name after '?>>'",
+                        "Example: user ?>> email",
+                    ));
                 };
                 expr = PExpr::OptMember(Box::new(expr), name);
                 continue;
@@ -437,14 +486,22 @@ impl<'t> Parser<'t> {
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
 
                 if self.peek_op("]") {
-                    return Err("expected expression inside '[]'".to_string());
+                    return Err(s_help(
+                        "P0701",
+                        "Brackets need an index or slice expression",
+                        "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]",
+                    ));
                 }
 
                 let idx = self.parse_coalesce()?;
 
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
                 if !self.eat_op("]") {
-                    return Err("expected ']' after index expression".to_string());
+                    return Err(s_help(
+                        "P0702",
+                        "This index or slice is missing a closing ']'",
+                        "Add ']' to close it: items[0] or data[1:5]",
+                    ));
                 }
 
                 expr = PExpr::Index(Box::new(expr), Box::new(idx));
@@ -518,7 +575,12 @@ impl<'t> Parser<'t> {
         let mut iterations = 0;
         loop {
             iterations += 1;
-            if iterations > 1000 { panic!("Stack overflow protection: too many postfix operations at token index {}", self.i); }
+            if iterations > 1000 {
+                panic!(
+                    "P1002: I hit my safety limit while parsing this really long chain of operations at token {}.\n\nhelp: Break the chain into steps: temp = obj()[0]; result = temp.call()",
+                    self.i
+                );
+            }
 
             let start_i = self.i;
 
@@ -574,7 +636,11 @@ impl<'t> Parser<'t> {
         }
         fn parse_ident(bytes: &[u8], i: &mut usize) -> Result<String, String> {
             if *i >= bytes.len() || !is_alpha(bytes[*i]) {
-                return Err("expected identifier".into());
+                return Err(s_help(
+                    "P0103",
+                    "Expected a name (identifier) here",
+                    "Use a simple name starting with a letter: username or count",
+                ));
             }
             let start = *i;
             *i += 1;
@@ -599,16 +665,32 @@ impl<'t> Parser<'t> {
                 // accept either quote
                 let quote = match peek(bytes, i, 0) {
                     Some(b'\'') | Some(b'"') => { let q = bytes[i]; i += 1; q }
-                    _ => return Err("expected quote after ??".into()),
+                    _ => return Err(s_help(
+                        "P0601",
+                        "After '??', start the default with a quote (' or \")",
+                        "Example: name ?? \"Anonymous\"",
+                    )),
                 };
 
                 let start = i;
                 while i < n && bytes[i] != quote { i += 1; }
-                if i >= n { return Err("unterminated default string after ??".into()); }
+                if i >= n {
+                    return Err(s_help(
+                        "P0602",
+                        "The default string after '??' isn't closed",
+                        "Add a matching quote to end it: name ?? \"guest\"",
+                    ));
+                }
                 let value = std::str::from_utf8(&bytes[start..i]).unwrap().to_string();
                 i += 1; // closing quote
                 skip_ws(bytes, &mut i);
-                if i != n { return Err("unexpected characters after default string".into()); }
+                if i != n {
+                    return Err(s_help(
+                        "P0603",
+                        "Only a single string is allowed after '??'",
+                        "Remove any extra characters after the closing quote: name ?? \"guest\"",
+                    ));
+                }
                 default_str = Some(value);
                 break;
             }
@@ -634,7 +716,7 @@ impl<'t> Parser<'t> {
             // index: [number] or [ident]
             if eat(bytes, &mut i, b'[') {
                 skip_ws(bytes, &mut i);
-                if i >= n { return Err("unterminated '[' in index".into()); }
+                if i >= n { return Err(s_help("P0703", "The '[' starts an index but it isn't closed", "Add a matching ']' to complete the index: items[0]")); }
 
                 // number?
                 if i < n && bytes[i].is_ascii_digit() {
@@ -643,7 +725,7 @@ impl<'t> Parser<'t> {
                     while i < n && (bytes[i].is_ascii_digit() || bytes[i] == b'_') { i += 1; }
                     let num = std::str::from_utf8(&bytes[start..i]).unwrap().to_string();
                     skip_ws(bytes, &mut i);
-                    if !eat(bytes, &mut i, b']') { return Err("expected ']' after numeric index".into()); }
+                    if !eat(bytes, &mut i, b']') { return Err(s_help("P0704", "This numeric index is missing a closing ']'", "Add ']' to close it: items[0]")); }
                     segments.push(LvSeg::IndexNumber(num));
                     continue;
                 }
@@ -652,12 +734,16 @@ impl<'t> Parser<'t> {
                 if i < n && is_alpha(bytes[i]) {
                     let name = parse_ident(bytes, &mut i)?;
                     skip_ws(bytes, &mut i);
-                    if !eat(bytes, &mut i, b']') { return Err("expected ']' after identifier index".into()); }
+                    if !eat(bytes, &mut i, b']') { return Err(s_help("P0705", "This identifier index is missing a closing ']'", "Add ']' to close it: items[id]")); }
                     segments.push(LvSeg::IndexIdent(name));
                     continue;
                 }
 
-                return Err("invalid index: expected number or identifier".into());
+                return Err(s_help(
+                    "P0706",
+                    "You need a number or a name inside '[ ]'",
+                    "Examples: items[0] or data[key]",
+                ));
             }
 
             // nothing more to consume
@@ -688,7 +774,11 @@ impl<'t> Parser<'t> {
         }
 
         if depth != 0 {
-            Err("unterminated '{' in interpolated string".to_string())
+            Err(s_help(
+                "P0604",
+                "There's an unclosed '{' in this string",
+                "Add a matching '}' to close it: \"Hello {name}\"",
+            ))
         } else {
             Ok(())
         }
@@ -723,9 +813,17 @@ impl<'t> Parser<'t> {
             "BOF".into()
         };
         if ctx.is_empty() {
-            format!("expected expression; got {} after {}", here, prev)
+            s_help(
+                "P1003",
+                &format!("Expected an expression, but found {} after {}", here, prev),
+                "Use a value, variable, or call: total = price * qty",
+            )
         } else {
-            format!("expected expression {} ; got {} after {}", ctx, here, prev)
+            s_help(
+                "P1003",
+                &format!("Expected an expression {} but found {} after {}", ctx, here, prev),
+                "Use a value, variable, or call: total = price * qty",
+            )
         }
     }
 
@@ -739,7 +837,11 @@ impl<'t> Parser<'t> {
     fn split_duration_lexeme(s: &str) -> Result<(String, String), String> {
         // Accept units: mo, s, m, h, d, w, y  (longest-match for "mo")
         if s.len() < 2 {
-            return Err("malformed duration literal".to_string());
+            return Err(s_help(
+                "P0901",
+                "This duration format isn't valid",
+                "Use formats like 5s, 10m, 2h, or 3d",
+            ));
         }
         let (base, unit) = if s.ends_with("mo") {
             (&s[..s.len()-2], "mo")
@@ -749,12 +851,20 @@ impl<'t> Parser<'t> {
             (&s[..s.len()-1], u)
         };
         if base.is_empty() {
-            return Err("malformed duration literal".to_string());
+            return Err(s_help(
+                "P0901",
+                "This duration format isn't valid",
+                "Use formats like 5s, 10m, 2h, or 3d",
+            ));
         }
         // Minimal unit validation
         match unit {
             "s" | "m" | "h" | "d" | "w" | "y" | "mo" => Ok((base.to_string(), unit.to_string())),
-            _ => Err(format!("unknown duration unit '{}'", unit)),
+            _ => Err(s_help(
+                "P0902",
+                &format!("'{}' isn't a valid time unit", unit),
+                "Use s, m, h, d, w, y, or mo: 5m or 2h",
+            )),
         }
     }
 
@@ -995,9 +1105,10 @@ impl<'t> Parser<'t> {
         if let Some(tok) = self.toks.get(j) {
             if let TokenKind::Op(ref s) = tok.kind {
                 if s == "{" {
-                    return Err(format!(
-                        "brace '{{' is not allowed after {} header; use layout (newline + indent) and close with '}}' or 'end'",
-                        who
+                    return Err(s_help(
+                        "P0203",
+                        &format!("Don't put '{{' after {} header on a new line", who),
+                        "Put '{{' on the same line as the header, or use indentation and close with '}}' or 'end': if ok {{ do() }}",
                     ));
                 }
             }
@@ -1011,7 +1122,11 @@ impl<'t> Parser<'t> {
         let mut depth = 1;
         loop {
             if self.is_eof() {
-                return Err("unexpected end of input while parsing action block".to_string());
+                return Err(s_help(
+                    "P0204",
+                    "I reached the end of the file, but this action block is still open",
+                    "Close the block with '}' or 'end': action Save { ... } end",
+                ));
             }
             let tok = self.peek().unwrap();
 
@@ -1057,14 +1172,22 @@ impl<'t> Parser<'t> {
         loop {
             let Some(key) = self.eat_object_key() else {
                 if out.is_empty() {
-                    return Err("expected field name in class header".to_string());
+                    return Err(s_help(
+                        "P0903",
+                        "Expected a field name in this class header",
+                        "Add a field in the header: @Player = username: \"john\" :: health: 100",
+                    ));
                 } else {
                     break;
                 }
             };
 
             if !self.eat_op(":") {
-                return Err("expected ':' after field name".to_string());
+                return Err(s_help(
+                    "P0904",
+                    "You need a ':' after the field name",
+                    "Write it like username: \"john\"",
+                ));
             }
 
             let val = self.parse_coalesce()?;
@@ -1086,7 +1209,11 @@ impl<'t> Parser<'t> {
     fn parse_action_after_keyword(&mut self, kw: &str) -> Result<PAction, String> {
 
         let Some(name) = self.eat_ident() else {
-            return Err(format!("expected {} name", kw));
+            return Err(s_help(
+                "P0501",
+                &format!("You need to give your {} a name", kw),
+                &format!("Write it like: {} Save", kw),
+            ));
         };
 
         // optional params: (p1, p2, ...)
@@ -1095,7 +1222,11 @@ impl<'t> Parser<'t> {
             if !self.peek_op(")") {
                 loop {
                     let Some(p) = self.eat_ident() else {
-                        return Err("expected parameter name".to_string());
+                        return Err(s_help(
+                            "P0502",
+                            "Expected a parameter name",
+                            "Use a simple identifier like username or count",
+                        ));
                     };
                     params.push(p);
                     if self.eat_op(",") {
@@ -1106,7 +1237,11 @@ impl<'t> Parser<'t> {
                 }
             }
             if !self.eat_op(")") {
-                return Err("expected ')' after parameter list".to_string());
+                return Err(s_help(
+                    "P0503",
+                    "Expected ')' to close the parameter list",
+                    "Add the closing ')': action Save(username, level)",
+                ));
             }
         }
 
@@ -1179,12 +1314,11 @@ impl<'t> Parser<'t> {
                 if matches!(next.kind, TokenKind::Op(ref s) if s == "{")
                     && next.span.line_start > prev_tok.span.line_end
                 {
-                    return Err(
-                        "brace '{' on a new line starts an object literal in Goblin.\n\
-                         For an action block, put '{' on the same line as 'action NAME', \
-                         or use layout (indent) and close with 'end' or '}'."
-                        .to_string()
-                    );
+                    return Err(s_help(
+                        "P0205",
+                        "A '{' on a new line starts an object, not an action block",
+                        "Put '{' on the same line as the action header, or use indentation and close with 'end': action Save { run() }",
+                    ));
                 }
             }
         }
@@ -1287,7 +1421,7 @@ impl<'t> Parser<'t> {
             // Progress guard
             if self.i <= before {
                 panic!(
-                    "skip_newlines made no progress at i={} (tok: {:?})",
+                    "P9001: Internal error: I got stuck trying to skip newlines at token {} ({:?}).\n\nhelp: This shouldn't happen - please report this bug with your source code.",
                     before, tok
                 );
             }
@@ -1297,7 +1431,7 @@ impl<'t> Parser<'t> {
                 // CLONE the span to avoid moving out of &Token
                 let first_span = self.toks.get(start_i).map(|t| t.span.clone());
                 panic!(
-                    "skip_newlines consumed >100k newlines starting at i={}, first_span={:?}",
+                    "P9002: Internal guard tripped: I tried to skip way too many newlines (>100k) starting at token {}, span={:?}.\n\nhelp: This shouldn't happen in normal code - please report this bug with your source code near that location.",
                     start_i, first_span
                 );
             }
@@ -1337,7 +1471,11 @@ impl<'t> Parser<'t> {
         if self.eat_block_close() {
             Ok(())
         } else {
-            Err(format!("expected '}}' or 'end' to close {}", ctx))
+            Err(s_help(
+                "P0206",
+                &format!("You need '}}' or 'end' to close {}", ctx),
+                "Close the block with '}}' or 'end': if ok {{ do() }} end",
+            ))
         }
     }
 
@@ -1368,14 +1506,22 @@ impl<'t> Parser<'t> {
                 let close_tok = &self.toks[self.i];
                 let close_line = close_tok.span.line_start;
                 if close_line != brace_line {
-                    return Err("inline braced block must be single-line; remove the newline or use a layout block".into());
+                    return Err(s_help(
+                        "P0207",
+                        "Inline braced blocks must be on a single line",
+                        "Keep it on one line: if ok { do() }, or use indentation and close with 'end'",
+                    ));
                 }
                 // Must be a '}' (not 'end') for inline braced
                 if self.peek_op("}") {
                     let _ = self.eat_op("}");
                     return Ok(Vec::new());
                 } else {
-                    return Err("inline braced block must close with '}' on the same line".into());
+                    return Err(s_help(
+                        "P0208",
+                        "Inline braced blocks must close with '}' on the same line",
+                        "Keep it on one line: { do() }, or use indentation and close with 'end'",
+                    ));
                 }
             }
 
@@ -1388,25 +1534,41 @@ impl<'t> Parser<'t> {
                 let close_tok = &self.toks[self.i];
                 let close_line = close_tok.span.line_start;
                 if close_line != brace_line {
-                    return Err("inline braced block must be single-line; remove the newline or use a layout block".into());
+                    return Err(s_help(
+                        "P0207",
+                        "Inline braced blocks must be on a single line",
+                        "Keep it on one line: if ok { do() }, or use indentation and close with 'end'",
+                    ));
                 }
                 if self.peek_op("}") {
                     let _ = self.eat_op("}");
                     return Ok(out);
                 } else {
-                    return Err("inline braced block must close with '}' on the same line".into());
+                    return Err(s_help(
+                        "P0208",
+                        "Inline braced blocks must close with '}' on the same line",
+                        "Keep it on one line: { do() }, or use indentation and close with 'end'",
+                    ));
                 }
             }
 
             // If there’s a newline before any closer, call it out explicitly
             if let Some(tok) = self.toks.get(self.i) {
                 if matches!(tok.kind, TokenKind::Newline) {
-                    return Err("inline braced block must be single-line; remove the newline or use a layout block".into());
+                    return Err(s_help(
+                        "P0207",
+                        "Inline braced blocks must be on a single line",
+                        "Keep it on one line: if ok { do() }, or use indentation and close with 'end'",
+                    ));
                 }
             }
 
             // Otherwise: we didn’t find a same-line '}'
-            return Err("unterminated inline braced block; expected '}' on the same line".into());
+            return Err(s_help(
+                "P0209",
+                "This inline braced block isn't closed on the same line",
+                "Add the closing '}' on this line: { do() }",
+            ));
         }
 
         // LAYOUT MODE: require newline, optionally followed by Indent
@@ -1439,7 +1601,11 @@ impl<'t> Parser<'t> {
         }
 
         if !saw_nl {
-            return Err("expected indentation after header; either put '{' on the same line or indent the next line".to_string());
+            return Err(s_help(
+                "P0210",
+                "Expected indentation after this header",
+                "Put '{' on the same line or indent the next line: if ok { run() }",
+            ));
         }
 
         let mut out = Vec::new();
@@ -1453,7 +1619,11 @@ impl<'t> Parser<'t> {
                 Some(tok) if matches!(tok.kind, TokenKind::Dedent) => {
                     self.i += 1;
                     if depth == 0 {
-                        return Err("dedent below block start".into());
+                        return Err(s_help(
+                            "P0211",
+                            "The indentation went back too far for this block",
+                            "Indent the line to stay inside the block, or close it first: if ok { run() }",
+                        ));
                     }
                     depth -= 1;
                     if depth == 0 {
@@ -1463,13 +1633,21 @@ impl<'t> Parser<'t> {
                             let _ = self.eat_block_close();
                             break;
                         }
-                        return Err("missing 'end' (or '}') to close block".into());
+                        return Err(s_help(
+                            "P0212",
+                            "This block is missing its closing 'end' or '}'",
+                            "Close the block with 'end' or '}': if ok { run() } end",
+                        ));
                     }
                     continue;
                 }
                 Some(_) => { /* normal statement path */ }
                 None => {
-                    return Err("unexpected end of file: expected '}' or 'end' to close block".into());
+                    return Err(s_help(
+                        "P0201",
+                        "I reached the end of the file, but this block is still open",
+                        "Close the block with '}' or 'end': if ok { run() } end",
+                    ));
                 }
             }
 
@@ -1545,7 +1723,11 @@ impl<'t> Parser<'t> {
             }
         }
 
-        Err("expected newline to start block".to_string())
+        Err(s_help(
+            "P0213",
+            "Expected a newline to start this block",
+            "Put '{' on the same line or start a new line and indent the block: if ok { run() }",
+        ))
     }
 
     /// Consume optional `between` sugar after a subject expression:
@@ -1586,7 +1768,11 @@ impl<'t> Parser<'t> {
         } else if self.eat_op("..") {
             false
         } else {
-            return Err("expected '..' or '...' after lower bound in 'between'".into());
+            return Err(s_help(
+                "P1004",
+                "Expected '..' or '...' after the lower bound in 'between'",
+                "Write it like: between 1..5 or between 10...20",
+            ));
         };
 
         // upper bound
@@ -1607,7 +1793,11 @@ impl<'t> Parser<'t> {
             };
 
             if !self.eat_op(":") {
-                return Err("expected ':' after field name in class header".to_string());
+                return Err(s_help(
+                    "P0904",
+                    "You need a ':' after the field name in the class header",
+                    "Write it like: username: \"john\"",
+                ));
             }
 
             let value = self.parse_coalesce()?;
@@ -1625,21 +1815,37 @@ impl<'t> Parser<'t> {
     fn parse_class_decl(&mut self) -> Result<PExpr, String> {
 
         if !self.eat_op("@") {
-            return Err("expected '@' to start class declaration".to_string());
+            return Err(s_help(
+                "P0905",
+                "Expected '@' to start a class declaration",
+                "Start the class like: @Player = username: \"john\" :: health: 100",
+            ));
         }
 
         let Some(name) = self.eat_ident() else {
-            return Err("expected class name after '@'".to_string());
+            return Err(s_help(
+                "P0906",
+                "Expected a class name after '@'",
+                "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
+            ));
         };
 
         let name_tok_idx = self.i - 1;
         if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
             self.i = name_tok_idx;
-            return Err(format!("class name '{}' must start with an uppercase letter", name));
+            return Err(s_help(
+                "P0907",
+                &format!("Class names must start with a capital letter (found '{}')", name),
+                "Rename it to start with uppercase: Player",
+            ));
         }
 
         if !self.eat_op("=") {
-            return Err(format!("expected '=' after class name '{}'", name));
+            return Err(s_help(
+                "P0908",
+                &format!("You need '=' after the class name '{}'", name),
+                "Write it like: @Player = username: \"john\" :: health: 100",
+            ));
         }
 
         let fields = self.parse_field_chain_line()?;
@@ -1652,7 +1858,11 @@ impl<'t> Parser<'t> {
 
             // Close class body with either `end` or `}`
             if self.is_eof() {
-                return Err(format!("unterminated class '{}': missing '}}' or 'end'", name));
+                return Err(s_help(
+                    "P0909",
+                    &format!("I reached the end of the file, but the class '{}' is still open (missing '}}' or 'end')", name),
+                    "Close the class with '}' or 'end': @Player = username: \"john\" :: health: 100 end",
+                ));
             }
             let tok = self.peek().unwrap();
             let is_end = matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
@@ -1673,7 +1883,11 @@ impl<'t> Parser<'t> {
                     "action"
                 }
                 _ => {
-                    return Err("expected 'act' or 'action' or 'end' in class body".to_string());
+                    return Err(s_help(
+                        "P0910",
+                        "Inside a class, only 'act', 'action', or 'end' are allowed here",
+                        "Add an action or end the class: act run() { ... } or end",
+                    ));
                 }
             };
 
@@ -1695,17 +1909,8 @@ impl<'t> Parser<'t> {
             match kind {
                 TokenKind::Op(op) if op == "@" => {
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl {
-                        name,
-                        fields,
-                        actions,
-                    } = class
-                    {
-                        return Ok(PDecl::Class {
-                            name,
-                            fields,
-                            actions,
-                        });
+                    if let PExpr::ClassDecl { name, fields, actions } = class {
+                        return Ok(PDecl::Class { name, fields, actions });
                     }
                 }
                 TokenKind::Ident => {
@@ -1715,22 +1920,6 @@ impl<'t> Parser<'t> {
                             let _ = self.eat_ident();
                             let act = self.parse_action_after_keyword(kw)?;
                             return Ok(PDecl::Action(act));
-                        }
-                        "class" => {
-                            let _ = self.eat_ident();
-                            let class = self.parse_class_decl_keyword()?;
-                            if let PExpr::ClassDecl {
-                                name,
-                                fields,
-                                actions,
-                            } = class
-                            {
-                                return Ok(PDecl::Class {
-                                    name,
-                                    fields,
-                                    actions,
-                                });
-                            }
                         }
                         _ => {}
                     }
@@ -1744,57 +1933,11 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_class_decl_keyword(&mut self) -> Result<PExpr, String> {
-
-        let Some(name) = self.eat_ident() else {
-            return Err("expected class name after 'class'".to_string());
-        };
-
-        if !self.eat_op("=") {
-            return Err(format!("expected '=' after class name '{}'", name));
-        }
-
-        let fields = self.parse_field_chain_line()?;
-        self.eat_semi_separators();
-
-        let mut actions = Vec::new();
-
-        loop {
-            self.eat_semi_separators();
-
-            if self.is_eof() {
-                return Err(format!(
-                    "unterminated class '{}': missing '}}' or 'end'",
-                    name
-                ));
-            }
-            let tok = self.peek().unwrap();
-            let is_end =
-                matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
-            let is_rbrace = matches!(tok.kind, TokenKind::Op(ref s) if s == "}");
-            if is_end || is_rbrace {
-                self.i += 1;
-                break;
-            }
-
-            let Some(kw) = self.eat_ident() else {
-                return Err("expected 'act' or 'action' or 'end' in class body".to_string());
-            };
-            if kw != "act" && kw != "action" {
-                return Err(format!(
-                    "expected 'act' or 'action' or 'end', found '{}'",
-                    kw
-                ));
-            }
-
-            let action = self.parse_action_after_keyword(&kw)?;
-            actions.push(action);
-        }
-
-        Ok(PExpr::ClassDecl {
-            name,
-            fields,
-            actions,
-        })
+        Err(s_help(
+            "P0912",
+            "The 'class' keyword isn't used here",
+            "Declare a class with '@' instead: @Player = username: \"john\" :: health: 100",
+        ))
     }
 
     fn eat_object_key(&mut self) -> Option<String> {
@@ -1890,9 +2033,10 @@ impl<'t> Parser<'t> {
                 let brace_line = self.toks[j].span.line_start;
                 if brace_line > header_line {
                     self.i = saved_i;
-                    return Err(format!(
-                        "brace '{{' must be on the same line as the {} header, or use layout (newline + indent) without a brace",
-                        who
+                    return Err(s_help(
+                        "P0203",
+                        &format!("Don't put '{{' after the {} header on a new line", who),
+                        "Put '{{' on the same line as the header, or use indentation and close with 'end': if ok {{ run() }}",
                     ));
                 }
             }
@@ -1926,9 +2070,11 @@ impl<'t> Parser<'t> {
                 if let goblin_lexer::TokenKind::Op(op) = &t.kind {
                     if op == "{" && t.span.line_start > if_line {
                         self.i = save;
-                        return Err("brace '{' on a new line starts an object literal.\n\
-                                    For an 'if' block, either use layout-indent and close with 'end' or '}', \
-                                    or put '{' on the same line as 'if <cond>'.".to_string());
+                        return Err(s_help(
+                            "P0205",
+                            "A '{' on a new line starts an object, not an 'if' block",
+                            "Put '{' on the same line as the 'if': if ok { run() }",
+                        ));
                     }
                 }
             }
@@ -1993,7 +2139,11 @@ impl<'t> Parser<'t> {
             if self.peek_op("}") {
                 let close_line = self.toks[self.i].span.line_start;
                 if close_line != brace_line {
-                    return Err("inline braced block must be single-line; place '}' on the same line as '{'".into());
+                    return Err(s_help(
+                        "P0207",
+                        "Inline braced blocks must be on a single line",
+                        "Place '}' on the same line as '{': { do() }",
+                    ));
                 }
                 let _ = self.eat_op("}");
                 // Inline braced blocks do NOT prevent tails
@@ -2004,10 +2154,18 @@ impl<'t> Parser<'t> {
             // First body token must be on the SAME line as `{`
             if let Some(tok) = self.toks.get(self.i) {
                 if tok.span.line_start != brace_line {
-                    return Err("inline braced block must be single-line; remove the newline or use a layout block".into());
+                    return Err(s_help(
+                        "P0207",
+                        "Inline braced blocks must be on a single line",
+                        "Remove the newline or use indentation and close with 'end': { do() }",
+                    ));
                 }
             } else {
-                return Err("unexpected end of file: expected a statement or '}' in inline braced block".into());
+                return Err(s_help(
+                    "P0214",
+                    "I reached the end of the file inside an inline braced block",
+                    "Finish the block on the same line with a statement and '}': { run() }",
+                ));
             }
 
             // Exactly ONE statement/expression
@@ -2015,14 +2173,26 @@ impl<'t> Parser<'t> {
 
             // Require `}` on the SAME line; `end` never allowed here
             if self.peek_ident() == Some("end") {
-                return Err("braced block must close with '}' (not 'end')".into());
+                return Err(s_help(
+                    "P0215",
+                    "Braced blocks close with '}', not 'end'",
+                    "Close it with '}': if ok { run() }",
+                ));
             }
             if !self.peek_op("}") {
-                return Err("expected '}' immediately after inline braced statement".into());
+                return Err(s_help(
+                    "P0216",
+                    "Expected '}' immediately after this inline braced statement",
+                    "Close it on the same line: { run() }",
+                ));
             }
             let close_line = self.toks[self.i].span.line_start;
             if close_line != brace_line {
-                return Err("inline braced block must be single-line; place '}' on the same line as '{'".into());
+                return Err(s_help(
+                    "P0207",
+                    "Inline braced blocks must be on a single line",
+                    "Place '}' on the same line as '{': { do() }",
+                ));
             }
             let _ = self.eat_op("}");
             // Inline braced blocks do NOT prevent tails
@@ -2049,7 +2219,11 @@ impl<'t> Parser<'t> {
             }
         }
         if !saw_nl {
-            return Err("expected newline to start block".to_string());
+            return Err(s_help(
+                "P0213",
+                "Expected a newline to start this block",
+                "Put '{' on the same line or start a new line and indent the block: if ok { run() }",
+            ));
         }
 
         // Baseline col for soft-indent
@@ -2086,16 +2260,28 @@ impl<'t> Parser<'t> {
                     soft_mode = true;
                     soft_cols.push(body_col);
                 } else {
-                    return Err("expected indentation after header; either put '{' on the same line or indent the next line".into());
+                    return Err(s_help(
+                        "P0210",
+                        "Expected indentation after this header",
+                        "Put '{' on the same line or indent the next line: if ok { run() }",
+                    ));
                 }
             }
         } else {
-            return Err("missing 'end' (or '}') to close block".into());
+            return Err(s_help(
+                "P0212",
+                "This block is missing its closing 'end' or '}'",
+                "Close the block with 'end' or '}': if ok { run() } end",
+            ));
         }
 
         loop {
             if self.is_eof() {
-                return Err("missing 'end' (or '}') to close block".into());
+                return Err(s_help(
+                    "P0212",
+                    "This block is missing its closing 'end' or '}'",
+                    "Close the block with 'end' or '}': if ok { run() } end",
+                ));
             }
 
             // ===== Tokenized indentation first
@@ -2107,7 +2293,13 @@ impl<'t> Parser<'t> {
                         while let Some(t2) = self.toks.get(self.i) {
                             if matches!(t2.kind, TokenKind::Dedent) { self.i += 1; ded_count += 1; } else { break; }
                         }
-                        if ded_count > depth { return Err("dedent below block start".to_string()); }
+                        if ded_count > depth {
+                            return Err(s_help(
+                                "P0211",
+                                "The indentation went back too far for this block",
+                                "Indent the line to stay inside the block, or close it first: if ok { run() }",
+                            ));
+                        }
                         depth -= ded_count;
 
                         if depth == 0 {
@@ -2123,14 +2315,22 @@ impl<'t> Parser<'t> {
                             // Misaligned tails at header level → explicit error here
                             if let Some(id) = self.peek_ident() {
                                 if (id == "elif" || id == "else") && !stop(self) {
-                                    return Err("misaligned 'elif'/'else': tails must start at the same column as the 'if' header".into());
+                                    return Err(s_help(
+                                        "P0221",
+                                        "This 'elif' or 'else' isn't aligned with its matching 'if'",
+                                        "Align 'elif'/'else' with 'if' (same column): if ok { run() } elif other { handle() } else { fallback() }",
+                                    ));
                                 }
                             }
                             if stop(self) {
                                 ended_hard = false; // stopped by tail
                                 break;
                             }
-                            return Err("missing 'end' (or '}') to close block".into());
+                            return Err(s_help(
+                                "P0212",
+                                "This block is missing its closing 'end' or '}'",
+                                "Close the block with 'end' or '}': if ok { run() } end",
+                            ));
                         }
                         continue;
                     }
@@ -2146,7 +2346,11 @@ impl<'t> Parser<'t> {
                 }
 
                 if saw_linebreak {
-                    if self.is_eof() { return Err("missing 'end' (or '}') to close block".into()); }
+                    if self.is_eof() { return Err(s_help(
+                    "P0212",
+                    "This block is missing its closing 'end' or '}'",
+                    "Close the block with 'end' or '}': if ok { run() } end",
+                )); }
 
                     // NOTE: Previously this accepted a closer at depth == 1.
                     // That allowed misaligned closers inside the body. Disallow that now.
@@ -2154,12 +2358,20 @@ impl<'t> Parser<'t> {
                         // Closer encountered while still indented -> misaligned closer error.
                         if let Some(cl) = self.peek() {
                             let closer = if cl.value.as_deref() == Some("}") { "}" } else { "end" };
-                            return Err(format!(
-                                "misaligned block closer '{}': expected column {}, found column {}",
-                                closer, header_col, cl.span.col_start
+                            return Err(s_help(
+                                "P0222",
+                                &format!(
+                                    "This '{}' closer is misaligned: expected column {}, found column {}",
+                                    closer, header_col, cl.span.col_start
+                                ),
+                                "Align the closer with its header (same column): place 'end' or '}' directly under the start of the block header",
                             ));
                         } else {
-                            return Err("missing 'end' (or '}') to close block".into());
+                            return Err(s_help(
+                                "P0212",
+                                "This block is missing its closing 'end' or '}'",
+                                "Close the block with 'end' or '}': if ok { run() } end",
+                            ));
                         }
                     }
 
@@ -2179,14 +2391,22 @@ impl<'t> Parser<'t> {
                                 }
                                 if let Some(id) = self.peek_ident() {
                                     if (id == "elif" || id == "else") && !stop(self) {
-                                        return Err("misaligned 'elif'/'else': tails must start at the same column as the 'if' header".into());
+                                        return Err(s_help(
+                                            "P0221",
+                                            "This 'elif' or 'else' isn't aligned with its matching 'if'",
+                                            "Align 'elif'/'else' with 'if' at the same column: start 'elif' exactly under 'if'",
+                                        ));
                                     }
                                 }
                                 if stop(self) {
                                     ended_hard = false; // stopped by tail
                                     break;
                                 }
-                                return Err("missing 'end' (or '}') to close block".into());
+                                return Err(s_help(
+                                    "P0212",
+                                    "This block is missing its closing 'end' or '}'",
+                                    "Close the block with 'end' or '}': if ok { run() } end",
+                                ));
                             }
                         }
 
@@ -2198,7 +2418,11 @@ impl<'t> Parser<'t> {
                             }
                             if let Some(id) = self.peek_ident() {
                                 if (id == "elif" || id == "else") && !stop(self) {
-                                    return Err("misaligned 'elif'/'else': tails must start at the same column as the 'if' header".into());
+                                    return Err(s_help(
+                                        "P0221",
+                                        "This 'elif' or 'else' isn't aligned with its matching 'if'",
+                                        "Align 'elif'/'else' with 'if' at the same column: start 'elif' exactly under 'if'",
+                                    ));
                                 }
                             }
                             if stop(self) {
@@ -2222,12 +2446,20 @@ impl<'t> Parser<'t> {
             if depth > 0 && self.peek_block_close() {
                 if let Some(cl) = self.peek() {
                     let closer = if cl.value.as_deref() == Some("}") { "}" } else { "end" };
-                    return Err(format!(
-                        "misaligned block closer '{}': expected column {}, found column {}",
-                        closer, header_col, cl.span.col_start
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, header_col, cl.span.col_start
+                        ),
+                        "Align the closer with its header (same column): place 'end' or '}' directly under the start of the block header",
                     ));
                 } else {
-                    return Err("missing 'end' (or '}') to close block".into());
+                    return Err(s_help(
+                        "P0212",
+                        "This block is missing its closing 'end' or '}'",
+                        "Close the block with 'end' or '}': if ok { run() } end",
+                    ));
                 }
             }
 
@@ -2240,7 +2472,11 @@ impl<'t> Parser<'t> {
                 }
                 if let Some(id) = self.peek_ident() {
                     if (id == "elif" || id == "else") && !stop(self) {
-                        return Err("misaligned 'elif'/'else': tails must start at the same column as the 'if' header".into());
+                        return Err(s_help(
+                            "P0221",
+                            "This 'elif' or 'else' isn't aligned with its matching 'if'",
+                            "Align 'elif'/'else' with 'if' at the same column: start 'elif' exactly under 'if'",
+                        ));
                     }
                 }
                 if stop(self) {
@@ -2269,11 +2505,12 @@ impl<'t> Parser<'t> {
             if let Some(first) = self.toks.get(j) {
                 if let TokenKind::Op(ref op) = first.kind {
                     if op == "=" || op == ":" {
-                        return Err(vec![Diagnostic::error(
-                            "ParseError",
-                            &format!("`{}` cannot start a statement", op),
+                        return Err(derr_help(
+                            "P0104",
+                            &format!("A statement can't start with '{}'", op),
+                            "Start with a keyword or a name: x = 1 or if ok { run() }",
                             first.span.clone(),
-                        )]);
+                        ));
                     }
                 }
             }
@@ -2283,16 +2520,39 @@ impl<'t> Parser<'t> {
         self.eat_layout();
 
         while !self.is_eof() {
-            // Skip non-expression junk at top level, but keep layout tokens flowing.
+            // Skip layout; error on orphan closers here instead of silently eating them
             loop {
                 match self.peek().map(|t| &t.kind) {
                     Some(k) if Self::is_expr_start(k) => break,
                     Some(TokenKind::Eof) | None => break,
+
+                    // let layout flow
                     Some(TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) => {
                         self.i += 1;
                     }
+
+                    // orphan '}' at top level
+                    Some(TokenKind::Op(op)) if op == "}" => {
+                        return Err(derr_help(
+                            "P0224",
+                            "Found '}' without a matching '{'",
+                            "Remove this '}' or add the opening brace above to match it.",
+                            self.toks[self.i].span.clone(),
+                        ));
+                    }
+
+                    // orphan 'end' at top level
+                    Some(TokenKind::Ident) if self.peek_ident() == Some("end") => {
+                        return Err(derr_help(
+                            "P0223",
+                            "Found 'end' without a matching block start",
+                            "Remove this 'end' or add the missing header above (e.g., `if ok` … `end`).",
+                            self.toks[self.i].span.clone(),
+                        ));
+                    }
+
+                    // anything else: advance (comments, stray symbols, etc.)
                     _ => {
-                        // consume unexpected tokens quietly; stmt parse will error if needed
                         self.i += 1;
                     }
                 }
@@ -2300,17 +2560,49 @@ impl<'t> Parser<'t> {
 
             if self.is_eof() { break; }
 
+            // -------- progress guard: bail if parse_stmt() consumes nothing --------
+            let before_i = self.i;
+
             match self.parse_stmt() {
-                Ok(stmt) => items.push(stmt),
+                Ok(stmt) => {
+                    if self.i == before_i {
+                        // No forward progress => hard error to avoid infinite loop
+                        let sp = if let Some(tok) = self.peek() {
+                            tok.span.clone()
+                        } else if let Some(last) = self.toks.last() {
+                            last.span.clone()
+                        } else {
+                            goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0)
+                        };
+                        return Err(derr_help(
+                            "P0101",
+                            "The parser got stuck and didn't consume any tokens.",
+                            "Check for invalid or unsupported syntax near here, or remove the stray token.",
+                            sp,
+                        ));
+                    }
+                    items.push(stmt);
+                }
                 Err(msg) => {
+                    // Promote the String error EXACTLY as produced by s/s_help into a Diagnostic.
+                    // Your CLI expects the code to appear in the first line of the message (if present),
+                    // and finds the help line by "help:" on subsequent lines.
                     let sp = if let Some(tok) = self.peek() {
                         tok.span.clone()
+                    } else if let Some(last) = self.toks.last() {
+                        last.span.clone()
                     } else {
-                        Span::new("<eof>", 0, 0, 0, 0, 0, 0)
+                        goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0)
                     };
-                    return Err(vec![Diagnostic::error("ParseError", &msg, sp)]);
+                    let msg_static: &'static str = Box::leak(msg.into_boxed_str());
+                    return Err(vec![goblin_diagnostics::Diagnostic::error(
+                        "", // category is ignored by your formatter; message carries "P####: ..." when present
+                        msg_static,
+                        sp,
+                    )]);
                 }
             }
+
             self.eat_layout();
         }
 
@@ -2332,19 +2624,28 @@ impl<'t> Parser<'t> {
 
         // Orphan closer guard
         if self.peek_ident() == Some("end") {
-            return Err("orphan 'end' at statement start; braced blocks close with '}', layout blocks close inside their block".to_string());
+            return Err(s_help(
+                "P0223",
+                "Found 'end' without a matching block start",
+                "Remove this 'end' or add the missing header above: if ok { run() } end",
+            ));
         }
         if self.peek_op("}") {
-            return Err("orphan '}' at statement start; closers are only valid inside a block body".to_string());
+            return Err(s_help(
+                "P0224",
+                "Found '}' without a matching '{'",
+                "Remove this '}' or add the opening brace above to match it",
+            ));
         }
 
         // Orphan / top-level tail guard
         if let Some(k) = self.peek_ident() {
             if k == "elif" || k == "else" {
                 let col = self.toks[self.i].span.col_start;
-                return Err(format!(
-                    "unexpected '{}' at statement start (col {}): if this is a tail, align it with the matching 'if' header; otherwise remove it",
-                    k, col
+                return Err(s_help(
+                    "P0225",
+                    &format!("Found '{}' at column {} without a matching 'if'", k, col),
+                    "If this is a tail, align it with the 'if' header; otherwise remove it: put 'elif' at the same column as 'if'",
                 ));
             }
         }
@@ -2369,7 +2670,11 @@ impl<'t> Parser<'t> {
             // If the 'then' block hard-closed, tails are not allowed
             if self.block_closed_hard {
                 if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                    return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
+                    return Err(s_help(
+                        "P0226",
+                        "This 'elif' or 'else' comes after the 'if' block was already closed",
+                        "Move it before the '}' or 'end' that closes the 'if': if ok { run() } elif other { handle() } end",
+                    ));
                 }
             }
 
@@ -2379,12 +2684,20 @@ impl<'t> Parser<'t> {
 
                 if self.block_closed_hard {
                     if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                        return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
+                        return Err(s_help(
+                            "P0226",
+                            "This 'elif' or 'else' comes after the 'if' block was already closed",
+                            "Move it before the '}' or 'end' that closes the 'if': if ok { run() } elif other { handle() } end",
+                        ));
                     }
                 }
 
                 if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
-                    return Err("duplicate 'else' in if block".to_string());
+                    return Err(s_help(
+                        "P0227",
+                        "You can only have one 'else' in an 'if' block",
+                        "Remove the extra 'else': if ok { run() } else { fallback() }",
+                    ));
                 }
 
                 if self.peek_ident_at_col("elif", if_col) {
@@ -2401,7 +2714,11 @@ impl<'t> Parser<'t> {
 
                     if self.block_closed_hard {
                         if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                            return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
+                            return Err(s_help(
+                                "P0226",
+                                "This 'elif' or 'else' comes after the 'if' block was already closed",
+                                "Move it before the '}' or 'end' that closes the 'if': if ok { run() } elif other { handle() } end",
+                            ));
                         }
                     }
                     continue;
@@ -2414,7 +2731,11 @@ impl<'t> Parser<'t> {
             self.skip_stmt_separators();
 
             if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
-                return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
+                return Err(s_help(
+                    "P0226",
+                    "This 'elif' or 'else' comes after the 'if' block was already closed",
+                    "Move it before the '}' or 'end' that closes the 'if': if ok { run() } elif other { handle() } end",
+                ));
             }
 
             if self.peek_ident_at_col("else", if_col) {
@@ -2432,12 +2753,20 @@ impl<'t> Parser<'t> {
 
                 self.skip_stmt_separators();
                 if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                    return Err("duplicate 'else' in if block".to_string());
+                    return Err(s_help(
+                        "P0227",
+                        "You can only have one 'else' in an 'if' block",
+                        "Remove the extra 'else': if ok { run() } else { fallback() }",
+                    ));
                 }
 
                 if self.block_closed_hard {
                     if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                        return Err("tail 'elif'/'else' cannot follow a closed 'if' block; move the tail before the closing '}' or 'end'".to_string());
+                        return Err(s_help(
+                            "P0226",
+                            "This 'elif' or 'else' comes after the 'if' block was already closed",
+                            "Move it before the '}' or 'end' that closes the 'if': if ok { run() } elif other { handle() } end",
+                        ));
                     }
                 }
             }
@@ -2478,14 +2807,22 @@ impl<'t> Parser<'t> {
                     self.i += 1;
                     v
                 }
-                _ => return Err("expected loop variable after 'for'".to_string()),
+                _ => return Err(s_help(
+                    "P0802",
+                    "Expected a loop variable after 'for'",
+                    "Write it like: for item in items",
+                )),
             };
 
             self.skip_newlines();
 
             // 'in'
             if self.peek_ident() != Some("in") {
-                return Err("expected 'in' after loop variable in 'for' header".to_string());
+                return Err(s_help(
+                    "P0801",
+                    "Expected 'in' after the loop variable in a 'for' header",
+                    "Write it like: for item in items",
+                ));
             }
             let _ = self.eat_ident(); // 'in'
             self.skip_newlines();
@@ -2514,7 +2851,11 @@ impl<'t> Parser<'t> {
         if self.peek_ident() == Some("a") && self.peek_op(">>") {
             let _ = self.eat_ident();  // 'a'
             let _ = self.eat_op(">>"); // >>
-            let name = self.eat_ident().ok_or("expected action name after 'a >> '")?;
+            let name = self.eat_ident().ok_or(s_help(
+                "P0504",
+                "Expected an action name after 'a >>'",
+                "Write it like: a >> run",
+            ))?;
             let params = if self.eat_op(":") { self.parse_args_colon()? } else { Vec::new() };
             return Ok(ast::Stmt::Expr(self.lower_expr(PExpr::FreeCall(name, params))));
         }
@@ -2552,9 +2893,22 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {
-        let t = self.bump().ok_or_else(|| vec![Diagnostic::error(
-            "ParseError", "Unexpected end of input.", Span::new("<eof>", 0, 0, 0, 0, 0, 0)
-        )])?;
+        let t = match self.bump() {
+            Some(t) => t,
+            None => {
+                let sp = self.toks
+                    .get(self.i)
+                    .or_else(|| self.toks.last())
+                    .map(|t| t.span.clone())
+                    .unwrap_or_else(|| Span::new("<eof>", 0, 0, 0, 0, 0, 0));
+                return Err(derr_help(
+                    "P0106",
+                    "I reached the end of the file unexpectedly.",
+                    "Close the open construct or add the missing token.",
+                    sp,
+                ));
+            }
+        };
         let sp = t.span.clone();
         match &t.kind {
             TokenKind::Ident => {
@@ -2567,13 +2921,19 @@ impl<'t> Parser<'t> {
             }
             TokenKind::Act | TokenKind::Action => {
                 let kw = if matches!(t.kind, TokenKind::Act) { "act" } else { "action" };
-                Err(vec![Diagnostic::error(
-                    "ParseError",
-                    &format!("Unexpected keyword '{}'.", kw),
+                Err(derr_help(
+                    "P1005",
+                    &format!("The keyword '{}' can't be used here", kw),
+                    "Move it to a valid place or remove it: use 'if' to start a block, not inside an expression",
                     sp,
-                )])
+                ))
             }
-            _ => Err(vec![Diagnostic::error("ParseError", "Expected expression.", sp)]),
+            _ => Err(derr_help(
+                "P1003",
+                "Expected an expression here",
+                "Use a value, variable, or call: total = price * qty",
+                sp,
+            )),
         }
     }
 
@@ -2582,11 +2942,15 @@ impl<'t> Parser<'t> {
         if let Some(t) = self.peek() {
             if matches!(t.kind, goblin_lexer::TokenKind::Blob) {
                 self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string or integer after 'blob'".to_string()) };
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1101", "You need a string or an integer after 'blob'", "Examples: blob \"text\" or blob 0xFF")) };
                 let expr = match k2 {
                     goblin_lexer::TokenKind::String => { let lit = v2.unwrap_or_default(); self.i += 1; PExpr::BlobStr(lit) }
                     goblin_lexer::TokenKind::Int    => { let lit = v2.unwrap_or_default(); self.i += 1; PExpr::BlobNum(lit) }
-                    _ => return Err("expected string or integer after 'blob'".to_string()),
+                    _ => return Err(s_help(
+                        "P1101",
+                        "You need a string or an integer after 'blob'.",
+                        "Examples: blob \"text\" or blob 0xFF.",
+                    )),
                 };
                 return Ok(self.apply_postfix_ops(expr));
             }
@@ -2595,8 +2959,17 @@ impl<'t> Parser<'t> {
         // --- Parenthesized ---
         if self.peek_op("(") {
             let _ = self.eat_op("(");
-            let expr = self.parse_coalesce()?;
-            if !self.eat_op(")") { return Err("expected ')' to close parenthesized expression".to_string()); }
+
+            // Guard deep recursion while parsing the inner expression
+            let expr = self.with_depth(|p| p.parse_coalesce())?;
+
+            if !self.eat_op(")") {
+                return Err(s_help(
+                    "P0707",
+                    "Expected ')' to close this parenthesized expression",
+                    "Add the closing ')': (a + b)",
+                ));
+            }
             return Ok(self.apply_postfix_ops(expr));
         }
 
@@ -2616,7 +2989,7 @@ impl<'t> Parser<'t> {
                 }
             }
             while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-            if !self.eat_op("]") { return Err("expected ']' to close array".to_string()); }
+            if !self.eat_op("]") { return Err(s_help("P0708", "Expected ']' to close this array", "Add the closing ']': [1, 2, 3]")); }
             return Ok(self.apply_postfix_ops(PExpr::Array(elems)));
         }
 
@@ -2626,9 +2999,13 @@ impl<'t> Parser<'t> {
             let mut props: Vec<(String, PExpr)> = Vec::new();
             if !self.peek_op("}") {
                 loop {
-                    let Some(key) = self.eat_object_key() else { return Err("expected object key".to_string()); };
+                    let Some(key) = self.eat_object_key() else { return Err(s_help(
+                        "P1201",
+                        "Expected an object key here",
+                        "Add a property name before ':': name: \"John\"",
+                    )); };
                     while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                    if !self.eat_op(":") { return Err("expected ':' after object key".to_string()); }
+                    if !self.eat_op(":") { return Err(s_help("P1202", "You need a ':' after the object key", "Write it like: name: \"John\"")); }
                     while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                     let value = self.parse_assign()?; props.push((key, value));
                     if self.eat_op(",") {
@@ -2640,12 +3017,12 @@ impl<'t> Parser<'t> {
                 }
             }
             while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-            if !self.eat_op("}") { return Err("expected '}' to close object".to_string()); }
+            if !self.eat_op("}") { return Err(s_help("P1203", "Expected '}' to close this object", "Add the closing '}': { name: \"John\" }")); }
             return Ok(self.apply_postfix_ops(PExpr::Object(props)));
         }
 
         // --- Lit / Ident dispatch ---
-        let (kind, val_opt) = match self.peek() { Some(t) => (t.kind.clone(), t.value.clone()), None => return Err(self.err_expected_expr("(found EOF)")) };
+        let (kind, val_opt) = match self.peek() { Some(t) => (t.kind.clone(), t.value.clone()), None => return Err(s_help("P1003", "Expected an expression here", "Use a value, variable, or call: total = price * qty")) };
         let expr = match kind {
             // MONEY
             goblin_lexer::TokenKind::Money => {
@@ -2684,7 +3061,7 @@ impl<'t> Parser<'t> {
                             if !text.is_empty() { parts.push(StrPart::Text(std::mem::take(&mut text))); }
                             let mut depth: usize = 1; let start = i + 1; i += 1;
                             while i < n && depth > 0 { match b[i] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} } i += 1; }
-                            if depth != 0 { return Err("unterminated '{' in interpolated string".to_string()); }
+                            if depth != 0 { return Err(s_help("P0604", "There's an unclosed '{' in this interpolated string.", "Add a matching '}' to close it, e.g., \"Hello {name}\".")); }
                             let end = i - 1; let inner = &lit[start..end]; let part = self.parse_interpolation_lvalue(inner)?; parts.push(part); continue;
                         }
                         text.push(b[i] as char); i += 1;
@@ -2695,29 +3072,29 @@ impl<'t> Parser<'t> {
             }
             goblin_lexer::TokenKind::Date => {
                 self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string after 'date'".to_string()) };
-                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err("expected string after 'date'".to_string()); }
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1301", "Expected a string after 'date'.", "Write it like: date \"2023-12-25\".")) };
+                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err(s_help("P1301", "Expected a string after 'date'", "Write it like: date \"2023-12-25\"")); }
                 let lit = v2.unwrap_or_default(); self.i += 1; PExpr::Date(lit)
             }
             goblin_lexer::TokenKind::Time => {
                 self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string after 'time'".to_string()) };
-                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err("expected string after 'time'".to_string()); }
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1302", "Expected a string after 'time'", "Write it like: time \"14:30:00\"")) };
+                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err(s_help("P1302", "Expected a string after 'time'", "Write it like: time \"14:30:00\"")); }
                 let lit = v2.unwrap_or_default(); self.i += 1; PExpr::Time(lit)
             }
             goblin_lexer::TokenKind::DateTime => {
                 self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err("expected string after 'datetime'".to_string()) };
-                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err("expected string after 'datetime'".to_string()); }
+                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1303", "Expected a string after 'datetime'.", "Write it like: datetime \"2023-12-25T14:30:00\".")) };
+                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err(s_help("P1303", "Expected a string after 'datetime'", "Write it like: datetime \"2023-12-25T14:30:00\"")); }
                 let value = v2.unwrap_or_default(); self.i += 1; self.skip_newlines();
                 let mut tz: Option<String> = None;
                 if let Some(tz_tok) = self.peek() {
                     if matches!(tz_tok.kind, goblin_lexer::TokenKind::Ident) && tz_tok.value.as_deref() == Some("tz") {
                         self.i += 1; self.skip_newlines();
-                        if !self.eat_op(":") { return Err("expected ':' after tz".to_string()); }
+                        if !self.eat_op(":") { return Err(s_help("P1304", "You need a ':' after tz", "Write it like: tz: \"UTC\"")); }
                         self.skip_newlines();
-                        let (k3, v3) = match self.peek() { Some(t3) => (t3.kind.clone(), t3.value.clone()), None => return Err("expected string after tz:'".to_string()) };
-                        if !matches!(k3, goblin_lexer::TokenKind::String) { return Err("expected string after tz:'".to_string()); }
+                        let (k3, v3) = match self.peek() { Some(t3) => (t3.kind.clone(), t3.value.clone()), None => return Err(s_help("P1305", "Expected a string after tz:", "Write it like: tz: \"UTC\"")) };
+                        if !matches!(k3, goblin_lexer::TokenKind::String) { return Err(s_help("P1305", "Expected a string after tz:", "Write it like: tz: \"UTC\"")); }
                         tz = Some(v3.unwrap_or_default()); self.i += 1;
                     }
                 }
@@ -2731,7 +3108,11 @@ impl<'t> Parser<'t> {
             goblin_lexer::TokenKind::Op(ref s) => {
                 let sp = self.toks[self.i].span.clone();
                 self.i += 1;
-                return Err(format!("expected expression, found operator '{}' at line {}, col {}", s, sp.line_start, sp.col_start));
+                return Err(s_help(
+                    "P1006",
+                    &format!("Expected an expression, but found operator '{}' at line {}, col {}", s, sp.line_start, sp.col_start),
+                    "Add a value or name before the operator: total = price * qty (not * qty)",
+                ));
             }
             _ => return Err(self.err_expected_expr("at start of primary")),
         };
@@ -2741,45 +3122,36 @@ impl<'t> Parser<'t> {
 
     #[inline]
     fn lhs_ends_with_dot_type_at(&self, eq_i: usize) -> bool {
-
         if eq_i == 0 { return false; }
-        // j will walk left from the '=' position, skipping layout tokens
-        let mut j = eq_i;
 
-        // step 1: find the last *significant* token before '='
+        // Walk left from the '=' position, skipping layout tokens
+        let mut j = eq_i;
         while j > 0 {
-            let t = &self.toks[j - 1];
-            match t.kind {
-                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
-                    j -= 1;
-                    continue;
-                }
+            match self.toks[j - 1].kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => j -= 1,
                 _ => break,
             }
         }
         if j == 0 { return false; }
 
-        // step 2: that token must be Ident("type")
+        // Must be Ident("type")
         let t_ident = &self.toks[j - 1];
         if !matches!(t_ident.kind, TokenKind::Ident) || t_ident.value.as_deref() != Some("type") {
             return false;
         }
 
-        // step 3: before that, after skipping layout, we must have a '.' operator
+        // Skip layout again to find preceding '.'
         let mut k = j - 1;
         while k > 0 {
-            let t = &self.toks[k - 1];
-            match t.kind {
-                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
-                    k -= 1;
-                    continue;
-                }
+            match self.toks[k - 1].kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => k -= 1,
                 _ => break,
             }
         }
         if k == 0 { return false; }
+
         let t_dot = &self.toks[k - 1];
-        t_dot.value.as_deref() == Some(".")
+        matches!(t_dot.kind, TokenKind::Op(ref op) if op == ".")
     }
 
     fn parse_coalesce_impl(&mut self) -> Result<PExpr, String> {
@@ -3001,9 +3373,11 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            let Some(colon_i) = end_i else {
-                return Err("expected ':' after condition in judge".to_string());
-            };
+            let Some(colon_i) = end_i else { return Err(s_help(
+                "P0811",
+                "You need ':' after the condition in 'judge'",
+                "Write it like: judge x > 5: \"big\"",
+            )); };
 
             // Build a readable key string from tokens [start_i .. colon_i)
             // (We only need a stable textual key right now; evaluation will happen later.)
@@ -3055,7 +3429,11 @@ impl<'t> Parser<'t> {
                 Err(_) => {
                     // Don't loop forever if nothing consumed after '&'
                     if self.i == i0 { /* we already ate '&' */ }
-                    return Err("'&' requires a variable/field/index".to_string());
+                    return Err(s_help(
+                        "P0401",
+                        "You need a variable, field access, or array index after '&'",
+                        "Examples: &user, &user>>name, &items[0]",
+                    ));
                 }
             }
         }
@@ -3068,7 +3446,11 @@ impl<'t> Parser<'t> {
 
             let _ = self.eat_ident(); // 'judge'
             if self.peek_op("{") {
-                return Err("unexpected '{' after 'judge'; use layout (newline + indent) and close with 'end' or '}'".into());
+                return Err(s_help(
+                    "P0812",
+                    "Don't put '{' after 'judge'",
+                    "Use indentation and close with 'end' or '}': judge x > 5: \"big\" end",
+                ));
             }
             self.forbid_next_line_brace(header_line, header_col, "judge")?;
             self.skip_newlines();
@@ -3086,7 +3468,11 @@ impl<'t> Parser<'t> {
 
             let _ = self.eat_ident(); // 'judge_all'
             if self.peek_op("{") {
-                return Err("unexpected '{' after 'judge_all'; use layout (newline + indent) and close with 'end' or '}'".into());
+                return Err(s_help(
+                    "P0813",
+                    "Don't put '{' after 'judge_all'",
+                    "Use indentation and close with 'end' or '}': judge_all x > 5: \"big\" end",
+                ));
             }
             self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
             self.skip_newlines();
@@ -3111,19 +3497,35 @@ impl<'t> Parser<'t> {
                         self.i += 1;
                         v
                     } else {
-                        return Err("expected integer count after 'pick'".to_string());
+                        return Err(s_help(
+                            "P1401",
+                            "You need a number after 'pick'",
+                            "Write it like: pick 5 from items",
+                        ));
                     }
                 }
-                _ => return Err("expected integer count after 'pick'".to_string()),
+                _ => return Err(s_help(
+                    "P1401",
+                    "You need a number after 'pick'",
+                    "Write it like: pick 5 from items",
+                )),
             };
             if count < 0 {
-                return Err("pick count cannot be negative".to_string());
+                return Err(s_help(
+                    "P1402",
+                    "You can't pick a negative number of items",
+                    "Use a positive number: pick 3 from items",
+                ));
             }
             self.skip_newlines();
 
             // 'from'
             if self.peek_ident() != Some("from") {
-                return Err("expected 'from' after pick count".to_string());
+                return Err(s_help(
+                    "P1403",
+                    "Expected 'from' after the pick count",
+                    "Write it like: pick 3 from items",
+                ));
             }
             let _ = self.eat_ident(); // 'from'
             self.skip_newlines();
@@ -3142,7 +3544,11 @@ impl<'t> Parser<'t> {
                     with_dups = true;
                     self.skip_newlines();
                 } else {
-                    return Err("expected 'dups' after 'with'".to_string());
+                    return Err(s_help(
+                        "P1404",
+                        "Expected 'dups' after 'with'",
+                        "Write it like: pick 5 from items with dups",
+                    ));
                 }
             }
 
@@ -3168,9 +3574,10 @@ impl<'t> Parser<'t> {
                     if all_simple {
                         let distinct = set.len() as i128;
                         if count > distinct {
-                            return Err(format!(
-                                "too many distinct without 'with dups': requested {}, available {} (expect: FAIL)",
-                                count, distinct
+                            return Err(s_help(
+                                "P1405",
+                                &format!("You're trying to pick {} items, but there are only {} distinct items available", count, distinct),
+                                "Add 'with dups' to allow repeats: pick 5 from items with dups, or pick fewer items",
                             ));
                         }
                     }
@@ -3190,7 +3597,11 @@ impl<'t> Parser<'t> {
 
                 let count_tok_i = match self.peek() {
                     Some(t) if matches!(t.kind, TokenKind::Int) => { let idx = self.i; self.i += 1; idx }
-                    _ => return Err("expected integer dice count before 'd' (e.g., roll 2d6)".to_string()),
+                    _ => return Err(s_help(
+                        "P1501",
+                        "You need a number before 'd' in a roll",
+                        "Example: roll 2d6",
+                    )),
                 };
 
                 // contiguous dNNN
@@ -3199,11 +3610,19 @@ impl<'t> Parser<'t> {
                         let prev = &self.toks[count_tok_i].span;
                         let cur  = &self.toks[self.i].span;
                         if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
-                            return Err("dice must be contiguous; write '2d6', not '2 d 6'".into());
+                            return Err(s_help(
+                                "P1502",
+                                "Dice notation must be contiguous",
+                                "Write it like 2d6, not 2 d 6",
+                            ));
                         }
                         let idx = self.i; self.i += 1; idx
                     }
-                    _ => return Err("expected contiguous dice like '2d6' (no spaces)".to_string()),
+                    _ => return Err(s_help(
+                        "P1502",
+                        "Dice notation must be contiguous.",
+                        "Write it like 2d6, not 2 d 6.",
+                    )),
                 };
 
                 // optional contiguous +Z / -Z
@@ -3213,7 +3632,11 @@ impl<'t> Parser<'t> {
                     let prev = &self.toks[die_tok_i].span;
                     let cur  = &self.toks[self.i].span;
                     if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
-                        return Err("spaces are not allowed in dice modifiers; write '2d6+3'".into());
+                        return Err(s_help(
+                            "P1503",
+                            "Don't put spaces in dice notation modifiers",
+                            "Write it like 2d6+3, not 2d6 + 3",
+                        ));
                     }
                     mod_sign_i = self.i;
                     self.i += 1;
@@ -3224,15 +3647,23 @@ impl<'t> Parser<'t> {
                             let cur2 = &t.span;
                             let prev2 = &self.toks[mod_sign_i].span;
                             if !(cur2.line_start == prev2.line_end && cur2.col_start == prev2.col_end) {
-                                return Err("spaces are not allowed in dice modifiers; write '2d6+3'".into());
+                                return Err(s_help(
+                                    "P1503",
+                                    "Don't put spaces in dice notation modifiers",
+                                    "Write it like 2d6+3, not 2d6 + 3",
+                                ));
                             }
                             self.i += 1;
                         }
-                        _ => return Err("expected integer after '+'/'-' in dice; write '2d6+3'".to_string()),
+                        _ => return Err(s_help(
+                            "P1504",
+                            "You need a number after '+' or '-' in a dice notation roll",
+                            "Examples: 2d6+3 or 1d20-1",
+                        )),
                     }
                 }
-                if !has_mod && self.peek_op("+") { return Err("expected integer after '+' in dice; write '2d6+3'".into()); }
-                if !has_mod && self.peek_op("-") { return Err("expected integer after '-' in dice; write '2d6-1'".into()); }
+                if !has_mod && self.peek_op("+") { return Err(s_help("P1504", "You need a number after '+' in a dice notation roll", "Write it like 2d6+3")); }
+                if !has_mod && self.peek_op("-") { return Err(s_help("P1504", "You need a number after '-' in a dice notation roll", "Write it like 1d20-1")); }
 
                 let name = if is_detail { "roll_detail_expr" } else { "roll_expr" };
                 return Ok(PExpr::Ident(name.into()));
@@ -3302,7 +3733,7 @@ impl<'t> Parser<'t> {
                     }
                 }
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if !self.eat_op(")") { return Err("expected ')' to close call".to_string()); }
+                if !self.eat_op(")") { return Err(s_help("P0505", "Expected ')' to close this action call", "Add the closing ')': calculate(price, tax)")); }
 
                 lhs = PExpr::Call(Box::new(lhs), "()".to_string(), args);
                 continue;
@@ -3311,7 +3742,7 @@ impl<'t> Parser<'t> {
             // --- indexing / slicing ---
             if self.eat_op("[") {
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if self.eat_op("]") { return Err("expected expression inside '[]'".to_string()); }
+                if self.eat_op("]") { return Err(s_help("P0701", "Brackets need an index or slice expression", "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]")); }
 
                 let mut start: Option<PExpr> = None;
                 if !self.peek_op(":") {
@@ -3337,7 +3768,7 @@ impl<'t> Parser<'t> {
                         }
                     }
 
-                    if !self.eat_op("]") { return Err("expected ']' after slice".to_string()); }
+                    if !self.eat_op("]") { return Err(s_help("P0709", "Expected ']' to close this slice", "Add the closing ']': items[1:4]")); }
 
                     lhs = if step.is_some() {
                         PExpr::Slice3(Box::new(lhs), start.map(Box::new), end.map(Box::new), step.map(Box::new))
@@ -3348,7 +3779,7 @@ impl<'t> Parser<'t> {
                 }
 
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if !self.eat_op("]") { return Err("expected ']' after index expression".to_string()); }
+                if !self.eat_op("]") { return Err(s_help("P0702", "Expected ']' to close this index", "Add the closing ']': items[0]")); }
                 let idx = start.expect("index expression parsed");
                 lhs = PExpr::Index(Box::new(lhs), Box::new(idx));
                 continue;
@@ -3391,7 +3822,7 @@ impl<'t> Parser<'t> {
                 // Disallow empty brackets: a[]
                 if self.peek_op("]") {
                     self.suspend_colon_call -= 1;
-                    return Err("expected expression inside '[]'".to_string());
+                    return Err(s_help("P0701", "Brackets need an index or slice expression", "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]"));
                 }
 
                 // Parse start / end / step using ":" separators
@@ -3426,7 +3857,11 @@ impl<'t> Parser<'t> {
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                 if !self.eat_op("]") {
                     self.suspend_colon_call -= 1;
-                    return Err("expected ']' to close index/slice".to_string());
+                    return Err(s_help(
+                        "P0702",
+                        "Expected ']' to close this index or slice",
+                        "Add the closing ']': items[0] or data[1:4]",
+                    ));
                 }
 
                 // leave bracket mode
@@ -3445,7 +3880,11 @@ impl<'t> Parser<'t> {
                     }
                 } else {
                     // Plain index: require an index expr (i.e., start must exist)
-                    let idx = start.ok_or_else(|| "expected expression inside '[]'".to_string())?;
+                    let idx = start.ok_or_else(|| s_help(
+                        "P0701",
+                        "Brackets need an index or slice expression",
+                        "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]",
+                    ))?;
                     PExpr::Index(Box::new(lhs), Box::new(idx))
                 };
                 continue;
@@ -3455,7 +3894,11 @@ impl<'t> Parser<'t> {
             if self.eat_op(">>") {
                 if let Some(name) = self.eat_ident()      { lhs = PExpr::Member(Box::new(lhs), name); continue; }
                 if let Some(key)  = self.eat_string_lit() { lhs = PExpr::Member(Box::new(lhs), key ); continue; }
-                return Err("expected identifier or string after '>>'".to_string());
+                return Err(s_help(
+                    "P0402",
+                    "You need a field name or a quoted string after '>>'",
+                    "Example: user >> email or config >> \"api-key\"",
+                ));
             }
 
             // ---------- optional member / optional call: ?>> name | ?>>(args...) ----------
@@ -3475,7 +3918,7 @@ impl<'t> Parser<'t> {
                             break;
                         }
                     }
-                    if !self.eat_op(")") { return Err("expected ')' to close optional call".to_string()); }
+                    if !self.eat_op(")") { return Err(s_help("P0506", "Expected ')' to close this optional call", "Add the closing ')': user?>>getName()")); }
                     lhs = match lhs {
                         PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
                         other                       => PExpr::OptCall(Box::new(other), String::new(), args),
@@ -3483,7 +3926,11 @@ impl<'t> Parser<'t> {
                     continue;
                 } else {
                     // ?>> name  — optional member
-                    let Some(name) = self.eat_ident() else { return Err("expected identifier after '?>>'".to_string()); };
+                    let Some(name) = self.eat_ident() else { return Err(s_help(
+                        "P0403",
+                        "You need a field name after '?>>'",
+                        "Example: user ?>> email",
+                    )); };
                     lhs = PExpr::OptMember(Box::new(lhs), name);
                     continue;
                 }
@@ -3493,7 +3940,7 @@ impl<'t> Parser<'t> {
             if self.suspend_colon_call == 0 && self.eat_op(":") {
                 let mut args = Vec::new();
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if self.peek_newline_or_eof() { return Err("expected argument after ':'".to_string()); }
+                if self.peek_newline_or_eof() { return Err(s_help("P0507", "Expected an argument after ':'", "Add at least one argument after ':': calculate: price, tax")); }
 
                 loop {
                     args.push(self.parse_coalesce()?);
@@ -3509,7 +3956,11 @@ impl<'t> Parser<'t> {
                     PExpr::Member(obj, name)    => PExpr::Call(obj, name, args),
                     PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
                     PExpr::Ident(name)          => PExpr::FreeCall(name, args),
-                    other                       => return Err(format!("invalid colon-call target: {:?}", other)),
+                    other                       => return Err(s_help(
+                        "P0508",
+                        &format!("You can't use ':' to call this: {:?}", other),
+                        "Use ':' with a free action or member action target: calculate: price, tax",
+                    )),
                 };
                 continue;
             }
@@ -3529,7 +3980,7 @@ impl<'t> Parser<'t> {
                         break;
                     }
                 }
-                if !self.eat_op(")") { return Err("expected ')' after argument list".to_string()); }
+                if !self.eat_op(")") { return Err(s_help("P0509", "Expected ')' after the argument list", "Add the closing ')': calculate(price, tax)")); }
 
                 lhs = match lhs {
                     PExpr::Member(obj, name)    => PExpr::Call(obj, name, args),
@@ -3544,7 +3995,11 @@ impl<'t> Parser<'t> {
             if matches!(&lhs, PExpr::Ident(_)) && self.peek_op("::") {
                 let ns = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
                 let _ = self.eat_op("::");
-                let Some(opname) = self.eat_ident() else { return Err("expected identifier after '::'".to_string()); };
+                let Some(opname) = self.eat_ident() else { return Err(s_help(
+                    "P0510",
+                    "Expected a name after '::'",
+                    "Write it like: module_name::Action",
+                )); };
 
                 if self.eat_op("(") {
                     let args = if self.eat_op(")") { vec![] } else { self.parse_args_paren()? };
@@ -3576,7 +4031,11 @@ impl<'t> Parser<'t> {
             } else if self.eat_op(")") {
                 break;
             } else {
-                return Err("expected ',' or ')' in argument list".to_string());
+                return Err(s_help(
+                    "P0511",
+                    "Expected ',' or ')' in the argument list",
+                    "Use ',' to separate and ')' to close: calculate(price, tax)",
+                ));
             }
         }
 
