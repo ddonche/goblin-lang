@@ -127,7 +127,11 @@ fn consume_block_comment(
         // EOF → error at opener
         if *i >= bytes.len() {
             let sp = Span::new(file, open_i, (open_i + 4).min(bytes.len()), open_line, open_col, open_line, open_col + 4);
-            return Err(vec![Diagnostic::error("LexError", "Unterminated block comment (//// ... ////).", sp)]);
+            return Err(vec![Diagnostic::error(
+                "L0206", 
+                "I found a block comment that never closes\n\nhelp: Close it with //// on a later line", 
+                sp,
+            )]);
         }
 
         // advance, tracking newlines (i/line/col are &mut)
@@ -693,57 +697,269 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         b'x' | b'X' => {
                             let mut j = i + 2;
                             let mut c = col + 2;
-                            if eat_hex_digits_us(bytes, &mut j, &mut c) {
-                                // Attach optional numeric type suffix (i8/u32/.../f32/f64/b)
-                                let mut end = j;
-                                let mut end_col = c;
-                                let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
-                                if let Some((adv, suf)) = match_type_suffix(bytes, end) {
-                                    lit.push_str(suf);
-                                    end += adv;
-                                    end_col += adv as u32;
-                                }
-                                let span = Span::new(file, i, end, line, col, line, end_col);
-                                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                                i = end; col = end_col;
-                                continue;
+
+                            // require at least one valid hex digit after 0x/0X
+                            if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
+                                let sp = Span::new(file, j, (j + 1).min(bytes.len()), line, c, line, c + 1);
+                                return Err(vec![Diagnostic::error(
+                                    "L0302",
+                                    "Invalid digit for this base\n\nhelp: After `0x`, use hexadecimal digits (0–9, A–F). Example: `0xDEAD_BEEF`",
+                                    sp,
+                                )]);
                             }
+
+                            // consume hex digits; allow underscores only between digits
+                            let mut last_us = false;
+                            while j < bytes.len() {
+                                let b = bytes[j];
+                                if (b as char).is_ascii_hexdigit() {
+                                    last_us = false;
+                                    j += 1; c += 1;
+                                } else if b == b'_' {
+                                    // underscore must be between hex digits
+                                    let ok_next = j + 1 < bytes.len() && (bytes[j + 1] as char).is_ascii_hexdigit();
+                                    if last_us || !ok_next {
+                                        let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                        return Err(vec![Diagnostic::error(
+                                            "L0303",
+                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0xDEAD_BEEF`), not at the start, end, or doubled",
+                                            sp,
+                                        )]);
+                                    }
+                                    last_us = true;
+                                    j += 1; c += 1;
+                                } else {
+                                    // first non-hex, non-underscore char ends the literal
+                                    break;
+                                }
+                            }
+
+                            if last_us {
+                                // trailing underscore at end of hex literal
+                                let sp = Span::new(file, j - 1, j, line, c - 1, line, c);
+                                return Err(vec![Diagnostic::error(
+                                    "L0309",
+                                    "This number ends with an underscore\n\nhelp: Put underscores only between digits (e.g., `0xDEAD_BEEF`), not at the end",
+                                    sp,
+                                )]);
+                            }
+
+                            // Attach optional numeric type suffix (i8/u32/.../f32/f64/b)
+                            let mut end = j;
+                            let mut end_col = c;
+                            let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                            if let Some((adv, suf)) = match_type_suffix(bytes, end) {
+                                lit.push_str(suf);
+                                end += adv;
+                                end_col += adv as u32;
+                            }
+
+                            let span = Span::new(file, i, end, line, col, line, end_col);
+                            tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
+                            i = end; col = end_col;
+                            continue;
                         }
+                        
+                        // 0o / 0O  — octal
                         b'o' | b'O' => {
                             let mut j = i + 2;
                             let mut c = col + 2;
-                            if eat_oct_digits_us(bytes, &mut j, &mut c) {
-                                let mut end = j;
-                                let mut end_col = c;
-                                let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
-                                if let Some((adv, suf)) = match_type_suffix(bytes, end) {
-                                    lit.push_str(suf);
-                                    end += adv;
-                                    end_col += adv as u32;
-                                }
-                                let span = Span::new(file, i, end, line, col, line, end_col);
-                                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                                i = end; col = end_col;
-                                continue;
+
+                            // require a digit; '_' at start is an underscore misuse
+                            if j >= bytes.len() {
+                                let sp = Span::new(file, j, j, line, c, line, c);
+                                return Err(vec![Diagnostic::error(
+                                    "L0302",
+                                    "Invalid digit for this base\n\nhelp: After `0o`, use octal digits (0–7). Example: `0o755`",
+                                    sp,
+                                )]);
                             }
+                            if bytes[j] == b'_' {
+                                let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                return Err(vec![Diagnostic::error(
+                                    "L0303",
+                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0o7_55`), not at the start, end, or doubled",
+                                    sp,
+                                )]);
+                            }
+                            if !(b'0'..=b'7').contains(&bytes[j]) {
+                                let sp = Span::new(file, j, (j + 1).min(bytes.len()), line, c, line, c + 1);
+                                return Err(vec![Diagnostic::error(
+                                    "L0302",
+                                    "Invalid digit for this base\n\nhelp: After `0o`, use octal digits (0–7). Example: `0o755`",
+                                    sp,
+                                )]);
+                            }
+
+                            let mut last_us = false;
+                            let mut saw_digit = false;
+                            while j < bytes.len() {
+                                let b = bytes[j];
+                                if (b'0'..=b'7').contains(&b) {
+                                    saw_digit = true;
+                                    last_us = false;
+                                    j += 1; c += 1;
+                                } else if b == b'_' {
+                                    // underscores only between digits
+                                    if !saw_digit || last_us {
+                                        let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                        return Err(vec![Diagnostic::error(
+                                            "L0303",
+                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0o7_55`), not at the start, end, or doubled",
+                                            sp,
+                                        )]);
+                                    }
+                                    if j + 1 >= bytes.len() {
+                                        // trailing underscore -> handled after the loop as L0309
+                                        last_us = true;
+                                        j += 1; c += 1;
+                                        break;
+                                    }
+                                    if !(b'0'..=b'7').contains(&bytes[j + 1]) {
+                                        let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                        return Err(vec![Diagnostic::error(
+                                            "L0303",
+                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0o7_55`), not at the start, end, or doubled",
+                                            sp,
+                                        )]);
+                                    }
+                                    last_us = true;
+                                    j += 1; c += 1;
+                                } else {
+                                    // first invalid non-octal char after the prefix/digits -> L0302
+                                    let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                    return Err(vec![Diagnostic::error(
+                                        "L0302",
+                                        "Invalid digit for this base\n\nhelp: After `0o`, use octal digits (0–7). Example: `0o755`",
+                                        sp,
+                                    )]);
+                                }
+                            }
+
+                            if last_us {
+                                let sp = Span::new(file, j - 1, j, line, c - 1, line, c);
+                                return Err(vec![Diagnostic::error(
+                                    "L0309",
+                                    "This number ends with an underscore\n\nhelp: Put underscores only between digits (e.g., `0o7_55`), not at the end",
+                                    sp,
+                                )]);
+                            }
+
+                            // optional numeric type suffix
+                            let mut end = j;
+                            let mut end_col = c;
+                            let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                            if let Some((adv, suf)) = match_type_suffix(bytes, end) {
+                                lit.push_str(suf);
+                                end += adv;
+                                end_col += adv as u32;
+                            }
+
+                            let span = Span::new(file, i, end, line, col, line, end_col);
+                            tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
+                            i = end; col = end_col;
+                            continue;
                         }
+
+                        // 0b / 0B  — binary
                         b'b' | b'B' => {
                             let mut j = i + 2;
                             let mut c = col + 2;
-                            if eat_bin_digits_us(bytes, &mut j, &mut c) {
-                                let mut end = j;
-                                let mut end_col = c;
-                                let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
-                                if let Some((adv, suf)) = match_type_suffix(bytes, end) {
-                                    lit.push_str(suf);
-                                    end += adv;
-                                    end_col += adv as u32;
-                                }
-                                let span = Span::new(file, i, end, line, col, line, end_col);
-                                tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
-                                i = end; col = end_col;
-                                continue;
+
+                            // require a digit; '_' at start is an underscore misuse
+                            if j >= bytes.len() {
+                                let sp = Span::new(file, j, j, line, c, line, c);
+                                return Err(vec![Diagnostic::error(
+                                    "L0302",
+                                    "Invalid digit for this base\n\nhelp: After `0b`, use binary digits (0 or 1). Example: `0b1010`",
+                                    sp,
+                                )]);
                             }
+                            if bytes[j] == b'_' {
+                                let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                return Err(vec![Diagnostic::error(
+                                    "L0303",
+                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0b1010_0101`), not at the start, end, or doubled",
+                                    sp,
+                                )]);
+                            }
+                            if !(b'0'..=b'1').contains(&bytes[j]) {
+                                let sp = Span::new(file, j, (j + 1).min(bytes.len()), line, c, line, c + 1);
+                                return Err(vec![Diagnostic::error(
+                                    "L0302",
+                                    "Invalid digit for this base\n\nhelp: After `0b`, use binary digits (0 or 1). Example: `0b1010`",
+                                    sp,
+                                )]);
+                            }
+
+                            let mut last_us = false;
+                            let mut saw_digit = false;
+                            while j < bytes.len() {
+                                let b = bytes[j];
+                                if (b'0'..=b'1').contains(&b) {
+                                    saw_digit = true;
+                                    last_us = false;
+                                    j += 1; c += 1;
+                                } else if b == b'_' {
+                                    // underscores only between digits
+                                    if !saw_digit || last_us {
+                                        let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                        return Err(vec![Diagnostic::error(
+                                            "L0303",
+                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0b1010_0101`), not at the start, end, or doubled",
+                                            sp,
+                                        )]);
+                                    }
+                                    if j + 1 >= bytes.len() {
+                                        // trailing underscore -> handled after the loop as L0309
+                                        last_us = true;
+                                        j += 1; c += 1;
+                                        break;
+                                    }
+                                    if !(b'0'..=b'1').contains(&bytes[j + 1]) {
+                                        let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                        return Err(vec![Diagnostic::error(
+                                            "L0303",
+                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0b1010_0101`), not at the start, end, or doubled",
+                                            sp,
+                                        )]);
+                                    }
+                                    last_us = true;
+                                    j += 1; c += 1;
+                                } else {
+                                    // first invalid non-binary char after the prefix/digits -> L0302
+                                    let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
+                                    return Err(vec![Diagnostic::error(
+                                        "L0302",
+                                        "Invalid digit for this base\n\nhelp: After `0b`, use binary digits (0 or 1). Example: `0b1010`",
+                                        sp,
+                                    )]);
+                                }
+                            }
+
+                            if last_us {
+                                let sp = Span::new(file, j - 1, j, line, c - 1, line, c);
+                                return Err(vec![Diagnostic::error(
+                                    "L0309",
+                                    "This number ends with an underscore\n\nhelp: Put underscores only between digits (e.g., `0b1010_0101`), not at the end",
+                                    sp,
+                                )]);
+                            }
+
+                            // optional numeric type suffix
+                            let mut end = j;
+                            let mut end_col = c;
+                            let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
+                            if let Some((adv, suf)) = match_type_suffix(bytes, end) {
+                                lit.push_str(suf);
+                                end += adv;
+                                end_col += adv as u32;
+                            }
+
+                            let span = Span::new(file, i, end, line, col, line, end_col);
+                            tokens.push(Token { kind: TokenKind::Int, span, value: Some(lit) });
+                            i = end; col = end_col;
+                            continue;
                         }
                         _ => {}
                     }
@@ -764,8 +980,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             if !saw_digit || last_was_underscore {
                                 let sp = Span::new(file, i, i, line, col, line, col);
                                 return Err(vec![Diagnostic::error(
-                                    "lexer",
-                                    "invalid '_' in numeric literal: underscores must appear between digits (e.g., 1_234), not at the start or doubled",
+                                    "L0303",
+                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits: 1_234, not at the start, end, or doubled",
                                     sp,
                                 )]);
                             }
@@ -779,8 +995,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 if last_was_underscore {
                     let sp = Span::new(file, i, i, line, col, line, col);
                     return Err(vec![Diagnostic::error(
-                        "lexer",
-                        "numeric literal cannot end with '_'",
+                        "L0309",
+                        "This number ends with an underscore\n\nhelp: Put underscores only between digits: 1_234, not at the end",
                         sp,
                     )]);
                 }
@@ -803,8 +1019,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                     if !saw_frac_digit || last_us {
                                         let sp = Span::new(file, i, i, line, col, line, col);
                                         return Err(vec![Diagnostic::error(
-                                            "lexer",
-                                            "invalid '_' in fractional part",
+                                            "L0311",
+                                            "I found an underscore here in the fractional part\n\nhelp: In the fractional part, put underscores only between digits: 3.141_592, not right after the dot, doubled, or at the end",
                                             sp,
                                         )]);
                                     }
@@ -816,49 +1032,57 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         if last_us {
                             let sp = Span::new(file, i, i, line, col, line, col);
                             return Err(vec![Diagnostic::error(
-                                "lexer",
-                                "fractional part cannot end with '_'",
+                                "L0312",
+                                "The fractional part ends with an underscore\n\nhelp: Put underscores only between digits: 3.141_592, not at the end",
                                 sp,
                             )]);
                         }
+                    }
+                }
 
-                        // Optional exponent: e|E [+-]? digits (underscore-separated ok)
-                        if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-                            let save_i = i;
-                            let save_col = col;
+                // Optional exponent (applies with or without a fractional part): e|E [+-]? digits (no underscores allowed)
+                if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+                    let e_pos  = i;
+                    let e_line = line;
+                    let e_col  = col;
+
+                    // consume 'e' / 'E'
+                    i += 1; col += 1;
+
+                    // optional sign
+                    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                        i += 1; col += 1;
+                    }
+
+                    // must have at least one digit
+                    if i >= bytes.len() || !bytes[i].is_ascii_digit() {
+                        let sp = Span::new(file, e_pos, e_pos + 1, e_line, e_col, e_line, e_col + 1);
+                        return Err(vec![Diagnostic::error(
+                            "L0304",
+                            "Exponent must be followed by digits\n\nhelp: Write `1e9` or `1e+9`, not `1e`",
+                            sp,
+                        )]);
+                    }
+
+                    // consume digits; underscores are NOT allowed in the exponent
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        if b.is_ascii_digit() {
                             i += 1; col += 1;
-
-                            if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-                                i += 1; col += 1;
-                            }
-
-                            let mut saw_exp_digit = false;
-                            let mut last_us2 = false;
-                            while i < bytes.len() {
-                                match bytes[i] {
-                                    b'0'..=b'9' => { saw_exp_digit = true; last_us2 = false; i += 1; col += 1; }
-                                    b'_' => {
-                                        if !saw_exp_digit || last_us2 {
-                                            let sp = Span::new(file, i, i, line, col, line, col);
-                                            return Err(vec![Diagnostic::error(
-                                                "lexer",
-                                                "invalid '_' in exponent",
-                                                sp,
-                                            )]);
-                                        }
-                                        last_us2 = true; i += 1; col += 1;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            if !saw_exp_digit || last_us2 {
-                                // no exponent digits or trailing underscore; roll back to 'e'
-                                i = save_i; col = save_col;
-                            } else {
-                                is_float = true;
-                            }
+                        } else if b == b'_' {
+                            let sp = Span::new(file, i, i + 1, line, col, line, col + 1);
+                            return Err(vec![Diagnostic::error(
+                                "L0313",
+                                "I found an underscore in this exponent where it can't go\n\nhelp: Write the exponent with digits only: 1e9, 1e+9, 1e-9; underscores aren't allowed",
+                                sp,
+                            )]);
+                        } else {
+                            break;
                         }
                     }
+
+                    // exponent makes the literal a float
+                    is_float = true;
                 }
 
                 // Get the base number
@@ -1004,8 +1228,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                     start_col + 1,
                                 );
                                 return Err(vec![Diagnostic::error(
-                                    "LexError",
-                                    "Unterminated string (basic).",
+                                    "L0201",
+                                    "This string never closes\n\nhelp: Add the closing '\"'",
                                     sp,
                                 )]);
                             }
@@ -1025,8 +1249,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 start_col + 1,
                             );
                             return Err(vec![Diagnostic::error(
-                                "LexError",
-                                "Unterminated string (basic).",
+                                "L0201",
+                                "This string never closes\n\nhelp: Add the closing '\"'",
                                 sp,
                             )]);
                         }
@@ -1103,8 +1327,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         let sp = Span::new(file, start_i, (start_i + 1).min(bytes.len()),
                                            start_line, start_col, start_line, start_col + 1);
                         return Err(vec![Diagnostic::error(
-                            "LexError",
-                            "Unterminated string literal.",
+                            "L0201",
+                            "This string never closes\n\nhelp: Add the closing '\"'",
                             sp,
                         )]);
                     }
@@ -1133,8 +1357,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             let sp = Span::new(file, start_i, (start_i + 1).min(bytes.len()),
                                                start_line, start_col, start_line, start_col + 1);
                             return Err(vec![Diagnostic::error(
-                                "LexError",
-                                "Unterminated string literal (newline before closing quote).",
+                                "L0204",
+                                "Strings can't contain an unescaped newline\n\nhelp: Close the quote before the newline or escape it",
                                 sp,
                             )]);
                         }
@@ -1157,8 +1381,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             let sp = Span::new(file, start_i, (start_i + 1).min(bytes.len()),
                                                start_line, start_col, start_line, start_col + 1);
                             return Err(vec![Diagnostic::error(
-                                "LexError",
-                                "Unterminated string escape.",
+                                "L0205",
+                                "This escape sequence never finishes\n\nhelp: Complete the escape: \\n, \\t, \\\" or \\u{1F600}, or remove the trailing '\\\\'",
                                 sp,
                             )]);
                         }
@@ -1174,8 +1398,11 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             invalid => {
                                 let sp = Span::new(file, i, i + 2, line, col, line, col + 2);
                                 return Err(vec![Diagnostic::error(
-                                    "LexError",
-                                    &format!("Invalid escape sequence: \\{}", invalid as char),
+                                    "L0202",
+                                    &format!(
+                                        "Invalid escape sequence: \\{}\n\nhelp: Use one of: \\n, \\r, \\t, \\\\, \\\", or \\u{{…}}",
+                                        invalid as char
+                                    ),
                                     sp,
                                 )]);
                             }
@@ -1555,8 +1782,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 }
             }
 
-            // Operators / punctuators (adjust nesting for delimiters)
-            b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';' => {
+            // Operators / punctuators (adjust nesting for delimiters) — exclude ';' here
+            b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' => {
                 let ch = bytes[i] as char;
                 match ch {
                     '(' | '[' | '{' => {
@@ -1706,8 +1933,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     // '&=' — explicitly not supported
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
                     return Err(vec![Diagnostic::error(
-                        "lex",
-                        "Unsupported operator '&=' (reserved '&' cannot be combined with '=')",
+                        "L0112",
+                        "There is no `&=` operator in Goblin\n\nhelp: For boolean-and assignment, write it explicitly: `x = x and y` or `x = x && y`. To test definedness, use unary `&`: `flag = &user>>name`",
                         span,
                     )]);
                 } else {
@@ -1920,7 +2147,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 }
             }
 
-            // Semicolon family: ";;" (fang operator), ";" 
+            // Semicolon family: ";;" (fang operator), ";"
             b';' => {
                 if i + 1 < bytes.len() && bytes[i + 1] == b';' {
                     // ";;" fang operator (consume-on-call)
@@ -1933,7 +2160,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     i += 2;
                     col += 2;
                 } else {
-                    // Single ';' 
+                    // Single ';'
                     let ch = bytes[i] as char;
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
                     tokens.push(Token {
@@ -1946,97 +2173,137 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 }
             }
 
-            // --- Combined AT/HASH identifiers (keep this; delete the later standalone `b'#'` arm) ---
+            // --- Combined AT/HASH identifiers ---
             b'@' | b'#' => {
-                let prefix = bytes[i];
-                let start_i = i;
+                let prefix    = bytes[i];
+                let start_i   = i;
                 let start_col = col;
 
-                // '@' must be followed by an identifier start (class name)
-                if i + 1 >= bytes.len() || !is_ident_start(bytes[i + 1]) {
-                    let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                    return Err(vec![Diagnostic::error("LexError", "Expected identifier after '@'.", span)]);
-                }
+                // helpers
+                let is_alpha = |b: u8| (b'a'..=b'z').contains(&b) || (b'A'..=b'Z').contains(&b);
+                let is_upper = |b: u8| (b'A'..=b'Z').contains(&b);
+                let is_digit = |b: u8| b.is_ascii_digit();
+                let is_ident_continue = |b: u8| is_alpha(b) || is_digit(b) || b == b'_';
 
-                // Version chars used when we see @ followed by a digit
-                let is_ver_char = |b: u8| b.is_ascii_alphanumeric();
-
-                // @VERSION form: @ followed by a digit → consume a version atom (kept as Ident for now)
-                if prefix == b'@' && i + 1 < bytes.len() && (bytes[i + 1] as char).is_ascii_digit()
-                {
-                    i += 2;
-                    col += 2; // '@' and first digit
-                    while i < bytes.len() && is_ver_char(bytes[i]) {
-                        i += 1;
-                        col += 1;
+                if prefix == b'@' {
+                    // @ClassName — must start with uppercase A–Z
+                    if i + 1 >= bytes.len() {
+                        let span = Span::new(file, i, i + 1, line, col, line, col + 1);
+                        return Err(vec![Diagnostic::error(
+                            "L0402",
+                            "Expected a class name after `@`\n\nhelp: Start with an uppercase name: `@Player = username: \"john\" :: health: 100`",
+                            span,
+                        )]);
                     }
-                    let text = &source.as_bytes()[start_i..i]; // keep "@1.2.3" shape for now
-                    let name = String::from_utf8_lossy(text).into_owned();
-                    let span = Span::new(file, start_i, i, line, start_col, line, col);
+                    let b0 = bytes[i + 1];
+                    if !is_upper(b0) {
+                        let span = Span::new(file, i, i + 2, line, col, line, col + 2);
+                        return Err(vec![Diagnostic::error(
+                            "L0402",
+                            "Expected a class name after `@`\n\nhelp: Class names start with uppercase: `@Player`, not `@player` or `@123`",
+                            span,
+                        )]);
+                    }
+
+                    // consume '@' + first letter + rest of class name [A-Za-z0-9_]*
+                    i += 2; col += 2; // '@' and first letter
+                    while i < bytes.len() && is_ident_continue(bytes[i]) {
+                        i += 1; col += 1;
+                    }
+
+                    // capture the name (excluding '@')
+                    let name = String::from_utf8_lossy(&bytes[(start_i + 1)..i]).into_owned();
+                    let span_name = Span::new(file, start_i, i, line, start_col, line, col);
+
+                    // optional strict marker '!' immediately after class name
+                    if i < bytes.len() && bytes[i] == b'!' {
+                        // emit @Class as AtIdent, then a separate '!' operator token
+                        tokens.push(Token {
+                            kind: TokenKind::AtIdent,
+                            span: span_name.clone(),
+                            value: Some(name),
+                        });
+                        let bang_span = Span::new(file, i, i + 1, line, col, line, col + 1);
+                        tokens.push(Token {
+                            kind: TokenKind::Op("!".to_string()),
+                            span: bang_span,
+                            value: None,
+                        });
+                        i += 1; col += 1;
+                        continue;
+                    }
+
+                    // forbid '?' suffix after class name
+                    if i < bytes.len() && bytes[i] == b'?' {
+                        let sp = Span::new(file, i, i + 1, line, col, line, col + 1);
+                        return Err(vec![Diagnostic::error(
+                            "L0403",
+                            "Names can’t end with `?`\n\nhelp: Remove the suffix: write `@Player`",
+                            sp,
+                        )]);
+                    }
+
                     tokens.push(Token {
-                        kind: TokenKind::Ident,
-                        span,
+                        kind: TokenKind::AtIdent,
+                        span: span_name,
                         value: Some(name),
                     });
                     continue;
+                } else {
+                    // '#' identifiers: alpha/underscore start, same tail (NO !/? allowed)
+                    if i + 1 < bytes.len() && (is_alpha(bytes[i + 1]) || bytes[i + 1] == b'_') {
+                        i += 2; col += 2; // '#' and first ident char
+                        while i < bytes.len() && is_ident_continue(bytes[i]) {
+                            i += 1; col += 1;
+                        }
+
+                        // unified suffix ban message/code for '#'
+                        if i < bytes.len() && (bytes[i] == b'!' || bytes[i] == b'?') {
+                            let sp = Span::new(file, i, i + 1, line, col, line, col + 1);
+                            return Err(vec![Diagnostic::error(
+                                "L0403",
+                                "Names can’t end with `!` or `?`\n\nhelp: Remove the suffix: write `#tag`",
+                                sp,
+                            )]);
+                        }
+
+                        let name = String::from_utf8_lossy(&bytes[(start_i + 1)..i]).into_owned();
+                        let span = Span::new(file, start_i, i, line, start_col, line, col);
+                        tokens.push(Token { kind: TokenKind::HashIdent, span, value: Some(name) });
+                        continue;
+                    }
+
+                    // Lone '#'
+                    let span = Span::new(file, i, i + 1, line, col, line, col + 1);
+                    return Err(vec![Diagnostic::error(
+                        "L0401",
+                        "Expected a name after `#`\n\nhelp: Write `#tag` or remove the `#`",
+                        span,
+                    )]);
                 }
-
-                // @ident / #ident (with optional trailing !/?), value excludes the prefix
-                let is_alpha = |b: u8| b.is_ascii_alphabetic();
-                let is_digit = |b: u8| b.is_ascii_digit();
-                let is_ident_start = |b: u8| is_alpha(b) || b == b'_';
-                let is_ident_continue = |b: u8| is_alpha(b) || is_digit(b) || b == b'_';
-
-                if i + 1 < bytes.len() && is_ident_start(bytes[i + 1]) {
-                    i += 1;
-                    col += 1; // consume prefix
-                    let ident_start = i; // start AFTER the prefix
-                    let _ident_col = col;
-
-                    i += 1;
-                    col += 1; // first char already valid
-                    while i < bytes.len() && is_ident_continue(bytes[i]) {
-                        i += 1;
-                        col += 1;
-                    }
-                    if i < bytes.len() && (bytes[i] == b'!' || bytes[i] == b'?') {
-                        i += 1;
-                        col += 1;
-                    }
-
-                    let name = String::from_utf8_lossy(&bytes[ident_start..i]).into_owned();
-                    let span = Span::new(file, start_i, i, line, start_col, line, col);
-
-                    if prefix == b'@' {
-                        tokens.push(Token {
-                            kind: TokenKind::AtIdent,
-                            span,
-                            value: Some(name),
-                        });
-                    } else {
-                        tokens.push(Token {
-                            kind: TokenKind::HashIdent,
-                            span,
-                            value: Some(name),
-                        });
-                    }
-                    continue;
-                }
-
-                // Lone '@' or '#'
-                let span = Span::new(file, i, i + 1, line, col, line, col + 1);
-                tokens.push(Token {
-                    kind: TokenKind::Op((prefix as char).to_string()),
-                    span,
-                    value: None,
-                });
-                i += 1;
-                col += 1;
             }
 
             b if is_ident_start(b) => {
                 let start_i = i;
                 let start_col = col;
+                // Special-case: crossbones closer `xx` -> treat as operator token.
+                // We only do this when the two x's are not followed by an ident-continue char,
+                // so that identifiers like `xxx` or `xxy` remain identifiers.
+                if bytes[i] == b'x' && i + 1 < bytes.len() && bytes[i + 1] == b'x' {
+                    let next = bytes.get(i + 2).copied();
+                    let continues_ident = matches!(next, Some(b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_'));
+                    if !continues_ident {
+                        let span = Span::new(file, i, i + 2, line, col, line, col + 2);
+                        tokens.push(Token { 
+                            kind: TokenKind::Operator("xx".to_string()), 
+                            span, 
+                            value: Some("xx".to_string()) 
+                        });
+                        i += 2;
+                        col += 2;
+                        continue;
+                    }
+                }
 
                 // Special-case: standalone '_' acts as a postfix operator (e.g., 3.14_)
                 if bytes[i] == b'_' {

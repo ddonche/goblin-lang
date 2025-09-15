@@ -218,7 +218,12 @@ fn run_parse(path: &Path) -> i32 {
     };
 
     // lex it
-    let lexed = lex(&src, &path.display().to_string());
+    // lex it (label temp here-strings as <snippet>)
+    let label = match path.file_name().and_then(|n| n.to_str()) {
+        Some(name) if name.starts_with("goblin_") && name.ends_with(".gbln") => "<snippet>".to_string(),
+        _ => path.display().to_string(),
+    };
+    let lexed = lex(&src, &label);
     let tokens = match lexed {
         Ok(toks) => toks,
         Err(diags) => {
@@ -228,7 +233,7 @@ fn run_parse(path: &Path) -> i32 {
                 if diags.len() == 1 { "" } else { "s" }
             );
             for (i, d) in diags.iter().enumerate() {
-                eprintln!("  [{}] {:#?}", i + 1, d);
+                eprintln!("  [{}] {}", i + 1, format_diagnostic(d));
             }
             return 1;
         }
