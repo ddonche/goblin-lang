@@ -931,12 +931,13 @@ impl<'t> Parser<'t> {
             _ => { self.i = save; return None; }
         };
 
-        // range operator
-        self.skip_newlines();
+        // dots: prefer "..." over ".."
         let exclusive = if self.eat_op("...") {
-            true
-        } else if self.eat_op("..") {
+            // CHANGED: "..." => inclusive range, so `exclusive = false`
             false
+        } else if self.eat_op("..") {
+            // CHANGED: ".."  => exclusive range, so `exclusive = true`
+            true
         } else {
             self.i = save;
             return None;
@@ -1229,8 +1230,14 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
+        // We arrive here right after the caller consumed 'act' or 'action'.
+        // Capture the header *start* (keyword) for alignment.
+        let hdr_tok_i  = self.i.saturating_sub(1);
+        let hdr_start  = self.toks[hdr_tok_i].clone();
+        let hdr_line   = hdr_start.span.line_start;
+        let hdr_col    = hdr_start.span.col_start;
 
-        // Parse the header (name, params, maybe single-line `= expr`)
+        // Parse the rest of the header (name, params, maybe single-line `= expr`)
         let pa = self.parse_action_after_keyword(kw)?;
 
         // If header produced the single-line body (`= expr`), just lower and return.
@@ -1241,29 +1248,23 @@ impl<'t> Parser<'t> {
                 .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
                 .collect();
 
-            let body = ast::ActionBody::Block(body_stmts);
-
             let params: Vec<ast::Param> = pa.params.into_iter().map(|pname| {
-                let sp = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i);
+                let sp = Self::span_from_tokens(self.toks, hdr_tok_i, self.i);
                 ast::Param { name: pname, type_name: None, default: None, span: sp }
             }).collect();
 
             let act = ast::ActionDecl {
                 name: pa.name,
                 params,
-                body,
-                span: Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i),
+                body: ast::ActionBody::Block(body_stmts),
+                span: Self::span_from_tokens(self.toks, hdr_tok_i, self.i),
                 ret: None,
             };
             return Ok(ast::Stmt::Action(act));
         }
 
         // ---- Friendly diagnostic for *next-line* brace (object literal by design) ----
-        // Detect:  action go \n { ... }   → error
-        // Allow:   action go { ... }      → OK (same line)
-        // Allow:   action go \n  <indent> → OK (layout)
-        let prev = self.toks.get(self.i.saturating_sub(1)); // last token of the header
-        if let Some(prev_tok) = prev {
+        if let Some(prev_tok) = self.toks.get(self.i.saturating_sub(1)) {
             let mut j = self.i;
             // Look ahead through true statement separators only
             while let Some(tok) = self.toks.get(j) {
@@ -1287,25 +1288,45 @@ impl<'t> Parser<'t> {
         }
         // ---------------------------------------------------------------------------
 
-        // IMPORTANT: Do NOT call expect_block_start() here.
-        // parse_stmt_block() **itself** handles both forms and consumes the opener:
-        //   - same-line '{ ... }' (brace mode)
-        //   - newline + indent ... 'end' / '}' (layout mode)
-        let body_stmts = self.parse_stmt_block()?;
+        // Forbid same-line '{' after header (layout-only)
+        self.enforce_inline_brace_policy(hdr_line, kw)?;
 
-        let body = ast::ActionBody::Block(body_stmts);
+        // Body: read until an ALIGNED closer ('end' or 'xx') at the header column
+        let body_stmts = self.parse_stmt_block_until(|p| {
+            p.peek_block_close() && p.toks[p.i].span.col_start == hdr_col
+        })?;
 
-        // Lower params (unchanged)
+        // Require and consume the aligned closer
+        self.skip_stmt_separators();
+        if self.peek_block_close() {
+            let col = self.toks[self.i].span.col_start;
+            if col != hdr_col {
+                return Err(s_help(
+                    "P0222",
+                    &format!("This closer is misaligned: expected column {}, found column {}", hdr_col, col),
+                    "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the block header.",
+                ));
+            }
+            let _ = self.eat_block_close();
+        } else {
+            return Err(s_help(
+                "P0212",
+                "This block is missing its closing 'end' or 'xx' (crossbones).",
+                "Close the block with 'end' or 'xx' (crossbones).",
+            ));
+        }
+
+        // Lower params and body
         let params: Vec<ast::Param> = pa.params.into_iter().map(|pname| {
-            let sp = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i);
+            let sp = Self::span_from_tokens(self.toks, hdr_tok_i, self.i);
             ast::Param { name: pname, type_name: None, default: None, span: sp }
         }).collect();
 
         let act = ast::ActionDecl {
             name: pa.name,
             params,
-            body,
-            span: Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i),
+            body: ast::ActionBody::Block(body_stmts),
+            span: Self::span_from_tokens(self.toks, hdr_tok_i, self.i),
             ret: None,
         };
 
@@ -1644,9 +1665,11 @@ impl<'t> Parser<'t> {
 
         // dots: prefer "..." over ".."
         let exclusive_end = if self.eat_op("...") {
-            true
-        } else if self.eat_op("..") {
+            // CHANGED: "..." => inclusive upper bound
             false
+        } else if self.eat_op("..") {
+            // CHANGED: ".."  => exclusive upper bound
+            true
         } else {
             return Err(s_help(
                 "P1004",
@@ -1693,33 +1716,72 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_class_decl(&mut self) -> Result<PExpr, String> {
+        use goblin_lexer::TokenKind;
 
-        if !self.eat_op("@") {
+        // Accept either a single AtIdent token or '@' followed by Ident.
+        // Capture header start col/line for aligned closer & diagnostics.
+        let (name, hdr_col, hdr_line) = if let Some(t0) = self.peek() {
+            match &t0.kind {
+                TokenKind::AtIdent => {
+                    let nm = t0.value.clone().ok_or_else(|| s_help(
+                        "P0906",
+                        "Expected a class name after '@'",
+                        "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
+                    ))?;
+                    let col  = t0.span.col_start;
+                    let line = t0.span.line_start;
+                    self.i += 1; // consume AtIdent
+                    (nm, col, line)
+                }
+                TokenKind::Op(s) if s == "@" => {
+                    let col  = t0.span.col_start;
+                    let line = t0.span.line_start;
+                    self.i += 1; // consume '@'
+                    let nm = self.eat_ident().ok_or_else(|| s_help(
+                        "P0906",
+                        "Expected a class name after '@'",
+                        "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
+                    ))?;
+                    (nm, col, line)
+                }
+                _ => {
+                    return Err(s_help(
+                        "P0905",
+                        "Expected '@' to start a class declaration",
+                        "Start the class like: @Player = username: \"john\" :: health: 100",
+                    ));
+                }
+            }
+        } else {
             return Err(s_help(
                 "P0905",
                 "Expected '@' to start a class declaration",
                 "Start the class like: @Player = username: \"john\" :: health: 100",
             ));
-        }
-
-        let Some(name) = self.eat_ident() else {
-            return Err(s_help(
-                "P0906",
-                "Expected a class name after '@'",
-                "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
-            ));
         };
 
-        let name_tok_idx = self.i - 1;
-        if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-            self.i = name_tok_idx;
-            return Err(s_help(
-                "P0907",
-                &format!("Class names must start with a capital letter (found '{}')", name),
-                "Rename it to start with uppercase: Player",
-            ));
+        // Optional bang after the name: @Class!
+        if self.peek_op("!") { self.i += 1; }
+
+        // Optional (params)
+        if self.eat_op("(") {
+            if !self.peek_op(")") {
+                loop {
+                    let _ = self.parse_coalesce()?;
+                    if self.eat_op(",") { continue; }
+                    break;
+                }
+            }
+            if !self.eat_op(")") {
+                return Err(s_help(
+                    "P0703",
+                    "Unclosed parameter list after class header",
+                    "Close it with ')': @Class(Name)",
+                ));
+            }
         }
 
+        // Must have '=' on the header line (parse_module also checks this early)
         if !self.eat_op("=") {
             return Err(s_help(
                 "P0908",
@@ -1728,58 +1790,97 @@ impl<'t> Parser<'t> {
             ));
         }
 
+        // Header fields on the same line
         let fields = self.parse_field_chain_line()?;
         self.eat_semi_separators();
 
+        // Forbid '{' after header; class bodies use layout + ('end'|'xx')
+        self.enforce_inline_brace_policy(hdr_line, "class")?;
+
+        // ---- Body: actions (or nothing) until an ALIGNED closer at hdr_col ----
         let mut actions = Vec::new();
 
         loop {
-            self.eat_semi_separators();
+            // Skip separators + layout so we can see an aligned closer
+            self.skip_stmt_separators();
+            while let Some(tok) = self.toks.get(self.i) {
+                match tok.kind {
+                    TokenKind::Indent | TokenKind::Dedent | TokenKind::Newline => { self.i += 1; }
+                    _ => break,
+                }
+            }
 
-            // Close class body with either `end` or `}`
             if self.is_eof() {
                 return Err(s_help(
                     "P0909",
-                    &format!("I reached the end of the file, but the class '{}' is still open (missing '}}' or 'end')", name),
-                    "Close the class with '}' or 'end': @Player = username: \"john\" :: health: 100 end",
+                    &format!("I reached the end of the file, but the class '{}' is still open (missing 'end' or 'xx')", name),
+                    "Close the class with 'end' or 'xx' (crossbones): @Player = username: \"john\" :: health: 100 end",
                 ));
             }
-            let tok = self.peek().unwrap();
-            let is_end = matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("end");
-            let is_rbrace = matches!(tok.kind, TokenKind::Op(ref s) if s == "}");
-            if is_end || is_rbrace {
-                self.i += 1;
+
+            // Aligned closer for the class itself
+            if self.peek_block_close() && self.toks[self.i].span.col_start == hdr_col {
+                let _ = self.eat_block_close();
                 break;
             }
 
-            // Expect 'act' or 'action'
-            let kw = match self.toks.get(self.i).map(|t| &t.kind) {
-                Some(TokenKind::Act) => {
-                    self.i += 1;
-                    "act"
-                }
-                Some(TokenKind::Action) => {
-                    self.i += 1;
-                    "action"
-                }
+            // Expect an action header next
+            let act_tok = match self.peek() { Some(t) => t.clone(), None => break };
+            let kw = match &act_tok.kind {
+                TokenKind::Act => { self.i += 1; "act" }
+                TokenKind::Action => { self.i += 1; "action" }
+                TokenKind::Ident if act_tok.value.as_deref() == Some("act") => { let _ = self.eat_ident(); "act" }
+                TokenKind::Ident if act_tok.value.as_deref() == Some("action") => { let _ = self.eat_ident(); "action" }
                 _ => {
                     return Err(s_help(
                         "P0910",
-                        "Inside a class, only 'act', 'action', or 'end' are allowed here",
-                        "Add an action or end the class: act run() { ... } or end",
+                        "Inside a class, only 'act', 'action', or a closing 'end'/'xx' are allowed here",
+                        "Add an action or close the class: act run(a) ... end, or end",
                     ));
                 }
             };
 
+            // Record action header position (for aligned action closer)
+            let act_line = act_tok.span.line_start;
+            let act_col  = act_tok.span.col_start;
+
+            // Parse rest of action header (name/params or single-line '= expr')
             let action = self.parse_action_after_keyword(kw)?;
+            if action.is_single {
+                actions.push(action);
+                continue;
+            }
+
+            // Forbid same-line '{' for action, and parse its body until its own aligned closer
+            self.enforce_inline_brace_policy(act_line, kw)?;
+            let _ = self.parse_stmt_block_until(|p| {
+                p.peek_block_close() && p.toks[p.i].span.col_start == act_col
+            })?;
+
+            // Require & consume the aligned action closer
+            self.skip_stmt_separators();
+            if self.peek_block_close() {
+                let col = self.toks[self.i].span.col_start;
+                if col != act_col {
+                    return Err(s_help(
+                        "P0222",
+                        &format!("This closer is misaligned: expected column {}, found column {}", act_col, col),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the action header.",
+                    ));
+                }
+                let _ = self.eat_block_close();
+            } else {
+                return Err(s_help(
+                    "P0212",
+                    "This block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
+
             actions.push(action);
         }
 
-        Ok(PExpr::ClassDecl {
-            name,
-            fields,
-            actions,
-        })
+        Ok(PExpr::ClassDecl { name, fields, actions })
     }
 
     fn parse_decl(&mut self) -> Result<PDecl, String> {
@@ -2009,62 +2110,103 @@ impl<'t> Parser<'t> {
     where
         F: FnMut(&Parser<'_>) -> bool,
     {
-        // Track how THIS call ended (don't let nested calls overwrite it)
+        use goblin_lexer::TokenKind;
+
         let mut ended_hard = false;
 
-        // ===== LAYOUT MODE ONLY: newline + indent required; blocks close with 'end' or 'xx'
+        // ===== INLINE BRACE MODE: { ... } must be single-line
+        if self.eat_op("{") {
+            let brace_line = if self.i > 0 { self.toks[self.i - 1].span.line_start } else { 0 };
+
+            // `{}` allowed only if `}` is on the same line
+            if self.peek_op("}") {
+                let close_line = self.toks[self.i].span.line_start;
+                if close_line != brace_line {
+                    return Err(s_help(
+                        "P0207",
+                        "Inline braced blocks must be on a single line",
+                        "Place '}' on the same line as '{': { do() }",
+                    ));
+                }
+                let _ = self.eat_op("}");
+                self.block_closed_hard = false;
+                return Ok(Vec::new());
+            }
+
+            // first body token must share the line with '{'
+            if let Some(tok) = self.toks.get(self.i) {
+                if tok.span.line_start != brace_line {
+                    return Err(s_help(
+                        "P0207",
+                        "Inline braced blocks must be on a single line",
+                        "Remove the newline or use indentation and close with 'end' or 'xx' (crossbones): { do() }",
+                    ));
+                }
+            } else {
+                return Err(s_help(
+                    "P0214",
+                    "I reached the end of the file inside an inline braced block",
+                    "Finish the block on the same line with a statement and '}': { run() }",
+                ));
+            }
+
+            // exactly one statement/expression
+            let mut out = Vec::new();
+            out.push(self.parse_stmt()?);
+
+            // require same-line '}'
+            if self.peek_ident() == Some("end") || self.peek_ident() == Some("xx") {
+                return Err(s_help(
+                    "P0215",
+                    "Braced blocks close with '}', not a layout closer",
+                    "Close it with '}': if ok { run() }",
+                ));
+            }
+            if !self.peek_op("}") {
+                return Err(s_help(
+                    "P0216",
+                    "Expected '}' immediately after this inline braced statement",
+                    "Close it on the same line: { run() }",
+                ));
+            }
+            let close_line = self.toks[self.i].span.line_start;
+            if close_line != brace_line {
+                return Err(s_help(
+                    "P0207",
+                    "Inline braced blocks must be on a single line",
+                    "Place '}' on the same line as '{': { do() }",
+                ));
+            }
+            let _ = self.eat_op("}");
+            self.block_closed_hard = false;
+            return Ok(out);
+        }
+
+        // ===== LAYOUT MODE =====
+        // need a newline to start the block
         let mut saw_nl = false;
         while let Some(tok) = self.toks.get(self.i) {
-            if matches!(tok.kind, TokenKind::Newline) {
-                self.i += 1;
-                saw_nl = true;
-            } else {
-                break;
-            }
+            if matches!(tok.kind, TokenKind::Newline) { self.i += 1; saw_nl = true; } else { break; }
         }
-        // Fallback: physical line break if lexer didn’t emit Newline
         if !saw_nl {
             if let (Some(prev), Some(curr)) = (self.toks.get(self.i.saturating_sub(1)), self.toks.get(self.i)) {
-                if curr.span.line_start > prev.span.line_end {
-                    saw_nl = true;
-                }
+                if curr.span.line_start > prev.span.line_end { saw_nl = true; }
             }
         }
         if !saw_nl {
             return Err(s_help(
                 "P0213",
                 "Expected a newline to start this block",
-                "Start the block on the next line, indent the body, and close with 'end' or 'xx' (crossbones).",
+                "Put '{' on the same line or start a new line and indent the block: if ok { run() }",
             ));
         }
 
-        // Baseline col for soft-indent
+        // compute header line/col min (used only for helpful messages)
         let header_line = if let Some(prev) = self.toks.get(self.i.saturating_sub(1)) {
             prev.span.line_start
-        } else {
-            0
-        };
-        let mut header_col_min = u32::MAX;
-        let mut k = self.i.saturating_sub(1);
-        while let Some(tok) = self.toks.get(k) {
-            if tok.span.line_start == header_line {
-                if tok.span.col_start < header_col_min {
-                    header_col_min = tok.span.col_start;
-                }
-                if k == 0 {
-                    break;
-                }
-                k -= 1;
-            } else {
-                break;
-            }
-        }
-        if header_col_min == u32::MAX {
-            header_col_min = 0;
-        }
-        let header_col = header_col_min; // use this for closer alignment diagnostics
+        } else { 0 };
 
-        // Enter layout: real Indent preferred; otherwise soft by column
+        // enter layout: prefer real Indent; otherwise soft by column
         let mut out = Vec::new();
         let mut depth: usize = 0;
         let mut soft_mode = false;
@@ -2076,16 +2218,26 @@ impl<'t> Parser<'t> {
                 depth = 1;
             } else {
                 let body_line = tok.span.line_start;
-                let body_col = tok.span.col_start;
-                if body_line > header_line && body_col > header_col_min {
+                let mut header_col_min = u32::MAX;
+                let mut k = self.i.saturating_sub(1);
+                while let Some(t) = self.toks.get(k) {
+                    if t.span.line_start == header_line {
+                        if t.span.col_start < header_col_min { header_col_min = t.span.col_start; }
+                        if k == 0 { break; }
+                        k -= 1;
+                    } else { break; }
+                }
+                if header_col_min == u32::MAX { header_col_min = 0; }
+
+                if body_line > header_line && tok.span.col_start > header_col_min {
                     depth = 1;
                     soft_mode = true;
-                    soft_cols.push(body_col);
+                    soft_cols.push(tok.span.col_start);
                 } else {
                     return Err(s_help(
                         "P0210",
                         "Expected indentation after this header",
-                        "Indent the next line to start the block, then close with 'end' or 'xx' (crossbones).",
+                        "Put '{' on the same line or indent the next line: if ok { run() }",
                     ));
                 }
             }
@@ -2106,56 +2258,33 @@ impl<'t> Parser<'t> {
                 ));
             }
 
-            // ===== Tokenized indentation first
+            // ----- Tokenized indentation first
             if let Some(tok) = self.toks.get(self.i) {
                 match tok.kind {
-                    TokenKind::Indent => {
-                        self.i += 1;
-                        depth += 1;
-                        continue;
-                    }
+                    TokenKind::Indent => { self.i += 1; depth += 1; continue; }
                     TokenKind::Dedent => {
-                        let mut ded_count = 0usize;
+                        let mut ded = 0usize;
                         while let Some(t2) = self.toks.get(self.i) {
-                            if matches!(t2.kind, TokenKind::Dedent) {
-                                self.i += 1;
-                                ded_count += 1;
-                            } else {
-                                break;
-                            }
+                            if matches!(t2.kind, TokenKind::Dedent) { self.i += 1; ded += 1; } else { break; }
                         }
-                        if ded_count > depth {
+                        if ded > depth {
                             return Err(s_help(
                                 "P0211",
                                 "The indentation went back too far for this block",
-                                "Indent the line to stay inside the block, or close it first with 'end' or 'xx' (crossbones).",
+                                "Indent the line to stay inside the block, or close it first: if ok { run() }",
                             ));
                         }
-                        depth -= ded_count;
+                        depth -= ded;
 
                         if depth == 0 {
                             // allow blank lines
                             while let Some(t) = self.toks.get(self.i) {
-                                if matches!(t.kind, TokenKind::Newline) {
-                                    self.i += 1;
-                                } else {
-                                    break;
-                                }
+                                if matches!(t.kind, TokenKind::Newline) { self.i += 1; } else { break; }
                             }
-                            // At header level: stop (but DO NOT CONSUME) if closer present
                             if self.peek_block_close() {
-                                ended_hard = true; // layout closed explicitly (caller must consume)
+                                let _ = self.eat_block_close();
+                                ended_hard = true; // layout closed explicitly
                                 break;
-                            }
-                            // Misaligned tails at header level → explicit error here
-                            if let Some(id) = self.peek_ident() {
-                                if (id == "elif" || id == "else") && !stop(self) {
-                                    return Err(s_help(
-                                        "P0221",
-                                        "This 'elif' or 'else' isn't aligned with its matching 'if'",
-                                        "Align 'elif'/'else' with 'if' (same column).",
-                                    ));
-                                }
                             }
                             if stop(self) {
                                 ended_hard = false; // stopped by tail
@@ -2169,23 +2298,18 @@ impl<'t> Parser<'t> {
                         }
                         continue;
                     }
-                    _ => { /* fall through */ }
+                    _ => {}
                 }
             }
 
-            // ===== Soft indentation by column
+            // ----- Soft indentation by column
             if soft_mode {
-                let mut saw_linebreak = false;
+                let mut saw_lb = false;
                 while let Some(tok) = self.toks.get(self.i) {
-                    if matches!(tok.kind, TokenKind::Newline) {
-                        self.i += 1;
-                        saw_linebreak = true;
-                    } else {
-                        break;
-                    }
+                    if matches!(tok.kind, TokenKind::Newline) { self.i += 1; saw_lb = true; } else { break; }
                 }
 
-                if saw_linebreak {
+                if saw_lb {
                     if self.is_eof() {
                         return Err(s_help(
                             "P0212",
@@ -2194,6 +2318,7 @@ impl<'t> Parser<'t> {
                         ));
                     }
 
+                    // compute next token's col (if any)
                     if let Some(next) = self.toks.get(self.i) {
                         let next_col = next.span.col_start;
 
@@ -2202,19 +2327,10 @@ impl<'t> Parser<'t> {
                             soft_cols.pop();
                             depth -= 1;
                             if depth == 0 {
-                                // Header level now: stop on closer (DO NOT CONSUME) or tail
                                 if self.peek_block_close() {
-                                    ended_hard = true; // caller will consume
+                                    let _ = self.eat_block_close();
+                                    ended_hard = true;
                                     break;
-                                }
-                                if let Some(id) = self.peek_ident() {
-                                    if (id == "elif" || id == "else") && !stop(self) {
-                                        return Err(s_help(
-                                            "P0221",
-                                            "This 'elif'/'else' isn't aligned with its matching 'if'",
-                                            "Align 'elif'/'else' with 'if' (same column).",
-                                        ));
-                                    }
                                 }
                                 if stop(self) {
                                     ended_hard = false;
@@ -2228,24 +2344,15 @@ impl<'t> Parser<'t> {
                             }
                         }
 
-                        // Still inside: a closer here is misaligned
-                        if depth > 0 && self.peek_block_close() {
-                            if let Some(cl) = self.peek() {
-                                let closer = if cl.value.as_deref() == Some("xx") { "xx" } else { "end" };
-                                return Err(s_help(
-                                    "P0222",
-                                    &format!(
-                                        "This '{}' closer is misaligned: expected column {}, found column {}",
-                                        closer, header_col, cl.span.col_start
-                                    ),
-                                    "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the block header.",
-                                ));
-                            } else {
-                                return Err(s_help(
-                                    "P0212",
-                                    "This block is missing its closing 'end' or 'xx' (crossbones).",
-                                    "Close the block with 'end' or 'xx' (crossbones).",
-                                ));
+                        if depth == 0 {
+                            if self.peek_block_close() {
+                                let _ = self.eat_block_close();
+                                ended_hard = true;
+                                break;
+                            }
+                            if stop(self) {
+                                ended_hard = false;
+                                break;
                             }
                         }
 
@@ -2259,53 +2366,11 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            // ===== Alignment enforcement before parsing a body statement
-            if depth > 0 && self.peek_block_close() {
-                if let Some(cl) = self.peek() {
-                    let closer = if cl.value.as_deref() == Some("xx") { "xx" } else { "end" };
-                    return Err(s_help(
-                        "P0222",
-                        &format!(
-                            "This '{}' closer is misaligned: expected column {}, found column {}",
-                            closer, header_col, cl.span.col_start
-                        ),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the block header.",
-                    ));
-                } else {
-                    return Err(s_help(
-                        "P0212",
-                        "This block is missing its closing 'end' or 'xx' (crossbones).",
-                        "Close the block with 'end' or 'xx' (crossbones).",
-                    ));
-                }
-            }
-
-            // Header level: closer / stopper / misaligned tails
-            if depth == 0 {
-                if self.peek_block_close() {
-                    ended_hard = true; // DO NOT CONSUME here; caller will.
-                    break;
-                }
-                if let Some(id) = self.peek_ident() {
-                    if (id == "elif" || id == "else") && !stop(self) {
-                        return Err(s_help(
-                            "P0221",
-                            "This 'elif' or 'else' isn't aligned with its matching 'if'",
-                            "Align 'elif'/'else' with 'if' (same column).",
-                        ));
-                    }
-                }
-                if stop(self) {
-                    ended_hard = false; // stopped by tail
-                    break;
-                }
-            }
-
-            // Parse one statement
+            // ----- Parse exactly one statement in the body
             out.push(self.parse_stmt()?);
+            self.skip_stmt_separators();
         }
 
-        // publish how THIS block ended to the caller (caller must consume if hard)
         self.block_closed_hard = ended_hard;
         Ok(out)
     }
@@ -2487,362 +2552,271 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
-        // First: dedicated keyword tokens (some lexers emit these)
-        if let Some(t) = self.peek() {
-            match &t.kind {
-                TokenKind::Act    => { self.i += 1; return self.parse_free_action("act"); }
-                TokenKind::Action => { self.i += 1; return self.parse_free_action("action"); }
-                _ => {}
+            // First: dedicated keyword tokens (some lexers emit these)
+            if let Some(t) = self.peek() {
+                match &t.kind {
+                    TokenKind::Act    => { self.i += 1; return self.parse_free_action("act"); }
+                    TokenKind::Action => { self.i += 1; return self.parse_free_action("action"); }
+                    _ => {}
+                }
             }
-        }
 
-        // Orphan closer guards
-        if self.peek_ident() == Some("end") {
-            return Err(s_help(
-                "P0223",
-                "Found 'end' without a matching block start",
-                "Remove this 'end' or add the missing header above: close blocks with 'end' or 'xx' (crossbones).",
-            ));
-        }
-        if self.peek_op("xx") {
-            return Err(s_help(
-                "P0223",
-                "Found 'xx' (crossbones) without a matching block start",
-                "Remove this 'xx' or add the missing header above: close blocks with 'end' or 'xx' (crossbones).",
-            ));
-        }
-        if self.peek_op("}") {
-            return Err(s_help(
-                "P0224",
-                "Found '}' without a matching '{'",
-                "Remove this '}'. Braces are only used inside expressions (maps/interpolation), not for statement blocks.",
-            ));
-        }
-
-        // Orphan / top-level tail guard
-        if let Some(k) = self.peek_ident() {
-            if k == "elif" || k == "else" {
-                let col = self.toks[self.i].span.col_start;
-                return Err(s_help(
-                    "P0225",
-                    &format!("Found '{}' at column {} without a matching 'if'", k, col),
-                    "If this is a tail, align it with the 'if' header; otherwise remove it.",
-                ));
-            }
-        }
-
-        // IF (layout-only; no opening '{' allowed after headers)
-        if self.peek_ident() == Some("if") {
-            let if_tok_i = self.i;
-            let if_line  = self.toks[if_tok_i].span.line_start;
-            let if_col   = self.toks[if_tok_i].span.col_start;
-
-            let _ = self.eat_ident();                  // 'if'
-            let _cond = self.parse_coalesce()?;        // condition (no assignment in header)
-            self.enforce_inline_brace_policy(if_line, "if")?;
-
-            // THEN block: layout-only until aligned elif/else OR an aligned closer ('end' or 'xx')
-            let _then = self.parse_stmt_block_until(|p| {
-                p.peek_ident_at_col("elif", if_col)
-                    || p.peek_ident_at_col("else", if_col)
-                    || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
-            })?;
-
-            let mut else_seen = false;
-
-            // If the 'then' block hard-closed, tails are not allowed
-            if self.block_closed_hard {
-                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+            // Orphan / top-level tail guard
+            if let Some(k) = self.peek_ident() {
+                if k == "elif" || k == "else" {
+                    let col = self.toks[self.i].span.col_start;
                     return Err(s_help(
-                        "P0226",
-                        "This 'elif' or 'else' comes after the 'if' block was already closed",
-                        "Move it before the 'end' or 'xx' (crossbones) that closes the 'if'.",
+                        "P0225",
+                        &format!("Found '{}' at column {} without a matching 'if'", k, col),
+                        "If this is a tail, align it with the 'if' header; otherwise remove it: put 'elif' at the same column as 'if'",
                     ));
                 }
             }
 
-            // Zero or more aligned 'elif' blocks
-            loop {
-                self.skip_stmt_separators();
+            // IF (layout-only; no opening '{' allowed)
+            if self.peek_ident() == Some("if") {
+                let if_tok_i = self.i;
+                let if_line  = self.toks[if_tok_i].span.line_start;
+                let if_col   = self.toks[if_tok_i].span.col_start;
 
+                let _ = self.eat_ident();                  // 'if'
+                let _cond = self.parse_coalesce()?;        // condition (no assignment in header)
+                self.enforce_inline_brace_policy(if_line, "if")?;
+
+                // THEN block: layout-only until aligned elif/else or hard closer ('}' or 'end'/'xx')
+                let _then = self.parse_stmt_block_until(|p| {
+                    p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
+                })?;
+
+                let mut else_seen = false;
+
+                // If the 'then' block hard-closed, tails are not allowed
                 if self.block_closed_hard {
                     if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
                         return Err(s_help(
                             "P0226",
                             "This 'elif' or 'else' comes after the 'if' block was already closed",
-                            "Move it before the 'end' or 'xx' (crossbones) that closes the 'if'.",
+                            "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
                         ));
                     }
                 }
 
-                if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
-                    return Err(s_help(
-                        "P0227",
-                        "You can only have one 'else' in an 'if' block",
-                        "Remove the extra 'else'.",
-                    ));
-                }
-
-                if self.peek_ident_at_col("elif", if_col) {
-                    let elif_tok_i = self.i;
-                    let elif_line  = self.toks[elif_tok_i].span.line_start;
-
-                    let _ = self.eat_ident();           // 'elif'
-                    let _c = self.parse_coalesce()?;    // condition
-                    self.enforce_inline_brace_policy(elif_line, "elif")?;
-
-                    let _b = self.parse_stmt_block_until(|p| {
-                        p.peek_ident_at_col("elif", if_col)
-                            || p.peek_ident_at_col("else", if_col)
-                            || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
-                    })?;
+                // Zero or more aligned 'elif' blocks
+                loop {
+                    self.skip_stmt_separators();
 
                     if self.block_closed_hard {
                         if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
                             return Err(s_help(
                                 "P0226",
                                 "This 'elif' or 'else' comes after the 'if' block was already closed",
-                                "Move it before the 'end' or 'xx' (crossbones) that closes the 'if'.",
+                                "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
                             ));
                         }
                     }
-                    continue;
-                }
 
-                break;
-            }
-
-            // Optional aligned 'else' block
-            self.skip_stmt_separators();
-
-            if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
-                return Err(s_help(
-                    "P0226",
-                    "This 'elif' or 'else' comes after the 'if' block was already closed",
-                    "Move it before the 'end' or 'xx' (crossbones) that closes the 'if'.",
-                ));
-            }
-
-            if self.peek_ident_at_col("else", if_col) {
-                else_seen = true;
-
-                let else_tok_i = self.i;
-                let else_line  = self.toks[else_tok_i].span.line_start;
-
-                let _ = self.eat_ident();               // 'else'
-                self.enforce_inline_brace_policy(else_line, "else")?;
-
-                let _else = self.parse_stmt_block_until(|p| {
-                    p.peek_ident_at_col("elif", if_col)
-                        || p.peek_ident_at_col("else", if_col)
-                        || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
-                })?;
-
-                self.skip_stmt_separators();
-                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                    return Err(s_help(
-                        "P0227",
-                        "You can only have one 'else' in an 'if' block",
-                        "Remove the extra 'else'.",
-                    ));
-                }
-
-                if self.block_closed_hard {
-                    if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                    if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
                         return Err(s_help(
-                            "P0226",
-                            "This 'elif' or 'else' comes after the 'if' block was already closed",
-                            "Move it before the 'end' or 'xx' (crossbones) that closes the 'if'.",
+                            "P0227",
+                            "You can only have one 'else' in an 'if' block",
+                            "Remove the extra 'else': if ok { run() } else { fallback() }",
                         ));
                     }
-                }
-            }
 
-            // Require an aligned closer at the header column; consume it with your existing eater.
-            self.skip_stmt_separators();
-            if self.peek_block_close() {
-                let col = self.toks[self.i].span.col_start;
-                if col != if_col {
+                    if self.peek_ident_at_col("elif", if_col) {
+                        let elif_tok_i = self.i;
+                        let elif_line  = self.toks[elif_tok_i].span.line_start;
+
+                        let _ = self.eat_ident();           // 'elif'
+                        let _c = self.parse_coalesce()?;    // condition
+                        self.enforce_inline_brace_policy(elif_line, "elif")?;
+
+                        let _b = self.parse_stmt_block_until(|p| {
+                            p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
+                        })?;
+
+                        if self.block_closed_hard {
+                            if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                                return Err(s_help(
+                                    "P0226",
+                                    "This 'elif' or 'else' comes after the 'if' block was already closed",
+                                    "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
+                                ));
+                            }
+                        }
+                        continue;
+                    }
+
+                    break;
+                }
+
+                // Optional aligned 'else' block
+                self.skip_stmt_separators();
+
+                if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
                     return Err(s_help(
-                        "P0222",
-                        &format!("This closer is misaligned: expected column {}, found column {}", if_col, col),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the block header.",
+                        "P0226",
+                        "This 'elif' or 'else' comes after the 'if' block was already closed",
+                        "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
                     ));
                 }
-                let _ = self.eat_block_close(); // consumes 'end' or 'xx'
-            } else {
-                return Err(s_help(
-                    "P0212",
-                    "This block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
+
+                if self.peek_ident_at_col("else", if_col) {
+                    else_seen = true;
+
+                    let else_tok_i = self.i;
+                    let else_line  = self.toks[else_tok_i].span.line_start;
+
+                    let _ = self.eat_ident();               // 'else'
+                    self.enforce_inline_brace_policy(else_line, "else")?;
+
+                    let _else = self.parse_stmt_block_until(|p| {
+                        p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
+                    })?;
+
+                    self.skip_stmt_separators();
+                    if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                        return Err(s_help(
+                            "P0227",
+                            "You can only have one 'else' in an 'if' block",
+                            "Remove the extra 'else': if ok { run() } else { fallback() }",
+                        ));
+                    }
+
+                    if self.block_closed_hard {
+                        if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                            return Err(s_help(
+                                "P0226",
+                                "This 'elif' or 'else' comes after the 'if' block was already closed",
+                                "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
+                            ));
+                        }
+                    }
+                }
+
+                let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
+                let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
+                return Ok(ast::Stmt::Expr(expr));
             }
 
-            let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
-            let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
-            return Ok(ast::Stmt::Expr(expr));
-        }
+            // WHILE (layout-only; no opening '{' allowed)
+            if self.peek_ident() == Some("while") {
+                let while_tok_i = self.i;
+                let while_line  = self.toks[while_tok_i].span.line_start;
 
-        // WHILE (layout-only; no opening '{' allowed)
-        if self.peek_ident() == Some("while") {
-            let while_tok_i = self.i;
-            let while_line  = self.toks[while_tok_i].span.line_start;
-            let while_col   = self.toks[while_tok_i].span.col_start;
+                let _ = self.eat_ident();                   // 'while'
+                let _cond = self.parse_coalesce()?;         // condition
+                self.enforce_inline_brace_policy(while_line, "while")?;
+                let _body = self.parse_stmt_block_until(|_| false)?;
 
-            let _ = self.eat_ident();                   // 'while'
-            let _cond = self.parse_coalesce()?;         // condition
-            self.enforce_inline_brace_policy(while_line, "while")?;
+                let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
+                let expr = Self::lower_expr_preview(PExpr::Ident("while_block".into()), sp);
+                return Ok(ast::Stmt::Expr(expr));
+            }
 
-            // Body: stop when we see an ALIGNED closer ('end' or 'xx') at the header column
-            let _body = self.parse_stmt_block_until(|p| {
-                p.peek_block_close() && p.toks[p.i].span.col_start == while_col
-            })?;
+            // FOR (layout-only; no opening '{' allowed)
+            if self.peek_ident() == Some("for") {
+                let for_tok_i = self.i;
+                let for_line  = self.toks[for_tok_i].span.line_start;
+                let for_col   = self.toks[for_tok_i].span.col_start;
 
-            // Require an aligned closer and consume it
-            self.skip_stmt_separators();
-            if self.peek_block_close() {
-                let col = self.toks[self.i].span.col_start;
-                if col != while_col {
+                let _ = self.eat_ident(); // 'for'
+                self.skip_newlines();
+
+                // Loop variable (simple identifier for now)
+                let _loop_var = match self.peek() {
+                    Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Ident) => {
+                        let v = t.value.clone().unwrap_or_default();
+                        self.i += 1;
+                        v
+                    }
+                    _ => return Err(s_help(
+                        "P0802",
+                        "Expected a loop variable after 'for'",
+                        "Write it like: for item in items",
+                    )),
+                };
+
+                self.skip_newlines();
+
+                // 'in'
+                if self.peek_ident() != Some("in") {
                     return Err(s_help(
-                        "P0222",
-                        &format!("This closer is misaligned: expected column {}, found column {}", while_col, col),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the block header.",
+                        "P0801",
+                        "Expected 'in' after the loop variable in a 'for' header",
+                        "Write it like: for item in items",
                     ));
                 }
-                let _ = self.eat_block_close(); // consumes 'end' or 'xx'
-            } else {
-                return Err(s_help(
-                    "P0212",
-                    "This block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
+                let _ = self.eat_ident(); // 'in'
+                self.skip_newlines();
+
+                // Iterable expression (no assignment in header)
+                let _iter_expr = self.parse_coalesce()?;
+
+                // Forbid '{' after header (same line or next line) and require newline before block
+                self.enforce_inline_brace_policy(for_line, "for")?;
+
+                // THEN block: layout-only until aligned 'end' (or hard closer '}'/'end'/'xx')
+                let _body = self.parse_stmt_block_until(|p| p.peek_ident_at_col("end", for_col))?;
+
+                // Consume aligned 'end' if present (layout closer)
+                if self.peek_ident_at_col("end", for_col) {
+                    let _ = self.eat_ident(); // 'end'
+                }
+
+                // Placeholder lowering
+                let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
+                let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
+                return Ok(ast::Stmt::Expr(expr));
             }
 
-            let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
-            let expr = Self::lower_expr_preview(PExpr::Ident("while_block".into()), sp);
-            return Ok(ast::Stmt::Expr(expr));
-        }
+            // free-arrow action: a >> foo : a, b, c
+            if self.peek_ident() == Some("a") && self.peek_op(">>") {
+                let _ = self.eat_ident();  // 'a'
+                let _ = self.eat_op(">>"); // >>
+                let name = self.eat_ident().ok_or(s_help(
+                    "P0504",
+                    "Expected an action name after 'a >>'",
+                    "Write it like: a >> run",
+                ))?;
+                let params = if self.eat_op(":") { self.parse_args_colon()? } else { Vec::new() };
+                return Ok(ast::Stmt::Expr(self.lower_expr(PExpr::FreeCall(name, params))));
+            }
 
-        // FOR (layout-only; no opening '{' allowed)
-        if self.peek_ident() == Some("for") {
-            let for_tok_i = self.i;
-            let for_line  = self.toks[for_tok_i].span.line_start;
-            let for_col   = self.toks[for_tok_i].span.col_start;
-
-            let _ = self.eat_ident(); // 'for'
-            self.skip_newlines();
-
-            // Loop variable (simple identifier for now)
-            let _loop_var = match self.peek() {
-                Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Ident) => {
-                    let v = t.value.clone().unwrap_or_default();
-                    self.i += 1;
-                    v
+            // ---- NO-BRACE guard for @Class / @Class! headers (reuse existing policy) ----
+            if let Some(t0) = self.peek() {
+                if matches!(t0.kind, goblin_lexer::TokenKind::AtIdent) {
+                    let class_line = t0.span.line_start;
+                    // Reuse policy used by if/elif/while/for
+                    self.enforce_inline_brace_policy(class_line, "class")?;
                 }
-                _ => return Err(s_help(
-                    "P0802",
-                    "Expected a loop variable after 'for'",
-                    "Write it like: for item in items",
-                )),
+            }
+
+            // Fallback when lexer emits Ident("act"/"action")
+            if let Some(kw) = self.peek_ident() {
+                if kw == "act" || kw == "action" {
+                    let kw = self.eat_ident().unwrap();
+                    return self.parse_free_action(&kw);
+                }
+            }
+
+            // Statement boundary: allow assignment here (with progress-on-error)
+            let prev = self.in_stmt; self.in_stmt = true;
+            let stmt_start = self.i;
+            let expr_pe = match self.parse_assign() {
+                Ok(e) => e,
+                Err(e) => {
+                    // If parsing didn't consume anything, force progress so caller can't re-enter forever.
+                    if self.i == stmt_start && !self.is_eof() { self.i += 1; }
+                    self.in_stmt = prev;
+                    return Err(e);
+                }
             };
+            self.in_stmt = prev;
 
-            self.skip_newlines();
-
-            // 'in'
-            if self.peek_ident() != Some("in") {
-                return Err(s_help(
-                    "P0801",
-                    "Expected 'in' after the loop variable in a 'for' header",
-                    "Write it like: for item in items",
-                ));
-            }
-            let _ = self.eat_ident(); // 'in'
-            self.skip_newlines();
-
-            // Iterable expression (no assignment in header)
-            let _iter_expr = self.parse_coalesce()?;
-
-            // Forbid '{' after header (same line) before block
-            self.enforce_inline_brace_policy(for_line, "for")?;
-
-            // Body: stop on an ALIGNED closer ('end' or 'xx') at the header column
-            let _body = self.parse_stmt_block_until(|p| {
-                p.peek_block_close() && p.toks[p.i].span.col_start == for_col
-            })?;
-
-            // Require an aligned closer and consume it
-            self.skip_stmt_separators();
-            if self.peek_block_close() {
-                let col = self.toks[self.i].span.col_start;
-                if col != for_col {
-                    return Err(s_help(
-                        "P0222",
-                        &format!("This closer is misaligned: expected column {}, found column {}", for_col, col),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the block header.",
-                    ));
-                }
-                let _ = self.eat_block_close(); // consumes 'end' or 'xx'
-            } else {
-                return Err(s_help(
-                    "P0212",
-                    "This block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
-            }
-
-            // Placeholder lowering
-            let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
-            let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
-            return Ok(ast::Stmt::Expr(expr));
+            let expr = self.lower_expr(expr_pe);
+            Ok(ast::Stmt::Expr(expr))
         }
-
-        // free-arrow action: a >> foo : a, b, c
-        if self.peek_ident() == Some("a") && self.peek_op(">>") {
-            let _ = self.eat_ident();  // 'a'
-            let _ = self.eat_op(">>"); // >>
-            let name = self.eat_ident().ok_or(s_help(
-                "P0504",
-                "Expected an action name after 'a >>'",
-                "Write it like: a >> run",
-            ))?;
-            let params = if self.eat_op(":") { self.parse_args_colon()? } else { Vec::new() };
-            return Ok(ast::Stmt::Expr(self.lower_expr(PExpr::FreeCall(name, params))));
-        }
-
-        // ---- NO-BRACE guard for @Class / @Class! headers (reuse existing policy) ----
-        if let Some(t0) = self.peek() {
-            if matches!(t0.kind, goblin_lexer::TokenKind::AtIdent) {
-                let class_line = t0.span.line_start;
-                // Reuse policy used by if/elif/while/for
-                self.enforce_inline_brace_policy(class_line, "class")?;
-            }
-        }
-
-        // Fallback when lexer emits Ident("act"/"action")
-        if let Some(kw) = self.peek_ident() {
-            if kw == "act" || kw == "action" {
-                let kw = self.eat_ident().unwrap();
-                return self.parse_free_action(&kw);
-            }
-        }
-
-        // Statement boundary: allow assignment here (with progress-on-error)
-        let prev = self.in_stmt; self.in_stmt = true;
-        let stmt_start = self.i;
-        let expr_pe = match self.parse_assign() {
-            Ok(e) => e,
-            Err(e) => {
-                // If parsing didn't consume anything, force progress so caller can't re-enter forever.
-                if self.i == stmt_start && !self.is_eof() { self.i += 1; }
-                self.in_stmt = prev;
-                return Err(e);
-            }
-        };
-        self.in_stmt = prev;
-
-        let expr = self.lower_expr(expr_pe);
-        Ok(ast::Stmt::Expr(expr))
-    }
 
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {
         let t = match self.bump() {
