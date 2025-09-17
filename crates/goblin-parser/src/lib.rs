@@ -1586,32 +1586,26 @@ impl<'t> Parser<'t> {
         if self.is_eof() {
             return Err(s_help(
                 "P0212",
-                "This block is missing its closing 'end' or 'xx' (crossbones).",
+                &format!("This {} block is missing its closing 'end' or 'xx' (crossbones).", block_type),
                 "Close the block with 'end' or 'xx' (crossbones).",
             ));
         }
         let tok = self.toks.get(self.i).ok_or_else(|| {
             s_help(
                 "P0212",
-                "This block is missing its closing 'end' or 'xx' (crossbones).",
+                &format!("This {} block is missing its closing 'end' or 'xx' (crossbones).", block_type),
                 "Close the block with 'end' or 'xx' (crossbones).",
             )
         })?;
         if tok.value.as_deref() != Some("end") && tok.value.as_deref() != Some("xx") {
             return Err(s_help(
                 "P0212",
-                "Expected 'end' or 'xx' to close this block.",
+                &format!("Expected 'end' or 'xx' to close this {} block.", block_type),
                 "Use 'end' or 'xx' to close the block.",
             ));
         }
-        if tok.span.col_start != expected_col {
-            return Err(s_help(
-                "P0222",
-                "This closer is misaligned with its block",
-                &format!("Expected 'end' or 'xx' at column {}, found column {}.", expected_col, tok.span.col_start),
-            ));
-        }
         self.i += 1;
+        self.eat_layout_until_close(0);
         Ok(())
     }
 
@@ -2579,306 +2573,125 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
-        use goblin_lexer::TokenKind;
-        if let Some(t) = self.peek() {
-            match &t.kind {
-                TokenKind::Act => {
-                    self.i += 1;
-                    return self.parse_free_action("act");
-                }
-                TokenKind::Action => {
-                    self.i += 1;
-                    return self.parse_free_action("action");
-                }
-                _ => {}
-            }
-        }
-        if let Some(t0) = self.peek().cloned() {
-            let is_at_ident = matches!(&t0.kind, TokenKind::AtIdent);
-            let is_op_at = matches!(&t0.kind, TokenKind::Op(op) if op == "@");
-            if is_at_ident || is_op_at {
-                let class_line = t0.span.line_start;
-                self.enforce_inline_brace_policy(class_line, "class")?;
-                let pe = self.parse_class_decl()?;
-                let expr = self.lower_expr(pe);
-                return Ok(ast::Stmt::Expr(expr));
-            }
-        }
-        if let Some(k) = self.peek_ident() {
-            if k == "elif" || k == "else" {
-                let col = self.toks[self.i].span.col_start;
-                return Err(s_help(
-                    "P0225",
-                    &format!("Found '{}' at column {} without a matching 'if'", k, col),
-                    "If this is a tail, align it with the 'if' header; otherwise remove it: put 'elif' at the same column as 'if'",
-                ));
-            }
-        }
-        if self.peek_ident() == Some("if") {
-            let if_tok_i = self.i;
-            let if_line = self.toks[if_tok_i].span.line_start;
-            let if_col = self.toks[if_tok_i].span.col_start;
-            let _ = self.eat_ident(); // 'if'
-            let _cond = self.parse_coalesce()?; // condition
-            self.enforce_inline_brace_policy(if_line, "if")?;
-            let _then = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
-                p.skip_newlines();
-                p.eat_layout_until_close(if_col)
-                    || p.peek_ident_at_col("elif", if_col)
-                    || p.peek_ident_at_col("else", if_col)
-                    || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
-            })?;
-            let mut else_seen = false;
-            if self.block_closed_hard {
-                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+        let start_i = self.i;
+        let expr = self.parse_coalesce()?;
+        if let Some(assign_op) = ["=", "+=", "-="].iter().find(|&&op| self.peek_op(op)).copied() {
+            self.i += 1;
+            let value = self.parse_coalesce()?;
+            self.skip_stmt_separators();
+            if !self.peek_block_close() && !self.eat_layout_until_close(0) {
+                if self.i == start_i {
                     return Err(s_help(
-                        "P0226",
-                        "This 'elif' or 'else' comes after the 'if' block was already closed",
-                        "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
+                        "P0204",
+                        "Expected a statement, found something else",
+                        "Use a valid statement like an expression or assignment.",
                     ));
                 }
             }
-            loop {
-                self.skip_stmt_separators();
-                if self.block_closed_hard {
-                    if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                        return Err(s_help(
-                            "P0226",
-                            "This 'elif' or 'else' comes after the 'if' block was already closed",
-                            "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
-                        ));
-                    }
-                }
-                if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
-                    return Err(s_help(
-                        "P0227",
-                        "You can only have one 'else' in an 'if' block",
-                        "Remove the extra 'else': if ok { run() } else { fallback() }",
-                    ));
-                }
-                if self.peek_ident_at_col("elif", if_col) {
-                    let elif_tok_i = self.i;
-                    let elif_line = self.toks[elif_tok_i].span.line_start;
-                    let _ = self.eat_ident(); // 'elif'
-                    let _c = self.parse_coalesce()?; // condition
-                    self.enforce_inline_brace_policy(elif_line, "elif")?;
-                    let _b = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
-                        p.skip_newlines();
-                        p.eat_layout_until_close(if_col)
-                            || p.peek_ident_at_col("elif", if_col)
-                            || p.peek_ident_at_col("else", if_col)
-                            || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
-                    })?;
-                    if self.block_closed_hard {
-                        if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+            match assign_op {
+                "=" => Ok(ast::Stmt::Assign {
+                    target: expr.clone().try_into().map_err(|_| {
+                        s_help(
+                            "P0302",
+                            "Invalid assignment target",
+                            "Use a variable, attribute, or index expression as the target.",
+                        )
+                    })?,
+                    value: value.try_into().map_err(|_| {
+                        s_help(
+                            "P0303",
+                            "Invalid assignment value",
+                            "Use a valid expression as the assignment value.",
+                        )
+                    })?,
+                }),
+                "+=" => Ok(ast::Stmt::Append {
+                    target: expr.clone().try_into().map_err(|_| {
+                        s_help(
+                            "P0304",
+                            "Invalid append target",
+                            "Use a list or other appendable expression as the target.",
+                        )
+                    })?,
+                    value: value.try_into().map_err(|_| {
+                        s_help(
+                            "P0305",
+                            "Invalid append value",
+                            "Use a valid expression as the append value.",
+                        )
+                    })?,
+                }),
+                "-=" => Ok(ast::Stmt::Delete {
+                    target: expr.clone().try_into().map_err(|_| {
+                        s_help(
+                            "P0306",
+                            "Invalid delete target",
+                            "Use a dictionary or other expression with keys as the target.",
+                        )
+                    })?,
+                    key: value.try_into().map_err(|_| {
+                        s_help(
+                            "P0307",
+                            "Invalid delete key",
+                            "Use a valid key expression for deletion.",
+                        )
+                    })?,
+                }),
+                _ => Err(s_help(
+                    "P0301",
+                    &format!("Unknown assignment operator '{}'", assign_op),
+                    "Use '=', '+=', or '-=' for assignments.",
+                )),
+            }
+        } else {
+            // Handle 'if' as PExpr::If
+            if let PExpr::If(branches) = &expr {
+                let if_col = self.toks.get(start_i).map(|t| t.span.col_start).unwrap_or(0);
+                if !self.block_closed_hard {
+                    self.skip_stmt_separators();
+                    if self.peek_block_close() {
+                        let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                        if col != if_col {
+                            let closer = self.peek_ident().unwrap_or("}");
                             return Err(s_help(
-                                "P0226",
-                                "This 'elif' or 'else' comes after the 'if' block was already closed",
-                                "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
+                                "P0222",
+                                &format!(
+                                    "This '{}' closer is misaligned: expected column {}, found column {}",
+                                    closer, if_col, col
+                                ),
+                                "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the 'if' header.",
                             ));
                         }
-                    }
-                    continue;
-                }
-                break;
-            }
-            self.skip_stmt_separators();
-            if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
-                return Err(s_help(
-                    "P0226",
-                    "This 'elif' or 'else' comes after the 'if' block was already closed",
-                    "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
-                ));
-            }
-            if self.peek_ident_at_col("else", if_col) {
-                else_seen = true;
-                let else_tok_i = self.i;
-                let else_line = self.toks[else_tok_i].span.line_start;
-                let _ = self.eat_ident(); // 'else'
-                self.enforce_inline_brace_policy(else_line, "else")?;
-                let _else = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
-                    p.skip_newlines();
-                    p.eat_layout_until_close(if_col)
-                        || p.peek_ident_at_col("elif", if_col)
-                        || p.peek_ident_at_col("else", if_col)
-                        || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
-                })?;
-                self.skip_stmt_separators();
-                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                    return Err(s_help(
-                        "P0227",
-                        "You can only have one 'else' in an 'if' block",
-                        "Remove the extra 'else': if ok { run() } else { fallback() }",
-                    ));
-                }
-            }
-            if !self.block_closed_hard && !else_seen {
-                self.skip_stmt_separators();
-                if self.peek_block_close() {
-                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-                    if col != if_col {
-                        let closer = self.peek_ident().unwrap_or("}");
+                        self.expect_block_close("if")?;
+                    } else if !self.eat_layout_until_close(if_col) {
                         return Err(s_help(
-                            "P0222",
-                            &format!(
-                                "This '{}' closer is misaligned: expected column {}, found column {}",
-                                closer, if_col, col
-                            ),
-                            "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the 'if' header.",
+                            "P0212",
+                            "This 'if' block is missing its closing 'end' or 'xx' (crossbones).",
+                            "Close the block with 'end' or 'xx' (crossbones).",
                         ));
                     }
-                    self.expect_block_close("if")?;
-                } else if !self.eat_layout_until_close(if_col) {
-                    return Err(s_help(
-                        "P0212",
-                        "This 'if' block is missing its closing 'end' or 'xx' (crossbones).",
-                        "Close the block with 'end' or 'xx' (crossbones).",
-                    ));
                 }
             }
-            let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
-            let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
-            return Ok(ast::Stmt::Expr(expr));
-        }
-        if self.peek_ident() == Some("while") {
-            let while_tok_i = self.i;
-            let while_line = self.toks[while_tok_i].span.line_start;
-            let while_col = self.toks[while_tok_i].span.col_start;
-            let _ = self.eat_ident(); // 'while'
-            let _cond = self.parse_coalesce()?; // condition
-            self.enforce_inline_brace_policy(while_line, "while")?;
-            let _body = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
-                p.skip_newlines();
-                p.eat_layout_until_close(while_col) || (p.peek_block_close() && p.toks[p.i].span.col_start == while_col)
-            })?;
             self.skip_stmt_separators();
-            if self.peek_block_close() {
-                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-                if col != while_col {
-                    let closer = self.peek_ident().unwrap_or("}");
+            if !self.peek_block_close() && !self.eat_layout_until_close(0) {
+                if self.i == start_i {
                     return Err(s_help(
-                        "P0222",
-                        &format!(
-                            "This '{}' closer is misaligned: expected column {}, found column {}",
-                            closer, while_col, col
-                        ),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the 'while' header.",
+                        "P0204",
+                        "Expected a statement, found something else",
+                        "Use a valid statement like an expression or assignment.",
                     ));
                 }
-                self.expect_block_close("while")?;
-            } else if !self.eat_layout_until_close(while_col) {
-                return Err(s_help(
-                    "P0212",
-                    "This 'while' block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
             }
-            let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
-            let expr = Self::lower_expr_preview(PExpr::Ident("while_block".into()), sp);
-            return Ok(ast::Stmt::Expr(expr));
+            Ok(ast::Stmt::Expr(expr.try_into().map_err(|_| {
+                s_help(
+                    "P0308",
+                    "Invalid statement expression",
+                    "Use a valid expression for the statement.",
+                )
+            })?))
         }
-        if self.peek_ident() == Some("for") {
-            let for_tok_i = self.i;
-            let for_line = self.toks[for_tok_i].span.line_start;
-            let for_col = self.toks[for_tok_i].span.col_start;
-            let _ = self.eat_ident(); // 'for'
-            self.skip_newlines();
-            let _loop_var = match self.peek() {
-                Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Ident) => {
-                    let v = t.value.clone().unwrap_or_default();
-                    self.i += 1;
-                    v
-                }
-                _ => {
-                    return Err(s_help(
-                        "P0802",
-                        "Expected a loop variable after 'for'",
-                        "Write it like: for item in items",
-                    ))
-                }
-            };
-            self.skip_newlines();
-            if self.peek_ident() != Some("in") {
-                return Err(s_help(
-                    "P0801",
-                    "Expected 'in' after the loop variable in a 'for' header",
-                    "Write it like: for item in items",
-                ));
-            }
-            let _ = self.eat_ident(); // 'in'
-            self.skip_newlines();
-            let _iter_expr = self.parse_coalesce()?;
-            self.enforce_inline_brace_policy(for_line, "for")?;
-            let _body = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
-                p.skip_newlines();
-                p.eat_layout_until_close(for_col) || (p.peek_block_close() && p.toks[p.i].span.col_start == for_col)
-            })?;
-            self.skip_stmt_separators();
-            if self.peek_block_close() {
-                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-                if col != for_col {
-                    let closer = self.peek_ident().unwrap_or("}");
-                    return Err(s_help(
-                        "P0222",
-                        &format!(
-                            "This '{}' closer is misaligned: expected column {}, found column {}",
-                            closer, for_col, col
-                        ),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the 'for' header.",
-                    ));
-                }
-                self.expect_block_close("for")?;
-            } else if !self.eat_layout_until_close(for_col) {
-                return Err(s_help(
-                    "P0212",
-                    "This 'for' block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
-            }
-            let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
-            let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
-            return Ok(ast::Stmt::Expr(expr));
-        }
-        if self.peek_ident() == Some("a") && self.peek_op(">>") {
-            let _ = self.eat_ident(); // 'a'
-            let _ = self.eat_op(">>"); // >>
-            let name = self.eat_ident().ok_or(s_help(
-                "P0504",
-                "Expected an action name after 'a >>'",
-                "Write it like: a >> run",
-            ))?;
-            let params = if self.eat_op(":") { self.parse_args_colon()? } else { Vec::new() };
-            return Ok(ast::Stmt::Expr(self.lower_expr(PExpr::FreeCall(name, params))));
-        }
-        if let Some(t0) = self.peek() {
-            if matches!(t0.kind, goblin_lexer::TokenKind::AtIdent) {
-                let class_line = t0.span.line_start;
-                self.enforce_inline_brace_policy(class_line, "class")?;
-            }
-        }
-        if let Some(kw) = self.peek_ident() {
-            if kw == "act" || kw == "action" {
-                let kw = self.eat_ident().unwrap();
-                return self.parse_free_action(&kw);
-            }
-        }
-        let prev = self.in_stmt;
-        self.in_stmt = true;
-        let stmt_start = self.i;
-        let expr_pe = match self.parse_assign() {
-            Ok(e) => e,
-            Err(e) => {
-                if self.i == stmt_start && !self.is_eof() {
-                    self.i += 1;
-                }
-                self.in_stmt = prev;
-                return Err(e);
-            }
-        };
-        self.in_stmt = prev;
-        let expr = self.lower_expr(expr_pe);
-        Ok(ast::Stmt::Expr(expr))
     }
+    
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {
         let t = match self.bump() {
             Some(t) => t,
