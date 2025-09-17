@@ -553,6 +553,26 @@ impl<'t> Parser<'t> {
         }
     }
 
+    // Add helper to eat layout and detect closes (non-consuming peek variant for peek_block_close)
+    fn eat_layout_until_close(&mut self, opening_indent: u32) -> bool {
+        let mut closed = false;
+        while let Some(t) = self.peek() {
+            match t.kind {
+                goblin_lexer::TokenKind::Newline => { self.i += 1; continue; }
+                goblin_lexer::TokenKind::Dedent => {
+                    self.i += 1;
+                    // Optional: Check if current indent <= opening_indent (need lexer to expose indent level in Dedent)
+                    // For now, any Dedent signals potential close
+                    closed = true;
+                    break;
+                }
+                goblin_lexer::TokenKind::Indent => { self.i += 1; continue; } // Eat but don't close
+                _ => break,
+            }
+        }
+        closed
+    }
+
     fn apply_postfix_ops(&mut self, mut expr: PExpr) -> PExpr {
         // decide if token after an op starts an expression; keeps "**" and "//" postfix
         // from stealing binary uses like `a ** 2` or `a // 2`
@@ -829,6 +849,21 @@ impl<'t> Parser<'t> {
         // In this codebase, operator tokens carry their exact lexeme in `value`.
         // Comparing the string is sufficient and avoids enum pattern issues.
         tok.value.as_deref() == Some(s)
+    }
+
+    #[inline]
+    fn peek_is_object_key_start(&self) -> bool {
+        if let Some(tok) = self.toks.get(self.i) {
+            use goblin_lexer::TokenKind;
+            matches!(
+                tok.kind,
+                TokenKind::Ident
+                // If you allow quoted keys in class headers, include the string token too:
+                // | TokenKind::Str
+            )
+        } else {
+            false
+        }
     }
 
     fn split_duration_lexeme(s: &str) -> Result<(String, String), String> {
@@ -1134,6 +1169,7 @@ impl<'t> Parser<'t> {
         let mut out = Vec::new();
 
         loop {
+            // 1) Field key
             let Some(key) = self.eat_object_key() else {
                 if out.is_empty() {
                     return Err(s_help(
@@ -1146,6 +1182,7 @@ impl<'t> Parser<'t> {
                 }
             };
 
+            // 2) Colon
             if !self.eat_op(":") {
                 return Err(s_help(
                     "P0904",
@@ -1154,17 +1191,114 @@ impl<'t> Parser<'t> {
                 ));
             }
 
-            let val = self.parse_coalesce()?;
-            out.push((key, val));
-
-            if self.eat_op("::") {
-                if self.peek_newline_or_eof() {
-                    break;
+            // Allow layout after ':'
+            while let Some(t) = self.peek() {
+                match t.kind {
+                    goblin_lexer::TokenKind::Newline
+                    | goblin_lexer::TokenKind::Indent
+                    | goblin_lexer::TokenKind::Dedent => { self.i += 1; }
+                    _ => break,
                 }
-                continue;
             }
 
-            break;
+            // 3) Scan the rest of THIS LINE (top-level only) to find end of this value
+            let value_start = self.i;
+            let value_line = match self.toks.get(value_start) {
+                Some(t) => t.span.line_start,
+                None => {
+                    return Err(s_help(
+                        "P0906",
+                        "Expected a value after ':'",
+                        "Write it like username: \"john\"",
+                    ));
+                }
+            };
+
+            let mut depth_paren = 0i32;
+            let mut depth_brack = 0i32;
+            let mut depth_brace = 0i32;
+            let mut sep_i: Option<usize> = None;
+
+            let mut k = value_start;
+            while let Some(tok) = self.toks.get(k) {
+                if tok.span.line_start != value_line { break; } // stop at EOL
+
+                use goblin_lexer::TokenKind;
+                match &tok.kind {
+                    // track nesting so commas inside ()/[]/{} are ignored
+                    TokenKind::Op(op) if op == "(" => { depth_paren += 1; k += 1; continue; }
+                    TokenKind::Op(op) if op == ")" => { depth_paren -= 1; k += 1; continue; }
+                    TokenKind::Op(op) if op == "[" => { depth_brack += 1; k += 1; continue; }
+                    TokenKind::Op(op) if op == "]" => { depth_brack -= 1; k += 1; continue; }
+                    TokenKind::Op(op) if op == "{" => { depth_brace += 1; k += 1; continue; }
+                    TokenKind::Op(op) if op == "}" => { depth_brace -= 1; k += 1; continue; }
+
+                    // legal field separators at top level
+                    TokenKind::Op(op)
+                        if (op == "::" || op == ",")
+                            && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 =>
+                    {
+                        sep_i = Some(k);
+                        break;
+                    }
+
+                    // NEW FIELD starting without a separator: ident ':' at top level, later on same line
+                    TokenKind::Ident
+                        if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && k > value_start =>
+                    {
+                        if let Some(next) = self.toks.get(k + 1) {
+                            if next.span.line_start == value_line
+                                && matches!(next.kind, TokenKind::Op(ref c) if c == ":")
+                            {
+                                return Err(s_help(
+                                    "P0905",
+                                    "Missing field separator between fields",
+                                    "Separate fields with '::' or ',' e.g. username: \"john\" :: health: 100",
+                                ));
+                            }
+                        }
+                        k += 1;
+                        continue;
+                    }
+
+                    _ => { k += 1; continue; }
+                }
+            }
+
+            // 4) Value slice = [value_start .. end_i)
+            let end_i = sep_i.unwrap_or(k);
+
+            // 5) Parse only that slice to avoid swallowing separators
+            let val = parse_expr_preview(&self.toks[value_start..end_i])?;
+            out.push((key, val));
+
+            // 6) Separator handling (consume exactly ONE; disallow doubles)
+            if let Some(si) = sep_i {
+                self.i = si;
+
+                // consume exactly one separator
+                let _ = if self.peek_op("::") { self.eat_op("::") } else { self.eat_op(",") };
+
+                // If another separator immediately follows on the same line → error
+                if let Some(tok2) = self.toks.get(self.i) {
+                    if tok2.span.line_start == value_line {
+                        if let goblin_lexer::TokenKind::Op(op) = &tok2.kind {
+                            if op == "::" || op == "," {
+                                return Err(s_help(
+                                    "P0907",
+                                    "Unexpected extra separator",
+                                    "Use a single '::' or ',' between fields: name: \"Rook\" :: health: 100",
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                continue;
+            } else {
+                self.i = end_i; // EOL/EOF ends header row
+                break;
+            }
         }
 
         Ok(out)
@@ -1230,47 +1364,51 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
-        // We arrive here right after the caller consumed 'act' or 'action'.
-        // Capture the header *start* (keyword) for alignment.
-        let hdr_tok_i  = self.i.saturating_sub(1);
-        let hdr_start  = self.toks[hdr_tok_i].clone();
-        let hdr_line   = hdr_start.span.line_start;
-        let hdr_col    = hdr_start.span.col_start;
-
-        // Parse the rest of the header (name, params, maybe single-line `= expr`)
+        use goblin_lexer::TokenKind;
+        let hdr_tok_i = self.i.saturating_sub(1);
+        let hdr_start = self.toks[hdr_tok_i].clone();
+        let hdr_line = hdr_start.span.line_start;
+        let hdr_col = hdr_start.span.col_start;
+        let action_start = self.i;
         let pa = self.parse_action_after_keyword(kw)?;
-
-        // If header produced the single-line body (`= expr`), just lower and return.
+        let action_span = Self::span_from_tokens(self.toks, action_start, self.i);
+        let params: Vec<ast::Param> = pa
+            .params
+            .into_iter()
+            .map(|pname| ast::Param {
+                name: pname,
+                type_name: None,
+                default: None,
+                span: action_span.clone(),
+            })
+            .collect();
         if !pa.body.is_empty() {
             let body_stmts: Vec<ast::Stmt> = pa
                 .body
                 .into_iter()
                 .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
                 .collect();
-
-            let params: Vec<ast::Param> = pa.params.into_iter().map(|pname| {
-                let sp = Self::span_from_tokens(self.toks, hdr_tok_i, self.i);
-                ast::Param { name: pname, type_name: None, default: None, span: sp }
-            }).collect();
-
             let act = ast::ActionDecl {
                 name: pa.name,
                 params,
                 body: ast::ActionBody::Block(body_stmts),
-                span: Self::span_from_tokens(self.toks, hdr_tok_i, self.i),
+                span: action_span,
                 ret: None,
             };
             return Ok(ast::Stmt::Action(act));
         }
-
-        // ---- Friendly diagnostic for *next-line* brace (object literal by design) ----
         if let Some(prev_tok) = self.toks.get(self.i.saturating_sub(1)) {
             let mut j = self.i;
-            // Look ahead through true statement separators only
             while let Some(tok) = self.toks.get(j) {
                 match &tok.kind {
-                    TokenKind::Newline => { j += 1; continue; }
-                    TokenKind::Op(s) if s == ";" => { j += 1; continue; }
+                    TokenKind::Newline => {
+                        j += 1;
+                        continue;
+                    }
+                    TokenKind::Op(s) if s == ";" => {
+                        j += 1;
+                        continue;
+                    }
                     _ => break,
                 }
             }
@@ -1286,50 +1424,41 @@ impl<'t> Parser<'t> {
                 }
             }
         }
-        // ---------------------------------------------------------------------------
-
-        // Forbid same-line '{' after header (layout-only)
         self.enforce_inline_brace_policy(hdr_line, kw)?;
-
-        // Body: read until an ALIGNED closer ('end' or 'xx') at the header column
-        let body_stmts = self.parse_stmt_block_until(|p| {
-            p.peek_block_close() && p.toks[p.i].span.col_start == hdr_col
+        let body_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+            p.skip_newlines();
+            p.eat_layout_until_close(hdr_col) || (p.peek_block_close() && p.toks[p.i].span.col_start == hdr_col)
         })?;
-
-        // Require and consume the aligned closer
         self.skip_stmt_separators();
-        if self.peek_block_close() {
-            let col = self.toks[self.i].span.col_start;
+        if self.block_closed_hard {
+            self.block_closed_hard = false;
+        } else if self.peek_block_close() {
+            let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col != hdr_col {
                 return Err(s_help(
                     "P0222",
-                    &format!("This closer is misaligned: expected column {}, found column {}", hdr_col, col),
-                    "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the block header.",
+                    &format!(
+                        "This closer is misaligned: expected column {}, found column {}",
+                        hdr_col, col
+                    ),
+                    "Align the closer with its header (same column), placing 'end' or 'xx' directly under the action header.",
                 ));
             }
-            let _ = self.eat_block_close();
-        } else {
+            self.expect_block_close("action")?;
+        } else if !self.eat_layout_until_close(hdr_col) {
             return Err(s_help(
                 "P0212",
-                "This block is missing its closing 'end' or 'xx' (crossbones).",
+                "This action block is missing its closing 'end' or 'xx' (crossbones).",
                 "Close the block with 'end' or 'xx' (crossbones).",
             ));
         }
-
-        // Lower params and body
-        let params: Vec<ast::Param> = pa.params.into_iter().map(|pname| {
-            let sp = Self::span_from_tokens(self.toks, hdr_tok_i, self.i);
-            ast::Param { name: pname, type_name: None, default: None, span: sp }
-        }).collect();
-
         let act = ast::ActionDecl {
             name: pa.name,
             params,
             body: ast::ActionBody::Block(body_stmts),
-            span: Self::span_from_tokens(self.toks, hdr_tok_i, self.i),
+            span: action_span,
             ret: None,
         };
-
         Ok(ast::Stmt::Action(act))
     }
 
@@ -1423,12 +1552,19 @@ impl<'t> Parser<'t> {
     }
 
     // Do we see a block closer at the current position?  (allowed: 'end' or 'xx')
-    fn peek_block_close(&self) -> bool {
-        if self.peek_ident() == Some("end") {
-            return true;
-        }
-        // 'xx' is lexed as an operator token
-        self.peek_op("xx")
+    fn peek_block_close(&mut self) -> bool {
+        let save_i = self.i;
+        self.skip_newlines();
+        let j = self.i;
+        self.eat_layout_until_close(0); // Temp eat for peek
+        let is_close = match self.toks.get(j) {
+            Some(t) => {
+                t.value.as_deref() == Some("end") || t.value.as_deref() == Some("xx") || matches!(t.kind, ::goblin_lexer::TokenKind::Dedent)
+            }
+            None => true, // EOF closes
+        };
+        self.i = save_i;
+        is_close
     }
 
     // If present, consume a block closer. Returns true if one was consumed. (end or xx)
@@ -1445,14 +1581,24 @@ impl<'t> Parser<'t> {
     }
 
     // Require a block closer right here (after optional newlines). Helpful error if missing.
-    fn expect_block_close(&mut self, ctx: &'static str) -> Result<(), String> {
+    fn expect_block_close(&mut self, kw: &str) -> Result<(), String> {
+        use goblin_lexer::TokenKind;
         self.skip_newlines();
-        if self.eat_block_close() {
+        self.eat_layout_until_close(0); // Eat Dedent before checking
+        if self.peek_ident() == Some("end") {
+            let _ = self.eat_ident();
+            Ok(())
+        } else if self.eat_op("xx") {
             Ok(())
         } else {
+            let sp = self
+                .toks
+                .get(self.i)
+                .map(|t| t.span.clone())
+                .unwrap_or_else(|| Span::new("<eof>", 0, 0, 0, 0, 0, 0));
             Err(s_help(
-                "P0206",
-                &format!("You need 'end' or 'xx' (crossbones) to close {}", ctx),
+                "P0212",
+                &format!("This {} block is missing its closing 'end' or 'xx' (crossbones).", kw),
                 "Close the block with 'end' or 'xx' (crossbones).",
             ))
         }
@@ -1460,12 +1606,58 @@ impl<'t> Parser<'t> {
 
     // Optional: also treat semicolons as statement separators when scanning blocks.
     fn skip_stmt_separators(&mut self) {
+        use goblin_lexer::TokenKind as K;
+
         loop {
             match self.toks.get(self.i) {
-                Some(tok) if matches!(tok.kind, TokenKind::Newline) => { self.i += 1; }
-                Some(tok) if matches!(tok.kind, TokenKind::Op(ref s) if s == ";") => { self.i += 1; }
+                // Layout trivia
+                Some(tok) if matches!(tok.kind, K::Newline | K::Indent | K::Dedent) => {
+                    self.i += 1;
+                }
+
+                // Inline/block comments:
+                //  - works whether your lexer has comment kinds OR emits Op("///") / Op("////")
+                Some(tok) if matches!(tok.kind, K::Op(ref s) if s.starts_with("///") || s.starts_with("////")) => {
+                    self.i += 1;
+                }
+
+                // If your lexer DOES have explicit kinds, you can add them too (optional):
+                // Some(tok) if matches!(tok.kind, K::LineComment | K::BlockComment) => { self.i += 1; }
+
                 _ => break,
             }
+        }
+    }
+
+    fn eat_semi_separators(&mut self) {
+        use goblin_lexer::TokenKind as K;
+
+        loop {
+            // Goblin has no ';' statement separators — do NOT consume ';'
+
+            match self.toks.get(self.i) {
+                // Treat layout as separators
+                Some(tok) if matches!(tok.kind, K::Newline | K::Indent | K::Dedent) => {
+                    self.i += 1;
+                    continue;
+                }
+
+                // Treat comments as separators as well (see note above)
+                Some(tok) if matches!(tok.kind, K::Op(ref s) if s.starts_with("///") || s.starts_with("////")) => {
+                    self.i += 1;
+                    continue;
+                }
+
+                // Optional explicit comment kinds:
+                // Some(tok) if matches!(tok.kind, K::LineComment | K::BlockComment) => {
+                //     self.i += 1;
+                //     continue;
+                // }
+
+                _ => {}
+            }
+
+            break;
         }
     }
 
@@ -1584,53 +1776,6 @@ impl<'t> Parser<'t> {
         }
     }
 
-    /// After a header (e.g., `if <expr>`), accept either `{` or a newline-led block.
-    /// Be tolerant if a caller already consumed the `Newline` (and/or `Indent`) tokens.
-    /// We also use spans to detect a line break when tokens were eaten upstream.
-    fn expect_block_start(&mut self) -> Result<(), String> {
-
-        // Style 1: explicit braced body: `{`
-        if self.eat_op("{") {
-            return Ok(());
-        }
-
-        // Style 2: explicit newline, then (optionally) an Indent token
-        if let Some(tok) = self.peek() {
-            if matches!(tok.kind, TokenKind::Newline) {
-                // consume the newline
-                self.i += 1;
-                // consume exactly one optional Indent token if present
-                if let Some(t2) = self.peek() {
-                    if matches!(t2.kind, TokenKind::Indent) {
-                        self.i += 1;
-                    }
-                }
-                return Ok(());
-            }
-        }
-
-        // Style 3: physical line break (span-based), for cases where lexer didn’t emit Newline here
-        let prev = self.toks.get(self.i.saturating_sub(1));
-        let curr = self.toks.get(self.i);
-        if let (Some(p), Some(c)) = (prev, curr) {
-            if c.span.line_start > p.span.line_end {
-                // accept (and consume) a single Indent token if it happens to be here
-                if let Some(t2) = self.peek() {
-                    if matches!(t2.kind, TokenKind::Indent) {
-                        self.i += 1;
-                    }
-                }
-                return Ok(());
-            }
-        }
-
-        Err(s_help(
-            "P0213",
-            "Expected a newline to start this block",
-            "Put '{' on the same line or start a new line and indent the block: if ok { run() }",
-        ))
-    }
-
     /// Consume optional `between` sugar after a subject expression:
     ///   <expr> between <lo> ..  <hi>
     ///   <expr> between <lo> ... <hi>
@@ -1717,32 +1862,31 @@ impl<'t> Parser<'t> {
 
     fn parse_class_decl(&mut self) -> Result<PExpr, String> {
         use goblin_lexer::TokenKind;
-
-        // Accept either a single AtIdent token or '@' followed by Ident.
-        // Capture header start col/line for aligned closer & diagnostics.
-        let (name, hdr_col, hdr_line) = if let Some(t0) = self.peek() {
-            match &t0.kind {
+        let (name, hdr_col) = if let Some(tok0) = self.peek().cloned() {
+            match tok0.kind {
                 TokenKind::AtIdent => {
-                    let nm = t0.value.clone().ok_or_else(|| s_help(
-                        "P0906",
-                        "Expected a class name after '@'",
-                        "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
-                    ))?;
-                    let col  = t0.span.col_start;
-                    let line = t0.span.line_start;
-                    self.i += 1; // consume AtIdent
-                    (nm, col, line)
+                    let nm = tok0.value.clone().unwrap_or_default();
+                    if nm.is_empty() {
+                        return Err(s_help(
+                            "P0906",
+                            "Expected a class name after '@'",
+                            "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
+                        ));
+                    }
+                    self.i += 1; // eat AtIdent
+                    (nm, tok0.span.col_start)
                 }
-                TokenKind::Op(s) if s == "@" => {
-                    let col  = t0.span.col_start;
-                    let line = t0.span.line_start;
-                    self.i += 1; // consume '@'
-                    let nm = self.eat_ident().ok_or_else(|| s_help(
-                        "P0906",
-                        "Expected a class name after '@'",
-                        "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
-                    ))?;
-                    (nm, col, line)
+                TokenKind::Op(ref op) if op == "@" => {
+                    let at_col = tok0.span.col_start;
+                    self.i += 1; // eat '@'
+                    let Some(nm) = self.eat_ident() else {
+                        return Err(s_help(
+                            "P0906",
+                            "Expected a class name after '@'",
+                            "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
+                        ));
+                    };
+                    (nm, at_col)
                 }
                 _ => {
                     return Err(s_help(
@@ -1759,16 +1903,23 @@ impl<'t> Parser<'t> {
                 "Start the class like: @Player = username: \"john\" :: health: 100",
             ));
         };
-
-        // Optional bang after the name: @Class!
-        if self.peek_op("!") { self.i += 1; }
-
-        // Optional (params)
+        if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            return Err(s_help(
+                "P0907",
+                &format!("Class names must start with a capital letter (found '{}')", name),
+                "Rename it to start with uppercase: Player",
+            ));
+        }
+        if self.peek_op("!") {
+            self.i += 1;
+        }
         if self.eat_op("(") {
             if !self.peek_op(")") {
                 loop {
                     let _ = self.parse_coalesce()?;
-                    if self.eat_op(",") { continue; }
+                    if self.eat_op(",") {
+                        continue;
+                    }
                     break;
                 }
             }
@@ -1780,8 +1931,6 @@ impl<'t> Parser<'t> {
                 ));
             }
         }
-
-        // Must have '=' on the header line (parse_module also checks this early)
         if !self.eat_op("=") {
             return Err(s_help(
                 "P0908",
@@ -1789,48 +1938,70 @@ impl<'t> Parser<'t> {
                 "Write it like: @Player = username: \"john\" :: health: 100",
             ));
         }
-
-        // Header fields on the same line
         let fields = self.parse_field_chain_line()?;
         self.eat_semi_separators();
-
-        // Forbid '{' after header; class bodies use layout + ('end'|'xx')
-        self.enforce_inline_brace_policy(hdr_line, "class")?;
-
-        // ---- Body: actions (or nothing) until an ALIGNED closer at hdr_col ----
-        let mut actions = Vec::new();
-
+        let mut actions: Vec<PAction> = Vec::new();
         loop {
-            // Skip separators + layout so we can see an aligned closer
-            self.skip_stmt_separators();
-            while let Some(tok) = self.toks.get(self.i) {
-                match tok.kind {
-                    TokenKind::Indent | TokenKind::Dedent | TokenKind::Newline => { self.i += 1; }
-                    _ => break,
+            self.skip_newlines();
+            if self.eat_layout_until_close(hdr_col) || self.peek_block_close() {
+                if self.peek_block_close() {
+                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if col != hdr_col {
+                        let closer = self.peek_ident().unwrap_or("}");
+                        return Err(s_help(
+                            "P0222",
+                            &format!(
+                                "This '{}' closer is misaligned: expected column {}, found column {}",
+                                closer, hdr_col, col
+                            ),
+                            "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the class header.",
+                        ));
+                    }
+                    self.expect_block_close("class")?;
                 }
+                break;
             }
-
             if self.is_eof() {
                 return Err(s_help(
                     "P0909",
-                    &format!("I reached the end of the file, but the class '{}' is still open (missing 'end' or 'xx')", name),
+                    &format!(
+                        "I reached the end of the file, but the class '{}' is still open (missing 'end' or 'xx')",
+                        name
+                    ),
                     "Close the class with 'end' or 'xx' (crossbones): @Player = username: \"john\" :: health: 100 end",
                 ));
             }
-
-            // Aligned closer for the class itself
-            if self.peek_block_close() && self.toks[self.i].span.col_start == hdr_col {
-                let _ = self.eat_block_close();
-                break;
+            if let Some(tok) = self.peek() {
+                if tok.span.col_start == hdr_col {
+                    let is_act_kw = matches!(&tok.kind, TokenKind::Act | TokenKind::Action)
+                        || (matches!(&tok.kind, TokenKind::Ident)
+                            && (tok.value.as_deref() == Some("act") || tok.value.as_deref() == Some("action")));
+                    if !is_act_kw {
+                        break;
+                    }
+                }
             }
-
-            // Expect an action header next
-            let act_tok = match self.peek() { Some(t) => t.clone(), None => break };
+            let act_tok = match self.peek() {
+                Some(t) => t.clone(),
+                None => break,
+            };
             let kw = match &act_tok.kind {
-                TokenKind::Act => { self.i += 1; "act" }
-                TokenKind::Action => { self.i += 1; "action" }
-                TokenKind::Ident if act_tok.value.as_deref() == Some("act") => { let _ = self.eat_ident(); "act" }
-                TokenKind::Ident if act_tok.value.as_deref() == Some("action") => { let _ = self.eat_ident(); "action" }
+                TokenKind::Act => {
+                    self.i += 1;
+                    "act"
+                }
+                TokenKind::Action => {
+                    self.i += 1;
+                    "action"
+                }
+                TokenKind::Ident if act_tok.value.as_deref() == Some("act") => {
+                    let _ = self.eat_ident();
+                    "act"
+                }
+                TokenKind::Ident if act_tok.value.as_deref() == Some("action") => {
+                    let _ = self.eat_ident();
+                    "action"
+                }
                 _ => {
                     return Err(s_help(
                         "P0910",
@@ -1839,47 +2010,59 @@ impl<'t> Parser<'t> {
                     ));
                 }
             };
-
-            // Record action header position (for aligned action closer)
             let act_line = act_tok.span.line_start;
-            let act_col  = act_tok.span.col_start;
-
-            // Parse rest of action header (name/params or single-line '= expr')
+            let act_col = act_tok.span.col_start;
             let action = self.parse_action_after_keyword(kw)?;
-            if action.is_single {
+            self.enforce_inline_brace_policy(act_line, "action")?;
+            if !action.body.is_empty() {
                 actions.push(action);
                 continue;
             }
-
-            // Forbid same-line '{' for action, and parse its body until its own aligned closer
-            self.enforce_inline_brace_policy(act_line, kw)?;
-            let _ = self.parse_stmt_block_until(|p| {
-                p.peek_block_close() && p.toks[p.i].span.col_start == act_col
+            let body = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+                p.skip_newlines();
+                p.eat_layout_until_close(act_col)
+                    || (p.peek_block_close() && p.toks[p.i].span.col_start == act_col)
             })?;
-
-            // Require & consume the aligned action closer
             self.skip_stmt_separators();
-            if self.peek_block_close() {
-                let col = self.toks[self.i].span.col_start;
+            if self.block_closed_hard {
+                self.block_closed_hard = false;
+            } else if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != act_col {
                     return Err(s_help(
                         "P0222",
-                        &format!("This closer is misaligned: expected column {}, found column {}", act_col, col),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the action header.",
+                        &format!(
+                            "This closer is misaligned: expected column {}, found column {}",
+                            act_col, col
+                        ),
+                        "Align the closer with its header (same column), placing 'end' or 'xx' directly under the action header.",
                     ));
                 }
-                let _ = self.eat_block_close();
-            } else {
+                self.expect_block_close("action")?;
+            } else if !self.eat_layout_until_close(act_col) {
                 return Err(s_help(
                     "P0212",
-                    "This block is missing its closing 'end' or 'xx' (crossbones).",
+                    "This action block is missing its closing 'end' or 'xx' (crossbones).",
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-
-            actions.push(action);
+            // Convert ast::Stmt to PExpr for PAction::body
+            actions.push(PAction {
+                name: action.name,
+                params: action.params,
+                body: body
+                    .into_iter()
+                    .map(|stmt| match stmt {
+                        ast::Stmt::Expr(expr) => match expr {
+                            ast::Expr::Ident(name, _) => PExpr::Ident(name), // Ignore Span
+                            _ => PExpr::Ident("expr".into()), // Fallback for other ast::Expr variants
+                        },
+                        _ => PExpr::Ident("stmt".into()), // Fallback for non-expression statements
+                    })
+                    .collect(),
+                is_single: false,
+            });
         }
-
         Ok(PExpr::ClassDecl { name, fields, actions })
     }
 
@@ -1977,23 +2160,22 @@ impl<'t> Parser<'t> {
     }
 
     #[inline]
-    fn is_expr_start(kind: &TokenKind) -> bool {
+    fn is_expr_start(k: &goblin_lexer::TokenKind) -> bool {
+        use goblin_lexer::TokenKind;
 
-        match kind {
-            // common expr/stmt starters
-            TokenKind::Ident
-            | TokenKind::Int
-            | TokenKind::Float
-            | TokenKind::Money
-            | TokenKind::String => true,
+        match k {
+            // identifiers (including capitalized) and @Ident can begin expressions
+            TokenKind::Ident | TokenKind::AtIdent => true,
 
-            // grouping / literals that can begin expr-stmts
-            TokenKind::Op(op) if op == "(" || op == "[" || op == "{" || op == "@" => true,
+            // grouping / collection literals
+            TokenKind::Op(op) if op == "(" || op == "[" || op == "{" => true,
 
-            // keyword tokens that begin statements
-            TokenKind::Act | TokenKind::Action => true,
+            // never starts an expression
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof => false,
+            TokenKind::Op(op) if op == "}" || op == "xx" || op == ";" => false,
 
-            _ => false,
+            // let the expression parser decide the rest (numbers/strings/etc. as your lexer emits them)
+            _ => true,
         }
     }
 
@@ -2063,8 +2245,11 @@ impl<'t> Parser<'t> {
         }
 
         // THEN body — hand control straight to the block reader
+        // FIXED: Also check for aligned 'end' or 'xx' as stop conditions
         let _then_body = self.parse_stmt_block_until(|p| {
-            p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
+            p.peek_ident_at_col("elif", if_col) || 
+            p.peek_ident_at_col("else", if_col) ||
+            (p.peek_block_close() && p.toks.get(p.i).map_or(false, |t| t.span.col_start == if_col))
         })?;
 
         // zero or more ELIF blocks
@@ -2075,7 +2260,9 @@ impl<'t> Parser<'t> {
                 let _ = self.eat_ident();       // 'elif'
                 let _elif_cond = self.parse_assign()?;
                 let _elif_body = self.parse_stmt_block_until(|p| {
-                    p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
+                    p.peek_ident_at_col("elif", if_col) || 
+                    p.peek_ident_at_col("else", if_col) ||
+                    (p.peek_block_close() && p.toks.get(p.i).map_or(false, |t| t.span.col_start == if_col))
                 })?;
                 elif_count += 1;
                 continue;
@@ -2088,8 +2275,25 @@ impl<'t> Parser<'t> {
         self.eat_semi_separators();
         if self.peek_ident_at_col("else", if_col) {
             let _ = self.eat_ident(); // 'else'
+            // For the final else block, use parse_stmt_block which expects to consume the closer
             let _else_body = self.parse_stmt_block()?; // to 'end' / '}' / dedent
             has_else = true;
+        } else {
+            // No else block, so we need to consume the aligned closer ourselves
+            self.skip_stmt_separators();
+            if self.block_closed_hard {
+                // The then/elif block already consumed the closer
+                self.block_closed_hard = false;
+            } else if self.peek_ident_at_col("end", if_col) || 
+                      (self.peek_op("xx") && self.toks.get(self.i).map_or(false, |t| t.span.col_start == if_col)) {
+                let _ = self.eat_block_close();
+            } else {
+                return Err(s_help(
+                    "P0212",
+                    "This 'if' block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
         }
 
         // Placeholder node so parse completes without dedicated If AST (your existing pattern)
@@ -2106,18 +2310,16 @@ impl<'t> Parser<'t> {
     // It removes inline `{ ... }` mode, **does not consume** the aligned closer,
     // and sets `block_closed_hard` so the caller knows a hard closer is present.
 
+    // REPLACE the existing function with this one in lib.rs
     fn parse_stmt_block_until<F>(&mut self, mut stop: F) -> Result<Vec<ast::Stmt>, String>
     where
-        F: FnMut(&Parser<'_>) -> bool,
+        F: FnMut(&mut Parser<'_>) -> bool,
     {
         use goblin_lexer::TokenKind;
-
         let mut ended_hard = false;
-
         // ===== INLINE BRACE MODE: { ... } must be single-line
         if self.eat_op("{") {
             let brace_line = if self.i > 0 { self.toks[self.i - 1].span.line_start } else { 0 };
-
             // `{}` allowed only if `}` is on the same line
             if self.peek_op("}") {
                 let close_line = self.toks[self.i].span.line_start;
@@ -2132,41 +2334,14 @@ impl<'t> Parser<'t> {
                 self.block_closed_hard = false;
                 return Ok(Vec::new());
             }
-
-            // first body token must share the line with '{'
-            if let Some(tok) = self.toks.get(self.i) {
-                if tok.span.line_start != brace_line {
-                    return Err(s_help(
-                        "P0207",
-                        "Inline braced blocks must be on a single line",
-                        "Remove the newline or use indentation and close with 'end' or 'xx' (crossbones): { do() }",
-                    ));
-                }
-            } else {
-                return Err(s_help(
-                    "P0214",
-                    "I reached the end of the file inside an inline braced block",
-                    "Finish the block on the same line with a statement and '}': { run() }",
-                ));
-            }
-
-            // exactly one statement/expression
+            // parse exactly one stmt, require the `}` on the same line
             let mut out = Vec::new();
             out.push(self.parse_stmt()?);
-
-            // require same-line '}'
-            if self.peek_ident() == Some("end") || self.peek_ident() == Some("xx") {
-                return Err(s_help(
-                    "P0215",
-                    "Braced blocks close with '}', not a layout closer",
-                    "Close it with '}': if ok { run() }",
-                ));
-            }
             if !self.peek_op("}") {
                 return Err(s_help(
-                    "P0216",
-                    "Expected '}' immediately after this inline braced statement",
-                    "Close it on the same line: { run() }",
+                    "P0207",
+                    "Inline braced blocks must be on a single line",
+                    "Place '}' on the same line as '{': { do() }",
                 ));
             }
             let close_line = self.toks[self.i].span.line_start;
@@ -2181,37 +2356,32 @@ impl<'t> Parser<'t> {
             self.block_closed_hard = false;
             return Ok(out);
         }
-
         // ===== LAYOUT MODE =====
-        // need a newline to start the block
+        // need a newline to start the block (or a physical line break)
         let mut saw_nl = false;
         while let Some(tok) = self.toks.get(self.i) {
-            if matches!(tok.kind, TokenKind::Newline) { self.i += 1; saw_nl = true; } else { break; }
-        }
-        if !saw_nl {
-            if let (Some(prev), Some(curr)) = (self.toks.get(self.i.saturating_sub(1)), self.toks.get(self.i)) {
-                if curr.span.line_start > prev.span.line_end { saw_nl = true; }
+            if matches!(tok.kind, TokenKind::Newline) {
+                self.i += 1;
+                saw_nl = true;
+            } else {
+                break;
             }
         }
         if !saw_nl {
-            return Err(s_help(
-                "P0213",
-                "Expected a newline to start this block",
-                "Put '{' on the same line or start a new line and indent the block: if ok { run() }",
-            ));
+            if let (Some(prev), Some(curr)) = (self.toks.get(self.i.saturating_sub(1)), self.toks.get(self.i)) {
+                if curr.span.line_start <= prev.span.line_end {
+                    return Err(s_help(
+                        "P0210",
+                        "Expected indentation after this header",
+                        "Put '{' on the same line or indent the next line: if ok { run() }",
+                    ));
+                }
+            }
         }
-
-        // compute header line/col min (used only for helpful messages)
-        let header_line = if let Some(prev) = self.toks.get(self.i.saturating_sub(1)) {
-            prev.span.line_start
-        } else { 0 };
-
-        // enter layout: prefer real Indent; otherwise soft by column
         let mut out = Vec::new();
         let mut depth: usize = 0;
         let mut soft_mode = false;
         let mut soft_cols: Vec<u32> = Vec::new();
-
         if let Some(tok) = self.toks.get(self.i) {
             if matches!(tok.kind, TokenKind::Indent) {
                 self.i += 1;
@@ -2221,15 +2391,22 @@ impl<'t> Parser<'t> {
                 let mut header_col_min = u32::MAX;
                 let mut k = self.i.saturating_sub(1);
                 while let Some(t) = self.toks.get(k) {
-                    if t.span.line_start == header_line {
-                        if t.span.col_start < header_col_min { header_col_min = t.span.col_start; }
-                        if k == 0 { break; }
+                    if t.span.line_start == body_line.saturating_sub(1) {
+                        if t.span.col_start < header_col_min {
+                            header_col_min = t.span.col_start;
+                        }
+                        if k == 0 {
+                            break;
+                        }
                         k -= 1;
-                    } else { break; }
+                    } else {
+                        break;
+                    }
                 }
-                if header_col_min == u32::MAX { header_col_min = 0; }
-
-                if body_line > header_line && tok.span.col_start > header_col_min {
+                if header_col_min == u32::MAX {
+                    header_col_min = 0;
+                }
+                if body_line > 0 && tok.span.col_start > header_col_min {
                     depth = 1;
                     soft_mode = true;
                     soft_cols.push(tok.span.col_start);
@@ -2248,7 +2425,6 @@ impl<'t> Parser<'t> {
                 "Close the block with 'end' or 'xx' (crossbones).",
             ));
         }
-
         loop {
             if self.is_eof() {
                 return Err(s_help(
@@ -2257,15 +2433,28 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-
+            // IMPORTANT: Check the stop condition BEFORE processing indentation
+            if stop(self) {
+                ended_hard = false; // we did not consume a closer here
+                break;
+            }
             // ----- Tokenized indentation first
             if let Some(tok) = self.toks.get(self.i) {
                 match tok.kind {
-                    TokenKind::Indent => { self.i += 1; depth += 1; continue; }
+                    TokenKind::Indent => {
+                        self.i += 1;
+                        depth += 1;
+                        continue;
+                    }
                     TokenKind::Dedent => {
                         let mut ded = 0usize;
                         while let Some(t2) = self.toks.get(self.i) {
-                            if matches!(t2.kind, TokenKind::Dedent) { self.i += 1; ded += 1; } else { break; }
+                            if matches!(t2.kind, TokenKind::Dedent) {
+                                self.i += 1;
+                                ded += 1;
+                            } else {
+                                break;
+                            }
                         }
                         if ded > depth {
                             return Err(s_help(
@@ -2275,19 +2464,23 @@ impl<'t> Parser<'t> {
                             ));
                         }
                         depth -= ded;
-
                         if depth == 0 {
                             // allow blank lines
                             while let Some(t) = self.toks.get(self.i) {
-                                if matches!(t.kind, TokenKind::Newline) { self.i += 1; } else { break; }
+                                if matches!(t.kind, TokenKind::Newline) {
+                                    self.i += 1;
+                                } else {
+                                    break;
+                                }
                             }
-                            if self.peek_block_close() {
-                                let _ = self.eat_block_close();
-                                ended_hard = true; // layout closed explicitly
+                            // Check stop condition again after dedent
+                            if stop(self) {
+                                ended_hard = false;
                                 break;
                             }
-                            if stop(self) {
-                                ended_hard = false; // stopped by tail
+                            if self.peek_block_close() {
+                                // DO NOT consume; leave for caller to align & eat
+                                ended_hard = false;
                                 break;
                             }
                             return Err(s_help(
@@ -2301,14 +2494,17 @@ impl<'t> Parser<'t> {
                     _ => {}
                 }
             }
-
             // ----- Soft indentation by column
             if soft_mode {
                 let mut saw_lb = false;
                 while let Some(tok) = self.toks.get(self.i) {
-                    if matches!(tok.kind, TokenKind::Newline) { self.i += 1; saw_lb = true; } else { break; }
+                    if matches!(tok.kind, TokenKind::Newline) {
+                        self.i += 1;
+                        saw_lb = true;
+                    } else {
+                        break;
+                    }
                 }
-
                 if saw_lb {
                     if self.is_eof() {
                         return Err(s_help(
@@ -2317,22 +2513,21 @@ impl<'t> Parser<'t> {
                             "Close the block with 'end' or 'xx' (crossbones).",
                         ));
                     }
-
                     // compute next token's col (if any)
                     if let Some(next) = self.toks.get(self.i) {
                         let next_col = next.span.col_start;
-
                         // Dedent(s) by column
                         while depth > 0 && !soft_cols.is_empty() && next_col < *soft_cols.last().unwrap() {
                             soft_cols.pop();
                             depth -= 1;
                             if depth == 0 {
-                                if self.peek_block_close() {
-                                    let _ = self.eat_block_close();
-                                    ended_hard = true;
+                                // Check stop condition after soft dedent
+                                if stop(self) {
+                                    ended_hard = false;
                                     break;
                                 }
-                                if stop(self) {
+                                if self.peek_block_close() {
+                                    // DO NOT consume; leave for caller to align & eat
                                     ended_hard = false;
                                     break;
                                 }
@@ -2343,21 +2538,8 @@ impl<'t> Parser<'t> {
                                 ));
                             }
                         }
-
-                        if depth == 0 {
-                            if self.peek_block_close() {
-                                let _ = self.eat_block_close();
-                                ended_hard = true;
-                                break;
-                            }
-                            if stop(self) {
-                                ended_hard = false;
-                                break;
-                            }
-                        }
-
-                        // Indent by column
-                        if depth > 0 && (soft_cols.is_empty() || next_col > *soft_cols.last().unwrap()) {
+                        // Soft indent of a new nested block
+                        if next_col > *soft_cols.last().unwrap_or(&0) {
                             soft_cols.push(next_col);
                             depth += 1;
                             continue;
@@ -2365,12 +2547,16 @@ impl<'t> Parser<'t> {
                     }
                 }
             }
-
+            // Check stop condition one more time before parsing a statement
+            if stop(self) {
+                ended_hard = false;
+                break;
+            }
             // ----- Parse exactly one statement in the body
             out.push(self.parse_stmt()?);
             self.skip_stmt_separators();
         }
-
+        // We never consume closers here
         self.block_closed_hard = ended_hard;
         Ok(out)
     }
@@ -2552,45 +2738,67 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
-            // First: dedicated keyword tokens (some lexers emit these)
-            if let Some(t) = self.peek() {
-                match &t.kind {
-                    TokenKind::Act    => { self.i += 1; return self.parse_free_action("act"); }
-                    TokenKind::Action => { self.i += 1; return self.parse_free_action("action"); }
-                    _ => {}
+        use goblin_lexer::TokenKind;
+        if let Some(t) = self.peek() {
+            match &t.kind {
+                TokenKind::Act => {
+                    self.i += 1;
+                    return self.parse_free_action("act");
                 }
+                TokenKind::Action => {
+                    self.i += 1;
+                    return self.parse_free_action("action");
+                }
+                _ => {}
             }
-
-            // Orphan / top-level tail guard
-            if let Some(k) = self.peek_ident() {
-                if k == "elif" || k == "else" {
-                    let col = self.toks[self.i].span.col_start;
+        }
+        if let Some(t0) = self.peek().cloned() {
+            let is_at_ident = matches!(&t0.kind, TokenKind::AtIdent);
+            let is_op_at = matches!(&t0.kind, TokenKind::Op(op) if op == "@");
+            if is_at_ident || is_op_at {
+                let class_line = t0.span.line_start;
+                self.enforce_inline_brace_policy(class_line, "class")?;
+                let pe = self.parse_class_decl()?;
+                let expr = self.lower_expr(pe);
+                return Ok(ast::Stmt::Expr(expr));
+            }
+        }
+        if let Some(k) = self.peek_ident() {
+            if k == "elif" || k == "else" {
+                let col = self.toks[self.i].span.col_start;
+                return Err(s_help(
+                    "P0225",
+                    &format!("Found '{}' at column {} without a matching 'if'", k, col),
+                    "If this is a tail, align it with the 'if' header; otherwise remove it: put 'elif' at the same column as 'if'",
+                ));
+            }
+        }
+        if self.peek_ident() == Some("if") {
+            let if_tok_i = self.i;
+            let if_line = self.toks[if_tok_i].span.line_start;
+            let if_col = self.toks[if_tok_i].span.col_start;
+            let _ = self.eat_ident(); // 'if'
+            let _cond = self.parse_coalesce()?; // condition
+            self.enforce_inline_brace_policy(if_line, "if")?;
+            let _then = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+                p.skip_newlines();
+                p.eat_layout_until_close(if_col)
+                    || p.peek_ident_at_col("elif", if_col)
+                    || p.peek_ident_at_col("else", if_col)
+                    || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
+            })?;
+            let mut else_seen = false;
+            if self.block_closed_hard {
+                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
                     return Err(s_help(
-                        "P0225",
-                        &format!("Found '{}' at column {} without a matching 'if'", k, col),
-                        "If this is a tail, align it with the 'if' header; otherwise remove it: put 'elif' at the same column as 'if'",
+                        "P0226",
+                        "This 'elif' or 'else' comes after the 'if' block was already closed",
+                        "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
                     ));
                 }
             }
-
-            // IF (layout-only; no opening '{' allowed)
-            if self.peek_ident() == Some("if") {
-                let if_tok_i = self.i;
-                let if_line  = self.toks[if_tok_i].span.line_start;
-                let if_col   = self.toks[if_tok_i].span.col_start;
-
-                let _ = self.eat_ident();                  // 'if'
-                let _cond = self.parse_coalesce()?;        // condition (no assignment in header)
-                self.enforce_inline_brace_policy(if_line, "if")?;
-
-                // THEN block: layout-only until aligned elif/else or hard closer ('}' or 'end'/'xx')
-                let _then = self.parse_stmt_block_until(|p| {
-                    p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
-                })?;
-
-                let mut else_seen = false;
-
-                // If the 'then' block hard-closed, tails are not allowed
+            loop {
+                self.skip_stmt_separators();
                 if self.block_closed_hard {
                     if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
                         return Err(s_help(
@@ -2600,89 +2808,26 @@ impl<'t> Parser<'t> {
                         ));
                     }
                 }
-
-                // Zero or more aligned 'elif' blocks
-                loop {
-                    self.skip_stmt_separators();
-
-                    if self.block_closed_hard {
-                        if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                            return Err(s_help(
-                                "P0226",
-                                "This 'elif' or 'else' comes after the 'if' block was already closed",
-                                "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
-                            ));
-                        }
-                    }
-
-                    if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
-                        return Err(s_help(
-                            "P0227",
-                            "You can only have one 'else' in an 'if' block",
-                            "Remove the extra 'else': if ok { run() } else { fallback() }",
-                        ));
-                    }
-
-                    if self.peek_ident_at_col("elif", if_col) {
-                        let elif_tok_i = self.i;
-                        let elif_line  = self.toks[elif_tok_i].span.line_start;
-
-                        let _ = self.eat_ident();           // 'elif'
-                        let _c = self.parse_coalesce()?;    // condition
-                        self.enforce_inline_brace_policy(elif_line, "elif")?;
-
-                        let _b = self.parse_stmt_block_until(|p| {
-                            p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
-                        })?;
-
-                        if self.block_closed_hard {
-                            if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                                return Err(s_help(
-                                    "P0226",
-                                    "This 'elif' or 'else' comes after the 'if' block was already closed",
-                                    "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
-                                ));
-                            }
-                        }
-                        continue;
-                    }
-
-                    break;
-                }
-
-                // Optional aligned 'else' block
-                self.skip_stmt_separators();
-
-                if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
+                if else_seen && (self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col)) {
                     return Err(s_help(
-                        "P0226",
-                        "This 'elif' or 'else' comes after the 'if' block was already closed",
-                        "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
+                        "P0227",
+                        "You can only have one 'else' in an 'if' block",
+                        "Remove the extra 'else': if ok { run() } else { fallback() }",
                     ));
                 }
-
-                if self.peek_ident_at_col("else", if_col) {
-                    else_seen = true;
-
-                    let else_tok_i = self.i;
-                    let else_line  = self.toks[else_tok_i].span.line_start;
-
-                    let _ = self.eat_ident();               // 'else'
-                    self.enforce_inline_brace_policy(else_line, "else")?;
-
-                    let _else = self.parse_stmt_block_until(|p| {
-                        p.peek_ident_at_col("elif", if_col) || p.peek_ident_at_col("else", if_col)
+                if self.peek_ident_at_col("elif", if_col) {
+                    let elif_tok_i = self.i;
+                    let elif_line = self.toks[elif_tok_i].span.line_start;
+                    let _ = self.eat_ident(); // 'elif'
+                    let _c = self.parse_coalesce()?; // condition
+                    self.enforce_inline_brace_policy(elif_line, "elif")?;
+                    let _b = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+                        p.skip_newlines();
+                        p.eat_layout_until_close(if_col)
+                            || p.peek_ident_at_col("elif", if_col)
+                            || p.peek_ident_at_col("else", if_col)
+                            || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
                     })?;
-
-                    self.skip_stmt_separators();
-                    if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
-                        return Err(s_help(
-                            "P0227",
-                            "You can only have one 'else' in an 'if' block",
-                            "Remove the extra 'else': if ok { run() } else { fallback() }",
-                        ));
-                    }
-
                     if self.block_closed_hard {
                         if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
                             return Err(s_help(
@@ -2692,132 +2837,207 @@ impl<'t> Parser<'t> {
                             ));
                         }
                     }
+                    continue;
                 }
-
-                let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
-                let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
-                return Ok(ast::Stmt::Expr(expr));
+                break;
             }
-
-            // WHILE (layout-only; no opening '{' allowed)
-            if self.peek_ident() == Some("while") {
-                let while_tok_i = self.i;
-                let while_line  = self.toks[while_tok_i].span.line_start;
-
-                let _ = self.eat_ident();                   // 'while'
-                let _cond = self.parse_coalesce()?;         // condition
-                self.enforce_inline_brace_policy(while_line, "while")?;
-                let _body = self.parse_stmt_block_until(|_| false)?;
-
-                let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
-                let expr = Self::lower_expr_preview(PExpr::Ident("while_block".into()), sp);
-                return Ok(ast::Stmt::Expr(expr));
+            self.skip_stmt_separators();
+            if self.block_closed_hard && self.peek_ident_at_col("else", if_col) {
+                return Err(s_help(
+                    "P0226",
+                    "This 'elif' or 'else' comes after the 'if' block was already closed",
+                    "Move it before the '}' or 'end'/'xx' that closes the 'if': if ok { run() } elif other { handle() } end",
+                ));
             }
-
-            // FOR (layout-only; no opening '{' allowed)
-            if self.peek_ident() == Some("for") {
-                let for_tok_i = self.i;
-                let for_line  = self.toks[for_tok_i].span.line_start;
-                let for_col   = self.toks[for_tok_i].span.col_start;
-
-                let _ = self.eat_ident(); // 'for'
-                self.skip_newlines();
-
-                // Loop variable (simple identifier for now)
-                let _loop_var = match self.peek() {
-                    Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Ident) => {
-                        let v = t.value.clone().unwrap_or_default();
-                        self.i += 1;
-                        v
+            if self.peek_ident_at_col("else", if_col) {
+                else_seen = true;
+                let else_tok_i = self.i;
+                let else_line = self.toks[else_tok_i].span.line_start;
+                let _ = self.eat_ident(); // 'else'
+                self.enforce_inline_brace_policy(else_line, "else")?;
+                let _else = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+                    p.skip_newlines();
+                    p.eat_layout_until_close(if_col)
+                        || p.peek_ident_at_col("elif", if_col)
+                        || p.peek_ident_at_col("else", if_col)
+                        || (p.peek_block_close() && p.toks[p.i].span.col_start == if_col)
+                })?;
+                self.skip_stmt_separators();
+                if self.peek_ident_at_col("elif", if_col) || self.peek_ident_at_col("else", if_col) {
+                    return Err(s_help(
+                        "P0227",
+                        "You can only have one 'else' in an 'if' block",
+                        "Remove the extra 'else': if ok { run() } else { fallback() }",
+                    ));
+                }
+            }
+            if !self.block_closed_hard && !else_seen {
+                self.skip_stmt_separators();
+                if self.peek_block_close() {
+                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if col != if_col {
+                        let closer = self.peek_ident().unwrap_or("}");
+                        return Err(s_help(
+                            "P0222",
+                            &format!(
+                                "This '{}' closer is misaligned: expected column {}, found column {}",
+                                closer, if_col, col
+                            ),
+                            "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the 'if' header.",
+                        ));
                     }
-                    _ => return Err(s_help(
+                    self.expect_block_close("if")?;
+                } else if !self.eat_layout_until_close(if_col) {
+                    return Err(s_help(
+                        "P0212",
+                        "This 'if' block is missing its closing 'end' or 'xx' (crossbones).",
+                        "Close the block with 'end' or 'xx' (crossbones).",
+                    ));
+                }
+            }
+            let sp = Self::span_from_tokens(self.toks, if_tok_i, self.i);
+            let expr = Self::lower_expr_preview(PExpr::Ident("if_block".into()), sp);
+            return Ok(ast::Stmt::Expr(expr));
+        }
+        if self.peek_ident() == Some("while") {
+            let while_tok_i = self.i;
+            let while_line = self.toks[while_tok_i].span.line_start;
+            let while_col = self.toks[while_tok_i].span.col_start;
+            let _ = self.eat_ident(); // 'while'
+            let _cond = self.parse_coalesce()?; // condition
+            self.enforce_inline_brace_policy(while_line, "while")?;
+            let _body = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+                p.skip_newlines();
+                p.eat_layout_until_close(while_col) || (p.peek_block_close() && p.toks[p.i].span.col_start == while_col)
+            })?;
+            self.skip_stmt_separators();
+            if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if col != while_col {
+                    let closer = self.peek_ident().unwrap_or("}");
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, while_col, col
+                        ),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the 'while' header.",
+                    ));
+                }
+                self.expect_block_close("while")?;
+            } else if !self.eat_layout_until_close(while_col) {
+                return Err(s_help(
+                    "P0212",
+                    "This 'while' block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
+            let sp = Self::span_from_tokens(self.toks, while_tok_i, self.i);
+            let expr = Self::lower_expr_preview(PExpr::Ident("while_block".into()), sp);
+            return Ok(ast::Stmt::Expr(expr));
+        }
+        if self.peek_ident() == Some("for") {
+            let for_tok_i = self.i;
+            let for_line = self.toks[for_tok_i].span.line_start;
+            let for_col = self.toks[for_tok_i].span.col_start;
+            let _ = self.eat_ident(); // 'for'
+            self.skip_newlines();
+            let _loop_var = match self.peek() {
+                Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Ident) => {
+                    let v = t.value.clone().unwrap_or_default();
+                    self.i += 1;
+                    v
+                }
+                _ => {
+                    return Err(s_help(
                         "P0802",
                         "Expected a loop variable after 'for'",
                         "Write it like: for item in items",
-                    )),
-                };
-
-                self.skip_newlines();
-
-                // 'in'
-                if self.peek_ident() != Some("in") {
-                    return Err(s_help(
-                        "P0801",
-                        "Expected 'in' after the loop variable in a 'for' header",
-                        "Write it like: for item in items",
-                    ));
-                }
-                let _ = self.eat_ident(); // 'in'
-                self.skip_newlines();
-
-                // Iterable expression (no assignment in header)
-                let _iter_expr = self.parse_coalesce()?;
-
-                // Forbid '{' after header (same line or next line) and require newline before block
-                self.enforce_inline_brace_policy(for_line, "for")?;
-
-                // THEN block: layout-only until aligned 'end' (or hard closer '}'/'end'/'xx')
-                let _body = self.parse_stmt_block_until(|p| p.peek_ident_at_col("end", for_col))?;
-
-                // Consume aligned 'end' if present (layout closer)
-                if self.peek_ident_at_col("end", for_col) {
-                    let _ = self.eat_ident(); // 'end'
-                }
-
-                // Placeholder lowering
-                let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
-                let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
-                return Ok(ast::Stmt::Expr(expr));
-            }
-
-            // free-arrow action: a >> foo : a, b, c
-            if self.peek_ident() == Some("a") && self.peek_op(">>") {
-                let _ = self.eat_ident();  // 'a'
-                let _ = self.eat_op(">>"); // >>
-                let name = self.eat_ident().ok_or(s_help(
-                    "P0504",
-                    "Expected an action name after 'a >>'",
-                    "Write it like: a >> run",
-                ))?;
-                let params = if self.eat_op(":") { self.parse_args_colon()? } else { Vec::new() };
-                return Ok(ast::Stmt::Expr(self.lower_expr(PExpr::FreeCall(name, params))));
-            }
-
-            // ---- NO-BRACE guard for @Class / @Class! headers (reuse existing policy) ----
-            if let Some(t0) = self.peek() {
-                if matches!(t0.kind, goblin_lexer::TokenKind::AtIdent) {
-                    let class_line = t0.span.line_start;
-                    // Reuse policy used by if/elif/while/for
-                    self.enforce_inline_brace_policy(class_line, "class")?;
-                }
-            }
-
-            // Fallback when lexer emits Ident("act"/"action")
-            if let Some(kw) = self.peek_ident() {
-                if kw == "act" || kw == "action" {
-                    let kw = self.eat_ident().unwrap();
-                    return self.parse_free_action(&kw);
-                }
-            }
-
-            // Statement boundary: allow assignment here (with progress-on-error)
-            let prev = self.in_stmt; self.in_stmt = true;
-            let stmt_start = self.i;
-            let expr_pe = match self.parse_assign() {
-                Ok(e) => e,
-                Err(e) => {
-                    // If parsing didn't consume anything, force progress so caller can't re-enter forever.
-                    if self.i == stmt_start && !self.is_eof() { self.i += 1; }
-                    self.in_stmt = prev;
-                    return Err(e);
+                    ))
                 }
             };
-            self.in_stmt = prev;
-
-            let expr = self.lower_expr(expr_pe);
-            Ok(ast::Stmt::Expr(expr))
+            self.skip_newlines();
+            if self.peek_ident() != Some("in") {
+                return Err(s_help(
+                    "P0801",
+                    "Expected 'in' after the loop variable in a 'for' header",
+                    "Write it like: for item in items",
+                ));
+            }
+            let _ = self.eat_ident(); // 'in'
+            self.skip_newlines();
+            let _iter_expr = self.parse_coalesce()?;
+            self.enforce_inline_brace_policy(for_line, "for")?;
+            let _body = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+                p.skip_newlines();
+                p.eat_layout_until_close(for_col) || (p.peek_block_close() && p.toks[p.i].span.col_start == for_col)
+            })?;
+            self.skip_stmt_separators();
+            if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if col != for_col {
+                    let closer = self.peek_ident().unwrap_or("}");
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, for_col, col
+                        ),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the 'for' header.",
+                    ));
+                }
+                self.expect_block_close("for")?;
+            } else if !self.eat_layout_until_close(for_col) {
+                return Err(s_help(
+                    "P0212",
+                    "This 'for' block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
+            let sp = Self::span_from_tokens(self.toks, for_tok_i, self.i);
+            let expr = Self::lower_expr_preview(PExpr::Ident("for_block".into()), sp);
+            return Ok(ast::Stmt::Expr(expr));
         }
-
+        if self.peek_ident() == Some("a") && self.peek_op(">>") {
+            let _ = self.eat_ident(); // 'a'
+            let _ = self.eat_op(">>"); // >>
+            let name = self.eat_ident().ok_or(s_help(
+                "P0504",
+                "Expected an action name after 'a >>'",
+                "Write it like: a >> run",
+            ))?;
+            let params = if self.eat_op(":") { self.parse_args_colon()? } else { Vec::new() };
+            return Ok(ast::Stmt::Expr(self.lower_expr(PExpr::FreeCall(name, params))));
+        }
+        if let Some(t0) = self.peek() {
+            if matches!(t0.kind, goblin_lexer::TokenKind::AtIdent) {
+                let class_line = t0.span.line_start;
+                self.enforce_inline_brace_policy(class_line, "class")?;
+            }
+        }
+        if let Some(kw) = self.peek_ident() {
+            if kw == "act" || kw == "action" {
+                let kw = self.eat_ident().unwrap();
+                return self.parse_free_action(&kw);
+            }
+        }
+        let prev = self.in_stmt;
+        self.in_stmt = true;
+        let stmt_start = self.i;
+        let expr_pe = match self.parse_assign() {
+            Ok(e) => e,
+            Err(e) => {
+                if self.i == stmt_start && !self.is_eof() {
+                    self.i += 1;
+                }
+                self.in_stmt = prev;
+                return Err(e);
+            }
+        };
+        self.in_stmt = prev;
+        let expr = self.lower_expr(expr_pe);
+        Ok(ast::Stmt::Expr(expr))
+    }
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {
         let t = match self.bump() {
             Some(t) => t,
@@ -3252,22 +3472,30 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_kv_bind_list_judge(&mut self) -> Result<Vec<(String, PExpr)>, String> {
-
+        use goblin_lexer::TokenKind;
+        // Capture the header column for alignment (assume called after 'judge'/'judge_all')
+        let hdr_tok_i = self.i.saturating_sub(1);
+        let hdr_col = self.toks[hdr_tok_i].span.col_start;
         let mut out: Vec<(String, PExpr)> = Vec::new();
-
         loop {
             // Stop when we see a block closer 'end' or '}' (caller will consume it)
             self.skip_newlines();
-            if self.peek_block_close() {
+            if self.eat_layout_until_close(hdr_col) || self.peek_block_close() {
                 break;
             }
-
+            // Check for EOF
+            if self.is_eof() {
+                return Err(s_help(
+                    "P0212",
+                    "This judge block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
             // Capture everything from here up to the first ':' at nesting level 0
             let start_i = self.i;
             let mut depth_paren = 0i32;
             let mut depth_brack = 0i32;
             let mut depth_brace = 0i32;
-
             let mut end_i: Option<usize> = None;
             while let Some(tok) = self.toks.get(self.i) {
                 match &tok.kind {
@@ -3279,34 +3507,50 @@ impl<'t> Parser<'t> {
                         // ':' inside nested ()/[]/{} – part of the expression
                         self.i += 1;
                     }
-
-                    TokenKind::Op(op) if op == "(" => { depth_paren += 1; self.i += 1; }
-                    TokenKind::Op(op) if op == ")" => { depth_paren -= 1; self.i += 1; }
-                    TokenKind::Op(op) if op == "[" => { depth_brack += 1; self.i += 1; }
-                    TokenKind::Op(op) if op == "]" => { depth_brack -= 1; self.i += 1; }
-                    TokenKind::Op(op) if op == "{" => { depth_brace += 1; self.i += 1; }
-                    TokenKind::Op(op) if op == "}" => { depth_brace -= 1; self.i += 1; }
-
+                    TokenKind::Op(op) if op == "(" => {
+                        depth_paren += 1;
+                        self.i += 1;
+                    }
+                    TokenKind::Op(op) if op == ")" => {
+                        depth_paren -= 1;
+                        self.i += 1;
+                    }
+                    TokenKind::Op(op) if op == "[" => {
+                        depth_brack += 1;
+                        self.i += 1;
+                    }
+                    TokenKind::Op(op) if op == "]" => {
+                        depth_brack -= 1;
+                        self.i += 1;
+                    }
+                    TokenKind::Op(op) if op == "{" => {
+                        depth_brace += 1;
+                        self.i += 1;
+                    }
+                    TokenKind::Op(op) if op == "}" => {
+                        depth_brace -= 1;
+                        self.i += 1;
+                    }
                     // Treat layout as whitespace while searching for the first ':' at top level
                     TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
                         if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 =>
                     {
                         self.i += 1;
                     }
-
                     // Any other token – keep scanning
-                    _ => { self.i += 1; }
+                    _ => {
+                        self.i += 1;
+                    }
                 }
             }
-
-            let Some(colon_i) = end_i else { return Err(s_help(
-                "P0811",
-                "You need ':' after the condition in 'judge'",
-                "Write it like: judge x > 5: \"big\"",
-            )); };
-
+            let Some(colon_i) = end_i else {
+                return Err(s_help(
+                    "P0811",
+                    "You need ':' after the condition in 'judge'",
+                    "Write it like: judge x > 5: \"big\"",
+                ));
+            };
             // Build a readable key string from tokens [start_i .. colon_i)
-            // (We only need a stable textual key right now; evaluation will happen later.)
             let mut parts: Vec<String> = Vec::new();
             for t in &self.toks[start_i..colon_i] {
                 match &t.kind {
@@ -3316,39 +3560,30 @@ impl<'t> Parser<'t> {
             }
             // Simple join with spaces; keeps operators recognizable
             let key_text = parts.join(" ").trim().to_string();
-
             // Consume the ':'
             self.i = colon_i;
             let _ = self.eat_op(":");
-
             // Optional layout after ':'
-            while let Some(t) = self.peek() {
-                match t.kind {
-                    TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => { self.i += 1; }
-                    _ => break,
-                }
-            }
-
+            self.skip_newlines();
+            self.eat_layout_until_close(0); // Handle Dedent after ':'
             // Parse value expression
             let val = self.parse_assign()?;
             out.push((key_text, val));
-
             // Allow trailing commas or line breaks between pairs
             self.eat_semi_separators();
             if self.peek_block_close() {
                 break;
             }
         }
-
         Ok(out)
     }
 
     fn parse_unary(&mut self) -> Result<PExpr, String> {
+        use goblin_lexer::TokenKind;
         // unary definedness: &LValue (right-assoc, same tier as other prefix ops)
         if self.eat_op("&") {
             // allow newline(s) after '&'
             self.skip_newlines();
-
             let i0 = self.i;
             match self.parse_definedness_lvalue() {
                 Ok(lv) => return Ok(PExpr::IsBound(Box::new(lv))),
@@ -3363,13 +3598,11 @@ impl<'t> Parser<'t> {
                 }
             }
         }
-
         // expression-form: judge …
         if let Some("judge") = self.peek_ident() {
             let header_tok_i = self.i;
-            let header_line  = self.toks[header_tok_i].span.line_start;
-            let header_col   = self.toks[header_tok_i].span.col_start;
-
+            let header_line = self.toks[header_tok_i].span.line_start;
+            let header_col = self.toks[header_tok_i].span.col_start;
             let _ = self.eat_ident(); // 'judge'
             if self.peek_op("{") {
                 return Err(s_help(
@@ -3380,18 +3613,37 @@ impl<'t> Parser<'t> {
             }
             self.forbid_next_line_brace(header_line, header_col, "judge")?;
             self.skip_newlines();
+            self.eat_layout_until_close(header_col); // Handle Dedent before parsing pairs
             let pairs = self.parse_kv_bind_list_judge()?;
             self.skip_newlines();
-            self.expect_block_close("judge")?;
+            if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if col != header_col {
+                    let closer = self.peek_ident().unwrap_or("}");
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, header_col, col
+                        ),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge header.",
+                    ));
+                }
+                self.expect_block_close("judge")?;
+            } else if !self.eat_layout_until_close(header_col) {
+                return Err(s_help(
+                    "P0212",
+                    "This judge block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
             return Ok(PExpr::Object(pairs));
         }
-
         // expression-form: judge_all …
         if let Some("judge_all") = self.peek_ident() {
             let header_tok_i = self.i;
-            let header_line  = self.toks[header_tok_i].span.line_start;
-            let header_col   = self.toks[header_tok_i].span.col_start;
-
+            let header_line = self.toks[header_tok_i].span.line_start;
+            let header_col = self.toks[header_tok_i].span.col_start;
             let _ = self.eat_ident(); // 'judge_all'
             if self.peek_op("{") {
                 return Err(s_help(
@@ -3402,19 +3654,38 @@ impl<'t> Parser<'t> {
             }
             self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
             self.skip_newlines();
+            self.eat_layout_until_close(header_col); // Handle Dedent before parsing pairs
             let pairs = self.parse_kv_bind_list_judge()?;
             self.skip_newlines();
-            self.expect_block_close("judge_all")?;
+            if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if col != header_col {
+                    let closer = self.peek_ident().unwrap_or("}");
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, header_col, col
+                        ),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge_all header.",
+                    ));
+                }
+                self.expect_block_close("judge_all")?;
+            } else if !self.eat_layout_until_close(header_col) {
+                return Err(s_help(
+                    "P0212",
+                    "This judge_all block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
             return Ok(PExpr::Object(pairs));
         }
-
         // PICK (expression form)
         // Syntax: pick <count:int> from <expr> [with dups]
         if self.peek_ident() == Some("pick") {
             let pick_tok_i = self.i; // kept for potential future diagnostics
             let _ = self.eat_ident(); // 'pick'
             self.skip_newlines();
-
             // <count>: integer literal (supports suffixes)
             let count = match self.peek() {
                 Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
@@ -3430,11 +3701,13 @@ impl<'t> Parser<'t> {
                         ));
                     }
                 }
-                _ => return Err(s_help(
-                    "P1401",
-                    "You need a number after 'pick'",
-                    "Write it like: pick 5 from items",
-                )),
+                _ => {
+                    return Err(s_help(
+                        "P1401",
+                        "You need a number after 'pick'",
+                        "Write it like: pick 5 from items",
+                    ))
+                }
             };
             if count < 0 {
                 return Err(s_help(
@@ -3444,7 +3717,6 @@ impl<'t> Parser<'t> {
                 ));
             }
             self.skip_newlines();
-
             // 'from'
             if self.peek_ident() != Some("from") {
                 return Err(s_help(
@@ -3455,11 +3727,9 @@ impl<'t> Parser<'t> {
             }
             let _ = self.eat_ident(); // 'from'
             self.skip_newlines();
-
             // <expr> (iterable/source expression)
             let src_expr = self.parse_coalesce()?;
             self.skip_newlines();
-
             // Optional: 'with dups'
             let mut with_dups = false;
             if self.peek_ident() == Some("with") {
@@ -3477,7 +3747,6 @@ impl<'t> Parser<'t> {
                     ));
                 }
             }
-
             // Compile-time sanity check: if src is a literal array and no 'with dups',
             // ensure count <= number of DISTINCT literal elements.
             if !with_dups {
@@ -3490,11 +3759,20 @@ impl<'t> Parser<'t> {
                             PExpr::Int(s) | PExpr::Float(s) | PExpr::Str(s) => {
                                 // Normalize underscores so 1_0 == 10
                                 let mut norm = String::with_capacity(s.len());
-                                for ch in s.chars() { if ch != '_' { norm.push(ch); } }
+                                for ch in s.chars() {
+                                    if ch != '_' {
+                                        norm.push(ch);
+                                    }
+                                }
                                 set.insert(norm);
                             }
-                            PExpr::Bool(b) => { set.insert(format!("b{}", b)); }
-                            _ => { all_simple = false; break; }
+                            PExpr::Bool(b) => {
+                                set.insert(format!("b{}", b));
+                            }
+                            _ => {
+                                all_simple = false;
+                                break;
+                            }
                         }
                     }
                     if all_simple {
@@ -3502,39 +3780,46 @@ impl<'t> Parser<'t> {
                         if count > distinct {
                             return Err(s_help(
                                 "P1405",
-                                &format!("You're trying to pick {} items, but there are only {} distinct items available", count, distinct),
+                                &format!(
+                                    "You're trying to pick {} items, but there are only {} distinct items available",
+                                    count, distinct
+                                ),
                                 "Add 'with dups' to allow repeats: pick 5 from items with dups, or pick fewer items",
                             ));
                         }
                     }
                 }
             }
-
             // Placeholder expression node; matches how 'judge' returns directly from parse_unary.
-            // (If you later want postfix like `.map` after pick, we can thread this through parse_postfix.)
             return Ok(PExpr::Ident("pick_expr".into()));
         }
-
         // roll / roll_detail (syntax-only; contiguous dice)
         if let Some(id) = self.peek_ident() {
             if id == "roll" || id == "roll_detail" {
                 let is_detail = id == "roll_detail";
                 let _ = self.eat_ident();
-
                 let count_tok_i = match self.peek() {
-                    Some(t) if matches!(t.kind, TokenKind::Int) => { let idx = self.i; self.i += 1; idx }
-                    _ => return Err(s_help(
-                        "P1501",
-                        "You need a number before 'd' in a roll",
-                        "Example: roll 2d6",
-                    )),
+                    Some(t) if matches!(t.kind, TokenKind::Int) => {
+                        let idx = self.i;
+                        self.i += 1;
+                        idx
+                    }
+                    _ => {
+                        return Err(s_help(
+                            "P1501",
+                            "You need a number before 'd' in a roll",
+                            "Example: roll 2d6",
+                        ))
+                    }
                 };
-
                 // contiguous dNNN
                 let die_tok_i = match self.peek_ident() {
-                    Some(s) if s.len() > 1 && s.starts_with('d') && s[1..].chars().all(|c| c.is_ascii_digit()) => {
+                    Some(s) if s.len() > 1
+                        && s.starts_with('d')
+                        && s[1..].chars().all(|c| c.is_ascii_digit()) =>
+                    {
                         let prev = &self.toks[count_tok_i].span;
-                        let cur  = &self.toks[self.i].span;
+                        let cur = &self.toks[self.i].span;
                         if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
                             return Err(s_help(
                                 "P1502",
@@ -3542,21 +3827,24 @@ impl<'t> Parser<'t> {
                                 "Write it like 2d6, not 2 d 6",
                             ));
                         }
-                        let idx = self.i; self.i += 1; idx
+                        let idx = self.i;
+                        self.i += 1;
+                        idx
                     }
-                    _ => return Err(s_help(
-                        "P1502",
-                        "Dice notation must be contiguous.",
-                        "Write it like 2d6, not 2 d 6.",
-                    )),
+                    _ => {
+                        return Err(s_help(
+                            "P1502",
+                            "Dice notation must be contiguous.",
+                            "Write it like 2d6, not 2 d 6.",
+                        ))
+                    }
                 };
-
                 // optional contiguous +Z / -Z
                 let mut has_mod = false;
                 let mut mod_sign_i = 0usize;
                 if self.peek_op("+") || self.peek_op("-") {
                     let prev = &self.toks[die_tok_i].span;
-                    let cur  = &self.toks[self.i].span;
+                    let cur = &self.toks[self.i].span;
                     if !(cur.line_start == prev.line_end && cur.col_start == prev.col_end) {
                         return Err(s_help(
                             "P1503",
@@ -3567,7 +3855,6 @@ impl<'t> Parser<'t> {
                     mod_sign_i = self.i;
                     self.i += 1;
                     has_mod = true;
-
                     match self.peek() {
                         Some(t) if matches!(t.kind, TokenKind::Int) => {
                             let cur2 = &t.span;
@@ -3581,27 +3868,47 @@ impl<'t> Parser<'t> {
                             }
                             self.i += 1;
                         }
-                        _ => return Err(s_help(
-                            "P1504",
-                            "You need a number after '+' or '-' in a dice notation roll",
-                            "Examples: 2d6+3 or 1d20-1",
-                        )),
+                        _ => {
+                            return Err(s_help(
+                                "P1504",
+                                "You need a number after '+' or '-' in a dice notation roll",
+                                "Examples: 2d6+3 or 1d20-1",
+                            ))
+                        }
                     }
                 }
-                if !has_mod && self.peek_op("+") { return Err(s_help("P1504", "You need a number after '+' in a dice notation roll", "Write it like 2d6+3")); }
-                if !has_mod && self.peek_op("-") { return Err(s_help("P1504", "You need a number after '-' in a dice notation roll", "Write it like 1d20-1")); }
-
+                if !has_mod && self.peek_op("+") {
+                    return Err(s_help(
+                        "P1504",
+                        "You need a number after '+' in a dice notation roll",
+                        "Write it like 2d6+3",
+                    ));
+                }
+                if !has_mod && self.peek_op("-") {
+                    return Err(s_help(
+                        "P1504",
+                        "You need a number after '-' in a dice notation roll",
+                        "Write it like 1d20-1",
+                    ));
+                }
                 let name = if is_detail { "roll_detail_expr" } else { "roll_expr" };
                 return Ok(PExpr::Ident(name.into()));
             }
         }
-
         // logical-not
-        if self.eat_op("!") { let rhs = self.parse_unary()?; return Ok(PExpr::Prefix("!".into(), Box::new(rhs))); }
+        if self.eat_op("!") {
+            let rhs = self.parse_unary()?;
+            return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
+        }
         // unary +/-
-        if self.eat_op("+") { let rhs = self.parse_unary()?; return Ok(PExpr::Prefix("+".into(), Box::new(rhs))); }
-        if self.eat_op("-") { let rhs = self.parse_unary()?; return Ok(PExpr::Prefix("-".into(), Box::new(rhs))); }
-
+        if self.eat_op("+") {
+            let rhs = self.parse_unary()?;
+            return Ok(PExpr::Prefix("+".into(), Box::new(rhs)));
+        }
+        if self.eat_op("-") {
+            let rhs = self.parse_unary()?;
+            return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
+        }
         // hand off
         self.parse_postfix()
     }
@@ -3862,6 +4169,28 @@ impl<'t> Parser<'t> {
                 }
             }
 
+            // ---------- dot-call: .name or .name(args...) (call-only) ----------
+            if self.eat_op(".") {
+                // Dot is for calling only. It must be followed by an identifier.
+                let Some(opname) = self.eat_ident() else {
+                    return Err(s_help(
+                        "P0504",
+                        "Expected a callable name after '.'",
+                        "Use '.' only to call: Player.take_damage(30) or Player.status",
+                    ));
+                };
+
+                // If '(' follows, parse a normal argument list; otherwise it's a zero-arg call.
+                if self.eat_op("(") {
+                    let args = if self.eat_op(")") { vec![] } else { self.parse_args_paren()? };
+                    lhs = PExpr::Call(Box::new(lhs), opname, args);
+                } else {
+                    // Zero-arg sugar: obj.foo  ==  obj.foo()
+                    lhs = PExpr::Call(Box::new(lhs), opname, vec![]);
+                }
+                continue;
+            }
+
             // ---------- colon-call: target : arg, arg, ... ----------
             if self.suspend_colon_call == 0 && self.eat_op(":") {
                 let mut args = Vec::new();
@@ -3975,22 +4304,6 @@ impl<'t> Parser<'t> {
             args.push(self.parse_coalesce()?);
         }
         Ok(args)
-    }
-
-    fn eat_semi_separators(&mut self) {
-        loop {
-            if self.eat_op(";") {
-                continue;
-            }
-            match self.peek() {
-                Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline) => {
-                    self.i += 1;
-                    continue;
-                }
-                _ => {}
-            }
-            break;
-        }
     }
 }
 
