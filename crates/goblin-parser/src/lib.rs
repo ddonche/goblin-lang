@@ -1581,27 +1581,38 @@ impl<'t> Parser<'t> {
     }
 
     // Require a block closer right here (after optional newlines). Helpful error if missing.
-    fn expect_block_close(&mut self, kw: &str) -> Result<(), String> {
-        use goblin_lexer::TokenKind;
+    fn expect_block_close(&mut self, block_type: &str) -> Result<(), String> {
         self.skip_newlines();
-        self.eat_layout_until_close(0); // Eat Dedent before checking
-        if self.peek_ident() == Some("end") {
-            let _ = self.eat_ident();
-            Ok(())
-        } else if self.eat_op("xx") {
-            Ok(())
-        } else {
-            let sp = self
-                .toks
-                .get(self.i)
-                .map(|t| t.span.clone())
-                .unwrap_or_else(|| Span::new("<eof>", 0, 0, 0, 0, 0, 0));
-            Err(s_help(
+        if self.is_eof() {
+            return Err(s_help(
                 "P0212",
-                &format!("This {} block is missing its closing 'end' or 'xx' (crossbones).", kw),
+                "This block is missing its closing 'end' or 'xx' (crossbones).",
                 "Close the block with 'end' or 'xx' (crossbones).",
-            ))
+            ));
         }
+        let tok = self.toks.get(self.i).ok_or_else(|| {
+            s_help(
+                "P0212",
+                "This block is missing its closing 'end' or 'xx' (crossbones).",
+                "Close the block with 'end' or 'xx' (crossbones).",
+            )
+        })?;
+        if tok.value.as_deref() != Some("end") && tok.value.as_deref() != Some("xx") {
+            return Err(s_help(
+                "P0212",
+                "Expected 'end' or 'xx' to close this block.",
+                "Use 'end' or 'xx' to close the block.",
+            ));
+        }
+        if tok.span.col_start != expected_col {
+            return Err(s_help(
+                "P0222",
+                "This closer is misaligned with its block",
+                &format!("Expected 'end' or 'xx' at column {}, found column {}.", expected_col, tok.span.col_start),
+            ));
+        }
+        self.i += 1;
+        Ok(())
     }
 
     // Optional: also treat semicolons as statement separators when scanning blocks.
@@ -2313,252 +2324,82 @@ impl<'t> Parser<'t> {
     // REPLACE the existing function with this one in lib.rs
     fn parse_stmt_block_until<F>(&mut self, mut stop: F) -> Result<Vec<ast::Stmt>, String>
     where
-        F: FnMut(&mut Parser<'_>) -> bool,
-    {
-        use goblin_lexer::TokenKind;
-        let mut ended_hard = false;
-        // ===== INLINE BRACE MODE: { ... } must be single-line
-        if self.eat_op("{") {
-            let brace_line = if self.i > 0 { self.toks[self.i - 1].span.line_start } else { 0 };
-            // `{}` allowed only if `}` is on the same line
-            if self.peek_op("}") {
-                let close_line = self.toks[self.i].span.line_start;
-                if close_line != brace_line {
+        F: FnMut(&mut Parser<'_>) -> bool, {
+        let ended_hard = false; // Fixed unused_mut warning
+        let mut stmts: Vec<ast::Stmt> = Vec::new();
+        let mut soft_cols: Vec<u32> = Vec::new();
+        let mut soft_mode = false;
+        let mut depth = 0;
+
+        loop {
+            self.skip_newlines();
+            if stop(self) {
+                if !soft_cols.is_empty() && !self.eat_layout_until_close(*soft_cols.last().unwrap_or(&0)) {
                     return Err(s_help(
-                        "P0207",
-                        "Inline braced blocks must be on a single line",
-                        "Place '}' on the same line as '{': { do() }",
+                        "P0212",
+                        "This block is missing its closing 'end' or 'xx' (crossbones).",
+                        "Close the block with 'end' or 'xx' (crossbones).",
                     ));
                 }
-                let _ = self.eat_op("}");
-                self.block_closed_hard = false;
-                return Ok(Vec::new());
-            }
-            // parse exactly one stmt, require the `}` on the same line
-            let mut out = Vec::new();
-            out.push(self.parse_stmt()?);
-            if !self.peek_op("}") {
-                return Err(s_help(
-                    "P0207",
-                    "Inline braced blocks must be on a single line",
-                    "Place '}' on the same line as '{': { do() }",
-                ));
-            }
-            let close_line = self.toks[self.i].span.line_start;
-            if close_line != brace_line {
-                return Err(s_help(
-                    "P0207",
-                    "Inline braced blocks must be on a single line",
-                    "Place '}' on the same line as '{': { do() }",
-                ));
-            }
-            let _ = self.eat_op("}");
-            self.block_closed_hard = false;
-            return Ok(out);
-        }
-        // ===== LAYOUT MODE =====
-        // need a newline to start the block (or a physical line break)
-        let mut saw_nl = false;
-        while let Some(tok) = self.toks.get(self.i) {
-            if matches!(tok.kind, TokenKind::Newline) {
-                self.i += 1;
-                saw_nl = true;
-            } else {
                 break;
             }
-        }
-        if !saw_nl {
-            if let (Some(prev), Some(curr)) = (self.toks.get(self.i.saturating_sub(1)), self.toks.get(self.i)) {
-                if curr.span.line_start <= prev.span.line_end {
+            if self.is_eof() {
+                if depth > 0 || !soft_cols.is_empty() {
                     return Err(s_help(
-                        "P0210",
-                        "Expected indentation after this header",
-                        "Put '{' on the same line or indent the next line: if ok { run() }",
+                        "P0212",
+                        "This block is missing its closing 'end' or 'xx' (crossbones).",
+                        "Close the block with 'end' or 'xx' (crossbones).",
                     ));
                 }
+                break;
             }
-        }
-        let mut out = Vec::new();
-        let mut depth: usize = 0;
-        let mut soft_mode = false;
-        let mut soft_cols: Vec<u32> = Vec::new();
-        if let Some(tok) = self.toks.get(self.i) {
-            if matches!(tok.kind, TokenKind::Indent) {
-                self.i += 1;
-                depth = 1;
-            } else {
-                let body_line = tok.span.line_start;
-                let mut header_col_min = u32::MAX;
-                let mut k = self.i.saturating_sub(1);
-                while let Some(t) = self.toks.get(k) {
-                    if t.span.line_start == body_line.saturating_sub(1) {
-                        if t.span.col_start < header_col_min {
-                            header_col_min = t.span.col_start;
-                        }
-                        if k == 0 {
-                            break;
-                        }
-                        k -= 1;
-                    } else {
-                        break;
+            let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            if let Some(&last_col) = soft_cols.last() {
+                if self.peek_block_close() {
+                    if !soft_cols.contains(&col) {
+                        return Err(s_help(
+                            "P0222",
+                            "This closer is misaligned with its block",
+                            &format!("Expected 'end' or 'xx' at column {}, found column {}.", last_col, col),
+                        ));
                     }
+                    self.expect_block_close("block")?;
+                    soft_cols.pop(); // Close the current block
+                    break;
                 }
-                if header_col_min == u32::MAX {
-                    header_col_min = 0;
-                }
-                if body_line > 0 && tok.span.col_start > header_col_min {
-                    depth = 1;
-                    soft_mode = true;
-                    soft_cols.push(tok.span.col_start);
-                } else {
+                if col < last_col {
                     return Err(s_help(
-                        "P0210",
-                        "Expected indentation after this header",
-                        "Put '{' on the same line or indent the next line: if ok { run() }",
+                        "P0211",
+                        "The indentation went back too far for this block",
+                        &format!("Indent the line to match column {}, found column {}.", last_col, col),
                     ));
+                } else if col > last_col {
+                    soft_cols.push(col);
+                    soft_mode = true;
+                }
+            } else {
+                soft_cols.push(col);
+                soft_mode = true;
+            }
+            if let Some(_t) = self.peek() {
+                if matches!(_t.kind, ::goblin_lexer::TokenKind::Indent) {
+                    depth += 1;
+                    self.i += 1;
                 }
             }
-        } else {
+            let stmt = self.parse_stmt()?;
+            stmts.push(stmt);
+            self.skip_stmt_separators();
+        }
+        if !soft_cols.is_empty() && !self.eat_layout_until_close(*soft_cols.last().unwrap_or(&0)) {
             return Err(s_help(
                 "P0212",
                 "This block is missing its closing 'end' or 'xx' (crossbones).",
                 "Close the block with 'end' or 'xx' (crossbones).",
             ));
         }
-        loop {
-            if self.is_eof() {
-                return Err(s_help(
-                    "P0212",
-                    "This block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
-            }
-            // IMPORTANT: Check the stop condition BEFORE processing indentation
-            if stop(self) {
-                ended_hard = false; // we did not consume a closer here
-                break;
-            }
-            // ----- Tokenized indentation first
-            if let Some(tok) = self.toks.get(self.i) {
-                match tok.kind {
-                    TokenKind::Indent => {
-                        self.i += 1;
-                        depth += 1;
-                        continue;
-                    }
-                    TokenKind::Dedent => {
-                        let mut ded = 0usize;
-                        while let Some(t2) = self.toks.get(self.i) {
-                            if matches!(t2.kind, TokenKind::Dedent) {
-                                self.i += 1;
-                                ded += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        if ded > depth {
-                            return Err(s_help(
-                                "P0211",
-                                "The indentation went back too far for this block",
-                                "Indent the line to stay inside the block, or close it first: if ok { run() }",
-                            ));
-                        }
-                        depth -= ded;
-                        if depth == 0 {
-                            // allow blank lines
-                            while let Some(t) = self.toks.get(self.i) {
-                                if matches!(t.kind, TokenKind::Newline) {
-                                    self.i += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                            // Check stop condition again after dedent
-                            if stop(self) {
-                                ended_hard = false;
-                                break;
-                            }
-                            if self.peek_block_close() {
-                                // DO NOT consume; leave for caller to align & eat
-                                ended_hard = false;
-                                break;
-                            }
-                            return Err(s_help(
-                                "P0212",
-                                "This block is missing its closing 'end' or 'xx' (crossbones).",
-                                "Close the block with 'end' or 'xx' (crossbones).",
-                            ));
-                        }
-                        continue;
-                    }
-                    _ => {}
-                }
-            }
-            // ----- Soft indentation by column
-            if soft_mode {
-                let mut saw_lb = false;
-                while let Some(tok) = self.toks.get(self.i) {
-                    if matches!(tok.kind, TokenKind::Newline) {
-                        self.i += 1;
-                        saw_lb = true;
-                    } else {
-                        break;
-                    }
-                }
-                if saw_lb {
-                    if self.is_eof() {
-                        return Err(s_help(
-                            "P0212",
-                            "This block is missing its closing 'end' or 'xx' (crossbones).",
-                            "Close the block with 'end' or 'xx' (crossbones).",
-                        ));
-                    }
-                    // compute next token's col (if any)
-                    if let Some(next) = self.toks.get(self.i) {
-                        let next_col = next.span.col_start;
-                        // Dedent(s) by column
-                        while depth > 0 && !soft_cols.is_empty() && next_col < *soft_cols.last().unwrap() {
-                            soft_cols.pop();
-                            depth -= 1;
-                            if depth == 0 {
-                                // Check stop condition after soft dedent
-                                if stop(self) {
-                                    ended_hard = false;
-                                    break;
-                                }
-                                if self.peek_block_close() {
-                                    // DO NOT consume; leave for caller to align & eat
-                                    ended_hard = false;
-                                    break;
-                                }
-                                return Err(s_help(
-                                    "P0212",
-                                    "This block is missing its closing 'end' or 'xx' (crossbones).",
-                                    "Close the block with 'end' or 'xx' (crossbones).",
-                                ));
-                            }
-                        }
-                        // Soft indent of a new nested block
-                        if next_col > *soft_cols.last().unwrap_or(&0) {
-                            soft_cols.push(next_col);
-                            depth += 1;
-                            continue;
-                        }
-                    }
-                }
-            }
-            // Check stop condition one more time before parsing a statement
-            if stop(self) {
-                ended_hard = false;
-                break;
-            }
-            // ----- Parse exactly one statement in the body
-            out.push(self.parse_stmt()?);
-            self.skip_stmt_separators();
-        }
-        // We never consume closers here
         self.block_closed_hard = ended_hard;
-        Ok(out)
+        Ok(stmts)
     }
 
     pub fn parse_module(mut self) -> ParseResult<ast::Module> {
