@@ -48,6 +48,12 @@ enum PExpr {
         fields: Vec<(String, PExpr)>,
         actions: Vec<PAction>,
     },
+    // Applying a named template/type to named fields, e.g. Pet: name: "Fluffy" :: age: 3
+    TemplateApply {
+        type_name: String,
+        pairs: Vec<(String, PExpr)>,
+        span: goblin_diagnostics::Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,6 +261,11 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_assign(&mut self) -> Result<PExpr, String> {
+        // At the very start of parse_assign():
+        if let Some(pe) = self.try_parse_typed_object_assign()? {
+            return Ok(pe);
+        }
+
         // Parse potential LHS first
         let lhs = self.parse_coalesce()?;
 
@@ -310,6 +321,134 @@ impl<'t> Parser<'t> {
         } else {
             Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
         }
+    }
+
+    // Inside impl<'t> Parser<'t>
+    fn try_parse_typed_object_assign(&mut self) -> Result<Option<PExpr>, String> {
+        use goblin_lexer::TokenKind;
+
+        let start_i = self.i;
+
+        // <name>  (identifier)
+        let var = match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::Ident) => t.value.clone().unwrap_or_default(),
+            _ => return Ok(None), // not our form; let normal assign parsing handle it
+        };
+        let _ = self.eat_ident(); // consume <name>
+
+        // '|'
+        if !self.eat_op("|") {
+            // not typed-LHS; rewind and let the normal path proceed
+            self.i = start_i;
+            return Ok(None);
+        }
+
+        // <Type> (identifier; must be Capitalized)
+        let Some(ty) = self.eat_ident() else {
+            self.i = start_i;
+            return Err(s_help(
+                "P0912",
+                "Expected a Type name after '|'.",
+                "Write: name | Pet = name: \"...\"",
+            ));
+        };
+        if !Self::is_capitalized(&ty) {
+            return Err(s_help(
+                "P0910",
+                "Types used in object construction must begin with a capital letter.",
+                &format!(
+                    "Write '{} | {} = ...' where '{}' is capitalized.",
+                    var, Self::capitalize_like(&ty), Self::capitalize_like(&ty)
+                ),
+            ));
+        }
+
+        // '='
+        if !self.eat_op("=") {
+            return Err(s_help(
+                "P0913",
+                "Expected '=' after 'name | Type'.",
+                "Write: name | Type = name: \"...\"",
+            ));
+        }
+
+        // pairs: for now use your existing `parse_template_pairs()`
+        // (we’ll swap to a flexible version that supports ',' and 'nc' next)
+        let pairs = self.parse_template_pairs_flex()?;
+
+        // Build Assign(Ident(var), TemplateApply{type_name: ty, pairs})
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let lhs = PExpr::Ident(var);
+        let rhs = PExpr::TemplateApply { type_name: ty, pairs, span: span.clone() };
+
+        Ok(Some(PExpr::Assign(Box::new(lhs), Box::new(rhs))))
+    }
+
+    fn parse_template_pairs_flex(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+        use goblin_lexer::TokenKind;
+
+        let mut pairs: Vec<(String, PExpr)> = Vec::new();
+
+        // At least one unit (pair or placeholder) expected
+        self.parse_one_pair_or_skip_into(&mut pairs)?;
+
+        loop {
+            // Accept either '::' or ',' as a separator (mix-and-match allowed)
+            let sep = if self.eat_op("::") {
+                Some("::")
+            } else if self.eat_op(",") {
+                Some(",")
+            } else {
+                None
+            };
+            if sep.is_none() {
+                break; // no more separators → done
+            }
+
+            // Optional skip units: allow empty '::' (already handled by just continuing)
+            // and allow explicit 'nc' between separators.
+            // If the next token clearly starts a pair/skip, parse it; otherwise allow trailing sep.
+            if self.peek_starts_pair_or_skip() {
+                self.parse_one_pair_or_skip_into(&mut pairs)?;
+            } else {
+                // trailing separator -> treat as an empty skip (OK), keep going
+                continue;
+            }
+        }
+
+        Ok(pairs)
+    }
+
+    fn peek_starts_pair_or_skip(&mut self) -> bool {
+        use goblin_lexer::TokenKind;
+        matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident))
+    }
+
+    fn parse_one_pair_or_skip_into(&mut self, pairs: &mut Vec<(String, PExpr)>) -> Result<(), String> {
+        // ident expected: either a field name or 'nc' (case-insensitive)
+        let Some(head) = self.eat_ident() else {
+            return Err(s_help("P0911", "Expected a field name or 'nc' here", "Write: name: value, or use 'nc' to skip"));
+        };
+
+        if head.eq_ignore_ascii_case("nc") {
+            // placeholder skip; must not be followed by ':'
+            if self.peek_op(":") {
+                return Err(s_help(
+                    "P0916",
+                    "'nc' is a placeholder; don't write 'nc:'.",
+                    "Use 'nc' by itself between separators, e.g., :: nc :: .",
+                ));
+            }
+            return Ok(());
+        }
+
+        if !self.eat_op(":") {
+            return Err(s_help("P0911", "Expected ':' after field name", "Write: name: value"));
+        }
+
+        let val = self.parse_assign()?; // full expr allowed on RHS
+        pairs.push((head, val));
+        Ok(())
     }
 
     fn parse_coalesce(&mut self) -> Result<PExpr, String> {
@@ -550,6 +689,7 @@ impl<'t> Parser<'t> {
 
             // conservative default for constructs that shouldn't appear in keys
             ClassDecl { .. } => false,
+            PExpr::TemplateApply { .. } => false,
         }
     }
 
@@ -997,7 +1137,6 @@ impl<'t> Parser<'t> {
 
     fn lower_expr_preview(pe: PExpr, sp: Span) -> ast::Expr {
         match pe {
-
             // Basic literals and identifiers
             PExpr::Ident(name) => ast::Expr::Ident(name, sp),
             PExpr::Int(s)
@@ -1016,7 +1155,7 @@ impl<'t> Parser<'t> {
                     .collect();
                 ast::Expr::Array(elems, sp)
             }
-           PExpr::Object(fields) => {
+            PExpr::Object(fields) => {
                 let fields = fields
                     .into_iter()
                     .map(|(k, v)| (k, Self::lower_expr_preview(v, sp.clone())))
@@ -1089,6 +1228,20 @@ impl<'t> Parser<'t> {
                 let lhs = Box::new(Self::lower_expr_preview(*lhs, sp.clone()));
                 let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
                 ast::Expr::Assign(lhs, rhs, sp)
+            }
+
+            // Template-style object construction: FreeCall("Type", [Object(pairs)], span)
+            PExpr::TemplateApply { type_name, pairs, span } => {
+                let pairs_ast: Vec<(String, ast::Expr)> = pairs
+                    .into_iter()
+                    .map(|(k, v)| (k, Self::lower_expr_preview(v, span.clone())))
+                    .collect();
+
+                ast::Expr::FreeCall(
+                    type_name,
+                    vec![ast::Expr::Object(pairs_ast, span.clone())],
+                    span,
+                )
             }
 
             // Fallback for unimplemented constructs
@@ -1165,11 +1318,11 @@ impl<'t> Parser<'t> {
         Ok(())
     }
 
-    fn parse_field_chain_line(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+    fn parse_field_chain_line_class(&mut self) -> Result<Vec<(String, PExpr)>, String> {
         let mut out = Vec::new();
 
         loop {
-            // 1) Field key
+            // 1) Field key (class-strict: forbid 'nc')
             let Some(key) = self.eat_object_key() else {
                 if out.is_empty() {
                     return Err(s_help(
@@ -1181,6 +1334,14 @@ impl<'t> Parser<'t> {
                     break;
                 }
             };
+
+            if key.eq_ignore_ascii_case("nc") {
+                return Err(s_help(
+                    "P1910",
+                    "'nc' is not allowed in class headers.",
+                    "Declare a real field: name: \"...\"",
+                ));
+            }
 
             // 2) Colon
             if !self.eat_op(":") {
@@ -1201,7 +1362,7 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            // 3) Scan the rest of THIS LINE (top-level only) to find end of this value
+            // 3) Scan this line to find end of this value
             let value_start = self.i;
             let value_line = match self.toks.get(value_start) {
                 Some(t) => t.span.line_start,
@@ -1242,7 +1403,7 @@ impl<'t> Parser<'t> {
                         break;
                     }
 
-                    // NEW FIELD starting without a separator: ident ':' at top level, later on same line
+                    // Missing separator: ident ':' later on same line
                     TokenKind::Ident
                         if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && k > value_start =>
                     {
@@ -1272,7 +1433,7 @@ impl<'t> Parser<'t> {
             let val = parse_expr_preview(&self.toks[value_start..end_i])?;
             out.push((key, val));
 
-            // 6) Separator handling (consume exactly ONE; disallow doubles)
+            // 6) Separator handling (strict: must have another field on SAME LINE)
             if let Some(si) = sep_i {
                 self.i = si;
 
@@ -1291,6 +1452,48 @@ impl<'t> Parser<'t> {
                                 ));
                             }
                         }
+                    }
+                }
+
+                // STRICT: require next token on same line to be Ident, not 'nc',
+                // and ensure a ':' follows (also same line). Do NOT consume them here.
+                let next = self.toks.get(self.i);
+                match next {
+                    Some(t) if t.span.line_start == value_line => {
+                        if !matches!(t.kind, goblin_lexer::TokenKind::Ident) {
+                            return Err(s_help(
+                                "P0914",
+                                "Expected a field name after the separator in this class header.",
+                                "Write: name: value, age: 0  (no empty '::' and no placeholders)",
+                            ));
+                        }
+                        if t.value.as_deref().map(|s| s.eq_ignore_ascii_case("nc")).unwrap_or(false) {
+                            return Err(s_help(
+                                "P1910",
+                                "'nc' is not allowed in class headers.",
+                                "Declare an explicit field: name: \"...\"",
+                            ));
+                        }
+                        // look ahead for ':' on same line
+                        let next2 = self.toks.get(self.i + 1);
+                        if !(matches!(next2, Some(tt)
+                            if tt.span.line_start == value_line
+                            && matches!(tt.kind, goblin_lexer::TokenKind::Op(ref c) if c == ":")))
+                        {
+                            return Err(s_help(
+                                "P0904",
+                                "You need a ':' after the field name",
+                                "Write it like username: \"john\"",
+                            ));
+                        }
+                    }
+                    _ => {
+                        // newline/EOF after separator → trailing separator is illegal in class headers
+                        return Err(s_help(
+                            "P0915",
+                            "Expected another field after the separator in this class header.",
+                            "Write: name: value, age: 0  (no trailing '::' or ',')",
+                        ));
                     }
                 }
 
@@ -1609,6 +1812,112 @@ impl<'t> Parser<'t> {
         Ok(())
     }
 
+    fn is_capitalized(name: &str) -> bool {
+        name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+    }
+
+    /// Parse one `name: expr` pair. Caller has NOT consumed `name` yet.
+    fn parse_name_colon_expr_pair(&mut self) -> Result<(String, PExpr), String> {
+        let Some(name) = self.eat_ident() else {
+            return Err(s_help("P0911", "Expected a field name before ':'", "Write: name: value"));
+        };
+        if !self.eat_op(":") {
+            return Err(s_help("P0911", "Expected ':' after field name", "Write: name: value"));
+        }
+        let val = self.parse_assign()?; // full expr on the right
+        Ok((name, val))
+    }
+
+    /// Parse `name: expr` pairs separated by `::`, allowing empty `::` segments (skips)
+    fn parse_template_pairs(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+        use goblin_lexer::TokenKind;
+
+        let mut pairs: Vec<(String, PExpr)> = Vec::new();
+
+        // First pair (required)
+        pairs.push(self.parse_name_colon_expr_pair()?);
+
+        loop {
+            // Stop on newline / block closers / expression terminators
+            if let Some(t) = self.peek() {
+                match &t.kind {
+                    TokenKind::Newline => break,
+                    TokenKind::Op(op) if op == ")" || op == "]" || op == "}" || op == "," => break,
+                    // We're inside an expr; don't eat 'end'/'else' here — higher-level parsers own them.
+                    TokenKind::Ident if matches!(t.value.as_deref(), Some("end") | Some("else")) => break,
+                    _ => {}
+                }
+            } else {
+                break; // EOF
+            }
+
+            // Expect `::` or stop
+            if !self.eat_op("::") {
+                break;
+            }
+
+            // Allow empty segment to mean "skip (use default)"
+            // e.g., `Pet: name: "Max" :: :: species: "cat"`
+            // If next token starts a new pair, parse it; if it's another `::` or newline/terminator, just continue.
+            let should_parse_pair = if let Some(t) = self.peek() {
+                matches!(t.kind, TokenKind::Ident)
+            } else {
+                false
+            };
+
+            if should_parse_pair {
+                pairs.push(self.parse_name_colon_expr_pair()?);
+            } else {
+                // empty `::` — do nothing (skip)
+            }
+        }
+
+        Ok(pairs)
+    }
+
+    /// Try to parse `TypeName: name: expr (:: name: expr)*` after having just seen an Ident.
+    /// `type_name` is the already-consumed identifier text. If not a template apply, returns None and does not consume.
+    fn try_parse_template_apply_after_ident(
+        &mut self,
+        type_name: String,
+        start_i: usize,
+    ) -> Result<Option<PExpr>, String> {
+        // Must see a colon immediately after the Ident
+        if !self.peek_op(":") {
+            return Ok(None);
+        }
+
+        // Enforce capitalized Type name
+        if !Self::is_capitalized(&type_name) {
+            return Err(s_help(
+                "P0910",
+                "Types used in object construction must begin with a capital letter.",
+                &format!("Write '{}: name: \"...\"' with a capitalized type, like 'Pet: ...'.", Self::capitalize_like(&type_name)),
+            ));
+        }
+
+        let _ = self.eat_op(":"); // consume the first ':'
+
+        // Parse pairs: name: expr (:: name: expr)*
+        let pairs = self.parse_template_pairs_flex()?;
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(Some(PExpr::TemplateApply {
+            type_name,
+            pairs,
+            span,
+        }))
+    }
+
+    /// Simple helper to suggest a capitalized form (e.g., "pet" -> "Pet")
+    fn capitalize_like(s: &str) -> String {
+        let mut it = s.chars();
+        match it.next() {
+            Some(first) => first.to_ascii_uppercase().to_string() + it.as_str(),
+            None => String::new(),
+        }
+    }
+
     // Optional: also treat semicolons as statement separators when scanning blocks.
     fn skip_stmt_separators(&mut self) {
         use goblin_lexer::TokenKind as K;
@@ -1918,24 +2227,18 @@ impl<'t> Parser<'t> {
         if self.peek_op("!") {
             self.i += 1;
         }
+
         if self.eat_op("(") {
-            if !self.peek_op(")") {
-                loop {
-                    let _ = self.parse_coalesce()?;
-                    if self.eat_op(",") {
-                        continue;
-                    }
-                    break;
-                }
-            }
-            if !self.eat_op(")") {
+            // forbid parentheses after class name
+            if self.peek_op("(") {
                 return Err(s_help(
-                    "P0703",
-                    "Unclosed parameter list after class header",
-                    "Close it with ')': @Class(Name)",
+                    "P0710",
+                    "Parentheses are not allowed after a class name.",
+                    "Put fields after '=': @Player = username: \"john\" :: health: 100",
                 ));
             }
         }
+
         if !self.eat_op("=") {
             return Err(s_help(
                 "P0908",
@@ -1943,7 +2246,10 @@ impl<'t> Parser<'t> {
                 "Write it like: @Player = username: \"john\" :: health: 100",
             ));
         }
-        let fields = self.parse_field_chain_line()?;
+        
+        // No nc in class header
+        let fields = self.parse_field_chain_line_class()?;
+
         self.eat_semi_separators();
         let mut actions: Vec<PAction> = Vec::new();
         loop {
@@ -2595,27 +2901,41 @@ impl<'t> Parser<'t> {
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
-        // Allow '=' inside statements (e.g., in action bodies / if branches)
-        let prev_in_stmt = self.in_stmt;
-        self.in_stmt = true;
+        // ---- Friendly guard: looks like a class header but missing '@'
+        // Pattern: Capitalized Ident '=' Ident ':'  (e.g., A = n: 1)
+        if let Some(t0) = self.peek().cloned() {
+            if let TokenKind::Ident = t0.kind {
+                if let Some(name) = t0.value.as_deref() {
+                    if !name.is_empty() && name.chars().next().unwrap().is_ascii_uppercase() {
+                        let t1 = self.toks.get(self.i + 1);
+                        let t2 = self.toks.get(self.i + 2);
+                        let t3 = self.toks.get(self.i + 3);
+                        let is_eq = matches!(t1.map(|t| &t.kind), Some(TokenKind::Op(op)) if op == "=");
+                        let is_field_name = matches!(t2.map(|t| &t.kind), Some(TokenKind::Ident));
+                        let is_colon = matches!(t3.map(|t| &t.kind), Some(TokenKind::Op(op)) if op == ":");
+                        if is_eq && is_field_name && is_colon {
+                            return Err(s_help(
+                                "P0906",
+                                "Classes must start with '@'.",
+                                &format!("Write '@{} = ...' and close the block with 'end' or 'xx'.", name),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         // -------- keyword-first dispatch (keeps style consistent) --------
         if self.peek_ident() == Some("if") {
-            let out = self.parse_if_stmt();
-            self.in_stmt = prev_in_stmt;
-            return out;
+            return self.parse_if_stmt();
         }
         if self.peek_ident() == Some("act") {
             let _ = self.eat_ident(); // 'act'
-            let out = self.parse_free_action("act");
-            self.in_stmt = prev_in_stmt;
-            return out;
+            return self.parse_free_action("act");
         }
         if self.peek_ident() == Some("action") {
             let _ = self.eat_ident(); // 'action'
-            let out = self.parse_free_action("action");
-            self.in_stmt = prev_in_stmt;
-            return out;
+            return self.parse_free_action("action");
         }
 
         // -------- class declarations: @Class or '@' then Ident --------
@@ -2625,17 +2945,13 @@ impl<'t> Parser<'t> {
                     let start_i = self.i;
                     let pe = self.parse_class_decl()?;
                     let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                    let out = self.lower_class_stmt_from_pexpr(pe, sp);
-                    self.in_stmt = prev_in_stmt;
-                    return out;
+                    return self.lower_class_stmt_from_pexpr(pe, sp);
                 }
                 TokenKind::Op(ref op) if op == "@" => {
                     let start_i = self.i;
                     let pe = self.parse_class_decl()?;
                     let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                    let out = self.lower_class_stmt_from_pexpr(pe, sp);
-                    self.in_stmt = prev_in_stmt;
-                    return out;
+                    return self.lower_class_stmt_from_pexpr(pe, sp);
                 }
                 _ => {}
             }
@@ -2643,9 +2959,7 @@ impl<'t> Parser<'t> {
 
         // -------- default: expression/assignment statement --------
         let expr_pe = self.parse_assign()?;
-        let stmt = ast::Stmt::Expr(self.lower_expr(expr_pe));
-        self.in_stmt = prev_in_stmt;
-        Ok(stmt)
+        Ok(ast::Stmt::Expr(self.lower_expr(expr_pe)))
     }
 
     // Helper: lower a parsed class PExpr into Stmt::Class (fields + actions)
@@ -2760,20 +3074,45 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_primary_impl(&mut self) -> Result<PExpr, String> {
+        use goblin_lexer::TokenKind;
+
         // --- blob literal special-case: blob "..." | blob 0xDEAD... ---
         if let Some(t) = self.peek() {
-            if matches!(t.kind, goblin_lexer::TokenKind::Blob) {
-                self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1101", "You need a string or an integer after 'blob'", "Examples: blob \"text\" or blob 0xFF")) };
-                let expr = match k2 {
-                    goblin_lexer::TokenKind::String => { let lit = v2.unwrap_or_default(); self.i += 1; PExpr::BlobStr(lit) }
-                    goblin_lexer::TokenKind::Int    => { let lit = v2.unwrap_or_default(); self.i += 1; PExpr::BlobNum(lit) }
-                    _ => return Err(s_help(
-                        "P1101",
-                        "You need a string or an integer after 'blob'.",
-                        "Examples: blob \"text\" or blob 0xFF.",
-                    )),
+            if matches!(t.kind, TokenKind::Blob) {
+                self.i += 1;
+                self.skip_newlines();
+
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => {
+                        return Err(s_help(
+                            "P1101",
+                            "You need a string or an integer after 'blob'",
+                            "Examples: blob \"text\" or blob 0xFF",
+                        ))
+                    }
                 };
+
+                let expr = match k2 {
+                    TokenKind::String => {
+                        let lit = v2.unwrap_or_default();
+                        self.i += 1;
+                        PExpr::BlobStr(lit)
+                    }
+                    TokenKind::Int => {
+                        let lit = v2.unwrap_or_default();
+                        self.i += 1;
+                        PExpr::BlobNum(lit)
+                    }
+                    _ => {
+                        return Err(s_help(
+                            "P1101",
+                            "You need a string or an integer after 'blob'.",
+                            "Examples: blob \"text\" or blob 0xFF.",
+                        ))
+                    }
+                };
+
                 return Ok(self.apply_postfix_ops(expr));
             }
         }
@@ -2797,145 +3136,418 @@ impl<'t> Parser<'t> {
 
         // --- Array literal ---
         if self.eat_op("[") {
-            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+            // skip newlines after '['
+            while let Some(tok) = self.toks.get(self.i) {
+                if matches!(tok.kind, TokenKind::Newline) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
             let mut elems = Vec::new();
             if !self.peek_op("]") {
                 loop {
-                    let elem = self.parse_coalesce()?; elems.push(elem);
+                    let elem = self.parse_coalesce()?;
+                    elems.push(elem);
+
                     if self.eat_op(",") {
-                        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                        if self.peek_op("]") { break; }
+                        while let Some(tok) = self.toks.get(self.i) {
+                            if matches!(tok.kind, TokenKind::Newline) {
+                                self.i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if self.peek_op("]") {
+                            break;
+                        }
                         continue;
                     }
                     break;
                 }
             }
-            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-            if !self.eat_op("]") { return Err(s_help("P0708", "Expected ']' to close this array", "Add the closing ']': [1, 2, 3]")); }
+
+            while let Some(tok) = self.toks.get(self.i) {
+                if matches!(tok.kind, TokenKind::Newline) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if !self.eat_op("]") {
+                return Err(s_help(
+                    "P0708",
+                    "Expected ']' to close this array",
+                    "Add the closing ']': [1, 2, 3]",
+                ));
+            }
             return Ok(self.apply_postfix_ops(PExpr::Array(elems)));
+        }
+
+        // --- Identifier (name, keywords; forbid legacy `Type: ...`) ---
+        if let Some(tok0) = self.peek().cloned() {
+            if matches!(tok0.kind, TokenKind::Ident) {
+                let name = tok0.value.clone().unwrap_or_default();
+                self.i += 1; // eat the ident
+
+                // DEPRECATE old `Type: ...` object form right here (name is in scope)
+                if self.peek_op(":") {
+                    return Err(s_help(
+                        "P0998",
+                        "Object construction has moved to 'name | Type = ...'.",
+                        &format!(
+                            "Write: myVar | {} = name: \"...\"",
+                            Self::capitalize_like(&name)
+                        ),
+                    ));
+                }
+
+                // true/false/nil or plain identifier
+                let base = match name.as_str() {
+                    "true" => PExpr::Bool(true),
+                    "false" => PExpr::Bool(false),
+                    "nil" => PExpr::Nil,
+                    _ => PExpr::Ident(name),
+                };
+
+                return Ok(self.apply_postfix_ops(base));
+            }
         }
 
         // --- Object literal ---
         if self.eat_op("{") {
-            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+            // skip newlines after '{'
+            while let Some(tok) = self.toks.get(self.i) {
+                if matches!(tok.kind, TokenKind::Newline) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
             let mut props: Vec<(String, PExpr)> = Vec::new();
             if !self.peek_op("}") {
                 loop {
-                    let Some(key) = self.eat_object_key() else { return Err(s_help(
-                        "P1201",
-                        "Expected an object key here",
-                        "Add a property name before ':': name: \"John\"",
-                    )); };
-                    while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                    if !self.eat_op(":") { return Err(s_help("P1202", "You need a ':' after the object key", "Write it like: name: \"John\"")); }
-                    while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                    let value = self.parse_assign()?; props.push((key, value));
+                    let Some(key) = self.eat_object_key() else {
+                        return Err(s_help(
+                            "P1201",
+                            "Expected an object key here",
+                            "Add a property name before ':': name: \"John\"",
+                        ));
+                    };
+
+                    while let Some(tok) = self.toks.get(self.i) {
+                        if matches!(tok.kind, TokenKind::Newline) {
+                            self.i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if !self.eat_op(":") {
+                        return Err(s_help(
+                            "P1202",
+                            "You need a ':' after the object key",
+                            "Write it like: name: \"John\"",
+                        ));
+                    }
+
+                    while let Some(tok) = self.toks.get(self.i) {
+                        if matches!(tok.kind, TokenKind::Newline) {
+                            self.i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let value = self.parse_assign()?;
+                    props.push((key, value));
+
                     if self.eat_op(",") {
-                        while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                        if self.peek_op("}") { break; }
+                        while let Some(tok) = self.toks.get(self.i) {
+                            if matches!(tok.kind, TokenKind::Newline) {
+                                self.i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if self.peek_op("}") {
+                            break;
+                        }
                         continue;
                     }
                     break;
                 }
             }
-            while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-            if !self.eat_op("}") { return Err(s_help("P1203", "Expected '}' to close this object", "Add the closing '}': { name: \"John\" }")); }
+
+            while let Some(tok) = self.toks.get(self.i) {
+                if matches!(tok.kind, TokenKind::Newline) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if !self.eat_op("}") {
+                return Err(s_help(
+                    "P1203",
+                    "Expected '}' to close this object",
+                    "Add the closing '}': { name: \"John\" }",
+                ));
+            }
+
             return Ok(self.apply_postfix_ops(PExpr::Object(props)));
         }
 
-        // --- Lit / Ident dispatch ---
-        let (kind, val_opt) = match self.peek() { Some(t) => (t.kind.clone(), t.value.clone()), None => return Err(s_help("P1003", "Expected an expression here", "Use a value, variable, or call: total = price * qty")) };
+        // --- Lit / other dispatch (ident is handled above) ---
+        let (kind, val_opt) = match self.peek() {
+            Some(t) => (t.kind.clone(), t.value.clone()),
+            None => {
+                return Err(s_help(
+                    "P1003",
+                    "Expected an expression here",
+                    "Use a value, variable, or call: total = price * qty",
+                ))
+            }
+        };
+
         let expr = match kind {
             // MONEY
-            goblin_lexer::TokenKind::Money => {
+            TokenKind::Money => {
                 let lit = val_opt.unwrap_or_default();
                 self.i += 1;
                 PExpr::Money(lit)
             }
 
-            goblin_lexer::TokenKind::Int => {
-                let lit = val_opt.unwrap_or_default(); self.i += 1;
+            TokenKind::Int => {
+                let lit = val_opt.unwrap_or_default();
+                self.i += 1;
                 if let Some(t) = self.peek() {
-                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) { let unit = t.value.clone().unwrap_or_default(); self.i += 1; PExpr::IntWithUnit(lit, unit) }
-                    else { PExpr::Int(lit) }
-                } else { PExpr::Int(lit) }
+                    if t.kind == TokenKind::Op("unit".into()) {
+                        let unit = t.value.clone().unwrap_or_default();
+                        self.i += 1;
+                        PExpr::IntWithUnit(lit, unit)
+                    } else {
+                        PExpr::Int(lit)
+                    }
+                } else {
+                    PExpr::Int(lit)
+                }
             }
-            goblin_lexer::TokenKind::Float => {
-                let lit = val_opt.unwrap_or_default(); self.i += 1;
+
+            TokenKind::Float => {
+                let lit = val_opt.unwrap_or_default();
+                self.i += 1;
                 if let Some(t) = self.peek() {
-                    if t.kind == goblin_lexer::TokenKind::Op("unit".into()) { let unit = t.value.clone().unwrap_or_default(); self.i += 1; PExpr::FloatWithUnit(lit, unit) }
-                    else { PExpr::Float(lit) }
-                } else { PExpr::Float(lit) }
+                    if t.kind == TokenKind::Op("unit".into()) {
+                        let unit = t.value.clone().unwrap_or_default();
+                        self.i += 1;
+                        PExpr::FloatWithUnit(lit, unit)
+                    } else {
+                        PExpr::Float(lit)
+                    }
+                } else {
+                    PExpr::Float(lit)
+                }
             }
-            goblin_lexer::TokenKind::Duration => {
-                let lit = val_opt.unwrap_or_default(); self.i += 1;
+
+            TokenKind::Duration => {
+                let lit = val_opt.unwrap_or_default();
+                self.i += 1;
                 let (base, unit) = Self::split_duration_lexeme(&lit)?;
                 let is_floaty = base.contains('.') || base.contains('e') || base.contains('E');
-                if is_floaty { PExpr::FloatWithUnit(base, unit) } else { PExpr::IntWithUnit(base, unit) }
+                if is_floaty {
+                    PExpr::FloatWithUnit(base, unit)
+                } else {
+                    PExpr::IntWithUnit(base, unit)
+                }
             }
-            goblin_lexer::TokenKind::String => {
-                let lit = self.toks[self.i].value.clone().unwrap_or_default(); self.i += 1;
-                if !lit.as_bytes().contains(&b'{') { PExpr::Str(lit) } else {
-                    let b = lit.as_bytes(); let mut parts: Vec<StrPart> = Vec::new(); let mut text = String::new(); let mut i: usize = 0; let n = b.len();
+
+            TokenKind::String => {
+                let lit = self.toks[self.i].value.clone().unwrap_or_default();
+                self.i += 1;
+
+                if !lit.as_bytes().contains(&b'{') {
+                    PExpr::Str(lit)
+                } else {
+                    // Interpolated string
+                    let b = lit.as_bytes();
+                    let mut parts: Vec<StrPart> = Vec::new();
+                    let mut text = String::new();
+                    let mut i: usize = 0;
+                    let n = b.len();
+
                     while i < n {
-                        if i + 4 < n && &b[i..i + 5] == b"{{/}}" { text.push('}'); i += 5; continue; }
-                        if b[i] == b'{' {
-                            if !text.is_empty() { parts.push(StrPart::Text(std::mem::take(&mut text))); }
-                            let mut depth: usize = 1; let start = i + 1; i += 1;
-                            while i < n && depth > 0 { match b[i] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} } i += 1; }
-                            if depth != 0 { return Err(s_help("P0604", "There's an unclosed '{' in this interpolated string.", "Add a matching '}' to close it, e.g., \"Hello {name}\".")); }
-                            let end = i - 1; let inner = &lit[start..end]; let part = self.parse_interpolation_lvalue(inner)?; parts.push(part); continue;
+                        if i + 4 < n && &b[i..i + 5] == b"{{/}}" {
+                            text.push('}');
+                            i += 5;
+                            continue;
                         }
-                        text.push(b[i] as char); i += 1;
+                        if b[i] == b'{' {
+                            if !text.is_empty() {
+                                parts.push(StrPart::Text(std::mem::take(&mut text)));
+                            }
+                            let mut depth: usize = 1;
+                            let start = i + 1;
+                            i += 1;
+                            while i < n && depth > 0 {
+                                match b[i] {
+                                    b'{' => depth += 1,
+                                    b'}' => depth -= 1,
+                                    _ => {}
+                                }
+                                i += 1;
+                            }
+                            if depth != 0 {
+                                return Err(s_help(
+                                    "P0604",
+                                    "There's an unclosed '{' in this interpolated string.",
+                                    "Add a matching '}' to close it, e.g., \"Hello {name}\".",
+                                ));
+                            }
+                            let end = i - 1;
+                            let inner = &lit[start..end];
+                            let part = self.parse_interpolation_lvalue(inner)?;
+                            parts.push(part);
+                            continue;
+                        }
+                        text.push(b[i] as char);
+                        i += 1;
                     }
-                    if !text.is_empty() { parts.push(StrPart::Text(text)); }
+                    if !text.is_empty() {
+                        parts.push(StrPart::Text(text));
+                    }
                     PExpr::StrInterp(parts)
                 }
             }
-            goblin_lexer::TokenKind::Date => {
-                self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1301", "Expected a string after 'date'.", "Write it like: date \"2023-12-25\".")) };
-                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err(s_help("P1301", "Expected a string after 'date'", "Write it like: date \"2023-12-25\"")); }
-                let lit = v2.unwrap_or_default(); self.i += 1; PExpr::Date(lit)
+
+            TokenKind::Date => {
+                self.i += 1;
+                self.skip_newlines();
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => {
+                        return Err(s_help(
+                            "P1301",
+                            "Expected a string after 'date'.",
+                            "Write it like: date \"2023-12-25\".",
+                        ))
+                    }
+                };
+                if !matches!(k2, TokenKind::String) {
+                    return Err(s_help(
+                        "P1301",
+                        "Expected a string after 'date'",
+                        "Write it like: date \"2023-12-25\"",
+                    ));
+                }
+                let lit = v2.unwrap_or_default();
+                self.i += 1;
+                PExpr::Date(lit)
             }
-            goblin_lexer::TokenKind::Time => {
-                self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1302", "Expected a string after 'time'", "Write it like: time \"14:30:00\"")) };
-                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err(s_help("P1302", "Expected a string after 'time'", "Write it like: time \"14:30:00\"")); }
-                let lit = v2.unwrap_or_default(); self.i += 1; PExpr::Time(lit)
+
+            TokenKind::Time => {
+                self.i += 1;
+                self.skip_newlines();
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => {
+                        return Err(s_help(
+                            "P1302",
+                            "Expected a string after 'time'",
+                            "Write it like: time \"14:30:00\"",
+                        ))
+                    }
+                };
+                if !matches!(k2, TokenKind::String) {
+                    return Err(s_help(
+                        "P1302",
+                        "Expected a string after 'time'",
+                        "Write it like: time \"14:30:00\"",
+                    ));
+                }
+                let lit = v2.unwrap_or_default();
+                self.i += 1;
+                PExpr::Time(lit)
             }
-            goblin_lexer::TokenKind::DateTime => {
-                self.i += 1; self.skip_newlines();
-                let (k2, v2) = match self.peek() { Some(t2) => (t2.kind.clone(), t2.value.clone()), None => return Err(s_help("P1303", "Expected a string after 'datetime'.", "Write it like: datetime \"2023-12-25T14:30:00\".")) };
-                if !matches!(k2, goblin_lexer::TokenKind::String) { return Err(s_help("P1303", "Expected a string after 'datetime'", "Write it like: datetime \"2023-12-25T14:30:00\"")); }
-                let value = v2.unwrap_or_default(); self.i += 1; self.skip_newlines();
+
+            TokenKind::DateTime => {
+                self.i += 1;
+                self.skip_newlines();
+                let (k2, v2) = match self.peek() {
+                    Some(t2) => (t2.kind.clone(), t2.value.clone()),
+                    None => {
+                        return Err(s_help(
+                            "P1303",
+                            "Expected a string after 'datetime'.",
+                            "Write it like: datetime \"2023-12-25T14:30:00\".",
+                        ))
+                    }
+                };
+                if !matches!(k2, TokenKind::String) {
+                    return Err(s_help(
+                        "P1303",
+                        "Expected a string after 'datetime'",
+                        "Write it like: datetime \"2023-12-25T14:30:00\"",
+                    ));
+                }
+                let value = v2.unwrap_or_default();
+                self.i += 1;
+                self.skip_newlines();
+
                 let mut tz: Option<String> = None;
                 if let Some(tz_tok) = self.peek() {
-                    if matches!(tz_tok.kind, goblin_lexer::TokenKind::Ident) && tz_tok.value.as_deref() == Some("tz") {
-                        self.i += 1; self.skip_newlines();
-                        if !self.eat_op(":") { return Err(s_help("P1304", "You need a ':' after tz", "Write it like: tz: \"UTC\"")); }
+                    if matches!(tz_tok.kind, TokenKind::Ident) && tz_tok.value.as_deref() == Some("tz") {
+                        self.i += 1;
                         self.skip_newlines();
-                        let (k3, v3) = match self.peek() { Some(t3) => (t3.kind.clone(), t3.value.clone()), None => return Err(s_help("P1305", "Expected a string after tz:", "Write it like: tz: \"UTC\"")) };
-                        if !matches!(k3, goblin_lexer::TokenKind::String) { return Err(s_help("P1305", "Expected a string after tz:", "Write it like: tz: \"UTC\"")); }
-                        tz = Some(v3.unwrap_or_default()); self.i += 1;
+                        if !self.eat_op(":") {
+                            return Err(s_help(
+                                "P1304",
+                                "You need a ':' after tz",
+                                "Write it like: tz: \"UTC\"",
+                            ));
+                        }
+                        self.skip_newlines();
+                        let (k3, v3) = match self.peek() {
+                            Some(t3) => (t3.kind.clone(), t3.value.clone()),
+                            None => {
+                                return Err(s_help(
+                                    "P1305",
+                                    "Expected a string after tz:",
+                                    "Write it like: tz: \"UTC\"",
+                                ))
+                            }
+                        };
+                        if !matches!(k3, TokenKind::String) {
+                            return Err(s_help(
+                                "P1305",
+                                "Expected a string after tz:",
+                                "Write it like: tz: \"UTC\"",
+                            ));
+                        }
+                        tz = Some(v3.unwrap_or_default());
+                        self.i += 1;
                     }
                 }
                 PExpr::DateTime { value, tz }
             }
-            goblin_lexer::TokenKind::Ident => {
-                let name = val_opt.unwrap_or_default(); self.i += 1;
-                match name.as_str() { "true" => PExpr::Bool(true), "false" => PExpr::Bool(false), "nil" => PExpr::Nil, _ => PExpr::Ident(name) }
-            }
+
             // Catch-all for orphaned operators at primary position: consume + error (prevents loops).
-            goblin_lexer::TokenKind::Op(ref s) => {
+            TokenKind::Op(ref s) => {
                 let sp = self.toks[self.i].span.clone();
                 self.i += 1;
                 return Err(s_help(
                     "P1006",
-                    &format!("Expected an expression, but found operator '{}' at line {}, col {}", s, sp.line_start, sp.col_start),
+                    &format!(
+                        "Expected an expression, but found operator '{}' at line {}, col {}",
+                        s, sp.line_start, sp.col_start
+                    ),
                     "Add a value or name before the operator: total = price * qty (not * qty)",
                 ));
             }
+
             _ => return Err(self.err_expected_expr("at start of primary")),
         };
 
@@ -3059,34 +3671,15 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_range(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_join()?;
+        let mut lhs = self.parse_additive()?; // was parse_join()
 
         loop {
             let op = if self.eat_op("...") { "..." }
             else if self.eat_op("..") { ".." }
             else { break };
 
-            let rhs = self.parse_join()?;
+            let rhs = self.parse_additive()?; // was parse_join()
             lhs = PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs));
-        }
-
-        Ok(lhs)
-    }
-
-    fn parse_join(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_additive()?;
-
-        loop {
-            if self.eat_op("||") {
-                let rhs = self.parse_additive()?;
-                lhs = PExpr::Binary(Box::new(lhs), "||".to_string(), Box::new(rhs));
-                continue;
-            } else if self.eat_op("|") {
-                let rhs = self.parse_additive()?;
-                lhs = PExpr::Binary(Box::new(lhs), "|".to_string(), Box::new(rhs));
-                continue;
-            }
-            break;
         }
 
         Ok(lhs)
@@ -3096,17 +3689,23 @@ impl<'t> Parser<'t> {
         let mut lhs = self.parse_multiplicative()?;
 
         loop {
-            if self.eat_op("+") {
+            if self.eat_op("++") {
+                self.skip_newlines();
+                let rhs = self.parse_multiplicative()?;
+                lhs = PExpr::Binary(Box::new(lhs), "++".into(), Box::new(rhs));
+                continue;
+            } else if self.eat_op("+") {
                 self.skip_newlines();
                 let rhs = self.parse_multiplicative()?;
                 lhs = PExpr::Binary(Box::new(lhs), "+".into(), Box::new(rhs));
+                continue;
             } else if self.eat_op("-") {
                 self.skip_newlines();
                 let rhs = self.parse_multiplicative()?;
                 lhs = PExpr::Binary(Box::new(lhs), "-".into(), Box::new(rhs));
-            } else {
-                break;
+                continue;
             }
+            break;
         }
 
         Ok(lhs)

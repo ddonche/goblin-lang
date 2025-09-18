@@ -519,10 +519,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
     }
 
     while i < bytes.len() {
-        // Orphan pipeline-carry line (non-indented):
-        // If previous token is layout (or none) and this physical line starts
-        // at column 1 with "|>", ignore the whole line so it lexes as a blank line.
-        // We do NOT consume the newline here; the NL arm will emit NEWLINE.
+
         if nest == 0 {
             let prev_is_layout = match tokens.last() {
                 None => true,
@@ -531,26 +528,6 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
                 ),
             };
-
-            if prev_is_layout {
-                // Only treat as orphan if `|>` is at column 1 (no leading spaces).
-                let mut j = i;
-                let mut saw_space = false;
-                while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
-                    saw_space = true;
-                    j += 1;
-                }
-                if !saw_space && j + 1 < bytes.len() && bytes[j] == b'|' && bytes[j + 1] == b'>' {
-                    // Skip to end-of-line (but leave the newline to be handled normally).
-                    j += 2;
-                    while j < bytes.len() && bytes[j] != b'\n' && bytes[j] != b'\r' {
-                        j += 1;
-                    }
-                    col += (j - i) as u32;
-                    i = j;
-                    continue;
-                }
-            }
         }
 
         match bytes[i] {
@@ -2098,7 +2075,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
 
             // '|' family: ||', '|=', '|'
             b'|' => {
-                // Longest-match among |>  ||  |=  |
+                // Longest-match among  ||  |=  |
                 if i + 1 < bytes.len() && bytes[i + 1] == b'|' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
                     tokens.push(Token { kind: TokenKind::Operator("||".to_string()), span, value: None });
