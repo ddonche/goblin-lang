@@ -2254,7 +2254,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     let span = Span::new(file, i, i + 1, line, col, line, col + 1);
                     return Err(vec![Diagnostic::error(
                         "L0401",
-                        "Expected a name after `#`\n\nhelp: Write `#tag` or remove the `#`",
+                        "Expected a name after `#`\n\nhelp: Write `#tag` or remove the `#`; if you meant to write a comment, use `///` instead",
                         span,
                     )]);
                 }

@@ -336,13 +336,14 @@ impl<'t> Parser<'t> {
 
         // Detect assignment / compound-assign
         let op: Option<&'static str> =
-            if self.peek_op("//=") { Some("//=") }
-            else if self.peek_op("+=") { Some("+=") }
-            else if self.peek_op("-=") { Some("-=") }
-            else if self.peek_op("*=") { Some("*=") }
-            else if self.peek_op("/=") { Some("/=") }
-            else if self.peek_op("%=") { Some("%=") }
-            else if self.peek_op("=")  { Some("=")  }
+            if self.peek_op("??=") { Some("??=") }
+            else if self.peek_op("//=") { Some("//=") }
+            else if self.peek_op("+=")  { Some("+=")  }
+            else if self.peek_op("-=")  { Some("-=")  }
+            else if self.peek_op("*=")  { Some("*=")  }
+            else if self.peek_op("/=")  { Some("/=")  }
+            else if self.peek_op("%=")  { Some("%=")  }
+            else if self.peek_op("=")   { Some("=")   }
             else { None };
 
         if op.is_none() {
@@ -384,6 +385,12 @@ impl<'t> Parser<'t> {
         } else {
             Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
         }
+    }
+
+    fn is_const_ident(name: &str) -> bool {
+        !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && name.chars().next().unwrap().is_ascii_uppercase()
     }
 
     fn parse_template_pairs_flex(&mut self) -> Result<Vec<(String, PExpr)>, String> {
@@ -2771,6 +2778,143 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("if".to_string(), args, span)))
     }
 
+    fn parse_unless_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+
+        let start_i = self.i;
+
+        // 'unless'
+        debug_assert_eq!(self.peek_ident().as_deref(), Some("unless"));
+        let _ = self.eat_ident();
+
+        // condition (negated): unless <cond>  =>  if !<cond>
+        let cond_pe = self.parse_assign()?;
+        let cond_pe = PExpr::Prefix("!".into(), Box::new(cond_pe));
+        let cond = self.lower_expr(cond_pe);
+
+        // THEN block: stop at else/end/xx
+        let then_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+            if let Some(t) = p.peek() {
+                match &t.kind {
+                    TokenKind::Ident => matches!(t.value.as_deref(), Some("else") | Some("end")),
+                    TokenKind::Op(op) => op == "xx",
+                    _ => false,
+                }
+            } else {
+                true // EOF
+            }
+        })?;
+
+        // Optional ELSE block
+        let else_stmts = if let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("else") {
+                let _ = self.eat_ident(); // 'else'
+                Some(self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+                    if let Some(t2) = p.peek() {
+                        match &t2.kind {
+                            TokenKind::Ident => matches!(t2.value.as_deref(), Some("end")),
+                            TokenKind::Op(op) => op == "xx",
+                            _ => false,
+                        }
+                    } else {
+                        true
+                    }
+                })?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Tolerant closer: 'end' or 'xx' if still present
+        if let Some(t) = self.peek() {
+            match &t.kind {
+                TokenKind::Ident if t.value.as_deref() == Some("end") => { let _ = self.eat_ident(); }
+                TokenKind::Op(op) if op == "xx" => { let _ = self.eat_op("xx"); }
+                _ => {}
+            }
+        }
+
+        // Convert stmt blocks -> arrays of exprs (same contract as 'if')
+        let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
+            stmts
+                .into_iter()
+                .map(|s| match s {
+                    ast::Stmt::Expr(e) => Ok(e),
+                    _ => Err(s_help(
+                        "P0311",
+                        "Only expression statements are allowed inside an 'unless' block here.",
+                        "Use value/call/assignment lines inside 'unless'; declarations must be outside.",
+                    )),
+                })
+                .collect()
+        };
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let then_arr = ast::Expr::Array(to_exprs(then_stmts)?, span.clone());
+
+        let mut args = vec![cond, then_arr];
+        if let Some(else_block) = else_stmts {
+            args.push(ast::Expr::Array(to_exprs(else_block)?, span.clone()));
+        }
+
+        Ok(ast::Stmt::Expr(ast::Expr::FreeCall("if".to_string(), args, span)))
+    }
+
+    fn parse_while_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+
+        // 'while'
+        debug_assert_eq!(self.peek_ident().as_deref(), Some("while"));
+        let _ = self.eat_ident();
+
+        // condition
+        let cond_pe = self.parse_assign()?;
+        let cond = self.lower_expr(cond_pe);
+
+        // BODY block: stop at end/xx
+        let body_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+            if let Some(t) = p.peek() {
+                match &t.kind {
+                    TokenKind::Ident => matches!(t.value.as_deref(), Some("end")),
+                    TokenKind::Op(op) => op == "xx",
+                    _ => false,
+                }
+            } else {
+                true // EOF
+            }
+        })?;
+
+        // Tolerant closer: 'end' or 'xx' if still present
+        if let Some(t) = self.peek() {
+            match &t.kind {
+                TokenKind::Ident if t.value.as_deref() == Some("end") => { let _ = self.eat_ident(); }
+                TokenKind::Op(op) if op == "xx" => { let _ = self.eat_op("xx"); }
+                _ => {}
+            }
+        }
+
+        // Convert stmt list -> expr array
+        let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
+            stmts.into_iter().map(|s| match s {
+                ast::Stmt::Expr(e) => Ok(e),
+                _ => Err(s_help(
+                    "P0313",
+                    "Only expression statements are allowed inside a 'while' block here.",
+                    "Use value/call/assignment lines inside 'while'; declarations must be outside.",
+                )),
+            }).collect()
+        };
+
+        let span = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i.saturating_sub(1));
+        let body_arr = ast::Expr::Array(to_exprs(body_stmts)?, span.clone());
+
+        // Lower to FreeCall("while", [cond, body[]])
+        let args = vec![cond, body_arr];
+        Ok(ast::Stmt::Expr(ast::Expr::FreeCall("while".to_string(), args, span)))
+    }
+
     fn parse_stmt_block_until<F>(&mut self, mut stop: F) -> Result<Vec<ast::Stmt>, String>
     where
         F: FnMut(&mut Parser<'_>) -> bool,
@@ -3077,6 +3221,12 @@ impl<'t> Parser<'t> {
         // -------- keyword-first dispatch (keeps style consistent) --------
         if self.peek_ident() == Some("if") {
             return self.parse_if_stmt();
+        }
+        if self.peek_ident() == Some("unless") {
+            return self.parse_unless_stmt();
+        }
+        if self.peek_ident() == Some("while") {
+            return self.parse_while_stmt();
         }
         if self.peek_ident() == Some("act") {
             let _ = self.eat_ident(); // 'act'
@@ -3807,6 +3957,60 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
+            // predicate:  <lhs> between <lo> .. <hi>    or    <lhs> !between <lo> .. <hi>
+            if self.peek_ident() == Some("between")
+                || (self.peek_op("!") && self.toks.get(self.i + 1).and_then(|t| t.value.as_deref()) == Some("between"))
+            {
+                // consume '!between' or 'between'
+                let mut neg = false;
+                if self.peek_op("!") {
+                    self.i += 1; // '!'
+                    debug_assert_eq!(self.peek_ident().as_deref(), Some("between"));
+                    let _ = self.eat_ident(); // 'between'
+                    neg = true;
+                } else {
+                    let _ = self.eat_ident(); // 'between'
+                }
+
+                self.skip_newlines();
+                // lower bound
+                let lo = self.parse_additive()?;
+
+                self.skip_newlines();
+                // dots: "..." (inclusive upper) preferred over ".." (exclusive upper)
+                let inclusive_upper = if self.eat_op("...") {
+                    true
+                } else if self.eat_op("..") {
+                    false
+                } else {
+                    return Err(s_help(
+                        "P1004",
+                        "Expected '..' or '...' after the lower bound in 'between'",
+                        "Write it like:  x between 1..5   or   x between 10...20",
+                    ));
+                };
+
+                self.skip_newlines();
+                // upper bound
+                let hi = self.parse_additive()?;
+
+                // Desugar:
+                //   between: (lo <= lhs) and (lhs <|<= hi)
+                //   !between: (lhs < lo) or (lhs > hi)
+                if neg {
+                    let a = PExpr::Binary(Box::new(lhs.clone()), "<".into(), Box::new(lo));
+                    let b = PExpr::Binary(Box::new(lhs.clone()), ">".into(), Box::new(hi));
+                    lhs = PExpr::Binary(Box::new(a), "or".into(), Box::new(b));
+                } else {
+                    let left = PExpr::Binary(Box::new(lo), "<=".into(), Box::new(lhs.clone()));
+                    let right_op = if inclusive_upper { "<=" } else { "<" };
+                    let right = PExpr::Binary(Box::new(lhs.clone()), right_op.into(), Box::new(hi));
+                    lhs = PExpr::Binary(Box::new(left), "and".into(), Box::new(right));
+                }
+
+                continue;
+            }
+
             if self.eat_op("===")  { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
             if self.eat_op("!==")  { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
             if self.eat_op("==")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
@@ -4494,13 +4698,20 @@ impl<'t> Parser<'t> {
                 let mut end:   Option<PExpr> = None;
                 let mut step:  Option<PExpr> = None;
 
-                // start is present iff the next token isn't ":" (or "]" which we rejected above)
-                if !self.peek_op(":") {
+                // start is present iff the next token isn't ":" or ".." or "..." (or "]" which we rejected above)
+                if !self.peek_op(":") && !self.peek_op("..") && !self.peek_op("...") {
                     start = Some(self.parse_coalesce()?);
                 }
 
-                // If we see a ':', we're in slice mode; otherwise it's an index
-                let is_slice = self.eat_op(":");
+                // If we see a ':' or '..' or '...', we're in slice mode; otherwise it's an index
+                let is_slice = if self.eat_op("...") {
+                    true
+                } else if self.eat_op("..") {
+                    true
+                } else {
+                    self.eat_op(":")
+                };
+
                 if is_slice {
                     // optional end
                     while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
