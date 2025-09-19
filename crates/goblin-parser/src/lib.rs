@@ -261,12 +261,77 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_assign(&mut self) -> Result<PExpr, String> {
-        // At the very start of parse_assign():
-        if let Some(pe) = self.try_parse_typed_object_assign()? {
-            return Ok(pe);
-        }
+        use goblin_lexer::TokenKind;
 
-        // Parse potential LHS first
+        // ---------- EARLY LOOKAHEAD: typed-LHS  name | Type = <pairs> ----------
+        // Do not consume unless the entire pattern matches on the same line.
+        if let Some(t0) = self.toks.get(self.i).cloned() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                let obj_name = t0.value.clone().unwrap_or_default();
+                let line = t0.span.line_start;
+                let mut j = self.i + 1;
+
+                // Expect '|'
+                if let Some(t1) = self.toks.get(j) {
+                    if t1.span.line_start == line && matches!(t1.kind, TokenKind::Op(ref op) if op == "|") {
+                        j += 1;
+
+                        // Expect Type ident
+                        if let Some(t2) = self.toks.get(j) {
+                            if t2.span.line_start == line && matches!(t2.kind, TokenKind::Ident) {
+                                let type_name = t2.value.clone().unwrap_or_default();
+                                j += 1;
+
+                                // Optional layout after type (be forgiving), but stay on same line for '='
+                                while let Some(t) = self.toks.get(j) {
+                                    match t.kind {
+                                        TokenKind::Indent | TokenKind::Dedent | TokenKind::Newline => j += 1,
+                                        _ => break,
+                                    }
+                                }
+
+                                // Expect '=' on same line
+                                if let Some(t3) = self.toks.get(j) {
+                                    if t3.span.line_start == line && matches!(t3.kind, TokenKind::Op(ref op) if op == "=") {
+                                        // Assignments only at statement level (match normal '=' behavior)
+                                        if !self.in_stmt {
+                                            return Err(s_help(
+                                                "P0301",
+                                                "You can't use assignment (=) inside an expression.",
+                                                "Put the assignment on its own line, then use the variable: result = calculate() then total = result * 2.",
+                                            ));
+                                        }
+
+                                        // Enforce capitalized Type
+                                        if !type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                                            return Err(s_help(
+                                                "P0910",
+                                                "Types used in object construction must begin with a capital letter.",
+                                                &format!("Write: myVar | {} = name: \"...\"", Self::capitalize_like(&type_name)),
+                                            ));
+                                        }
+
+                                        // Commit: consume through '='
+                                        self.i = j + 1;
+
+                                        // Allow newlines before pairs, then parse flexible object pairs:
+                                        // accepts ',' or '::', bare 'nc', and empty slots.
+                                        self.skip_newlines();
+                                        let pairs = self.parse_object_field_chain_line()?;
+
+                                        let rhs = PExpr::FreeCall(type_name, vec![PExpr::Object(pairs)]);
+                                        return Ok(PExpr::Assign(Box::new(PExpr::Ident(obj_name)), Box::new(rhs)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ---------- END typed-LHS lookahead ----------
+
+        // Fallback: parse potential LHS as a normal expression
         let lhs = self.parse_coalesce()?;
 
         // Detect assignment / compound-assign
@@ -284,7 +349,7 @@ impl<'t> Parser<'t> {
             return Ok(lhs);
         }
 
-        // Assignments only at statement level
+        // Assignments only at statement level (applies to the normal path)
         if !self.in_stmt {
             return Err(s_help(
                 "P0301",
@@ -308,9 +373,7 @@ impl<'t> Parser<'t> {
         // Allow newline(s) before RHS
         self.skip_newlines();
 
-        // NOTE: We no longer support “brace-block RHS”. Braces after '=' belong to expressions
-        // (maps/interpolation) and are handled by the primary/object-literal parser.
-        // Fall through to normal RHS expression (disable nested assignment).
+        // Parse RHS as expression (disable nested assignment while parsing RHS)
         let prev_in_stmt = self.in_stmt;
         self.in_stmt = false;
         let rhs = self.parse_coalesce()?;
@@ -323,70 +386,7 @@ impl<'t> Parser<'t> {
         }
     }
 
-    // Inside impl<'t> Parser<'t>
-    fn try_parse_typed_object_assign(&mut self) -> Result<Option<PExpr>, String> {
-        use goblin_lexer::TokenKind;
-
-        let start_i = self.i;
-
-        // <name>  (identifier)
-        let var = match self.peek() {
-            Some(t) if matches!(t.kind, TokenKind::Ident) => t.value.clone().unwrap_or_default(),
-            _ => return Ok(None), // not our form; let normal assign parsing handle it
-        };
-        let _ = self.eat_ident(); // consume <name>
-
-        // '|'
-        if !self.eat_op("|") {
-            // not typed-LHS; rewind and let the normal path proceed
-            self.i = start_i;
-            return Ok(None);
-        }
-
-        // <Type> (identifier; must be Capitalized)
-        let Some(ty) = self.eat_ident() else {
-            self.i = start_i;
-            return Err(s_help(
-                "P0912",
-                "Expected a Type name after '|'.",
-                "Write: name | Pet = name: \"...\"",
-            ));
-        };
-        if !Self::is_capitalized(&ty) {
-            return Err(s_help(
-                "P0910",
-                "Types used in object construction must begin with a capital letter.",
-                &format!(
-                    "Write '{} | {} = ...' where '{}' is capitalized.",
-                    var, Self::capitalize_like(&ty), Self::capitalize_like(&ty)
-                ),
-            ));
-        }
-
-        // '='
-        if !self.eat_op("=") {
-            return Err(s_help(
-                "P0913",
-                "Expected '=' after 'name | Type'.",
-                "Write: name | Type = name: \"...\"",
-            ));
-        }
-
-        // pairs: for now use your existing `parse_template_pairs()`
-        // (we’ll swap to a flexible version that supports ',' and 'nc' next)
-        let pairs = self.parse_template_pairs_flex()?;
-
-        // Build Assign(Ident(var), TemplateApply{type_name: ty, pairs})
-        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        let lhs = PExpr::Ident(var);
-        let rhs = PExpr::TemplateApply { type_name: ty, pairs, span: span.clone() };
-
-        Ok(Some(PExpr::Assign(Box::new(lhs), Box::new(rhs))))
-    }
-
     fn parse_template_pairs_flex(&mut self) -> Result<Vec<(String, PExpr)>, String> {
-        use goblin_lexer::TokenKind;
-
         let mut pairs: Vec<(String, PExpr)> = Vec::new();
 
         // At least one unit (pair or placeholder) expected
@@ -746,7 +746,11 @@ impl<'t> Parser<'t> {
             if self.peek_op("//") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("//"); expr = PExpr::Postfix(Box::new(expr), "//".into()); continue; }
 
             // other postfix ops
-            if self.eat_op("++") { expr = PExpr::Postfix(Box::new(expr), "++".into()); continue; }
+            if self.peek_op("++") && !lookahead_starts_expr(self.i + 1) {
+                self.i += 1; // eat '++'
+                expr = PExpr::Postfix(Box::new(expr), "++".into());
+                continue;
+            }
             if self.eat_op("--") { expr = PExpr::Postfix(Box::new(expr), "--".into()); continue; }
             if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));               continue; }
             if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());   continue; }
@@ -1502,6 +1506,151 @@ impl<'t> Parser<'t> {
                 self.i = end_i; // EOL/EOF ends header row
                 break;
             }
+        }
+
+        Ok(out)
+    }
+
+    fn parse_object_field_chain_line(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+        use goblin_lexer::TokenKind;
+
+        let mut out = Vec::new();
+
+        // If nothing follows (EOF), object provides no overrides
+        let line = match self.toks.get(self.i) {
+            Some(t) => t.span.line_start,
+            None => return Ok(out),
+        };
+
+        loop {
+            // 0) Consume any number of separators at the start (each empty slot = skip)
+            while let Some(t) = self.toks.get(self.i) {
+                if t.span.line_start != line { break; }
+                if let TokenKind::Op(ref op) = t.kind {
+                    if op == "::" || op == "," { self.i += 1; continue; }
+                }
+                break;
+            }
+
+            // End if we reached EOL/EOF
+            let Some(t0) = self.toks.get(self.i) else { break; };
+            if t0.span.line_start != line { break; }
+
+            // 1) Bare 'nc' placeholder → skip (unless it's a real field 'nc:')
+            if matches!(t0.kind, TokenKind::Ident)
+                && t0.value.as_deref().map(|s| s.eq_ignore_ascii_case("nc")).unwrap_or(false)
+            {
+                let is_real_field = match self.toks.get(self.i + 1) {
+                    Some(t1)
+                        if t1.span.line_start == line
+                        && matches!(t1.kind, TokenKind::Op(ref c) if c == ":") => true,
+                    _ => false,
+                };
+                if !is_real_field {
+                    self.i += 1; // consume bare 'nc' as skip
+                    continue;
+                }
+            }
+
+            // 2) Try a named field: key ':' expr
+            let save_i = self.i;
+            let Some(key) = self.eat_object_key() else {
+                return Err(s_help(
+                    "O0901",
+                    "Expected 'name: value', 'nc', or a separator in this object.",
+                    "Use 'nc' or '::' to skip, or write a field like name: \"Fluffy\"",
+                ));
+            };
+
+            if !self.eat_op(":") {
+                // Not actually a pair; rewind and error
+                self.i = save_i;
+                return Err(s_help(
+                    "O0902",
+                    "Expected ':' after the field name in this object.",
+                    "Write: name: \"Fluffy\" or use 'nc' to skip",
+                ));
+            }
+
+            // Allow layout after ':'
+            while let Some(t) = self.peek() {
+                match t.kind {
+                    TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => { self.i += 1; }
+                    _ => break,
+                }
+            }
+
+            // 3) Scan until next top-level ',' or '::' on the SAME line
+            let value_start = self.i;
+            let mut depth_paren = 0i32;
+            let mut depth_brack = 0i32;
+            let mut depth_brace = 0i32;
+            let mut sep_i: Option<usize> = None;
+
+            let mut k = value_start;
+            while let Some(tok) = self.toks.get(k) {
+                if tok.span.line_start != line { break; }
+
+                match &tok.kind {
+                    TokenKind::Op(op) if op == "(" => { depth_paren += 1; }
+                    TokenKind::Op(op) if op == ")" => { depth_paren -= 1; }
+                    TokenKind::Op(op) if op == "[" => { depth_brack += 1; }
+                    TokenKind::Op(op) if op == "]" => { depth_brack -= 1; }
+                    TokenKind::Op(op) if op == "{" => { depth_brace += 1; }
+                    TokenKind::Op(op) if op == "}" => { depth_brace -= 1; }
+
+                    // Unexpected junk token at top-level between fields (e.g., '$$$')
+                    TokenKind::Op(op)
+                        if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && k > value_start
+                           && op != "::" && op != "," =>
+                    {
+                        return Err(s_help(
+                            "O0904",
+                            &format!("Unexpected token '{}' between fields in this object.", op),
+                            "Remove it or separate fields with '::' or ',': name: \"n\" :: species: \"cat\"",
+                        ));
+                    }
+
+                    // NEW: starting a NEW FIELD without a separator → error
+                    TokenKind::Ident
+                        if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && k > value_start =>
+                    {
+                        if let Some(next) = self.toks.get(k + 1) {
+                            if next.span.line_start == line
+                                && matches!(next.kind, TokenKind::Op(ref c) if c == ":")
+                            {
+                                return Err(s_help(
+                                    "O0903",
+                                    "Missing field separator between fields in this object.",
+                                    "Separate fields with '::' or ',': name: \"n\" :: species: \"cat\"",
+                                ));
+                            }
+                        }
+                    }
+
+                    // legal separators at top level
+                    TokenKind::Op(op)
+                        if (op == "::" || op == ",")
+                            && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 =>
+                    {
+                        sep_i = Some(k);
+                        break;
+                    }
+
+                    _ => {}
+                }
+                k += 1;
+            }
+
+            let end_i = sep_i.unwrap_or(k);
+
+            // 4) Parse just that slice
+            let val = parse_expr_preview(&self.toks[value_start..end_i])?;
+            out.push((key, val));
+
+            // 5) Advance to separator (if any) or to EOL and continue
+            self.i = end_i;
+            if sep_i.is_some() { continue; } else { break; }
         }
 
         Ok(out)
@@ -2958,7 +3107,10 @@ impl<'t> Parser<'t> {
         }
 
         // -------- default: expression/assignment statement --------
+        let was = self.in_stmt;
+        self.in_stmt = true;
         let expr_pe = self.parse_assign()?;
+        self.in_stmt = was;
         Ok(ast::Stmt::Expr(self.lower_expr(expr_pe)))
     }
 
@@ -4299,7 +4451,11 @@ impl<'t> Parser<'t> {
             if self.peek_op("**") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("**"); lhs = PExpr::Postfix(Box::new(lhs), "**".to_string()); continue; }
             if self.peek_op("//") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("//"); lhs = PExpr::Postfix(Box::new(lhs), "//".to_string()); continue; }
 
-            if self.eat_op("++") { lhs = PExpr::Postfix(Box::new(lhs), "++".to_string()); continue; }
+            if self.peek_op("++") && !lookahead_starts_expr(self.i + 1) {
+                self.i += 1;
+                lhs = PExpr::Postfix(Box::new(lhs), "++".to_string());
+                continue;
+            }
             if self.eat_op("--") { lhs = PExpr::Postfix(Box::new(lhs), "--".to_string()); continue; }
             if self.eat_op("?")  { lhs = PExpr::IsBound(Box::new(lhs));                     continue; }
             if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());   continue; }
@@ -4549,6 +4705,7 @@ impl<'t> Parser<'t> {
 
         Ok(lhs)
     }
+
     fn parse_args_paren(&mut self) -> Result<Vec<PExpr>, String> {
         let mut args = Vec::new();
 

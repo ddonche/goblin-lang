@@ -521,7 +521,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
     while i < bytes.len() {
 
         if nest == 0 {
-            let prev_is_layout = match tokens.last() {
+            let _prev_is_layout = match tokens.last() {
                 None => true,
                 Some(t) => matches!(
                     t.kind,
