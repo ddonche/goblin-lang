@@ -57,12 +57,17 @@ name = "goblin-cli"
 version = "0.1.0"
 dependencies = [
  "goblin-diagnostics",
+ "goblin-gql",
  "goblin-lexer",
  "goblin-parser",
 ]
 
 [[package]]
 name = "goblin-diagnostics"
+version = "0.1.0"
+
+[[package]]
+name = "goblin-gql"
 version = "0.1.0"
 
 [[package]]

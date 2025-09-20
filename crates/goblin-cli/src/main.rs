@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-
+use goblin_gql::{parse_query as gql_parse, pretty as gql_pretty};
 use goblin_lexer::{lex, TokenKind};
 use goblin_parser::Parser;
 
@@ -48,7 +48,16 @@ fn main() {
         std::process::exit(run_parse(Path::new(&args[1])));
     }
 
-    eprintln!("usage: goblin-cli lex --check\n       goblin-cli parse <file>");
+    // NEW: `goblin-cli gql-parse <file|->`
+    if !args.is_empty() && args[0] == "gql-parse" {
+        args.remove(0);
+        let input = args.get(0).map(|s| s.as_str()).unwrap_or("-");
+        std::process::exit(run_gql_parse(input));
+    }
+
+    eprintln!(
+        "usage: goblin-cli lex --check\n       goblin-cli parse <file>\n       goblin-cli gql-parse <file|->"
+    );
     std::process::exit(2);
 }
 
@@ -255,6 +264,37 @@ fn run_parse(path: &Path) -> i32 {
             for (idx, d) in diags.iter().enumerate() {
                 eprintln!("  [{}] {}", idx + 1, format_diagnostic(d));
             }
+            1
+        }
+    }
+}
+
+fn run_gql_parse(arg: &str) -> i32 {
+    // read from stdin if "-" (or no arg), else from path
+    let src = if arg == "-" {
+        let mut s = String::new();
+        if let Err(e) = io::stdin().read_to_string(&mut s) {
+            eprintln!("read stdin error: {}", e);
+            return 2;
+        }
+        s
+    } else {
+        match fs::read_to_string(arg) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("read error: {}: {}", arg, e);
+                return 1;
+            }
+        }
+    };
+
+    match gql_parse(&src) {
+        Ok(q) => {
+            println!("{}", gql_pretty(&q));
+            0
+        }
+        Err(e) => {
+            eprintln!("{}", e);
             1
         }
     }

@@ -6,6 +6,7 @@ members = [
     "crates/goblin-ast",
     "crates/goblin-parser",
     "crates/goblin-interpreter",
-    "crates/goblin-cli",
+    "crates/goblin-cli", "crates/goblin-gql",
+    "crates/goblin-gql",
 ]
 resolver = "2"
