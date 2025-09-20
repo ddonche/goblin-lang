@@ -8,3 +8,7 @@ goblin_lexer = { package = "goblin-lexer", path = "../goblin-lexer" }
 goblin-diagnostics = { path = "../goblin-diagnostics" }
 goblin-parser = { path = "../goblin-parser" } 
 goblin-gql = { path = "../goblin-gql" }
+
+[[bin]]
+name = "goblin"               # <— this is the installed executable name
+path = "src/main.rs"
