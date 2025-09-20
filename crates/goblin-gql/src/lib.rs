@@ -409,42 +409,52 @@ struct RawLine { line_no: usize, content: String }
 
 fn parse_scope(rest: &str, line_no: usize) -> Result<Option<Scope>, DslError> {
     let toks = split_ws_preserving_quotes(rest);
-    if toks.is_empty() { return Ok(None); }
+    if toks.is_empty() {
+        return Ok(None); // bare `grab` / `fetch` — scope inferred from body
+    }
+
     match toks[0].as_str() {
         "latest" => {
-            if toks.len() < 2 {
+            if toks.len() != 2 {
                 return Err(s_help(
                     line_no, 1, "P0115",
-                    "Malformed scope: `latest` requires a number.",
+                    "Malformed scope: `latest` requires exactly one number.",
                     "Write:\n  grab latest 10\n  - posts [title]\n  xx",
                 ));
             }
-            let n = toks[1].parse::<u64>()
-                .map_err(|_| s_help(
-                    line_no, 1, "P0115",
-                    "Malformed scope: expected a number after `latest`.",
-                    "Write:\n  grab latest 10\n  - posts [title]\n  xx",
-                ))?;
+            let n = toks[1].parse::<u64>().map_err(|_| s_help(
+                line_no, 1, "P0115",
+                "Malformed scope: expected a number after `latest`.",
+                "Write:\n  grab latest 10\n  - posts [title]\n  xx",
+            ))?;
             Ok(Some(Scope::Latest(n)))
         }
         "oldest" => {
-            if toks.len() < 2 {
+            if toks.len() != 2 {
                 return Err(s_help(
                     line_no, 1, "P0115",
-                    "Malformed scope: `oldest` requires a number.",
+                    "Malformed scope: `oldest` requires exactly one number.",
                     "Write:\n  grab oldest 5\n  - posts [title]\n  xx",
                 ));
             }
-            let n = toks[1].parse::<u64>()
-                .map_err(|_| s_help(
-                    line_no, 1, "P0115",
-                    "Malformed scope: expected a number after `oldest`.",
-                    "Write:\n  grab oldest 5\n  - posts [title]\n  xx",
-                ))?;
+            let n = toks[1].parse::<u64>().map_err(|_| s_help(
+                line_no, 1, "P0115",
+                "Malformed scope: expected a number after `oldest`.",
+                "Write:\n  grab oldest 5\n  - posts [title]\n  xx",
+            ))?;
             Ok(Some(Scope::Oldest(n)))
         }
-        "all" => Ok(Some(Scope::All)),
-        _ => return Err(s_help(
+        "all" => {
+            if toks.len() != 1 {
+                return Err(s_help(
+                    line_no, 1, "P0112",
+                    "Unexpected text after `grab`. The entity goes on the first body line.",
+                    "Write:\n  grab all\n  - posts [title, date]\n  xx",
+                ));
+            }
+            Ok(Some(Scope::All))
+        }
+        _ => Err(s_help(
             line_no, 1, "P0112",
             "Unexpected text after `grab`. The entity goes on the first body line.",
             "Write:\n  grab all\n  - posts [title, date]\n  xx",
