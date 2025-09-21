@@ -58,6 +58,7 @@ version = "0.1.0"
 dependencies = [
  "goblin-diagnostics",
  "goblin-gql",
+ "goblin-interpreter",
  "goblin-lexer",
  "goblin-parser",
 ]
@@ -73,6 +74,12 @@ version = "0.1.0"
 [[package]]
 name = "goblin-interpreter"
 version = "0.1.0"
+dependencies = [
+ "goblin-ast",
+ "goblin-diagnostics",
+ "goblin-lexer",
+ "goblin-parser",
+]
 
 [[package]]
 name = "goblin-lexer"

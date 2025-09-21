@@ -3,4 +3,12 @@ name = "goblin-interpreter"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "goblin_interpreter"
+path = "src/lib.rs"
+
 [dependencies]
+goblin-ast = { path = "../goblin-ast" }
+goblin-diagnostics = { path = "../goblin-diagnostics" }
+goblin-lexer = { path = "../goblin-lexer" }
+goblin-parser = { path = "../goblin-parser" }

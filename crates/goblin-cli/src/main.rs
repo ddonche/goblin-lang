@@ -670,11 +670,20 @@ mod pathdiff {
 
 // ===================== REPL (Stage 1) =====================
 
+fn repl_banner() -> &'static str {
+    if cfg!(windows) {
+        "Goblin v0.1.0 — type 'exit'/'quit' or press Ctrl+Z (Windows) to exit"
+    } else {
+        "Goblin v0.1.0 — type 'exit'/'quit' or press Ctrl+D (Unix) to exit"
+    }
+}
+
 fn run_repl() -> i32 {
     use std::io::{self, Write};
+    use goblin_interpreter::Session;
 
-    println!("Goblin v0.1.0 — type 'exit'/'quit' or Ctrl+D (Unix) / Ctrl+Z (Windows)");
-    let mut evals: Vec<ReplVal> = Vec::new();
+    println!("{}", repl_banner());
+    let mut sess = Session::new();
     let mut n: usize = 1;
 
     loop {
@@ -683,32 +692,18 @@ fn run_repl() -> i32 {
 
         let mut line = String::new();
         let read = io::stdin().read_line(&mut line).unwrap_or(0);
-        if read == 0 {
-            println!();
-            break; // EOF
-        }
+        if read == 0 { println!(); break; }
+
         let input = line.trim();
         if input.is_empty() { continue; }
         if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") { break; }
 
-        // Allow running a script by typing a path at the prompt (very simple heuristic).
-        if is_probable_file(input) {
-            match run_run(std::path::Path::new(input)) {
-                0 => { n += 1; continue; }
-                code => { return code; }
-            }
-        }
-
-        // Evaluate as an expression.
-        match repl_eval(input, &evals) {
+        match sess.eval_line(input) {
             Ok(val) => {
-                println!("{}", repl_fmt(&val));
-                evals.push(val);
+                println!("{}", val);
                 n += 1;
             }
-            Err(e) => {
-                eprintln!("{}", e);
-            }
+            Err(d) => eprintln!("{}", d),
         }
     }
     0

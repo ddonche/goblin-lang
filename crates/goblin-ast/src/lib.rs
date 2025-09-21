@@ -1,5 +1,4 @@
-//! Abstract Syntax Tree (AST) for Goblin.
-
+//! Abstract Syntax Tree (AST) for Goblin — aligned to the current parser.
 use goblin_diagnostics::Span;
 
 #[derive(Debug, Clone)]
@@ -25,63 +24,61 @@ pub struct ClassDecl {
 #[derive(Debug, Clone)]
 pub struct FieldDecl {
     pub name: String,
-    pub private: bool, // true if '#field'
+    pub private: bool,       // parser currently sets false; hook for '#field' later
     pub default: Expr,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct ActionDecl {
-    pub name: String,
-    pub params: Vec<Param>,
-    pub ret: Option<String>,
-    pub body: ActionBody,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
-    pub type_name: Option<String>,   // e.g. "int", "money" (optional for now)
-    pub default: Option<Expr>,       // support `param = expr`
+    pub type_name: Option<String>,   // e.g. `amount | Number`
+    pub default: Option<Expr>,       // default arg value if provided
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum ActionBody {
-    Expr(Expr),          // `act foo() = expr`
-    Block(Vec<Stmt>),    // `act foo() ... end`  (we’ll fill later)
+    Block(Vec<Stmt>),
+    // Native(Vec<String>) // (not used by parser right now, placeholder if you add later)
+}
+
+#[derive(Debug, Clone)]
+pub struct ActionDecl {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub body: ActionBody,
+    pub span: Span,
+    pub ret: Option<String>, // parser always sets None for now; wire a real Type later
 }
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    // A literal or composite value forms
-    Array(Vec<Expr>, Span),
-    Bool(bool, Span),
-    Float(String, Span),
-    FloatWithUnit(String, String, Span),
-    Ident(String, Span),
-    Int(String, Span),
-    IntWithUnit(String, String, Span),
+    // Literals & identifiers
     Nil(Span),
-    Number(String, Span),                // <-- add this back
-    Object(Vec<(String, Expr)>, Span),
+    Bool(bool, Span),
+    Number(String, Span),    // raw text as produced by lexer/parser (e.g., "10", "3.14")
     Str(String, Span),
+    Ident(String, Span),
 
-    // Unary / binary / assignment
-    Assign(Box<Expr>, Box<Expr>, Span),
-    Binary(Box<Expr>, String, Box<Expr>, Span),
-    Postfix(Box<Expr>, String, Span),
-    Prefix(String, Box<Expr>, Span),
+    // Collections & objects
+    Array(Vec<Expr>, Span),
+    Object(Vec<(String, Expr)>, Span),
 
-    // Indexing and member access
-    Index(Box<Expr>, Box<Expr>, Span),
-    Member(Box<Expr>, String, Span),
-    OptMember(Box<Expr>, String, Span),
+    // Property & indexing
+    Member(Box<Expr>, String, Span),      // obj.name
+    OptMember(Box<Expr>, String, Span),   // obj?.name
+    Index(Box<Expr>, Box<Expr>, Span),    // obj[idx]
 
     // Calls
-    Call(Box<Expr>, String, Vec<Expr>, Span),
-    FreeCall(String, Vec<Expr>, Span),
-    NsCall(String, String, Vec<Expr>, Span),
-    OptCall(Box<Expr>, String, Vec<Expr>, Span),
+    Call(Box<Expr>, String, Vec<Expr>, Span),    // recv.name(args)
+    OptCall(Box<Expr>, String, Vec<Expr>, Span), // recv?.name(args)
+    FreeCall(String, Vec<Expr>, Span),           // name(args)
+    NsCall(String, String, Vec<Expr>, Span),     // Ns::name(args)
+
+    // Operators
+    Prefix(String, Box<Expr>, Span),
+    Postfix(Box<Expr>, String, Span),
+    Binary(Box<Expr>, String, Box<Expr>, Span),
+    Assign(Box<Expr>, Box<Expr>, Span),
 }
