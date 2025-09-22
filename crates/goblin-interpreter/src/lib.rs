@@ -1,13 +1,13 @@
 // goblin-interp/src/lib.rs
 //! Stage 1 interpreter that works with the *real* Goblin AST.
-//! Scope: numbers, strings, basic unary/postfix/binary math, and `v(n)` via FreeCall.
-//! Anything else (classes, fields, actions, member/index/calls beyond FreeCall("v"))
+//! Scope: numbers, strings, basic unary/postfix/binary math, percent family,
+//! and `v(n)` / `say(x)` via FreeCall.
+//! Anything else (classes, fields, actions, member/index/calls beyond FreeCall)
 //! returns a clean "not implemented in Stage 1" diagnostic.
 
 use std::fmt;
 
 use goblin_diagnostics::Span;
-// Adjust this import if your AST is exported under a different path:
 use goblin_ast as ast;
 
 // ===================== Public API =====================
@@ -17,6 +17,7 @@ pub enum Value {
     Num(f64),
     Str(String),
     Pair(Box<Value>, Box<Value>), // for >< (divmod) result
+    Unit,                         // side-effect result (e.g., say)
 }
 
 impl fmt::Display for Value {
@@ -27,13 +28,13 @@ impl fmt::Display for Value {
                     write!(f, "{}", *x as i64)
                 } else {
                     let s = format!("{}", x);
-                    let s = s.trim_end_matches('0').trim_end_matches('.');
-                    write!(f, "{}", s)
+                    write!(f, "{}", s.trim_end_matches('0').trim_end_matches('.'))
                 }
             }
-            // Keep quoted output to match REPL expectation
-            Value::Str(s) => write!(f, "{}", s),
+            // REPL echo uses a repr-ish format (quoted)
+            Value::Str(s) => write!(f, "{:?}", s),
             Value::Pair(a, b) => write!(f, "({}, {})", a, b),
+            Value::Unit => Ok(()),
         }
     }
 }
@@ -55,6 +56,7 @@ impl std::error::Error for Diag {}
 pub struct Session {
     history: Vec<Value>, // v(n) lookup; 1-based externally
 }
+
 impl Session {
     pub fn new() -> Self { Self::default() }
 
@@ -71,13 +73,13 @@ impl Session {
         Ok(last)
     }
 
-    /// Parse a single REPL line using the real parser, evaluate it, push to history, return the value.
+    /// Parse a single REPL line using the real parser, evaluate it, and return the value.
+    /// Only non-Unit values are recorded into history (so `say` doesn't pollute v(n)).
     pub fn eval_line(&mut self, src: &str) -> Result<Value, Diag> {
-        // 1) Lex, using the same API the CLI uses
+        // 1) Lex
         let toks = match goblin_lexer::lex(src, "<repl>") {
             Ok(t) => t,
             Err(diags) => {
-                // Map the first diagnostic into our Diag
                 let d = diags.into_iter().next().expect("nonempty diags");
                 return Err(Diag {
                     code: if d.category.is_empty() { "LEX".to_string() } else { d.category.to_string() },
@@ -87,7 +89,7 @@ impl Session {
             }
         };
 
-        // 2) Parse a module (same as CLI)
+        // 2) Parse
         let parser = goblin_parser::Parser::new(&toks);
         let module = match parser.parse_module() {
             Ok(m) => m,
@@ -101,25 +103,28 @@ impl Session {
             }
         };
 
-        // 3) Evaluate the module; return the last expression value (Stage 1 behavior)
+        // 3) Evaluate; record only non-Unit values
         match self.eval_module(&module)? {
             Some(v) => {
-                self.history.push(v.clone());
+                if !matches!(v, Value::Unit) {
+                    self.history.push(v.clone());
+                }
                 Ok(v)
             }
             None => Err(Diag {
                 code: "R0005".to_string(),
                 message: "no expression to evaluate".into(),
-                // Harmless placeholder span
-                span: goblin_diagnostics::Span::new("<repl>", 0, 0, 1, 1, 1, 1),
+                span: Span::new("<repl>", 0, 0, 1, 1, 1, 1),
             }),
         }
     }
 
-    /// Evaluate a single expression node and push it to history.
+    /// Evaluate a single expression node and record only non-Unit results.
     pub fn eval_expr(&mut self, e: &ast::Expr) -> Result<Value, Diag> {
         let v = eval_expr(e, self)?;
-        self.history.push(v.clone());
+        if !matches!(v, Value::Unit) {
+            self.history.push(v.clone());
+        }
         Ok(v)
     }
 
@@ -168,6 +173,24 @@ fn span_of_expr(e: &ast::Expr) -> Span {
     }
 }
 
+fn fmt_num_trim(n: f64) -> String {
+    if n.is_finite() && n.fract() == 0.0 {
+        format!("{}", n as i64)
+    } else {
+        let s = format!("{}", n);
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn fmt_value_raw(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.clone(), // raw, unquoted
+        Value::Num(n) => fmt_num_trim(*n),
+        Value::Pair(a, b) => format!("({}, {})", fmt_value_raw(a), fmt_value_raw(b)),
+        Value::Unit => String::new(),
+    }
+}
+
 fn as_num(v: Value, at: Span, label: &str) -> Result<f64, Diag> {
     match v {
         Value::Num(n) => Ok(n),
@@ -205,7 +228,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             Err(not_impl("Stage 1", "method/namespace calls", sp.clone()))
         }
 
-        // Free calls: allow only v(n) for history
+        // Free calls: allow v(n) and say(x)
         ast::Expr::FreeCall(name, args, sp) => {
             let nm = name.as_str();
             match nm {
@@ -227,6 +250,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             sp.clone(),
                         )),
                     }
+                }
+                "say" => {
+                    // zero args -> newline; one arg -> print raw form; more -> error (Stage 1)
+                    if args.len() > 1 {
+                        return Err(rt("R0001", "say(...) takes at most one argument in Stage 1", sp.clone()));
+                    }
+                    let printed = if let Some(e) = args.get(0) {
+                        let v = eval_expr(e, sess)?;
+                        let s = fmt_value_raw(&v);   // no quotes for strings; trimmed numbers
+                        println!("{}", s);
+                        Value::Unit
+                    } else {
+                        println!();
+                        Value::Unit
+                    };
+                    Ok(printed)
                 }
                 _ => Err(rt("R0001", format!("free call '{}' is not implemented in Stage 1", nm), sp.clone())),
             }

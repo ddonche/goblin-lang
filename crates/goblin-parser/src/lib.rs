@@ -3506,6 +3506,39 @@ impl<'t> Parser<'t> {
                     ));
                 }
 
+                // ---- SPECIAL: say ----
+                if name == "say" {
+                    self.skip_newlines();
+                    let mut args = Vec::<PExpr>::new();
+
+                    if self.peek_op("(") {
+                        let _ = self.eat_op("(");
+                        self.skip_newlines();
+                        // say() -> zero args, else parse exactly one expression
+                        if !self.peek_op(")") {
+                            let expr = self.parse_coalesce()?;
+                            self.skip_newlines();
+                            if !self.eat_op(")") {
+                                return Err(s_help(
+                                    "P0707",
+                                    "Expected ')' to close this call",
+                                    "Add the closing ')': say(\"hi\")",
+                                ));
+                            }
+                            args.push(expr);
+                        } else {
+                            // consume ')'
+                            let _ = self.eat_op(")");
+                        }
+                    } else {
+                        // no-paren form: say <expr>
+                        let expr = self.parse_coalesce()?;
+                        args.push(expr);
+                    }
+
+                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("say".to_string(), args)));
+                }
+
                 // true/false/nil or plain identifier
                 let base = match name.as_str() {
                     "true" => PExpr::Bool(true),
