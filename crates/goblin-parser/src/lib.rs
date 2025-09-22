@@ -343,6 +343,7 @@ impl<'t> Parser<'t> {
             else if self.peek_op("*=")  { Some("*=")  }
             else if self.peek_op("/=")  { Some("/=")  }
             else if self.peek_op("%=")  { Some("%=")  }
+            else if self.peek_op("**=") { Some("**=") }
             else if self.peek_op("=")   { Some("=")   }
             else { None };
 
@@ -3422,10 +3423,7 @@ impl<'t> Parser<'t> {
         // --- Parenthesized ---
         if self.peek_op("(") {
             let _ = self.eat_op("(");
-
-            // Guard deep recursion while parsing the inner expression
             let expr = self.with_depth(|p| p.parse_coalesce())?;
-
             if !self.eat_op(")") {
                 return Err(s_help(
                     "P0707",
@@ -3440,11 +3438,7 @@ impl<'t> Parser<'t> {
         if self.eat_op("[") {
             // skip newlines after '['
             while let Some(tok) = self.toks.get(self.i) {
-                if matches!(tok.kind, TokenKind::Newline) {
-                    self.i += 1;
-                } else {
-                    break;
-                }
+                if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
             }
 
             let mut elems = Vec::new();
@@ -3455,15 +3449,9 @@ impl<'t> Parser<'t> {
 
                     if self.eat_op(",") {
                         while let Some(tok) = self.toks.get(self.i) {
-                            if matches!(tok.kind, TokenKind::Newline) {
-                                self.i += 1;
-                            } else {
-                                break;
-                            }
+                            if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
                         }
-                        if self.peek_op("]") {
-                            break;
-                        }
+                        if self.peek_op("]") { break; }
                         continue;
                     }
                     break;
@@ -3471,11 +3459,7 @@ impl<'t> Parser<'t> {
             }
 
             while let Some(tok) = self.toks.get(self.i) {
-                if matches!(tok.kind, TokenKind::Newline) {
-                    self.i += 1;
-                } else {
-                    break;
-                }
+                if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
             }
 
             if !self.eat_op("]") {
@@ -3494,15 +3478,12 @@ impl<'t> Parser<'t> {
                 let name = tok0.value.clone().unwrap_or_default();
                 self.i += 1; // eat the ident
 
-                // DEPRECATE old `Type: ...` object form right here (name is in scope)
+                // DEPRECATE old `Type: ...`
                 if self.peek_op(":") {
                     return Err(s_help(
                         "P0998",
                         "Object construction has moved to 'name | Type = ...'.",
-                        &format!(
-                            "Write: myVar | {} = name: \"...\"",
-                            Self::capitalize_like(&name)
-                        ),
+                        &format!("Write: myVar | {} = name: \"...\"", Self::capitalize_like(&name)),
                     ));
                 }
 
@@ -3514,7 +3495,6 @@ impl<'t> Parser<'t> {
                     if self.peek_op("(") {
                         let _ = self.eat_op("(");
                         self.skip_newlines();
-                        // say() -> zero args, else parse exactly one expression
                         if !self.peek_op(")") {
                             let expr = self.parse_coalesce()?;
                             self.skip_newlines();
@@ -3527,7 +3507,6 @@ impl<'t> Parser<'t> {
                             }
                             args.push(expr);
                         } else {
-                            // consume ')'
                             let _ = self.eat_op(")");
                         }
                     } else {
@@ -3555,11 +3534,7 @@ impl<'t> Parser<'t> {
         if self.eat_op("{") {
             // skip newlines after '{'
             while let Some(tok) = self.toks.get(self.i) {
-                if matches!(tok.kind, TokenKind::Newline) {
-                    self.i += 1;
-                } else {
-                    break;
-                }
+                if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
             }
 
             let mut props: Vec<(String, PExpr)> = Vec::new();
@@ -3574,11 +3549,7 @@ impl<'t> Parser<'t> {
                     };
 
                     while let Some(tok) = self.toks.get(self.i) {
-                        if matches!(tok.kind, TokenKind::Newline) {
-                            self.i += 1;
-                        } else {
-                            break;
-                        }
+                        if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
                     }
 
                     if !self.eat_op(":") {
@@ -3590,11 +3561,7 @@ impl<'t> Parser<'t> {
                     }
 
                     while let Some(tok) = self.toks.get(self.i) {
-                        if matches!(tok.kind, TokenKind::Newline) {
-                            self.i += 1;
-                        } else {
-                            break;
-                        }
+                        if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
                     }
 
                     let value = self.parse_assign()?;
@@ -3602,15 +3569,9 @@ impl<'t> Parser<'t> {
 
                     if self.eat_op(",") {
                         while let Some(tok) = self.toks.get(self.i) {
-                            if matches!(tok.kind, TokenKind::Newline) {
-                                self.i += 1;
-                            } else {
-                                break;
-                            }
+                            if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
                         }
-                        if self.peek_op("}") {
-                            break;
-                        }
+                        if self.peek_op("}") { break; }
                         continue;
                     }
                     break;
@@ -3618,11 +3579,7 @@ impl<'t> Parser<'t> {
             }
 
             while let Some(tok) = self.toks.get(self.i) {
-                if matches!(tok.kind, TokenKind::Newline) {
-                    self.i += 1;
-                } else {
-                    break;
-                }
+                if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
             }
 
             if !self.eat_op("}") {
@@ -3636,7 +3593,7 @@ impl<'t> Parser<'t> {
             return Ok(self.apply_postfix_ops(PExpr::Object(props)));
         }
 
-        // --- Lit / other dispatch (ident is handled above) ---
+        // --- Lit / other dispatch (ident handled above) ---
         let (kind, val_opt) = match self.peek() {
             Some(t) => (t.kind.clone(), t.value.clone()),
             None => {
@@ -3700,62 +3657,11 @@ impl<'t> Parser<'t> {
                 }
             }
 
+            // --- String literal: ALWAYS plain string (no StrInterp here) ---
             TokenKind::String => {
                 let lit = self.toks[self.i].value.clone().unwrap_or_default();
                 self.i += 1;
-
-                if !lit.as_bytes().contains(&b'{') {
-                    PExpr::Str(lit)
-                } else {
-                    // Interpolated string
-                    let b = lit.as_bytes();
-                    let mut parts: Vec<StrPart> = Vec::new();
-                    let mut text = String::new();
-                    let mut i: usize = 0;
-                    let n = b.len();
-
-                    while i < n {
-                        if i + 4 < n && &b[i..i + 5] == b"{{/}}" {
-                            text.push('}');
-                            i += 5;
-                            continue;
-                        }
-                        if b[i] == b'{' {
-                            if !text.is_empty() {
-                                parts.push(StrPart::Text(std::mem::take(&mut text)));
-                            }
-                            let mut depth: usize = 1;
-                            let start = i + 1;
-                            i += 1;
-                            while i < n && depth > 0 {
-                                match b[i] {
-                                    b'{' => depth += 1,
-                                    b'}' => depth -= 1,
-                                    _ => {}
-                                }
-                                i += 1;
-                            }
-                            if depth != 0 {
-                                return Err(s_help(
-                                    "P0604",
-                                    "There's an unclosed '{' in this interpolated string.",
-                                    "Add a matching '}' to close it, e.g., \"Hello {name}\".",
-                                ));
-                            }
-                            let end = i - 1;
-                            let inner = &lit[start..end];
-                            let part = self.parse_interpolation_lvalue(inner)?;
-                            parts.push(part);
-                            continue;
-                        }
-                        text.push(b[i] as char);
-                        i += 1;
-                    }
-                    if !text.is_empty() {
-                        parts.push(StrPart::Text(text));
-                    }
-                    PExpr::StrInterp(parts)
-                }
+                PExpr::Str(lit)
             }
 
             TokenKind::Date => {
@@ -3945,6 +3851,11 @@ impl<'t> Parser<'t> {
                 self.skip_newlines();
                 let rhs = self.parse_and()?;
                 lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
+                continue;
+            }
+            if self.eat_op("<>") {
+                let rhs = self.parse_and()?;
+                lhs = PExpr::Binary(Box::new(lhs), "<>".into(), Box::new(rhs));
                 continue;
             }
             break;

@@ -9,12 +9,13 @@ with built-in money types, currency handling, and product
 templating systems.
 
 *Currently in development. Not ready for public use.*
+*Currently on Stage 2 of the Interpreter.
 
 ## Status
 - [x] Language specification
 - [x] Lexer implementation
 - [x] Parser implementation 
-- [ ] AST implementation 
+- [x] AST implementation 
 - [ ] Interpreter implementation  
 - [ ] Glam scaffolding system
 - [ ] Real-world testing with Game Goblin Supply

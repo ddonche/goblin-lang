@@ -625,6 +625,18 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     continue; // no token for comments
                 }
 
+                if i + 2 < bytes.len() && bytes[i + 1] == b'/' && bytes[i + 2] == b'=' {
+                    let span = Span::new(file, i, i + 3, line, col, line, col + 3);
+                    tokens.push(Token {
+                        kind: TokenKind::Op("//=".to_string()),
+                        span,
+                        value: Some("//=".to_string()),
+                    });
+                    i += 3;
+                    col += 3;
+                    continue;
+                }
+
                 // 3) Integer-division / postfix-sqrt operator: "//"
                 if i + 1 < bytes.len() && bytes[i + 1] == b'/' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
