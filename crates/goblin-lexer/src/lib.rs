@@ -671,6 +671,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Base-prefixed integers: 0x / 0o / 0b
                 if i + 1 < bytes.len() && bytes[i] == b'0' {
                     match bytes[i + 1] {
+                        // 0x / 0X  — hex
                         b'x' | b'X' => {
                             let mut j = i + 2;
                             let mut c = col + 2;
@@ -685,7 +686,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 )]);
                             }
 
-                            // consume hex digits; allow underscores only between digits
+                            // consume hex digits; allow underscores only between digits;
+                            // if '_' is NOT followed by a hex digit, STOP (so '_' can be a postfix operator)
                             let mut last_us = false;
                             while j < bytes.len() {
                                 let b = bytes[j];
@@ -694,25 +696,27 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                     j += 1; c += 1;
                                 } else if b == b'_' {
                                     // underscore must be between hex digits
-                                    let ok_next = j + 1 < bytes.len() && (bytes[j + 1] as char).is_ascii_hexdigit();
-                                    if last_us || !ok_next {
+                                    if last_us {
                                         let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
                                         return Err(vec![Diagnostic::error(
                                             "L0303",
-                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0xDEAD_BEEF`), not at the start, end, or doubled",
+                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0xDEAD_BEEF`), not doubled",
                                             sp,
                                         )]);
                                     }
-                                    last_us = true;
-                                    j += 1; c += 1;
+                                    if j + 1 < bytes.len() && (bytes[j + 1] as char).is_ascii_hexdigit() {
+                                        last_us = true;
+                                        j += 1; c += 1; // consume '_'; next loop eats the digit
+                                    } else {
+                                        break; // leave '_' for outer loop (postfix op)
+                                    }
                                 } else {
-                                    // first non-hex, non-underscore char ends the literal
                                     break;
                                 }
                             }
 
                             if last_us {
-                                // trailing underscore at end of hex literal
+                                // we consumed '_' but did not see a following digit as part of the literal
                                 let sp = Span::new(file, j - 1, j, line, c - 1, line, c);
                                 return Err(vec![Diagnostic::error(
                                     "L0309",
@@ -721,7 +725,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 )]);
                             }
 
-                            // Attach optional numeric type suffix (i8/u32/.../f32/f64/b)
+                            // optional numeric type suffix (i8/u32/.../f32/f64/b)
                             let mut end = j;
                             let mut end_col = c;
                             let mut lit = String::from_utf8_lossy(&bytes[i..j]).into_owned();
@@ -736,7 +740,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             i = end; col = end_col;
                             continue;
                         }
-                        
+
                         // 0o / 0O  — octal
                         b'o' | b'O' => {
                             let mut j = i + 2;
@@ -755,7 +759,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
                                 return Err(vec![Diagnostic::error(
                                     "L0303",
-                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0o7_55`), not at the start, end, or doubled",
+                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0o7_55`), not at the start",
                                     sp,
                                 )]);
                             }
@@ -777,7 +781,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                     last_us = false;
                                     j += 1; c += 1;
                                 } else if b == b'_' {
-                                    // underscores only between digits
+                                    // underscores only between digits;
+                                    // if '_' is NOT followed by an octal digit, STOP (postfix op)
                                     if !saw_digit || last_us {
                                         let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
                                         return Err(vec![Diagnostic::error(
@@ -786,24 +791,14 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                             sp,
                                         )]);
                                     }
-                                    if j + 1 >= bytes.len() {
-                                        // trailing underscore -> handled after the loop as L0309
+                                    if j + 1 < bytes.len() && (b'0'..=b'7').contains(&bytes[j + 1]) {
                                         last_us = true;
                                         j += 1; c += 1;
-                                        break;
+                                    } else {
+                                        break; // leave '_' for outer loop (postfix op)
                                     }
-                                    if !(b'0'..=b'7').contains(&bytes[j + 1]) {
-                                        let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
-                                        return Err(vec![Diagnostic::error(
-                                            "L0303",
-                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0o7_55`), not at the start, end, or doubled",
-                                            sp,
-                                        )]);
-                                    }
-                                    last_us = true;
-                                    j += 1; c += 1;
                                 } else {
-                                    // first invalid non-octal char after the prefix/digits -> L0302
+                                    // first invalid non-octal char after prefix/digits -> L0302
                                     let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
                                     return Err(vec![Diagnostic::error(
                                         "L0302",
@@ -856,7 +851,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
                                 return Err(vec![Diagnostic::error(
                                     "L0303",
-                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0b1010_0101`), not at the start, end, or doubled",
+                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0b1010_0101`), not at the start",
                                     sp,
                                 )]);
                             }
@@ -878,7 +873,8 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                     last_us = false;
                                     j += 1; c += 1;
                                 } else if b == b'_' {
-                                    // underscores only between digits
+                                    // underscores only between digits;
+                                    // if '_' is NOT followed by a binary digit, STOP (postfix op)
                                     if !saw_digit || last_us {
                                         let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
                                         return Err(vec![Diagnostic::error(
@@ -887,22 +883,12 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                             sp,
                                         )]);
                                     }
-                                    if j + 1 >= bytes.len() {
-                                        // trailing underscore -> handled after the loop as L0309
+                                    if j + 1 < bytes.len() && (b'0'..=b'1').contains(&bytes[j + 1]) {
                                         last_us = true;
                                         j += 1; c += 1;
-                                        break;
+                                    } else {
+                                        break; // leave '_' for outer loop (postfix op)
                                     }
-                                    if !(b'0'..=b'1').contains(&bytes[j + 1]) {
-                                        let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
-                                        return Err(vec![Diagnostic::error(
-                                            "L0303",
-                                            "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits (e.g., `0b1010_0101`), not at the start, end, or doubled",
-                                            sp,
-                                        )]);
-                                    }
-                                    last_us = true;
-                                    j += 1; c += 1;
                                 } else {
                                     // first invalid non-binary char after the prefix/digits -> L0302
                                     let sp = Span::new(file, j, j + 1, line, c, line, c + 1);
@@ -942,6 +928,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     }
                 }
 
+                // ----- decimal integer part (only accept '_' if followed by a digit) -----
                 let mut saw_digit = false;
                 let mut last_was_underscore = false;
 
@@ -958,12 +945,17 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 let sp = Span::new(file, i, i, line, col, line, col);
                                 return Err(vec![Diagnostic::error(
                                     "L0303",
-                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits: 1_234, not at the start, end, or doubled",
+                                    "I found an underscore in this number where it can't go\n\nhelp: Use underscores only between digits: 1_234, not at the start or doubled",
                                     sp,
                                 )]);
                             }
-                            last_was_underscore = true;
-                            i += 1; col += 1;
+                            // only between digits; if NOT followed by a digit, stop number (postfix '_')
+                            if i + 1 < bytes.len() && matches!(bytes[i + 1], b'0'..=b'9') {
+                                last_was_underscore = true;
+                                i += 1; col += 1;
+                            } else {
+                                break; // leave '_' for next token
+                            }
                         }
                         _ => break,
                     }
@@ -978,7 +970,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     )]);
                 }
 
-                // Fractional part?
+                // ----- fractional part -----
                 if i < bytes.len() && bytes[i] == b'.' {
                     // Lookahead: if next is another '.', it's a range, not a float
                     if i + 1 < bytes.len() && bytes[i + 1] == b'.' {
@@ -997,11 +989,16 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                         let sp = Span::new(file, i, i, line, col, line, col);
                                         return Err(vec![Diagnostic::error(
                                             "L0311",
-                                            "I found an underscore here in the fractional part\n\nhelp: In the fractional part, put underscores only between digits: 3.141_592, not right after the dot, doubled, or at the end",
+                                            "I found an underscore here in the fractional part\n\nhelp: In the fractional part, put underscores only between digits: 3.141_592, not right after the dot or doubled",
                                             sp,
                                         )]);
                                     }
-                                    last_us = true; i += 1; col += 1;
+                                    // only between digits; if NOT followed by a digit, stop (postfix '_')
+                                    if i + 1 < bytes.len() && matches!(bytes[i + 1], b'0'..=b'9') {
+                                        last_us = true; i += 1; col += 1;
+                                    } else {
+                                        break; // leave '_' for next token
+                                    }
                                 }
                                 _ => break,
                             }
@@ -1073,49 +1070,25 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Check for immediate postfix (no whitespace)
                 // 1) Prefer numeric type suffix if present (i8/u32/.../f32/f64/b)
                 // 2) Otherwise fall back to duration units
-                if i < bytes.len() {
-                    if let Some((adv, suf)) = match_type_suffix(bytes, i) {
+                if final_i < bytes.len() {
+                    if let Some((adv, suf)) = match_type_suffix(bytes, final_i) {
                         final_lit.push_str(suf);
                         final_i += adv;
                         final_col += adv as u32;
                     } else {
                         // Duration units (longest first: "mo" before "m")
-                        if i + 1 < bytes.len() && bytes[i] == b'm' && bytes[i + 1] == b'o' {
+                        if final_i + 1 < bytes.len() && bytes[final_i] == b'm' && bytes[final_i + 1] == b'o' {
                             final_lit.push_str("mo");
                             final_i += 2; final_col += 2;
                             base_kind = TokenKind::Duration;
-                        } else if i < bytes.len() {
-                            match bytes[i] {
-                                b's' => {
-                                    final_lit.push('s');
-                                    final_i += 1; final_col += 1;
-                                    base_kind = TokenKind::Duration;
-                                }
-                                b'm' => {
-                                    final_lit.push('m');
-                                    final_i += 1; final_col += 1;
-                                    base_kind = TokenKind::Duration;
-                                }
-                                b'h' => {
-                                    final_lit.push('h');
-                                    final_i += 1; final_col += 1;
-                                    base_kind = TokenKind::Duration;
-                                }
-                                b'd' => {
-                                    final_lit.push('d');
-                                    final_i += 1; final_col += 1;
-                                    base_kind = TokenKind::Duration;
-                                }
-                                b'w' => {
-                                    final_lit.push('w');
-                                    final_i += 1; final_col += 1;
-                                    base_kind = TokenKind::Duration;
-                                }
-                                b'y' => {
-                                    final_lit.push('y');
-                                    final_i += 1; final_col += 1;
-                                    base_kind = TokenKind::Duration;
-                                }
+                        } else if final_i < bytes.len() {
+                            match bytes[final_i] {
+                                b's' => { final_lit.push('s'); final_i += 1; final_col += 1; base_kind = TokenKind::Duration; }
+                                b'm' => { final_lit.push('m'); final_i += 1; final_col += 1; base_kind = TokenKind::Duration; }
+                                b'h' => { final_lit.push('h'); final_i += 1; final_col += 1; base_kind = TokenKind::Duration; }
+                                b'd' => { final_lit.push('d'); final_i += 1; final_col += 1; base_kind = TokenKind::Duration; }
+                                b'w' => { final_lit.push('w'); final_i += 1; final_col += 1; base_kind = TokenKind::Duration; }
+                                b'y' => { final_lit.push('y'); final_i += 1; final_col += 1; base_kind = TokenKind::Duration; }
                                 _ => {}
                             }
                         }
@@ -1127,7 +1100,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 tokens.push(Token { kind: base_kind, span, value: Some(final_lit) });
                 i = final_i;
                 col = final_col;
-            }
+            },
 
             // Raw strings starting with r" / r' / r""" / r''' (case-insensitive 'r')
             // If not followed by a quote, treat as a normal identifier starting at this 'r'.
@@ -1174,11 +1147,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             col += 1;
                         }
                         let span = Span::new(file, start_i, i, line, start_col, line, col);
-                        tokens.push(Token {
-                            kind: TokenKind::String,
-                            span,
-                            value: Some(out),
-                        });
+                        tokens.push(Token { kind: TokenKind::String, span, value: Some(out) });
                     } else {
                         // single-line raw
                         i += 2;
@@ -1195,15 +1164,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                                 break;
                             }
                             if b == b'\n' || b == b'\r' {
-                                let sp = Span::new(
-                                    file,
-                                    start_i,
-                                    start_i + 1,
-                                    line,
-                                    start_col,
-                                    line,
-                                    start_col + 1,
-                                );
+                                let sp = Span::new(file, start_i, start_i + 1, line, start_col, line, start_col + 1);
                                 return Err(vec![Diagnostic::error(
                                     "L0201",
                                     "This string never closes\n\nhelp: Add the closing '\"'",
@@ -1216,15 +1177,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                         }
                         if !closed {
                             // hit EOF without a closing quote
-                            let sp = Span::new(
-                                file,
-                                start_i,
-                                start_i + 1,
-                                line,
-                                start_col,
-                                line,
-                                start_col + 1,
-                            );
+                            let sp = Span::new(file, start_i, start_i + 1, line, start_col, line, start_col + 1);
                             return Err(vec![Diagnostic::error(
                                 "L0201",
                                 "This string never closes\n\nhelp: Add the closing '\"'",
@@ -1232,11 +1185,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                             )]);
                         }
                         let span = Span::new(file, start_i, i, line, start_col, line, col);
-                        tokens.push(Token {
-                            kind: TokenKind::String,
-                            span,
-                            value: Some(out),
-                        });
+                        tokens.push(Token { kind: TokenKind::String, span, value: Some(out) });
                     }
                     continue;
                 } else {
@@ -1261,11 +1210,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     let text = &bytes[start_i..i];
                     let name = String::from_utf8_lossy(text).into_owned();
                     let span = Span::new(file, start_i, i, line, start_col, line, col);
-                    tokens.push(Token {
-                        kind: TokenKind::Ident,
-                        span,
-                        value: Some(name),
-                    });
+                    tokens.push(Token { kind: TokenKind::Ident, span, value: Some(name) });
                     continue;
                 }
             }

@@ -4047,18 +4047,45 @@ impl<'t> Parser<'t> {
         loop {
             if self.eat_op("++") {
                 self.skip_newlines();
-                let rhs = self.parse_multiplicative()?;
-                lhs = PExpr::Binary(Box::new(lhs), "++".into(), Box::new(rhs));
+                let mut rhs = self.parse_multiplicative()?;
+
+                // Desugar RHS `N%s` => `(N% of lhs)`
+                if let PExpr::Postfix(inner, op) = &rhs {
+                    if op == "%s" {
+                        let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
+                        rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
+                    }
+                }
+
+                lhs = PExpr::Binary(Box::new(lhs), "++".to_string(), Box::new(rhs));
                 continue;
             } else if self.eat_op("+") {
                 self.skip_newlines();
-                let rhs = self.parse_multiplicative()?;
-                lhs = PExpr::Binary(Box::new(lhs), "+".into(), Box::new(rhs));
+                let mut rhs = self.parse_multiplicative()?;
+
+                // Desugar RHS `N%s` => `(N% of lhs)`
+                if let PExpr::Postfix(inner, op) = &rhs {
+                    if op == "%s" {
+                        let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
+                        rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
+                    }
+                }
+
+                lhs = PExpr::Binary(Box::new(lhs), "+".to_string(), Box::new(rhs));
                 continue;
             } else if self.eat_op("-") {
                 self.skip_newlines();
-                let rhs = self.parse_multiplicative()?;
-                lhs = PExpr::Binary(Box::new(lhs), "-".into(), Box::new(rhs));
+                let mut rhs = self.parse_multiplicative()?;
+
+                // Desugar RHS `N%s` => `(N% of lhs)`
+                if let PExpr::Postfix(inner, op) = &rhs {
+                    if op == "%s" {
+                        let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
+                        rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
+                    }
+                }
+
+                lhs = PExpr::Binary(Box::new(lhs), "-".to_string(), Box::new(rhs));
                 continue;
             }
             break;
@@ -4071,15 +4098,24 @@ impl<'t> Parser<'t> {
         let mut lhs = self.parse_power()?;
 
         loop {
-            let op = if self.eat_op("><") { "><" }      // divmod
-                     else if self.eat_op("//") { "//" } // integer division
+            let op = if self.eat_op("><") { "><" }       // divmod
+                     else if self.eat_op("//") { "//" }  // floor division
                      else if self.eat_op("*")  { "*"  }
                      else if self.eat_op("/")  { "/"  }
-                     else if self.eat_op("%")  { "%"  }
+                     else if self.eat_op("%")  { "%"  }  // modulo (NOT percent-literal)
                      else { break };
 
             self.skip_newlines();
-            let rhs = self.parse_power()?;
+            let mut rhs = self.parse_power()?;
+
+            // Desugar RHS `N%s` => `(N% of lhs)`
+            if let PExpr::Postfix(inner, op_pct) = &rhs {
+                if op_pct == "%s" {
+                    let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
+                    rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
+                }
+            }
+
             lhs = PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs));
         }
 
@@ -4665,6 +4701,73 @@ impl<'t> Parser<'t> {
             if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());   continue; }
             if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());   continue; }
             if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());   continue; }
+
+            // ---- percent family (tight) --------------------------------------------
+
+            // `%o` — tight binary: (lhs %o rhs)
+            if self.eat_op("%o") {
+                self.skip_newlines();
+                let rhs = self.parse_postfix()?; // tight binding
+                lhs = PExpr::Binary(Box::new(lhs), "%o".to_string(), Box::new(rhs));
+                continue;
+            }
+
+            // Try `%`
+            let save_i = self.i;
+            if self.eat_op("%") {
+                self.skip_newlines();
+
+                // If next token is ident 'of', parse:  ( (lhs%) of <rhs> )
+                let is_of = match self.toks.get(self.i) {
+                    Some(t) => match &t.kind {
+                        goblin_lexer::TokenKind::Ident => t.value.as_deref() == Some("of"),
+                        _ => false,
+                    },
+                    None => false,
+                };
+                if is_of {
+                    let _ = self.eat_ident(); // consume 'of'
+                    self.skip_newlines();
+                    let rhs = self.parse_postfix()?; // tight
+                    let pct = PExpr::Postfix(Box::new(lhs), "%".to_string());
+                    lhs = PExpr::Binary(Box::new(pct), "of".to_string(), Box::new(rhs));
+                    continue;
+                }
+
+                // Not `of`: decide literal vs modulo by lookahead, without holding borrows.
+                let mut j = self.i;
+                while matches!(self.toks.get(j).map(|t| &t.kind), Some(goblin_lexer::TokenKind::Newline)) {
+                    j += 1;
+                }
+                let starts_expr = match self.toks.get(j) {
+                    Some(t) => {
+                        use goblin_lexer::TokenKind as K;
+                        match &t.kind {
+                            K::Int | K::Float | K::Money | K::String | K::Duration
+                            | K::Date | K::Time | K::DateTime
+                            | K::Ident | K::AtIdent | K::HashIdent => true,
+                            K::Op(s) if s == "(" || s == "+" || s == "-" => true,
+                            _ => false,
+                        }
+                    }
+                    None => false,
+                };
+
+                if starts_expr {
+                    // treat as modulo at multiplicative tier: roll back to before '%'
+                    self.i = save_i;
+                } else {
+                    // postfix percent literal: N%
+                    lhs = PExpr::Postfix(Box::new(lhs), "%".to_string());
+                    continue;
+                }
+            }
+
+            // `%s` — percent-of-self postfix; desugared when used as RHS
+            if self.eat_op("%s") {
+                lhs = PExpr::Postfix(Box::new(lhs), "%s".to_string());
+                continue;
+            }
 
             // nothing matched; ensure progress or bail
             if self.i == start_i { break; }

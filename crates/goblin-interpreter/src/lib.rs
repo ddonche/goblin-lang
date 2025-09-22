@@ -32,7 +32,7 @@ impl fmt::Display for Value {
                 }
             }
             // Keep quoted output to match REPL expectation
-            Value::Str(s) => write!(f, "{:?}", s),
+            Value::Str(s) => write!(f, "{}", s),
             Value::Pair(a, b) => write!(f, "({}, {})", a, b),
         }
     }

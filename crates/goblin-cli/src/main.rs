@@ -759,7 +759,7 @@ fn repl_fmt(v: &ReplVal) -> String {
                 s.trim_end_matches('0').trim_end_matches('.').to_string()
             }
         }
-        ReplVal::Str(s) => format!("{:?}", s), // print with quotes
+        ReplVal::Str(s) => s.clone(), 
     }
 }
 
