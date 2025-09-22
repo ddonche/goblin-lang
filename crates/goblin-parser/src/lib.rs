@@ -4511,6 +4511,15 @@ impl<'t> Parser<'t> {
             let rhs = self.parse_unary()?;
             return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
         }
+
+        // alias: "not" keyword for logical-not
+        if self.peek_ident() == Some("not") {
+            let _ = self.eat_ident(); // consumed "not"
+            self.skip_newlines();
+            let rhs = self.parse_unary()?;
+            return Ok(PExpr::Prefix("!".into(), Box::new(rhs))); // normalize to "!"
+        }
+        
         // unary +/-
         if self.eat_op("+") {
             let rhs = self.parse_unary()?;

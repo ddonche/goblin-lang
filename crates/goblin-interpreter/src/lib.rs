@@ -28,27 +28,48 @@ pub enum Value {
     Num(f64),
     Str(String),
     Bool(bool),
+    Array(Vec<Value>),
+    Map(BTreeMap<String, Value>), // ← was Object; this is the map
+    Pair(Box<Value>, Box<Value>),
     Nil,
-    Pair(Box<Value>, Box<Value>), // for >< (divmod)
-    Unit,                         // printed as nothing (used by `say`)
+    Unit,
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Num(x) => {
-                if x.is_finite() && x.fract() == 0.0 {
-                    write!(f, "{}", *x as i64)
+                let s = if x.is_finite() && x.fract() == 0.0 {
+                    format!("{}", *x as i64)
                 } else {
                     let s = format!("{}", x);
-                    write!(f, "{}", s.trim_end_matches('0').trim_end_matches('.'))
-                }
+                    s.trim_end_matches('0').trim_end_matches('.').to_string()
+                };
+                write!(f, "{}", s)
             }
-            Value::Str(s) => write!(f, "{:?}", s), // repr-style for REPL echo
+            Value::Str(s) => write!(f, "{:?}", s),
             Value::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::Nil => write!(f, "nil"),
+            Value::Array(xs) => {
+                write!(f, "[")?;
+                for (i, v) in xs.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
+            Value::Map(map) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (k, v) in map.iter() {
+                    if !first { write!(f, ", ")?; }
+                    first = false;
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, "}}")
+            }
             Value::Pair(a, b) => write!(f, "({}, {})", a, b),
-            Value::Unit => Ok(()), // prints nothing if displayed (CLI suppresses extra line)
+            Value::Unit => Ok(()),
         }
     }
 }
@@ -193,12 +214,18 @@ fn fmt_num_trim(n: f64) -> String {
 
 fn fmt_value_raw(v: &Value) -> String {
     match v {
-        Value::Str(s) => s.clone(),                           // raw (no quotes)
-        Value::Num(n) => fmt_num_trim(*n),
+        Value::Str(s) => s.clone(),
+        Value::Num(n) => {
+            if n.is_finite() && n.fract() == 0.0 {
+                format!("{}", *n as i64)
+            } else {
+                let s = format!("{}", n);
+                s.trim_end_matches('0').trim_end_matches('.').to_string()
+            }
+        }
         Value::Bool(b) => if *b { "true".into() } else { "false".into() },
         Value::Nil => "nil".into(),
-        Value::Pair(a, b) => format!("({}, {})", fmt_value_raw(a), fmt_value_raw(b)),
-        Value::Unit => String::new(),
+        _ => format!("{}", v), // Array/Map/Pair -> use Display
     }
 }
 
@@ -303,8 +330,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Bool(b, _) => Ok(Value::Bool(*b)),
         ast::Expr::Number(txt, sp) => Ok(Value::Num(parse_num(txt, sp.clone())?)),
         ast::Expr::Str(s, sp) => {
-            // If the string has braces, run the lightweight interpolator.
-            if s.as_bytes().contains(&b'{') || s.as_bytes().contains(&b'}') {
+            if s.as_bytes().contains(&b'{') {
+                // only identifiers are allowed inside { … } in Stage 2
                 let rendered = render_interpolated(s, sess, sp)?;
                 Ok(Value::Str(rendered))
             } else {
@@ -318,13 +345,43 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
 
-        // ---- Collections (not in Stage 2 yet) ----
-        ast::Expr::Array(_, sp) => Err(not_impl("Stage 2", "arrays", sp.clone())),
-        ast::Expr::Object(_, sp) => Err(not_impl("Stage 2", "objects", sp.clone())),
+        // ---- Collections ----
+        ast::Expr::Array(elems, _sp) => {
+            let mut out = Vec::with_capacity(elems.len());
+            for e in elems {
+                out.push(eval_expr(e, sess)?);
+            }
+            Ok(Value::Array(out))
+        }
 
-        // ---- Property/index (not in Stage 2 yet) ----
-        ast::Expr::Member(_, _, sp) | ast::Expr::OptMember(_, _, sp) => Err(not_impl("Stage 2", "member access", sp.clone())),
-        ast::Expr::Index(_, _, sp) => Err(not_impl("Stage 2", "indexing", sp.clone())),
+        // Maps (parser calls it Object)
+        ast::Expr::Object(kvs, _sp) => {
+            let mut m = BTreeMap::new();
+            for (k, vexpr) in kvs {
+                let v = eval_expr(vexpr, sess)?;
+                m.insert(k.clone(), v);
+            }
+            Ok(Value::Map(m))
+        }
+        
+        ast::Expr::Index(base, idx, sp) => {
+            let b = eval_expr(base, sess)?;
+            let i = eval_expr(idx, sess)?;
+            match (b, i) {
+                (Value::Array(items), Value::Num(n)) => {
+                    if n.fract() != 0.0 || n < 0.0 {
+                        return Err(rt("T0201", "index must be a non-negative integer", span_of_expr(idx)));
+                    }
+                    let k = n as usize;
+                    items.get(k).cloned().ok_or_else(|| rt("R0402", "array index out of bounds", sp.clone()))
+                }
+                (Value::Map(map), Value::Str(key)) => {
+                    map.get(&key).cloned().ok_or_else(|| rt("R0403", format!("missing key '{}'", key), sp.clone()))
+                }
+                (Value::Map(_), _) => Err(rt("T0201", "map index must be a string key", span_of_expr(idx))),
+                _ => Err(rt("T0401", "indexing requires an array or map", span_of_expr(base))),
+            }
+        }
 
         // ---- Calls ----
         ast::Expr::Call(_, _, _, sp) | ast::Expr::OptCall(_, _, _, sp) | ast::Expr::NsCall(_, _, _, sp) => {
@@ -377,6 +434,29 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
 
+        // ---- Member access on maps (syntax-agnostic; whatever the parser used) ----
+        ast::Expr::Member(base, name, sp) => {
+            let base_v = eval_expr(base, sess)?;
+            match base_v {
+                Value::Map(map) => {
+                    match map.get(name) {
+                        Some(v) => Ok(v.clone()),
+                        None => Err(rt("R0403", format!("missing key '{}'", name), sp.clone())),
+                    }
+                }
+                _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
+            }
+        }
+
+        ast::Expr::OptMember(base, name, _sp) => {
+            let base_v = eval_expr(base, sess)?;
+            match base_v {
+                Value::Nil => Ok(Value::Nil), // short-circuit: nil?.key  -> nil
+                Value::Map(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
+                _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
+            }
+        }
+
         // ---- Prefix operators ----
         ast::Expr::Prefix(op, expr, sp) => {
             match op.as_str() {
@@ -389,6 +469,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let v = eval_expr(expr, sess)?;
                     let n = as_num(v, span_of_expr(expr), "unary '+'")?;
                     Ok(Value::Num(n))
+                }
+                "!" => {
+                    let v = eval_expr(expr, sess)?;
+                    match v {
+                        Value::Bool(b) => Ok(Value::Bool(!b)),
+                        _ => Err(rt("T0303", "logical 'not' (!) requires a boolean", sp.clone())),
+                    }
                 }
                 _ => Err(rt("R0002", format!("prefix operator '{}' not implemented", op), sp.clone())),
             }

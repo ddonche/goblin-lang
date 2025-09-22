@@ -17,7 +17,9 @@ templating systems.
 - [x] Parser implementation 
 - [x] AST implementation 
 - [ ] Interpreter implementation  
-- [ ] Glam scaffolding system
+- [ ] Release beta version. 
 - [ ] Real-world testing with Game Goblin Supply
+- [ ] Write Goblin programming language book
+- [ ] Begin working on Grvyrd (Graveyard) framework
 
 See `spec/` for the complete language specification.
