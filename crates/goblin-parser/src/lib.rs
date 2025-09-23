@@ -2924,62 +2924,6 @@ impl<'t> Parser<'t> {
 
         let mut out: Vec<ast::Stmt> = Vec::new();
 
-        // ===== INLINE BRACE MODE: { ... } =====
-        // We fully own braces here, including consuming the closing '}'.
-        if self.eat_op("{") {
-            // If you enforce single-line inline blocks, keep this check:
-            let brace_line = if self.i > 0 {
-                self.toks[self.i - 1].span.line_start
-            } else {
-                0
-            };
-
-            // Allow "{}" empty block but ensure '}' is on the same line if that's your rule.
-            if self.peek_op("}") {
-                let close_line = self.peek().unwrap().span.line_start;
-                if close_line != brace_line {
-                    return Err(s_help(
-                        "P0207",
-                        "Inline braced blocks must be on a single line",
-                        "Place '}' on the same line as '{': { do() }",
-                    ));
-                }
-                let _ = self.eat_op("}");
-                return Ok(out);
-            }
-
-            // Parse statements until the closing brace.
-            loop {
-                // Skip blank lines inside braces
-                while let Some(t) = self.peek() {
-                    if matches!(t.kind, TokenKind::Newline) {
-                        self.i += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                if self.peek_op("}") {
-                    let _ = self.eat_op("}");
-                    break;
-                }
-
-                // Inside braces, we do NOT stop on 'else'/'end'/'xx'—the brace wins.
-                if self.peek().is_none() {
-                    // Reached EOF without '}' — emit a clear diagnostic
-                    return Err(s_help(
-                        "P0212",
-                        "This block is missing its closing '}'.",
-                        "Close the inline block with a matching '}'.",
-                    ));
-                }
-
-                out.push(self.parse_stmt()?);
-            }
-
-            return Ok(out);
-        }
-
         // ===== INDENT / KEYWORD MODE =====
         // Here we rely on explicit stoppers like 'else'/'end'/'xx', but we DO NOT consume them.
         loop {
@@ -4519,7 +4463,7 @@ impl<'t> Parser<'t> {
             let rhs = self.parse_unary()?;
             return Ok(PExpr::Prefix("!".into(), Box::new(rhs))); // normalize to "!"
         }
-        
+
         // unary +/-
         if self.eat_op("+") {
             let rhs = self.parse_unary()?;

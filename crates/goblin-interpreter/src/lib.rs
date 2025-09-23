@@ -96,12 +96,10 @@ impl Session {
     pub fn new() -> Self { Self::default() }
 
     /// Evaluate a whole module (returns last expression value if any).
-    /// Stage 1/2: executes only top-level `Stmt::Expr`; skips class/action decls.
     pub fn eval_module(&mut self, m: &ast::Module) -> Result<Option<Value>, Diag> {
         let mut last = None;
         for stmt in &m.items {
-            if let ast::Stmt::Expr(e) = stmt {
-                let v = eval_expr(e, self)?;
+            if let Some(v) = eval_stmt(stmt, self)? {
                 last = Some(v);
             }
         }
@@ -201,6 +199,23 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Binary(_, _, _, sp)
         | ast::Expr::Assign(_, _, sp) => sp.clone(),
     }
+}
+
+fn as_bool(v: Value, at: Span, label: &str) -> Result<bool, Diag> {
+    match v {
+        Value::Bool(b) => Ok(b),
+        _ => Err(rt("T0303", format!("{label} requires a boolean"), at)),
+    }
+}
+
+fn eval_block(stmts: &[ast::Stmt], sess: &mut Session) -> Result<Option<Value>, Diag> {
+    let mut last = None;
+    for s in stmts {
+        if let Some(v) = eval_stmt(s, sess)? {
+            last = Some(v);
+        }
+    }
+    Ok(last)
 }
 
 fn fmt_num_trim(n: f64) -> String {
@@ -321,6 +336,29 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
     Ok(out)
 }
 
+fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
+    match s {
+        ast::Stmt::Expr(e) => Ok(Some(eval_expr(e, sess)?)),
+        ast::Stmt::Class(_) | ast::Stmt::Action(_) => Ok(None),
+    }
+}
+
+fn eval_expr_list(exprs: &[ast::Expr], sess: &mut Session) -> Result<Option<Value>, Diag> {
+    let mut last: Option<Value> = None;
+    for e in exprs {
+        last = Some(eval_expr(e, sess)?);
+    }
+    Ok(last)
+}
+
+fn expect_array<'a>(e: &'a ast::Expr, label: &str) -> Result<&'a [ast::Expr], Diag> {
+    if let ast::Expr::Array(items, _) = e {
+        Ok(items.as_slice())
+    } else {
+        Err(rt("P0314", format!("{label} must be an array of expressions"), span_of_expr(e)))
+    }
+}
+
 // ===================== Evaluation =====================
 
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
@@ -383,15 +421,47 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
 
-        // ---- Calls ----
+        // ---- Calls (methods/namespaces still unimplemented) ----
         ast::Expr::Call(_, _, _, sp) | ast::Expr::OptCall(_, _, _, sp) | ast::Expr::NsCall(_, _, _, sp) => {
-            Err(not_impl("Stage 2", "method/namespace calls", sp.clone()))
+            Err(not_impl("Stage 3", "method/namespace calls", sp.clone()))
         }
 
         // Free calls: v(n) (history) and say(expr)
         ast::Expr::FreeCall(name, args, sp) => {
-            let nm = name.as_str();
-            match nm {
+            match name.as_str() {
+                "if" => {
+                    // args: [cond, then_arr, (optional) else_arr]
+                    if args.len() < 2 || args.len() > 3 {
+                        return Err(rt("P0315", "if expects [cond, then_block, (else_block)]", sp.clone()));
+                    }
+                    let cond_v = eval_expr(&args[0], sess)?;
+                    let cond_b = as_bool(cond_v, span_of_expr(&args[0]), "if condition")?;
+
+                    if cond_b {
+                        let then_es = expect_array(&args[1], "then_block")?;
+                        Ok(eval_expr_list(then_es, sess)?.unwrap_or(Value::Unit))
+                    } else if args.len() == 3 {
+                        let else_es = expect_array(&args[2], "else_block")?;
+                        Ok(eval_expr_list(else_es, sess)?.unwrap_or(Value::Unit))
+                    } else {
+                        Ok(Value::Unit)
+                    }
+                }
+
+                "while" => {
+                    // args: [cond, body_arr]
+                    if args.len() != 2 {
+                        return Err(rt("P0316", "while expects [cond, body_block]", sp.clone()));
+                    }
+                    let body_es = expect_array(&args[1], "body_block")?;
+                    loop {
+                        let c = eval_expr(&args[0], sess)?;
+                        if !as_bool(c, span_of_expr(&args[0]), "while condition")? { break; }
+                        let _ = eval_expr_list(body_es, sess)?;
+                    }
+                    Ok(Value::Unit)
+                }
+
                 "v" => {
                     if args.len() != 1 {
                         return Err(rt("P0703", "v(n) requires exactly one numeric argument", sp.clone()));
@@ -404,33 +474,25 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let idx = n as usize;
                     match sess.get(idx) {
                         Some(v) => Ok(v.clone()),
-                        None => Err(rt(
-                            "R0101",
+                        None => Err(rt("R0101",
                             format!("no value at v({}); session has {}", idx, sess.history_len()),
-                            sp.clone(),
-                        )),
+                            sp.clone())),
                     }
                 }
-                "say" => {
-                    let printed = if args.is_empty() {
-                        Value::Unit
-                    } else {
-                        eval_expr(&args[0], sess)?
-                    };
 
+                "say" => {
+                    let printed = if args.is_empty() { Value::Unit } else { eval_expr(&args[0], sess)? };
                     match printed {
                         Value::Str(s) => {
-                            // Interpolate at print time, using current env
                             let rendered = render_interpolated(&s, sess, &span_of_expr(&args[0]))?;
                             println!("{}", rendered);
                         }
-                        other => {
-                            println!("{}", fmt_value_raw(&other));
-                        }
+                        other => println!("{}", fmt_value_raw(&other)),
                     }
                     Ok(Value::Unit)
                 }
-                _ => Err(rt("R0001", format!("free call '{}' is not implemented in Stage 2", nm), sp.clone())),
+
+                _ => Err(rt("R0001", format!("free call '{}' is not implemented in Stage 3", name), sp.clone())),
             }
         }
 

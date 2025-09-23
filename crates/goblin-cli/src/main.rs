@@ -681,35 +681,179 @@ fn repl_banner() -> &'static str {
 fn run_repl() -> i32 {
     use std::io::{self, Write};
     use goblin_interpreter::Session;
+    use goblin_lexer::{lex, TokenKind};
+    use goblin_parser::Parser;
+    use goblin_ast as ast;
 
     println!("{}", repl_banner());
     let mut sess = Session::new();
     let mut n: usize = 1;
 
+    // Accumulator for multi-line input and a tiny depth counter for blocks.
+    let mut buf = String::new();
+    let mut depth: i32 = 0;
+
     loop {
-        print!("gbln({})>> ", n);
+        // Primary prompt for a fresh form; continuation prompt inside a form.
+        if buf.is_empty() {
+            print!("gbln({})>> ", n);
+        } else {
+            print!("...       ");
+        }
         if io::stdout().flush().is_err() { return 1; }
 
         let mut line = String::new();
         let read = io::stdin().read_line(&mut line).unwrap_or(0);
-        if read == 0 { println!(); break; }
+        if read == 0 { println!(); break; } // Ctrl+D/Z
 
-        let input = line.trim();
-        if input.is_empty() { continue; }
-        if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") { break; }
+        let trimmed = line.trim_end();
 
-        match sess.eval_line(input) {
-            Ok(val) => {
-                let echo = format!("{}", val); // Value::Unit -> ""
-                if !echo.is_empty() {
-                    println!("{}", echo);
-                }
-                n += 1;
-            }
-            Err(d) => eprintln!("{}", d),
+        // Allow exit/quit only when not inside a pending block.
+        if buf.is_empty() && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit")) {
+            break;
         }
+
+        // Append this line to the buffer we’ll parse as a unit.
+        buf.push_str(trimmed);
+        buf.push('\n');
+
+        // ----- Update block depth from THIS line only -----
+        // We ONLY count control keywords (no braces — braces are for maps/interpolation only).
+        if let Ok(toks) = lex(trimmed, "<repl>") {
+            for t in &toks {
+                match &t.kind {
+                    TokenKind::Ident if t.value.as_deref() == Some("if")
+                                    || t.value.as_deref() == Some("while")
+                                    || t.value.as_deref() == Some("unless") => { depth += 1; }
+                    TokenKind::Ident if t.value.as_deref() == Some("end") => { depth -= 1; }
+                    TokenKind::Op(op) if op == "xx" => { depth -= 1; }
+                    _ => {}
+                }
+            }
+        }
+
+        // Safety clamp so we never “owe” an opener; parser will still complain if it’s wrong.
+        if depth < 0 { depth = 0; }
+
+        // If we're still inside a block, keep reading lines.
+        if depth > 0 { continue; }
+
+        // We’re at top level (depth == 0): try to parse+eval the whole buffer.
+        if buf.trim().is_empty() {
+            buf.clear();
+            continue;
+        }
+
+        let toks = match lex(&buf, "<repl>") {
+            Ok(t) => t,
+            Err(diags) => {
+                eprintln!("{}", diags[0]);
+                buf.clear();
+                depth = 0;
+                continue;
+            }
+        };
+
+        let parser = Parser::new(&toks);
+        let module = match parser.parse_module() {
+            Ok(m) => m,
+            Err(diags) => {
+                eprintln!("{}", diags[0]);
+                buf.clear();
+                depth = 0;
+                continue;
+            }
+        };
+
+        // Evaluate each top-level expression; only print non-empty echoes.
+        for stmt in &module.items {
+            if let ast::Stmt::Expr(e) = stmt {
+                match sess.eval_expr(e) {
+                    Ok(val) => {
+                        let echo = format!("{}", val); // Value::Unit -> ""
+                        if !echo.is_empty() {
+                            println!("{}", echo);
+                        }
+                    }
+                    Err(d) => {
+                        eprintln!("{}", d);
+                        // On error, stop executing the rest of the buffered form.
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Reset for the next form.
+        buf.clear();
+        depth = 0;
+        n += 1;
     }
     0
+}
+
+/// Use the real lexer to count control-flow depth (`if|unless|while` ++, `end|xx` --)
+/// and detect if the current buffer ends with `else`. This ignores strings automatically
+/// because we rely on tokenization.
+fn block_state(src: &str) -> Result<(i32, bool), ()> {
+    use goblin_lexer::TokenKind;
+
+    let toks = match goblin_lexer::lex(src, "<repl>") {
+        Ok(t) => t,
+        Err(_) => return Err(()),
+    };
+
+    let mut depth: i32 = 0;
+    let mut last_sig_is_else = false;
+
+    for t in &toks {
+        match &t.kind {
+            TokenKind::Ident => {
+                match t.value.as_deref() {
+                    Some("if") | Some("unless") | Some("while") => depth += 1,
+                    Some("end") => depth -= 1,
+                    Some("else") => { /* handled only as “ends with else” below */ }
+                    _ => {}
+                }
+            }
+            TokenKind::Op(op) if op == "xx" => depth -= 1,
+            _ => {}
+        }
+    }
+
+    // Find the last significant token (skip Newline/Indent/Dedent if you emit those)
+    for t in toks.iter().rev() {
+        match &t.kind {
+            TokenKind::Newline => continue,
+            TokenKind::Ident if t.value.as_deref() == Some("else") => {
+                last_sig_is_else = true;
+                break;
+            }
+            _ => {
+                last_sig_is_else = false;
+                break;
+            }
+        }
+    }
+
+    Ok((depth, last_sig_is_else))
+}
+
+/// Evaluate the accumulated source once, echoing only non-empty values (so `if/while`
+/// print nothing; use a follow-up line like `x` to see the result).
+fn eval_and_echo(sess: &mut goblin_interpreter::Session, src: &str) -> Result<bool, goblin_interpreter::Diag> {
+    match sess.eval_line(src) {
+        Ok(val) => {
+            let echo = format!("{}", val);
+            if !echo.is_empty() {
+                println!("{}", echo);
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        Err(d) => Err(d),
+    }
 }
 
 fn run_run(path: &std::path::Path) -> i32 {
