@@ -1727,27 +1727,35 @@ impl<'t> Parser<'t> {
 
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
-        let hdr_tok_i = self.i.saturating_sub(1);
-        let hdr_start = self.toks[hdr_tok_i].clone();
-        let hdr_line = hdr_start.span.line_start;
-        let hdr_col = hdr_start.span.col_start;
+
+        // Header position (right after the keyword token/ident)
+        let hdr_tok_i   = self.i.saturating_sub(1);
+        let hdr_start   = self.toks[hdr_tok_i].clone();
+        let hdr_line    = hdr_start.span.line_start;
+        let hdr_col     = hdr_start.span.col_start;
+
+        // Parse: name, (params), optional "= expr" (single-line), otherwise no body here
         let action_start = self.i;
         let pa = self.parse_action_after_keyword(kw)?;
-        let action_span = Self::span_from_tokens(self.toks, action_start, self.i);
+        let action_span = Self::span_from_tokens(self.toks, action_start, self.i.saturating_sub(1));
+
+        // Lower params: Vec<(String, Option<PExpr>)> -> Vec<ast::Param>
         let params: Vec<ast::Param> = pa.params.into_iter()
             .map(|(pname, def_pe)| ast::Param {
                 name: pname,
                 type_name: None,
-                default: def_pe.map(|pe| self.lower_expr(pe)), // PExpr -> Expr
+                default: def_pe.map(|pe| self.lower_expr(pe)),
                 span: action_span.clone(),
             })
-            .collect::<Vec<_>>();
+            .collect();
+
+        // ---------- SINGLE-LINE FORM: `action name(...) = expr` ----------
+        // parse_action_after_keyword set body (Vec<PExpr>) when '=' was present.
         if !pa.body.is_empty() {
-            let body_stmts: Vec<ast::Stmt> = pa
-                .body
-                .into_iter()
+            let body_stmts: Vec<ast::Stmt> = pa.body.into_iter()
                 .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
                 .collect();
+
             let act = ast::ActionDecl {
                 name: pa.name,
                 params,
@@ -1757,18 +1765,15 @@ impl<'t> Parser<'t> {
             };
             return Ok(ast::Stmt::Action(act));
         }
+
+        // ---------- BLOCK FORM (layout, no braces) ----------
+        // If the next non-blank token on a *new line* is '{', that’s a map, not a block.
         if let Some(prev_tok) = self.toks.get(self.i.saturating_sub(1)) {
             let mut j = self.i;
             while let Some(tok) = self.toks.get(j) {
                 match &tok.kind {
-                    TokenKind::Newline => {
-                        j += 1;
-                        continue;
-                    }
-                    TokenKind::Op(s) if s == ";" => {
-                        j += 1;
-                        continue;
-                    }
+                    TokenKind::Newline => { j += 1; continue; }
+                    TokenKind::Op(s) if s == ";" => { j += 1; continue; }
                     _ => break,
                 }
             }
@@ -1784,23 +1789,29 @@ impl<'t> Parser<'t> {
                 }
             }
         }
+
+        // Policy: no inline braces for blocks; enforce your existing rule.
         self.enforce_inline_brace_policy(hdr_line, kw)?;
+
+        // Parse the indented block until a closer aligned with the header column.
         let body_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
             p.skip_newlines();
-            p.eat_layout_until_close(hdr_col) || (p.peek_block_close() && p.toks[p.i].span.col_start == hdr_col)
+            // stop if dedented back to header column, or a closer ('end' / 'xx') at header col
+            p.eat_layout_until_close(hdr_col)
+                || (p.peek_block_close() && p.toks[p.i].span.col_start == hdr_col)
         })?;
+
+        // Consume the closer (if still present) and validate alignment.
         self.skip_stmt_separators();
         if self.block_closed_hard {
+            // a hard closer like 'xx' already consumed inside helper
             self.block_closed_hard = false;
         } else if self.peek_block_close() {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col != hdr_col {
                 return Err(s_help(
                     "P0222",
-                    &format!(
-                        "This closer is misaligned: expected column {}, found column {}",
-                        hdr_col, col
-                    ),
+                    &format!("This closer is misaligned: expected column {}, found column {}", hdr_col, col),
                     "Align the closer with its header (same column), placing 'end' or 'xx' directly under the action header.",
                 ));
             }
@@ -1812,6 +1823,8 @@ impl<'t> Parser<'t> {
                 "Close the block with 'end' or 'xx' (crossbones).",
             ));
         }
+
+        // Build AST action
         let act = ast::ActionDecl {
             name: pa.name,
             params,
@@ -3187,6 +3200,14 @@ impl<'t> Parser<'t> {
             if matches!(t.kind, TokenKind::Act) {
                 self.i += 1;                 // eat the Act token
                 return self.parse_free_action("act");
+            }
+        }
+
+        // action (keyword token form)
+        if let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Action) {
+                self.i += 1; // consume the keyword token
+                return self.parse_free_action("action");
             }
         }
 

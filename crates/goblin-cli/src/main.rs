@@ -718,38 +718,44 @@ fn run_repl() -> i32 {
         buf.push('\n');
 
         // ----- Update block depth from THIS line only -----
-        // We ONLY count control keywords (no braces — braces are for maps/interpolation only).
-        if let Ok(toks) = lex(trimmed, "<repl>") {
-            for t in &toks {
-                match &t.kind {
-                    // block openers
-                    TokenKind::Ident
-                        if matches!(t.value.as_deref(), Some("if") | Some("while") | Some("unless")) =>
-                    {
-                        depth += 1;
-                    }
-                    TokenKind::Act => {            // <— this is the key bit for `act`
-                        depth += 1;
-                    }
-                    // If your lexer uses Ident("action") or a separate TokenKind::Action, add one:
-                    // TokenKind::Ident if t.value.as_deref() == Some("action") => { depth += 1; }
-                    // TokenKind::Action => { depth += 1; }
+        // Do it with a simple string scan (no braces; only keywords matter here).
+        {
+            let s = trimmed.trim_start();
 
-                    // block closers
-                    TokenKind::Ident if t.value.as_deref() == Some("end") => {
-                        depth -= 1;
+            // helper: does this line start a block keyword?
+            let starts_block_kw = |kw: &str| -> bool {
+                s == kw || s.starts_with(kw) && s[kw.len()..].starts_with(char::is_whitespace)
+            };
+
+            // 1) control-flow headers always open a block on their line
+            if starts_block_kw("if") || starts_block_kw("while") || starts_block_kw("unless") {
+                depth += 1;
+            }
+
+            // 2) action header: open a block UNLESS it's the single-line form `= ...` at top level
+            if s.starts_with("act ") || s.starts_with("act(") || s.starts_with("action ") || s.starts_with("action(") {
+                // scan for '=' that is NOT inside parens
+                let mut paren = 0i32;
+                let mut has_eq_outside = false;
+                for ch in s.chars() {
+                    match ch {
+                        '(' => paren += 1,
+                        ')' => if paren > 0 { paren -= 1; },
+                        '=' if paren == 0 => { has_eq_outside = true; break; }
+                        _ => {}
                     }
-                    TokenKind::Op(op) if op == "xx" => {
-                        depth -= 1;
-                    }
-                    _ => {}
+                }
+                if !has_eq_outside {
+                    depth += 1; // multiline action; keep buffering
                 }
             }
-        }
-        if depth < 0 { depth = 0; }
 
-        // Safety clamp so we never “owe” an opener; parser will still complain if it’s wrong.
-        if depth < 0 { depth = 0; }
+            // 3) closers
+            if s == "end" { depth -= 1; }
+            if s == "xx"  { depth -= 1; }
+
+            if depth < 0 { depth = 0; } // never “owe” an opener
+        }
 
         // If we're still inside a block, keep reading lines.
         if depth > 0 { continue; }
