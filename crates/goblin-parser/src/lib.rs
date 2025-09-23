@@ -133,9 +133,9 @@ fn parse_int_literal_to_i128(s: &str) -> Option<i128> {
 #[derive(Debug, Clone)]
 struct PAction {
     name: String,
-    params: Vec<String>,
-    body: Vec<PExpr>,
-    is_single: bool,
+    params: Vec<(String, Option<PExpr>)>, // (param name, optional default)
+    body: Vec<PExpr>,                     // lowered later
+    is_single: bool,                      // action Foo() = expr
 }
 
 
@@ -1665,7 +1665,7 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_action_after_keyword(&mut self, kw: &str) -> Result<PAction, String> {
-
+        // name
         let Some(name) = self.eat_ident() else {
             return Err(s_help(
                 "P0501",
@@ -1674,19 +1674,26 @@ impl<'t> Parser<'t> {
             ));
         };
 
-        // optional params: (p1, p2, ...)
-        let mut params = Vec::new();
+        // (p1, p2 = expr, ...)
+        let mut params: Vec<(String, Option<PExpr>)> = Vec::new();
         if self.eat_op("(") {
             if !self.peek_op(")") {
                 loop {
-                    let Some(p) = self.eat_ident() else {
+                    let Some(pname) = self.eat_ident() else {
                         return Err(s_help(
                             "P0502",
                             "Expected a parameter name",
                             "Use a simple identifier like username or count",
                         ));
                     };
-                    params.push(p);
+                    // optional default: = <expr>
+                    let default = if self.eat_op("=") {
+                        Some(self.parse_coalesce()?)
+                    } else {
+                        None
+                    };
+                    params.push((pname, default));
+
                     if self.eat_op(",") {
                         if self.peek_op(")") { break; }
                         continue;
@@ -1703,7 +1710,7 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // single-line form: `act foo = expr`
+        // single-line form:  act foo = expr
         if self.eat_op("=") {
             let expr = self.parse_coalesce()?;
             return Ok(PAction {
@@ -1714,13 +1721,8 @@ impl<'t> Parser<'t> {
             });
         }
 
-        // IMPORTANT: do NOT parse a block body here.
-        Ok(PAction {
-            name,
-            params,
-            body: Vec::new(),
-            is_single: false,
-        })
+        // multi-line form: body parsed by parse_free_action
+        Ok(PAction { name, params, body: Vec::new(), is_single: false })
     }
 
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
@@ -1732,16 +1734,14 @@ impl<'t> Parser<'t> {
         let action_start = self.i;
         let pa = self.parse_action_after_keyword(kw)?;
         let action_span = Self::span_from_tokens(self.toks, action_start, self.i);
-        let params: Vec<ast::Param> = pa
-            .params
-            .into_iter()
-            .map(|pname| ast::Param {
+        let params: Vec<ast::Param> = pa.params.into_iter()
+            .map(|(pname, def_pe)| ast::Param {
                 name: pname,
                 type_name: None,
-                default: None,
+                default: def_pe.map(|pe| self.lower_expr(pe)), // PExpr -> Expr
                 span: action_span.clone(),
             })
-            .collect();
+            .collect::<Vec<_>>();
         if !pa.body.is_empty() {
             let body_stmts: Vec<ast::Stmt> = pa
                 .body
@@ -3182,6 +3182,14 @@ impl<'t> Parser<'t> {
             return self.parse_free_action("action");
         }
 
+        // -------- free action: dedicated token from the lexer --------
+        if let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Act) {
+                self.i += 1;                 // eat the Act token
+                return self.parse_free_action("act");
+            }
+        }
+
         // -------- class declarations: @Class or '@' then Ident --------
         if let Some(tok0) = self.peek().cloned() {
             match tok0.kind {
@@ -3228,24 +3236,19 @@ impl<'t> Parser<'t> {
                     })
                     .collect();
 
-                // Actions (mirrors parse_free_action lowering)
                 let actions_ast: Vec<ast::ActionDecl> = actions
                     .into_iter()
                     .map(|pa| {
-                        let params: Vec<ast::Param> = pa
-                            .params
-                            .into_iter()
-                            .map(|pname| ast::Param {
+                        let params: Vec<ast::Param> = pa.params.into_iter()
+                            .map(|(pname, def_pe)| ast::Param {
                                 name: pname,
                                 type_name: None,
-                                default: None,
-                                span: sp.clone(),
+                                default: def_pe.map(|pe| self.lower_expr(pe)), // PExpr -> Expr
+                                span: sp.clone(), // <-- was action_span.clone()
                             })
                             .collect();
 
-                        // PAction.body is Vec<PExpr>; treat each as an expression-statement
-                        let body_stmts: Vec<ast::Stmt> = pa
-                            .body
+                        let body_stmts: Vec<ast::Stmt> = pa.body
                             .into_iter()
                             .map(|pex| ast::Stmt::Expr(self.lower_expr(pex)))
                             .collect();

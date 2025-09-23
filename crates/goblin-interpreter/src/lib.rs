@@ -1,19 +1,27 @@
 // goblin-interpreter/src/lib.rs
-//! Stage 1+ interpreter on the *real* Goblin AST.
-//! Scope implemented now (matches your current repo):
-//!   - numbers, strings (lexer provides escapes), booleans, nil
-//!   - unary +/-
-//!   - postfix: %, !, ^, _, ** (square), // (sqrt)
-//!   - infix: + - * / // % ** ><
-//!   - percent-of family: N% (literal), N% of E, N%o E
-//!   - comparisons: == != < <= > >=
-//!   - logic: and/or (&&, <>), coalesce ??
-//!   - assignment: name = expr, and compound assigns (+= -= *= /= //= %= **=)
-//!   - free calls: v(n), say(expr)
+//! Stage 1–3 interpreter on the real Goblin AST.
 //!
-//! Not implemented yet (as per your current AST + smokes):
-//!   - string interpolation (AST has no StrInterp)
-//!   - arrays/objects/member/index (return clear "not implemented in Stage 2")
+//! Implemented (per your repo so far):
+//! - literals: numbers/strings/bools/nil  (escapes handled by lexer)
+//! - unary +/- and logical not: "!" and "not"
+//! - postfix: %, !, ^ (ceil), _ (floor), ** (square), // (sqrt)
+//! - infix math: + - * / // % ** ><
+//! - percent family: N% literal, `N %o X` == (N/100)*X, `N% of X` == (N/100)*X (parser lowers "of")
+//! - comparisons: == != < <= > >= (num/num or str/str)
+//! - logic: and/or (aliases &&, <>), coalesce ??
+//! - strings: "a" + "b", and "a" ++ "b" (space-join, stringifies rhs/lhs)
+//! - string interpolation at runtime: "Hello {name}" with {{ and }} escapes
+//! - vars: `name = expr`, compound: += -= *= /= //= %= **=
+//! - arrays & maps: [..], {k: v}; indexing: arr[i], map["key"]
+//! - member access (from parser): Member/OptMember work on maps (name key); OptMember nil-propagates
+//! - free calls: v(n), say(x)
+//! - control flow (parser lowers to free calls):
+//!     if(cond) { then[] [, else[]] } -> FreeCall("if", [cond, then[], else?[]])
+//!     while(cond) { body[] }         -> FreeCall("while", [cond, body[]])
+//!
+//! Not implemented yet:
+//! - namespaced/receiver calls (Call/OptCall/NsCall) -> clear "not implemented" diag
+//! - classes/actions execution semantics beyond registering free actions (Stage 4)
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -29,12 +37,10 @@ pub enum Value {
     Str(String),
     Bool(bool),
     Array(Vec<Value>),
-    Map(BTreeMap<String, Value>), // ← was Object; this is the map
-    Pair(Box<Value>, Box<Value>),
+    Map(BTreeMap<String, Value>),
+    Pair(Box<Value>, Box<Value>), // for >< (divmod)
     Nil,
     Unit,
-    CtrlSkip,  // "skip"
-    CtrlStop,
 }
 
 impl fmt::Display for Value {
@@ -52,10 +58,10 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Map(m) => {
+            Value::Map(map) => {
                 write!(f, "{{")?;
                 let mut first = true;
-                for (k, v) in m.iter() {
+                for (k, v) in map.iter() {
                     if !first { write!(f, ", ")?; }
                     first = false;
                     write!(f, "{}: {}", k, v)?;
@@ -63,7 +69,7 @@ impl fmt::Display for Value {
                 write!(f, "}}")
             }
             Value::Pair(a, b) => write!(f, "({}, {})", a, b),
-            Value::Unit | Value::CtrlSkip | Value::CtrlStop => Ok(()),
+            Value::Unit => Ok(()),
         }
     }
 }
@@ -83,13 +89,39 @@ impl std::error::Error for Diag {}
 
 #[derive(Default)]
 pub struct Session {
-    history: Vec<Value>,          // v(n) lookup; 1-based externally
-    env: BTreeMap<String, Value>, // Stage 2: single global env
-    loop_depth: usize,
+    history: Vec<Value>,                               // v(n)
+    pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
+    pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
 }
 
 impl Session {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self {
+            history: Vec::new(),
+            env: vec![BTreeMap::new()],
+            actions: BTreeMap::new(),
+        }
+    }
+
+    // --- scope helpers ---
+    fn push_frame(&mut self) { self.env.push(BTreeMap::new()); }
+    fn pop_frame(&mut self) { let _ = self.env.pop(); }
+
+    pub fn get_var(&self, name: &str) -> Option<&Value> {
+        for frame in self.env.iter().rev() {
+            if let Some(v) = frame.get(name) { return Some(v); }
+        }
+        None
+    }
+    pub fn set_var(&mut self, name: String, val: Value) {
+        if let Some(top) = self.env.last_mut() {
+            top.insert(name, val);
+        }
+    }
+
+    pub fn eval_stmt(&mut self, s: &ast::Stmt) -> Result<Option<Value>, Diag> {
+        eval_stmt(s, self)
+    }
 
     /// Evaluate a whole module (returns last expression value if any).
     pub fn eval_module(&mut self, m: &ast::Module) -> Result<Option<Value>, Diag> {
@@ -102,7 +134,7 @@ impl Session {
         Ok(last)
     }
 
-    /// Parse + eval a single REPL line using the real parser.
+    /// Parse + eval a single REPL form using the real parser.
     pub fn eval_line(&mut self, src: &str) -> Result<Value, Diag> {
         // 1) Lex
         let toks = match goblin_lexer::lex(src, "<repl>") {
@@ -204,27 +236,6 @@ fn as_bool(v: Value, at: Span, label: &str) -> Result<bool, Diag> {
     }
 }
 
-// Helper just for loop bodies: run a list of exprs and detect control signals.
-#[allow(dead_code)]
-enum BlockFlow {
-    Value(Option<Value>), // normal completion
-    Skip,                 // encountered "skip"
-    Stop,                 // encountered "stop"
-}
-
-fn run_block_for_loop(exprs: &[ast::Expr], sess: &mut Session) -> Result<BlockFlow, Diag> {
-    let mut last: Option<Value> = None;
-    for e in exprs {
-        let v = eval_expr(e, sess)?;
-        match v {
-            Value::CtrlSkip => return Ok(BlockFlow::Skip),
-            Value::CtrlStop => return Ok(BlockFlow::Stop),
-            other => last = Some(other),
-        }
-    }
-    Ok(BlockFlow::Value(last))
-}
-
 fn fmt_num_trim(n: f64) -> String {
     if n.is_finite() && n.fract() == 0.0 {
         format!("{}", n as i64)
@@ -237,14 +248,7 @@ fn fmt_num_trim(n: f64) -> String {
 fn fmt_value_raw(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
-        Value::Num(n) => {
-            if n.is_finite() && n.fract() == 0.0 {
-                format!("{}", *n as i64)
-            } else {
-                let s = format!("{}", n);
-                s.trim_end_matches('0').trim_end_matches('.').to_string()
-            }
-        }
+        Value::Num(n) => fmt_num_trim(*n),
         Value::Bool(b) => if *b { "true".into() } else { "false".into() },
         Value::Nil => "nil".into(),
         _ => format!("{}", v), // Array/Map/Pair -> use Display
@@ -296,28 +300,16 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
                 let mut j = start;
                 while j < b.len() && b[j] != b'}' { j += 1; }
                 if j >= b.len() {
-                    return Err(rt(
-                        "P0604",
-                        "There's an unclosed '{' in this string.",
-                        sp.clone(),
-                    ));
+                    return Err(rt("P0604", "There's an unclosed '{' in this string.", sp.clone()));
                 }
                 let inner = s[start..j].trim();
                 if !is_ident(inner) {
-                    return Err(rt(
-                        "P0103",
-                        "Expected a name (identifier) inside { ... }",
-                        sp.clone(),
-                    ));
+                    return Err(rt("P0103", "Expected a name (identifier) inside { ... }", sp.clone()));
                 }
-                match sess.env.get(inner) {
+                match sess.get_var(inner) {
                     Some(v) => out.push_str(&fmt_value_raw(v)),
                     None => {
-                        return Err(rt(
-                            "R0110",
-                            format!("unknown identifier '{}'", inner),
-                            sp.clone(),
-                        ))
+                        return Err(rt("R0110", format!("unknown identifier '{}'", inner), sp.clone()))
                     }
                 }
                 i = j + 1;
@@ -346,7 +338,15 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
 fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
     match s {
         ast::Stmt::Expr(e) => Ok(Some(eval_expr(e, sess)?)),
-        ast::Stmt::Class(_) | ast::Stmt::Action(_) => Ok(None),
+
+        // Register free action declarations at load/run time (Stage 4+).
+        ast::Stmt::Action(decl) => {
+            sess.actions.insert(decl.name.clone(), decl.clone());
+            Ok(None)
+        }
+
+        // Classes are later; ignore gracefully for now.
+        ast::Stmt::Class(_c) => Ok(None),
     }
 }
 
@@ -376,7 +376,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Number(txt, sp) => Ok(Value::Num(parse_num(txt, sp.clone())?)),
         ast::Expr::Str(s, sp) => {
             if s.as_bytes().contains(&b'{') {
-                // only identifiers are allowed inside { … } in Stage 2
+                // only simple identifiers are allowed inside { … } at this stage
                 let rendered = render_interpolated(s, sess, sp)?;
                 Ok(Value::Str(rendered))
             } else {
@@ -384,10 +384,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
         ast::Expr::Ident(name, sp) => {
-            match sess.env.get(name) {
+            match sess.get_var(name) {
                 Some(v) => Ok(v.clone()),
                 None => Err(rt("R0110", format!("unknown identifier '{}'", name), sp.clone())),
             }
+        }
+
+        // Plain assignment (ident = expr)
+        ast::Expr::Assign(lhs, rhs, _sp) => {
+            let name = if let ast::Expr::Ident(n, _) = &**lhs {
+                n.clone()
+            } else {
+                return Err(rt("P0801", "left-hand side of assignment must be a name", span_of_expr(lhs)));
+            };
+            let v = eval_expr(rhs, sess)?;
+            sess.set_var(name, v.clone());
+            Ok(v)
         }
 
         // ---- Collections ----
@@ -399,7 +411,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             Ok(Value::Array(out))
         }
 
-        // Maps (parser calls it Object)
         ast::Expr::Object(kvs, _sp) => {
             let mut m = BTreeMap::new();
             for (k, vexpr) in kvs {
@@ -408,7 +419,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
             Ok(Value::Map(m))
         }
-        
+
+        // ---- Indexing (array / map) ----
         ast::Expr::Index(base, idx, sp) => {
             let b = eval_expr(base, sess)?;
             let i = eval_expr(idx, sess)?;
@@ -428,103 +440,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
 
-        // ---- Calls (methods/namespaces still unimplemented) ----
-        ast::Expr::Call(_, _, _, sp) | ast::Expr::OptCall(_, _, _, sp) | ast::Expr::NsCall(_, _, _, sp) => {
-            Err(not_impl("Stage 3", "method/namespace calls", sp.clone()))
-        }
-
-        // Free calls: v(n) (history) and say(expr)
-        ast::Expr::FreeCall(name, args, sp) => {
-            match name.as_str() {
-                "if" => {
-                    // args: [cond, then_arr, (optional) else_arr]
-                    if args.len() < 2 || args.len() > 3 {
-                        return Err(rt("P0315", "if expects [cond, then_block, (else_block)]", sp.clone()));
-                    }
-                    let cond_v = eval_expr(&args[0], sess)?;
-                    let cond_b = as_bool(cond_v, span_of_expr(&args[0]), "if condition")?;
-
-                    if cond_b {
-                        let then_es = expect_array(&args[1], "then_block")?;
-                        Ok(eval_expr_list(then_es, sess)?.unwrap_or(Value::Unit))
-                    } else if args.len() == 3 {
-                        let else_es = expect_array(&args[2], "else_block")?;
-                        Ok(eval_expr_list(else_es, sess)?.unwrap_or(Value::Unit))
-                    } else {
-                        Ok(Value::Unit)
-                    }
-                }
-
-                "skip" => {
-                    if sess.loop_depth == 0 {
-                        return Err(rt("R0501", "'skip' can only be used inside a loop", sp.clone()));
-                    }
-                    Ok(Value::CtrlSkip)
-                }
-                "stop" => {
-                    if sess.loop_depth == 0 {
-                        return Err(rt("R0502", "'stop' can only be used inside a loop", sp.clone()));
-                    }
-                    Ok(Value::CtrlStop)
-                }
-
-                "while" => {
-                    // args: [cond, body_arr]
-                    if args.len() != 2 {
-                        return Err(rt("P0316", "while expects [cond, body_block]", sp.clone()));
-                    }
-                    let body_es = expect_array(&args[1], "body_block")?;
-
-                    sess.loop_depth += 1;
-                    loop {
-                        let c = eval_expr(&args[0], sess)?;
-                        if !as_bool(c, span_of_expr(&args[0]), "while condition")? { break; }
-
-                        match run_block_for_loop(body_es, sess)? {
-                            BlockFlow::Value(_) => { /* normal iteration */ }
-                            BlockFlow::Skip => continue, // "skip" -> next iteration
-                            BlockFlow::Stop => break,     // "stop" -> break loop
-                        }
-                    }
-                    sess.loop_depth -= 1;
-                    Ok(Value::Unit)
-                }
-
-                "v" => {
-                    if args.len() != 1 {
-                        return Err(rt("P0703", "v(n) requires exactly one numeric argument", sp.clone()));
-                    }
-                    let n_val = eval_expr(&args[0], sess)?;
-                    let n = as_num(n_val, span_of_expr(&args[0]), "v(n)")?;
-                    if n < 1.0 || n.fract() != 0.0 {
-                        return Err(rt("P0703", "v(n) requires a positive integer", sp.clone()));
-                    }
-                    let idx = n as usize;
-                    match sess.get(idx) {
-                        Some(v) => Ok(v.clone()),
-                        None => Err(rt("R0101",
-                            format!("no value at v({}); session has {}", idx, sess.history_len()),
-                            sp.clone())),
-                    }
-                }
-
-                "say" => {
-                    let printed = if args.is_empty() { Value::Unit } else { eval_expr(&args[0], sess)? };
-                    match printed {
-                        Value::Str(s) => {
-                            let rendered = render_interpolated(&s, sess, &span_of_expr(&args[0]))?;
-                            println!("{}", rendered);
-                        }
-                        other => println!("{}", fmt_value_raw(&other)),
-                    }
-                    Ok(Value::Unit)
-                }
-
-                _ => Err(rt("R0001", format!("free call '{}' is not implemented in Stage 3", name), sp.clone())),
-            }
-        }
-
-        // ---- Member access on maps (syntax-agnostic; whatever the parser used) ----
+        // ---- Member access on maps (syntax from parser; you’re not using dot in code, but handle it) ----
         ast::Expr::Member(base, name, sp) => {
             let base_v = eval_expr(base, sess)?;
             match base_v {
@@ -537,13 +453,129 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
             }
         }
-
         ast::Expr::OptMember(base, name, _sp) => {
             let base_v = eval_expr(base, sess)?;
             match base_v {
-                Value::Nil => Ok(Value::Nil), // short-circuit: nil?.key  -> nil
+                Value::Nil => Ok(Value::Nil),
                 Value::Map(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
                 _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
+            }
+        }
+
+        // ---- Calls (methods/namespaces not in Stage 3) ----
+        ast::Expr::Call(_, _, _, sp) | ast::Expr::OptCall(_, _, _, sp) | ast::Expr::NsCall(_, _, _, sp) => {
+            Err(not_impl("Stage 3", "method/namespace calls", sp.clone()))
+        }
+
+        // ---- Free calls ----
+        ast::Expr::FreeCall(name, args, sp) => {
+            match name.as_str() {
+                // control flow lowered by parser
+                "if" => {
+                    if args.len() < 2 || args.len() > 3 {
+                        return Err(rt("P0315", "if expects [cond, then_block, (else_block)]", sp.clone()));
+                    }
+                    let cond_v = eval_expr(&args[0], sess)?;
+                    if as_bool(cond_v, span_of_expr(&args[0]), "if condition")? {
+                        let then_es = expect_array(&args[1], "then_block")?;
+                        Ok(eval_expr_list(then_es, sess)?.unwrap_or(Value::Unit))
+                    } else if args.len() == 3 {
+                        let else_es = expect_array(&args[2], "else_block")?;
+                        Ok(eval_expr_list(else_es, sess)?.unwrap_or(Value::Unit))
+                    } else {
+                        Ok(Value::Unit)
+                    }
+                }
+                "while" => {
+                    if args.len() != 2 {
+                        return Err(rt("P0316", "while expects [cond, body_block]", sp.clone()));
+                    }
+                    let body_es = expect_array(&args[1], "body_block")?;
+                    loop {
+                        let c = eval_expr(&args[0], sess)?;
+                        if !as_bool(c, span_of_expr(&args[0]), "while condition")? { break; }
+                        let _ = eval_expr_list(body_es, sess)?;
+                    }
+                    Ok(Value::Unit)
+                }
+
+                // v(n): history lookup (1-based)
+                "v" => {
+                    if args.len() != 1 {
+                        return Err(rt("P0703", "v(n) requires exactly one numeric argument", sp.clone()));
+                    }
+                    let n_val = eval_expr(&args[0], sess)?;
+                    let n = as_num(n_val, span_of_expr(&args[0]), "v(n)")?;
+                    if n < 1.0 || n.fract() != 0.0 {
+                        return Err(rt("P0703", "v(n) requires a positive integer", sp.clone()));
+                    }
+                    let idx = n as usize;
+                    match sess.get(idx) {
+                        Some(v) => Ok(v.clone()),
+                        None => Err(rt("R0101", format!("no value at v({}); session has {}", idx, sess.history_len()), sp.clone())),
+                    }
+                }
+
+                // say: prints value; for strings, render interpolation at print time
+                "say" => {
+                    let printed = if args.is_empty() { Value::Unit } else { eval_expr(&args[0], sess)? };
+                    match printed {
+                        Value::Str(s) => {
+                            let rendered = render_interpolated(&s, sess, &span_of_expr(&args[0]))?;
+                            println!("{}", rendered);
+                        }
+                        other => println!("{}", fmt_value_raw(&other)),
+                    }
+                    Ok(Value::Unit)
+                }
+
+                // user-defined actions (Stage 4+): bind params + new frame + run body
+                other_name => {
+                    let decl = match sess.actions.get(other_name) {
+                        Some(d) => d.clone(),
+                        None => return Err(rt("A0401", format!("unknown action '{}'", other_name), sp.clone())),
+                    };
+
+                    // eval args in caller scope
+                    let mut arg_vals = Vec::with_capacity(args.len());
+                    for a in args { arg_vals.push(eval_expr(a, sess)?); }
+
+                    // arity + defaults
+                    let params = &decl.params;
+                    if arg_vals.len() > params.len() {
+                        return Err(rt("A0402", format!("wrong number of arguments: expected {}, got {}", params.len(), arg_vals.len()), sp.clone()));
+                    }
+
+                    // bind
+                    sess.push_frame();
+                    for (i, p) in params.iter().enumerate() {
+                        if i < arg_vals.len() {
+                            sess.set_var(p.name.clone(), arg_vals[i].clone());
+                        } else if let Some(def_e) = &p.default {
+                            let v = eval_expr(def_e, sess)?;
+                            sess.set_var(p.name.clone(), v);
+                        } else {
+                            sess.pop_frame();
+                            return Err(rt("A0402", format!("missing required argument '{}'", p.name), sp.clone()));
+                        }
+                    }
+
+                    // run body (last expr value is the return)
+                    let ret = match &decl.body {
+                        ast::ActionBody::Block(stmts) => {
+                            let mut last = Value::Unit;
+                            for st in stmts {
+                                if let Some(v) = eval_stmt(st, sess)? {
+                                    last = v;
+                                }
+                            }
+                            last
+                        }
+                    };
+
+                    sess.pop_frame();
+                    Ok(ret)
+                }
             }
         }
 
@@ -560,11 +592,11 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let n = as_num(v, span_of_expr(expr), "unary '+'")?;
                     Ok(Value::Num(n))
                 }
-                "!" => {
+                "!" | "not" => {
                     let v = eval_expr(expr, sess)?;
                     match v {
                         Value::Bool(b) => Ok(Value::Bool(!b)),
-                        _ => Err(rt("T0303", "logical 'not' (!) requires a boolean", sp.clone())),
+                        _ => Err(rt("T0303", "logical 'not' requires a boolean", sp.clone())),
                     }
                 }
                 _ => Err(rt("R0002", format!("prefix operator '{}' not implemented", op), sp.clone())),
@@ -661,7 +693,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Num((a / 100.0) * b))
                 }
 
-                // comparisons
+                // comparisons (bool)
                 "==" => { let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?; Ok(Value::Bool(lv == rv)) }
                 "!=" => { let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?; Ok(Value::Bool(lv != rv)) }
                 "<" | "<=" | ">" | ">=" => {
@@ -715,14 +747,14 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(rv)
                 }
 
-                // compound assigns on identifiers only (parser must produce Binary for them)
+                // compound assigns on identifiers only
                 "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "**=" => {
                     let name = if let ast::Expr::Ident(n, _) = &**lhs {
                         n.clone()
                     } else {
                         return Err(rt("P0801", "left-hand side of compound assign must be a name", span_of_expr(lhs)));
                     };
-                    let old = match sess.env.get(&name) {
+                    let old = match sess.get_var(&name) {
                         Some(v) => v.clone(),
                         None => return Err(rt("R0110", format!("unknown identifier '{}'", name), span_of_expr(lhs))),
                     };
@@ -740,24 +772,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         _ => unreachable!(),
                     };
                     let out = Value::Num(new);
-                    sess.env.insert(name, out.clone());
+                    sess.set_var(name, out.clone());
                     Ok(out)
                 }
 
                 _ => Err(rt("R0004", format!("binary operator '{}' not implemented", op), sp.clone())),
             }
-        }
-
-        // Plain assignment (ident = expr)
-        ast::Expr::Assign(lhs, rhs, _sp) => {
-            let name = if let ast::Expr::Ident(n, _) = &**lhs {
-                n.clone()
-            } else {
-                return Err(rt("P0801", "left-hand side of assignment must be a name", span_of_expr(lhs)));
-            };
-            let v = eval_expr(rhs, sess)?;
-            sess.env.insert(name, v.clone());
-            Ok(v)
         }
     }
 }

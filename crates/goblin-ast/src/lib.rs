@@ -32,24 +32,23 @@ pub struct FieldDecl {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
-    pub type_name: Option<String>,   // e.g. `amount | Number`
-    pub default: Option<Expr>,       // default arg value if provided
+    pub type_name: Option<String>,
+    pub default: Option<Expr>, // AST Expr (not PExpr)
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum ActionBody {
     Block(Vec<Stmt>),
-    // Native(Vec<String>) // (not used by parser right now, placeholder if you add later)
 }
 
 #[derive(Debug, Clone)]
 pub struct ActionDecl {
     pub name: String,
-    pub params: Vec<Param>,
+    pub params: Vec<Param>,    // <-- single field; no PExpr here
     pub body: ActionBody,
     pub span: Span,
-    pub ret: Option<String>, // parser always sets None for now; wire a real Type later
+    pub ret: Option<String>,
 }
 
 #[derive(Debug, Clone)]

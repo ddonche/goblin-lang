@@ -722,15 +722,31 @@ fn run_repl() -> i32 {
         if let Ok(toks) = lex(trimmed, "<repl>") {
             for t in &toks {
                 match &t.kind {
-                    TokenKind::Ident if t.value.as_deref() == Some("if")
-                                    || t.value.as_deref() == Some("while")
-                                    || t.value.as_deref() == Some("unless") => { depth += 1; }
-                    TokenKind::Ident if t.value.as_deref() == Some("end") => { depth -= 1; }
-                    TokenKind::Op(op) if op == "xx" => { depth -= 1; }
+                    // block openers
+                    TokenKind::Ident
+                        if matches!(t.value.as_deref(), Some("if") | Some("while") | Some("unless")) =>
+                    {
+                        depth += 1;
+                    }
+                    TokenKind::Act => {            // <— this is the key bit for `act`
+                        depth += 1;
+                    }
+                    // If your lexer uses Ident("action") or a separate TokenKind::Action, add one:
+                    // TokenKind::Ident if t.value.as_deref() == Some("action") => { depth += 1; }
+                    // TokenKind::Action => { depth += 1; }
+
+                    // block closers
+                    TokenKind::Ident if t.value.as_deref() == Some("end") => {
+                        depth -= 1;
+                    }
+                    TokenKind::Op(op) if op == "xx" => {
+                        depth -= 1;
+                    }
                     _ => {}
                 }
             }
         }
+        if depth < 0 { depth = 0; }
 
         // Safety clamp so we never “owe” an opener; parser will still complain if it’s wrong.
         if depth < 0 { depth = 0; }
@@ -765,22 +781,17 @@ fn run_repl() -> i32 {
             }
         };
 
-        // Evaluate each top-level expression; only print non-empty echoes.
+        // Evaluate every top-level statement (expressions *and* declarations).
         for stmt in &module.items {
-            if let ast::Stmt::Expr(e) = stmt {
-                match sess.eval_expr(e) {
-                    Ok(val) => {
-                        let echo = format!("{}", val); // Value::Unit -> ""
-                        if !echo.is_empty() {
-                            println!("{}", echo);
-                        }
-                    }
-                    Err(d) => {
-                        eprintln!("{}", d);
-                        // On error, stop executing the rest of the buffered form.
-                        break;
+            match sess.eval_stmt(stmt) {
+                Ok(Some(val)) => {
+                    let echo = format!("{}", val);
+                    if !echo.is_empty() {
+                        println!("{}", echo);
                     }
                 }
+                Ok(None) => {}              // declarations (act/action/class) don't echo
+                Err(d) => { eprintln!("{}", d); break; }
             }
         }
 
@@ -842,17 +853,13 @@ fn run_run(path: &std::path::Path) -> i32 {
     let mut sess = Session::new();
     for stmt in &module.items {
         if let goblin_ast::Stmt::Expr(e) = stmt {
-            match sess.eval_expr(e) {
-                Ok(val) => {
-                    let echo = format!("{}", val); // Value::Unit -> ""
-                    if !echo.is_empty() {
-                        println!("{}", echo);
-                    }
+            match sess.eval_module(&module) {
+                Ok(Some(val)) => {
+                    let echo = format!("{}", val);
+                    if !echo.is_empty() { println!("{}", echo); }
                 }
-                Err(d) => {
-                    eprintln!("{}", d);
-                    return 1;
-                }
+                Ok(None) => {}
+                Err(d) => eprintln!("{}", d),
             }
         }
         // non-expr statements are ignored in Stage 1 (same as REPL/session)
