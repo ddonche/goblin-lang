@@ -33,20 +33,14 @@ pub enum Value {
     Pair(Box<Value>, Box<Value>),
     Nil,
     Unit,
+    CtrlSkip,  // "skip"
+    CtrlStop,
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::Num(x) => {
-                let s = if x.is_finite() && x.fract() == 0.0 {
-                    format!("{}", *x as i64)
-                } else {
-                    let s = format!("{}", x);
-                    s.trim_end_matches('0').trim_end_matches('.').to_string()
-                };
-                write!(f, "{}", s)
-            }
+            Value::Num(x) => write!(f, "{}", fmt_num_trim(*x)),
             Value::Str(s) => write!(f, "{:?}", s),
             Value::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::Nil => write!(f, "nil"),
@@ -58,10 +52,10 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Map(map) => {
+            Value::Map(m) => {
                 write!(f, "{{")?;
                 let mut first = true;
-                for (k, v) in map.iter() {
+                for (k, v) in m.iter() {
                     if !first { write!(f, ", ")?; }
                     first = false;
                     write!(f, "{}: {}", k, v)?;
@@ -69,7 +63,7 @@ impl fmt::Display for Value {
                 write!(f, "}}")
             }
             Value::Pair(a, b) => write!(f, "({}, {})", a, b),
-            Value::Unit => Ok(()),
+            Value::Unit | Value::CtrlSkip | Value::CtrlStop => Ok(()),
         }
     }
 }
@@ -91,7 +85,9 @@ impl std::error::Error for Diag {}
 pub struct Session {
     history: Vec<Value>,          // v(n) lookup; 1-based externally
     env: BTreeMap<String, Value>, // Stage 2: single global env
+    loop_depth: usize,
 }
+
 impl Session {
     pub fn new() -> Self { Self::default() }
 
@@ -208,14 +204,25 @@ fn as_bool(v: Value, at: Span, label: &str) -> Result<bool, Diag> {
     }
 }
 
-fn eval_block(stmts: &[ast::Stmt], sess: &mut Session) -> Result<Option<Value>, Diag> {
-    let mut last = None;
-    for s in stmts {
-        if let Some(v) = eval_stmt(s, sess)? {
-            last = Some(v);
+// Helper just for loop bodies: run a list of exprs and detect control signals.
+#[allow(dead_code)]
+enum BlockFlow {
+    Value(Option<Value>), // normal completion
+    Skip,                 // encountered "skip"
+    Stop,                 // encountered "stop"
+}
+
+fn run_block_for_loop(exprs: &[ast::Expr], sess: &mut Session) -> Result<BlockFlow, Diag> {
+    let mut last: Option<Value> = None;
+    for e in exprs {
+        let v = eval_expr(e, sess)?;
+        match v {
+            Value::CtrlSkip => return Ok(BlockFlow::Skip),
+            Value::CtrlStop => return Ok(BlockFlow::Stop),
+            other => last = Some(other),
         }
     }
-    Ok(last)
+    Ok(BlockFlow::Value(last))
 }
 
 fn fmt_num_trim(n: f64) -> String {
@@ -448,17 +455,38 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                 }
 
+                "skip" => {
+                    if sess.loop_depth == 0 {
+                        return Err(rt("R0501", "'skip' can only be used inside a loop", sp.clone()));
+                    }
+                    Ok(Value::CtrlSkip)
+                }
+                "stop" => {
+                    if sess.loop_depth == 0 {
+                        return Err(rt("R0502", "'stop' can only be used inside a loop", sp.clone()));
+                    }
+                    Ok(Value::CtrlStop)
+                }
+
                 "while" => {
                     // args: [cond, body_arr]
                     if args.len() != 2 {
                         return Err(rt("P0316", "while expects [cond, body_block]", sp.clone()));
                     }
                     let body_es = expect_array(&args[1], "body_block")?;
+
+                    sess.loop_depth += 1;
                     loop {
                         let c = eval_expr(&args[0], sess)?;
                         if !as_bool(c, span_of_expr(&args[0]), "while condition")? { break; }
-                        let _ = eval_expr_list(body_es, sess)?;
+
+                        match run_block_for_loop(body_es, sess)? {
+                            BlockFlow::Value(_) => { /* normal iteration */ }
+                            BlockFlow::Skip => continue, // "skip" -> next iteration
+                            BlockFlow::Stop => break,     // "stop" -> break loop
+                        }
                     }
+                    sess.loop_depth -= 1;
                     Ok(Value::Unit)
                 }
 

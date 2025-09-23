@@ -792,69 +792,6 @@ fn run_repl() -> i32 {
     0
 }
 
-/// Use the real lexer to count control-flow depth (`if|unless|while` ++, `end|xx` --)
-/// and detect if the current buffer ends with `else`. This ignores strings automatically
-/// because we rely on tokenization.
-fn block_state(src: &str) -> Result<(i32, bool), ()> {
-    use goblin_lexer::TokenKind;
-
-    let toks = match goblin_lexer::lex(src, "<repl>") {
-        Ok(t) => t,
-        Err(_) => return Err(()),
-    };
-
-    let mut depth: i32 = 0;
-    let mut last_sig_is_else = false;
-
-    for t in &toks {
-        match &t.kind {
-            TokenKind::Ident => {
-                match t.value.as_deref() {
-                    Some("if") | Some("unless") | Some("while") => depth += 1,
-                    Some("end") => depth -= 1,
-                    Some("else") => { /* handled only as “ends with else” below */ }
-                    _ => {}
-                }
-            }
-            TokenKind::Op(op) if op == "xx" => depth -= 1,
-            _ => {}
-        }
-    }
-
-    // Find the last significant token (skip Newline/Indent/Dedent if you emit those)
-    for t in toks.iter().rev() {
-        match &t.kind {
-            TokenKind::Newline => continue,
-            TokenKind::Ident if t.value.as_deref() == Some("else") => {
-                last_sig_is_else = true;
-                break;
-            }
-            _ => {
-                last_sig_is_else = false;
-                break;
-            }
-        }
-    }
-
-    Ok((depth, last_sig_is_else))
-}
-
-/// Evaluate the accumulated source once, echoing only non-empty values (so `if/while`
-/// print nothing; use a follow-up line like `x` to see the result).
-fn eval_and_echo(sess: &mut goblin_interpreter::Session, src: &str) -> Result<bool, goblin_interpreter::Diag> {
-    match sess.eval_line(src) {
-        Ok(val) => {
-            let echo = format!("{}", val);
-            if !echo.is_empty() {
-                println!("{}", echo);
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        }
-        Err(d) => Err(d),
-    }
-}
 
 fn run_run(path: &std::path::Path) -> i32 {
     use goblin_interpreter::Session;

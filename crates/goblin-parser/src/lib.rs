@@ -3462,6 +3462,17 @@ impl<'t> Parser<'t> {
                     return Ok(self.apply_postfix_ops(PExpr::FreeCall("say".to_string(), args)));
                 }
 
+                if name == "skip" {
+                    // no args
+                    let span = self.toks[self.i - 1].span.clone();
+                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("skip".to_string(), vec![])));
+                }
+                if name == "stop" {
+                    // no args
+                    let span = self.toks[self.i - 1].span.clone();
+                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("stop".to_string(), vec![])));
+                }
+
                 // true/false/nil or plain identifier
                 let base = match name.as_str() {
                     "true" => PExpr::Bool(true),
