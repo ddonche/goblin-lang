@@ -41,6 +41,8 @@ pub enum Value {
     Pair(Box<Value>, Box<Value>), // for >< (divmod)
     Nil,
     Unit,
+    CtrlSkip,  
+    CtrlStop,
 }
 
 impl fmt::Display for Value {
@@ -69,7 +71,7 @@ impl fmt::Display for Value {
                 write!(f, "}}")
             }
             Value::Pair(a, b) => write!(f, "({}, {})", a, b),
-            Value::Unit => Ok(()),
+            Value::Unit | Value::CtrlSkip | Value::CtrlStop => Ok(()),
         }
     }
 }
@@ -92,6 +94,7 @@ pub struct Session {
     history: Vec<Value>,                               // v(n)
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
     pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
+    pub loop_depth: i32, 
 }
 
 impl Session {
@@ -100,6 +103,7 @@ impl Session {
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
+            loop_depth: 0,
         }
     }
 
@@ -366,6 +370,61 @@ fn expect_array<'a>(e: &'a ast::Expr, label: &str) -> Result<&'a [ast::Expr], Di
     }
 }
 
+fn call_action_by_name(
+    sess: &mut Session,
+    name: &str,
+    args: Vec<Value>,
+    sp: Span,
+) -> Result<Value, Diag> {
+    let decl = match sess.actions.get(name) {
+        Some(d) => d.clone(),
+        None => return Err(rt("A0401", format!("unknown action '{}'", name), sp)),
+    };
+
+    // Bind params (with defaults)
+    let params = &decl.params;
+    if args.len() > params.len() {
+        return Err(rt(
+            "A0402",
+            format!("wrong number of arguments: expected {}, got {}", params.len(), args.len()),
+            sp,
+        ));
+    }
+    let mut bound: Vec<(String, Value)> = Vec::new();
+    for (i, p) in params.iter().enumerate() {
+        if i < args.len() {
+            bound.push((p.name.clone(), args[i].clone()));
+        } else if let Some(def_e) = &p.default {
+            bound.push((p.name.clone(), eval_expr(def_e, sess)?));
+        } else {
+            return Err(rt("A0402", format!("missing required argument '{}'", p.name), sp));
+        }
+    }
+
+    // Execute body in a new frame; return last expr value
+    sess.push_frame();
+    for (k, v) in bound {
+        sess.set_var(k, v);
+    }
+
+    let ret = {
+        let ast::ActionBody::Block(stmts) = &decl.body;
+        let mut last = Value::Unit;
+        for st in stmts {
+            if let Some(v) = eval_stmt(st, sess)? {
+                match v {
+                    Value::CtrlSkip | Value::CtrlStop => { /* ignore outside loops */ }
+                    other => last = other,
+                }
+            }
+        }
+        last
+    };
+
+    sess.pop_frame();
+    Ok(ret)
+}
+
 // ===================== Evaluation =====================
 
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
@@ -453,6 +512,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
             }
         }
+
         ast::Expr::OptMember(base, name, _sp) => {
             let base_v = eval_expr(base, sess)?;
             match base_v {
@@ -460,11 +520,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 Value::Map(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
                 _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
             }
-        }
-
-        // ---- Calls (methods/namespaces not in Stage 3) ----
-        ast::Expr::Call(_, _, _, sp) | ast::Expr::OptCall(_, _, _, sp) | ast::Expr::NsCall(_, _, _, sp) => {
-            Err(not_impl("Stage 3", "method/namespace calls", sp.clone()))
         }
 
         // ---- Free calls ----
@@ -491,12 +546,34 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         return Err(rt("P0316", "while expects [cond, body_block]", sp.clone()));
                     }
                     let body_es = expect_array(&args[1], "body_block")?;
-                    loop {
+                    sess.loop_depth += 1;
+                    'outer: loop {
                         let c = eval_expr(&args[0], sess)?;
                         if !as_bool(c, span_of_expr(&args[0]), "while condition")? { break; }
-                        let _ = eval_expr_list(body_es, sess)?;
+                        for e in body_es {
+                            let v = eval_expr(e, sess)?;
+                            match v {
+                                Value::CtrlSkip => continue 'outer, // next iteration
+                                Value::CtrlStop => break 'outer,    // exit loop
+                                _ => {} // ignore normal values
+                            }
+                        }
                     }
+                    sess.loop_depth -= 1;
                     Ok(Value::Unit)
+                }
+
+                "skip" => {
+                    if sess.loop_depth <= 0 {
+                        return Err(rt("R0501", "'skip' used outside of a loop", sp.clone()));
+                    }
+                    Ok(Value::CtrlSkip)
+                }
+                "stop" => {
+                    if sess.loop_depth <= 0 {
+                        return Err(rt("R0502", "'stop' used outside of a loop", sp.clone()));
+                    }
+                    Ok(Value::CtrlStop)
                 }
 
                 // v(n): history lookup (1-based)
@@ -577,6 +654,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(ret)
                 }
             }
+        }
+
+        ast::Expr::Call(_, _, _, sp)
+        | ast::Expr::OptCall(_, _, _, sp)
+        | ast::Expr::NsCall(_, _, _, sp) => {
+            Err(not_impl("Stage 4", "member/optional/namespace calls", sp.clone()))
         }
 
         // ---- Prefix operators ----

@@ -1801,6 +1801,61 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             // Less-than family: <<=, <<, <=, <>, <
             b'<' => {
                 // Longest-match first
+                // Inline comment: '<---' or '<----' that must appear AFTER code on the same line.
+                // We only treat it as a comment if there has already been a non-layout token on this line.
+                {
+                    // prefer longest match (4) first; require EXACTLY 3 or 4 dashes (not 5+)
+                    let is_four = i + 5 <= bytes.len()
+                        && &bytes[i + 1..i + 5] == b"----"
+                        && (i + 6 > bytes.len() || bytes[i + 5] != b'-');
+                    let is_three = !is_four
+                        && i + 4 <= bytes.len()
+                        && &bytes[i + 1..i + 4] == b"---"
+                        && (i + 5 > bytes.len() || bytes[i + 4] != b'-');
+
+                    if is_three || is_four {
+                        // Determine if there has been code on this line already.
+                        let mut has_code_on_line = false;
+                        for t in tokens.iter().rev() {
+                            if t.span.line_start < line { break; }
+                            match t.kind {
+                                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => { /* layout, ignore */ }
+                                _ => { has_code_on_line = true; break; }
+                            }
+                        }
+
+                        let dashes = if is_four { 4usize } else { 3usize };
+                        if has_code_on_line {
+                            // consume '<' + dashes
+                            let step = 1usize + dashes;
+                            i += step;
+                            col = col.saturating_add(step as u32);
+
+                            // consume until EOL (do NOT eat the newline byte(s))
+                            while i < bytes.len() && bytes[i] != b'\r' && bytes[i] != b'\n' {
+                                i += 1;
+                                col = col.saturating_add(1);
+                            }
+                            continue; // no token from inline comments
+                        } else {
+                            // Error: inline comment marker at start-of-line (or after only layout)
+                            let start_i   = i;
+                            let start_col = col;
+                            let end_i     = i + 1 + dashes;
+                            let end_col   = start_col + (1 + dashes as u32);
+                            let span = Span::new(file, start_i, end_i, line, start_col, line, end_col);
+
+                            return Err(vec![Diagnostic::error(
+                                "L0207",
+                                "I found an inline comment marker at the start of this line\n\n\
+                                 help: Inline comments (`<---` or `<----`) are only allowed \
+                                 after code on the same line. If you meant a comment by itself, \
+                                 use `///` for a line comment or `//// ... ////` for a block comment.",
+                                span,
+                            )]);
+                        }
+                    }
+                }
                 if i + 1 < bytes.len() && bytes[i + 1] == b'<' {
                     let span = Span::new(file, i, i + 2, line, col, line, col + 2);
                     tokens.push(Token { kind: TokenKind::Operator("<<".to_string()), span, value: None });
