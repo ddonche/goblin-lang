@@ -3497,6 +3497,47 @@ impl<'t> Parser<'t> {
                     return Ok(self.apply_postfix_ops(PExpr::FreeCall("stop".to_string(), vec![])));
                 }
 
+                // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
+                // Allow: upper "x", lower "x", title "x", slug "x", mixed "x"
+                fn is_no_parens_freecall(name: &str) -> bool {
+                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed"
+                        | "trim" | "trim_lead" | "trim_trail" | "lines" | "words" | "chars" | "reverse" | "minimize" | "parse_bool")
+                }
+
+                if is_no_parens_freecall(&name) {
+                    self.skip_newlines();
+
+                    // Inline: does the next token start an expression?
+                    let starts_expr = match self.peek() {
+                        Some(t) => match &t.kind {
+                            // literals & identifiers
+                            TokenKind::String
+                            | TokenKind::Int
+                            | TokenKind::Float
+                            | TokenKind::Money
+                            | TokenKind::Duration
+                            | TokenKind::Ident
+                            | TokenKind::Date
+                            | TokenKind::Time
+                            | TokenKind::DateTime
+                            | TokenKind::Blob => true,
+
+                            // grouping / collection / prefix ops that begin an expr
+                            TokenKind::Op(s) if s == "(" || s == "[" || s == "{" || s == "-" || s == "+" || s == "!" => true,
+
+                            _ => false,
+                        },
+                        None => false,
+                    };
+
+                    if starts_expr {
+                        // Parse exactly one argument expression (same entry point as `say`)
+                        let arg = self.parse_coalesce()?;
+                        return Ok(self.apply_postfix_ops(PExpr::FreeCall(name, vec![arg])));
+                    }
+                    // else: fall through to ident handling below
+                }
+
                 // true/false/nil or plain identifier
                 let base = match name.as_str() {
                     "true" => PExpr::Bool(true),
@@ -4857,13 +4898,21 @@ impl<'t> Parser<'t> {
                     ));
                 };
 
-                // If '(' follows, parse a normal argument list; otherwise it's a zero-arg call.
                 if self.eat_op("(") {
+                    // normal arg list (may be empty)
                     let args = if self.eat_op(")") { vec![] } else { self.parse_args_paren()? };
-                    lhs = PExpr::Call(Box::new(lhs), opname, args);
+
+                    // NEW: if LHS was produced by postfix '?', lower to OptCall(lhs, name, args)
+                    lhs = match lhs {
+                        PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, args),
+                        other                  => PExpr::Call(Box::new(other), opname, args),
+                    };
                 } else {
-                    // Zero-arg sugar: obj.foo  ==  obj.foo()
-                    lhs = PExpr::Call(Box::new(lhs), opname, vec![]);
+                    // zero-arg sugar: obj.foo  ==  obj.foo()
+                    lhs = match lhs {
+                        PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, vec![]), // NEW: optional zero-arg call
+                        other                  => PExpr::Call(Box::new(other), opname, vec![]),
+                    };
                 }
                 continue;
             }

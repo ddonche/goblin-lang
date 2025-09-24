@@ -2392,13 +2392,16 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
 
                         if leads_to_string {
                             if ident_text == "raw" {
+                                // keep raw as a real string prefix
                                 pending_raw = true;
+                                // swallow this ident; next loop iteration will lex the string
+                                continue;
                             }
                             if ident_text == "trim_lead" {
-                                pending_trim_lead = true;
+                                // DO NOT swallow; let 'trim_lead' lex as an IDENT so the parser can build a FreeCall.
+                                // No lexer flag needed; the builtin handles the trimming.
+                                // fall through (do nothing here)
                             }
-                            // swallow this ident as a prefix; next loop iteration will lex the string.
-                            continue;
                         }
                     }
                 }

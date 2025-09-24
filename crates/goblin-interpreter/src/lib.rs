@@ -240,6 +240,14 @@ fn as_bool(v: Value, at: Span, label: &str) -> Result<bool, Diag> {
     }
 }
 
+fn eval_args_to_values(args: &[ast::Expr], sess: &mut Session) -> Result<Vec<Value>, Diag> {
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        out.push(eval_expr(a, sess)?);
+    }
+    Ok(out)
+}
+
 fn fmt_num_trim(n: f64) -> String {
     if n.is_finite() && n.fract() == 0.0 {
         format!("{}", n as i64)
@@ -313,7 +321,17 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
                 match sess.get_var(inner) {
                     Some(v) => out.push_str(&fmt_value_raw(v)),
                     None => {
-                        return Err(rt("R0110", format!("unknown identifier '{}'", inner), sp.clone()))
+                        // Fallback: if there's a `self` map in scope, allow `{field}` to read `self[field]`
+                        if let Some(Value::Map(m)) = sess.get_var("self") {
+                            if let Some(v) = m.get(inner) {
+                                out.push_str(&fmt_value_raw(v));
+                                // continue
+                            } else {
+                                return Err(rt("R0110", format!("unknown identifier '{}'", inner), sp.clone()))
+                            }
+                        } else {
+                            return Err(rt("R0110", format!("unknown identifier '{}'", inner), sp.clone()))
+                        }
                     }
                 }
                 i = j + 1;
@@ -370,59 +388,614 @@ fn expect_array<'a>(e: &'a ast::Expr, label: &str) -> Result<&'a [ast::Expr], Di
     }
 }
 
+/// Try a shadowable builtin. Returns Ok(Some(Value)) if handled, Ok(None) if unknown.
+fn eval_builtin(
+    name: &str,
+    args: &[Value],
+    _sess: &mut Session,
+    sp: &Span,
+) -> Result<Option<Value>, Diag> {
+    // local helpers
+    let arity = |wanted: usize| -> Result<(), Diag> {
+        if args.len() != wanted {
+            Err(rt("A0402", format!("wrong number of arguments: expected {}, got {}", wanted, args.len()), sp.clone()))
+        } else { Ok(()) }
+    };
+    let want_num = |v: &Value, label: &str| -> Result<f64, Diag> {
+        match v {
+            Value::Num(n) => Ok(*n),
+            _ => Err(need_number(label, sp.clone())),
+        }
+    };
+
+    let want_str = |v: &Value, label: &str, at: &Span| -> Result<String, Diag> {
+        match v {
+            Value::Str(s) => Ok(s.clone()),
+            _ => Err(rt("T0205", format!("{label} expects a string"), at.clone())),
+        }
+    };
+
+    let out = match name {
+        // ---------- Numeric ----------
+        "round" => {
+            arity(1)?;
+            Value::Num(want_num(&args[0], "round")?.round())
+        }
+        "floor" => {
+            arity(1)?;
+            Value::Num(want_num(&args[0], "floor")?.floor())
+        }
+        "ceil" => {
+            arity(1)?;
+            Value::Num(want_num(&args[0], "ceil")?.ceil())
+        }
+        "abs" => {
+            arity(1)?;
+            Value::Num(want_num(&args[0], "abs")?.abs())
+        }
+        "pow" => {
+            arity(2)?;
+            let a = want_num(&args[0], "pow (base)")?;
+            let b = want_num(&args[1], "pow (exponent)")?;
+            Value::Num(a.powf(b))
+        }
+        "sqrt" => {
+            arity(1)?;
+            let n = want_num(&args[0], "sqrt")?;
+            if n < 0.0 { return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone())); }
+            Value::Num(n.sqrt())
+        }
+
+        // ---------- Collection (array<number>) ----------
+        "sum" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    let mut acc = 0.0;
+                    for v in xs { acc += want_num(v, "sum")?; }
+                    Value::Num(acc)
+                }
+                _ => return Err(rt("T0401", "sum expects an array of numbers", sp.clone())),
+            }
+        }
+        "avg" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    if xs.is_empty() { Value::Num(0.0) }
+                    else {
+                        let mut acc = 0.0;
+                        for v in xs { acc += want_num(v, "avg")?; }
+                        Value::Num(acc / xs.len() as f64)
+                    }
+                }
+                _ => return Err(rt("T0401", "avg expects an array of numbers", sp.clone())),
+            }
+        }
+        "min" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    let mut it = xs.iter();
+                    let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
+                    let mut m = want_num(first, "min")?;
+                    for v in it { m = m.min(want_num(v, "min")?); }
+                    Value::Num(m)
+                }
+                _ => return Err(rt("T0401", "min expects an array of numbers", sp.clone())),
+            }
+        }
+        "max" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    let mut it = xs.iter();
+                    let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
+                    let mut m = want_num(first, "max")?;
+                    for v in it { m = m.max(want_num(v, "max")?); }
+                    Value::Num(m)
+                }
+                _ => return Err(rt("T0401", "max expects an array of numbers", sp.clone())),
+            }
+        }
+
+        // ---------- String case & transforms ----------
+        "upper" => {
+            arity(1)?;
+            let s = want_str(&args[0], "upper", &sp)?;
+            Value::Str(s.to_uppercase())
+        }
+        "lower" => {
+            arity(1)?;
+            let s = want_str(&args[0], "lower", &sp)?;
+            Value::Str(s.to_lowercase())
+        }
+        "title" => {
+            arity(1)?;
+            let s = want_str(&args[0], "title", &sp)?;
+            let mut out = String::with_capacity(s.len());
+            for (i, w) in s.split_whitespace().enumerate() {
+                if i > 0 { out.push(' '); }
+                let mut chs = w.chars();
+                if let Some(first) = chs.next() {
+                    out.extend(first.to_uppercase());
+                    let rest: String = chs.collect();
+                    out.push_str(&rest.to_lowercase());
+                }
+            }
+            Value::Str(out)
+        }
+        "slug" => {
+            arity(1)?;
+            let s = want_str(&args[0], "slug", &sp)?;
+            let mut out = String::with_capacity(s.len());
+            let mut last_dash = false;
+            for ch in s.chars() {
+                if ch.is_ascii_alphanumeric() {
+                    out.push(ch.to_ascii_lowercase());
+                    last_dash = false;
+                } else if !last_dash {
+                    out.push('-');
+                    last_dash = true;
+                }
+            }
+            Value::Str(out.trim_matches('-').to_string())
+        }
+        "mixed" => {
+            arity(1)?;
+            let s = want_str(&args[0], "mixed", &sp)?;
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let mut seed = t.as_nanos() as u128;
+            for b in s.as_bytes() { seed = seed.wrapping_mul(1099511628211).wrapping_add(*b as u128); }
+            let mut state: u128 = seed ^ 0x9E3779B97F4A7C15u128;
+            let mut out = String::with_capacity(s.len());
+            for ch in s.chars() {
+                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
+                if ch.is_alphabetic() {
+                    let upper = ((state >> 127) & 1) == 1;
+                    if upper { out.extend(ch.to_uppercase()); } else { out.extend(ch.to_lowercase()); }
+                } else {
+                    out.push(ch);
+                }
+            }
+            Value::Str(out)
+        }
+
+        // Unknown builtin → tell caller to fall back to A0401
+        _ => return Ok(None),
+    };
+
+    Ok(Some(out))
+}
+
 fn call_action_by_name(
     sess: &mut Session,
     name: &str,
     args: Vec<Value>,
     sp: Span,
 ) -> Result<Value, Diag> {
-    let decl = match sess.actions.get(name) {
-        Some(d) => d.clone(),
-        None => return Err(rt("A0401", format!("unknown action '{}'", name), sp)),
-    };
-
-    // Bind params (with defaults)
-    let params = &decl.params;
-    if args.len() > params.len() {
-        return Err(rt(
-            "A0402",
-            format!("wrong number of arguments: expected {}, got {}", params.len(), args.len()),
-            sp,
-        ));
-    }
-    let mut bound: Vec<(String, Value)> = Vec::new();
-    for (i, p) in params.iter().enumerate() {
-        if i < args.len() {
-            bound.push((p.name.clone(), args[i].clone()));
-        } else if let Some(def_e) = &p.default {
-            bound.push((p.name.clone(), eval_expr(def_e, sess)?));
-        } else {
-            return Err(rt("A0402", format!("missing required argument '{}'", p.name), sp));
+    // Prefer user-defined actions (shadowable)
+    if let Some(decl) = sess.actions.get(name).cloned() {
+        let params = &decl.params;
+        if args.len() > params.len() {
+            return Err(rt("A0402",
+                format!("wrong number of arguments: expected {}, got {}", params.len(), args.len()),
+                sp.clone()));
         }
-    }
 
-    // Execute body in a new frame; return last expr value
-    sess.push_frame();
-    for (k, v) in bound {
-        sess.set_var(k, v);
-    }
-
-    let ret = {
-        let ast::ActionBody::Block(stmts) = &decl.body;
-        let mut last = Value::Unit;
-        for st in stmts {
-            if let Some(v) = eval_stmt(st, sess)? {
-                match v {
-                    Value::CtrlSkip | Value::CtrlStop => { /* ignore outside loops */ }
-                    other => last = other,
-                }
+        let mut bound: Vec<(String, Value)> = Vec::with_capacity(params.len());
+        for (i, p) in params.iter().enumerate() {
+            if i < args.len() {
+                bound.push((p.name.clone(), args[i].clone()));
+            } else if let Some(def_e) = &p.default {
+                let v = eval_expr(def_e, sess)?;
+                bound.push((p.name.clone(), v));
+            } else {
+                return Err(rt("A0402", format!("missing required argument '{}'", p.name), sp.clone()));
             }
         }
-        last
+
+        sess.push_frame();
+        for (k, v) in bound { sess.set_var(k, v); }
+
+        let ret = {
+            let ast::ActionBody::Block(stmts) = &decl.body;
+            let mut last = Value::Unit;
+            for st in stmts {
+                if let Some(v) = eval_stmt(st, sess)? {
+                    match v {
+                        Value::CtrlSkip | Value::CtrlStop => { /* ignore outside loops */ }
+                        other => last = other,
+                    }
+                }
+            }
+            last
+        };
+
+        sess.pop_frame();
+        return Ok(ret);
+    }
+
+    // ---------- Built-ins (shadowable) ----------
+    let arity = |wanted: usize| -> Result<(), Diag> {
+        if args.len() != wanted {
+            Err(rt("A0402",
+                format!("wrong number of arguments: expected {}, got {}", wanted, args.len()),
+                sp.clone()))
+        } else { Ok(()) }
+    };
+    let want_num = |v: &Value, label: &str| -> Result<f64, Diag> {
+        match v {
+            Value::Num(n) => Ok(*n),
+            _ => Err(need_number(label, sp.clone())),
+        }
+    };
+    let want_str = |v: &Value, label: &str| -> Result<String, Diag> {
+        match v {
+            Value::Str(s) => Ok(s.clone()),
+            _ => Err(rt("T0205", format!("{label} expects a string"), sp.clone())),
+        }
     };
 
-    sess.pop_frame();
-    Ok(ret)
+    // Map a (&str -> String) transform over string or array<string>
+    let map_str_1 = |v: &Value, label: &str, f: &dyn Fn(&str) -> String| -> Result<Value, Diag> {
+        match v {
+            Value::Str(s) => Ok(Value::Str(f(s))),
+            Value::Array(xs) => {
+                let mut out = Vec::with_capacity(xs.len());
+                for it in xs {
+                    match it {
+                        Value::Str(s) => out.push(Value::Str(f(s))),
+                        _ => return Err(rt("T0205", format!("{label} expects a string (or array of strings)"), sp.clone())),
+                    }
+                }
+                Ok(Value::Array(out))
+            }
+            _ => Err(rt("T0205", format!("{label} expects a string (or array of strings)"), sp.clone())),
+        }
+    };
+
+    let out: Value = match name {
+        // ----- Numeric -----
+        "round" => { arity(1)?; Value::Num(want_num(&args[0], "round")?.round()) }
+        "floor" => { arity(1)?; Value::Num(want_num(&args[0], "floor")?.floor()) }
+        "ceil"  => { arity(1)?; Value::Num(want_num(&args[0], "ceil")?.ceil()) }
+        "abs"   => { arity(1)?; Value::Num(want_num(&args[0], "abs")?.abs()) }
+        "pow"   => { arity(2)?; Value::Num(want_num(&args[0], "pow (base)")?.powf(want_num(&args[1], "pow (exponent)")?)) }
+        "sqrt"  => {
+            arity(1)?;
+            let n = want_num(&args[0], "sqrt")?;
+            if n < 0.0 { return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone())); }
+            Value::Num(n.sqrt())
+        }
+
+        // ----- Array<number> stats -----
+        "sum" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    let mut acc = 0.0;
+                    for v in xs { acc += want_num(v, "sum")?; }
+                    Value::Num(acc)
+                }
+                _ => return Err(rt("T0401", "sum expects an array of numbers", sp.clone())),
+            }
+        }
+        "avg" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    if xs.is_empty() { Value::Num(0.0) } else {
+                        let mut acc = 0.0;
+                        for v in xs { acc += want_num(v, "avg")?; }
+                        Value::Num(acc / xs.len() as f64)
+                    }
+                }
+                _ => return Err(rt("T0401", "avg expects an array of numbers", sp.clone())),
+            }
+        }
+        "min" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    let mut it = xs.iter();
+                    let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
+                    let mut m = want_num(first, "min")?;
+                    for v in it { m = m.min(want_num(v, "min")?); }
+                    Value::Num(m)
+                }
+                _ => return Err(rt("T0401", "min expects an array of numbers", sp.clone())),
+            }
+        }
+        "max" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Array(xs) => {
+                    let mut it = xs.iter();
+                    let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
+                    let mut m = want_num(first, "max")?;
+                    for v in it { m = m.max(want_num(v, "max")?); }
+                    Value::Num(m)
+                }
+                _ => return Err(rt("T0401", "max expects an array of numbers", sp.clone())),
+            }
+        }
+
+        // ----- String case & transforms -----
+        "upper" => { arity(1)?; map_str_1(&args[0], "upper", &|s| s.to_uppercase())? }
+        "lower" => { arity(1)?; map_str_1(&args[0], "lower", &|s| s.to_lowercase())? }
+        "title" => {
+            arity(1)?;
+            let to_title = |s: &str| -> String {
+                let mut out = String::with_capacity(s.len());
+                for (i, w) in s.split_whitespace().enumerate() {
+                    if i > 0 { out.push(' '); }
+                    let mut chs = w.chars();
+                    if let Some(first) = chs.next() {
+                        out.extend(first.to_uppercase());
+                        let rest: String = chs.collect();
+                        out.push_str(&rest.to_lowercase());
+                    }
+                }
+                out
+            };
+            map_str_1(&args[0], "title", &to_title)?
+        }
+        "slug" => {
+            arity(1)?;
+            let to_slug = |s: &str| -> String {
+                let mut out = String::with_capacity(s.len());
+                let mut last_dash = false;
+                for ch in s.chars() {
+                    if ch.is_ascii_alphanumeric() {
+                        out.push(ch.to_ascii_lowercase());
+                        last_dash = false;
+                    } else if !last_dash {
+                        out.push('-');
+                        last_dash = true;
+                    }
+                }
+                out.trim_matches('-').to_string()
+            };
+            map_str_1(&args[0], "slug", &to_slug)?
+        }
+        "mixed" => {
+            arity(1)?;
+            let to_mixed = |s: &str| -> String {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                let mut seed = t.as_nanos() as u128;
+                for b in s.as_bytes() { seed = seed.wrapping_mul(1099511628211).wrapping_add(*b as u128); }
+                let mut state: u128 = seed ^ 0x9E3779B97F4A7C15u128;
+                let mut out = String::with_capacity(s.len());
+                for ch in s.chars() {
+                    state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
+                    if ch.is_alphabetic() {
+                        let upper = ((state >> 127) & 1) == 1;
+                        if upper { out.extend(ch.to_uppercase()); } else { out.extend(ch.to_lowercase()); }
+                    } else { out.push(ch); }
+                }
+                out
+            };
+            map_str_1(&args[0], "mixed", &to_mixed)?
+        }
+
+        // ----- String trim -----
+        "trim"       => { arity(1)?; map_str_1(&args[0], "trim",       &|s| s.trim().to_string())? }
+        "trim_lead"  => { arity(1)?; map_str_1(&args[0], "trim_lead",  &|s| s.trim_start().to_string())? }
+        "trim_trail" => { arity(1)?; map_str_1(&args[0], "trim_trail", &|s| s.trim_end().to_string())? }
+
+        // ===== Search & test =====
+        "has" => { // s contains sub?  -> Bool
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let s   = want_str(&args[0], "has")?;
+            let sub = want_str(&args[1], "has")?;
+            Value::Bool(s.contains(&sub))
+        }
+        "find" => { // first index of sub (0-based), or nil
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let s   = want_str(&args[0], "find")?;
+            let sub = want_str(&args[1], "find")?;
+            match s.find(&sub) { Some(i) => Value::Num(i as f64), None => Value::Nil }
+        }
+        "find_all" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let s   = want_str(&args[0], "find_all")?;
+            let sub = want_str(&args[1], "find_all")?;
+            if sub.is_empty() {
+                Value::Array(vec![])
+            } else {
+                let mut out = Vec::new();
+                let mut start = 0usize;
+                while let Some(pos) = s[start..].find(&sub) {
+                    let idx = start + pos;
+                    out.push(Value::Num(idx as f64));
+                    start = idx + sub.len(); // non-overlapping
+                }
+                Value::Array(out)
+            }
+        }
+        "count" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let s   = want_str(&args[0], "count")?;
+            let sub = want_str(&args[1], "count")?;
+            if sub.is_empty() {
+                Value::Num(0.0)
+            } else {
+                let mut n = 0usize;
+                let mut start = 0usize;
+                while let Some(pos) = s[start..].find(&sub) {
+                    n += 1;
+                    start = start + pos + sub.len();
+                }
+                Value::Num(n as f64)
+            }
+        }
+
+        // ===== Replace & remove =====
+        "replace" => {
+            if args.len() != 3 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
+            }
+            let s    = want_str(&args[0], "replace")?;
+            let from = want_str(&args[1], "replace")?;
+            let to   = want_str(&args[2], "replace")?;
+            if from.is_empty() {
+                Value::Str(s)
+            } else {
+                Value::Str(s.replace(&from, &to))
+            }
+        }
+        "replace_first" => {
+            if args.len() != 3 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
+            }
+            let s    = want_str(&args[0], "replace_first")?;
+            let from = want_str(&args[1], "replace_first")?;
+            let to   = want_str(&args[2], "replace_first")?;
+            if from.is_empty() {
+                Value::Str(s)
+            } else if let Some(pos) = s.find(&from) {
+                let mut out = String::with_capacity(s.len());
+                out.push_str(&s[..pos]);
+                out.push_str(&to);
+                out.push_str(&s[pos + from.len()..]);
+                Value::Str(out)
+            } else {
+                Value::Str(s)
+            }
+        }
+        "remove" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let s   = want_str(&args[0], "remove")?;
+            let sub = want_str(&args[1], "remove")?;
+            if sub.is_empty() {
+                Value::Str(s)
+            } else {
+                Value::Str(s.replace(&sub, ""))
+            }
+        }
+
+        // ===== Slice / extract =====
+        "before" => {
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "before")?;
+            let sep = want_str(&args[1], "before")?;
+            match s.find(&sep) { Some(i) => Value::Str(s[..i].to_string()), None => Value::Str(s) }
+        }
+        "after" => {
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "after")?;
+            let sep = want_str(&args[1], "after")?;
+            match s.find(&sep) { Some(i) => Value::Str(s[i + sep.len()..].to_string()), None => Value::Str(String::new()) }
+        }
+        "before_last" => {
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "before_last")?;
+            let sep = want_str(&args[1], "before_last")?;
+            match s.rfind(&sep) { Some(i) => Value::Str(s[..i].to_string()), None => Value::Str(s) }
+        }
+        "after_last" => {
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "after_last")?;
+            let sep = want_str(&args[1], "after_last")?;
+            match s.rfind(&sep) { Some(i) => Value::Str(s[i + sep.len()..].to_string()), None => Value::Str(String::new()) }
+        }
+        "between" => { // first left … right after that
+            if args.len() != 3 { return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "between")?;
+            let left  = want_str(&args[1], "between")?;
+            let right = want_str(&args[2], "between")?;
+            if let Some(i) = s.find(&left) {
+                let jstart = i + left.len();
+                if let Some(jrel) = s[jstart..].find(&right) {
+                    let j = jstart + jrel;
+                    Value::Str(s[jstart..j].to_string())
+                } else {
+                    Value::Str(String::new())
+                }
+            } else {
+                Value::Str(String::new())
+            }
+        }
+
+        // ===== Split & join =====
+        "lines" => { // split on '\n'
+            if args.len() != 1 { return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "lines")?;
+            Value::Array(s.split('\n').map(|t| Value::Str(t.to_string())).collect())
+        }
+        "words" => {
+            if args.len() != 1 { return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "words")?;
+            Value::Array(s.split_whitespace().map(|t| Value::Str(t.to_string())).collect())
+        }
+        "chars" => {
+            if args.len() != 1 { return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "chars")?;
+            Value::Array(s.chars().map(|c| Value::Str(c.to_string())).collect())
+        }
+        "split" => { // split by separator (string)
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "split")?;
+            let sep = want_str(&args[1], "split")?;
+            if sep.is_empty() {
+                Value::Array(s.chars().map(|c| Value::Str(c.to_string())).collect())
+            } else {
+                Value::Array(s.split(&sep).map(|t| Value::Str(t.to_string())).collect())
+            }
+        }
+        "join" => { // join array of strings with sep
+            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
+            let arr = match &args[0] { Value::Array(xs) => xs, _ => return Err(rt("T0401", "join expects an array", sp.clone())) };
+            let sep = want_str(&args[1], "join")?;
+            let mut out = String::new();
+            for (i, v) in arr.iter().enumerate() {
+                let s = match v { Value::Str(s) => s.clone(), _ => return Err(rt("T0205", "join expects array of strings", sp.clone())) };
+                if i > 0 { out.push_str(&sep); }
+                out.push_str(&s);
+            }
+            Value::Str(out)
+        }
+
+        // ===== Other transforms =====
+        "reverse" => { arity(1)?; map_str_1(&args[0], "reverse", &|s| s.chars().rev().collect())? }
+        "minimize" => {
+            arity(1)?;
+            let f = |s: &str| {
+                let mut out = String::new();
+                let mut in_ws = false;
+                for ch in s.chars() {
+                    if ch.is_whitespace() {
+                        if !in_ws { out.push(' '); in_ws = true; }
+                    } else { in_ws = false; out.push(ch); }
+                }
+                out.trim().to_string()
+            };
+            map_str_1(&args[0], "minimize", &f)?
+        }
+        "parse_bool" => { // "true"/"false" (case-insensitive); else error
+            if args.len() != 1 { return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone())); }
+            let s = want_str(&args[0], "parse_bool")?;
+            match s.to_ascii_lowercase().as_str() {
+                "true"  => Value::Bool(true),
+                "false" => Value::Bool(false),
+                _ => return Err(rt("T0205", "parse_bool expects 'true' or 'false'", sp.clone())),
+            }
+        }
+
+        // ----- Unknown -----
+        other => return Err(rt("A0401", format!("unknown action '{}'", other), sp.clone())),
+    };
+
+    Ok(out)
 }
 
 // ===================== Evaluation =====================
@@ -606,60 +1179,39 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Unit)
                 }
 
-                // user-defined actions (Stage 4+): bind params + new frame + run body
                 other_name => {
-                    let decl = match sess.actions.get(other_name) {
-                        Some(d) => d.clone(),
-                        None => return Err(rt("A0401", format!("unknown action '{}'", other_name), sp.clone())),
-                    };
-
-                    // eval args in caller scope
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for a in args { arg_vals.push(eval_expr(a, sess)?); }
-
-                    // arity + defaults
-                    let params = &decl.params;
-                    if arg_vals.len() > params.len() {
-                        return Err(rt("A0402", format!("wrong number of arguments: expected {}, got {}", params.len(), arg_vals.len()), sp.clone()));
-                    }
-
-                    // bind
-                    sess.push_frame();
-                    for (i, p) in params.iter().enumerate() {
-                        if i < arg_vals.len() {
-                            sess.set_var(p.name.clone(), arg_vals[i].clone());
-                        } else if let Some(def_e) = &p.default {
-                            let v = eval_expr(def_e, sess)?;
-                            sess.set_var(p.name.clone(), v);
-                        } else {
-                            sess.pop_frame();
-                            return Err(rt("A0402", format!("missing required argument '{}'", p.name), sp.clone()));
-                        }
-                    }
-
-                    // run body (last expr value is the return)
-                    let ret = match &decl.body {
-                        ast::ActionBody::Block(stmts) => {
-                            let mut last = Value::Unit;
-                            for st in stmts {
-                                if let Some(v) = eval_stmt(st, sess)? {
-                                    last = v;
-                                }
-                            }
-                            last
-                        }
-                    };
-
-                    sess.pop_frame();
-                    Ok(ret)
+                    call_action_by_name(sess, other_name, arg_vals, sp.clone())
                 }
             }
         }
 
-        ast::Expr::Call(_, _, _, sp)
-        | ast::Expr::OptCall(_, _, _, sp)
-        | ast::Expr::NsCall(_, _, _, sp) => {
-            Err(not_impl("Stage 4", "member/optional/namespace calls", sp.clone()))
+        // ---- Member/optional member calls (receiver becomes first argument) ----
+        ast::Expr::Call(base, name, args, sp) => {
+            // evaluate receiver and args
+            let recv = eval_expr(base, sess)?;
+            let mut argv: Vec<Value> = Vec::with_capacity(args.len() + 1);
+            argv.push(recv);
+            for a in args { argv.push(eval_expr(a, sess)?); }
+            // reuse your existing action call path
+            call_action_by_name(sess, name, argv, sp.clone())
+        }
+
+        ast::Expr::OptCall(base, name, args, sp) => {
+            // nil-propagation on receiver
+            let recv = eval_expr(base, sess)?;
+            if matches!(recv, Value::Nil) {
+                return Ok(Value::Nil);
+            }
+            let mut argv: Vec<Value> = Vec::with_capacity(args.len() + 1);
+            argv.push(recv);
+            for a in args { argv.push(eval_expr(a, sess)?); }
+            call_action_by_name(sess, name, argv, sp.clone())
+        }
+
+        ast::Expr::NsCall(_, _, _, sp) => {
+            Err(not_impl("Stage 4", "namespace calls", sp.clone()))
         }
 
         // ---- Prefix operators ----
@@ -708,6 +1260,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
                 "^" => Ok(Value::Num(as_num(v, span_of_expr(expr), "ceil")?.ceil())),
                 "_" => Ok(Value::Num(as_num(v, span_of_expr(expr), "floor")?.floor())),
+                "?" => Ok(Value::Bool(!matches!(v, Value::Nil))),
                 _ => Err(rt("R0003", format!("postfix operator '{}' not implemented", op), sp.clone())),
             }
         }
