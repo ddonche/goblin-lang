@@ -722,6 +722,257 @@ fn call_action_by_name(
             }
         }
 
+        // ----- Collections -----
+        "pick" => {
+            use std::collections::{BTreeMap, BTreeSet};
+
+            // ---- validate arg ----
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            let cfg = match &args[0] {
+                Value::Map(m) => m.clone(),
+                _ => return Err(rt("T0401", "pick expects a config object", sp.clone())),
+            };
+
+            // ---- small getters ----
+            let get_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+                m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
+            };
+            let get_num = |m: &BTreeMap<String, Value>, k: &str| -> Option<f64> {
+                m.get(k).and_then(|v| if let Value::Num(n) = v { Some(*n) } else { None })
+            };
+            let get_arr = |m: &BTreeMap<String, Value>, k: &str| -> Option<Vec<Value>> {
+                m.get(k).and_then(|v| if let Value::Array(xs) = v { Some(xs.clone()) } else { None })
+            };
+
+            // ---- base config ----
+            let count = get_num(&cfg, "count").unwrap_or(1.0);
+            if count < 1.0 || count.fract() != 0.0 {
+                return Err(rt("P1406", "pick count must be a positive integer", sp.clone()));
+            }
+            let n_out = count as usize;
+
+            let digits_opt = get_num(&cfg, "digits").map(|d| d as i64);
+            if let Some(d) = digits_opt { if d < 1 { return Err(rt("P1407", "digits must be >= 1", sp.clone())); } }
+            let unique_digits = get_bool(&cfg, "unique").unwrap_or(false);
+
+            let src_array = get_arr(&cfg, "src");
+            let has_range  = cfg.contains_key("range_start") && cfg.contains_key("range_end");
+
+            // default allow_dups: collections => false; numeric (range/digits) => true
+            let allow_dups = match get_bool(&cfg, "allow_dups") {
+                Some(b) => b,
+                None => if src_array.is_some() { false } else { true },
+            };
+
+            // ---- RNG: fast 128-bit LCG ----
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let mut state: u128 = t.as_nanos() ^ 0x9E37_79B9_7F4A_7C15u128;
+            let mut next_u = || { state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128); state };
+            let pick_index = |len: usize, r: &mut dyn FnMut() -> u128| -> usize { (r() as usize) % len };
+
+            let finish = |mut items: Vec<Value>| -> Value {
+                if n_out == 1 { items.pop().unwrap_or(Value::Nil) } else { Value::Array(items) }
+            };
+
+            // ================== Collections ==================
+            if let Some(arr) = src_array {
+                if arr.is_empty() { return Err(rt("R0701", "cannot pick from an empty collection", sp.clone())); }
+                if !allow_dups && n_out > arr.len() {
+                    return Err(rt("R0701", format!("cannot pick {} distinct items from {}", n_out, arr.len()), sp.clone()));
+                }
+
+                let out = if allow_dups {
+                    let mut out = Vec::with_capacity(n_out);
+                    for _ in 0..n_out { out.push(arr[pick_index(arr.len(), &mut next_u)].clone()); }
+                    out
+                } else {
+                    // without replacement: partial Fisher–Yates over indices
+                    let mut idxs: Vec<usize> = (0..arr.len()).collect();
+                    let mut out = Vec::with_capacity(n_out);
+                    for i in 0..n_out {
+                        let j = i + pick_index(arr.len() - i, &mut next_u);
+                        idxs.swap(i, j);
+                        out.push(arr[idxs[i]].clone());
+                    }
+                    out
+                };
+                return Ok(finish(out));
+            }
+
+            // ---------- helpers for numeric domains ----------
+            let within_digits = |v: i64, d: i64| -> bool {
+                if d <= 0 { return true; }
+                let min = 10_i64.pow((d - 1) as u32);
+                let max = 10_i64.pow(d as u32) - 1;
+                v >= min && v <= max
+            };
+            let has_unique_digits = |mut v: i64, d: i64| -> bool {
+                if !unique_digits { return true; }
+                if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; } // no leading-zero width
+                let mut seen = [false; 10];
+                if v == 0 { return false; }
+                while v > 0 {
+                    let dd = (v % 10) as usize;
+                    if seen[dd] { return false; }
+                    seen[dd] = true;
+                    v /= 10;
+                }
+                true
+            };
+
+            // ================== Numeric Range (optional digits) ==================
+            // IMPORTANT: handle range BEFORE pure-digits to avoid any retry loops.
+            if has_range {
+                let a = get_num(&cfg, "range_start").ok_or_else(|| rt("T0201", "range bounds must be numbers", sp.clone()))?;
+                let b = get_num(&cfg, "range_end").ok_or_else(|| rt("T0201", "range bounds must be numbers", sp.clone()))?;
+                if a.fract() != 0.0 || b.fract() != 0.0 {
+                    return Err(rt("T0201", "range bounds must be integers", sp.clone()));
+                }
+
+                let mut lo = a as i64;
+                let mut hi = b as i64;
+                if lo > hi { std::mem::swap(&mut lo, &mut hi); }
+                let inc = get_bool(&cfg, "range_inclusive").unwrap_or(false);
+
+                let d = digits_opt.unwrap_or(0);
+
+                // filters
+                let within_digits = |v: i64, d: i64| -> bool {
+                    if d <= 0 { return true; }
+                    let min = 10_i64.pow((d - 1) as u32);
+                    let max = 10_i64.pow(d as u32) - 1;
+                    v >= min && v <= max
+                };
+                let has_unique_digits = |mut v: i64, d: i64| -> bool {
+                    if !unique_digits { return true; }
+                    if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; } // no leading-zero width
+                    let mut seen = [false; 10];
+                    if v == 0 { return false; }
+                    while v > 0 {
+                        let dd = (v % 10) as usize;
+                        if seen[dd] { return false; }
+                        seen[dd] = true;
+                        v /= 10;
+                    }
+                    true
+                };
+
+                // Build finite pool.
+                let mut pool: Vec<i64> = Vec::new();
+                if inc {
+                    for v in lo..=hi {
+                        if within_digits(v, d) && has_unique_digits(v, d) { pool.push(v); }
+                    }
+                } else {
+                    for v in lo..hi {
+                        if within_digits(v, d) && has_unique_digits(v, d) { pool.push(v); }
+                    }
+                }
+
+                if pool.is_empty() {
+                    return Err(rt("R0702", "invalid range (no values after filters)", sp.clone()));
+                }
+                if !allow_dups && n_out > pool.len() {
+                    return Err(rt("R0701", "not enough values in range for !dups", sp.clone()));
+                }
+
+                // RNG
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                let mut state: u128 = t.as_nanos() ^ 0x9E37_79B9_7F4A_7C15u128;
+                let mut next_u = || { state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128); state };
+                let pick_index = |len: usize, r: &mut dyn FnMut() -> u128| -> usize { (r() as usize) % len };
+
+                let out_vals: Vec<Value> = if allow_dups {
+                    let mut out = Vec::with_capacity(n_out);
+                    for _ in 0..n_out {
+                        out.push(Value::Num(pool[pick_index(pool.len(), &mut next_u)] as f64));
+                    }
+                    out
+                } else {
+                    // Without replacement: partial Fisher–Yates on the pool itself.
+                    for i in 0..n_out {
+                        let j = i + pick_index(pool.len() - i, &mut next_u);
+                        pool.swap(i, j);
+                    }
+                    (0..n_out).map(|i| Value::Num(pool[i] as f64)).collect()
+                };
+
+                return Ok(if n_out == 1 { out_vals.into_iter().next().unwrap() } else { Value::Array(out_vals) });
+            }
+
+            // ================== Pure Digits (no range) ==================
+            if let Some(d) = digits_opt {
+                // Feasibility for !dups
+                let domain_size = if unique_digits {
+                    // 1st digit 1..9, then P(9, d-1)
+                    let mut total: i64 = 9;
+                    let mut avail: i64 = 9;
+                    for _ in 1..d { total *= avail; avail -= 1; }
+                    total.max(0) as usize
+                } else {
+                    // d-digit numbers: 10^(d-1) .. 10^d - 1
+                    (10_i64.pow(d as u32) - 10_i64.pow((d - 1) as u32)) as usize
+                };
+                if !allow_dups && n_out > domain_size {
+                    return Err(rt("R0701", "cannot satisfy !dups for the requested digit space", sp.clone()));
+                }
+
+                // generator of one d-digit number
+                let mut gen_one = |rng: &mut dyn FnMut() -> u128| -> i64 {
+                    if !unique_digits {
+                        let min = 10_i64.pow((d - 1) as u32);
+                        let width = (9_i64 * 10_i64.pow((d - 1) as u32)) as usize;
+                        let j = pick_index(width, rng);
+                        min + j as i64
+                    } else {
+                        // first digit 1..9, remaining without repetition
+                        let mut digits: [i64; 10] = [0,1,2,3,4,5,6,7,8,9];
+                        let first_idx = 1 + pick_index(9, rng);
+                        let first = digits[first_idx];
+                        digits[first_idx] = digits[9]; // remove chosen
+                        let mut val: i64 = first;
+                        let mut size = 9; // remaining usable positions
+                        for _ in 1..d {
+                            let idx = pick_index(size + 1, rng);
+                            let chosen = digits[idx];
+                            digits[idx] = digits[size];
+                            if size > 0 { size -= 1; }
+                            val = val * 10 + chosen;
+                        }
+                        val
+                    }
+                };
+
+                let out = if allow_dups {
+                    let mut out = Vec::with_capacity(n_out);
+                    for _ in 0..n_out { out.push(Value::Num(gen_one(&mut next_u) as f64)); }
+                    out
+                } else {
+                    // without replacement: set until n_out (feasible by check above)
+                    let mut set = BTreeSet::<i64>::new();
+                    // lightweight guard in case someone edits logic later
+                    let mut attempts_left: usize = domain_size.saturating_mul(3).max(n_out * 10);
+                    while set.len() < n_out {
+                        if attempts_left == 0 {
+                            return Err(rt("R0701", "could not generate enough distinct values", sp.clone()));
+                        }
+                        attempts_left -= 1;
+                        set.insert(gen_one(&mut next_u));
+                    }
+                    set.into_iter().map(|v| Value::Num(v as f64)).collect()
+                };
+
+                return Ok(finish(out));
+            }
+
+            // nothing recognized
+            return Err(rt("P1408", "pick needs a source: `from <collection>` or a numeric form", sp.clone()));
+        }
+
         // ----- String case & transforms -----
         "upper" => { arity(1)?; map_str_1(&args[0], "upper", &|s| s.to_uppercase())? }
         "lower" => { arity(1)?; map_str_1(&args[0], "lower", &|s| s.to_lowercase())? }

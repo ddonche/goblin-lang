@@ -1859,6 +1859,27 @@ impl<'t> Parser<'t> {
     }
 
     #[inline]
+    fn peek_word(&self, want: &str) -> bool {
+        use goblin_lexer::TokenKind;
+        match self.toks.get(self.i) {
+            Some(t) if matches!(t.kind, TokenKind::Ident) => t.value.as_deref() == Some(want),
+            _ => false,
+        }
+    }
+
+    #[inline]
+    fn eat_word(&mut self, want: &str) -> bool {
+        use goblin_lexer::TokenKind;
+        match self.toks.get(self.i) {
+            Some(t) if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some(want) => {
+                self.i += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[inline]
     fn peek_ident(&self) -> Option<&str> {
         self.peek().and_then(|t| {
             if let goblin_lexer::TokenKind::Ident = t.kind {
@@ -4311,99 +4332,147 @@ impl<'t> Parser<'t> {
             }
             return Ok(PExpr::Object(pairs));
         }
+        
         // PICK (expression form)
-        // Syntax: pick <count:int> from <expr> [with dups]
+        // Syntax:
+        //   pick <count:int> [_ <digits:int>]   // also supports packed shorthand: pick 100_8
+        //        [from <expr or range>]
+        //        [with dups | without dups | wo dups]
+        //        [unique]   // for digit shorthand (x_y): each number’s digits must be distinct
         if self.peek_ident() == Some("pick") {
-            let pick_tok_i = self.i; // kept for potential future diagnostics
             let _ = self.eat_ident(); // 'pick'
             self.skip_newlines();
-            // <count>: integer literal (supports suffixes)
-            let count = match self.peek() {
+
+            // <count>: integer literal (lexer may give "1_6" as a single Int token)
+            let mut count_txt = String::new();
+            let mut count = match self.peek() {
                 Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
-                    let s = t.value.clone().unwrap_or_default();
-                    if let Some(v) = parse_int_literal_to_i128(&s) {
-                        self.i += 1;
-                        v
-                    } else {
-                        return Err(s_help(
-                            "P1401",
-                            "You need a number after 'pick'",
-                            "Write it like: pick 5 from items",
-                        ));
+                    count_txt = t.value.clone().unwrap_or_default();
+                    if let Some(v) = parse_int_literal_to_i128(&count_txt) { self.i += 1; v } else {
+                        return Err(s_help("P1401","You need a number after 'pick'","Write it like: pick 5 from items"));
                     }
                 }
                 _ => {
-                    return Err(s_help(
-                        "P1401",
-                        "You need a number after 'pick'",
-                        "Write it like: pick 5 from items",
-                    ))
+                    return Err(s_help("P1401","You need a number after 'pick'","Write it like: pick 5 from items"));
                 }
             };
             if count < 0 {
-                return Err(s_help(
-                    "P1402",
-                    "You can't pick a negative number of items",
-                    "Use a positive number: pick 3 from items",
-                ));
+                return Err(s_help("P1402","You can't pick a negative number of items","Use a positive number: pick 3 from items"));
             }
             self.skip_newlines();
-            // 'from'
-            if self.peek_ident() != Some("from") {
-                return Err(s_help(
-                    "P1403",
-                    "Expected 'from' after the pick count",
-                    "Write it like: pick 3 from items",
-                ));
-            }
-            let _ = self.eat_ident(); // 'from'
-            self.skip_newlines();
-            // <expr> (iterable/source expression)
-            let src_expr = self.parse_coalesce()?;
-            self.skip_newlines();
-            // Optional: 'with dups'
-            let mut with_dups = false;
-            if self.peek_ident() == Some("with") {
-                let _ = self.eat_ident(); // 'with'
-                self.skip_newlines();
-                if self.peek_ident() == Some("dups") {
-                    let _ = self.eat_ident(); // 'dups'
-                    with_dups = true;
-                    self.skip_newlines();
-                } else {
-                    return Err(s_help(
-                        "P1404",
-                        "Expected 'dups' after 'with'",
-                        "Write it like: pick 5 from items with dups",
-                    ));
+
+            // Optional digit shorthand:
+            //  (a) packed:   pick 100_8    <-- detect in the count token text
+            //  (b) separate: pick 100 _ 8  <-- normal operator path
+            let mut digits_expr: Option<PExpr> = None;
+
+            // (a) packed detection — only when the raw count text contains exactly one underscore
+            if let Some(udx) = count_txt.find('_') {
+                // Split once; require both sides ASCII digits; RHS is digit count in 1..=18 (so 1_000 is NOT shorthand)
+                let (lhs, rhs) = (&count_txt[..udx], &count_txt[udx + 1..]);
+                let is_digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+                if is_digits(lhs) && is_digits(rhs) {
+                    if let Ok(rhs_val) = rhs.parse::<i32>() {
+                        if (1..=18).contains(&rhs_val) {
+                            if let Ok(lhs_val) = lhs.parse::<i128>() {
+                                count = lhs_val;
+                                digits_expr = Some(PExpr::Int(rhs.to_string()));
+                            }
+                        }
+                    }
                 }
             }
-            // Compile-time sanity check: if src is a literal array and no 'with dups',
-            // ensure count <= number of DISTINCT literal elements.
-            if !with_dups {
-                if let PExpr::Array(ref elems) = src_expr {
+
+            // (b) separate form: pick N _ D
+            if digits_expr.is_none() && self.eat_op("_") {
+                match self.peek() {
+                    Some(t2) if matches!(t2.kind, goblin_lexer::TokenKind::Int) => {
+                        let s2 = t2.value.clone().unwrap_or_default();
+                        self.i += 1;
+                        digits_expr = Some(PExpr::Int(s2));
+                    }
+                    _ => return Err(s_help("P1401","Expected digits after '_'","Example: pick 5_4")),
+                }
+            }
+            self.skip_newlines();
+
+            // Source: required if no digits; optional if digits form.
+            let mut src_expr: Option<PExpr> = None;
+            if digits_expr.is_none() {
+                if self.peek_ident() != Some("from") {
+                    return Err(s_help("P1403","Expected 'from' after the pick count","Write it like: pick 3 from items"));
+                }
+                let _ = self.eat_ident(); // 'from'
+                self.skip_newlines();
+                let parsed_src = self.parse_range()?; // handles ".." and "..."
+                src_expr = Some(parsed_src);
+                self.skip_newlines();
+            } else if self.peek_ident() == Some("from") {
+                let _ = self.eat_ident();
+                self.skip_newlines();
+                let parsed_src = self.parse_range()?; // optional range filter for digits
+                src_expr = Some(parsed_src);
+                self.skip_newlines();
+            }
+
+            // Modifiers: with dups | without dups | wo dups | unique (order-insensitive)
+            let mut allow_dups: Option<bool> = None; // explicit only; runtime chooses default otherwise
+            let mut unique_digits = false;
+
+            loop {
+                self.skip_newlines();
+
+                // with dups
+                if self.peek_ident() == Some("with") {
+                    let _ = self.eat_ident();
+                    self.skip_newlines();
+                    if self.peek_ident() == Some("dups") {
+                        let _ = self.eat_ident();
+                        allow_dups = Some(true);
+                        continue;
+                    } else {
+                        return Err(s_help("P1404","Expected 'dups' after 'with'","Use: with dups"));
+                    }
+                }
+
+                // without dups / wo dups
+                if self.peek_ident() == Some("without") || self.peek_ident() == Some("wo") {
+                    let _ = self.eat_ident();
+                    self.skip_newlines();
+                    if self.peek_ident() == Some("dups") {
+                        let _ = self.eat_ident();
+                        allow_dups = Some(false);
+                        continue;
+                    } else {
+                        return Err(s_help("P1406","Expected 'dups' after 'without'/'wo'","Use: without dups"));
+                    }
+                }
+
+                // unique (digit-uniqueness for x_y)
+                if self.peek_ident() == Some("unique") {
+                    let _ = self.eat_ident();
+                    unique_digits = true;
+                    continue;
+                }
+
+                break;
+            }
+
+            // Compile-time sanity check: only for literal array sources when not explicitly allowing dups
+            if allow_dups != Some(true) {
+                if let Some(PExpr::Array(ref elems)) = src_expr {
                     use std::collections::HashSet;
                     let mut set: HashSet<String> = HashSet::new();
                     let mut all_simple = true;
                     for e in elems {
                         match e {
                             PExpr::Int(s) | PExpr::Float(s) | PExpr::Str(s) => {
-                                // Normalize underscores so 1_0 == 10
                                 let mut norm = String::with_capacity(s.len());
-                                for ch in s.chars() {
-                                    if ch != '_' {
-                                        norm.push(ch);
-                                    }
-                                }
+                                for ch in s.chars() { if ch != '_' { norm.push(ch); } }
                                 set.insert(norm);
                             }
-                            PExpr::Bool(b) => {
-                                set.insert(format!("b{}", b));
-                            }
-                            _ => {
-                                all_simple = false;
-                                break;
-                            }
+                            PExpr::Bool(b) => { set.insert(format!("b{}", b)); }
+                            _ => { all_simple = false; break; }
                         }
                     }
                     if all_simple {
@@ -4411,19 +4480,36 @@ impl<'t> Parser<'t> {
                         if count > distinct {
                             return Err(s_help(
                                 "P1405",
-                                &format!(
-                                    "You're trying to pick {} items, but there are only {} distinct items available",
-                                    count, distinct
-                                ),
-                                "Add 'with dups' to allow repeats: pick 5 from items with dups, or pick fewer items",
+                                &format!("You're trying to pick {} items, but there are only {} distinct items available", count, distinct),
+                                "Add 'with dups' to allow repeats, or pick fewer items",
                             ));
                         }
                     }
                 }
             }
-            // Placeholder expression node; matches how 'judge' returns directly from parse_unary.
-            return Ok(PExpr::Ident("pick_expr".into()));
+
+            // ---- Lower to FreeCall("pick", [ {config} ]) ----
+            let mut props: Vec<(String, PExpr)> = Vec::new();
+            props.push(("count".into(),  PExpr::Int(count.to_string())));
+            if let Some(d) = digits_expr { props.push(("digits".into(), d)); }
+
+            if let Some(s) = src_expr {
+                match &s {
+                    PExpr::Binary(lhs, op, rhs) if op == ".." || op == "..." => {
+                        props.push(("range_start".into(), (*lhs.clone())));
+                        props.push(("range_end".into(),   (*rhs.clone())));
+                        props.push(("range_inclusive".into(), PExpr::Bool(op == "...")));
+                    }
+                    _ => { props.push(("src".into(), s)); }
+                }
+            }
+            if let Some(b) = allow_dups { props.push(("allow_dups".into(), PExpr::Bool(b))); }
+            if unique_digits { props.push(("unique".into(), PExpr::Bool(true))); }
+
+            let cfg = PExpr::Object(props);
+            return Ok(self.apply_postfix_ops(PExpr::FreeCall("pick".to_string(), vec![cfg])));
         }
+
         // roll / roll_detail (syntax-only; contiguous dice)
         if let Some(id) = self.peek_ident() {
             if id == "roll" || id == "roll_detail" {
