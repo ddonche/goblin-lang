@@ -973,6 +973,104 @@ fn call_action_by_name(
             return Err(rt("P1408", "pick needs a source: `from <collection>` or a numeric form", sp.clone()));
         }
 
+        // ====== INTERPRETER: inside call_action_by_name `match name` ======
+        "roll" => {
+            use std::collections::BTreeMap;
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            let cfg = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Err(rt("T0401", "roll expects a config object", sp.clone())),
+            };
+
+            let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+                match m.get(k) {
+                    Some(Value::Num(n)) if n.fract() == 0.0 => Ok(*n as i64),
+                    _ => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
+                }
+            };
+            let count    = get_i64(cfg, "count")?;
+            let sides    = get_i64(cfg, "sides")?;
+            // accept either key for safety
+            let modifier = if let Some(Value::Num(n)) = cfg.get("modifier") { *n as i64 }
+                           else if let Some(Value::Num(n)) = cfg.get("mod") { *n as i64 } else { 0 };
+
+            if count <= 0 || sides <= 0 {
+                return Err(rt("T0201", "roll count and sides must be > 0", sp.clone()));
+            }
+
+            // RNG (LCG)
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let mut state: u128 = t.as_nanos() ^ 0xA24BAED4963EE407u128;
+            let mut next_u = || {
+                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
+                state
+            };
+
+            let mut sum = 0i64;
+            for _ in 0..count {
+                let roll = ((next_u() % (sides as u128)) as i64) + 1; // 1..=sides
+                sum += roll;
+            }
+            let total = sum + modifier;
+            Value::Num(total as f64)
+        },
+
+        "roll_detail" => {
+            use std::collections::BTreeMap;
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            let cfg = match &args[0] {
+                Value::Map(m) => m,
+                _ => return Err(rt("T0401", "roll_detail expects a config object", sp.clone())),
+            };
+
+            let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+                match m.get(k) {
+                    Some(Value::Num(n)) if n.fract() == 0.0 => Ok(*n as i64),
+                    _ => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
+                }
+            };
+            let count    = get_i64(cfg, "count")?;
+            let sides    = get_i64(cfg, "sides")?;
+            let modifier = if let Some(Value::Num(n)) = cfg.get("modifier") { *n as i64 }
+                           else if let Some(Value::Num(n)) = cfg.get("mod") { *n as i64 } else { 0 };
+
+            if count <= 0 || sides <= 0 {
+                return Err(rt("T0201", "roll count and sides must be > 0", sp.clone()));
+            }
+
+            // RNG (LCG)
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let mut state: u128 = t.as_nanos() ^ 0xA24BAED4963EE407u128;
+            let mut next_u = || {
+                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
+                state
+            };
+
+            let mut vals: Vec<Value> = Vec::with_capacity(count as usize);
+            let mut sum = 0i64;
+            for _ in 0..count {
+                let r = ((next_u() % (sides as u128)) as i64) + 1; // 1..=sides
+                sum += r;
+                vals.push(Value::Num(r as f64));
+            }
+            let total = sum + modifier;
+
+            let mut out = BTreeMap::<String, Value>::new();
+            out.insert("count".into(),    Value::Num(count as f64));
+            out.insert("sides".into(),    Value::Num(sides as f64));
+            out.insert("modifier".into(), Value::Num(modifier as f64));
+            out.insert("values".into(),   Value::Array(vals)); // renamed from "dice"
+            out.insert("sum".into(),      Value::Num(sum as f64));
+            out.insert("total".into(),    Value::Num(total as f64));
+            Value::Map(out)
+        },
+
         // ----- String case & transforms -----
         "upper" => { arity(1)?; map_str_1(&args[0], "upper", &|s| s.to_uppercase())? }
         "lower" => { arity(1)?; map_str_1(&args[0], "lower", &|s| s.to_lowercase())? }
@@ -1086,6 +1184,245 @@ fn call_action_by_name(
                 }
                 Value::Num(n as f64)
             }
+        }
+
+        // ===== Other Stuff =====
+        "add" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "add expects an array as first argument", sp.clone())),
+            };
+            let mut out = arr.clone();
+            out.push(args[1].clone());
+            Value::Array(out)
+        }
+
+        "insert" => {
+            if args.len() != 3 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "insert expects an array as first argument", sp.clone())),
+            };
+            let idx = match &args[1] {
+                Value::Num(n) if *n >= 0.0 && n.fract() == 0.0 => *n as usize,
+                _ => return Err(rt("T0201", "insert index must be a non-negative integer", sp.clone())),
+            };
+            let mut out = arr.clone();
+            if idx > out.len() {
+                return Err(rt("R0402", "insert index out of bounds", sp.clone()));
+            }
+            out.insert(idx, args[2].clone());
+            Value::Array(out)
+        }
+
+        "shuffle" => {
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs.clone(),
+                _ => return Err(rt("T0401", "shuffle expects an array", sp.clone())),
+            };
+            let mut out = arr;
+            let len = out.len();
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let mut state: u128 = t.as_nanos() ^ 0x9E3779B97F4A7C15u128;
+            for i in (1..len).rev() {
+                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
+                let j = (state as usize) % (i + 1);
+                out.swap(i, j);
+            }
+            Value::Array(out)
+        }
+
+        "sort" => {
+            if args.len() < 1 || args.len() > 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1..2, got {}", args.len()), sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs.clone(),
+                _ => return Err(rt("T0401", "sort expects an array", sp.clone())),
+            };
+            let desc = if args.len() == 2 {
+                match &args[1] {
+                    Value::Bool(b) => *b,
+                    _ => return Err(rt("T0303", "sort second argument must be boolean (desc)", sp.clone())),
+                }
+            } else { false };
+
+            if arr.iter().all(|v| matches!(v, Value::Num(_))) {
+                let mut xs: Vec<f64> = arr.iter().map(|v| if let Value::Num(n)=v { *n } else { 0.0 }).collect();
+                xs.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                if desc { xs.reverse(); }
+                Value::Array(xs.into_iter().map(Value::Num).collect())
+            } else if arr.iter().all(|v| matches!(v, Value::Str(_))) {
+                let mut xs: Vec<String> = arr.iter().map(|v| if let Value::Str(s)=v { s.clone() } else { String::new() }).collect();
+                xs.sort();
+                if desc { xs.reverse(); }
+                Value::Array(xs.into_iter().map(Value::Str).collect())
+            } else {
+                return Err(rt("T0401", "sort expects an array of numbers or strings", sp.clone()));
+            }
+        }
+
+        "freq" => {
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "freq expects an array", sp.clone())),
+            };
+            let mut map = std::collections::BTreeMap::<String, i64>::new();
+            for v in arr {
+                let k = fmt_value_raw(v);
+                *map.entry(k).or_insert(0) += 1;
+            }
+            let mut out = std::collections::BTreeMap::<String, Value>::new();
+            for (k, n) in map { out.insert(k, Value::Num(n as f64)); }
+            Value::Map(out)
+        }
+
+        "mode" => {
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "mode expects an array", sp.clone())),
+            };
+            if arr.is_empty() { return Err(rt("R0404", "mode of empty array", sp.clone())); }
+            let mut counts = std::collections::BTreeMap::<String, i64>::new();
+            for v in arr {
+                let k = fmt_value_raw(v);
+                *counts.entry(k).or_insert(0) += 1;
+            }
+            let mut best_k = String::new();
+            let mut best_n = -1i64;
+            for (k, n) in counts.iter() {
+                if *n > best_n { best_n = *n; best_k = k.clone(); }
+            }
+            Value::Map(vec![(best_k, Value::Num(best_n as f64))].into_iter().collect())
+        }
+
+        "sample_weighted" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let items = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "sample_weighted expects an array of items", sp.clone())),
+            };
+            let weights = match &args[1] {
+                Value::Array(ws) => ws,
+                _ => return Err(rt("T0401", "sample_weighted expects an array of weights", sp.clone())),
+            };
+            if items.len() != weights.len() {
+                return Err(rt("A0402", "items and weights must have same length", sp.clone()));
+            }
+
+            let mut ws: Vec<f64> = Vec::with_capacity(weights.len());
+            let mut total = 0.0f64;
+            for w in weights {
+                let n = match w {
+                    Value::Num(n) => *n,
+                    _ => return Err(rt("T0201", "weights must be numbers", sp.clone())),
+                };
+                if n < 0.0 {
+                    return Err(rt("T0201", "weights must be non-negative", sp.clone()));
+                }
+                ws.push(n);
+                total += n;
+            }
+            if total <= 0.0 {
+                return Err(rt("T0201", "sum of weights must be > 0", sp.clone()));
+            }
+
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let mut state: u128 = t.as_nanos() ^ 0xD2B74407B1CE6E93u128;
+
+            // draw in [0,total)
+            state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
+            let mut r = (state as f64 / (u128::MAX as f64 + 1.0)) * total;
+
+            // choose an index without early-returning a Result
+            let mut choice: Option<Value> = None;
+            for (i, w) in ws.iter().enumerate() {
+                if r < *w {
+                    choice = Some(items[i].clone());
+                    break;
+                }
+                r -= *w;
+            }
+
+            choice.unwrap_or_else(|| items.last().cloned().unwrap_or(Value::Nil))
+        }
+
+        "map" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "map expects an array as first argument", sp.clone())),
+            };
+            let action = match &args[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(rt("T0205", "map expects the action name as a string", sp.clone())),
+            };
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                let res = call_action_by_name(sess, &action, vec![v.clone()], sp.clone())?;
+                out.push(res);
+            }
+            Value::Array(out)
+        }
+
+        // ---------- Collections: unique / dups ----------
+        "unique" => {
+            if args.len() != 1 {
+                return Err(rt("A0402",
+                    format!("wrong number of arguments: expected 1, got {}", args.len()),
+                    sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "unique expects an array", sp.clone())),
+            };
+            let mut out: Vec<Value> = Vec::with_capacity(arr.len());
+            for v in arr {
+                if !out.iter().any(|x| x == v) { out.push(v.clone()); }
+            }
+            Value::Array(out)
+        }
+
+        "dups" => {
+            if args.len() != 1 {
+                return Err(rt("A0402",
+                    format!("wrong number of arguments: expected 1, got {}", args.len()),
+                    sp.clone()));
+            }
+            let arr = match &args[0] {
+                Value::Array(xs) => xs,
+                _ => return Err(rt("T0401", "dups expects an array", sp.clone())),
+            };
+            let mut seen: Vec<Value> = Vec::new();
+            let mut dup_only: Vec<Value> = Vec::new();
+            for v in arr {
+                if seen.iter().any(|x| x == v) {
+                    if !dup_only.iter().any(|x| x == v) { dup_only.push(v.clone()); }
+                } else {
+                    seen.push(v.clone());
+                }
+            }
+            Value::Array(dup_only)
         }
 
         // ===== Replace & remove =====
