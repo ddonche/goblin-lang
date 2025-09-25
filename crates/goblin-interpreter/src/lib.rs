@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-
+use std::time::{SystemTime, UNIX_EPOCH};
 use goblin_ast as ast;
 use goblin_diagnostics::Span;
 
@@ -94,17 +94,38 @@ pub struct Session {
     history: Vec<Value>,                               // v(n)
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
     pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
-    pub loop_depth: i32, 
+    pub loop_depth: i32,
+    rng_state: u128, 
 }
 
 impl Session {
     pub fn new() -> Self {
+        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let seed = t.as_nanos() ^ 0xA24B_AED4_963E_E407u128;
         Self {
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
             loop_depth: 0,
+            rng_state: seed,
         }
+
+    }
+
+    #[inline]
+    pub fn reseed(&mut self, seed: u128) {
+        self.rng_state = seed;
+    }
+
+    /// Fast 128-bit LCG
+    #[inline]
+    pub fn next_u128(&mut self) -> u128 {
+        // Numerical Recipes LCG 64x2 widened
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(6364136223846793005u128)
+            .wrapping_add(1u128);
+        self.rng_state
     }
 
     // --- scope helpers ---
@@ -193,6 +214,45 @@ impl Session {
 }
 
 // ===================== Helpers =====================
+
+#[inline]
+fn rng_u64(sess: &mut Session) -> u64 {
+    // use the high 64 bits; LCG low bits are the problem
+    (sess.next_u128() >> 64) as u64
+}
+
+// Lemire's unbiased bounded integer (uniform in [0, bound))
+#[inline]
+fn rng_bounded(sess: &mut Session, bound: u64) -> u64 {
+    if bound == 0 { return 0; }
+    loop {
+        let x = rng_u64(sess);
+        let m = (x as u128).wrapping_mul(bound as u128);
+        let l = m as u64;
+        let t = bound.wrapping_neg() % bound; // threshold to avoid bias
+        if l >= t {
+            return (m >> 64) as u64;
+        }
+        // else retry
+    }
+}
+
+fn rng_index(sess: &mut Session, len: usize) -> usize {
+    if len == 0 { return 0; }
+    rng_bounded(sess, len as u64) as usize
+}
+
+fn rng_roll_1_to_s(sess: &mut Session, sides: i64) -> i64 {
+    debug_assert!(sides > 0);
+    (rng_bounded(sess, sides as u64) as i64) + 1
+}
+
+// 53-bit uniform in [0,1)
+#[inline]
+fn rng_u01(sess: &mut Session) -> f64 {
+    let bits53 = (sess.next_u128() >> 75) as u64; // keep top 53 random bits
+    (bits53 as f64) / ((1u64 << 53) as f64)
+}
 
 fn rt(code: &str, msg: impl Into<String>, span: Span) -> Diag {
     Diag { code: code.to_string(), message: msg.into(), span }
@@ -392,7 +452,7 @@ fn expect_array<'a>(e: &'a ast::Expr, label: &str) -> Result<&'a [ast::Expr], Di
 fn eval_builtin(
     name: &str,
     args: &[Value],
-    _sess: &mut Session,
+    sess: &mut Session,
     sp: &Span,
 ) -> Result<Option<Value>, Diag> {
     // local helpers
@@ -544,16 +604,10 @@ fn eval_builtin(
         "mixed" => {
             arity(1)?;
             let s = want_str(&args[0], "mixed", &sp)?;
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-            let mut seed = t.as_nanos() as u128;
-            for b in s.as_bytes() { seed = seed.wrapping_mul(1099511628211).wrapping_add(*b as u128); }
-            let mut state: u128 = seed ^ 0x9E3779B97F4A7C15u128;
             let mut out = String::with_capacity(s.len());
             for ch in s.chars() {
-                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
                 if ch.is_alphabetic() {
-                    let upper = ((state >> 127) & 1) == 1;
+                    let upper = ((sess.next_u128() >> 127) & 1) == 1;
                     if upper { out.extend(ch.to_uppercase()); } else { out.extend(ch.to_lowercase()); }
                 } else {
                     out.push(ch);
@@ -615,6 +669,21 @@ fn call_action_by_name(
 
         sess.pop_frame();
         return Ok(ret);
+    }
+
+    // Shared helpers
+    fn get_i64_from(m:&std::collections::BTreeMap<String,Value>, k:&str, sp:&Span)->Result<i64,Diag>{
+        match m.get(k) {
+            Some(Value::Num(n)) if n.fract()==0.0 => Ok(*n as i64),
+            Some(_) => Err(rt("T0201",&format!("roll '{k}' must be an integer"), sp.clone())),
+            None => Err(rt("T0201",&format!("missing roll field '{k}'"), sp.clone())),
+        }
+    }
+    fn get_i64_opt(m:&std::collections::BTreeMap<String,Value>, k:&str)->Option<i64>{
+        m.get(k).and_then(|v| if let Value::Num(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
+    }
+    fn get_bool_opt(m:&std::collections::BTreeMap<String,Value>, k:&str)->Option<bool>{
+        m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
     }
 
     // ---------- Built-ins (shadowable) ----------
@@ -767,11 +836,6 @@ fn call_action_by_name(
             };
 
             // ---- RNG: fast 128-bit LCG ----
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-            let mut state: u128 = t.as_nanos() ^ 0x9E37_79B9_7F4A_7C15u128;
-            let mut next_u = || { state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128); state };
-            let pick_index = |len: usize, r: &mut dyn FnMut() -> u128| -> usize { (r() as usize) % len };
 
             let finish = |mut items: Vec<Value>| -> Value {
                 if n_out == 1 { items.pop().unwrap_or(Value::Nil) } else { Value::Array(items) }
@@ -786,14 +850,16 @@ fn call_action_by_name(
 
                 let out = if allow_dups {
                     let mut out = Vec::with_capacity(n_out);
-                    for _ in 0..n_out { out.push(arr[pick_index(arr.len(), &mut next_u)].clone()); }
+                    for _ in 0..n_out {
+                        out.push(arr[rng_index(sess, arr.len())].clone());
+                    }
                     out
                 } else {
                     // without replacement: partial Fisher–Yates over indices
                     let mut idxs: Vec<usize> = (0..arr.len()).collect();
                     let mut out = Vec::with_capacity(n_out);
                     for i in 0..n_out {
-                        let j = i + pick_index(arr.len() - i, &mut next_u);
+                        let j = i + rng_index(sess, arr.len() - i);
                         idxs.swap(i, j);
                         out.push(arr[idxs[i]].clone());
                     }
@@ -880,28 +946,27 @@ fn call_action_by_name(
                 }
 
                 // RNG
-                use std::time::{SystemTime, UNIX_EPOCH};
-                let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-                let mut state: u128 = t.as_nanos() ^ 0x9E37_79B9_7F4A_7C15u128;
-                let mut next_u = || { state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128); state };
-                let pick_index = |len: usize, r: &mut dyn FnMut() -> u128| -> usize { (r() as usize) % len };
 
                 let out_vals: Vec<Value> = if allow_dups {
                     let mut out = Vec::with_capacity(n_out);
                     for _ in 0..n_out {
-                        out.push(Value::Num(pool[pick_index(pool.len(), &mut next_u)] as f64));
+                        out.push(Value::Num(pool[rng_index(sess, pool.len())] as f64));
                     }
                     out
                 } else {
                     // Without replacement: partial Fisher–Yates on the pool itself.
                     for i in 0..n_out {
-                        let j = i + pick_index(pool.len() - i, &mut next_u);
+                        let j = i + rng_index(sess, pool.len() - i);
                         pool.swap(i, j);
                     }
                     (0..n_out).map(|i| Value::Num(pool[i] as f64)).collect()
                 };
 
-                return Ok(if n_out == 1 { out_vals.into_iter().next().unwrap() } else { Value::Array(out_vals) });
+                return Ok(if n_out == 1 {
+                    out_vals.into_iter().next().unwrap()
+                } else {
+                    Value::Array(out_vals)
+                });
             }
 
             // ================== Pure Digits (no range) ==================
@@ -922,22 +987,22 @@ fn call_action_by_name(
                 }
 
                 // generator of one d-digit number
-                let mut gen_one = |rng: &mut dyn FnMut() -> u128| -> i64 {
+                let mut gen_one = || -> i64 {
                     if !unique_digits {
                         let min = 10_i64.pow((d - 1) as u32);
                         let width = (9_i64 * 10_i64.pow((d - 1) as u32)) as usize;
-                        let j = pick_index(width, rng);
+                        let j = rng_index(sess, width);
                         min + j as i64
                     } else {
                         // first digit 1..9, remaining without repetition
                         let mut digits: [i64; 10] = [0,1,2,3,4,5,6,7,8,9];
-                        let first_idx = 1 + pick_index(9, rng);
+                        let first_idx = 1 + rng_index(sess, 9);
                         let first = digits[first_idx];
                         digits[first_idx] = digits[9]; // remove chosen
                         let mut val: i64 = first;
                         let mut size = 9; // remaining usable positions
                         for _ in 1..d {
-                            let idx = pick_index(size + 1, rng);
+                            let idx = rng_index(sess, size + 1);
                             let chosen = digits[idx];
                             digits[idx] = digits[size];
                             if size > 0 { size -= 1; }
@@ -947,21 +1012,23 @@ fn call_action_by_name(
                     }
                 };
 
+                // allow_dups:
                 let out = if allow_dups {
                     let mut out = Vec::with_capacity(n_out);
-                    for _ in 0..n_out { out.push(Value::Num(gen_one(&mut next_u) as f64)); }
+                    for _ in 0..n_out {
+                        out.push(Value::Num(gen_one() as f64));
+                    }
                     out
                 } else {
-                    // without replacement: set until n_out (feasible by check above)
+                    // without replacement:
                     let mut set = BTreeSet::<i64>::new();
-                    // lightweight guard in case someone edits logic later
                     let mut attempts_left: usize = domain_size.saturating_mul(3).max(n_out * 10);
                     while set.len() < n_out {
                         if attempts_left == 0 {
                             return Err(rt("R0701", "could not generate enough distinct values", sp.clone()));
                         }
                         attempts_left -= 1;
-                        set.insert(gen_one(&mut next_u));
+                        set.insert(gen_one());
                     }
                     set.into_iter().map(|v| Value::Num(v as f64)).collect()
                 };
@@ -973,7 +1040,17 @@ fn call_action_by_name(
             return Err(rt("P1408", "pick needs a source: `from <collection>` or a numeric form", sp.clone()));
         }
 
-        // ====== INTERPRETER: inside call_action_by_name `match name` ======
+        //===== SEEDS =====
+        "rand_seed" => {
+            arity(1)?;
+            let n = want_num(&args[0], "rand_seed")?;
+            // Make negative / float inputs deterministic too
+            let bits = (n.to_bits() as u128) ^ 0x9E37_79B9_7F4A_7C15u128;
+            sess.reseed(bits);
+            Value::Unit
+        }
+
+        // ====== roll (numeric result) ======
         "roll" => {
             use std::collections::BTreeMap;
             if args.len() != 1 {
@@ -984,40 +1061,118 @@ fn call_action_by_name(
                 _ => return Err(rt("T0401", "roll expects a config object", sp.clone())),
             };
 
+            // --- helpers ---
             let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
                     Some(Value::Num(n)) if n.fract() == 0.0 => Ok(*n as i64),
-                    _ => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
+                    Some(_) => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
+                    None => Err(rt("T0201", &format!("missing roll field '{k}'"), sp.clone())),
                 }
             };
+            let get_i64_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+                m.get(k).and_then(|v| if let Value::Num(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
+            };
+            let get_bool_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+                m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
+            };
+
             let count    = get_i64(cfg, "count")?;
             let sides    = get_i64(cfg, "sides")?;
-            // accept either key for safety
-            let modifier = if let Some(Value::Num(n)) = cfg.get("modifier") { *n as i64 }
-                           else if let Some(Value::Num(n)) = cfg.get("mod") { *n as i64 } else { 0 };
+            let modifier = get_i64_opt(cfg, "modifier").or_else(|| get_i64_opt(cfg, "mod")).unwrap_or(0);
 
             if count <= 0 || sides <= 0 {
                 return Err(rt("T0201", "roll count and sides must be > 0", sp.clone()));
             }
 
-            // RNG (LCG)
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-            let mut state: u128 = t.as_nanos() ^ 0xA24BAED4963EE407u128;
-            let mut next_u = || {
-                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
-                state
+            // extras
+            let keep_high = get_i64_opt(cfg, "keep_high").unwrap_or(0);
+            let drop_low  = get_i64_opt(cfg, "drop_low").unwrap_or(0);
+            let reroll_eq = get_i64_opt(cfg, "reroll_eq");
+            let explode   = get_bool_opt(cfg, "explode").unwrap_or(false);
+            let adv       = get_bool_opt(cfg, "adv").unwrap_or(false);
+            let dis       = get_bool_opt(cfg, "dis").unwrap_or(false);
+            let clamp_lo  = get_i64_opt(cfg, "clamp_min");
+            let clamp_hi  = get_i64_opt(cfg, "clamp_max");
+
+            if (adv || dis) && count != 1 {
+                return Err(rt("T0201","adv/dis requires a single die (count=1)", sp.clone()));
+            }
+            if keep_high > 0 && drop_low > 0 {
+                return Err(rt("T0201","cannot combine keep_high and drop_low", sp.clone()));
+            }
+            if let Some(x) = reroll_eq {
+                if x < 1 || x > sides {
+                    return Err(rt("T0201","reroll_eq must be between 1 and sides", sp.clone()));
+                }
+            }
+
+            // local RNG (LCG)
+            let mut roll_one = |s: i64| -> i64 {
+                let mut r = rng_roll_1_to_s(sess, s);
+                if let Some(face) = reroll_eq {
+                    if r == face {
+                        r = rng_roll_1_to_s(sess, s); // reroll once
+                    }
+                }
+                if explode {
+                    let mut total = r;
+                    let mut last = r;
+                    let mut guard = 0usize;
+                    while last == s && guard < 1024 {
+                        let extra = rng_roll_1_to_s(sess, s);
+                        total += extra;
+                        last = extra;
+                        guard += 1;
+                    }
+                    total
+                } else {
+                    r
+                }
             };
 
-            let mut sum = 0i64;
-            for _ in 0..count {
-                let roll = ((next_u() % (sides as u128)) as i64) + 1; // 1..=sides
-                sum += roll;
-            }
-            let total = sum + modifier;
-            Value::Num(total as f64)
+            // === produce a plain Value (no Ok, no return) ===
+            let result_num: i64 = if adv || dis {
+                let a = roll_one(sides);
+                let b = roll_one(sides);
+                let mut total = if adv { a.max(b) } else { a.min(b) } + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) {
+                    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+                    if total < lo { total = lo; }
+                    if total > hi { total = hi; }
+                }
+                total
+            } else {
+                // regular N dice
+                let mut vals: Vec<i64> = Vec::with_capacity(count as usize);
+                for _ in 0..count { vals.push(roll_one(sides)); }
+
+                let kept_sum: i64 = if keep_high > 0 {
+                    let mut xs = vals.clone();
+                    xs.sort_unstable_by(|a,b| b.cmp(a)); // desc
+                    let k = keep_high.max(0) as usize;
+                    xs.into_iter().take(k.min(vals.len())).sum()
+                } else if drop_low > 0 {
+                    let mut xs = vals.clone();
+                    xs.sort_unstable(); // asc
+                    let d = drop_low.max(0) as usize;
+                    xs.into_iter().skip(d.min(vals.len())).sum()
+                } else {
+                    vals.iter().sum()
+                };
+
+                let mut total = kept_sum + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) {
+                    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+                    if total < lo { total = lo; }
+                    if total > hi { total = hi; }
+                }
+                total
+            };
+
+            Value::Num(result_num as f64)
         },
 
+        // ====== roll_detail (map with values / kept / dropped / sum / total) ======
         "roll_detail" => {
             use std::collections::BTreeMap;
             if args.len() != 1 {
@@ -1028,47 +1183,157 @@ fn call_action_by_name(
                 _ => return Err(rt("T0401", "roll_detail expects a config object", sp.clone())),
             };
 
+            // --- helpers ---
             let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
                     Some(Value::Num(n)) if n.fract() == 0.0 => Ok(*n as i64),
-                    _ => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
+                    Some(_) => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
+                    None => Err(rt("T0201", &format!("missing roll field '{k}'"), sp.clone())),
                 }
             };
+            let get_i64_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+                m.get(k).and_then(|v| if let Value::Num(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
+            };
+            let get_bool_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+                m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
+            };
+
             let count    = get_i64(cfg, "count")?;
             let sides    = get_i64(cfg, "sides")?;
-            let modifier = if let Some(Value::Num(n)) = cfg.get("modifier") { *n as i64 }
-                           else if let Some(Value::Num(n)) = cfg.get("mod") { *n as i64 } else { 0 };
+            let modifier = get_i64_opt(cfg, "modifier").or_else(|| get_i64_opt(cfg, "mod")).unwrap_or(0);
 
             if count <= 0 || sides <= 0 {
                 return Err(rt("T0201", "roll count and sides must be > 0", sp.clone()));
             }
 
-            // RNG (LCG)
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-            let mut state: u128 = t.as_nanos() ^ 0xA24BAED4963EE407u128;
-            let mut next_u = || {
-                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
-                state
+            // extras
+            let keep_high = get_i64_opt(cfg, "keep_high").unwrap_or(0);
+            let drop_low  = get_i64_opt(cfg, "drop_low").unwrap_or(0);
+            let reroll_eq = get_i64_opt(cfg, "reroll_eq");
+            let explode   = get_bool_opt(cfg, "explode").unwrap_or(false);
+            let adv       = get_bool_opt(cfg, "adv").unwrap_or(false);
+            let dis       = get_bool_opt(cfg, "dis").unwrap_or(false);
+            let clamp_lo  = get_i64_opt(cfg, "clamp_min");
+            let clamp_hi  = get_i64_opt(cfg, "clamp_max");
+
+            if (adv || dis) && count != 1 {
+                return Err(rt("T0201","adv/dis requires a single die (count=1)", sp.clone()));
+            }
+            if keep_high > 0 && drop_low > 0 {
+                return Err(rt("T0201","cannot combine keep_high and drop_low", sp.clone()));
+            }
+            if let Some(x) = reroll_eq {
+                if x < 1 || x > sides {
+                    return Err(rt("T0201","reroll_eq must be between 1 and sides", sp.clone()));
+                }
+            }
+
+            let mut roll_one = |s: i64| -> i64 {
+                let mut r = rng_roll_1_to_s(sess, s);
+                if let Some(face) = reroll_eq {
+                    if r == face {
+                        r = rng_roll_1_to_s(sess, s); // reroll once
+                    }
+                }
+                if explode {
+                    let mut total = r;
+                    let mut last = r;
+                    let mut guard = 0usize;
+                    while last == s && guard < 1024 {
+                        let extra = rng_roll_1_to_s(sess, s);
+                        total += extra;
+                        last = extra;
+                        guard += 1;
+                    }
+                    total
+                } else {
+                    r
+                }
             };
 
-            let mut vals: Vec<Value> = Vec::with_capacity(count as usize);
-            let mut sum = 0i64;
-            for _ in 0..count {
-                let r = ((next_u() % (sides as u128)) as i64) + 1; // 1..=sides
-                sum += r;
-                vals.push(Value::Num(r as f64));
-            }
-            let total = sum + modifier;
+            // === produce the detail map ===
+            let detail_out: Value = if (adv || dis) {
+                // two rolls, choose one
+                let a = roll_one(sides);
+                let b = roll_one(sides);
+                let chosen = if adv { a.max(b) } else { a.min(b) };
+                let dropped_val = if adv { a.min(b) } else { a.max(b) };
 
-            let mut out = BTreeMap::<String, Value>::new();
-            out.insert("count".into(),    Value::Num(count as f64));
-            out.insert("sides".into(),    Value::Num(sides as f64));
-            out.insert("modifier".into(), Value::Num(modifier as f64));
-            out.insert("values".into(),   Value::Array(vals)); // renamed from "dice"
-            out.insert("sum".into(),      Value::Num(sum as f64));
-            out.insert("total".into(),    Value::Num(total as f64));
-            Value::Map(out)
+                let mut total = chosen + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) {
+                    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+                    if total < lo { total = lo; }
+                    if total > hi { total = hi; }
+                }
+
+                let mut out = BTreeMap::<String, Value>::new();
+                out.insert("count".into(),    Value::Num(1.0));
+                out.insert("sides".into(),    Value::Num(sides as f64));
+                out.insert("modifier".into(), Value::Num(modifier as f64));
+                out.insert("values".into(),   Value::Array(vec![Value::Num(a as f64), Value::Num(b as f64)]));
+                out.insert("kept".into(),     Value::Array(vec![Value::Num(chosen as f64)]));
+                out.insert("dropped".into(),  Value::Array(vec![Value::Num(dropped_val as f64)]));
+                out.insert("sum".into(),      Value::Num(chosen as f64));
+                out.insert("total".into(),    Value::Num(total as f64));
+                out.insert("adv".into(),      Value::Bool(adv));
+                out.insert("dis".into(),      Value::Bool(dis));
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Num(x as f64)); }
+                if explode { out.insert("explode".into(), Value::Bool(true)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Num(lo as f64)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Num(hi as f64)); }
+                Value::Map(out)
+            } else {
+                // N dice, mark kept vs dropped explicitly
+                let mut vals: Vec<i64> = Vec::with_capacity(count as usize);
+                for _ in 0..count { vals.push(roll_one(sides)); }
+
+                // Decide kept/dropped (by index, stable against equal values)
+                let mut keep_mask = vec![true; vals.len()];
+                if keep_high > 0 {
+                    let k = keep_high.max(0) as usize;
+                    let mut idxs: Vec<usize> = (0..vals.len()).collect();
+                    idxs.sort_unstable_by(|&i, &j| vals[j].cmp(&vals[i])); // desc by value
+                    for &i in idxs.iter().skip(k.min(vals.len())) { keep_mask[i] = false; }
+                } else if drop_low > 0 {
+                    let d = drop_low.max(0) as usize;
+                    let mut idxs: Vec<usize> = (0..vals.len()).collect();
+                    idxs.sort_unstable_by(|&i, &j| vals[i].cmp(&vals[j])); // asc by value
+                    for &i in idxs.iter().take(d.min(vals.len())) { keep_mask[i] = false; }
+                }
+
+                let mut kept_vals: Vec<i64> = Vec::new();
+                let mut dropped_vals: Vec<i64> = Vec::new();
+                for (i, &v) in vals.iter().enumerate() {
+                    if keep_mask[i] { kept_vals.push(v); } else { dropped_vals.push(v); }
+                }
+
+                let mut kept_sum: i64 = kept_vals.iter().sum();
+                let mut total = kept_sum + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) {
+                    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+                    if total < lo { total = lo; }
+                    if total > hi { total = hi; }
+                }
+
+                let mut out = BTreeMap::<String, Value>::new();
+                out.insert("count".into(),    Value::Num(count as f64));
+                out.insert("sides".into(),    Value::Num(sides as f64));
+                out.insert("modifier".into(), Value::Num(modifier as f64));
+                out.insert("values".into(),   Value::Array(vals.iter().copied().map(|v| Value::Num(v as f64)).collect()));
+                out.insert("kept".into(),     Value::Array(kept_vals.iter().copied().map(|v| Value::Num(v as f64)).collect()));
+                out.insert("dropped".into(),  Value::Array(dropped_vals.iter().copied().map(|v| Value::Num(v as f64)).collect()));
+                out.insert("sum".into(),      Value::Num(kept_sum as f64));
+                out.insert("total".into(),    Value::Num(total as f64));
+                if keep_high > 0 { out.insert("keep_high".into(), Value::Num(keep_high as f64)); }
+                if drop_low  > 0 { out.insert("drop_low".into(),  Value::Num(drop_low  as f64)); }
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Num(x as f64)); }
+                if explode { out.insert("explode".into(), Value::Bool(true)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Num(lo as f64)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Num(hi as f64)); }
+                Value::Map(out)
+            };
+
+            detail_out
         },
 
         // ----- String case & transforms -----
@@ -1111,19 +1376,23 @@ fn call_action_by_name(
         }
         "mixed" => {
             arity(1)?;
-            let to_mixed = |s: &str| -> String {
-                use std::time::{SystemTime, UNIX_EPOCH};
-                let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-                let mut seed = t.as_nanos() as u128;
-                for b in s.as_bytes() { seed = seed.wrapping_mul(1099511628211).wrapping_add(*b as u128); }
-                let mut state: u128 = seed ^ 0x9E3779B97F4A7C15u128;
+            // draw one seed from the session RNG, then do pure mixing per char
+            let seed = sess.next_u128();
+            let to_mixed = move |s: &str| -> String {
                 let mut out = String::with_capacity(s.len());
-                for ch in s.chars() {
-                    state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
+                for (i, ch) in s.chars().enumerate() {
+                    // SplitMix-style stateless mixing from (seed ^ i)
+                    let mut x = seed ^ ((i as u128).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                    x ^= x >> 30; x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    x ^= x >> 27; x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+                    x ^= x >> 31;
+                    let upper = (x & 1) == 1;
                     if ch.is_alphabetic() {
-                        let upper = ((state >> 127) & 1) == 1;
-                        if upper { out.extend(ch.to_uppercase()); } else { out.extend(ch.to_lowercase()); }
-                    } else { out.push(ch); }
+                        if upper { out.extend(ch.to_uppercase()); }
+                        else     { out.extend(ch.to_lowercase()); }
+                    } else {
+                        out.push(ch);
+                    }
                 }
                 out
             };
@@ -1230,12 +1499,8 @@ fn call_action_by_name(
             };
             let mut out = arr;
             let len = out.len();
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-            let mut state: u128 = t.as_nanos() ^ 0x9E3779B97F4A7C15u128;
             for i in (1..len).rev() {
-                state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
-                let j = (state as usize) % (i + 1);
+                let j = rng_index(sess, i + 1);
                 out.swap(i, j);
             }
             Value::Array(out)
@@ -1344,13 +1609,7 @@ fn call_action_by_name(
                 return Err(rt("T0201", "sum of weights must be > 0", sp.clone()));
             }
 
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-            let mut state: u128 = t.as_nanos() ^ 0xD2B74407B1CE6E93u128;
-
-            // draw in [0,total)
-            state = state.wrapping_mul(6364136223846793005u128).wrapping_add(1u128);
-            let mut r = (state as f64 / (u128::MAX as f64 + 1.0)) * total;
+            let mut r = rng_u01(sess) * total; // r in [0,total)
 
             // choose an index without early-returning a Result
             let mut choice: Option<Value> = None;

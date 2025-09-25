@@ -4510,13 +4510,13 @@ impl<'t> Parser<'t> {
             return Ok(self.apply_postfix_ops(PExpr::FreeCall("pick".to_string(), vec![cfg])));
         }
 
-        // --- roll / roll_detail (syntax-only; contiguous dice) ---
+        // ---- roll / roll_detail (syntax-only; contiguous dice + extras) ----
         if let Some(id0) = self.peek_ident() {
             if id0 == "roll" || id0 == "roll_detail" {
                 use goblin_lexer::TokenKind;
 
                 let is_detail = id0 == "roll_detail";
-                let _ = self.eat_ident(); // eat 'roll' | 'roll_detail'
+                let _ = self.eat_ident(); // 'roll' | 'roll_detail'
                 self.skip_newlines();
 
                 #[inline]
@@ -4524,19 +4524,62 @@ impl<'t> Parser<'t> {
                     b.line_start == a.line_end && b.col_start == a.col_end
                 }
 
+                // collected pieces
                 let mut count_str = String::new();
                 let mut sides_str = String::new();
+                let mut mod_str   = String::from("0");
                 let mut last_span: Option<Span> = None;
 
-                // First token after 'roll'
-                let t0 = match self.peek() {
-                    Some(t) => t.clone(),
+                // extras
+                let mut keep_high: Option<String> = None; // kN
+                let mut drop_low:  Option<String> = None; // dN
+                let mut reroll_eq: Option<String> = None; // rN
+                let mut explode:   bool = false;          // !
+                let mut adv:       bool = false;          // +adv
+                let mut dis:       bool = false;          // +dis
+                let mut clamp_min: Option<PExpr> = None;  // clamp A..B / A...B
+                let mut clamp_max: Option<PExpr> = None;
+
+                // helper to parse compact suffix trail inside a single token, e.g. "k3r1!d2"
+                let mut parse_trail = |raw: &str,
+                                       keep_high: &mut Option<String>,
+                                       drop_low:  &mut Option<String>,
+                                       reroll_eq: &mut Option<String>,
+                                       explode:   &mut bool| -> Result<(), String> {
+                    let bytes = raw.as_bytes();
+                    let mut i = 0usize;
+                    while i < bytes.len() {
+                        let ch = bytes[i] as char;
+                        match ch {
+                            '!' => { *explode = true; i += 1; }
+                            'k' | 'x' | 'r' => {
+                                i += 1;
+                                let start = i;
+                                while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+                                if start == i {
+                                    return Err(s_help("P1505","Expected digits after suffix","Examples: k3, x1, r1"));
+                                }
+                                let num = &raw[start..i];
+                                match ch {
+                                    'k' => *keep_high = Some(num.to_string()),
+                                    'x' => *drop_low  = Some(num.to_string()),
+                                    'r' => *reroll_eq = Some(num.to_string()),
+                                    _ => {}
+                                }
+                            }
+                            _ => {
+                                return Err(s_help("P1505","Bad dice suffix","Use kN / dN / rN / !"));
+                            }
+                        }
+                    }
+                    Ok(())
+                };
+
+                // ---- first token after 'roll'
+                let t0 = match self.peek().cloned() {
+                    Some(t) => t,
                     None => {
-                        return Err(s_help(
-                            "P1501",
-                            "You need a number before 'd' in a roll",
-                            "Example: roll 2d6",
-                        ))
+                        return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                     }
                 };
 
@@ -4547,204 +4590,164 @@ impl<'t> Parser<'t> {
                     count_str = nstr;
                     last_span = Some(t0.span.clone());
 
-                    // Next must be contiguous die token
                     let t1 = self.peek().cloned().ok_or_else(|| {
-                        s_help(
-                            "P1502",
-                            "Dice notation must be contiguous",
-                            "Write it like 2d6, not 2 d 6",
-                        )
+                        s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
                     })?;
                     if !contiguous(last_span.as_ref().unwrap(), &t1.span) {
-                        return Err(s_help(
-                            "P1502",
-                            "Dice notation must be contiguous",
-                            "Write it like 2d6, not 2 d 6",
-                        ));
+                        return Err(s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
                     }
 
-                    match (&t1.kind, t1.value.as_deref()) {
-                        // Int + Ident("dM")
-                        (TokenKind::Ident, Some(s))
-                            if s.len() > 1
-                                && s.starts_with('d')
-                                && s[1..].chars().all(|c| c.is_ascii_digit()) =>
-                        {
-                            self.i += 1;
-                            sides_str = s[1..].to_string();
-                            last_span = Some(t1.span.clone());
-                        }
-                        // Int + Op(unit,"dM")
-                        (TokenKind::Op(op), Some(val))
-                            if op.as_str() == "unit"
-                                && val.len() > 1
-                                && val.starts_with('d')
-                                && val[1..].chars().all(|c| c.is_ascii_digit()) =>
-                        {
-                            self.i += 1;
-                            sides_str = val[1..].to_string();
-                            last_span = Some(t1.span.clone());
-                        }
-                        // Int + Op(unit,"d") + Int("M")
-                        (TokenKind::Op(op), Some(val)) if op.as_str() == "unit" && val == "d" => {
-                            let d_span = t1.span.clone();
-                            self.i += 1; // eat unit("d")
-
-                            let t2 = self.peek().cloned().ok_or_else(|| {
-                                s_help(
-                                    "P1502",
-                                    "Dice notation must be contiguous.",
-                                    "Write it like 2d6, not 2 d 6.",
-                                )
-                            })?;
-                            if !matches!(t2.kind, TokenKind::Int) || !contiguous(&d_span, &t2.span) {
-                                return Err(s_help(
-                                    "P1502",
-                                    "Dice notation must be contiguous.",
-                                    "Write it like 2d6, not 2 d 6.",
-                                ));
+                    match (t1.kind, t1.value.clone()) {
+                        // Int + Ident("dM...")  (e.g. d6, d6k3, d6r1!, etc)
+                        (TokenKind::Ident, Some(s)) => {
+                            if s.len() > 1 && s.starts_with('d') {
+                                let mut j = 1;
+                                while j < s.len() && s.as_bytes()[j].is_ascii_digit() { j += 1; }
+                                sides_str = s[1..j].to_string();
+                                last_span = Some(t1.span.clone());
+                                let trail = &s[j..];
+                                if !trail.is_empty() {
+                                    parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                }
+                                self.i += 1; // consume t1
+                            } else {
+                                return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                             }
-                            self.i += 1; // eat Int("M")
-                            sides_str = t2.value.unwrap_or_default();
-                            last_span = Some(t2.span.clone());
+                        }
+                        // Int + Op(unit,"dM...")  (same, but unit token)
+                        (TokenKind::Op(op), Some(val)) => {
+                            let op_s = op.as_str();
+                            if op_s == "unit" && val.len() > 1 && val.starts_with('d') {
+                                let mut j = 1;
+                                while j < val.len() && val.as_bytes()[j].is_ascii_digit() { j += 1; }
+                                sides_str = val[1..j].to_string();
+                                last_span = Some(t1.span.clone());
+                                let trail = &val[j..];
+                                if !trail.is_empty() {
+                                    parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                }
+                                self.i += 1; // consume t1
+                            } else if op_s == "unit" && val == "d" {
+                                // Int + Op(unit,"d") + contiguous Int("M")
+                                let d_span = t1.span.clone();
+                                self.i += 1; // eat unit("d")
+                                let t2 = self.peek().cloned().ok_or_else(|| {
+                                    s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6.")
+                                })?;
+                                if !matches!(t2.kind, TokenKind::Int) || !contiguous(&d_span, &t2.span) {
+                                    return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                                }
+                                self.i += 1; // eat Int("M")
+                                sides_str = t2.value.unwrap_or_default();
+                                last_span = Some(t2.span.clone());
+                            } else {
+                                return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                            }
                         }
                         _ => {
-                            return Err(s_help(
-                                "P1502",
-                                "Dice notation must be contiguous.",
-                                "Write it like 2d6, not 2 d 6.",
-                            ))
+                            return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                         }
                     }
                 }
-                // ---------- Case B: Duration("Nd") then contiguous Int("M") ----------
+                // ---------- Case B: Duration("Nd") + contiguous Int("M") ----------
                 else if matches!(t0.kind, TokenKind::Duration) {
-                    let dur = t0.value.clone().unwrap_or_default(); // e.g. "1d"
+                    let dur = t0.value.clone().unwrap_or_default(); // "Nd"
                     let (base, unit) = Self::split_duration_lexeme(&dur).map_err(|_| {
-                        s_help("P1501", "Bad duration token where dice were expected", "Example: roll 2d6")
+                        s_help("P1501","Bad duration token where dice were expected","Example: roll 2d6")
                     })?;
                     if unit != "d" {
-                        return Err(s_help(
-                            "P1501",
-                            "You need a number before 'd' in a roll",
-                            "Example: roll 2d6",
-                        ));
+                        return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                     }
                     self.i += 1; // eat Duration("Nd")
                     count_str = base;
                     last_span = Some(t0.span.clone());
 
-                    // Next must be contiguous Int("M")
                     let t1 = self.peek().cloned().ok_or_else(|| {
-                        s_help(
-                            "P1502",
-                            "Dice notation must be contiguous",
-                            "Write it like 2d6, not 2 d 6",
-                        )
+                        s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
                     })?;
-                    if !matches!(t1.kind, TokenKind::Int) || !contiguous(last_span.as_ref().unwrap(), &t1.span)
-                    {
-                        return Err(s_help(
-                            "P1502",
-                            "Dice notation must be contiguous",
-                            "Write it like 2d6, not 2 d 6",
-                        ));
+                    if !matches!(t1.kind, TokenKind::Int) || !contiguous(last_span.as_ref().unwrap(), &t1.span) {
+                        return Err(s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
                     }
-                    self.i += 1; // eat Int("M")
+                    self.i += 1; // Int("M")
                     sides_str = t1.value.unwrap_or_default();
                     last_span = Some(t1.span.clone());
                 }
-                // ---------- Case C: fused Ident("NdM") or Op(unit,"NdM") ----------
+                // ---------- Case C: fused Ident/Op(unit) "NdM..." ----------
                 else {
-                    match (&t0.kind, t0.value.as_deref()) {
+                    match (t0.kind, t0.value.clone()) {
                         (TokenKind::Ident, Some(raw)) => {
                             if let Some(dpos) = raw.find('d') {
                                 let (lhs, rhs) = raw.split_at(dpos);
                                 if !lhs.is_empty()
                                     && lhs.chars().all(|c| c.is_ascii_digit())
                                     && rhs.len() > 1
-                                    && rhs[1..].chars().all(|c| c.is_ascii_digit())
+                                    && rhs[1..].chars().all(|c| c.is_ascii_digit() || c=='k' || c=='x' || c=='r' || c=='!')
                                 {
                                     self.i += 1;
                                     count_str = lhs.to_string();
-                                    sides_str = rhs[1..].to_string();
+                                    let mut j = 1;
+                                    while j < rhs.len() && rhs.as_bytes()[j].is_ascii_digit() { j += 1; }
+                                    sides_str = rhs[1..j].to_string();
+                                    let trail = &rhs[j..];
                                     last_span = Some(t0.span.clone());
+                                    if !trail.is_empty() {
+                                        parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                    }
                                 } else {
-                                    return Err(s_help(
-                                        "P1501",
-                                        "You need a number before 'd' in a roll",
-                                        "Example: roll 2d6",
-                                    ));
+                                    return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                                 }
                             } else {
-                                return Err(s_help(
-                                    "P1501",
-                                    "You need a number before 'd' in a roll",
-                                    "Example: roll 2d6",
-                                ));
+                                return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                             }
                         }
-                        (TokenKind::Op(op), Some(raw)) if op.as_str() == "unit" => {
-                            if let Some(dpos) = raw.find('d') {
-                                let (lhs, rhs) = raw.split_at(dpos);
-                                if !lhs.is_empty()
-                                    && lhs.chars().all(|c| c.is_ascii_digit())
-                                    && rhs.len() > 1
-                                    && rhs[1..].chars().all(|c| c.is_ascii_digit())
-                                {
-                                    self.i += 1;
-                                    count_str = lhs.to_string();
-                                    sides_str = rhs[1..].to_string();
-                                    last_span = Some(t0.span.clone());
+                        (TokenKind::Op(op), Some(raw)) => {
+                            if op.as_str() == "unit" {
+                                if let Some(dpos) = raw.find('d') {
+                                    let (lhs, rhs) = raw.split_at(dpos);
+                                    if !lhs.is_empty()
+                                        && lhs.chars().all(|c| c.is_ascii_digit())
+                                        && rhs.len() > 1
+                                        && rhs[1..].chars().all(|c| c.is_ascii_digit() || c=='k' || c=='x' || c=='r' || c=='!')
+                                    {
+                                        self.i += 1;
+                                        count_str = lhs.to_string();
+                                        let mut j = 1;
+                                        while j < rhs.len() && rhs.as_bytes()[j].is_ascii_digit() { j += 1; }
+                                        sides_str = rhs[1..j].to_string();
+                                        let trail = &rhs[j..];
+                                        last_span = Some(t0.span.clone());
+                                        if !trail.is_empty() {
+                                            parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                        }
+                                    } else {
+                                        return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                    }
                                 } else {
-                                    return Err(s_help(
-                                        "P1501",
-                                        "You need a number before 'd' in a roll",
-                                        "Example: roll 2d6",
-                                    ));
+                                    return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                                 }
                             } else {
-                                return Err(s_help(
-                                    "P1501",
-                                    "You need a number before 'd' in a roll",
-                                    "Example: roll 2d6",
-                                ));
+                                return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                             }
                         }
                         _ => {
-                            return Err(s_help(
-                                "P1501",
-                                "You need a number before 'd' in a roll",
-                                "Example: roll 2d6",
-                            ));
+                            return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                         }
                     }
                 }
 
-                // ---- Optional contiguous +Z / -Z
-                let mut mod_str = String::from("0");
+                // ---- Optional contiguous numeric +Z / -Z
                 if let Some(op_tok) = self.peek().cloned() {
-                    if let TokenKind::Op(s) = &op_tok.kind {
+                    if let TokenKind::Op(s) = op_tok.kind {
                         if (s == "+" || s == "-") && contiguous(last_span.as_ref().unwrap(), &op_tok.span) {
                             let sign = if s == "-" { -1i32 } else { 1i32 };
-                            self.i += 1; // eat '+'|'-'
-
+                            self.i += 1; // '+'|'-'
                             let n_tok = self.peek().cloned().ok_or_else(|| {
-                                s_help(
-                                    "P1504",
-                                    "You need a number after '+' or '-' in a dice notation roll",
-                                    "Examples: 2d6+3 or 1d20-1",
-                                )
+                                s_help("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1")
                             })?;
-                            if !matches!(n_tok.kind, TokenKind::Int) || !contiguous(&op_tok.span, &n_tok.span)
-                            {
-                                return Err(s_help(
-                                    "P1504",
-                                    "You need a number after '+' or '-' in a dice notation roll",
-                                    "Examples: 2d6+3 or 1d20-1",
-                                ));
+                            if !matches!(n_tok.kind, TokenKind::Int) || !contiguous(&op_tok.span, &n_tok.span) {
+                                return Err(s_help("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1"));
                             }
-                            self.i += 1; // eat Int
+                            self.i += 1; // Int
                             let n_raw = n_tok.value.unwrap_or_default();
                             mod_str = if sign < 0 { format!("-{}", n_raw) } else { n_raw };
                             last_span = Some(n_tok.span.clone());
@@ -4752,18 +4755,100 @@ impl<'t> Parser<'t> {
                     }
                 }
 
-                // ---- Lower to FreeCall (count/sides/modifier) ----
-                let cfg = PExpr::Object(vec![
+                // ---- Optional +adv / +dis (NOT required to be contiguous)
+                self.skip_newlines();
+                if self.peek_op("+") {
+                    let _ = self.eat_op("+");
+                    self.skip_newlines();
+                    match self.peek_ident() {
+                        Some("adv") => { let _ = self.eat_ident(); adv = true; }
+                        Some("dis") => { let _ = self.eat_ident(); dis = true; }
+                        _ => return Err(s_help("P1506","Expected 'adv' or 'dis' after '+'","Use: roll 1d20 +adv")),
+                    }
+                }
+
+                // ---- Optional: consume further contiguous suffix tokens ('!' or compact "k3r1")
+                loop {
+                    let t = match self.peek().cloned() { Some(t) => t, None => break };
+                    if !contiguous(last_span.as_ref().unwrap(), &t.span) { break; }
+                    match (t.kind, t.value.clone()) {
+                        (TokenKind::Op(s), _) => {
+                            if s == "!" {
+                                self.i += 1;
+                                explode = true;
+                                last_span = Some(t.span.clone());
+                                continue;
+                            } else {
+                                break;
+                            }
+                        }
+                        (TokenKind::Ident, Some(raw)) => {
+                            parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                            self.i += 1;
+                            last_span = Some(t.span.clone());
+                            continue;
+                        }
+                        (TokenKind::Op(op), Some(raw)) => {
+                            if op.as_str() == "unit" {
+                                parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                self.i += 1;
+                                last_span = Some(t.span.clone());
+                                continue;
+                            } else {
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+
+                // ---- Optional: clamp A..B / A...B (not required to be contiguous)
+                self.skip_newlines();
+                if self.peek_ident() == Some("clamp") {
+                    let _ = self.eat_ident(); // 'clamp'
+                    self.skip_newlines();
+                    let rng = self.parse_range()?;
+                    if let PExpr::Binary(lhs, op, rhs) = rng {
+                        if op == ".." || op == "..." {
+                            clamp_min = Some(*lhs);
+                            clamp_max = Some(*rhs);
+                        } else {
+                            return Err(s_help("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
+                        }
+                    } else {
+                        return Err(s_help("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
+                    }
+                }
+
+                // ---- Build config object -> FreeCall
+                if adv && dis {
+                    return Err(s_help("P1508","You can't use both adv and dis","Use only one of +adv or +dis"));
+                }
+                if keep_high.is_some() && drop_low.is_some() {
+                    return Err(s_help("P1509","You can't combine kN and dN","Use only one of kN or dN"));
+                }
+
+                let mut props: Vec<(String, PExpr)> = vec![
                     ("count".into(),    PExpr::Int(count_str)),
                     ("sides".into(),    PExpr::Int(sides_str)),
-                    ("modifier".into(), PExpr::Int(mod_str)), // <-- key is "modifier"
-                ]);
+                    ("modifier".into(), PExpr::Int(mod_str)),
+                ];
+                if let Some(k) = keep_high { props.push(("keep_high".into(), PExpr::Int(k))); }
+                if let Some(d) = drop_low  { props.push(("drop_low".into(),  PExpr::Int(d))); }
+                if let Some(r) = reroll_eq { props.push(("reroll_eq".into(), PExpr::Int(r))); }
+                if explode { props.push(("explode".into(), PExpr::Bool(true))); }
+                if adv { props.push(("adv".into(), PExpr::Bool(true))); }
+                if dis { props.push(("dis".into(), PExpr::Bool(true))); }
+                if let (Some(lo), Some(hi)) = (clamp_min, clamp_max) {
+                    props.push(("clamp_min".into(), lo));
+                    props.push(("clamp_max".into(), hi));
+                }
 
+                let cfg = PExpr::Object(props);
                 let call = PExpr::FreeCall(
                     if is_detail { "roll_detail".to_string() } else { "roll".to_string() },
                     vec![cfg],
                 );
-
                 return Ok(self.apply_postfix_ops(call));
             }
         }
