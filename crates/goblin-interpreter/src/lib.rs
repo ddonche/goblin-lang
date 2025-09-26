@@ -28,8 +28,137 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use goblin_ast as ast;
 use goblin_diagnostics::Span;
+use std::sync::Arc;
 
 // ===================== Public API =====================
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeqKind { Auto, Array, List, Chunked }
+
+#[derive(Clone, Debug, Default, PartialEq)]   // <-- add PartialEq
+pub struct SeqMetrics {
+    pub len: usize,
+    pub ops_push_back: u64,
+    pub ops_push_front: u64,
+    pub ops_insert_idx: u64,
+    pub ops_remove_idx: u64,
+    pub ops_random_access: u64,
+    pub transitions: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]            // <-- add PartialEq
+enum SeqBackend {
+    Array(Vec<Value>),
+    // List(ListCore),
+    // Chunked(ChunkCore),
+}
+
+#[derive(Clone, Debug, PartialEq)]            // <-- add PartialEq
+pub struct Seq {
+    backend: SeqBackend,
+    kind_hint: SeqKind,
+    metrics: SeqMetrics,
+}
+
+impl Seq {
+    pub fn from_vec(v: Vec<Value>) -> Self {
+        Seq {
+            metrics: SeqMetrics { len: v.len(), ..Default::default() },
+            backend: SeqBackend::Array(v),
+            kind_hint: SeqKind::Auto,
+        }
+    }
+
+    #[inline] pub fn len(&self) -> usize { self.metrics.len }
+
+    // Read-only snapshot view used by existing code paths (sum, avg, etc.).
+    pub fn as_slice(&self) -> Option<&[Value]> {
+        match &self.backend {
+            SeqBackend::Array(v) => Some(v.as_slice()),
+            //_ => None, // later variants
+        }
+    }
+
+    // Materialize: used by sort/print until we migrate all call sites.
+    pub fn to_vec(&self) -> Vec<Value> {
+        match &self.backend {
+            SeqBackend::Array(v) => v.clone(),
+        }
+    }
+
+    // Mutating ops (used by future “!” forms; safe no-ops for now):
+    pub fn push_back(&mut self, v: Value) {
+        self.metrics.ops_push_back += 1;
+        match &mut self.backend {
+            SeqBackend::Array(vs) => { vs.push(v); self.metrics.len = vs.len(); }
+        }
+        self.maybe_rebucket();
+    }
+
+    pub fn insert(&mut self, i: usize, v: Value) -> Result<(), ()> {
+        self.metrics.ops_insert_idx += 1;
+        match &mut self.backend {
+            SeqBackend::Array(vs) => {
+                if i > vs.len() { return Err(()); }
+                vs.insert(i, v);
+                self.metrics.len = vs.len();
+            }
+        }
+        self.maybe_rebucket();
+        Ok(())
+    }
+
+    pub fn remove(&mut self, i: usize) -> Option<Value> {
+        self.metrics.ops_remove_idx += 1;
+        let out = match &mut self.backend {
+            SeqBackend::Array(vs) => {
+                if i < vs.len() { Some(vs.remove(i)) } else { None }
+            }
+        };
+        if out.is_some() {
+            if let SeqBackend::Array(vs) = &self.backend { /* borrow ends */ }
+            self.metrics.len = self.metrics.len.saturating_sub(1);
+        }
+        self.maybe_rebucket();
+        out
+    }
+
+    // Heuristics hook; no-op in Phase 0
+    pub fn maybe_rebucket(&mut self) {
+        // later: switch Array <-> List <-> Chunked + hysteresis
+    }
+
+    pub fn backend_name(&self) -> &'static str {
+        match &self.backend {
+            SeqBackend::Array(_) => "array",
+        }
+    }
+
+    pub fn metrics_map(&self) -> BTreeMap<String, Value> {
+        let mut m = BTreeMap::new();
+        m.insert("len".into(), Value::Num(self.metrics.len as f64));
+        m.insert("ops_push_back".into(), Value::Num(self.metrics.ops_push_back as f64));
+        m.insert("ops_push_front".into(), Value::Num(self.metrics.ops_push_front as f64));
+        m.insert("ops_insert_idx".into(), Value::Num(self.metrics.ops_insert_idx as f64));
+        m.insert("ops_remove_idx".into(), Value::Num(self.metrics.ops_remove_idx as f64));
+        m.insert("ops_random_access".into(), Value::Num(self.metrics.ops_random_access as f64));
+        m.insert("transitions".into(), Value::Num(self.metrics.transitions as f64));
+        m.insert("backend".into(), Value::Str(self.backend_name().into()));
+        m
+    }
+}
+
+// A tiny read-only view to bridge old call sites:
+pub enum SeqView<'a> {
+    Slice(&'a [Value]),
+    // Iter(Box<dyn Iterator<Item=&'a Value> + 'a>), // later
+}
+impl<'a> SeqView<'a> {
+    pub fn iter(&'a self) -> Box<dyn Iterator<Item = &'a Value> + 'a> {
+        match self {
+            SeqView::Slice(s) => Box::new(s.iter()),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -39,6 +168,7 @@ pub enum Value {
     Array(Vec<Value>),
     Map(BTreeMap<String, Value>),
     Pair(Box<Value>, Box<Value>), // for >< (divmod)
+    Seq(Seq),
     Nil,
     Unit,
     CtrlSkip,  
@@ -48,18 +178,22 @@ pub enum Value {
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::Num(x) => write!(f, "{}", fmt_num_trim(*x)),
-            Value::Str(s) => write!(f, "{:?}", s),
+            Value::Num(x)  => write!(f, "{}", fmt_num_trim(*x)),
+            Value::Str(s)  => write!(f, "{:?}", s),
             Value::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
-            Value::Nil => write!(f, "nil"),
+            Value::Nil     => write!(f, "nil"),
+
+            // ---- Array (single arm) ----
             Value::Array(xs) => {
                 write!(f, "[")?;
                 for (i, v) in xs.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{}", v)?;
+                    write!(f, "{v}")?;
                 }
                 write!(f, "]")
             }
+
+            // ---- Map ----
             Value::Map(map) => {
                 write!(f, "{{")?;
                 let mut first = true;
@@ -70,8 +204,29 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+
+            // ---- Pair / Unit / control ----
             Value::Pair(a, b) => write!(f, "({}, {})", a, b),
             Value::Unit | Value::CtrlSkip | Value::CtrlStop => Ok(()),
+
+            // ---- Seq ----
+            Value::Seq(xs) => {
+                write!(f, "[")?;
+                if let Some(s) = xs.as_slice() {
+                    for (i, v) in s.iter().enumerate() {
+                        if i > 0 { write!(f, ", ")?; }
+                        write!(f, "{v}")?;
+                    }
+                } else {
+                    // future backends: materialize for printing
+                    let vecd = xs.to_vec();
+                    for (i, v) in vecd.iter().enumerate() {
+                        if i > 0 { write!(f, ", ")?; }
+                        write!(f, "{v}")?;
+                    }
+                }
+                write!(f, "]")
+            }
         }
     }
 }
@@ -440,6 +595,15 @@ fn eval_expr_list(exprs: &[ast::Expr], sess: &mut Session) -> Result<Option<Valu
     Ok(last)
 }
 
+#[inline]
+fn as_array_like<'a>(v: &'a Value) -> Option<&'a [Value]> {
+    match v {
+        Value::Array(xs) => Some(xs.as_slice()),
+        Value::Seq(xs)   => xs.as_slice(),   // uses your Seq::as_slice()
+        _ => None,
+    }
+}
+
 fn expect_array<'a>(e: &'a ast::Expr, label: &str) -> Result<&'a [ast::Expr], Diag> {
     if let ast::Expr::Array(items, _) = e {
         Ok(items.as_slice())
@@ -518,6 +682,7 @@ fn eval_builtin(
                 _ => return Err(rt("T0401", "sum expects an array of numbers", sp.clone())),
             }
         }
+
         "avg" => {
             arity(1)?;
             match &args[0] {
@@ -742,52 +907,48 @@ fn call_action_by_name(
         // ----- Array<number> stats -----
         "sum" => {
             arity(1)?;
-            match &args[0] {
-                Value::Array(xs) => {
-                    let mut acc = 0.0;
-                    for v in xs { acc += want_num(v, "sum")?; }
-                    Value::Num(acc)
-                }
-                _ => return Err(rt("T0401", "sum expects an array of numbers", sp.clone())),
+            if let Some(xs) = as_array_like(&args[0]) {
+                let mut acc = 0.0;
+                for v in xs { acc += want_num(v, "sum")?; }
+                Value::Num(acc)
+            } else {
+                return Err(rt("T0401", "sum expects an array of numbers", sp.clone()));
             }
         }
         "avg" => {
             arity(1)?;
-            match &args[0] {
-                Value::Array(xs) => {
-                    if xs.is_empty() { Value::Num(0.0) } else {
-                        let mut acc = 0.0;
-                        for v in xs { acc += want_num(v, "avg")?; }
-                        Value::Num(acc / xs.len() as f64)
-                    }
+            if let Some(xs) = as_array_like(&args[0]) {
+                if xs.is_empty() { Value::Num(0.0) } else {
+                    let mut acc = 0.0;
+                    for v in xs { acc += want_num(v, "avg")?; }
+                    Value::Num(acc / xs.len() as f64)
                 }
-                _ => return Err(rt("T0401", "avg expects an array of numbers", sp.clone())),
+            } else {
+                return Err(rt("T0401", "avg expects an array of numbers", sp.clone()));
             }
         }
         "min" => {
             arity(1)?;
-            match &args[0] {
-                Value::Array(xs) => {
-                    let mut it = xs.iter();
-                    let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
-                    let mut m = want_num(first, "min")?;
-                    for v in it { m = m.min(want_num(v, "min")?); }
-                    Value::Num(m)
-                }
-                _ => return Err(rt("T0401", "min expects an array of numbers", sp.clone())),
+            if let Some(xs) = as_array_like(&args[0]) {
+                let mut it = xs.iter();
+                let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
+                let mut m = want_num(first, "min")?;
+                for v in it { m = m.min(want_num(v, "min")?); }
+                Value::Num(m)
+            } else {
+                return Err(rt("T0401", "min expects an array of numbers", sp.clone()));
             }
         }
         "max" => {
             arity(1)?;
-            match &args[0] {
-                Value::Array(xs) => {
-                    let mut it = xs.iter();
-                    let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
-                    let mut m = want_num(first, "max")?;
-                    for v in it { m = m.max(want_num(v, "max")?); }
-                    Value::Num(m)
-                }
-                _ => return Err(rt("T0401", "max expects an array of numbers", sp.clone())),
+            if let Some(xs) = as_array_like(&args[0]) {
+                let mut it = xs.iter();
+                let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
+                let mut m = want_num(first, "max")?;
+                for v in it { m = m.max(want_num(v, "max")?); }
+                Value::Num(m)
+            } else {
+                return Err(rt("T0401", "max expects an array of numbers", sp.clone()));
             }
         }
 
@@ -1537,34 +1698,26 @@ fn call_action_by_name(
         }
 
         "freq" => {
-            if args.len() != 1 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
-            }
-            let arr = match &args[0] {
-                Value::Array(xs) => xs,
-                _ => return Err(rt("T0401", "freq expects an array", sp.clone())),
-            };
+            arity(1)?;
+            let xs = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "freq expects an array", sp.clone()))?;
             let mut map = std::collections::BTreeMap::<String, i64>::new();
-            for v in arr {
+            for v in xs {
                 let k = fmt_value_raw(v);
                 *map.entry(k).or_insert(0) += 1;
             }
             let mut out = std::collections::BTreeMap::<String, Value>::new();
             for (k, n) in map { out.insert(k, Value::Num(n as f64)); }
             Value::Map(out)
-        }
+        },
 
         "mode" => {
-            if args.len() != 1 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
-            }
-            let arr = match &args[0] {
-                Value::Array(xs) => xs,
-                _ => return Err(rt("T0401", "mode expects an array", sp.clone())),
-            };
-            if arr.is_empty() { return Err(rt("R0404", "mode of empty array", sp.clone())); }
+            arity(1)?;
+            let xs = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "mode expects an array", sp.clone()))?;
+            if xs.is_empty() { return Err(rt("R0404", "mode of empty array", sp.clone())); }
             let mut counts = std::collections::BTreeMap::<String, i64>::new();
-            for v in arr {
+            for v in xs {
                 let k = fmt_value_raw(v);
                 *counts.entry(k).or_insert(0) += 1;
             }
@@ -1574,7 +1727,7 @@ fn call_action_by_name(
                 if *n > best_n { best_n = *n; best_k = k.clone(); }
             }
             Value::Map(vec![(best_k, Value::Num(best_n as f64))].into_iter().collect())
-        }
+        },
 
         "sample_weighted" => {
             if args.len() != 2 {
@@ -1628,21 +1781,22 @@ fn call_action_by_name(
             if args.len() != 2 {
                 return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
             }
-            let arr = match &args[0] {
-                Value::Array(xs) => xs,
-                _ => return Err(rt("T0401", "map expects an array as first argument", sp.clone())),
-            };
+            let xs = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "map expects an array as first argument", sp.clone()))?;
             let action = match &args[1] {
                 Value::Str(s) => s.clone(),
                 _ => return Err(rt("T0205", "map expects the action name as a string", sp.clone())),
             };
-            let mut out = Vec::with_capacity(arr.len());
-            for v in arr {
+            let mut out = Vec::with_capacity(xs.len());
+            for v in xs {
                 let res = call_action_by_name(sess, &action, vec![v.clone()], sp.clone())?;
                 out.push(res);
             }
+            // If you've begun returning Seq for producers, do:
+            // Value::Seq(gseq::Seq::from_vec(out))
+            // Otherwise, keep legacy Array for now:
             Value::Array(out)
-        }
+        },
 
         // ---------- Collections: unique / dups ----------
         "unique" => {
@@ -1801,16 +1955,17 @@ fn call_action_by_name(
         }
         "join" => { // join array of strings with sep
             if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
-            let arr = match &args[0] { Value::Array(xs) => xs, _ => return Err(rt("T0401", "join expects an array", sp.clone())) };
+            let xs = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "join expects an array", sp.clone()))?;
             let sep = want_str(&args[1], "join")?;
             let mut out = String::new();
-            for (i, v) in arr.iter().enumerate() {
+            for (i, v) in xs.iter().enumerate() {
                 let s = match v { Value::Str(s) => s.clone(), _ => return Err(rt("T0205", "join expects array of strings", sp.clone())) };
                 if i > 0 { out.push_str(&sep); }
                 out.push_str(&s);
             }
             Value::Str(out)
-        }
+        },
 
         // ===== Other transforms =====
         "reverse" => { arity(1)?; map_str_1(&args[0], "reverse", &|s| s.chars().rev().collect())? }
@@ -1836,6 +1991,47 @@ fn call_action_by_name(
                 "false" => Value::Bool(false),
                 _ => return Err(rt("T0205", "parse_bool expects 'true' or 'false'", sp.clone())),
             }
+        }
+
+        "backend" => {
+            if args.len() != 1 { return Err(rt("A0402", "backend expects 1 receiver", sp.clone())); }
+            match &args[0] {
+                Value::Seq(xs)   => Value::Str(xs.backend_name().into()),
+                Value::Array(_)  => Value::Str("array(legacy)".into()),
+                _ => return Err(rt("T0401", "backend expects a collection", sp.clone())),
+            }
+        }
+
+        "metrics" => {
+            if args.len() != 1 { return Err(rt("A0402", "metrics expects 1 receiver", sp.clone())); }
+            match &args[0] {
+                Value::Seq(xs)   => Value::Map(xs.metrics_map()),
+                Value::Array(xs) => {
+                    // legacy metrics for plain arrays
+                    let mut m = BTreeMap::new();
+                    m.insert("len".into(), Value::Num(xs.len() as f64));
+                    m.insert("backend".into(), Value::Str("array(legacy)".into()));
+                    Value::Map(m)
+                }
+                _ => return Err(rt("T0401", "metrics expects a collection", sp.clone())),
+            }
+        }
+
+        // ===== Super Troopers easter egg =====
+        "enhance" => {
+            if args.len() != 1 {
+                return Err(rt(
+                    "A0402",
+                    format!("wrong number of arguments: expected 1, got {}", args.len()),
+                    sp.clone(),
+                ));
+            }
+            let msg = match &args[0] {
+                Value::Str(s) => s.clone(),
+                other => fmt_value_raw(other),
+            };
+            println!("{msg} has been enhanced.");
+            Value::Unit
         }
 
         // ----- Unknown -----
@@ -1883,11 +2079,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Collections ----
         ast::Expr::Array(elems, _sp) => {
-            let mut out = Vec::with_capacity(elems.len());
-            for e in elems {
-                out.push(eval_expr(e, sess)?);
-            }
-            Ok(Value::Array(out))
+            let mut v = Vec::with_capacity(elems.len());
+            for e in elems { v.push(eval_expr(e, sess)?); }
+            Ok(Value::Array(v))
         }
 
         ast::Expr::Object(kvs, _sp) => {
@@ -2033,7 +2227,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
         }
-
+        
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
             // evaluate receiver and args

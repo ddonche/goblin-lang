@@ -713,6 +713,24 @@ fn run_repl() -> i32 {
             break;
         }
 
+        // --- Easter egg: `enhance ...` — print "<rest> has been enhanced." ---
+        if buf.is_empty() {
+            let s0 = trimmed.trim_start();
+            if let Some(rest) = s0.strip_prefix("enhance") {
+                // must be end-of-line or whitespace after the keyword
+                if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                    let payload = rest.trim();
+                    if payload.is_empty() {
+                        println!("Enhance what?");
+                    } else {
+                        println!("{payload} has been enhanced.");
+                    }
+                    n += 1;
+                    continue; // handled; do not buffer/parse this line
+                }
+            }
+        }
+
         // Append this line to the buffer we’ll parse as a unit.
         buf.push_str(trimmed);
         buf.push('\n');
