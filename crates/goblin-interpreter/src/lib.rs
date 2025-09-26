@@ -851,6 +851,13 @@ fn call_action_by_name(
         m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
     }
 
+    let want_bool = |v: &Value, label: &str| -> Result<bool, Diag> {
+        match v {
+            Value::Bool(b) => Ok(*b),
+            _ => Err(rt("T0203", format!("{label} expects a boolean"), sp.clone())),
+        }
+    };
+
     // ---------- Built-ins (shadowable) ----------
     let arity = |wanted: usize| -> Result<(), Diag> {
         if args.len() != wanted {
@@ -1838,6 +1845,44 @@ fn call_action_by_name(
             Value::Array(dup_only)
         }
 
+        "keep_where" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let xs_view = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "keep_where expects an array", sp.clone()))?;
+            let pred = match &args[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(rt("T0205", "keep_where expects the predicate action name as a string", sp.clone())),
+            };
+
+            let mut out: Vec<Value> = Vec::new();
+            for v in xs_view.iter() {
+                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                if want_bool(&ok_v, "keep_where predicate")? { out.push(v.clone()); }
+            }
+            Value::Array(out)
+        },
+
+        "drop_where" => {
+            if args.len() != 2 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+            }
+            let xs_view = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "drop_where expects an array", sp.clone()))?;
+            let pred = match &args[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(rt("T0205", "drop_where expects the predicate action name as a string", sp.clone())),
+            };
+
+            let mut out: Vec<Value> = Vec::new();
+            for v in xs_view.iter() {
+                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                if !want_bool(&ok_v, "drop_where predicate")? { out.push(v.clone()); }
+            }
+            Value::Array(out)
+        },
+
         // ===== Replace & remove =====
         "replace" => {
             if args.len() != 3 {
@@ -1852,6 +1897,44 @@ fn call_action_by_name(
                 Value::Str(s.replace(&from, &to))
             }
         }
+
+        "replace_all" => {
+            if args.len() != 3 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
+            }
+            let xs_view = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "replace_all expects an array", sp.clone()))?;
+            let oldv = args[1].clone();
+            let newv = args[2].clone();
+
+            let mut out: Vec<Value> = Vec::with_capacity(xs_view.iter().count());
+            for v in xs_view.iter() {
+                if v == &oldv { out.push(newv.clone()); } else { out.push(v.clone()); }
+            }
+            Value::Array(out)
+        },
+
+        "replace_where" => {
+            if args.len() != 3 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
+            }
+            let xs_view = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "replace_where expects an array", sp.clone()))?;
+            let pred = match &args[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(rt("T0205", "replace_where expects the predicate action name as a string", sp.clone())),
+            };
+            let withv = args[2].clone();
+
+            let mut out: Vec<Value> = Vec::with_capacity(xs_view.iter().count());
+            for v in xs_view.iter() {
+                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                if want_bool(&ok_v, "replace_where predicate")? { out.push(withv.clone()); }
+                else { out.push(v.clone()); }
+            }
+            Value::Array(out)
+        },
+
         "replace_first" => {
             if args.len() != 3 {
                 return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
@@ -1871,6 +1954,7 @@ fn call_action_by_name(
                 Value::Str(s)
             }
         }
+
         "remove" => {
             if args.len() != 2 {
                 return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
@@ -1883,6 +1967,29 @@ fn call_action_by_name(
                 Value::Str(s.replace(&sub, ""))
             }
         }
+
+        "usurp_where" => {
+            if args.len() != 3 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
+            }
+            let xs_view = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "usurp_where expects an array", sp.clone()))?;
+            let pred = match &args[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(rt("T0205", "usurp_where expects the predicate action name as a string", sp.clone())),
+            };
+            let withv = args[2].clone();
+
+            // returns only the (old,new) pairs that actually changed
+            let mut audit: Vec<Value> = Vec::new();
+            for v in xs_view.iter() {
+                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                if want_bool(&ok_v, "usurp_where predicate")? {
+                    audit.push(Value::Pair(Box::new(v.clone()), Box::new(withv.clone())));
+                }
+            }
+            Value::Array(audit)
+        },
 
         // ===== Slice / extract =====
         "before" => {
@@ -2015,23 +2122,6 @@ fn call_action_by_name(
                 }
                 _ => return Err(rt("T0401", "metrics expects a collection", sp.clone())),
             }
-        }
-
-        // ===== Super Troopers easter egg =====
-        "enhance" => {
-            if args.len() != 1 {
-                return Err(rt(
-                    "A0402",
-                    format!("wrong number of arguments: expected 1, got {}", args.len()),
-                    sp.clone(),
-                ));
-            }
-            let msg = match &args[0] {
-                Value::Str(s) => s.clone(),
-                other => fmt_value_raw(other),
-            };
-            println!("{msg} has been enhanced.");
-            Value::Unit
         }
 
         // ----- Unknown -----
@@ -2227,7 +2317,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
         }
-        
+
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
             // evaluate receiver and args
