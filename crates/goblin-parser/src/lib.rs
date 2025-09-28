@@ -3521,7 +3521,7 @@ impl<'t> Parser<'t> {
                 // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
                 // Allow: upper "x", lower "x", title "x", slug "x", mixed "x"
                 fn is_no_parens_freecall(name: &str) -> bool {
-                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed"
+                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed" | "reverse_chars"
                         | "trim" | "trim_lead" | "trim_trail" | "lines" | "words" | "chars" | "reverse" | "minimize" | "parse_bool")
                 }
 

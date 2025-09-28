@@ -2250,28 +2250,20 @@ fn call_action_by_name(
 
         // ===== Other transforms =====
         "reverse" => {
+            // reverse the ORDER of a collection (pure)
             arity(1)?;
-            match &args[0] {
-                // String: reverse characters
-                Value::Str(s) => Value::Str(s.chars().rev().collect()),
-                // Collection: reverse element ORDER (pure)
-                _ => {
-                    if let Some(xs) = as_array_like(&args[0]) {
-                        let mut out: Vec<Value> = xs.iter().cloned().collect();
-                        out.reverse();
-                        Value::Array(out) // keep legacy Array output for now
-                    } else {
-                        return Err(rt("T0401", "reverse expects a string or array/seq", sp.clone()));
-                    }
-                }
-            }
-        },
+            let xs = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "reverse expects array/seq", sp.clone()))?;
+            let mut v: Vec<Value> = xs.to_vec();
+            v.reverse();
+            Value::Array(v)
+        }
 
         "reverse_chars" => {
+            // reverse characters (string or array-of-strings)
             arity(1)?;
-            // string or array/seq<string> → reverse characters
             map_str_1(&args[0], "reverse_chars", &|s| s.chars().rev().collect())?
-        },
+        }
         
         "minimize" => {
             arity(1)?;
