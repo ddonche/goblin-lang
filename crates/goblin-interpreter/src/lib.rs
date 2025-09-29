@@ -327,6 +327,13 @@ impl Session {
 
     }
 
+    pub fn get_var_mut(&mut self, name: &str) -> Option<&mut Value> {
+        for frame in self.env.iter_mut().rev() {
+            if let Some(v) = frame.get_mut(name) { return Some(v); }
+        }
+        None
+    }
+
     #[inline]
     pub fn reseed(&mut self, seed: u128) {
         self.rng_state = seed;
@@ -2603,6 +2610,175 @@ fn call_action_by_name(
 // ===================== Evaluation =====================
 
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
+    fn mutate_via_call_name(
+        sess: &mut Session,
+        name: &str,        // "put_at!"
+        recv_ident: Option<&str>,
+        arg_exprs: &[ast::Expr],
+        sp: Span,
+    ) -> Result<Value, Diag> {
+        let base = name.strip_suffix('!')
+            .ok_or_else(|| rt("R0800", "internal: expected bang name", sp.clone()))?;
+
+        // Determine the target variable name and build argv for the pure version
+        let (target_name, argv_vals): (String, Vec<Value>) = if let Some(base_ident) = recv_ident {
+            // Receiver style: xs.put_at!(...)
+            let mut vals = Vec::with_capacity(arg_exprs.len() + 1);
+            // receiver value first
+            let recv_val = sess.get_var(base_ident)
+                .cloned()
+                .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", base_ident), sp.clone()))?;
+            vals.push(recv_val);
+            // then args
+            for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
+            (base_ident.to_string(), vals)
+        } else {
+            // Free-call style: put_at!(xs, ...)
+            if arg_exprs.is_empty() {
+                return Err(rt("A0402",
+                    format!("'{}' requires a target variable as first argument", name), sp.clone()));
+            }
+            let tgt = match &arg_exprs[0] {
+                ast::Expr::Ident(n, _) => n.clone(),
+                other => {
+                    return Err(rt("P0802",
+                        &format!("'{}' requires a variable name (not an expression) as first argument", name),
+                        span_of_expr(other)));
+                }
+            };
+            let mut vals = Vec::with_capacity(arg_exprs.len());
+            for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
+            (tgt, vals)
+        };
+
+        // Special-case destructive reap!: mutate target and return removed value(s)
+        if base == "reap" {
+            // Figure out target variable & optional count expr
+            let (target_name, count_expr_opt): (String, Option<&ast::Expr>) = if let Some(base_ident) = recv_ident {
+                // xs.reap!() or xs.reap!(count)
+                (base_ident.to_string(), arg_exprs.get(0))
+            } else {
+                // reap!(xs) or reap!(xs, count)
+                let Some(first) = arg_exprs.get(0) else {
+                    return Err(rt("A0402","reap! expects (xs) or (xs, count)", sp.clone()));
+                };
+                let ast::Expr::Ident(n, _) = first else {
+                    return Err(rt("P0802","reap!: first argument must be a variable name", span_of_expr(first)));
+                };
+                (n.clone(), arg_exprs.get(1))
+            };
+
+            // Parse count (default 1)
+            let count: usize = if let Some(e) = count_expr_opt {
+                let v = eval_expr(e, sess)?;
+                let n = as_num(v, span_of_expr(e), "reap!(..., count)")?;
+                if n <= 0.0 || n.fract() != 0.0 {
+                    return Err(rt("T0201","reap! count must be a positive integer", sp.clone()));
+                }
+                n as usize
+            } else { 1 };
+
+            // 1) Read-only: figure out length and type *without* mut-borrowing slot
+            enum CollKind { Arr(usize), Seq(usize), Str(usize) }
+            let kind_len = match sess.get_var(&target_name) {
+                Some(Value::Array(xs)) => {
+                    if xs.is_empty() { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
+                    CollKind::Arr(xs.len())
+                }
+                Some(Value::Seq(xs)) => {
+                    let len = xs.len();
+                    if len == 0 { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
+                    CollKind::Seq(len)
+                }
+                Some(Value::Str(s)) => {
+                    let n = s.chars().count();
+                    if n == 0 { return Err(rt("R0701","cannot reap from an empty string", sp.clone())); }
+                    CollKind::Str(n)
+                }
+                Some(_) => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
+                None => return Err(rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone())),
+            };
+
+            let len = match kind_len { CollKind::Arr(n)|CollKind::Seq(n)|CollKind::Str(n) => n };
+            if count > len {
+                return Err(rt("R0701", format!("not enough to sample: requested {count}, have {len}"), sp.clone()));
+            }
+
+            // 2) RNG picks BEFORE any mutable borrow of the slot
+            fn sample_indices(sess: &mut Session, len: usize, k: usize) -> Vec<usize> {
+                let mut idxs: Vec<usize> = (0..len).collect();
+                for i in 0..k {
+                    let j = i + rng_bounded(sess, (len - i) as u64) as usize;
+                    idxs.swap(i, j);
+                }
+                idxs[..k].to_vec()
+            }
+            let picks = sample_indices(sess, len, count);
+
+            // 3) Now mut-borrow slot and remove at descending indices
+            let slot = sess.get_var_mut(&target_name)
+                .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone()))?;
+
+            let finish_vals = |mut items: Vec<Value>| -> Value {
+                if items.len() == 1 { items.pop().unwrap() } else { Value::Array(items) }
+            };
+
+            match slot {
+                // Arrays
+                Value::Array(vecd) => {
+                    let mut removed: Vec<Value> = Vec::with_capacity(count);
+                    let mut sorted = picks.clone();
+                    sorted.sort_unstable_by(|a,b| b.cmp(a)); // remove safely
+                    for i in sorted { removed.push(vecd.remove(i)); }
+                    removed.reverse(); // report in draw order
+                    return Ok(finish_vals(removed));
+                }
+                // Adaptive seq
+                Value::Seq(seq) => {
+                    let mut removed: Vec<Value> = Vec::with_capacity(count);
+                    let mut sorted = picks.clone();
+                    sorted.sort_unstable_by(|a,b| b.cmp(a));
+                    for i in sorted {
+                        if let Some(v) = seq.remove(i) { removed.push(v); }
+                    }
+                    removed.reverse();
+                    return Ok(finish_vals(removed));
+                }
+                // Strings (Unicode scalar semantics)
+                Value::Str(s) => {
+                    // Build removed string from the original contents (draw order)
+                    let original = s.clone();
+                    let mut removed_s = String::new();
+                    for idx in &picks {
+                        if let Some(ch) = slice_char(&original, *idx) {
+                            removed_s.push_str(&ch);
+                        }
+                    }
+                    // Mutate the string by deleting chosen scalars (descending index order)
+                    let mut sorted = picks.clone();
+                    sorted.sort_unstable_by(|a,b| b.cmp(a));
+                    for idx in sorted {
+                        if let Some(new_s) = str_delete_at(s, idx) { *s = new_s; }
+                    }
+                    return Ok(Value::Str(removed_s));
+                }
+                _ => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
+            }
+        }
+
+        // Call the pure version to compute the updated value
+        let updated = call_action_by_name(sess, base, argv_vals, sp.clone())?;
+
+        // Write back to the target binding
+        if let Some(slot) = sess.get_var_mut(&target_name) {
+            *slot = updated;
+            Ok(Value::Unit) // or Ok(slot.clone()) if you want echo
+        } else {
+            Err(rt("R0110",
+                format!("unknown identifier '{}'", target_name), sp.clone()))
+        }
+    }
+
     match e {
         // ---- Literals & identifiers ----
         ast::Expr::Nil(_) => Ok(Value::Nil),
@@ -2698,6 +2874,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Free calls ----
         ast::Expr::FreeCall(name, args, sp) => {
+            // ---- bang builtins: put_at!(), delete_all!(), reap!(), ... ----
+            if name.ends_with('!') {
+                // no receiver here (free call): target must be first argument Ident
+                return mutate_via_call_name(sess, name, None, args, sp.clone());
+            }
+
             match name.as_str() {
                 // control flow lowered by parser
                 "if" => {
@@ -2727,9 +2909,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         for e in body_es {
                             let v = eval_expr(e, sess)?;
                             match v {
-                                Value::CtrlSkip => continue 'outer, // next iteration
-                                Value::CtrlStop => break 'outer,    // exit loop
-                                _ => {} // ignore normal values
+                                Value::CtrlSkip => continue 'outer,
+                                Value::CtrlStop => break 'outer,
+                                _ => {}
                             }
                         }
                     }
@@ -2780,6 +2962,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Unit)
                 }
 
+                // everything else → regular (pure) call
                 other_name => {
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for a in args { arg_vals.push(eval_expr(a, sess)?); }
@@ -2790,12 +2973,23 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
-            // evaluate receiver and args
+            if name.ends_with('!') {
+                // receiver must be an Ident
+                let recv_ident = match &**base {
+                    ast::Expr::Ident(n, _) => Some(n.as_str()),
+                    other => {
+                        return Err(rt("P0802",
+                            &format!("'{}' requires a variable receiver (e.g. xs.{}(...))", name, name),
+                            span_of_expr(other)));
+                    }
+                };
+                return mutate_via_call_name(sess, name, recv_ident, args, sp.clone());
+            }
+            // existing receiver-call path:
             let recv = eval_expr(base, sess)?;
-            let mut argv: Vec<Value> = Vec::with_capacity(args.len() + 1);
+            let mut argv = Vec::with_capacity(args.len() + 1);
             argv.push(recv);
             for a in args { argv.push(eval_expr(a, sess)?); }
-            // reuse your existing action call path
             call_action_by_name(sess, name, argv, sp.clone())
         }
 

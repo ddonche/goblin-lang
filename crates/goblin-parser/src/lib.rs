@@ -3520,6 +3520,69 @@ impl<'t> Parser<'t> {
                     return Ok(self.apply_postfix_ops(PExpr::FreeCall("stop".to_string(), vec![])));
                 }
 
+                // ---- Special no-parens grammar: "reap [count] from <src>" and "reap! [count] from <ident>" ----
+                // --- destructive reap! (mirrors "reap N from xs") ---
+                if name == "reap!" {
+                    self.skip_newlines();
+
+                    // Optional count before 'from' (default 1 if omitted)
+                    // If the next token is literally the identifier "from", skip parsing count.
+                    let count_opt = {
+                        let is_from_kw = match self.peek() {
+                            Some(t) if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("from") => true,
+                            _ => false,
+                        };
+                        if is_from_kw {
+                            None
+                        } else {
+                            // Parse one expression as count (e.g., 3)
+                            // (We keep it general Expr so you can later allow names/exprs if desired.)
+                            Some(self.parse_coalesce()?)
+                        }
+                    };
+
+                    self.skip_newlines();
+
+                    // Expect the keyword 'from'
+                    match self.peek().cloned() {
+                        Some(t) if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("from") => {
+                            self.i += 1; // consume 'from'
+                        }
+                        _ => {
+                            return Err(s_help(
+                                "P1410",
+                                "Expected 'from' here",
+                                "Write it like: reap! 3 from xs",
+                            ));
+                        }
+                    }
+
+                    self.skip_newlines();
+
+                    // Expect a variable name (the target to mutate)
+                    let src_ident = match self.peek().cloned() {
+                        Some(t) if matches!(t.kind, TokenKind::Ident) => {
+                            self.i += 1; // safe: cloned above
+                            t.value.unwrap_or_default()
+                        }
+                        _ => {
+                            return Err(s_help(
+                                "P1411",
+                                "reap! expects a variable name after 'from'",
+                                "Example: reap! 3 from xs",
+                            ));
+                        }
+                    };
+
+                    // Build args for the destructive lowering:
+                    //   FreeCall("reap!", [Ident(src), (count)?])
+                    let mut args = Vec::<PExpr>::new();
+                    args.push(PExpr::Ident(src_ident));
+                    if let Some(c) = count_opt { args.push(c); }
+
+                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args)));
+                }
+
                 // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
                 // Allow: upper "x", lower "x", title "x", slug "x", mixed "x"
                 fn is_no_parens_freecall(name: &str) -> bool {
