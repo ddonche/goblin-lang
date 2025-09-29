@@ -30,6 +30,7 @@ use goblin_ast as ast;
 use goblin_diagnostics::Span;
 
 // ===================== Public API =====================
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeqKind { Auto, Array, List, Chunked }
 
@@ -187,6 +188,7 @@ impl<'a> SeqView<'a> {
 pub enum Value {
     Num(f64),
     Str(String),
+    Char(char),
     Bool(bool),
     Array(Vec<Value>),
     Map(BTreeMap<String, Value>),
@@ -198,11 +200,46 @@ pub enum Value {
     CtrlStop,
 }
 
+fn fmt_string_visible(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"'  => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn fmt_char_visible(c: char) -> String {
+    match c {
+        '\\' => "'\\\\'".into(),
+        '\'' => "'\\''".into(),
+        '\n' => "'\\n'".into(),
+        '\r' => "'\\r'".into(),
+        '\t' => "'\\t'".into(),
+        c if c.is_control() => format!("'\\u{{{:x}}}'", c as u32),
+        c => {
+            let mut s = String::with_capacity(3);
+            s.push('\''); s.push(c); s.push('\''); s
+        }
+    }
+}
+
 impl fmt::Display for Value {
+
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Num(x)  => write!(f, "{}", fmt_num_trim(*x)),
-            Value::Str(s)  => write!(f, "{:?}", s),
+            Value::Str(s)  => f.write_str(&fmt_string_visible(s)),
+            Value::Char(c) => f.write_str(&fmt_char_visible(*c)),
             Value::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::Nil     => write!(f, "nil"),
 
@@ -392,6 +429,62 @@ impl Session {
 }
 
 // ===================== Helpers =====================
+fn want_str(v: &Value, label: &str, sp: Span) -> Result<String, Diag> {
+    match v {
+        Value::Str(s)  => Ok(s.clone()),
+        Value::Char(c) => Ok(c.to_string()),        // NEW: char -> 1-len string
+        _ => Err(rt("T0205", format!("{label} expects a string"), sp)),
+    }
+}
+
+fn want_char(v: &Value, label: &str, sp: Span) -> Result<char, Diag> {
+    match v {
+        Value::Char(c) => Ok(*c),
+        Value::Str(s) if s.chars().count() == 1 => Ok(s.chars().next().unwrap()),
+        _ => Err(rt("T0205", format!("{label} expects a char"), sp)),
+    }
+}
+// --- String-as-collection helpers (Unicode scalar semantics) ---
+fn char_len(s: &str) -> usize { s.chars().count() }
+
+fn byte_ix_at_char(s: &str, i: usize) -> Option<usize> {
+    if i == char_len(s) { return Some(s.len()); }
+    s.char_indices().nth(i).map(|(b, _)| b)
+}
+
+fn slice_char(s: &str, i: usize) -> Option<String> {
+    let start = byte_ix_at_char(s, i)?;
+    let end   = byte_ix_at_char(s, i + 1)?;
+    Some(s[start..end].to_string())
+}
+
+fn str_insert_at(s: &str, i: usize, sub: &str) -> Option<String> {
+    let pos = byte_ix_at_char(s, i)?;
+    let mut out = String::with_capacity(s.len() + sub.len());
+    out.push_str(&s[..pos]);
+    out.push_str(sub);
+    out.push_str(&s[pos..]);
+    Some(out)
+}
+
+fn str_update_at(s: &str, i: usize, with: &str) -> Option<String> {
+    let start = byte_ix_at_char(s, i)?;
+    let end   = byte_ix_at_char(s, i + 1)?;
+    let mut out = String::with_capacity(s.len() - (end - start) + with.len());
+    out.push_str(&s[..start]);
+    out.push_str(with);
+    out.push_str(&s[end..]);
+    Some(out)
+}
+
+fn str_delete_at(s: &str, i: usize) -> Option<String> {
+    let start = byte_ix_at_char(s, i)?;
+    let end   = byte_ix_at_char(s, i + 1)?;
+    let mut out = String::with_capacity(s.len() - (end - start));
+    out.push_str(&s[..start]);
+    out.push_str(&s[end..]);
+    Some(out)
+}
 
 #[inline]
 fn rng_u64(sess: &mut Session) -> u64 {
@@ -454,6 +547,7 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Bool(_, sp)
         | ast::Expr::Number(_, sp)
         | ast::Expr::Str(_, sp)
+        | ast::Expr::Char(_, sp)
         | ast::Expr::Ident(_, sp)
         | ast::Expr::Array(_, sp)
         | ast::Expr::Object(_, sp)
@@ -498,6 +592,7 @@ fn fmt_num_trim(n: f64) -> String {
 fn fmt_value_raw(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
+        Value::Char(c) => c.to_string(),
         Value::Num(n) => fmt_num_trim(*n),
         Value::Bool(b) => if *b { "true".into() } else { "false".into() },
         Value::Nil => "nil".into(),
@@ -860,19 +955,6 @@ fn call_action_by_name(
     }
 
     // Shared helpers
-    fn get_i64_from(m:&std::collections::BTreeMap<String,Value>, k:&str, sp:&Span)->Result<i64,Diag>{
-        match m.get(k) {
-            Some(Value::Num(n)) if n.fract()==0.0 => Ok(*n as i64),
-            Some(_) => Err(rt("T0201",&format!("roll '{k}' must be an integer"), sp.clone())),
-            None => Err(rt("T0201",&format!("missing roll field '{k}'"), sp.clone())),
-        }
-    }
-    fn get_i64_opt(m:&std::collections::BTreeMap<String,Value>, k:&str)->Option<i64>{
-        m.get(k).and_then(|v| if let Value::Num(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
-    }
-    fn get_bool_opt(m:&std::collections::BTreeMap<String,Value>, k:&str)->Option<bool>{
-        m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
-    }
 
     let want_bool = |v: &Value, label: &str| -> Result<bool, Diag> {
         match v {
@@ -1636,96 +1718,104 @@ fn call_action_by_name(
                 Value::Array(out)
             }
         }
+        
         "count" => {
-            if args.len() != 2 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
-            }
-            let s   = want_str(&args[0], "count")?;
-            let sub = want_str(&args[1], "count")?;
-            if sub.is_empty() {
-                Value::Num(0.0)
-            } else {
-                let mut n = 0usize;
-                let mut start = 0usize;
-                while let Some(pos) = s[start..].find(&sub) {
-                    n += 1;
-                    start = start + pos + sub.len();
+            match args.len() {
+                // count(x)  -> length of string/collection/map
+                1 => {
+                    match &args[0] {
+                        Value::Str(s)    => Value::Num(s.chars().count() as f64),
+                        Value::Array(xs) => Value::Num(xs.len() as f64),
+                        Value::Seq(xs)   => Value::Num(xs.len() as f64),
+                        Value::Map(m)    => Value::Num(m.len() as f64),
+                        _ => return Err(rt("T0401", "count expects a string or collection", sp.clone())),
+                    }
                 }
-                Value::Num(n as f64)
+                // count(s, sub) -> substring occurrences (existing behavior)
+                2 => {
+                    let s   = want_str(&args[0], "count")?;
+                    let sub = want_str(&args[1], "count")?;
+                    if sub.is_empty() {
+                        Value::Num(0.0)
+                    } else {
+                        let mut n = 0usize;
+                        let mut start = 0usize;
+                        while let Some(pos) = s[start..].find(&sub) {
+                            n += 1;
+                            start = start + pos + sub.len();
+                        }
+                        Value::Num(n as f64)
+                    }
+                }
+                _ => return Err(rt("A0402",
+                    format!("wrong number of arguments: expected 1 or 2, got {}", args.len()),
+                    sp.clone())),
             }
         }
 
         // ===== Other Stuff =====
-        "add" => {
-            if args.len() != 2 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
-            }
-            let arr = match &args[0] {
-                Value::Array(xs) => xs,
-                _ => return Err(rt("T0401", "add expects an array as first argument", sp.clone())),
-            };
-            let mut out = arr.clone();
-            out.push(args[1].clone());
-            Value::Array(out)
-        }
-
-        "insert" => {
-            if args.len() != 3 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
-            }
-            let arr = match &args[0] {
-                Value::Array(xs) => xs,
-                _ => return Err(rt("T0401", "insert expects an array as first argument", sp.clone())),
-            };
-            let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract() == 0.0 => *n as usize,
-                _ => return Err(rt("T0201", "insert index must be a non-negative integer", sp.clone())),
-            };
-            let mut out = arr.clone();
-            if idx > out.len() {
-                return Err(rt("R0402", "insert index out of bounds", sp.clone()));
-            }
-            out.insert(idx, args[2].clone());
-            Value::Array(out)
-        }
 
         "shuffle" => {
-            // shuffle(slice) -> Array (pure)
             arity(1)?;
-            let s = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "shuffle expects array/seq", sp.clone()))?;
-            let mut v: Vec<Value> = s.to_vec();
-            // partial FY shuffle
-            for i in 0..v.len() {
-                let j = i + rng_index(sess, v.len() - i);
-                v.swap(i, j);
+            match &args[0] {
+                Value::Str(s) => {
+                    let mut v: Vec<char> = s.chars().collect();
+                    for i in 0..v.len() {
+                        let j = i + rng_index(sess, v.len()-i);
+                        v.swap(i, j);
+                    }
+                    Value::Str(v.into_iter().collect())
+                }
+                _ => {
+                    let s = as_array_like(&args[0]).ok_or_else(|| rt("T0401", "shuffle expects array/seq/string", sp.clone()))?;
+                    let mut v = s.to_vec();
+                    for i in 0..v.len() {
+                        let j = i + rng_index(sess, v.len()-i);
+                        v.swap(i, j);
+                    }
+                    Value::Array(v)
+                }
             }
-            Value::Array(v)
         }
 
         "sort" => {
-            // sort(slice) -> Array (pure)
             arity(1)?;
-            let s = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "sort expects array/seq", sp.clone()))?;
-            let mut v: Vec<Value> = s.to_vec();
-            v.sort_by(|a, b| fmt_value_raw(a).cmp(&fmt_value_raw(b)));
-            Value::Array(v)
+            match &args[0] {
+                Value::Str(s) => {
+                    let mut v: Vec<char> = s.chars().collect();
+                    v.sort_unstable(); // Unicode scalar order
+                    Value::Str(v.into_iter().collect())
+                }
+                _ => {
+                    let s = as_array_like(&args[0]).ok_or_else(|| rt("T0401", "sort expects array/seq/string", sp.clone()))?;
+                    let mut v = s.to_vec();
+                    v.sort_by(|a,b| fmt_value_raw(a).cmp(&fmt_value_raw(b)));
+                    Value::Array(v)
+                }
+            }
         }
 
         "freq" => {
             arity(1)?;
-            let xs = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "freq expects an array", sp.clone()))?;
-            let mut map = std::collections::BTreeMap::<String, i64>::new();
-            for v in xs {
-                let k = fmt_value_raw(v);
-                *map.entry(k).or_insert(0) += 1;
+            match &args[0] {
+                Value::Str(s) => {
+                    use std::collections::BTreeMap;
+                    let mut m = BTreeMap::<String, Value>::new();
+                    let mut cnt = BTreeMap::<char, i64>::new();
+                    for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
+                    for (c, n) in cnt { m.insert(c.to_string(), Value::Num(n as f64)); }
+                    Value::Map(m)
+                }
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401", "freq expects an array/seq/string", sp.clone()))?;
+                    let mut map = std::collections::BTreeMap::<String, i64>::new();
+                    for v in xs { *map.entry(fmt_value_raw(v)).or_insert(0) += 1; }
+                    let mut out = std::collections::BTreeMap::<String, Value>::new();
+                    for (k, n) in map { out.insert(k, Value::Num(n as f64)); }
+                    Value::Map(out)
+                }
             }
-            let mut out = std::collections::BTreeMap::<String, Value>::new();
-            for (k, n) in map { out.insert(k, Value::Num(n as f64)); }
-            Value::Map(out)
-        },
+        }
 
         "mode" => {
             arity(1)?;
@@ -1791,100 +1881,471 @@ fn call_action_by_name(
         }
         "map" => {
             if args.len() != 2 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+                return Err(rt(
+                    "A0402",
+                    format!("wrong number of arguments: expected 2, got {}", args.len()),
+                    sp.clone(),
+                ));
             }
-            let xs = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "map expects an array as first argument", sp.clone()))?;
+
             let action = match &args[1] {
                 Value::Str(s) => s.clone(),
                 _ => return Err(rt("T0205", "map expects the action name as a string", sp.clone())),
             };
+
+            // --- String case: treat as array of runes/chars ---
+            if let Value::Str(s) = &args[0] {
+                let mut results: Vec<Value> = Vec::with_capacity(char_len(s));
+                let mut all_text = true;       // all Char or Str
+                let mut any_non_text = false;  // any non Char/Str
+
+                for c in s.chars() {
+                    let r = call_action_by_name(sess, &action, vec![Value::Char(c)], sp.clone())?;
+                    match r {
+                        Value::Char(_) | Value::Str(_) => { /* still text-like */ }
+                        _ => { any_non_text = true; }
+                    }
+                    results.push(r);
+                }
+
+                // If everything is text-like, collapse to a single string
+                if !results.is_empty() && !any_non_text {
+                    let mut out = String::new();
+                    for r in results {
+                        match r {
+                            Value::Char(ch) => out.push(ch),
+                            Value::Str(ts)  => out.push_str(&ts),
+                            _ => unreachable!(),
+                        }
+                    }
+                    return Ok(Value::Str(out));
+                }
+
+                // Mixed types -> return array
+                return Ok(Value::Array(results));
+            }
+
+            // --- Array/Seq case (unchanged logic, but allow seq as well) ---
+            let xs = as_array_like(&args[0])
+                .ok_or_else(|| rt("T0401", "map expects array/seq/string as first argument", sp.clone()))?;
+
             let mut out = Vec::with_capacity(xs.len());
             for v in xs {
-                let res = call_action_by_name(sess, &action, vec![v.clone()], sp.clone())?;
-                out.push(res);
+                let r = call_action_by_name(sess, &action, vec![v.clone()], sp.clone())?;
+                out.push(r);
             }
-            // If you've begun returning Seq for producers, do:
-            // Value::Seq(gseq::Seq::from_vec(out))
-            // Otherwise, keep legacy Array for now:
             Value::Array(out)
         },
 
         // ---------- Collections: unique / dups ----------
         "unique" => {
-            // unique(slice) -> Array of first occurrences (stable)
             arity(1)?;
-            let s = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "unique expects array/seq", sp.clone()))?;
-            use std::collections::BTreeSet;
-            let mut seen: BTreeSet<String> = BTreeSet::new();
-            let mut out: Vec<Value> = Vec::with_capacity(s.len());
-            for v in s {
-                let k = fmt_value_raw(v); // existing helper
-                if seen.insert(k) {
-                    out.push(v.clone());
+            match &args[0] {
+                Value::Str(s) => {
+                    use std::collections::BTreeSet;
+                    let mut seen = BTreeSet::new();
+                    let mut out = String::new();
+                    for c in s.chars() {
+                        if seen.insert(c) { out.push(c); }
+                    }
+                    Value::Str(out)
+                }
+                _ => {
+                    let s = as_array_like(&args[0]).ok_or_else(|| rt("T0401","unique expects array/seq/string", sp.clone()))?;
+                    use std::collections::BTreeSet;
+                    let mut seen = BTreeSet::<String>::new();
+                    let mut outv = Vec::with_capacity(s.len());
+                    for v in s {
+                        let k = fmt_value_raw(v);
+                        if seen.insert(k) { outv.push(v.clone()); }
+                    }
+                    Value::Array(outv)
                 }
             }
-            Value::Array(out)
         }
 
         "dups" => {
-            // dups(slice) -> Array of items that appear 2+ times (unique, stable by first appearance)
             arity(1)?;
-            let s = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "dups expects array/seq", sp.clone()))?;
-            use std::collections::BTreeMap;
-            let mut cnt: BTreeMap<String, (usize, Value)> = BTreeMap::new();
-            for v in s {
-                let k = fmt_value_raw(v); // existing helper
-                cnt.entry(k)
-                   .and_modify(|e| e.0 += 1)
-                   .or_insert((1, v.clone()));
+            match &args[0] {
+                Value::Str(s) => {
+                    use std::collections::BTreeMap;
+                    let mut cnt = BTreeMap::<char, usize>::new();
+                    for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
+                    let mut out = String::new();
+                    for (c, n) in cnt { if n >= 2 { out.push(c); } }
+                    Value::Str(out)
+                }
+                _ => {
+                    let s = as_array_like(&args[0]).ok_or_else(|| rt("T0401","dups expects array/seq/string", sp.clone()))?;
+                    use std::collections::BTreeMap;
+                    let mut cnt = BTreeMap::<String, (usize, Value)>::new();
+                    for v in s {
+                        let k = fmt_value_raw(v);
+                        cnt.entry(k).and_modify(|e| e.0+=1).or_insert((1, v.clone()));
+                    }
+                    let mut out = Vec::new();
+                    for (_, (n, exemplar)) in cnt { if n >= 2 { out.push(exemplar); } }
+                    Value::Array(out)
+                }
             }
-            let mut out: Vec<Value> = Vec::new();
-            for (_, (n, exemplar)) in cnt {
-                if n >= 2 { out.push(exemplar); }
-            }
-            Value::Array(out)
         }
 
-        "keep_where" => {
-            if args.len() != 2 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+        // collections CRUD style
+        "grab_first" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Str(s) => {
+                    if s.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    let c = s.chars().next().unwrap();
+                    Value::Char(c)
+                }
+                _ => {
+                    let xs = as_array_like(&args[0])
+                        .ok_or_else(|| rt("T0401","grab_first expects array/seq/string", sp.clone()))?;
+                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    xs[0].clone()
+                }
             }
-            let xs_view = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "keep_where expects an array", sp.clone()))?;
+        }
+
+        "grab_last" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Str(s) => {
+                    if s.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    let c = s.chars().rev().next().unwrap();
+                    Value::Char(c)
+                }
+                _ => {
+                    let xs = as_array_like(&args[0])
+                        .ok_or_else(|| rt("T0401","grab_last expects array/seq/string", sp.clone()))?;
+                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    xs[xs.len()-1].clone()
+                }
+            }
+        }
+
+        "grab_at" => {
+            arity(2)?;
+            let idx = match &args[1] {
+                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            };
+            match &args[0] {
+                Value::Str(s) => {
+                    let n = s.chars().count();
+                    if idx >= n { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    let c = s.chars().nth(idx).unwrap();
+                    Value::Char(c)
+                }
+                _ => {
+                    let xs = as_array_like(&args[0])
+                        .ok_or_else(|| rt("T0401","grab_at expects array/seq/string", sp.clone()))?;
+                    if idx >= xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    xs[idx].clone()
+                }
+            }
+        }
+
+        "grab_where" => {
+            arity(2)?;
             let pred = match &args[1] {
                 Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205", "keep_where expects the predicate action name as a string", sp.clone())),
+                _ => return Err(rt("T0205", "grab_where expects the predicate action name as a string", sp.clone())),
             };
 
-            let mut out: Vec<Value> = Vec::new();
-            for v in xs_view.iter() {
-                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                if want_bool(&ok_v, "keep_where predicate")? { out.push(v.clone()); }
+            match &args[0] {
+                Value::Str(s) => {
+                    let mut out = String::new();
+                    for c in s.chars() {
+                        let ok_v = call_action_by_name(sess, &pred, vec![Value::Char(c)], sp.clone())?;
+                        if matches!(ok_v, Value::Bool(true)) {
+                            out.push(c);
+                        }
+                    }
+                    Value::Str(out)
+                }
+                _ => {
+                    let xs = as_array_like(&args[0])
+                        .ok_or_else(|| rt("T0401","grab_where expects array/seq/string", sp.clone()))?;
+                    let mut out_vec = Vec::new();
+                    for v in xs.iter() {
+                        let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                        if matches!(ok_v, Value::Bool(true)) { out_vec.push(v.clone()); }
+                    }
+                    Value::Array(out_vec)
+                }
             }
-            Value::Array(out)
-        },
+        }
 
-        "drop_where" => {
-            if args.len() != 2 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
+        "grab_all" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_) => args[0].clone(),
+                _ => return Err(rt("T0401", "grab_all expects a collection", sp.clone())),
             }
-            let xs_view = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "drop_where expects an array", sp.clone()))?;
+        }
+
+        "put_first" => {
+            arity(2)?;
+            match (&args[0], &args[1]) {
+                (Value::Str(s), Value::Str(sub)) => Value::Str(format!("{}{}", sub, s)),
+                (Value::Str(_), _) => return Err(rt("T0205","put_first(string, ...) expects a string to insert", sp.clone())),
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","put_first expects array/seq/string", sp.clone()))?;
+                    let mut out = Vec::with_capacity(xs.len()+1);
+                    out.push(args[1].clone());
+                    out.extend(xs.iter().cloned());
+                    Value::Array(out)
+                }
+            }
+        }
+
+        "put_last" => {
+            arity(2)?;
+            match (&args[0], &args[1]) {
+                (Value::Str(s), Value::Str(sub)) => Value::Str(format!("{}{}", s, sub)),
+                (Value::Str(_), _) => return Err(rt("T0205","put_last(string, ...) expects a string to insert", sp.clone())),
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","put_last expects array/seq/string", sp.clone()))?;
+                    let mut out = xs.to_vec();
+                    out.push(args[1].clone());
+                    Value::Array(out)
+                }
+            }
+        }
+
+        "put_at" => {
+            arity(3)?;
+            let idx = match &args[1] {
+                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            };
+            match (&args[0], &args[2]) {
+                (Value::Str(s), Value::Str(sub)) => {
+                    let n = char_len(s);
+                    if idx > n { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    Value::Str(str_insert_at(s, idx, sub).unwrap())
+                }
+                (Value::Str(_), _) => return Err(rt("T0205","put_at(string, ...) expects a string to insert", sp.clone())),
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","put_at expects array/seq/string", sp.clone()))?;
+                    if idx > xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    let mut out = Vec::with_capacity(xs.len()+1);
+                    out.extend(xs.iter().take(idx).cloned());
+                    out.push(args[2].clone());
+                    out.extend(xs.iter().skip(idx).cloned());
+                    Value::Array(out)
+                }
+            }
+        }
+
+        "update_first" => {
+            arity(2)?;
+            match (&args[0], &args[1]) {
+                (Value::Str(s), Value::Str(with)) => {
+                    if s.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    Value::Str(str_update_at(s, 0, with).unwrap())
+                }
+                (Value::Str(_), _) => return Err(rt("T0205","update_first(string, ...) expects a string", sp.clone())),
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_first expects array/seq/string", sp.clone()))?;
+                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    let mut out = xs.to_vec();
+                    out[0] = args[1].clone();
+                    Value::Array(out)
+                }
+            }
+        }
+
+        "update_last" => {
+            arity(2)?;
+            match (&args[0], &args[1]) {
+                (Value::Str(s), Value::Str(with)) => {
+                    let n = char_len(s);
+                    if n == 0 { return Err(rt("R0701","empty", sp.clone())); }
+                    Value::Str(str_update_at(s, n-1, with).unwrap())
+                }
+                (Value::Str(_), _) => return Err(rt("T0205","update_last(string, ...) expects a string", sp.clone())),
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_last expects array/seq/string", sp.clone()))?;
+                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    let mut out = xs.to_vec();
+                    let k = out.len()-1;
+                    out[k] = args[1].clone();
+                    Value::Array(out)
+                }
+            }
+        }
+
+        "update_at" => {
+            arity(3)?;
+            let idx = match &args[1] {
+                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            };
+            match (&args[0], &args[2]) {
+                (Value::Str(s), Value::Str(with)) => {
+                    let n = char_len(s);
+                    if idx >= n { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    Value::Str(str_update_at(s, idx, with).unwrap())
+                }
+                (Value::Str(_), _) => return Err(rt("T0205","update_at(string, ...) expects a string", sp.clone())),
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_at expects array/seq/string", sp.clone()))?;
+                    if idx >= xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    let mut out = xs.to_vec();
+                    out[idx] = args[2].clone();
+                    Value::Array(out)
+                }
+            }
+        }
+
+        "update_where" => {
+            arity(3)?;
             let pred = match &args[1] {
                 Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205", "drop_where expects the predicate action name as a string", sp.clone())),
+                _ => return Err(rt("T0205","update_where expects a predicate action name (string)", sp.clone())),
             };
-
-            let mut out: Vec<Value> = Vec::new();
-            for v in xs_view.iter() {
-                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                if !want_bool(&ok_v, "drop_where predicate")? { out.push(v.clone()); }
+            match (&args[0], &args[2]) {
+                (Value::Str(s), Value::Str(with)) => {
+                    let mut out = String::new();
+                    for i in 0..char_len(s) {
+                        let ch = slice_char(s, i).unwrap();
+                        let ok_v = call_action_by_name(sess, &pred, vec![Value::Str(ch.clone())], sp.clone())?;
+                        if want_bool(&ok_v, "update_where predicate")? { out.push_str(with); } else { out.push_str(&ch); }
+                    }
+                    Value::Str(out)
+                }
+                (Value::Str(_), _) => return Err(rt("T0205","update_where on string expects a string replacement", sp.clone())),
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_where expects array/seq/string", sp.clone()))?;
+                    let withv = args[2].clone();
+                    let mut out: Vec<Value> = Vec::with_capacity(xs.len());
+                    for v in xs.iter() {
+                        let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                        out.push(if want_bool(&ok_v, "update_where predicate")? { withv.clone() } else { v.clone() });
+                    }
+                    Value::Array(out)
+                }
             }
-            Value::Array(out)
-        },
+        }
+
+        "update_all" => {
+            if args.len() != 2 {
+                return Err(rt("A0402",
+                    format!("wrong number of arguments: expected 2, got {}", args.len()),
+                    sp.clone()));
+            }
+            let withv = args[1].clone();
+            match &args[0] {
+                Value::Array(xs) => Value::Array(vec![withv; xs.len()]),
+                Value::Seq(s)    => Value::Seq(Seq::from_vec(vec![withv; s.len()])),
+                Value::Str(s)    => {
+                    let sub = match &withv {
+                        Value::Str(t) => t.clone(),
+                        _ => return Err(rt("T0205", "update_all(string, ...) expects a string replacement", sp.clone())),
+                    };
+                    let n = char_len(s);
+                    Value::Str(sub.repeat(n))
+                }
+                _ => return Err(rt("T0401", "update_all expects array/seq/string", sp.clone())),
+            }
+        }
+
+        "delete_first" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Str(s) => {
+                    if char_len(s) == 0 { return Err(rt("R0701","empty", sp.clone())); }
+                    Value::Str(str_delete_at(s, 0).unwrap())
+                }
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_first expects array/seq/string", sp.clone()))?;
+                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    Value::Array(xs.iter().skip(1).cloned().collect())
+                }
+            }
+        }
+
+        "delete_last" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Str(s) => {
+                    let n = char_len(s);
+                    if n == 0 { return Err(rt("R0701","empty", sp.clone())); }
+                    Value::Str(str_delete_at(s, n-1).unwrap())
+                }
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_last expects array/seq/string", sp.clone()))?;
+                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
+                    Value::Array(xs.iter().take(xs.len()-1).cloned().collect())
+                }
+            }
+        }
+
+        "delete_at" => {
+            arity(2)?;
+            let idx = match &args[1] {
+                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            };
+            match &args[0] {
+                Value::Str(s) => {
+                    let n = char_len(s);
+                    if idx >= n { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    Value::Str(str_delete_at(s, idx).unwrap())
+                }
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_at expects array/seq/string", sp.clone()))?;
+                    if idx >= xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
+                    let mut out = Vec::with_capacity(xs.len().saturating_sub(1));
+                    for (i, v) in xs.iter().enumerate() {
+                        if i != idx { out.push(v.clone()); }
+                    }
+                    Value::Array(out)
+                }
+            }
+        }
+
+        "delete_where" => {
+            arity(2)?;
+            let pred = match &args[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(rt("T0205","delete_where expects a predicate action name (string)", sp.clone())),
+            };
+            match &args[0] {
+                Value::Str(s) => {
+                    let mut out = String::new();
+                    for i in 0..char_len(s) {
+                        let ch = slice_char(s, i).unwrap();
+                        let ok_v = call_action_by_name(sess, &pred, vec![Value::Str(ch.clone())], sp.clone())?;
+                        if !want_bool(&ok_v, "delete_where predicate")? { out.push_str(&ch); }
+                    }
+                    Value::Str(out)
+                }
+                _ => {
+                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_where expects array/seq/string", sp.clone()))?;
+                    let mut kept: Vec<Value> = Vec::with_capacity(xs.len());
+                    for v in xs.iter() {
+                        let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                        if !want_bool(&ok_v, "delete_where predicate")? { kept.push(v.clone()); }
+                    }
+                    Value::Array(kept)
+                }
+            }
+        }
+
+        "delete_all" => {
+            arity(1)?;
+            match &args[0] {
+                Value::Str(_)   => Value::Str(String::new()),
+                Value::Array(_) => Value::Array(vec![]),
+                Value::Seq(_)   => Value::Seq(Seq::from_vec(vec![])),
+                Value::Map(_)   => { use std::collections::BTreeMap; Value::Map(BTreeMap::new()) }
+                _ => return Err(rt("T0401","delete_all expects a collection", sp.clone())),
+            }
+        }
 
         // ===== Replace & remove =====
         "reap" => {
@@ -1963,207 +2424,6 @@ fn call_action_by_name(
             }
         }
 
-        "replace_all" => {
-            if args.len() != 3 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
-            }
-            let xs_view = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "replace_all expects an array", sp.clone()))?;
-            let oldv = args[1].clone();
-            let newv = args[2].clone();
-
-            let mut out: Vec<Value> = Vec::with_capacity(xs_view.iter().count());
-            for v in xs_view.iter() {
-                if v == &oldv { out.push(newv.clone()); } else { out.push(v.clone()); }
-            }
-            Value::Array(out)
-        },
-
-        "replace_where" => {
-            if args.len() != 3 {
-                return Err(rt("A0402",
-                    format!("wrong number of arguments: expected 3, got {}", args.len()),
-                    sp.clone()));
-            }
-            let xs_slice: &[Value] = match &args[0] {
-                Value::Array(v) => v.as_slice(),
-                Value::Seq(s)   => s.as_slice().unwrap_or_else(|| &[]),
-                _ => return Err(rt("T0401", "replace_where expects an array", sp.clone())),
-            };
-            let pred = match &args[1] { Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205","replace_where expects a predicate action name (string)", sp.clone())) };
-            let newv = args[2].clone();
-
-            let mut out = Vec::with_capacity(xs_slice.len());
-            for v in xs_slice {
-                let keep = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                let ok = matches!(keep, Value::Bool(true));
-                out.push(if ok { newv.clone() } else { v.clone() });
-            }
-            Value::Seq(Seq::from_vec(out))
-        }
-
-        "replace_first" => {
-            if args.len() != 3 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
-            }
-            let s    = want_str(&args[0], "replace_first")?;
-            let from = want_str(&args[1], "replace_first")?;
-            let to   = want_str(&args[2], "replace_first")?;
-            if from.is_empty() {
-                Value::Str(s)
-            } else if let Some(pos) = s.find(&from) {
-                let mut out = String::with_capacity(s.len());
-                out.push_str(&s[..pos]);
-                out.push_str(&to);
-                out.push_str(&s[pos + from.len()..]);
-                Value::Str(out)
-            } else {
-                Value::Str(s)
-            }
-        }
-
-        "replace_at" => {
-            if args.len() != 3 {
-                return Err(rt("A0402",
-                    format!("wrong number of arguments: expected 3, got {}", args.len()),
-                    sp.clone()));
-            }
-            // xs
-            let xs_slice: &[Value] = match &args[0] {
-                Value::Array(v) => v.as_slice(),
-                Value::Seq(s)   => s.as_slice().unwrap_or_else(|| &[]),
-                _ => return Err(rt("T0401", "replace_at expects an array", sp.clone())),
-            };
-            // i
-            let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract() == 0.0 => *n as usize,
-                _ => return Err(rt("T0201", "replace_at index must be a non-negative integer", sp.clone())),
-            };
-            if idx >= xs_slice.len() {
-                return Err(rt("R0402", "replace_at index out of bounds", sp.clone()));
-            }
-            // build new vec
-            let mut out = xs_slice.to_vec();
-            out[idx] = args[2].clone();
-            Value::Seq(Seq::from_vec(out))
-        }
-
-        "remove" => {
-            if args.len() != 2 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone()));
-            }
-            let s   = want_str(&args[0], "remove")?;
-            let sub = want_str(&args[1], "remove")?;
-            if sub.is_empty() {
-                Value::Str(s)
-            } else {
-                Value::Str(s.replace(&sub, ""))
-            }
-        }
-
-        "remove_at" => {
-            if args.len() != 2 {
-                return Err(rt("A0402",
-                    format!("wrong number of arguments: expected 2, got {}", args.len()),
-                    sp.clone()));
-            }
-            let xs_slice: &[Value] = match &args[0] {
-                Value::Array(v) => v.as_slice(),
-                Value::Seq(s)   => s.as_slice().unwrap_or_else(|| &[]),
-                _ => return Err(rt("T0401", "remove_at expects an array", sp.clone())),
-            };
-            let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract() == 0.0 => *n as usize,
-                _ => return Err(rt("T0201", "remove_at index must be a non-negative integer", sp.clone())),
-            };
-            if idx >= xs_slice.len() {
-                return Err(rt("R0402", "remove_at index out of bounds", sp.clone()));
-            }
-            let mut out = Vec::with_capacity(xs_slice.len().saturating_sub(1));
-            let mut removed = Value::Nil;
-            for (i, v) in xs_slice.iter().enumerate() {
-                if i == idx { removed = v.clone(); } else { out.push(v.clone()); }
-            }
-            Value::Pair(Box::new(removed), Box::new(Value::Seq(Seq::from_vec(out))))
-        }
-
-        "remove_where" => {
-            if args.len() != 2 {
-                return Err(rt("A0402",
-                    format!("wrong number of arguments: expected 2, got {}", args.len()),
-                    sp.clone()));
-            }
-            let xs_slice: &[Value] = match &args[0] {
-                Value::Array(v) => v.as_slice(),
-                Value::Seq(s)   => s.as_slice().unwrap_or_else(|| &[]),
-                _ => return Err(rt("T0401", "remove_where expects an array", sp.clone())),
-            };
-            let pred = match &args[1] { Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205","remove_where expects a predicate action name (string)", sp.clone())) };
-
-            let mut kept = Vec::with_capacity(xs_slice.len());
-            let mut removed = Vec::new();
-            for v in xs_slice {
-                let keep = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                if matches!(keep, Value::Bool(true)) {
-                    removed.push(v.clone());
-                } else {
-                    kept.push(v.clone());
-                }
-            }
-            let mut m = std::collections::BTreeMap::new();
-            m.insert("removed".into(), Value::Array(removed));
-            m.insert("seq".into(), Value::Seq(Seq::from_vec(kept)));
-            Value::Map(m)
-        }
-
-        "usurp_where" => {
-            if args.len() != 3 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 3, got {}", args.len()), sp.clone()));
-            }
-            let xs_view = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "usurp_where expects an array", sp.clone()))?;
-            let pred = match &args[1] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205", "usurp_where expects the predicate action name as a string", sp.clone())),
-            };
-            let withv = args[2].clone();
-
-            // returns only the (old,new) pairs that actually changed
-            let mut audit: Vec<Value> = Vec::new();
-            for v in xs_view.iter() {
-                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                if want_bool(&ok_v, "usurp_where predicate")? {
-                    audit.push(Value::Pair(Box::new(v.clone()), Box::new(withv.clone())));
-                }
-            }
-            Value::Array(audit)
-        },
-
-        "usurp_at" => {
-            if args.len() != 3 {
-                return Err(rt("A0402",
-                    format!("wrong number of arguments: expected 3, got {}", args.len()),
-                    sp.clone()));
-            }
-            let xs_slice: &[Value] = match &args[0] {
-                Value::Array(v) => v.as_slice(),
-                Value::Seq(s)   => s.as_slice().unwrap_or_else(|| &[]),
-                _ => return Err(rt("T0401", "usurp_at expects an array", sp.clone())),
-            };
-            let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract() == 0.0 => *n as usize,
-                _ => return Err(rt("T0201", "usurp_at index must be a non-negative integer", sp.clone())),
-            };
-            if idx >= xs_slice.len() {
-                return Err(rt("R0402", "usurp_at index out of bounds", sp.clone()));
-            }
-            let mut out = xs_slice.to_vec();
-            let old = out[idx].clone();
-            out[idx] = args[2].clone();
-            Value::Pair(Box::new(Value::from(old)), Box::new(Value::Seq(Seq::from_vec(out))))
-        }
 
         // ===== Slice / extract =====
         "before" => {
@@ -2220,9 +2480,11 @@ fn call_action_by_name(
             Value::Array(s.split_whitespace().map(|t| Value::Str(t.to_string())).collect())
         }
         "chars" => {
-            if args.len() != 1 { return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone())); }
+            // chars(string) -> Array<Char>
+            if args.len() != 1 { return Err(rt("A0402",
+                format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone())); }
             let s = want_str(&args[0], "chars")?;
-            Value::Array(s.chars().map(|c| Value::Str(c.to_string())).collect())
+            Value::Array(s.chars().map(Value::Char).collect())
         }
         "split" => { // split by separator (string)
             if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
@@ -2234,19 +2496,22 @@ fn call_action_by_name(
                 Value::Array(s.split(&sep).map(|t| Value::Str(t.to_string())).collect())
             }
         }
-        "join" => { // join array of strings with sep
-            if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
-            let xs = as_array_like(&args[0])
-                .ok_or_else(|| rt("T0401", "join expects an array", sp.clone()))?;
+        "join" => {
+            arity(2)?;
+            let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401", "join expects an array/seq", sp.clone()))?;
             let sep = want_str(&args[1], "join")?;
             let mut out = String::new();
             for (i, v) in xs.iter().enumerate() {
-                let s = match v { Value::Str(s) => s.clone(), _ => return Err(rt("T0205", "join expects array of strings", sp.clone())) };
+                let piece = match v {
+                    Value::Str(s)  => s.clone(),
+                    Value::Char(c) => c.to_string(),           // NEW
+                    _ => return Err(rt("T0205", "join expects array of strings/chars", sp.clone())),
+                };
                 if i > 0 { out.push_str(&sep); }
-                out.push_str(&s);
+                out.push_str(&piece);
             }
             Value::Str(out)
-        },
+        }
 
         // ===== Other transforms =====
         "reverse" => {
@@ -2264,7 +2529,7 @@ fn call_action_by_name(
             arity(1)?;
             map_str_1(&args[0], "reverse_chars", &|s| s.chars().rev().collect())?
         }
-        
+
         "minimize" => {
             arity(1)?;
             let f = |s: &str| {
@@ -2352,6 +2617,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 Ok(Value::Str(s.clone()))
             }
         }
+        ast::Expr::Char(c, _sp) => Ok(Value::Char(*c)),
         ast::Expr::Ident(name, sp) => {
             match sess.get_var(name) {
                 Some(v) => Ok(v.clone()),

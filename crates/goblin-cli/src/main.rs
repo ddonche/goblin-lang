@@ -30,7 +30,20 @@ struct TestCase {
     dir_mode_hint: Option<Mode>,
 }
 
+#[cfg(windows)]
+fn enable_utf8_console() {
+    use windows::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+    unsafe {
+        // Ignore return values; if the OS refuses, we still run.
+        let _ = SetConsoleCP(65001);
+        let _ = SetConsoleOutputCP(65001);
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+        enable_utf8_console();
+
     let mut args = env::args().skip(1).collect::<Vec<_>>();
 
     // REPL when no args
@@ -493,6 +506,7 @@ fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
         TokenKind::Action => ExpectTok::Kind("ACTION".into()),
         TokenKind::Float => ExpectTok::Kind("FLOAT".into()),
         TokenKind::String => ExpectTok::Kind("STRING".into()),
+        TokenKind::Char     => ExpectTok::Kind("char".into()),
         TokenKind::Money => ExpectTok::Kind("MONEY".into()),
         TokenKind::Newline => ExpectTok::Kind("NEWLINE".into()),
         TokenKind::Indent => ExpectTok::Kind("INDENT".into()),
@@ -681,7 +695,6 @@ fn repl_banner() -> &'static str {
 fn run_repl() -> i32 {
     use std::io::{self, Write};
     use goblin_interpreter::Session;
-    use goblin_lexer::{lex, TokenKind};
     use goblin_parser::Parser;
     use goblin_ast as ast;
 
@@ -807,15 +820,23 @@ fn run_repl() -> i32 {
 
         // Evaluate every top-level statement (expressions *and* declarations).
         for stmt in &module.items {
-            match sess.eval_stmt(stmt) {
-                Ok(Some(val)) => {
-                    let echo = format!("{}", val);
-                    if !echo.is_empty() {
-                        println!("{}", echo);
+            match stmt {
+                // Expressions: push to history via eval_expr
+                ast::Stmt::Expr(e) => match sess.eval_expr(e) {
+                    Ok(val) => {
+                        let echo = format!("{val}");
+                        if !echo.is_empty() { println!("{echo}"); }
+                    }
+                    Err(d) => { eprintln!("{d}"); break; }
+                },
+
+                // Decls (act/action/class): let the interpreter register them
+                _ => {
+                    if let Err(d) = sess.eval_stmt(stmt) {
+                        eprintln!("{d}");
+                        break;
                     }
                 }
-                Ok(None) => {}              // declarations (act/action/class) don't echo
-                Err(d) => { eprintln!("{}", d); break; }
             }
         }
 

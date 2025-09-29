@@ -10,6 +10,8 @@ goblin-parser = { path = "../goblin-parser" }
 goblin-gql = { path = "../goblin-gql" }
 goblin-interpreter = { path = "../goblin-interpreter" }
 goblin-ast = { path = "../goblin-ast" }
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.54", features = ["Win32_System_Console"] }
 
 [[bin]]
 name = "goblin"               # <— this is the installed executable name

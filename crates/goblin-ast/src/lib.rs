@@ -58,6 +58,7 @@ pub enum Expr {
     Bool(bool, Span),
     Number(String, Span),    // raw text as produced by lexer/parser (e.g., "10", "3.14")
     Str(String, Span),
+    Char(char, Span),
     Ident(String, Span),
 
     // Collections & objects

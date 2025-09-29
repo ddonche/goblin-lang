@@ -16,6 +16,7 @@ enum PExpr {
     Binary(Box<PExpr>, String, Box<PExpr>),
     Bool(bool),
     Call(Box<PExpr>, String, Vec<PExpr>),
+    Char(char),
     Float(String),
     FloatWithUnit(String, String),
     FreeCall(String, Vec<PExpr>),
@@ -693,7 +694,7 @@ impl<'t> Parser<'t> {
 
             // harmless leaves in your PExpr
             Ident(_) | Int(_) | Float(_) | IntWithUnit(_,_) | FloatWithUnit(_,_)
-            | Bool(_) | Nil | Str(_) | BlobStr(_) | BlobNum(_) | Date(_) | Time(_) | DateTime { .. } => true,
+            | Bool(_) | Nil | Str(_) | Char(_) | BlobStr(_) | BlobNum(_) | Date(_) | Time(_) | DateTime { .. } => true,
 
             // conservative default for constructs that shouldn't appear in keys
             ClassDecl { .. } => false,
@@ -1157,6 +1158,7 @@ impl<'t> Parser<'t> {
             | PExpr::FloatWithUnit(s, _) => ast::Expr::Number(s, sp),
             PExpr::Bool(b) => ast::Expr::Bool(b, sp),
             PExpr::Str(s) => ast::Expr::Str(s, sp),
+            PExpr::Char(c) => ast::Expr::Char(c, sp),
             PExpr::Nil => ast::Expr::Nil(sp),
 
             // Collections
@@ -3521,7 +3523,7 @@ impl<'t> Parser<'t> {
                 // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
                 // Allow: upper "x", lower "x", title "x", slug "x", mixed "x"
                 fn is_no_parens_freecall(name: &str) -> bool {
-                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed" | "reverse_chars"
+                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed" | "reverse_chars" | "count"
                         | "trim" | "trim_lead" | "trim_trail" | "lines" | "words" | "chars" | "reverse" | "minimize" | "parse_bool")
                 }
 
@@ -3647,6 +3649,23 @@ impl<'t> Parser<'t> {
         };
 
         let expr = match kind {
+            TokenKind::Char => {
+                // The lexer put exactly one Unicode scalar in `val_opt` (e.g., "a", "\n", "😀")
+                let s = val_opt.as_deref().unwrap_or("");
+                let mut it = s.chars();
+                let ch = if let (Some(c), None) = (it.next(), it.next()) {
+                    c
+                } else {
+                    return Err(s_help(
+                        "P0214",
+                        "Invalid char literal payload from lexer",
+                        "This should be exactly one Unicode character like 'a', '\\n', or '😀'.",
+                    ));
+                };
+                self.i += 1;
+                PExpr::Char(ch)
+            }
+
             // MONEY
             TokenKind::Money => {
                 let lit = val_opt.unwrap_or_default();
