@@ -28,6 +28,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use goblin_ast as ast;
 use goblin_diagnostics::Span;
+use serde_json as sj;
 
 // ===================== Public API =====================
 
@@ -451,6 +452,56 @@ fn want_char(v: &Value, label: &str, sp: Span) -> Result<char, Diag> {
         _ => Err(rt("T0205", format!("{label} expects a char"), sp)),
     }
 }
+
+// ---------- Value <-> JSON ----------
+fn to_json(v: &Value) -> sj::Value {
+    match v {
+        Value::Num(n)     => sj::Value::Number(sj::Number::from_f64(*n).unwrap_or_else(|| sj::Number::from_f64(0.0).unwrap())),
+        Value::Str(s)     => sj::Value::String(s.clone()),
+        Value::Char(c)    => sj::Value::String(c.to_string()),
+        Value::Bool(b)    => sj::Value::Bool(*b),
+        Value::Nil | Value::Unit => sj::Value::Null,
+        Value::Array(xs)  => sj::Value::Array(xs.iter().map(to_json).collect()),
+        Value::Map(m)     => {
+            let mut obj = serde_json::Map::with_capacity(m.len());
+            for (k, v) in m { obj.insert(k.clone(), to_json(v)); }
+            sj::Value::Object(obj)
+        }
+        Value::Seq(seq)   => {
+            // If you have a real iterator/flattening, use it. Otherwise minimal fallback:
+            // Represent Seq by its Debug string (safe placeholder).
+            sj::Value::String(format!("{:?}", seq))
+        }
+        Value::CtrlSkip | Value::CtrlStop => sj::Value::Null, // control markers should not appear in JSON
+        Value::Pair(a, b) => {
+            sj::Value::Array(vec![to_json(a), to_json(b)])
+        }
+    }
+}
+
+// Keep it infallible to match the call sites below.
+// If you prefer a Result, we can flip the callers to handle errors.
+fn from_json(v: &sj::Value) -> Value {
+    match v {
+        sj::Value::Null        => Value::Nil,
+        sj::Value::Bool(b)     => Value::Bool(*b),
+        sj::Value::Number(n)   => {
+            if let Some(i) = n.as_i64() { Value::Num(i as f64) }
+            else if let Some(f) = n.as_f64() { Value::Num(f) }
+            else { Value::Num(0.0) }
+        }
+        sj::Value::String(s)   => Value::Str(s.clone()),
+        sj::Value::Array(xs)   => Value::Array(xs.iter().map(from_json).collect()),
+        sj::Value::Object(obj) => {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in obj {
+                m.insert(k.clone(), from_json(v));
+            }
+            Value::Map(m)
+        }
+    }
+}
+
 // --- String-as-collection helpers (Unicode scalar semantics) ---
 fn char_len(s: &str) -> usize { s.chars().count() }
 
@@ -757,10 +808,10 @@ fn eval_builtin(
         }
     };
 
-    let want_str = |v: &Value, label: &str, at: &Span| -> Result<String, Diag> {
+    let want_str = |v: &Value, label: &str| -> Result<String, Diag> {
         match v {
             Value::Str(s) => Ok(s.clone()),
-            _ => Err(rt("T0205", format!("{label} expects a string"), at.clone())),
+            other => Err(rt("J0000", format!("{label} expects a string, got {}", fmt_value_raw(other)), sp.clone())),
         }
     };
 
@@ -852,17 +903,20 @@ fn eval_builtin(
         // ---------- String case & transforms ----------
         "upper" => {
             arity(1)?;
-            let s = want_str(&args[0], "upper", &sp)?;
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "upper")?;
             Value::Str(s.to_uppercase())
         }
         "lower" => {
             arity(1)?;
-            let s = want_str(&args[0], "lower", &sp)?;
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "lower")?;
             Value::Str(s.to_lowercase())
         }
         "title" => {
             arity(1)?;
-            let s = want_str(&args[0], "title", &sp)?;
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "title")?;
             let mut out = String::with_capacity(s.len());
             for (i, w) in s.split_whitespace().enumerate() {
                 if i > 0 { out.push(' '); }
@@ -877,7 +931,8 @@ fn eval_builtin(
         }
         "slug" => {
             arity(1)?;
-            let s = want_str(&args[0], "slug", &sp)?;
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "slug")?;
             let mut out = String::with_capacity(s.len());
             let mut last_dash = false;
             for ch in s.chars() {
@@ -893,7 +948,8 @@ fn eval_builtin(
         }
         "mixed" => {
             arity(1)?;
-            let s = want_str(&args[0], "mixed", &sp)?;
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "mixed")?;
             let mut out = String::with_capacity(s.len());
             for ch in s.chars() {
                 if ch.is_alphabetic() {
@@ -1541,7 +1597,7 @@ fn call_action_by_name(
             };
 
             // === produce the detail map ===
-            let detail_out: Value = if (adv || dis) {
+            let detail_out: Value = if adv || dis {
                 // two rolls, choose one
                 let a = roll_one(sides);
                 let b = roll_one(sides);
@@ -2598,6 +2654,64 @@ fn call_action_by_name(
                 }
                 _ => return Err(rt("T0401", "metrics expects a collection", sp.clone())),
             }
+        }
+
+        // ----- JSON -----
+        "json_parse" => {
+            arity(1)?;
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "json_parse")?;
+            let vj: sj::Value = sj::from_str(&s)
+                .map_err(|e| rt("J0001", format!("json parse failed: {e}"), sp.clone()))?;
+            from_json(&vj)
+        }
+        "json_stringify" => {
+            arity(1)?;
+            let v0 = args[0].clone();
+            let s = sj::to_string(&to_json(&v0))
+                .map_err(|e| rt("J0002", format!("json stringify failed: {e}"), sp.clone()))?;
+            Value::Str(s)
+        }
+        "json_stringify_pretty" => {
+            arity(1)?;
+            let v0 = args[0].clone();
+            let s = sj::to_string_pretty(&to_json(&v0))
+                .map_err(|e| rt("J0002", format!("json stringify failed: {e}"), sp.clone()))?;
+            Value::Str(s)
+        }
+        "read_json" => {
+            arity(1)?;
+            let vpath = args[0].clone();
+            let path  = want_str(&vpath, "read_json path")?;
+            let txt   = std::fs::read_to_string(&path)
+                .map_err(|e| rt("J0003", format!("read_json: {e}"), sp.clone()))?;
+            let vj: sj::Value = sj::from_str(&txt)
+                .map_err(|e| rt("J0001", format!("json parse failed: {e}"), sp.clone()))?;
+            from_json(&vj)
+        }
+        "write_json!" => {
+            // write_json!(path, value, pretty=false)
+            if args.len() < 2 || args.len() > 3 {
+                return Err(rt("A0402", format!("write_json! expects 2 or 3 args, got {}", args.len()), sp.clone()));
+            }
+            let vpath = args[0].clone();
+            let vval   = args[1].clone();
+            let pretty = if args.len() == 3 {
+                let vpretty = args[2].clone();
+                as_bool(vpretty, sp.clone(), "write_json! pretty")?
+            } else { false };
+
+            let j = to_json(&vval);
+            let out = if pretty {
+                sj::to_string_pretty(&j)
+            } else {
+                sj::to_string(&j)
+            }.map_err(|e| rt("J0002", format!("json stringify failed: {e}"), sp.clone()))?;
+
+            let path = want_str(&vpath, "write_json! path")?;
+            std::fs::write(&path, out)
+                .map_err(|e| rt("J0004", format!("write_json!: {e}"), sp.clone()))?;
+            Value::Unit
         }
 
         // ----- Unknown -----

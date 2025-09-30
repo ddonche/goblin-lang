@@ -12,6 +12,7 @@ goblin-interpreter = { path = "../goblin-interpreter" }
 goblin-ast = { path = "../goblin-ast" }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features = ["Win32_System_Console"] }
+tempfile = "3"
 
 [[bin]]
 name = "goblin"               # <— this is the installed executable name
