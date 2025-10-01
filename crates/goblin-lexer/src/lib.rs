@@ -21,6 +21,7 @@ pub enum TokenKind {
     Float,
     String,
     Char,
+    Shadow,
     Newline,
     Indent,
     Dedent,
@@ -60,6 +61,10 @@ impl Token {
 
     fn simple_op(op: String, span: Span) -> Self {
         Self::new(TokenKind::Op(op), span, None)
+    }
+
+    pub fn shadow(span: Span) -> Self {
+        Token { kind: TokenKind::Shadow, span, value: None }
     }
 }
 
@@ -1750,7 +1755,11 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance_by(2);
-                state.tokens.push(Token::operator("[=".to_string(), state.span(start_i, start_col)));
+                let span = state.span(start_i, start_col);
+                // If you added the helper:
+                state.tokens.push(Token::shadow(span));
+                // Otherwise:
+                // state.tokens.push(Token { kind: TokenKind::Shadow, span, value: None });
             }
             b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' => {
                 let start_i = state.i;

@@ -1860,6 +1860,67 @@ impl<'t> Parser<'t> {
         }
     }
 
+    // === BEGIN: parse_bind_stmt ================================================
+    fn parse_bind_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+
+        // 1) Optional 'imm'
+        let is_const = if self.peek_word("imm") {
+            let _ = self.eat_word("imm");
+            true
+        } else {
+            false
+        };
+
+        // 2) IDENT (capture span + text)
+        let (name_text, name_span) = {
+            let Some(t) = self.peek().cloned() else {
+                return Err(s_help("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
+            };
+            match t.kind {
+                TokenKind::Ident => {
+                    let text = t.value.clone().unwrap_or_default();
+                    self.i += 1; // consume ident
+                    (text, t.span)
+                }
+                _ => {
+                    return Err(s_help("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
+                }
+            }
+        };
+
+        // 3) Operator: '=' (Normal) or '[=' (Shadow)
+        let (mode, op_span) = if self.peek_op("=") {
+            let sp = self.peek().unwrap().span.clone();
+            let _ = self.eat_op("=");
+            (ast::BindMode::Normal, sp)
+        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow)) {
+            let sp = self.peek().unwrap().span.clone();
+            self.i += 1; // consume the Shadow token
+            (ast::BindMode::Shadow, sp)
+        } else {
+            return Err(s_help(
+                "P0402",
+                &format!("Expected '=' or '[=' after '{}'", name_text),
+                "Use '=' for a normal assign, or '[=' (shadow) to declare+init in the current scope.",
+            ));
+        };
+
+        // 4) RHS expression (no nested assignment on RHS)
+        let rhs_pe = self.parse_coalesce()?;
+        let rhs = self.lower_expr(rhs_pe);
+
+        // 5) Build Stmt::Bind
+        Ok(ast::Stmt::Bind(ast::BindStmt {
+            name: (name_text, name_span),
+            expr: rhs,
+            is_const,
+            mode,
+            span: op_span,
+        }))
+    }
+    // === END: parse_bind_stmt ==================================================
+
     #[inline]
     fn peek_word(&self, want: &str) -> bool {
         use goblin_lexer::TokenKind;
@@ -3253,6 +3314,34 @@ impl<'t> Parser<'t> {
             }
         }
 
+        // -------- explicit bind/shadow/imm dispatch --------
+        // Forms:
+        //   imm IDENT (=|[=) expr
+        //   IDENT (=|[=) expr
+        if self.peek_word("imm") {
+            // Lookahead: imm IDENT (=|[=)
+            if let (Some(t1), Some(t2)) = (self.toks.get(self.i + 1), self.toks.get(self.i + 2)) {
+                let is_ident = matches!(t1.kind, TokenKind::Ident);
+                let is_eq_or_shadow =
+                    matches!(t2.kind, TokenKind::Op(ref s) if s == "=")
+                    || matches!(t2.kind, TokenKind::Shadow);
+                if is_ident && is_eq_or_shadow {
+                    return self.parse_bind_stmt();
+                }
+            }
+        }
+        if let Some(t0) = self.peek() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                if let Some(t1) = self.toks.get(self.i + 1) {
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "=")
+                        || matches!(t1.kind, TokenKind::Shadow)
+                    {
+                        return self.parse_bind_stmt();
+                    }
+                }
+            }
+        }
+
         // -------- default: expression/assignment statement --------
         let was = self.in_stmt;
         self.in_stmt = true;
@@ -4314,7 +4403,7 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_unary(&mut self) -> Result<PExpr, String> {
-        use goblin_lexer::TokenKind;
+        // use goblin_lexer::TokenKind;
         // unary definedness: &LValue (right-assoc, same tier as other prefix ops)
         if self.eat_op("&") {
             // allow newline(s) after '&'
@@ -4878,16 +4967,25 @@ impl<'t> Parser<'t> {
                     let t = match self.peek().cloned() { Some(t) => t, None => break };
                     if !contiguous(last_span.as_ref().unwrap(), &t.span) { break; }
                     match (t.kind, t.value.clone()) {
-                        (TokenKind::Op(s), _) => {
-                            if s == "!" {
+                        // match only the bang op here
+                        (TokenKind::Op(s), _) if s == "!" => {
+                            self.i += 1;
+                            explode = true;
+                            last_span = Some(t.span.clone());
+                            continue;
+                        },
+
+                        // keep your existing 'unit' trailer arm as-is
+                        (TokenKind::Op(op), Some(raw)) => {
+                            if op.as_str() == "unit" {
+                                parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
                                 self.i += 1;
-                                explode = true;
                                 last_span = Some(t.span.clone());
                                 continue;
                             } else {
                                 break;
                             }
-                        }
+                        },
                         (TokenKind::Ident, Some(raw)) => {
                             parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
                             self.i += 1;

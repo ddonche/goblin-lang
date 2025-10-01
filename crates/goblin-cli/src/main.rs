@@ -507,6 +507,7 @@ fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
         TokenKind::Float => ExpectTok::Kind("FLOAT".into()),
         TokenKind::String => ExpectTok::Kind("STRING".into()),
         TokenKind::Char     => ExpectTok::Kind("char".into()),
+        TokenKind::Shadow => ExpectTok::Op("[=".into()),
         TokenKind::Money => ExpectTok::Kind("MONEY".into()),
         TokenKind::Newline => ExpectTok::Kind("NEWLINE".into()),
         TokenKind::Indent => ExpectTok::Kind("INDENT".into()),
@@ -897,7 +898,7 @@ fn run_run(path: &std::path::Path) -> i32 {
     //    - print value only if non-empty (so `say` prints once, and `Unit` doesn't add a blank line)
     let mut sess = Session::new();
     for stmt in &module.items {
-        if let goblin_ast::Stmt::Expr(e) = stmt {
+        if let goblin_ast::Stmt::Expr(_e) = stmt {
             match sess.eval_module(&module) {
                 Ok(Some(val)) => {
                     let echo = format!("{}", val);

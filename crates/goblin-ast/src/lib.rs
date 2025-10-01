@@ -1,9 +1,26 @@
 //! Abstract Syntax Tree (AST) for Goblin — aligned to the current parser.
 use goblin_diagnostics::Span;
 
+pub type Ident = (String, Span);
+
 #[derive(Debug, Clone)]
 pub struct Module {
     pub items: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindMode {
+    Normal, // '='  (smart declare/mutate; shadowing with '=' is forbidden)
+    Shadow, // '[=' (shadow operator: always birth a new local in this scope)
+}
+
+#[derive(Debug, Clone)]
+pub struct BindStmt {
+    pub name: Ident,
+    pub expr: Expr,
+    pub is_const: bool,   // true if preceded by 'imm'
+    pub mode: BindMode,   // Normal or Shadow
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -11,6 +28,7 @@ pub enum Stmt {
     Expr(Expr),
     Class(ClassDecl),
     Action(ActionDecl),
+    Bind(BindStmt),
 }
 
 #[derive(Debug, Clone)]

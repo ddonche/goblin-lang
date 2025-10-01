@@ -29,6 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use goblin_ast as ast;
 use goblin_diagnostics::Span;
 use serde_json as sj;
+use goblin_ast::BindMode;
 
 // ===================== Public API =====================
 
@@ -311,7 +312,8 @@ pub struct Session {
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
     pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
     pub loop_depth: i32,
-    rng_state: u128, 
+    rng_state: u128,
+    pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding 
 }
 
 impl Session {
@@ -324,6 +326,7 @@ impl Session {
             actions: BTreeMap::new(),
             loop_depth: 0,
             rng_state: seed,
+            consts: vec![BTreeMap::new()],
         }
 
     }
@@ -352,8 +355,15 @@ impl Session {
     }
 
     // --- scope helpers ---
-    fn push_frame(&mut self) { self.env.push(BTreeMap::new()); }
-    fn pop_frame(&mut self) { let _ = self.env.pop(); }
+    // --- scope helpers ---
+    fn push_frame(&mut self) {
+        self.env.push(BTreeMap::new());
+        self.consts.push(BTreeMap::new()); // mirror
+    }
+    fn pop_frame(&mut self) {
+        let _ = self.env.pop();
+        let _ = self.consts.pop(); // mirror
+    }
 
     pub fn get_var(&self, name: &str) -> Option<&Value> {
         for frame in self.env.iter().rev() {
@@ -365,6 +375,30 @@ impl Session {
         if let Some(top) = self.env.last_mut() {
             top.insert(name, val);
         }
+    }
+
+    // Define a local in the current frame
+    fn define_local(&mut self, name: String, val: Value, is_const: bool) {
+        let top = self.env.last_mut().expect("has frame");
+        top.insert(name.clone(), val);
+        let tc = self.consts.last_mut().expect("has frame");
+        tc.insert(name, is_const);
+    }
+
+    // Find the nearest frame index containing `name` (0 = globals, len-1 = current)
+    fn find_name_frame(&self, name: &str) -> Option<usize> {
+        for (i, frame) in self.env.iter().enumerate().rev() {
+            if frame.contains_key(name) { return Some(i); }
+        }
+        None
+    }
+
+    // Is binding immutable in frame i?
+    fn is_const_in_frame(&self, frame_ix: usize, name: &str) -> bool {
+        self.consts
+            .get(frame_ix)
+            .and_then(|m| m.get(name).copied())
+            .unwrap_or(false)
     }
 
     pub fn eval_stmt(&mut self, s: &ast::Stmt) -> Result<Option<Value>, Diag> {
@@ -752,13 +786,71 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
     match s {
         ast::Stmt::Expr(e) => Ok(Some(eval_expr(e, sess)?)),
 
-        // Register free action declarations at load/run time (Stage 4+).
         ast::Stmt::Action(decl) => {
             sess.actions.insert(decl.name.clone(), decl.clone());
             Ok(None)
         }
 
-        // Classes are later; ignore gracefully for now.
+        ast::Stmt::Bind(b) => {
+            // name + span
+            let (name, name_span) = (&b.name.0, b.name.1.clone());
+
+            // evaluate RHS once
+            let rhs = eval_expr(&b.expr, sess)?;
+
+            match b.mode {
+                BindMode::Shadow => {
+                    // Always create a new local in the *current* frame.
+                    // Error if this frame already has the name.
+                    let cur = sess.env.len() - 1;
+                    if sess.env[cur].contains_key(name) {
+                        return Err(rt(
+                            "R0111",
+                            format!("'{}' is already declared in this scope; use '=' to reassign", name),
+                            name_span,
+                        ));
+                    }
+                    // record constness
+                    sess.define_local(name.clone(), rhs, b.is_const);
+                    Ok(None)
+                }
+
+                BindMode::Normal => {
+                    match sess.find_name_frame(name) {
+                        // Name exists *in current frame* → mutate (unless immutable)
+                        Some(ix) if ix == sess.env.len() - 1 => {
+                            if sess.is_const_in_frame(ix, name) {
+                                return Err(rt(
+                                    "R0113",
+                                    format!("cannot reassign immutable '{}'", name),
+                                    name_span,
+                                ));
+                            }
+                            if let Some(slot) = sess.env[ix].get_mut(name) {
+                                *slot = rhs;
+                                Ok(None)
+                            } else {
+                                Err(rt("R0009", "internal: slot missing during assign", name_span))
+                            }
+                        }
+
+                        // Name exists only in an *outer* frame → ERROR (no accidental shadowing)
+                        Some(_outer_ix) => Err(rt(
+                            "R0114",
+                            format!("'{}' exists in an outer scope; use '[=' to shadow", name),
+                            name_span,
+                        )),
+
+                        // Name not found anywhere → smart-declare local (respect imm)
+                        None => {
+                            sess.define_local(name.clone(), rhs, b.is_const);
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+        }
+
         ast::Stmt::Class(_c) => Ok(None),
     }
 }
