@@ -1202,6 +1202,28 @@ fn call_action_by_name(
             let bound = sess.find_name_frame(&name).is_some();
             Value::Bool(bound)
         }
+
+        // ----- Introspection -----
+        "type" => {
+            arity(1)?;
+            let kind = match &args[0] {
+                Value::Nil                         => "nil",
+                Value::Bool(_)                     => "bool",
+                Value::Num(n) if n.is_finite()
+                                  && n.fract() == 0.0 => "int",
+                Value::Num(_)                      => "float",
+                Value::Str(_)                      => "str",
+                Value::Char(_)                     => "char",
+                Value::Array(_)                    => "array",
+                Value::Map(_)                      => "map",
+                Value::Pair(_, _)                  => "pair",
+                Value::Seq(_)                      => "seq",
+                Value::Unit                        => "unit",
+                Value::CtrlSkip | Value::CtrlStop  => "control",
+            };
+            Value::Str(kind.to_string())
+        }
+
         // ----- Numeric -----
         "round" => { arity(1)?; Value::Num(want_num(&args[0], "round")?.round()) }
         "floor" => { arity(1)?; Value::Num(want_num(&args[0], "floor")?.floor()) }
@@ -3331,8 +3353,30 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
+            // Special-case: <expr>.type   (no args) — decide from AST text for number literals
+            if name == "type" && args.is_empty() {
+                let classify_from_ast = match &**base {
+                    // Number literal: use raw text to distinguish 4 vs 4.0
+                    ast::Expr::Number(text, _) => {
+                        if text.contains('.') || text.contains('e') || text.contains('E') { "float" } else { "int" }
+                    }
+                    // Other literal-ish forms we can answer without evaluating:
+                    ast::Expr::Str(_, _)    => "str",
+                    ast::Expr::Char(_, _)   => "char",
+                    ast::Expr::Bool(_, _)   => "bool",
+                    ast::Expr::Nil(_)       => "nil",
+                    ast::Expr::Array(_, _)  => "array",
+                    ast::Expr::Object(_, _) => "map",
+                    _ => {
+                        // Fallback: evaluate then call the existing builtin
+                        let recv = eval_expr(base, sess)?;
+                        return call_action_by_name(sess, "type", vec![recv], sp.clone());
+                    }
+                };
+                return Ok(Value::Str(classify_from_ast.to_string()));
+            }
+
             if name.ends_with('!') {
-                // receiver must be an Ident
                 let recv_ident = match &**base {
                     ast::Expr::Ident(n, _) => Some(n.as_str()),
                     other => {
@@ -3343,7 +3387,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 };
                 return mutate_via_call_name(sess, name, recv_ident, args, sp.clone());
             }
-            // existing receiver-call path:
+
+            // existing receiver-call path
             let recv = eval_expr(base, sess)?;
             let mut argv = Vec::with_capacity(args.len() + 1);
             argv.push(recv);
@@ -3352,11 +3397,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
 
         ast::Expr::OptCall(base, name, args, sp) => {
-            // nil-propagation on receiver
-            let recv = eval_expr(base, sess)?;
-            if matches!(recv, Value::Nil) {
-                return Ok(Value::Nil);
+            // Support ?.type (nil-propagating)
+            if name == "type" && args.is_empty() {
+                // If syntactically `nil`, short-circuit to nil
+                if matches!(&**base, ast::Expr::Nil(_)) { return Ok(Value::Nil); }
+
+                // Otherwise evaluate; nil still short-circuits
+                let recv = eval_expr(base, sess)?;
+                if matches!(recv, Value::Nil) { return Ok(Value::Nil); }
+
+                // For non-nil, reuse the existing builtin classification
+                return call_action_by_name(sess, "type", vec![recv], sp.clone());
             }
+
+            // normal optional-call path
+            let recv = eval_expr(base, sess)?;
+            if matches!(recv, Value::Nil) { return Ok(Value::Nil); }
             let mut argv: Vec<Value> = Vec::with_capacity(args.len() + 1);
             argv.push(recv);
             for a in args { argv.push(eval_expr(a, sess)?); }
