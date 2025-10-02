@@ -1229,6 +1229,113 @@ fn call_action_by_name(
             Value::Str(kind.to_string())
         }
 
+        "format" => {
+            // Usage: num.format(spec)
+            if args.len() != 2 {
+                return Err(rt(
+                    "A0402",
+                    format!("wrong number of arguments: expected 2, got {}", args.len()),
+                    sp.clone(),
+                ));
+            }
+
+            // 1) Pull receiver number and spec string
+            let n = match &args[0] {
+                Value::Num(x) => *x,
+                Value::Pct(p) => *p, // allow formatting pct as raw 0..1 if someone does (p * 100).format(...)
+                _ => return Err(rt("T0201", "format receiver must be a number", sp.clone())),
+            };
+            let mut spec = match &args[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(rt("T0205", "format spec must be a string", sp.clone())),
+            };
+
+            // 2) Handle NaN/±Inf plainly (commas don’t make sense)
+            if !n.is_finite() {
+                return Ok(Value::Str(format!("{}", n)));
+            }
+
+            // Helpers
+            fn add_commas(mut s: String) -> String {
+                // preserve sign
+                let mut sign = "";
+                if s.starts_with('-') {
+                    sign = "-";
+                    s.remove(0);
+                }
+                // split integer/frac
+                let (int_part, frac_part) = match s.find('.') {
+                    Some(ix) => (&s[..ix], &s[ix+1..]),
+                    None => (s.as_str(), ""),
+                };
+
+                // insert commas in int_part
+                let mut out_int = String::new();
+                let bytes = int_part.as_bytes();
+                let len = bytes.len();
+                for i in 0..len {
+                    out_int.push(bytes[i] as char);
+                    let left = len - 1 - i;
+                    if left > 0 && left % 3 == 0 {
+                        out_int.push(',');
+                    }
+                }
+
+                if frac_part.is_empty() {
+                    format!("{sign}{out_int}")
+                } else {
+                    format!("{sign}{out_int}.{}", frac_part)
+                }
+            }
+
+            // 3) Parse the mini-spec
+            // Supported:
+            //   ","          -> thousands separators
+            //   ".Nf"        -> fixed N decimals
+            //   ",.Nf"       -> commas + fixed N decimals
+            //   "e"          -> scientific (default precision)
+            //   ".Ne"        -> scientific with N decimals
+            let use_commas = spec.contains(',');
+            spec.retain(|c| c != ',');
+
+            let out = if spec.is_empty() {
+                // comma-only case: keep the raw numeric string (no FP trimming rules changed)
+                add_commas(format!("{}", n))
+            } else if spec == "e" {
+                format!("{:e}", n)
+            } else if let Some(rest) = spec.strip_prefix('.') {
+                // ".Nf" or ".Ne"
+                // split digits then suffix char
+                let mut digits = String::new();
+                let mut suffix = None;
+                for ch in rest.chars() {
+                    if ch.is_ascii_digit() { digits.push(ch); } else { suffix = Some(ch); break; }
+                }
+                let prec: usize = digits.parse().unwrap_or(0);
+                match suffix {
+                    Some('f') => {
+                        let s = format!("{:.*}", prec, n);        // exactly N decimals
+                        if use_commas { add_commas(s) } else { s }
+                    }
+                    Some('e') => {
+                        let s = format!("{:.*e}", prec, n);       // scientific with N decimals
+                        s
+                    }
+                    _ => {
+                        return Err(rt("P0901",
+                            "unsupported format: use ',', '.Nf', ',.Nf', 'e', or '.Ne'",
+                            sp.clone()));
+                    }
+                }
+            } else {
+                return Err(rt("P0901",
+                    "unsupported format: use ',', '.Nf', ',.Nf', 'e', or '.Ne'",
+                    sp.clone()));
+            };
+
+            Value::Str(out)
+        }
+
         // ----- Numeric -----
         "round" => { arity(1)?; Value::Num(want_num(&args[0], "round")?.round()) }
         "floor" => { arity(1)?; Value::Num(want_num(&args[0], "floor")?.floor()) }
