@@ -1230,7 +1230,13 @@ fn call_action_by_name(
         }
 
         "format" => {
-            // Usage: num.format(spec)
+            // Numeric formatting ONLY.
+            // Usage:
+            //   num.format(2)        -> round to 2 decimals (keeps numeric type)
+            //   num.format(".2f")    -> legacy: same as above
+            //   num.format(",.2f")   -> same (commas ignored)
+            // Any other spec -> no-op (return receiver unchanged)
+
             if args.len() != 2 {
                 return Err(rt(
                     "A0402",
@@ -1239,101 +1245,60 @@ fn call_action_by_name(
                 ));
             }
 
-            // 1) Pull receiver number and spec string
-            let n = match &args[0] {
-                Value::Num(x) => *x,
-                Value::Pct(p) => *p, // allow formatting pct as raw 0..1 if someone does (p * 100).format(...)
-                _ => return Err(rt("T0201", "format receiver must be a number", sp.clone())),
-            };
-            let mut spec = match &args[1] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205", "format spec must be a string", sp.clone())),
-            };
-
-            // 2) Handle NaN/±Inf plainly (commas don’t make sense)
-            if !n.is_finite() {
-                return Ok(Value::Str(format!("{}", n)));
-            }
-
-            // Helpers
-            fn add_commas(mut s: String) -> String {
-                // preserve sign
-                let mut sign = "";
-                if s.starts_with('-') {
-                    sign = "-";
-                    s.remove(0);
-                }
-                // split integer/frac
-                let (int_part, frac_part) = match s.find('.') {
-                    Some(ix) => (&s[..ix], &s[ix+1..]),
-                    None => (s.as_str(), ""),
-                };
-
-                // insert commas in int_part
-                let mut out_int = String::new();
-                let bytes = int_part.as_bytes();
-                let len = bytes.len();
-                for i in 0..len {
-                    out_int.push(bytes[i] as char);
-                    let left = len - 1 - i;
-                    if left > 0 && left % 3 == 0 {
-                        out_int.push(',');
+            // Parse precision from either integer or string (".Nf" or ",.Nf")
+            let parse_prec_from_str = |s: &str| -> Option<i32> {
+                // strip commas
+                let mut spec = s.replace(',', "");
+                if let Some(rest) = spec.strip_prefix('.') {
+                    // parse digits until a non-digit (expecting trailing 'f')
+                    let mut digits = String::new();
+                    let mut suffix = None;
+                    for ch in rest.chars() {
+                        if ch.is_ascii_digit() { digits.push(ch); }
+                        else { suffix = Some(ch); break; }
                     }
-                }
-
-                if frac_part.is_empty() {
-                    format!("{sign}{out_int}")
+                    match suffix {
+                        Some('f') => digits.parse::<i32>().ok(),
+                        // ".N" with no 'f' → accept anyway
+                        None if !digits.is_empty() => digits.parse::<i32>().ok(),
+                        _ => None,
+                    }
                 } else {
-                    format!("{sign}{out_int}.{}", frac_part)
+                    None
                 }
-            }
-
-            // 3) Parse the mini-spec
-            // Supported:
-            //   ","          -> thousands separators
-            //   ".Nf"        -> fixed N decimals
-            //   ",.Nf"       -> commas + fixed N decimals
-            //   "e"          -> scientific (default precision)
-            //   ".Ne"        -> scientific with N decimals
-            let use_commas = spec.contains(',');
-            spec.retain(|c| c != ',');
-
-            let out = if spec.is_empty() {
-                // comma-only case: keep the raw numeric string (no FP trimming rules changed)
-                add_commas(format!("{}", n))
-            } else if spec == "e" {
-                format!("{:e}", n)
-            } else if let Some(rest) = spec.strip_prefix('.') {
-                // ".Nf" or ".Ne"
-                // split digits then suffix char
-                let mut digits = String::new();
-                let mut suffix = None;
-                for ch in rest.chars() {
-                    if ch.is_ascii_digit() { digits.push(ch); } else { suffix = Some(ch); break; }
-                }
-                let prec: usize = digits.parse().unwrap_or(0);
-                match suffix {
-                    Some('f') => {
-                        let s = format!("{:.*}", prec, n);        // exactly N decimals
-                        if use_commas { add_commas(s) } else { s }
-                    }
-                    Some('e') => {
-                        let s = format!("{:.*e}", prec, n);       // scientific with N decimals
-                        s
-                    }
-                    _ => {
-                        return Err(rt("P0901",
-                            "unsupported format: use ',', '.Nf', ',.Nf', 'e', or '.Ne'",
-                            sp.clone()));
-                    }
-                }
-            } else {
-                return Err(rt("P0901",
-                    "unsupported format: use ',', '.Nf', ',.Nf', 'e', or '.Ne'",
-                    sp.clone()));
             };
 
-            Value::Str(out)
+            let prec_opt: Option<i32> = match &args[1] {
+                // preferred: integer precision argument (no quotes)
+                Value::Num(x) => {
+                    if !x.is_finite() { None } else {
+                        let n = *x as i32;
+                        // require integer-ish
+                        if (*x - (n as f64)).abs() <= 0.0 && n >= 0 { Some(n) } else { None }
+                    }
+                }
+                // legacy strings
+                Value::Str(s) => parse_prec_from_str(s),
+                _ => None,
+            };
+
+            // helper: round half away from zero to N decimal places
+            fn round_to(n: f64, places: i32) -> f64 {
+                if !n.is_finite() { return n; }
+                if places <= 0 { return n.round(); }
+                let p = places.min(308);
+                let f = 10f64.powi(p);
+                (n * f).round() / f
+            }
+
+            // If we parsed a precision, shape numerically; otherwise NO-OP (return receiver unchanged)
+            match (&args[0], prec_opt) {
+                (Value::Num(x), Some(p)) => Value::Num(round_to(*x, p)),
+                (Value::Pct(pv), Some(p)) => Value::Pct(round_to(*pv, p)),
+                // When you add Big/Int variants, mirror quantize/round and return same variant.
+                (v @ Value::Num(_), None) | (v @ Value::Pct(_), None) => v.clone(),
+                _ => return Err(rt("T0201", "format receiver must be a number", sp.clone())),
+            }
         }
 
         // ----- Numeric -----
