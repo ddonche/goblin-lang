@@ -192,6 +192,7 @@ pub enum Value {
     Str(String),
     Char(char),
     Bool(bool),
+    Pct(f64),
     Array(Vec<Value>),
     Map(BTreeMap<String, Value>),
     Pair(Box<Value>, Box<Value>), // for >< (divmod)
@@ -242,6 +243,7 @@ impl fmt::Display for Value {
             Value::Num(x)  => write!(f, "{}", fmt_num_trim(*x)),
             Value::Str(s)  => f.write_str(&fmt_string_visible(s)),
             Value::Char(c) => f.write_str(&fmt_char_visible(*c)),
+            Value::Pct(p) => write!(f, "{}", fmt_num_trim(*p)),
             Value::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::Nil     => write!(f, "nil"),
 
@@ -493,6 +495,7 @@ fn to_json(v: &Value) -> sj::Value {
         Value::Num(n)     => sj::Value::Number(sj::Number::from_f64(*n).unwrap_or_else(|| sj::Number::from_f64(0.0).unwrap())),
         Value::Str(s)     => sj::Value::String(s.clone()),
         Value::Char(c)    => sj::Value::String(c.to_string()),
+        Value::Pct(p)    => sj::Value::Number(sj::Number::from_f64(*p).unwrap_or_else(|| sj::Number::from_f64(0.0).unwrap())),
         Value::Bool(b)    => sj::Value::Bool(*b),
         Value::Nil | Value::Unit => sj::Value::Null,
         Value::Array(xs)  => sj::Value::Array(xs.iter().map(to_json).collect()),
@@ -697,6 +700,7 @@ fn fmt_value_raw(v: &Value) -> String {
 fn as_num(v: Value, at: Span, label: &str) -> Result<f64, Diag> {
     match v {
         Value::Num(n) => Ok(n),
+        Value::Pct(p) => Ok(p),
         _ => Err(need_number(label, at)),
     }
 }
@@ -1212,6 +1216,7 @@ fn call_action_by_name(
                 Value::Num(n) if n.is_finite()
                                   && n.fract() == 0.0 => "int",
                 Value::Num(_)                      => "float",
+                Value::Pct(_)                      => "pct",
                 Value::Str(_)                      => "str",
                 Value::Char(_)                     => "char",
                 Value::Array(_)                    => "array",
@@ -3451,7 +3456,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Postfix(expr, op, sp) => {
             let v = eval_expr(expr, sess)?;
             match op.as_str() {
-                "%"  => Ok(Value::Num(as_num(v, span_of_expr(expr), "percent literal")? / 100.0)),
+                "%"  => {
+                    let n = as_num(v, span_of_expr(expr), "percent literal")?;
+                    Ok(Value::Pct(n / 100.0))     
+                }
                 "**" => Ok(Value::Num(as_num(v, span_of_expr(expr), "postfix square")?.powf(2.0))),
                 "//" => {
                     let n = as_num(v, span_of_expr(expr), "postfix sqrt")?;
@@ -3481,10 +3489,23 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "+" => {
                     let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    match (lv, rv) {
-                        (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a + b)),
+                    match (&lv, &rv) {
+                        // string + string → concat (keep as-is)
                         (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
-                        (a, b) => Err(rt("T0204", format!("'+' expects two numbers or two strings; got {a:?} and {b:?}"), sp.clone())),
+
+                        // if either side is a string (and the other isn’t), error (keep policy)
+                        (Value::Str(_), _) | (_, Value::Str(_)) => {
+                            Err(rt("T0204",
+                                "'+' expects two numbers or two strings; mix not allowed",
+                                sp.clone()))
+                        }
+
+                        // numeric path: accept Num and Pct on either/both sides
+                        _ => {
+                            let a = as_num(lv,  span_of_expr(lhs), "left of '+'")?;
+                            let b = as_num(rv,  span_of_expr(rhs), "right of '+'")?;
+                            Ok(Value::Num(a + b))
+                        }
                     }
                 }
                 "++" => {
@@ -3497,7 +3518,16 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                               else { format!("{ls} {rs}") };
                     Ok(Value::Str(out))
                 }
-                "-" => { let (a,b) = bin_nums(lhs, rhs, sess, "subtraction")?; Ok(Value::Num(a - b)) }
+                "-" => {
+                    let lv = eval_expr(lhs, sess)?;
+                    let rv = eval_expr(rhs, sess)?;
+                    if matches!(lv, Value::Str(_)) || matches!(rv, Value::Str(_)) {
+                        return Err(rt("T0204", "'-' expects two numbers", sp.clone()));
+                    }
+                    let a = as_num(lv, span_of_expr(lhs), "left of '-'")?;   // Num or Pct
+                    let b = as_num(rv, span_of_expr(rhs), "right of '-'")?;  // Num or Pct
+                    Ok(Value::Num(a - b))
+                }
                 "*" => { let (a,b) = bin_nums(lhs, rhs, sess, "multiplication")?; Ok(Value::Num(a * b)) }
                 "/" => {
                     let (a,b) = bin_nums(lhs, rhs, sess, "division")?;
@@ -3527,15 +3557,31 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                 // percent-of family
                 "of" => {
-                    let lv = eval_expr(lhs, sess)?;
-                    let rv = eval_expr(rhs, sess)?;
-                    let lnum = as_num(lv, span_of_expr(lhs), "'of' left")?;
-                    let rnum = as_num(rv, span_of_expr(rhs), "'of' right")?;
-                    Ok(Value::Num(lnum * rnum))
+                    // Back-compat: if left is a pct, do pct * right; otherwise multiply numbers.
+                    let lv  = eval_expr(lhs, sess)?;
+                    let rv  = eval_expr(rhs, sess)?;
+                    match lv {
+                        Value::Pct(p) => {
+                            let rnum = as_num(rv, span_of_expr(rhs), "'of' right")?;
+                            Ok(Value::Num(p * rnum))
+                        }
+                        _ => {
+                            let lnum = as_num(lv,  span_of_expr(lhs),  "'of' left")?;
+                            let rnum = as_num(rv,  span_of_expr(rhs),  "'of' right")?;
+                            Ok(Value::Num(lnum * rnum))
+                        }
+                    }
                 }
                 "%o" => {
-                    let (a,b) = bin_nums(lhs, rhs, sess, "percent-of-other")?;
-                    Ok(Value::Num((a / 100.0) * b))
+                    // Allow either a pct on the left OR a plain number "N" meaning "N%".
+                    let lv  = eval_expr(lhs, sess)?;
+                    let rv  = eval_expr(rhs, sess)?;
+                    let p = match lv {
+                        Value::Pct(p) => p,
+                        other         => as_num(other, span_of_expr(lhs), "percent-of-other")? / 100.0,
+                    };
+                    let b = as_num(rv, span_of_expr(rhs), "percent-of-other")?;
+                    Ok(Value::Num(p * b))
                 }
 
                 // comparisons (bool)
