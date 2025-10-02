@@ -710,7 +710,7 @@ fn run_repl() -> i32 {
     loop {
         // Primary prompt for a fresh form; continuation prompt inside a form.
         if buf.is_empty() {
-            print!("gbln({})>> ", n);
+            print!("gbln({}): ", n);
         } else {
             print!("...       ");
         }

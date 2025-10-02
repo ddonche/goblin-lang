@@ -1161,6 +1161,30 @@ impl<'t> Parser<'t> {
             PExpr::Char(c) => ast::Expr::Char(c, sp),
             PExpr::Nil => ast::Expr::Nil(sp),
 
+            PExpr::IsBound(inner) => {
+                // The postfix '?' is only produced after an identifier in this grammar,
+                // but we’ll be tolerant here.
+                match *inner {
+                    PExpr::Ident(name) => {
+                        // emit: FreeCall("is_bound_name", [Str(name)])
+                        ast::Expr::FreeCall(
+                            "is_bound_name".into(),
+                            vec![ast::Expr::Str(name, sp.clone())],
+                            sp,
+                        )
+                    }
+                    other => {
+                        // If ever produced on a non-ident (shouldn’t happen), stringify as a fallback.
+                        let text = format!("{:?}", other);
+                        ast::Expr::FreeCall(
+                            "is_bound_name".into(),
+                            vec![ast::Expr::Str(text, sp.clone())],
+                            sp,
+                        )
+                    }
+                }
+            }
+
             // Collections
             PExpr::Array(items) => {
                 let elems = items

@@ -1167,6 +1167,21 @@ fn call_action_by_name(
     };
 
     let out: Value = match name {
+        "is_bound_name" => {
+            // is_bound_name(name: string) -> bool
+            if args.len() != 1 {
+                return Err(rt("A0402",
+                    format!("wrong number of arguments: expected 1, got {}", args.len()),
+                    sp.clone()));
+            }
+            let v0 = args[0].clone();
+            let name = match v0 {
+                Value::Str(s) => s,
+                _ => return Err(rt("T0205", "is_bound_name expects a string (variable name)", sp.clone())),
+            };
+            let bound = sess.find_name_frame(&name).is_some();
+            Value::Bool(bound)
+        }
         // ----- Numeric -----
         "round" => { arity(1)?; Value::Num(want_num(&args[0], "round")?.round()) }
         "floor" => { arity(1)?; Value::Num(want_num(&args[0], "floor")?.floor()) }
@@ -3005,6 +3020,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 Some(v) => Ok(v.clone()),
                 None => Err(rt("R0110", format!("unknown identifier '{}'", name), sp.clone())),
             }
+        }
+
+        ast::Expr::NsCall(ns, name, _args, sp) => {
+            // Keep this explicit until Stage 4 adds namespaced call semantics.
+            return Err(rt(
+                "R0000",
+                format!("namespaced call '{}::{}' not implemented", ns, name),
+                sp.clone(),
+            ));
         }
 
         // Plain assignment (ident = expr)
