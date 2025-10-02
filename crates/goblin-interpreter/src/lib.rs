@@ -3489,24 +3489,21 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "+" => {
                     let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    match (&lv, &rv) {
-                        // string + string → concat (keep as-is)
-                        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
+                    return match (lv, rv) {
+                        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)), // only str+str concatenates
 
-                        // if either side is a string (and the other isn’t), error (keep policy)
-                        (Value::Str(_), _) | (_, Value::Str(_)) => {
-                            Err(rt("T0204",
-                                "'+' expects two numbers or two strings; mix not allowed",
-                                sp.clone()))
-                        }
+                        (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a + b)),
+                        (Value::Num(a), Value::Pct(b)) => Ok(Value::Num(a + b)),
+                        (Value::Pct(a), Value::Num(b)) => Ok(Value::Num(a + b)),
+                        (Value::Pct(a), Value::Pct(b)) => Ok(Value::Num(a + b)),
 
-                        // numeric path: accept Num and Pct on either/both sides
-                        _ => {
-                            let a = as_num(lv,  span_of_expr(lhs), "left of '+'")?;
-                            let b = as_num(rv,  span_of_expr(rhs), "right of '+'")?;
-                            Ok(Value::Num(a + b))
-                        }
-                    }
+                        (l, r) => Err(rt(
+                            "T0204",
+                            format!("'+' expects two numbers or two strings; got {} and {}",
+                                    fmt_value_raw(&l), fmt_value_raw(&r)),
+                            sp.clone(),
+                        )),
+                    };
                 }
                 "++" => {
                     let lv = eval_expr(lhs, sess)?;
@@ -3521,12 +3518,19 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "-" => {
                     let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    if matches!(lv, Value::Str(_)) || matches!(rv, Value::Str(_)) {
-                        return Err(rt("T0204", "'-' expects two numbers", sp.clone()));
-                    }
-                    let a = as_num(lv, span_of_expr(lhs), "left of '-'")?;   // Num or Pct
-                    let b = as_num(rv, span_of_expr(rhs), "right of '-'")?;  // Num or Pct
-                    Ok(Value::Num(a - b))
+                    return match (lv, rv) {
+                        (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a - b)),
+                        (Value::Num(a), Value::Pct(b)) => Ok(Value::Num(a - b)),
+                        (Value::Pct(a), Value::Num(b)) => Ok(Value::Num(a - b)),
+                        (Value::Pct(a), Value::Pct(b)) => Ok(Value::Num(a - b)),
+
+                        (l, r) => Err(rt(
+                            "T0204",
+                            format!("'-' expects two numbers; got {} and {}",
+                                    fmt_value_raw(&l), fmt_value_raw(&r)),
+                            sp.clone(),
+                        )),
+                    };
                 }
                 "*" => { let (a,b) = bin_nums(lhs, rhs, sess, "multiplication")?; Ok(Value::Num(a * b)) }
                 "/" => {

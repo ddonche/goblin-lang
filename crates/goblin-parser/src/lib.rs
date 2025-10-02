@@ -5293,7 +5293,7 @@ impl<'t> Parser<'t> {
                             K::Int | K::Float | K::Money | K::String | K::Duration
                             | K::Date | K::Time | K::DateTime
                             | K::Ident | K::AtIdent | K::HashIdent => true,
-                            K::Op(s) if s == "(" || s == "+" || s == "-" => true,
+                            K::Op(s) if s == "(" => true,
                             _ => false,
                         }
                     }
