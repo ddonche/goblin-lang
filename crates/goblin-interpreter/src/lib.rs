@@ -646,6 +646,8 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Member(_, _, sp)
         | ast::Expr::OptMember(_, _, sp)
         | ast::Expr::Index(_, _, sp)
+        | ast::Expr::Slice(_, _, _, sp)                
+        | ast::Expr::Slice3(_, _, _, _, sp)
         | ast::Expr::Call(_, _, _, sp)
         | ast::Expr::OptCall(_, _, _, sp)
         | ast::Expr::FreeCall(_, _, sp)
@@ -714,6 +716,24 @@ fn is_ident(name: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Convert a Value to a non-negative usize (for slice indices)
+fn want_usize_index(v: Value, label: &str, sp: Span) -> Result<usize, Diag> {
+    match v {
+        Value::Num(n) if n.is_finite() && n.fract() == 0.0 && n >= 0.0 => Ok(n as usize),
+        _ => Err(rt("T0201", format!("{label} must be a non-negative integer"), sp)),
+    }
+}
+
+/// Clamp (start, end) against a known length; make end-exclusive and non-negative
+fn clamp_range(mut start: isize, mut end: isize, len: usize) -> (usize, usize) {
+    let l = len as isize;
+    if start < 0 { start = 0; }
+    if end   < 0 { end = 0; }
+    if start > l { start = l; }
+    if end   > l { end   = l; }
+    (start as usize, end as usize)
 }
 
 /// Render "Hello {name}" by looking identifiers up in the Session env.
@@ -3078,6 +3098,114 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 _ => Err(rt("T0401", "indexing requires an array or map", span_of_expr(base))),
             }
         }
+
+        /// arr[start:end]  (strings or arrays)
+            ast::Expr::Slice(recv, start_opt, end_opt, sp) => {
+                let recv_v = eval_expr(recv, sess)?;
+                match recv_v {
+                    Value::Array(xs) => {
+                        let len = xs.len();
+                        let s_ix = if let Some(s) = start_opt {
+                            let sv = eval_expr(s, sess)?;
+                            want_usize_index(sv, "slice start", sp.clone())? as isize
+                        } else { 0 };
+                        let e_ix = if let Some(e) = end_opt {
+                            let ev = eval_expr(e, sess)?;
+                            want_usize_index(ev, "slice end", sp.clone())? as isize
+                        } else { len as isize };
+
+                        let (s, e) = clamp_range(s_ix, e_ix, len);
+                        if s >= e { return Ok(Value::Array(vec![])); }
+                        Ok(Value::Array(xs[s..e].to_vec()))
+                    }
+
+                    Value::Str(s) => {
+                        let len = char_len(&s);
+                        let s_ix = if let Some(st) = start_opt {
+                            let sv = eval_expr(st, sess)?;
+                            want_usize_index(sv, "slice start", sp.clone())? as isize
+                        } else { 0 };
+                        let e_ix = if let Some(en) = end_opt {
+                            let ev = eval_expr(en, sess)?;
+                            want_usize_index(ev, "slice end", sp.clone())? as isize
+                        } else { len as isize };
+
+                        let (s_i, e_i) = clamp_range(s_ix, e_ix, len);
+                        if s_i >= e_i { return Ok(Value::Str(String::new())); }
+
+                        let b0 = byte_ix_at_char(&s, s_i).unwrap();
+                        let b1 = byte_ix_at_char(&s, e_i).unwrap();
+                        Ok(Value::Str(s[b0..b1].to_string()))
+                    }
+
+                    _ => Err(rt("T0401", "slice expects an array or string", sp.clone())),
+                }
+            }
+
+            /// arr[start:end:step]  (step > 0 only, end-exclusive)
+            ast::Expr::Slice3(recv, start_opt, end_opt, step_opt, sp) => {
+                let recv_v = eval_expr(recv, sess)?;
+
+                /// evaluate indices (defaults)
+                let step_v: usize = if let Some(stp) = step_opt {
+                    let vv = eval_expr(stp, sess)?;
+                    let u = want_usize_index(vv, "slice step", sp.clone())?;
+                    if u == 0 { return Err(rt("T0201", "slice step must be a positive integer", sp.clone())); }
+                    u
+                } else { 1 };
+
+                match recv_v {
+                    Value::Array(xs) => {
+                        let len = xs.len();
+                        let s_ix = if let Some(s) = start_opt {
+                            let sv = eval_expr(s, sess)?;
+                            want_usize_index(sv, "slice start", sp.clone())? as isize
+                        } else { 0 };
+                        let e_ix = if let Some(e) = end_opt {
+                            let ev = eval_expr(e, sess)?;
+                            want_usize_index(ev, "slice end", sp.clone())? as isize
+                        } else { len as isize };
+
+                        let (s, e) = clamp_range(s_ix, e_ix, len);
+                        if s >= e { return Ok(Value::Array(vec![])); }
+
+                        let mut out = Vec::new();
+                        let mut i = s;
+                        while i < e {
+                            out.push(xs[i].clone());
+                            i = i.saturating_add(step_v);
+                        }
+                        Ok(Value::Array(out))
+                    }
+
+                    Value::Str(s) => {
+                        let len = char_len(&s);
+                        let s_ix = if let Some(st) = start_opt {
+                            let sv = eval_expr(st, sess)?;
+                            want_usize_index(sv, "slice start", sp.clone())? as isize
+                        } else { 0 };
+                        let e_ix = if let Some(en) = end_opt {
+                            let ev = eval_expr(en, sess)?;
+                            want_usize_index(ev, "slice end", sp.clone())? as isize
+                        } else { len as isize };
+
+                        let (s_i, e_i) = clamp_range(s_ix, e_ix, len);
+                        if s_i >= e_i { return Ok(Value::Str(String::new())); }
+
+                        /// Build by chars to honor Unicode scalars and step
+                        let mut out = String::new();
+                        let mut idx = s_i;
+                        while idx < e_i {
+                            let ch = slice_char(&s, idx).unwrap();   /// one-character string
+                            out.push_str(&ch);
+                            idx = idx.saturating_add(step_v);
+                        }
+                        Ok(Value::Str(out))
+                    }
+
+                    _ => Err(rt("T0401", "slice expects an array or string", sp.clone())),
+                }
+            }
 
         // ---- Member access on maps (syntax from parser; you’re not using dot in code, but handle it) ----
         ast::Expr::Member(base, name, sp) => {

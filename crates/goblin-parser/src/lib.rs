@@ -1282,6 +1282,26 @@ impl<'t> Parser<'t> {
                 )
             }
 
+            PExpr::Slice(recv, start, end) => {
+                let recv_e  = Box::new(Self::lower_expr_preview((*recv).clone(), sp.clone()));
+                let start_e = start.as_ref()
+                    .map(|x| Box::new(Self::lower_expr_preview((**x).clone(), sp.clone())));
+                let end_e   = end.as_ref()
+                    .map(|x| Box::new(Self::lower_expr_preview((**x).clone(), sp.clone())));
+                ast::Expr::Slice(recv_e, start_e, end_e, sp.clone())
+            }
+
+            PExpr::Slice3(recv, start, end, step) => {
+                let recv_e  = Box::new(Self::lower_expr_preview((*recv).clone(), sp.clone()));
+                let start_e = start.as_ref()
+                    .map(|x| Box::new(Self::lower_expr_preview((**x).clone(), sp.clone())));
+                let end_e   = end.as_ref()
+                    .map(|x| Box::new(Self::lower_expr_preview((**x).clone(), sp.clone())));
+                let step_e  = step.as_ref()
+                    .map(|x| Box::new(Self::lower_expr_preview((**x).clone(), sp.clone())));
+                ast::Expr::Slice3(recv_e, start_e, end_e, step_e, sp.clone())
+            }
+
             // Fallback for unimplemented constructs
             other => {
                 let txt = format!("{:?}", other);

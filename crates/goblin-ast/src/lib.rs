@@ -78,6 +78,8 @@ pub enum Expr {
     Str(String, Span),
     Char(char, Span),
     Ident(String, Span),
+    Slice(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>, Span),
+    Slice3(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>, Option<Box<Expr>>, Span),
 
     // Collections & objects
     Array(Vec<Expr>, Span),
