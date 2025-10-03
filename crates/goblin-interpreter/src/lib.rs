@@ -690,6 +690,40 @@ fn either_is_big(a: &Value, b: &Value) -> bool {
 }
 
 #[inline]
+fn is_int_like_num(v: &Value) -> Option<f64> {
+    match v {
+        Value::Num(n) if n.is_finite() && n.fract() == 0.0 => Some(*n),
+        Value::Pct(n) if n.is_finite() && n.fract() == 0.0 => Some(*n),
+        _ => None,
+    }
+}
+
+#[inline]
+fn promote_int_add_needed(a: f64, b: f64) -> bool {
+    let aa = a.abs();
+    let bb = b.abs();
+    let limit = F64_SAFE_INT_MAX as f64;
+    (aa >= limit && bb >= 1.0) || (bb >= limit && aa >= 1.0)
+}
+
+#[inline]
+fn promote_int_sub_needed(a: f64, b: f64) -> bool {
+    let aa = a.abs();
+    let bb = b.abs();
+    let limit = F64_SAFE_INT_MAX as f64;
+    (aa >= limit && bb >= 1.0) || (bb >= limit && aa >= 1.0)
+}
+
+#[inline]
+fn promote_int_mul_needed(a: f64, b: f64) -> bool {
+    let aa = a.abs();
+    let bb = b.abs();
+    if aa == 0.0 || bb == 0.0 { return false; }
+    // if product would exceed 2^53, integer precision is not guaranteed
+    bb > (F64_SAFE_INT_MAX as f64) / aa
+}
+
+#[inline]
 fn decimal_powi(mut base: Decimal, mut exp: i64) -> Result<Decimal, Diag> {
     use rust_decimal::Decimal;
     if exp == 0 { return Ok(Decimal::ONE); }
@@ -4117,9 +4151,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         let b = to_big_for_math(&ru, span_of_expr(rhs), "addition: right")?;
                         Value::Big(a + b)
                     } else {
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "addition: left")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "addition: right")?;
-                        Value::Num(a + b)
+                        // Safe-integer promotion around 2^53 for integer-like Nums
+                        if let (Some(la), Some(rb)) = (is_int_like_num(&lu), is_int_like_num(&ru)) {
+                            if promote_int_add_needed(la, rb) {
+                                let da = Decimal::from_f64(la).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(lhs)))?;
+                                let db = Decimal::from_f64(rb).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(rhs)))?;
+                                Value::Big(da + db)
+                            } else {
+                                let a = to_f64_for_math(&lu, span_of_expr(lhs), "addition: left")?;
+                                let b = to_f64_for_math(&ru, span_of_expr(rhs), "addition: right")?;
+                                Value::Num(a + b)
+                            }
+                        } else {
+                            let a = to_f64_for_math(&lu, span_of_expr(lhs), "addition: left")?;
+                            let b = to_f64_for_math(&ru, span_of_expr(rhs), "addition: right")?;
+                            Value::Num(a + b)
+                        }
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
@@ -4145,9 +4192,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         let b = to_big_for_math(&ru, span_of_expr(rhs), "subtraction: right")?;
                         Value::Big(a - b)
                     } else {
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "subtraction: left")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "subtraction: right")?;
-                        Value::Num(a - b)
+                        // Safe-integer promotion around 2^53 for integer-like Nums
+                        if let (Some(la), Some(rb)) = (is_int_like_num(&lu), is_int_like_num(&ru)) {
+                            if promote_int_sub_needed(la, rb) {
+                                let da = Decimal::from_f64(la).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(lhs)))?;
+                                let db = Decimal::from_f64(rb).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(rhs)))?;
+                                Value::Big(da - db)
+                            } else {
+                                let a = to_f64_for_math(&lu, span_of_expr(lhs), "subtraction: left")?;
+                                let b = to_f64_for_math(&ru, span_of_expr(rhs), "subtraction: right")?;
+                                Value::Num(a - b)
+                            }
+                        } else {
+                            let a = to_f64_for_math(&lu, span_of_expr(lhs), "subtraction: left")?;
+                            let b = to_f64_for_math(&ru, span_of_expr(rhs), "subtraction: right")?;
+                            Value::Num(a - b)
+                        }
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
@@ -4162,9 +4222,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         let b = to_big_for_math(&ru, span_of_expr(rhs), "multiplication: right")?;
                         Value::Big(a * b)
                     } else {
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "multiplication: left")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "multiplication: right")?;
-                        Value::Num(a * b)
+                        // Safe-integer promotion for integer-like Nums when product would exceed 2^53
+                        if let (Some(la), Some(rb)) = (is_int_like_num(&lu), is_int_like_num(&ru)) {
+                            if promote_int_mul_needed(la, rb) {
+                                let da = Decimal::from_f64(la).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(lhs)))?;
+                                let db = Decimal::from_f64(rb).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(rhs)))?;
+                                Value::Big(da * db)
+                            } else {
+                                let a = to_f64_for_math(&lu, span_of_expr(lhs), "multiplication: left")?;
+                                let b = to_f64_for_math(&ru, span_of_expr(rhs), "multiplication: right")?;
+                                Value::Num(a * b)
+                            }
+                        } else {
+                            let a = to_f64_for_math(&lu, span_of_expr(lhs), "multiplication: left")?;
+                            let b = to_f64_for_math(&ru, span_of_expr(rhs), "multiplication: right")?;
+                            Value::Num(a * b)
+                        }
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
