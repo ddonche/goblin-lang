@@ -32,6 +32,7 @@ use serde_json as sj;
 use goblin_ast::BindMode;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use std::str::FromStr;
 
 const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference 
 
@@ -165,13 +166,13 @@ impl Seq {
 
     pub fn metrics_map(&self) -> BTreeMap<String, Value> {
         let mut m = BTreeMap::new();
-        m.insert("len".into(), Value::Num(self.metrics.len as f64));
-        m.insert("ops_push_back".into(), Value::Num(self.metrics.ops_push_back as f64));
-        m.insert("ops_push_front".into(), Value::Num(self.metrics.ops_push_front as f64));
-        m.insert("ops_insert_idx".into(), Value::Num(self.metrics.ops_insert_idx as f64));
-        m.insert("ops_remove_idx".into(), Value::Num(self.metrics.ops_remove_idx as f64));
-        m.insert("ops_random_access".into(), Value::Num(self.metrics.ops_random_access as f64));
-        m.insert("transitions".into(), Value::Num(self.metrics.transitions as f64));
+        m.insert("len".into(), Value::Int(self.metrics.len as i64));
+        m.insert("ops_push_back".into(), Value::Int(self.metrics.ops_push_back as i64));
+        m.insert("ops_push_front".into(), Value::Int(self.metrics.ops_push_front as i64));
+        m.insert("ops_insert_idx".into(), Value::Int(self.metrics.ops_insert_idx as i64));
+        m.insert("ops_remove_idx".into(), Value::Int(self.metrics.ops_remove_idx as i64));
+        m.insert("ops_random_access".into(), Value::Int(self.metrics.ops_random_access as i64));
+        m.insert("transitions".into(), Value::Int(self.metrics.transitions as i64));
         m.insert("backend".into(), Value::Str(self.backend_name().into()));
         m
     }
@@ -192,7 +193,8 @@ impl<'a> SeqView<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    Num(f64),
+    Int(i64),
+    Float(f64),
     Big(Decimal),
     Str(String),
     Char(char),
@@ -260,19 +262,20 @@ impl fmt::Display for Value {
         // Render formatted numbers first (display metadata lives on Value::Formatted)
         if let Value::Formatted(inner, spec) = self {
             match &**inner {
-                Value::Num(x) => {
-                    if !x.is_finite() {
-                        return write!(f, "{x}");
-                    }
+                Value::Int(x) => {
+                    let canon = x.to_string();
+                    let out   = render_with_spec(&canon, spec);
+                    return write!(f, "{out}");
+                }
+                Value::Float(x) => {
+                    if !x.is_finite() { return write!(f, "{x}"); }
                     let rounded = round_to(*x, spec.decimals);
-                    let canon   = fmt_num_trim(rounded);        // canonical "1234567.89"
-                    let out     = render_with_spec(&canon, spec); // apply thousands + decimal marker
+                    let canon   = fmt_num_trim(rounded);
+                    let out     = render_with_spec(&canon, spec);
                     return write!(f, "{out}");
                 }
                 Value::Pct(p) => {
-                    if !p.is_finite() {
-                        return write!(f, "{p}");
-                    }
+                    if !p.is_finite() { return write!(f, "{p}"); }
                     let rounded = round_to(*p, spec.decimals);
                     let canon   = fmt_num_trim(rounded);
                     let out     = render_with_spec(&canon, spec);
@@ -285,7 +288,6 @@ impl fmt::Display for Value {
                     return write!(f, "{out}");
                 }
                 other => {
-                    // Non-numeric inner: delegate to its Display
                     return write!(f, "{other}");
                 }
             }
@@ -293,13 +295,14 @@ impl fmt::Display for Value {
 
         // Unformatted values (normal rendering)
         match self {
-            Value::Num(x)  => write!(f, "{}", fmt_num_trim(*x)),
-            Value::Str(s)  => f.write_str(&fmt_string_visible(s)),
-            Value::Char(c) => f.write_str(&fmt_char_visible(*c)),
-            Value::Pct(p)  => write!(f, "{}", fmt_num_trim(*p)),
-            Value::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
-            Value::Nil     => write!(f, "nil"),
-            Value::Big(d)  => write!(f, "{}", d),
+            Value::Int(x)   => write!(f, "{x}"),
+            Value::Float(x) => write!(f, "{}", fmt_num_trim(*x)),
+            Value::Pct(p)   => write!(f, "{}", fmt_num_trim(*p)),
+            Value::Str(s)   => f.write_str(&fmt_string_visible(s)),
+            Value::Char(c)  => f.write_str(&fmt_char_visible(*c)),
+            Value::Bool(b)  => write!(f, "{}", if *b { "true" } else { "false" }),
+            Value::Nil      => write!(f, "nil"),
+            Value::Big(d)   => write!(f, "{}", d),
 
             // ---- Array (single arm) ----
             Value::Array(xs) => {
@@ -574,50 +577,41 @@ fn want_char(v: &Value, label: &str, sp: Span) -> Result<char, Diag> {
 fn to_json(v: &Value) -> sj::Value {
     let v = if let Value::Formatted(inner, _) = v { &**inner } else { v };
     match v {
-        Value::Num(n)     => sj::Value::Number(sj::Number::from_f64(*n).unwrap_or_else(|| sj::Number::from_f64(0.0).unwrap())),
-        Value::Big(d)    => sj::Value::String(d.to_string()),
-        Value::Str(s)     => sj::Value::String(s.clone()),
-        Value::Char(c)    => sj::Value::String(c.to_string()),
-        Value::Pct(p)    => sj::Value::Number(sj::Number::from_f64(*p).unwrap_or_else(|| sj::Number::from_f64(0.0).unwrap())),
-        Value::Bool(b)    => sj::Value::Bool(*b),
-        Value::Nil | Value::Unit => sj::Value::Null,
-        Value::Array(xs)  => sj::Value::Array(xs.iter().map(to_json).collect()),
-        Value::Map(m)     => {
-            let mut obj = serde_json::Map::with_capacity(m.len());
+        Value::Int(i)      => sj::Value::Number(serde_json::Number::from(*i)),
+        Value::Float(n)    => sj::Value::Number(serde_json::Number::from_f64(*n).unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap())),
+        Value::Pct(p)      => sj::Value::Number(serde_json::Number::from_f64(*p).unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap())),
+        Value::Big(d)      => sj::Value::String(d.to_string()),
+        Value::Str(s)      => sj::Value::String(s.clone()),
+        Value::Char(c)     => sj::Value::String(c.to_string()),
+        Value::Bool(b)     => sj::Value::Bool(*b),
+        Value::Array(xs)   => sj::Value::Array(xs.iter().map(to_json).collect()),
+        Value::Map(m)      => {
+            let mut obj = serde_json::Map::new();
             for (k, v) in m { obj.insert(k.clone(), to_json(v)); }
             sj::Value::Object(obj)
         }
-        Value::Seq(seq)   => {
-            // If you have a real iterator/flattening, use it. Otherwise minimal fallback:
-            // Represent Seq by its Debug string (safe placeholder).
-            sj::Value::String(format!("{:?}", seq))
-        }
-        Value::CtrlSkip | Value::CtrlStop => sj::Value::Null, // control markers should not appear in JSON
-        Value::Pair(a, b) => {
-            sj::Value::Array(vec![to_json(a), to_json(b)])
-        }
-    _ => unreachable!("Value::Formatted should have been unwrapped here"),
+        Value::Pair(a, b)  => sj::Value::Array(vec![to_json(a), to_json(b)]),
+        Value::Seq(_s)     => sj::Value::String("<seq>".to_string()),
+        Value::Nil | Value::Unit => sj::Value::Null,
+        Value::CtrlSkip | Value::CtrlStop => sj::Value::String("control".to_string()),
+        Value::Formatted(_, _) => unreachable!("peeled above"),
     }
 }
 
-// Keep it infallible to match the call sites below.
-// If you prefer a Result, we can flip the callers to handle errors.
 fn from_json(v: &sj::Value) -> Value {
     match v {
         sj::Value::Null        => Value::Nil,
         sj::Value::Bool(b)     => Value::Bool(*b),
         sj::Value::Number(n)   => {
-            if let Some(i) = n.as_i64() { Value::Num(i as f64) }
-            else if let Some(f) = n.as_f64() { Value::Num(f) }
-            else { Value::Num(0.0) }
+            if let Some(i) = n.as_i64() { Value::Int(i) }
+            else if let Some(f) = n.as_f64() { Value::Float(f) }
+            else { Value::Float(0.0) }
         }
         sj::Value::String(s)   => Value::Str(s.clone()),
         sj::Value::Array(xs)   => Value::Array(xs.iter().map(from_json).collect()),
         sj::Value::Object(obj) => {
-            let mut m = std::collections::BTreeMap::new();
-            for (k, v) in obj {
-                m.insert(k.clone(), from_json(v));
-            }
+            let mut m = BTreeMap::new();
+            for (k, v) in obj { m.insert(k.clone(), from_json(v)); }
             Value::Map(m)
         }
     }
@@ -627,50 +621,177 @@ fn from_json(v: &sj::Value) -> Value {
 fn cast_to_big(v: Value) -> Result<Value, Diag> {
     match v {
         Value::Big(d) => Ok(Value::Big(d)),
-        Value::Num(f) | Value::Pct(f) => {
-            let d = Decimal::from_f64(f).ok_or_else(|| rt("T0310","nan/inf not representable as big", synth_span()))?;
+        Value::Int(i) => Ok(Value::Big(Decimal::from(i))),
+        Value::Float(f) | Value::Pct(f) => {
+            let d = Decimal::from_f64(f).ok_or_else(|| rt("T0312","big(): cannot represent float as decimal", synth_span()))?;
             Ok(Value::Big(d))
         }
         Value::Str(s) => {
-            let d = s.parse::<Decimal>().map_err(|_| rt("T0311","invalid decimal string", synth_span()))?;
+            let trimmed = s.trim();
+            if trimmed.ends_with('%') { return Err(rt("T0323","big(): use pct() for percent strings", synth_span())); }
+            let cleaned: String = trimmed.chars().filter(|&c| c != '_').collect();
+            let d = Decimal::from_str(&cleaned)
+                .map_err(|_| rt("T0324","big(): invalid numeric string".to_string(), synth_span()))?;
             Ok(Value::Big(d))
         }
         Value::Formatted(inner, _) => cast_to_big(*inner),
-        other => Err(rt("T0312", format!("cannot cast {:?} to big", other), synth_span())),
+        _ => Err(rt("T0312","big(): cannot cast value to big".to_string(), synth_span())),
     }
 }
 
 fn cast_to_float(v: Value) -> Result<Value, Diag> {
     match v {
-        Value::Num(f) => Ok(Value::Num(f)),
-        Value::Pct(f) => Ok(Value::Num(f)),
-        Value::Big(d) => {
-            let f = d.to_f64().ok_or_else(|| rt("T0313","overflow casting big->float", synth_span()))?;
-            Ok(Value::Num(f))
+        Value::Float(f) => Ok(Value::Float(f)),
+        Value::Pct(p)   => Ok(Value::Float(p)),
+        Value::Int(i)   => {
+            if (i64::MIN..i64::MAX).contains(&i) && (i.abs() as i128) < (F64_SAFE_INT_MAX as i128) {
+                Ok(Value::Float(i as f64))
+            } else {
+                Err(rt("T0313","float(): cannot cast int ≥ 2^53 without precision loss; keep it as big", synth_span()))
+            }
         }
-        other => Err(rt("T0314", format!("cannot cast {:?} to float", other), synth_span())),
+        Value::Big(d) => {
+            let t = d.trunc();
+            let is_integer = d == t;
+            if is_integer {
+                let mag_ok = d.abs().to_f64().map(|x| x < (F64_SAFE_INT_MAX as f64)).unwrap_or(false);
+                if !mag_ok {
+                    return Err(rt("T0313","float(): cannot cast big integer ≥ 2^53 without precision loss; keep it as big", synth_span()));
+                }
+                let f = t.to_f64().ok_or_else(|| rt("T0313","float(): overflow casting big->float", synth_span()))?;
+                Ok(Value::Float(f))
+            } else {
+                if let Some(f) = d.to_f64() { Ok(Value::Float(f)) }
+                else { Err(rt("T0313","float(): overflow casting big->float", synth_span())) }
+            }
+        }
+        Value::Str(s) => {
+            let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+            if cleaned.ends_with('%') {
+                return Err(rt("T0314","float(): use pct() for percent strings", synth_span()));
+            }
+            if let Ok(d) = Decimal::from_str(&cleaned) {
+                let t = d.trunc();
+                let is_integer = d == t;
+                if is_integer {
+                    let mag_ok = d.abs().to_f64().map(|x| x < (F64_SAFE_INT_MAX as f64)).unwrap_or(false);
+                    if !mag_ok { return Err(rt("T0313","float(): cannot cast big integer ≥ 2^53 without precision loss; keep it as big", synth_span())); }
+                    let f = t.to_f64().ok_or_else(|| rt("T0313","float(): overflow casting string->float", synth_span()))?;
+                    Ok(Value::Float(f))
+                } else {
+                    if let Some(f) = d.to_f64() { Ok(Value::Float(f)) }
+                    else { Err(rt("T0313","float(): overflow casting string->float", synth_span())) }
+                }
+            } else if let Ok(f) = cleaned.parse::<f64>() {
+                if f.is_finite() { Ok(Value::Float(f)) }
+                else { Err(rt("T0313","float(): overflow casting string->float", synth_span())) }
+            } else {
+                Err(rt("T0314", "float(): cannot cast string to float".to_string(), synth_span()))
+            }
+        }
+        other => Err(rt("T0314", format!("float(): cannot cast {} to float", value_kind_str(&other)), synth_span())),
     }
 }
 
 fn cast_to_int_like(v: Value) -> Result<Value, Diag> {
-    // Your language’s “int” is represented with f64 but with integer semantics.
-    // We truncate toward zero (match your postfix floor/ceil style as needed).
     match v {
-        Value::Num(f) => Ok(Value::Num(f.trunc())),
-        Value::Pct(f) => Ok(Value::Num(f.trunc())),
+        Value::Int(i) => Ok(Value::Int(i)),
+        Value::Float(f) | Value::Pct(f) => {
+            // truncate toward zero
+            let t = f.trunc();
+            if t.is_finite() && t.abs() < (i64::MAX as f64) + 1.0 {
+                Ok(Value::Int(t as i64))
+            } else {
+                // represent as Big truncated
+                let d = Decimal::from_f64(f).ok_or_else(|| rt("T0315","int(): cannot represent float as decimal", synth_span()))?;
+                Ok(Value::Big(d.trunc()))
+            }
+        }
         Value::Big(d) => {
             let t = d.trunc();
-            let f = t.to_f64().ok_or_else(|| rt("T0315","overflow casting big->int(float)", synth_span()))?;
-            Ok(Value::Num(f))
+            if let Some(i) = t.to_i64() {
+                Ok(Value::Int(i))
+            } else {
+                Ok(Value::Big(t))
+            }
         }
-        other => Err(rt("T0316", format!("cannot cast {:?} to int", other), synth_span())),
+        Value::Str(s) => {
+            let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+            let d = Decimal::from_str(&cleaned)
+                .map_err(|_| rt("T0316", "cannot cast string to int".to_string(), synth_span()))?;
+            let t = d.trunc();
+            if let Some(i) = t.to_i64() { Ok(Value::Int(i)) } else { Ok(Value::Big(t)) }
+        }
+        Value::Formatted(inner, _) => cast_to_int_like(*inner),
+        _ => Err(rt("T0316","cannot cast value to int".to_string(), synth_span())),
+    }
+}
+
+fn cast_to_str(v: Value) -> Result<Value, Diag> {
+    let s = match v {
+        Value::Str(s)                 => s,
+        Value::Char(c)                => c.to_string(),
+        Value::Float(f)               => fmt_num_trim(f),
+        Value::Pct(p)                 => fmt_num_trim(p),
+        Value::Big(d)                 => d.to_string(),
+        Value::Formatted(inner, _)    => return cast_to_str(*inner),
+        Value::Nil                    => "nil".to_string(),
+        Value::Bool(b)                => if b { "true".to_string() } else { "false".to_string() },
+        other                         => format!("{other}"),
+    };
+    Ok(Value::Str(s))
+}
+
+fn cast_to_pct(v: Value) -> Result<Value, Diag> {
+    let to_pct = |f: f64| -> Value { Value::Pct(f) };
+    match v {
+        Value::Pct(p)               => Ok(Value::Pct(p)),
+        Value::Float(f)             => Ok(to_pct(f)),
+        Value::Big(d)               => {
+            if let Some(f) = d.to_f64() { Ok(to_pct(f)) }
+            else { Err(rt("T0320","pct(): cannot cast big to pct (out of range)", synth_span())) }
+        }
+        Value::Str(s)               => {
+            let trimmed = s.trim();
+            let cleaned: String = trimmed.chars().filter(|&c| c != '_').collect();
+            if cleaned.ends_with('%') {
+                let num = cleaned[..cleaned.len()-1].trim();
+                if let Ok(d) = Decimal::from_str(num) {
+                    if let Some(f) = d.to_f64() { return Ok(to_pct(f / 100.0)); }
+                }
+                Err(rt("T0321", format!("pct(): invalid percent string '{}'", s), synth_span()))
+            } else {
+                if let Ok(d) = Decimal::from_str(&cleaned) {
+                    if let Some(f) = d.to_f64() { return Ok(to_pct(f)); }
+                }
+                Err(rt("T0321", format!("pct(): invalid numeric string '{}'", s), synth_span()))
+            }
+        }
+        Value::Formatted(inner, _)  => cast_to_pct(*inner),
+        _                           => Err(rt("T0322", "pct(): cannot cast value to pct".to_string(), synth_span())),
+    }
+}
+
+#[inline] fn int_checked_add(a: i64, b: i64) -> Option<i64> { a.checked_add(b) }
+#[inline] fn int_checked_sub(a: i64, b: i64) -> Option<i64> { a.checked_sub(b) }
+#[inline] fn int_checked_mul(a: i64, b: i64) -> Option<i64> { a.checked_mul(b) }
+
+#[inline]
+fn to_decimal(v: &Value) -> Result<rust_decimal::Decimal, Diag> {
+    use rust_decimal::Decimal;
+    match v {
+        Value::Int(i)     => Ok(Decimal::from(*i)),
+        Value::Float(f)   => Decimal::from_f64(*f).ok_or_else(|| rt("R0298","float->decimal failed", synth_span())),
+        Value::Pct(f)     => Decimal::from_f64(*f).ok_or_else(|| rt("R0298","pct->decimal failed", synth_span())),
+        Value::Big(d)     => Ok(d.clone()),
+        _ => Err(rt("R0200","numeric expected", synth_span())),
     }
 }
 
 fn to_big_for_math(v: &Value, at: Span, label: &str) -> Result<Decimal, Diag> {
     match v {
         Value::Big(d) => Ok(*d),
-        Value::Num(f) | Value::Pct(f) => Decimal::from_f64(*f)
+        Value::Float(f) | Value::Pct(f) => Decimal::from_f64(*f)
             .ok_or_else(|| rt("T0320", format!("{label}: nan/inf not representable as big"), at)),
         _ => Err(need_number(label, at)), // your existing numeric-type error
     }
@@ -678,49 +799,16 @@ fn to_big_for_math(v: &Value, at: Span, label: &str) -> Result<Decimal, Diag> {
 
 fn to_f64_for_math(v: &Value, at: Span, label: &str) -> Result<f64, Diag> {
     match v {
-        Value::Num(f) => Ok(*f),
-        Value::Pct(f) => Ok(*f),
-        Value::Big(d) => d.to_f64().ok_or_else(|| rt("T0321", format!("{label}: big overflow to float"), at)),
+        Value::Int(i)   => Ok(*i as f64),
+        Value::Float(f) => Ok(*f),
+        Value::Pct(f)   => Ok(*f),
+        Value::Big(d)   => d.to_f64().ok_or_else(|| rt("T0321", format!("{label}: big overflow to float"), at)),
         _ => Err(need_number(label, at)),
     }
 }
 
 fn either_is_big(a: &Value, b: &Value) -> bool {
     matches!(a, Value::Big(_)) || matches!(b, Value::Big(_))
-}
-
-#[inline]
-fn is_int_like_num(v: &Value) -> Option<f64> {
-    match v {
-        Value::Num(n) if n.is_finite() && n.fract() == 0.0 => Some(*n),
-        Value::Pct(n) if n.is_finite() && n.fract() == 0.0 => Some(*n),
-        _ => None,
-    }
-}
-
-#[inline]
-fn promote_int_add_needed(a: f64, b: f64) -> bool {
-    let aa = a.abs();
-    let bb = b.abs();
-    let limit = F64_SAFE_INT_MAX as f64;
-    (aa >= limit && bb >= 1.0) || (bb >= limit && aa >= 1.0)
-}
-
-#[inline]
-fn promote_int_sub_needed(a: f64, b: f64) -> bool {
-    let aa = a.abs();
-    let bb = b.abs();
-    let limit = F64_SAFE_INT_MAX as f64;
-    (aa >= limit && bb >= 1.0) || (bb >= limit && aa >= 1.0)
-}
-
-#[inline]
-fn promote_int_mul_needed(a: f64, b: f64) -> bool {
-    let aa = a.abs();
-    let bb = b.abs();
-    if aa == 0.0 || bb == 0.0 { return false; }
-    // if product would exceed 2^53, integer precision is not guaranteed
-    bb > (F64_SAFE_INT_MAX as f64) / aa
 }
 
 #[inline]
@@ -843,9 +931,26 @@ fn need_number(what: &str, span: Span) -> Diag {
     rt("T0201", format!("{what} expects a number"), span)
 }
 
-fn parse_num(text: &str, span: Span) -> Result<f64, Diag> {
+fn parse_number_value(text: &str, sp: Span) -> Result<Value, Diag> {
+    // allow underscores in literals
     let cleaned: String = text.chars().filter(|&c| c != '_').collect();
-    cleaned.parse::<f64>().map_err(|_| rt("P0301", format!("invalid number literal '{text}'"), span))
+    let has_float_syntax = cleaned.contains('.') || cleaned.contains('e') || cleaned.contains('E');
+
+    if has_float_syntax {
+        let f = cleaned.parse::<f64>()
+            .map_err(|_| rt("P0301", format!("invalid number literal '{text}'"), sp.clone()))?;
+        Ok(Value::Float(f))
+    } else {
+        // integer literal
+        if let Ok(i) = cleaned.parse::<i64>() {
+            Ok(Value::Int(i))
+        } else {
+            // too large for i64 → Big(Decimal)
+            let d = Decimal::from_str(&cleaned)
+                .map_err(|_| rt("P0301", format!("invalid number literal '{text}'"), sp.clone()))?;
+            Ok(Value::Big(d))
+        }
+    }
 }
 
 fn span_of_expr(e: &ast::Expr) -> Span {
@@ -946,12 +1051,17 @@ fn fmt_value_raw(v: &Value) -> String {
     match v {
         Value::Formatted(inner, spec) => {
             match &**inner {
-                Value::Num(x) => {
-                    if !x.is_finite() { format!("{x}") } else {
-                        let rounded = round_to(*x, spec.decimals);
-                        let canon = fmt_num_trim(rounded); // you already have fmt_num_trim
-                        render_with_spec(&canon, spec)
-                    }
+                Value::Int(x) => {
+                    let canon = x.to_string();
+                    let out   = render_with_spec(&canon, spec);
+                    return out;
+                }
+                Value::Float(x) => {
+                    if !x.is_finite() { return x.to_string(); }
+                    let rounded = round_to(*x, spec.decimals);
+                    let canon   = fmt_num_trim(rounded);
+                    let out     = render_with_spec(&canon, spec);
+                    return out;
                 }
                 Value::Pct(p) => {
                     if !p.is_finite() { format!("{p}") } else {
@@ -973,17 +1083,38 @@ fn fmt_value_raw(v: &Value) -> String {
 
         Value::Str(s)  => s.clone(),
         Value::Char(c) => c.to_string(),
-        Value::Num(n)  => fmt_num_trim(*n),
+        Value::Float(n)  => fmt_num_trim(*n),
+        Value::Int(i) => i.to_string(),
         Value::Bool(b) => if *b { "true".into() } else { "false".into() },
         Value::Nil     => "nil".into(),
         _ => format!("{}", v), // Array/Map/Pair/Seq -> use Display
     }
 }
 
+fn value_kind_str(v: &Value) -> &'static str {
+    match v {
+        Value::Nil                 => "nil",
+        Value::Bool(_)             => "bool",
+        Value::Int(_)              => "int",
+        Value::Float(_)            => "float",
+        Value::Pct(_)              => "pct",
+        Value::Big(_)              => "big",
+        Value::Str(_)              => "str",
+        Value::Char(_)             => "char",
+        Value::Array(_)            => "array",
+        Value::Map(_)              => "map",
+        Value::Pair(_, _)          => "pair",
+        Value::Seq(_)              => "seq",
+        Value::Unit                => "unit",
+        Value::CtrlSkip | Value::CtrlStop => "control",
+        Value::Formatted(_, _)     => "formatted",
+    }
+}
+
 fn as_num(v: Value, at: Span, label: &str) -> Result<f64, Diag> {
     match v {
         Value::Formatted(inner, _) => as_num(*inner, at, label), // unwrap recursively
-        Value::Num(n) => Ok(n),
+        Value::Float(n) => Ok(n),
         Value::Pct(p) => Ok(p),
         _ => Err(need_number(label, at)),
     }
@@ -1009,7 +1140,7 @@ fn is_ident(name: &str) -> bool {
 // Convert a Value to a non-negative usize (for slice indices)
 fn want_usize_index(v: Value, label: &str, sp: Span) -> Result<usize, Diag> {
     match v {
-        Value::Num(n) if n.is_finite() && n.fract() == 0.0 && n >= 0.0 => Ok(n as usize),
+        Value::Float(n) if n.is_finite() && n.fract() == 0.0 && n >= 0.0 => Ok(n as usize),
         _ => Err(rt("T0201", format!("{label} must be a non-negative integer"), sp)),
     }
 }
@@ -1203,7 +1334,7 @@ fn eval_builtin(
     };
     let want_num = |v: &Value, label: &str| -> Result<f64, Diag> {
         match v {
-            Value::Num(n) => Ok(*n),
+            Value::Float(n) => Ok(*n),
             _ => Err(need_number(label, sp.clone())),
         }
     };
@@ -1232,36 +1363,40 @@ fn eval_builtin(
         "round" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.round_dp(0)),
-                Value::Num(f) => Value::Num(f.round()),
-                Value::Pct(p) => Value::Num(p.round()),
+                Value::Big(d)   => Value::Big(d.round_dp(0)),
+                Value::Int(i)   => Value::Int(*i),
+                Value::Float(f) => Value::Float(f.round()),
+                Value::Pct(p)   => Value::Float(p.round()),
                 _ => return Err(rt("T0402", "round requires a number", sp.clone())),
             }
         }
         "floor" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.floor()),
-                Value::Num(f) => Value::Num(f.floor()),
-                Value::Pct(p) => Value::Num(p.floor()),
+                Value::Big(d)   => Value::Big(d.floor()),
+                Value::Int(i)   => Value::Int(*i),
+                Value::Float(f) => Value::Float(f.floor()),
+                Value::Pct(p)   => Value::Float(p.floor()),
                 _ => return Err(rt("T0402", "floor requires a number", sp.clone())),
             }
         }
         "ceil" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.ceil()),
-                Value::Num(f) => Value::Num(f.ceil()),
-                Value::Pct(p) => Value::Num(p.ceil()),
+                Value::Big(d)   => Value::Big(d.ceil()),
+                Value::Int(i)   => Value::Int(*i),
+                Value::Float(f) => Value::Float(f.ceil()),
+                Value::Pct(p)   => Value::Float(p.ceil()),
                 _ => return Err(rt("T0402", "ceil requires a number", sp.clone())),
             }
         }
         "abs" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.abs()),
-                Value::Num(f) => Value::Num(f.abs()),
-                Value::Pct(p) => Value::Num(p.abs()),
+                Value::Big(d)   => Value::Big(d.abs()),
+                Value::Int(i)   => Value::Int(i.abs()),
+                Value::Float(f) => Value::Float(f.abs()),
+                Value::Pct(p)   => Value::Float(p.abs()),
                 _ => return Err(rt("T0402", "abs requires a number", sp.clone())),
             }
         }
@@ -1280,15 +1415,15 @@ fn eval_builtin(
                         } else {
                             let bf = base.to_f64().ok_or_else(|| rt("R0204", "big base overflow to float", sp.clone()))?;
                             let ef = e.to_f64().ok_or_else(|| rt("R0205", "big exponent overflow to float", sp.clone()))?;
-                            Value::Num(bf.powf(ef))
+                            Value::Float(bf.powf(ef))
                         }
                     }
-                    Value::Num(f) | Value::Pct(f) => {
+                    Value::Float(f) | Value::Pct(f) => {
                         if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
                             Value::Big(decimal_powi(base, *f as i64)?)
                         } else {
                             let bf = base.to_f64().ok_or_else(|| rt("R0204", "big base overflow to float", sp.clone()))?;
-                            Value::Num(bf.powf(*f))
+                            Value::Float(bf.powf(*f))
                         }
                     }
                     _ => return Err(rt("T0402", "pow requires numeric exponent", sp.clone())),
@@ -1296,7 +1431,7 @@ fn eval_builtin(
             } else {
                 let a = to_f64_for_math(&args[0], sp.clone(), "pow (base)")?;
                 let b = to_f64_for_math(&args[1], sp.clone(), "pow (exponent)")?;
-                Value::Num(a.powf(b))
+                Value::Float(a.powf(b))
             }
         }
         "sqrt" => {
@@ -1307,12 +1442,12 @@ fn eval_builtin(
                         return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone()));
                     }
                     let f = d.to_f64().ok_or_else(|| rt("R0204", "big overflow to float for sqrt", sp.clone()))?;
-                    Value::Num(f.sqrt())
+                    Value::Float(f.sqrt())
                 }
                 _ => {
                     let n = to_f64_for_math(&args[0], sp.clone(), "sqrt")?;
                     if n < 0.0 { return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone())); }
-                    Value::Num(n.sqrt())
+                    Value::Float(n.sqrt())
                 }
             }
         }
@@ -1330,7 +1465,7 @@ fn eval_builtin(
                     } else {
                         let mut acc = 0.0;
                         for v in xs { acc += to_f64_for_math(v, sp.clone(), "sum")?; }
-                        Value::Num(acc)
+                        Value::Float(acc)
                     }
                 }
                 _ => return Err(rt("T0401", "sum expects an array of numbers", sp.clone())),
@@ -1341,7 +1476,7 @@ fn eval_builtin(
             arity(1)?;
             match &args[0] {
                 Value::Array(xs) => {
-                    if xs.is_empty() { Value::Num(0.0) } // maintain your old behavior
+                    if xs.is_empty() { Value::Float(0.0) } // maintain your old behavior
                     else {
                         let any_big = xs.iter().any(|v| matches!(v, Value::Big(_)));
                         if any_big {
@@ -1352,7 +1487,7 @@ fn eval_builtin(
                         } else {
                             let mut acc = 0.0;
                             for v in xs { acc += to_f64_for_math(v, sp.clone(), "avg")?; }
-                            Value::Num(acc / (xs.len() as f64))
+                            Value::Float(acc / (xs.len() as f64))
                         }
                     }
                 }
@@ -1381,7 +1516,7 @@ fn eval_builtin(
                             let fv = to_f64_for_math(v, sp.clone(), "min")?;
                             if fv < m { m = fv; }
                         }
-                        Value::Num(m)
+                        Value::Float(m)
                     }
                 }
                 _ => return Err(rt("T0401", "min expects an array of numbers", sp.clone())),
@@ -1408,7 +1543,7 @@ fn eval_builtin(
                             let fv = to_f64_for_math(v, sp.clone(), "max")?;
                             if fv > m { m = fv; }
                         }
-                        Value::Num(m)
+                        Value::Float(m)
                     }
                 }
                 _ => return Err(rt("T0401", "max expects an array of numbers", sp.clone())),
@@ -1551,7 +1686,7 @@ fn call_action_by_name(
     };
     let want_num = |v: &Value, label: &str| -> Result<f64, Diag> {
         match v {
-            Value::Num(n) => Ok(*n),
+            Value::Float(n) => Ok(*n),
             _ => Err(need_number(label, sp.clone())),
         }
     };
@@ -1617,10 +1752,11 @@ fn call_action_by_name(
             let kind = match recv {
                 Value::Nil                         => "nil",
                 Value::Bool(_)                     => "bool",
-                Value::Num(n) if n.is_finite()
+                Value::Float(n) if n.is_finite()
                                   && n.fract() == 0.0 => "int",
                 Value::Big(_)                      => "big",
-                Value::Num(_)                      => "float",
+                Value::Float(_)                    => "float",
+                Value::Int(_)                      => "int",
                 Value::Pct(_)                      => "pct",
                 Value::Str(_)                      => "str",
                 Value::Char(_)                     => "char",
@@ -1654,7 +1790,7 @@ fn call_action_by_name(
 
             // arg1: decimals
             let dec: u32 = match &args[1] {
-                Value::Num(x) => {
+                Value::Float(x) => {
                     if !x.is_finite() { 0 } else {
                         let n = *x as i64;
                         if (*x - n as f64).abs() > 0.0 || n < 0 {
@@ -1708,7 +1844,8 @@ fn call_action_by_name(
             }
 
             match inner {
-                Value::Num(x) => Value::Formatted(Box::new(Value::Num(x)), spec),
+                Value::Float(x) => Value::Formatted(Box::new(Value::Float(x)), spec),
+                Value::Int(i)   => Value::Formatted(Box::new(Value::Int(i)),   spec),
                 Value::Pct(p) => Value::Formatted(Box::new(Value::Pct(p)), spec),
                 Value::Big(d) => Value::Formatted(Box::new(Value::Big(d)), spec),
                 _ => return Err(rt("T0201", "format receiver must be a number", sp.clone())),
@@ -1732,7 +1869,7 @@ fn call_action_by_name(
             match &args[0] {
                 Value::Formatted(_, spec) => {
                     let mut m = BTreeMap::new();
-                    m.insert("dec".to_string(), Value::Num(spec.decimals as f64));
+                    m.insert("dec".to_string(), Value::Int(spec.decimals as i64));
                     let th = match spec.sep_thousands {
                         Some(',') => ",".to_string(),
                         Some('.') => ".".to_string(),
@@ -1752,23 +1889,31 @@ fn call_action_by_name(
 
         // ----- Numeric (methods) -----
         "int" | "i" => {
-            if args.len() != 1 { return Err(rt("A0402", ".int takes no extra args", sp.clone())); }
-            return Ok(cast_to_int_like(args[0].clone())?);
-        },
+            arity(1)?;
+            cast_to_int_like(args[0].clone())?
+        }
         "float" | "f" => {
-            if args.len() != 1 { return Err(rt("A0402", ".float takes no extra args", sp.clone())); }
-            return Ok(cast_to_float(args[0].clone())?);
-        },
+            arity(1)?;
+            cast_to_float(args[0].clone())?
+        }
         "big" | "b" => {
-            if args.len() != 1 { return Err(rt("A0402", ".big takes no extra args", sp.clone())); }
-            return Ok(cast_to_big(args[0].clone())?);
-        },
+            arity(1)?;
+            cast_to_big(args[0].clone())?
+        }
+        "str" | "string" => {
+            arity(1)?;
+            cast_to_str(args[0].clone())?
+        }
+        "pct" | "percent" => {
+            arity(1)?;
+            cast_to_pct(args[0].clone())?
+        }
         "round" => {
             arity(1)?;
             match &args[0] {
                 Value::Big(d) => Value::Big(d.round_dp(0)),
-                Value::Num(f) => Value::Num(f.round()),
-                Value::Pct(p) => Value::Num(p.round()),
+                Value::Float(f) => Value::Float(f.round()),
+                Value::Pct(p)   => Value::Float(p.round()),
                 _ => return Err(rt("T0402", "round requires a number", sp.clone())),
             }
         }
@@ -1776,8 +1921,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Big(d) => Value::Big(d.floor()),
-                Value::Num(f) => Value::Num(f.floor()),
-                Value::Pct(p) => Value::Num(p.floor()),
+                Value::Float(f) => Value::Float(f.round()),
+                Value::Pct(p)   => Value::Float(p.round()),
                 _ => return Err(rt("T0402", "floor requires a number", sp.clone())),
             }
         }
@@ -1785,8 +1930,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Big(d) => Value::Big(d.ceil()),
-                Value::Num(f) => Value::Num(f.ceil()),
-                Value::Pct(p) => Value::Num(p.ceil()),
+                Value::Float(f) => Value::Float(f.round()),
+                Value::Pct(p)   => Value::Float(p.round()),
                 _ => return Err(rt("T0402", "ceil requires a number", sp.clone())),
             }
         }
@@ -1794,8 +1939,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Big(d) => Value::Big(d.abs()),
-                Value::Num(f) => Value::Num(f.abs()),
-                Value::Pct(p) => Value::Num(p.abs()),
+                Value::Float(f) => Value::Float(f.round()),
+                Value::Pct(p)   => Value::Float(p.round()),
                 _ => return Err(rt("T0402", "abs requires a number", sp.clone())),
             }
         }
@@ -1815,15 +1960,15 @@ fn call_action_by_name(
                             // fractional exponent -> float fallback
                             let bf = base.to_f64().ok_or_else(|| rt("R0204", "big base overflow to float", sp.clone()))?;
                             let ef = e.to_f64().ok_or_else(|| rt("R0205", "big exponent overflow to float", sp.clone()))?;
-                            Value::Num(bf.powf(ef))
+                            Value::Float(bf.powf(ef))
                         }
                     }
-                    Value::Num(f) | Value::Pct(f) => {
+                    Value::Float(f) | Value::Pct(f) => {
                         if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
                             Value::Big(decimal_powi(base, *f as i64)?)
                         } else {
                             let bf = base.to_f64().ok_or_else(|| rt("R0204", "big base overflow to float", sp.clone()))?;
-                            Value::Num(bf.powf(*f))
+                            Value::Float(bf.powf(*f))
                         }
                     }
                     _ => return Err(rt("T0402", "pow requires numeric exponent", sp.clone())),
@@ -1831,7 +1976,7 @@ fn call_action_by_name(
             } else {
                 let a = to_f64_for_math(&args[0], sp.clone(), "pow (base)")?;
                 let b = to_f64_for_math(&args[1], sp.clone(), "pow (exponent)")?;
-                Value::Num(a.powf(b))
+                Value::Float(a.powf(b))
             }
         }
         "sqrt" => {
@@ -1842,14 +1987,14 @@ fn call_action_by_name(
                         return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone()));
                     }
                     let f = d.to_f64().ok_or_else(|| rt("R0204", "big overflow to float for sqrt", sp.clone()))?;
-                    Value::Num(f.sqrt())    // <-- no trailing semicolon
+                    Value::Float(f.sqrt())    // <-- no trailing semicolon
                 }
                 _ => {
                     let n = to_f64_for_math(&args[0], sp.clone(), "sqrt")?;
                     if n < 0.0 {
                         return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone()));
                     }
-                    Value::Num(n.sqrt())     // <-- no trailing semicolon
+                    Value::Float(n.sqrt())     // <-- no trailing semicolon
                 }
             }
         }
@@ -1860,7 +2005,7 @@ fn call_action_by_name(
             if let Some(xs) = as_array_like(&args[0]) {
                 let mut acc = 0.0;
                 for v in xs { acc += want_num(v, "sum")?; }
-                Value::Num(acc)
+                Value::Float(acc)
             } else {
                 return Err(rt("T0401", "sum expects an array of numbers", sp.clone()));
             }
@@ -1868,10 +2013,10 @@ fn call_action_by_name(
         "avg" => {
             arity(1)?;
             if let Some(xs) = as_array_like(&args[0]) {
-                if xs.is_empty() { Value::Num(0.0) } else {
+                if xs.is_empty() { Value::Float(0.0) } else {
                     let mut acc = 0.0;
                     for v in xs { acc += want_num(v, "avg")?; }
-                    Value::Num(acc / xs.len() as f64)
+                    Value::Float(acc / xs.len() as f64)
                 }
             } else {
                 return Err(rt("T0401", "avg expects an array of numbers", sp.clone()));
@@ -1884,7 +2029,7 @@ fn call_action_by_name(
                 let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
                 let mut m = want_num(first, "min")?;
                 for v in it { m = m.min(want_num(v, "min")?); }
-                Value::Num(m)
+                Value::Float(m)
             } else {
                 return Err(rt("T0401", "min expects an array of numbers", sp.clone()));
             }
@@ -1896,7 +2041,7 @@ fn call_action_by_name(
                 let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
                 let mut m = want_num(first, "max")?;
                 for v in it { m = m.max(want_num(v, "max")?); }
-                Value::Num(m)
+                Value::Float(m)
             } else {
                 return Err(rt("T0401", "max expects an array of numbers", sp.clone()));
             }
@@ -1920,7 +2065,7 @@ fn call_action_by_name(
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
             let get_num = |m: &BTreeMap<String, Value>, k: &str| -> Option<f64> {
-                m.get(k).and_then(|v| if let Value::Num(n) = v { Some(*n) } else { None })
+                m.get(k).and_then(|v| if let Value::Float(n) = v { Some(*n) } else { None })
             };
             let get_arr = |m: &BTreeMap<String, Value>, k: &str| -> Option<Vec<Value>> {
                 m.get(k).and_then(|v| if let Value::Array(xs) = v { Some(xs.clone()) } else { None })
@@ -2061,7 +2206,7 @@ fn call_action_by_name(
                 let out_vals: Vec<Value> = if allow_dups {
                     let mut out = Vec::with_capacity(n_out);
                     for _ in 0..n_out {
-                        out.push(Value::Num(pool[rng_index(sess, pool.len())] as f64));
+                        out.push(Value::Int(pool[rng_index(sess, pool.len())] as i64));
                     }
                     out
                 } else {
@@ -2070,7 +2215,7 @@ fn call_action_by_name(
                         let j = i + rng_index(sess, pool.len() - i);
                         pool.swap(i, j);
                     }
-                    (0..n_out).map(|i| Value::Num(pool[i] as f64)).collect()
+                    (0..n_out).map(|i| Value::Int(pool[i] as i64)).collect()
                 };
 
                 return Ok(if n_out == 1 {
@@ -2127,7 +2272,7 @@ fn call_action_by_name(
                 let out = if allow_dups {
                     let mut out = Vec::with_capacity(n_out);
                     for _ in 0..n_out {
-                        out.push(Value::Num(gen_one() as f64));
+                        out.push(Value::Int(gen_one() as i64));
                     }
                     out
                 } else {
@@ -2141,7 +2286,7 @@ fn call_action_by_name(
                         attempts_left -= 1;
                         set.insert(gen_one());
                     }
-                    set.into_iter().map(|v| Value::Num(v as f64)).collect()
+                    set.into_iter().map(|v| Value::Int(v as i64)).collect()
                 };
 
                 return Ok(finish(out));
@@ -2175,13 +2320,13 @@ fn call_action_by_name(
             // --- helpers ---
             let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
-                    Some(Value::Num(n)) if n.fract() == 0.0 => Ok(*n as i64),
+                    Some(Value::Float(n)) if n.fract() == 0.0 => Ok(*n as i64),
                     Some(_) => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
                     None => Err(rt("T0201", &format!("missing roll field '{k}'"), sp.clone())),
                 }
             };
             let get_i64_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
-                m.get(k).and_then(|v| if let Value::Num(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
+                m.get(k).and_then(|v| if let Value::Float(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
             };
             let get_bool_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
@@ -2280,7 +2425,7 @@ fn call_action_by_name(
                 total
             };
 
-            Value::Num(result_num as f64)
+            Value::Float(result_num as f64)
         },
 
         // ====== roll_detail (map with values / kept / dropped / sum / total) ======
@@ -2297,13 +2442,13 @@ fn call_action_by_name(
             // --- helpers ---
             let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
-                    Some(Value::Num(n)) if n.fract() == 0.0 => Ok(*n as i64),
+                    Some(Value::Float(n)) if n.fract() == 0.0 => Ok(*n as i64),
                     Some(_) => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
                     None => Err(rt("T0201", &format!("missing roll field '{k}'"), sp.clone())),
                 }
             };
             let get_i64_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
-                m.get(k).and_then(|v| if let Value::Num(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
+                m.get(k).and_then(|v| if let Value::Float(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
             };
             let get_bool_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
@@ -2378,20 +2523,20 @@ fn call_action_by_name(
                 }
 
                 let mut out = BTreeMap::<String, Value>::new();
-                out.insert("count".into(),    Value::Num(1.0));
-                out.insert("sides".into(),    Value::Num(sides as f64));
-                out.insert("modifier".into(), Value::Num(modifier as f64));
-                out.insert("values".into(),   Value::Array(vec![Value::Num(a as f64), Value::Num(b as f64)]));
-                out.insert("kept".into(),     Value::Array(vec![Value::Num(chosen as f64)]));
-                out.insert("dropped".into(),  Value::Array(vec![Value::Num(dropped_val as f64)]));
-                out.insert("sum".into(),      Value::Num(chosen as f64));
-                out.insert("total".into(),    Value::Num(total as f64));
+                out.insert("count".into(),    Value::Int(1));
+                out.insert("sides".into(),    Value::Int(sides as i64));
+                out.insert("modifier".into(), Value::Int(modifier as i64));
+                out.insert("values".into(),   Value::Array(vec![Value::Int(a as i64), Value::Int(b as i64)]));
+                out.insert("kept".into(),     Value::Array(vec![Value::Int(chosen as i64)]));
+                out.insert("dropped".into(),  Value::Array(vec![Value::Int(dropped_val as i64)]));
+                out.insert("sum".into(),      Value::Int(chosen as i64));
+                out.insert("total".into(),    Value::Int(total as i64));
                 out.insert("adv".into(),      Value::Bool(adv));
                 out.insert("dis".into(),      Value::Bool(dis));
-                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Num(x as f64)); }
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x as i64)); }
                 if explode { out.insert("explode".into(), Value::Bool(true)); }
-                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Num(lo as f64)); }
-                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Num(hi as f64)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo as i64)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi as i64)); }
                 Value::Map(out)
             } else {
                 // N dice, mark kept vs dropped explicitly
@@ -2427,20 +2572,20 @@ fn call_action_by_name(
                 }
 
                 let mut out = BTreeMap::<String, Value>::new();
-                out.insert("count".into(),    Value::Num(count as f64));
-                out.insert("sides".into(),    Value::Num(sides as f64));
-                out.insert("modifier".into(), Value::Num(modifier as f64));
-                out.insert("values".into(),   Value::Array(vals.iter().copied().map(|v| Value::Num(v as f64)).collect()));
-                out.insert("kept".into(),     Value::Array(kept_vals.iter().copied().map(|v| Value::Num(v as f64)).collect()));
-                out.insert("dropped".into(),  Value::Array(dropped_vals.iter().copied().map(|v| Value::Num(v as f64)).collect()));
-                out.insert("sum".into(),      Value::Num(kept_sum as f64));
-                out.insert("total".into(),    Value::Num(total as f64));
-                if keep_high > 0 { out.insert("keep_high".into(), Value::Num(keep_high as f64)); }
-                if drop_low  > 0 { out.insert("drop_low".into(),  Value::Num(drop_low  as f64)); }
-                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Num(x as f64)); }
+                out.insert("count".into(),    Value::Int(count as i64));
+                out.insert("sides".into(),    Value::Int(sides as i64));
+                out.insert("modifier".into(), Value::Int(modifier as i64));
+                out.insert("values".into(),   Value::Array(vals.iter().copied().map(|v| Value::Int(v as i64)).collect()));
+                out.insert("kept".into(),     Value::Array(kept_vals.iter().copied().map(|v| Value::Int(v as i64)).collect()));
+                out.insert("dropped".into(),  Value::Array(dropped_vals.iter().copied().map(|v| Value::Int(v as i64)).collect()));
+                out.insert("sum".into(),      Value::Int(kept_sum as i64));
+                out.insert("total".into(),    Value::Int(total as i64));
+                if keep_high > 0 { out.insert("keep_high".into(), Value::Int(keep_high as i64)); }
+                if drop_low  > 0 { out.insert("drop_low".into(),  Value::Int(drop_low  as i64)); }
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x as i64)); }
                 if explode { out.insert("explode".into(), Value::Bool(true)); }
-                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Num(lo as f64)); }
-                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Num(hi as f64)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo as i64)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi as i64)); }
                 Value::Map(out)
             };
 
@@ -2526,7 +2671,7 @@ fn call_action_by_name(
             if args.len() != 2 { return Err(rt("A0402", format!("wrong number of arguments: expected 2, got {}", args.len()), sp.clone())); }
             let s   = want_str(&args[0], "find")?;
             let sub = want_str(&args[1], "find")?;
-            match s.find(&sub) { Some(i) => Value::Num(i as f64), None => Value::Nil }
+            match s.find(&sub) { Some(i) => Value::Int(i as i64), None => Value::Nil }
         }
         "find_all" => {
             if args.len() != 2 {
@@ -2541,7 +2686,7 @@ fn call_action_by_name(
                 let mut start = 0usize;
                 while let Some(pos) = s[start..].find(&sub) {
                     let idx = start + pos;
-                    out.push(Value::Num(idx as f64));
+                    out.push(Value::Int(idx as i64));
                     start = idx + sub.len(); // non-overlapping
                 }
                 Value::Array(out)
@@ -2553,10 +2698,10 @@ fn call_action_by_name(
                 // count(x)  -> length of string/collection/map
                 1 => {
                     match &args[0] {
-                        Value::Str(s)    => Value::Num(s.chars().count() as f64),
-                        Value::Array(xs) => Value::Num(xs.len() as f64),
-                        Value::Seq(xs)   => Value::Num(xs.len() as f64),
-                        Value::Map(m)    => Value::Num(m.len() as f64),
+                        Value::Str(s)    => Value::Int(s.chars().count() as i64),
+                        Value::Array(xs) => Value::Int(xs.len() as i64),
+                        Value::Seq(xs)   => Value::Int(xs.len() as i64),
+                        Value::Map(m)    => Value::Int(m.len() as i64),
                         _ => return Err(rt("T0401", "count expects a string or collection", sp.clone())),
                     }
                 }
@@ -2565,7 +2710,7 @@ fn call_action_by_name(
                     let s   = want_str(&args[0], "count")?;
                     let sub = want_str(&args[1], "count")?;
                     if sub.is_empty() {
-                        Value::Num(0.0)
+                        Value::Float(0.0)
                     } else {
                         let mut n = 0usize;
                         let mut start = 0usize;
@@ -2573,7 +2718,7 @@ fn call_action_by_name(
                             n += 1;
                             start = start + pos + sub.len();
                         }
-                        Value::Num(n as f64)
+                        Value::Float(n as f64)
                     }
                 }
                 _ => return Err(rt("A0402",
@@ -2632,7 +2777,7 @@ fn call_action_by_name(
                     let mut m = BTreeMap::<String, Value>::new();
                     let mut cnt = BTreeMap::<char, i64>::new();
                     for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
-                    for (c, n) in cnt { m.insert(c.to_string(), Value::Num(n as f64)); }
+                    for (c, n) in cnt { m.insert(c.to_string(), Value::Int(n as i64)); }
                     Value::Map(m)
                 }
                 _ => {
@@ -2640,7 +2785,7 @@ fn call_action_by_name(
                     let mut map = std::collections::BTreeMap::<String, i64>::new();
                     for v in xs { *map.entry(fmt_value_raw(v)).or_insert(0) += 1; }
                     let mut out = std::collections::BTreeMap::<String, Value>::new();
-                    for (k, n) in map { out.insert(k, Value::Num(n as f64)); }
+                    for (k, n) in map { out.insert(k, Value::Int(n as i64)); }
                     Value::Map(out)
                 }
             }
@@ -2661,7 +2806,7 @@ fn call_action_by_name(
             for (k, n) in counts.iter() {
                 if *n > best_n { best_n = *n; best_k = k.clone(); }
             }
-            Value::Map(vec![(best_k, Value::Num(best_n as f64))].into_iter().collect())
+            Value::Map(vec![(best_k, Value::Int(best_n as i64))].into_iter().collect())
         },
 
         "sample_weighted" => {
@@ -2681,7 +2826,7 @@ fn call_action_by_name(
             }
             let n_out: usize = match cfg.get("count") {
                 None => 1,
-                Some(Value::Num(n)) if *n > 0.0 && n.fract()==0.0 => *n as usize,
+                Some(Value::Float(n)) if *n > 0.0 && n.fract()==0.0 => *n as usize,
                 Some(_) => return Err(rt("T0201","count must be int > 0", sp.clone())),
             };
             // build cumulative weights
@@ -2857,7 +3002,7 @@ fn call_action_by_name(
         "grab_at" => {
             arity(2)?;
             let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
                 _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
             };
             match &args[0] {
@@ -2947,7 +3092,7 @@ fn call_action_by_name(
         "put_at" => {
             arity(3)?;
             let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
                 _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
             };
             match (&args[0], &args[2]) {
@@ -3010,7 +3155,7 @@ fn call_action_by_name(
         "update_at" => {
             arity(3)?;
             let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
                 _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
             };
             match (&args[0], &args[2]) {
@@ -3116,7 +3261,7 @@ fn call_action_by_name(
         "delete_at" => {
             arity(2)?;
             let idx = match &args[1] {
-                Value::Num(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
+                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
                 _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
             };
             match &args[0] {
@@ -3202,7 +3347,7 @@ fn call_action_by_name(
             // Resolve count (default 1), must be positive integer
             let n_out: usize = match cfg.get("count") {
                 None => 1,
-                Some(Value::Num(n)) if *n > 0.0 && n.fract() == 0.0 => *n as usize,
+                Some(Value::Float(n)) if *n > 0.0 && n.fract()==0.0 => *n as usize,
                 Some(_) => return Err(rt("T0201", "reap 'count' must be a positive integer", sp.clone())),
             };
 
@@ -3390,10 +3535,10 @@ fn call_action_by_name(
                     sp.clone()));
             }
             match &args[0] {
-                Value::Str(s)    => Value::Num(s.chars().count() as f64), // Unicode scalar count
-                Value::Array(xs) => Value::Num(xs.len() as f64),
-                Value::Seq(xs)   => Value::Num(xs.len() as f64),
-                Value::Map(m)    => Value::Num(m.len() as f64),
+                Value::Str(s)    => Value::Int(s.chars().count() as i64), // Unicode scalar count
+                Value::Array(xs) => Value::Int(xs.len() as i64),
+                Value::Seq(xs)   => Value::Int(xs.len() as i64),
+                Value::Map(m)    => Value::Int(m.len() as i64),
                 _ => return Err(rt("T0401", "len expects string or collection", sp.clone())),
             }
         }
@@ -3414,7 +3559,7 @@ fn call_action_by_name(
                 Value::Array(xs) => {
                     // legacy metrics for plain arrays
                     let mut m = BTreeMap::new();
-                    m.insert("len".into(), Value::Num(xs.len() as f64));
+                    m.insert("len".into(), Value::Int(xs.len() as i64));
                     m.insert("backend".into(), Value::Str("array(legacy)".into()));
                     Value::Map(m)
                 }
@@ -3675,7 +3820,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // f64 is exact for |n| <= 2^53
                     let mag: i128 = if i >= 0 { i as i128 } else { -(i as i128) };
                     if mag <= F64_SAFE_INT_MAX as i128 {
-                        Ok(Value::Num(i as f64))
+                        Ok(Value::Int(i as i64))
                     } else {
                         Ok(Value::Big(Decimal::from_i128_with_scale(i as i128, 0)))
                     }
@@ -3687,7 +3832,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             } else {
                 // float-like literal ('.' or exponent) — parse as f64 (underscores already allowed)
-                Ok(Value::Num(parse_num(raw, sp.clone())?))
+                Ok(parse_number_value(raw, sp.clone())?)
             }
         },
         ast::Expr::Str(s, sp) => {
@@ -3749,8 +3894,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             let b = eval_expr(base, sess)?;
             let i = eval_expr(idx, sess)?;
             match (b, i) {
-                (Value::Array(items), Value::Num(n)) => {
-                    if n.fract() != 0.0 || n < 0.0 {
+                (Value::Array(items), Value::Int(n)) => {
+                    if n < 0 {
                         return Err(rt("T0201", "index must be a non-negative integer", span_of_expr(idx)));
                     }
                     let k = n as usize;
@@ -3897,6 +4042,18 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Free calls ----
         ast::Expr::FreeCall(name, args, sp) => {
+            // Mutating casts for function form when arg is a plain identifier.
+            // Examples: float(x), int(x), big(x)
+            if matches!(name.as_str(), "float" | "int" | "big" | "str" | "pct" | "f" | "i" | "b" | "string" | "percent")
+               && args.len() == 1
+            {
+                if let ast::Expr::Ident(var_name, _) = &args[0] {
+                    let cur = eval_expr(&args[0], sess)?;
+                    let out = call_action_by_name(sess, &name, vec![cur], sp.clone())?;
+                    sess.set_var(var_name.clone(), out.clone());
+                    return Ok(out);
+                }
+            }
             // ---- bang builtins: put_at!(), delete_all!(), reap!(), ... ----
             if name.ends_with('!') {
                 // no receiver here (free call): target must be first argument Ident
@@ -3996,27 +4153,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
+            // Mutating casts for function form when arg is a plain identifier.
+            // Examples: float(x), int(x), big(x)
+            if args.is_empty() {
+                if matches!(name.as_str(), "float" | "f" | "int" | "i" | "big" | "b" | "str" | "string" | "pct" | "percent") {
+                    if let ast::Expr::Ident(var_name, _) = &**base {
+                        let recv = eval_expr(base, sess)?;
+                        let out  = call_action_by_name(sess, &name, vec![recv], sp.clone())?;
+                        sess.set_var(var_name.clone(), out.clone());
+                        return Ok(out);
+                    }
+                }
+            }
             // Special-case: <expr>.type   (no args) — decide from AST text for number literals
             if name == "type" && args.is_empty() {
-                let classify_from_ast = match &**base {
-                    // Number literal: use raw text to distinguish 4 vs 4.0
-                    ast::Expr::Number(text, _) => {
-                        if text.contains('.') || text.contains('e') || text.contains('E') { "float" } else { "int" }
-                    }
-                    // Other literal-ish forms we can answer without evaluating:
-                    ast::Expr::Str(_, _)    => "str",
-                    ast::Expr::Char(_, _)   => "char",
-                    ast::Expr::Bool(_, _)   => "bool",
-                    ast::Expr::Nil(_)       => "nil",
-                    ast::Expr::Array(_, _)  => "array",
-                    ast::Expr::Object(_, _) => "map",
-                    _ => {
-                        // Fallback: evaluate then call the existing builtin
-                        let recv = eval_expr(base, sess)?;
-                        return call_action_by_name(sess, "type", vec![recv], sp.clone());
-                    }
-                };
-                return Ok(Value::Str(classify_from_ast.to_string()));
+                let recv = eval_expr(base, sess)?;
+                return Ok(Value::Str(value_kind_str(&recv).to_string()));
             }
 
             if name.ends_with('!') {
@@ -4067,17 +4219,19 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             match op.as_str() {
                 "-" => {
                     let v = eval_expr(expr, sess)?;
-                    // strip any Value::Formatted wrapper, but remember its spec
                     let (u, uspec) = take_owned_unformatted(v);
 
                     let out = match u {
-                        Value::Big(d)   => Value::Big(-d),
-                        Value::Num(f)   => Value::Num(-f),
-                        Value::Pct(p)   => Value::Num(-p),
+                        Value::Big(d)    => Value::Big(-d),
+                        Value::Int(i)    => {
+                            if i == i64::MIN { Value::Big(-(rust_decimal::Decimal::from(i))) }
+                            else { Value::Int(-i) }
+                        }
+                        Value::Float(f)  => Value::Float(-f),
+                        Value::Pct(p)    => Value::Pct(-p),
                         _other           => return Err(need_number("unary '-'", span_of_expr(expr)).into()),
                     };
 
-                    // Reapply the original formatting if present
                     Ok(reapply_format(out, uspec, None))
                 }
 
@@ -4086,10 +4240,11 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (u, uspec) = take_owned_unformatted(v);
 
                     let out = match u {
-                        Value::Big(d)   => Value::Big(d),
-                        Value::Num(f)   => Value::Num(f),
-                        Value::Pct(p)   => Value::Num(p),
-                        other           => return Err(need_number("unary '+'", span_of_expr(expr)).into()),
+                        Value::Big(d)    => Value::Big(d),
+                        Value::Int(i)    => Value::Int(i),
+                        Value::Float(f)  => Value::Float(f),
+                        Value::Pct(p)    => Value::Pct(p),
+                        other            => return Err(need_number("unary '+'", span_of_expr(expr)).into()),
                     };
 
                     Ok(reapply_format(out, uspec, None))
@@ -4115,11 +4270,11 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let n = as_num(v, span_of_expr(expr), "percent literal")?;
                     Ok(Value::Pct(n / 100.0))     
                 }
-                "**" => Ok(Value::Num(as_num(v, span_of_expr(expr), "postfix square")?.powf(2.0))),
+                "**" => Ok(Value::Float(as_num(v, span_of_expr(expr), "postfix square")?.powf(2.0))),
                 "//" => {
                     let n = as_num(v, span_of_expr(expr), "postfix sqrt")?;
                     if n < 0.0 { return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone())); }
-                    Ok(Value::Num(n.sqrt()))
+                    Ok(Value::Float(n.sqrt()))
                 }
                 "!" => {
                     let n = as_num(v, span_of_expr(expr), "factorial")?;
@@ -4128,10 +4283,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let mut acc: u128 = 1;
                     let k = n as u128;
                     for i in 2..=k { acc = acc.saturating_mul(i); }
-                    Ok(Value::Num(acc as f64))
+                    Ok(Value::Float(acc as f64))
                 }
-                "^" => Ok(Value::Num(as_num(v, span_of_expr(expr), "ceil")?.ceil())),
-                "_" => Ok(Value::Num(as_num(v, span_of_expr(expr), "floor")?.floor())),
+                "^" => Ok(Value::Float(as_num(v, span_of_expr(expr), "ceil")?.ceil())),
+                "_" => Ok(Value::Float(as_num(v, span_of_expr(expr), "floor")?.floor())),
                 "?" => Ok(Value::Bool(!matches!(v, Value::Nil))),
                 _ => Err(rt("R0003", format!("postfix operator '{}' not implemented", op), sp.clone())),
             }
@@ -4146,30 +4301,27 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (lu, lspec) = take_owned_unformatted(lv);
                     let (ru, rspec) = take_owned_unformatted(rv);
 
-                    let out = if either_is_big(&lu, &ru) {
-                        let a = to_big_for_math(&lu, span_of_expr(lhs), "addition: left")?;
-                        let b = to_big_for_math(&ru, span_of_expr(rhs), "addition: right")?;
-                        Value::Big(a + b)
-                    } else {
-                        // Safe-integer promotion around 2^53 for integer-like Nums
-                        if let (Some(la), Some(rb)) = (is_int_like_num(&lu), is_int_like_num(&ru)) {
-                            if promote_int_add_needed(la, rb) {
-                                let da = Decimal::from_f64(la).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(lhs)))?;
-                                let db = Decimal::from_f64(rb).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(rhs)))?;
-                                Value::Big(da + db)
-                            } else {
-                                let a = to_f64_for_math(&lu, span_of_expr(lhs), "addition: left")?;
-                                let b = to_f64_for_math(&ru, span_of_expr(rhs), "addition: right")?;
-                                Value::Num(a + b)
-                            }
-                        } else {
-                            let a = to_f64_for_math(&lu, span_of_expr(lhs), "addition: left")?;
-                            let b = to_f64_for_math(&ru, span_of_expr(rhs), "addition: right")?;
-                            Value::Num(a + b)
+                    let out = match (&lu, &ru) {
+                        (Value::Int(a),   Value::Int(b)) => {
+                            if let Some(r) = int_checked_add(*a, *b) { Value::Int(r) }
+                            else { Value::Big(rust_decimal::Decimal::from(*a) + rust_decimal::Decimal::from(*b)) }
                         }
+                        (Value::Int(a),   Value::Float(b)) | (Value::Float(b), Value::Int(a)) =>
+                            Value::Float((*a as f64) + *b),
+                        (Value::Float(a), Value::Float(b)) =>
+                            Value::Float(*a + *b),
+                        (Value::Big(_),   _) | (_, Value::Big(_)) => {
+                            let da = to_decimal(&lu)?; let db = to_decimal(&ru)?;
+                            Value::Big(da + db)
+                        }
+                        (Value::Pct(a),   Value::Pct(b)) => Value::Pct(*a + *b),
+                        (Value::Pct(a),   _) => Value::Float(*a + to_f64_for_math(&ru, span_of_expr(rhs), "addition: rhs")?),
+                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, span_of_expr(lhs), "addition: lhs")? + *b),
+                        _ => return Err(need_number("addition", sp.clone()).into()),
                     };
+
                     Ok(reapply_format(out, lspec, rspec))
-                },
+                }
 
                 "++" => {
                     let lv = eval_expr(lhs, sess)?;
@@ -4187,79 +4339,100 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (lu, lspec) = take_owned_unformatted(lv);
                     let (ru, rspec) = take_owned_unformatted(rv);
 
-                    let out = if either_is_big(&lu, &ru) {
-                        let a = to_big_for_math(&lu, span_of_expr(lhs), "subtraction: left")?;
-                        let b = to_big_for_math(&ru, span_of_expr(rhs), "subtraction: right")?;
-                        Value::Big(a - b)
-                    } else {
-                        // Safe-integer promotion around 2^53 for integer-like Nums
-                        if let (Some(la), Some(rb)) = (is_int_like_num(&lu), is_int_like_num(&ru)) {
-                            if promote_int_sub_needed(la, rb) {
-                                let da = Decimal::from_f64(la).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(lhs)))?;
-                                let db = Decimal::from_f64(rb).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(rhs)))?;
-                                Value::Big(da - db)
-                            } else {
-                                let a = to_f64_for_math(&lu, span_of_expr(lhs), "subtraction: left")?;
-                                let b = to_f64_for_math(&ru, span_of_expr(rhs), "subtraction: right")?;
-                                Value::Num(a - b)
-                            }
-                        } else {
-                            let a = to_f64_for_math(&lu, span_of_expr(lhs), "subtraction: left")?;
-                            let b = to_f64_for_math(&ru, span_of_expr(rhs), "subtraction: right")?;
-                            Value::Num(a - b)
+                    let out = match (&lu, &ru) {
+                        (Value::Int(a),   Value::Int(b)) => {
+                            if let Some(r) = int_checked_sub(*a, *b) { Value::Int(r) }
+                            else { Value::Big(rust_decimal::Decimal::from(*a) - rust_decimal::Decimal::from(*b)) }
                         }
+                        (Value::Int(a),   Value::Float(b)) => Value::Float((*a as f64) - *b),
+                        (Value::Float(a), Value::Int(b))   => Value::Float(*a - (*b as f64)),
+                        (Value::Float(a), Value::Float(b)) => Value::Float(*a - *b),
+                        (Value::Big(_),   _) | (_, Value::Big(_)) => {
+                            let da = to_decimal(&lu)?; let db = to_decimal(&ru)?;
+                            Value::Big(da - db)
+                        }
+                        (Value::Pct(a),   Value::Pct(b)) => Value::Pct(*a - *b),
+                        (Value::Pct(a),   _) => Value::Float(*a - to_f64_for_math(&ru, span_of_expr(rhs), "subtraction: rhs")?),
+                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, span_of_expr(lhs), "subtraction: lhs")? - *b),
+                        _ => return Err(need_number("subtraction", sp.clone()).into()),
                     };
+
                     Ok(reapply_format(out, lspec, rspec))
-                },
+                }
 
                 "*" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
                     let (lu, lspec) = take_owned_unformatted(lv);
                     let (ru, rspec) = take_owned_unformatted(rv);
 
-                    let out = if either_is_big(&lu, &ru) {
-                        let a = to_big_for_math(&lu, span_of_expr(lhs), "multiplication: left")?;
-                        let b = to_big_for_math(&ru, span_of_expr(rhs), "multiplication: right")?;
-                        Value::Big(a * b)
-                    } else {
-                        // Safe-integer promotion for integer-like Nums when product would exceed 2^53
-                        if let (Some(la), Some(rb)) = (is_int_like_num(&lu), is_int_like_num(&ru)) {
-                            if promote_int_mul_needed(la, rb) {
-                                let da = Decimal::from_f64(la).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(lhs)))?;
-                                let db = Decimal::from_f64(rb).ok_or_else(|| rt("R0298","float->Big failed", span_of_expr(rhs)))?;
-                                Value::Big(da * db)
-                            } else {
-                                let a = to_f64_for_math(&lu, span_of_expr(lhs), "multiplication: left")?;
-                                let b = to_f64_for_math(&ru, span_of_expr(rhs), "multiplication: right")?;
-                                Value::Num(a * b)
-                            }
-                        } else {
-                            let a = to_f64_for_math(&lu, span_of_expr(lhs), "multiplication: left")?;
-                            let b = to_f64_for_math(&ru, span_of_expr(rhs), "multiplication: right")?;
-                            Value::Num(a * b)
+                    let out = match (&lu, &ru) {
+                        (Value::Int(a),   Value::Int(b)) => {
+                            if let Some(r) = int_checked_mul(*a, *b) { Value::Int(r) }
+                            else { Value::Big(rust_decimal::Decimal::from(*a) * rust_decimal::Decimal::from(*b)) }
                         }
+                        (Value::Int(a),   Value::Float(b)) | (Value::Float(b), Value::Int(a)) =>
+                            Value::Float((*a as f64) * *b),
+                        (Value::Float(a), Value::Float(b)) =>
+                            Value::Float(*a * *b),
+                        (Value::Big(_),   _) | (_, Value::Big(_)) => {
+                            let da = to_decimal(&lu)?; let db = to_decimal(&ru)?;
+                            Value::Big(da * db)
+                        }
+                        (Value::Pct(a),   Value::Pct(b)) => Value::Pct(*a * *b),
+                        (Value::Pct(a),   _) => Value::Float(*a * to_f64_for_math(&ru, span_of_expr(rhs), "multiplication: rhs")?),
+                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, span_of_expr(lhs), "multiplication: lhs")? * *b),
+                        _ => return Err(need_number("multiplication", sp.clone()).into()),
                     };
+
                     Ok(reapply_format(out, lspec, rspec))
-                },
+                }
 
                 "/" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
                     let (lu, lspec) = take_owned_unformatted(lv);
                     let (ru, rspec) = take_owned_unformatted(rv);
 
-                    let out = if either_is_big(&lu, &ru) {
-                        let a = to_big_for_math(&lu, span_of_expr(lhs), "division: left")?;
-                        let b = to_big_for_math(&ru, span_of_expr(rhs), "division: right")?;
-                        if b.is_zero() { return Err(rt("R0201", "divide by zero", sp.clone())); }
-                        Value::Big(a / b)
-                    } else {
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "division: left")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "division: right")?;
-                        if b == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
-                        Value::Num(a / b)
+                    let out = match (&lu, &ru) {
+                        (Value::Int(a),   Value::Int(b)) => {
+                            if *b == 0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            if a % b == 0 { Value::Int(a / b) } else { Value::Float((*a as f64) / (*b as f64)) }
+                        }
+                        (Value::Int(a),   Value::Float(b)) => {
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            Value::Float((*a as f64) / *b)
+                        }
+                        (Value::Float(a), Value::Int(b)) => {
+                            if *b == 0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            Value::Float(*a / (*b as f64))
+                        }
+                        (Value::Float(a), Value::Float(b)) => {
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            Value::Float(*a / *b)
+                        }
+                        (Value::Big(_),   _) | (_, Value::Big(_)) => {
+                            let da = to_decimal(&lu)?; let db = to_decimal(&ru)?;
+                            if db.is_zero() { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            Value::Big(da / db)
+                        }
+                        (Value::Pct(a),   Value::Pct(b)) => {
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            Value::Float(*a / *b)
+                        }
+                        (Value::Pct(a),   _) => {
+                            let denom = to_f64_for_math(&ru, span_of_expr(rhs), "division: rhs")?;
+                            if denom == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            Value::Float(*a / denom)
+                        }
+                        (_,               Value::Pct(b)) => {
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            let num = to_f64_for_math(&lu, span_of_expr(lhs), "division: lhs")?;
+                            Value::Float(num / *b)
+                        }
+                        _ => return Err(need_number("division", sp.clone()).into()),
                     };
+
                     Ok(reapply_format(out, lspec, rspec))
-                },
+                }
 
                 "%" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
@@ -4281,7 +4454,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         if b == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         let q = (a / b).floor();
                         let r = a - q * b;
-                        Value::Num(r)
+                        Value::Float(r)
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
@@ -4299,7 +4472,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         let a = to_f64_for_math(&lu, span_of_expr(lhs), "floor division: left")?;
                         let b = to_f64_for_math(&ru, span_of_expr(rhs), "floor division: right")?;
                         if (b) == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
-                        Value::Num((a / b).floor())
+                        Value::Float((a / b).floor())
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 }
@@ -4324,16 +4497,16 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                     // fractional exponent -> fall back to f64 powf (precision loss)
                                     let bf = base.to_f64().ok_or_else(|| rt("R0204", "big base overflow to float", sp.clone()))?;
                                     let ef = db.to_f64().ok_or_else(|| rt("R0205", "big exponent overflow to float", sp.clone()))?;
-                                    Value::Num(bf.powf(ef))
+                                    Value::Float(bf.powf(ef))
                                 }
                             }
-                            Value::Num(f) | Value::Pct(f) => {
+                            Value::Float(f) | Value::Pct(f) => {
                                 // If exponent is an integer (e.g. 2.0), keep Big. Else fall back to float.
                                 if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
                                     Value::Big(decimal_powi(base, *f as i64)?)
                                 } else {
                                     let bf = base.to_f64().ok_or_else(|| rt("R0204", "big base overflow to float", sp.clone()))?;
-                                    Value::Num(bf.powf(*f))
+                                    Value::Float(bf.powf(*f))
                                 }
                             }
                             _ => return Err(need_number("power: exponent", span_of_expr(rhs))),
@@ -4342,7 +4515,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         // pure float
                         let a = to_f64_for_math(&lu, span_of_expr(lhs), "power: base")?;
                         let b = to_f64_for_math(&ru, span_of_expr(rhs), "power: exponent")?;
-                        Value::Num(a.powf(b))
+                        Value::Float(a.powf(b))
                     };
 
                     Ok(reapply_format(out, lspec, rspec))
@@ -4365,7 +4538,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         if b == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         let q = (a / b).floor();
                         let r = a - q * b;
-                        Value::Pair(Box::new(Value::Num(q)), Box::new(Value::Num(r)))
+                        Value::Pair(Box::new(Value::Float(q)), Box::new(Value::Float(r)))
                     };
 
                     // divmod returns a Pair; formatting wrappers don't apply, so just return it
@@ -4380,12 +4553,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     match lv {
                         Value::Pct(p) => {
                             let rnum = as_num(rv, span_of_expr(rhs), "'of' right")?;
-                            Ok(Value::Num(p * rnum))
+                            Ok(Value::Float(p * rnum))
                         }
                         _ => {
                             let lnum = as_num(lv,  span_of_expr(lhs),  "'of' left")?;
                             let rnum = as_num(rv,  span_of_expr(rhs),  "'of' right")?;
-                            Ok(Value::Num(lnum * rnum))
+                            Ok(Value::Float(lnum * rnum))
                         }
                     }
                 }
@@ -4398,7 +4571,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         other         => as_num(other, span_of_expr(lhs), "percent-of-other")? / 100.0,
                     };
                     let b = as_num(rv, span_of_expr(rhs), "percent-of-other")?;
-                    Ok(Value::Num(p * b))
+                    Ok(Value::Float(p * b))
                 }
 
                 // comparisons (bool)
@@ -4408,7 +4581,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (rb, _) = strip_format(&rv);
 
                     // numeric equality if both numeric
-                    let is_num = |v: &Value| matches!(v, Value::Num(_) | Value::Pct(_) | Value::Big(_));
+                    let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let eqv = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
                             let a = to_big_for_math(&la, span_of_expr(lhs), "== left")?;
@@ -4431,7 +4604,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (la, _) = strip_format(&lv);
                     let (rb, _) = strip_format(&rv);
 
-                    let is_num = |v: &Value| matches!(v, Value::Num(_) | Value::Pct(_) | Value::Big(_));
+                    let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let neqv = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
                             let a = to_big_for_math(&la, span_of_expr(lhs), "!= left")?;
@@ -4454,7 +4627,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (rb, _) = strip_format(&rv);
 
                     // numeric?
-                    let is_num = |v: &Value| matches!(v, Value::Num(_) | Value::Pct(_) | Value::Big(_));
+                    let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let b = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
                             let a = to_big_for_math(&la, span_of_expr(lhs), "compare left")?;
@@ -4553,7 +4726,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         "**=" => a.powf(b),
                         _ => unreachable!(),
                     };
-                    let out = Value::Num(new);
+                    let out = Value::Float(new);
                     sess.set_var(name, out.clone());
                     Ok(out)
                 }
