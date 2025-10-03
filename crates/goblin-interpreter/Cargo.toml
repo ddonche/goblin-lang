@@ -14,3 +14,11 @@ goblin-lexer = { path = "../goblin-lexer" }
 goblin-parser = { path = "../goblin-parser" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rust_decimal = { version = "1", features = ["serde"] }  # base; maths is gated by feature below
+
+[features]
+# Enabling "maths" here also enables rust_decimal's maths feature
+maths = ["rust_decimal/maths"]
+
+# No default features — you opt-in
+default = []
