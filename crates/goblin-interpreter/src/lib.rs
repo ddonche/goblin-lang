@@ -193,6 +193,7 @@ pub enum Value {
     Char(char),
     Bool(bool),
     Pct(f64),
+    Formatted(Box<Value>, FormatSpec),
     Array(Vec<Value>),
     Map(BTreeMap<String, Value>),
     Pair(Box<Value>, Box<Value>), // for >< (divmod)
@@ -201,6 +202,13 @@ pub enum Value {
     Unit,
     CtrlSkip,  
     CtrlStop,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormatSpec {
+    pub decimals: u32,                  // how many decimals to display
+    pub sep_thousands: Option<char>,    // ',', '.', '_', '\'' or None
+    pub sep_decimal: char,              // '.' or ','
 }
 
 fn fmt_string_visible(s: &str) -> String {
@@ -237,13 +245,41 @@ fn fmt_char_visible(c: char) -> String {
 }
 
 impl fmt::Display for Value {
-
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Render formatted numbers first (display metadata lives on Value::Formatted)
+        if let Value::Formatted(inner, spec) = self {
+            match &**inner {
+                Value::Num(x) => {
+                    if !x.is_finite() {
+                        return write!(f, "{x}");
+                    }
+                    let rounded = round_to(*x, spec.decimals);
+                    let canon   = fmt_num_trim(rounded);        // canonical "1234567.89"
+                    let out     = render_with_spec(&canon, spec); // apply thousands + decimal marker
+                    return write!(f, "{out}");
+                }
+                Value::Pct(p) => {
+                    if !p.is_finite() {
+                        return write!(f, "{p}");
+                    }
+                    let rounded = round_to(*p, spec.decimals);
+                    let canon   = fmt_num_trim(rounded);
+                    let out     = render_with_spec(&canon, spec);
+                    return write!(f, "{out}");
+                }
+                other => {
+                    // Non-numeric inner: delegate to its Display
+                    return write!(f, "{other}");
+                }
+            }
+        }
+
+        // Unformatted values (normal rendering)
         match self {
             Value::Num(x)  => write!(f, "{}", fmt_num_trim(*x)),
             Value::Str(s)  => f.write_str(&fmt_string_visible(s)),
             Value::Char(c) => f.write_str(&fmt_char_visible(*c)),
-            Value::Pct(p) => write!(f, "{}", fmt_num_trim(*p)),
+            Value::Pct(p)  => write!(f, "{}", fmt_num_trim(*p)),
             Value::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::Nil     => write!(f, "nil"),
 
@@ -291,6 +327,10 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+
+            // This case is unreachable because we return early above for Formatted,
+            // but we keep it to satisfy exhaustiveness.
+            Value::Formatted(_, _) => unreachable!("Value::Formatted should have been rendered in the early return"),
         }
     }
 }
@@ -356,7 +396,6 @@ impl Session {
         self.rng_state
     }
 
-    // --- scope helpers ---
     // --- scope helpers ---
     fn push_frame(&mut self) {
         self.env.push(BTreeMap::new());
@@ -473,6 +512,30 @@ impl Session {
 }
 
 // ===================== Helpers =====================
+
+fn strip_format(v: &Value) -> (&Value, Option<&FormatSpec>) {
+    match v {
+        Value::Formatted(inner, spec) => (&*inner, Some(spec)),
+        _ => (v, None),
+    }
+}
+
+fn take_owned_unformatted(v: Value) -> (Value, Option<FormatSpec>) {
+    match v {
+        Value::Formatted(inner, spec) => (*inner, Some(spec)),
+        other => (other, None),
+    }
+}
+
+// carry formatting forward for math results: prefer left-hand spec if present, else right, else none
+fn reapply_format(result: Value, left_spec: Option<FormatSpec>, right_spec: Option<FormatSpec>) -> Value {
+    if let Some(spec) = left_spec.or(right_spec) {
+        Value::Formatted(Box::new(result), spec)
+    } else {
+        result
+    }
+}
+
 fn want_str(v: &Value, label: &str, sp: Span) -> Result<String, Diag> {
     match v {
         Value::Str(s)  => Ok(s.clone()),
@@ -491,6 +554,7 @@ fn want_char(v: &Value, label: &str, sp: Span) -> Result<char, Diag> {
 
 // ---------- Value <-> JSON ----------
 fn to_json(v: &Value) -> sj::Value {
+    let v = if let Value::Formatted(inner, _) = v { &**inner } else { v };
     match v {
         Value::Num(n)     => sj::Value::Number(sj::Number::from_f64(*n).unwrap_or_else(|| sj::Number::from_f64(0.0).unwrap())),
         Value::Str(s)     => sj::Value::String(s.clone()),
@@ -513,6 +577,7 @@ fn to_json(v: &Value) -> sj::Value {
         Value::Pair(a, b) => {
             sj::Value::Array(vec![to_json(a), to_json(b)])
         }
+    _ => unreachable!("Value::Formatted should have been unwrapped here"),
     }
 }
 
@@ -686,19 +751,85 @@ fn fmt_num_trim(n: f64) -> String {
     }
 }
 
+fn round_to(n: f64, places: u32) -> f64 {
+    if !n.is_finite() { return n; }
+    if places == 0 { return n.round(); }
+    let p = places.min(308);
+    let f = 10f64.powi(p as i32);
+    (n * f).round() / f
+}
+
+// Take canonical "1234567.89" ('.' decimal, no grouping) and render with separators.
+fn render_with_spec(canon: &str, spec: &FormatSpec) -> String {
+    let (sign, digits) = if canon.starts_with('-') { ("-", &canon[1..]) } else { ("", canon) };
+    let mut parts = digits.split('.');
+    let int_part = parts.next().unwrap_or("");
+    let mut frac = parts.next().unwrap_or("").to_string();
+
+    let need = spec.decimals as usize;
+    if need == 0 {
+        frac.clear();
+    } else {
+        if frac.len() < need { while frac.len() < need { frac.push('0'); } }
+        else if frac.len() > need { frac.truncate(need); }
+    }
+
+    let grouped = if let Some(sep) = spec.sep_thousands {
+        let mut out = String::with_capacity(int_part.len() + int_part.len() / 3 + 1);
+        let bytes = int_part.as_bytes();
+        let len = bytes.len();
+        for i in 0..len {
+            out.push(bytes[i] as char);
+            let left = len - 1 - i;
+            if left > 0 && left % 3 == 0 { out.push(sep); }
+        }
+        out
+    } else {
+        int_part.to_string()
+    };
+
+    if need == 0 {
+        format!("{sign}{grouped}")
+    } else {
+        format!("{sign}{grouped}{}{}", spec.sep_decimal, frac)
+    }
+}
+
 fn fmt_value_raw(v: &Value) -> String {
     match v {
-        Value::Str(s) => s.clone(),
+        Value::Formatted(inner, spec) => {
+            match &**inner {
+                Value::Num(x) => {
+                    if !x.is_finite() { format!("{x}") } else {
+                        let rounded = round_to(*x, spec.decimals);
+                        let canon = fmt_num_trim(rounded); // you already have fmt_num_trim
+                        render_with_spec(&canon, spec)
+                    }
+                }
+                Value::Pct(p) => {
+                    if !p.is_finite() { format!("{p}") } else {
+                        let rounded = round_to(*p, spec.decimals);
+                        let canon = fmt_num_trim(rounded);
+                        render_with_spec(&canon, spec)
+                    }
+                }
+                // If you later wrap Big/Int/etc., stringify canonically then render.
+                other => fmt_value_raw(other),
+            }
+        }
+
+        Value::Str(s)  => s.clone(),
         Value::Char(c) => c.to_string(),
-        Value::Num(n) => fmt_num_trim(*n),
+        Value::Num(n)  => fmt_num_trim(*n),
         Value::Bool(b) => if *b { "true".into() } else { "false".into() },
-        Value::Nil => "nil".into(),
-        _ => format!("{}", v), // Array/Map/Pair -> use Display
+        Value::Nil     => "nil".into(),
+        _ => format!("{}", v), // Array/Map/Pair/Seq -> use Display
     }
 }
 
 fn as_num(v: Value, at: Span, label: &str) -> Result<f64, Diag> {
     match v {
+        Value::Formatted(inner, _) => as_num(*inner, at, label), // unwrap recursively
         Value::Num(n) => Ok(n),
         Value::Pct(p) => Ok(p),
         _ => Err(need_number(label, at)),
@@ -1210,7 +1341,12 @@ fn call_action_by_name(
         // ----- Introspection -----
         "type" => {
             arity(1)?;
-            let kind = match &args[0] {
+            let recv = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+
+            let kind = match recv {
                 Value::Nil                         => "nil",
                 Value::Bool(_)                     => "bool",
                 Value::Num(n) if n.is_finite()
@@ -1225,79 +1361,122 @@ fn call_action_by_name(
                 Value::Seq(_)                      => "seq",
                 Value::Unit                        => "unit",
                 Value::CtrlSkip | Value::CtrlStop  => "control",
+            _ => "unknown",
             };
             Value::Str(kind.to_string())
         }
 
         "format" => {
-            // Numeric formatting ONLY.
             // Usage:
-            //   num.format(2)        -> round to 2 decimals (keeps numeric type)
-            //   num.format(".2f")    -> legacy: same as above
-            //   num.format(",.2f")   -> same (commas ignored)
-            // Any other spec -> no-op (return receiver unchanged)
-
-            if args.len() != 2 {
-                return Err(rt(
-                    "A0402",
-                    format!("wrong number of arguments: expected 2, got {}", args.len()),
-                    sp.clone(),
-                ));
+            //   n.format(dec)                     // decimals only
+            //   n.format(dec, sep_th, sep_dec)    // full spec
+            // dec: integer >= 0
+            // sep_th: ',', '.', '_', '\'', 'none'
+            // sep_dec: '.', ','
+            if args.len() != 2 && args.len() != 4 {
+                return Err(rt("P0901", "format expects 1 or 3 args: (dec) or (dec, sep_th, sep_dec)", sp.clone()));
             }
 
-            // Parse precision from either integer or string (".Nf" or ",.Nf")
-            let parse_prec_from_str = |s: &str| -> Option<i32> {
-                // strip commas
-                let mut spec = s.replace(',', "");
-                if let Some(rest) = spec.strip_prefix('.') {
-                    // parse digits until a non-digit (expecting trailing 'f')
-                    let mut digits = String::new();
-                    let mut suffix = None;
-                    for ch in rest.chars() {
-                        if ch.is_ascii_digit() { digits.push(ch); }
-                        else { suffix = Some(ch); break; }
-                    }
-                    match suffix {
-                        Some('f') => digits.parse::<i32>().ok(),
-                        // ".N" with no 'f' → accept anyway
-                        None if !digits.is_empty() => digits.parse::<i32>().ok(),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
+            // receiver: unwrap if already formatted
+            let inner = match &args[0] {
+                Value::Formatted(inner, _) => (*inner.clone()),
+                v => v.clone(),
             };
 
-            let prec_opt: Option<i32> = match &args[1] {
-                // preferred: integer precision argument (no quotes)
+            // arg1: decimals
+            let dec: u32 = match &args[1] {
                 Value::Num(x) => {
-                    if !x.is_finite() { None } else {
-                        let n = *x as i32;
-                        // require integer-ish
-                        if (*x - (n as f64)).abs() <= 0.0 && n >= 0 { Some(n) } else { None }
+                    if !x.is_finite() { 0 } else {
+                        let n = *x as i64;
+                        if (*x - n as f64).abs() > 0.0 || n < 0 {
+                            return Err(rt("P0901", "format decimals must be integer >= 0", sp.clone()));
+                        }
+                        n as u32
                     }
                 }
-                // legacy strings
-                Value::Str(s) => parse_prec_from_str(s),
-                _ => None,
+                Value::Str(s) => s.parse::<u32>().map_err(|_| rt("P0901", "format decimals must be integer >= 0", sp.clone()))?,
+                Value::Char(c) if c.is_ascii_digit() => c.to_string().parse::<u32>().map_err(|_| rt("P0901", "format decimals must be integer >= 0", sp.clone()))?,
+                _ => return Err(rt("T0205", "format decimals must be integer >= 0", sp.clone())),
             };
 
-            // helper: round half away from zero to N decimal places
-            fn round_to(n: f64, places: i32) -> f64 {
-                if !n.is_finite() { return n; }
-                if places <= 0 { return n.round(); }
-                let p = places.min(308);
-                let f = 10f64.powi(p);
-                (n * f).round() / f
+            let mut spec = FormatSpec { decimals: dec, sep_thousands: None, sep_decimal: '.' };
+
+            if args.len() == 4 {
+                // thousands sep (arg2)
+                spec.sep_thousands = match &args[2] {
+                    Value::Str(s) => match s.as_str() {
+                        "," => Some(','),
+                        "." => Some('.'),
+                        "_" => Some('_'),
+                        "'" => Some('\''),
+                        "none" => None,
+                        other => return Err(rt("P0901", format!("unknown thousands separator: {other}"), sp.clone())),
+                    },
+                    Value::Char(c) => match *c {
+                        ',' => Some(','),
+                        '.' => Some('.'),
+                        '_' => Some('_'),
+                        '\'' => Some('\''),
+                        _ => return Err(rt("P0901", "sep_th must be ',', '.', '_', '\\'', or 'none'", sp.clone())),
+                    },
+                    _ => return Err(rt("T0205", "sep_th must be ',', '.', '_', '\\'', or 'none'", sp.clone())),
+                };
+
+                // decimal marker (arg3)
+                spec.sep_decimal = match &args[3] {
+                    Value::Str(s) => match s.as_str() {
+                        "." => '.',
+                        "," => ',',
+                        other => return Err(rt("P0901", format!("unknown decimal marker: {other}"), sp.clone())),
+                    },
+                    Value::Char(c) => match *c {
+                        '.' => '.',
+                        ',' => ',',
+                        _ => return Err(rt("P0901", "sep_dec must be '.' or ','", sp.clone())),
+                    },
+                    _ => return Err(rt("T0205", "sep_dec must be '.' or ','", sp.clone())),
+                };
             }
 
-            // If we parsed a precision, shape numerically; otherwise NO-OP (return receiver unchanged)
-            match (&args[0], prec_opt) {
-                (Value::Num(x), Some(p)) => Value::Num(round_to(*x, p)),
-                (Value::Pct(pv), Some(p)) => Value::Pct(round_to(*pv, p)),
-                // When you add Big/Int variants, mirror quantize/round and return same variant.
-                (v @ Value::Num(_), None) | (v @ Value::Pct(_), None) => v.clone(),
+            match inner {
+                Value::Num(x) => Value::Formatted(Box::new(Value::Num(x)), spec),
+                Value::Pct(p) => Value::Formatted(Box::new(Value::Pct(p)), spec),
                 _ => return Err(rt("T0201", "format receiver must be a number", sp.clone())),
+            }
+        }
+
+        "clear_format" => {
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            match &args[0] {
+                Value::Formatted(inner, _) => (*inner.clone()),
+                v => v.clone(),
+            }
+        }
+
+        "format_info" => {
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+            }
+            match &args[0] {
+                Value::Formatted(_, spec) => {
+                    let mut m = BTreeMap::new();
+                    m.insert("dec".to_string(), Value::Num(spec.decimals as f64));
+                    let th = match spec.sep_thousands {
+                        Some(',') => ",".to_string(),
+                        Some('.') => ".".to_string(),
+                        Some('_') => "_".to_string(),
+                        Some('\'') => "'".to_string(),
+                        None => "none".to_string(),
+                        _ => "?".to_string(),
+                    };
+                    let dm = match spec.sep_decimal { '.' => ".", ',' => ",", _ => "?" }.to_string();
+                    m.insert("th".to_string(), Value::Str(th));
+                    m.insert("decmark".to_string(), Value::Str(dm));
+                    Value::Map(m)
+                }
+                _ => Value::Nil,
             }
         }
 
@@ -3561,21 +3740,19 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "+" => {
                     let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    return match (lv, rv) {
-                        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)), // only str+str concatenates
 
-                        (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a + b)),
-                        (Value::Num(a), Value::Pct(b)) => Ok(Value::Num(a + b)),
-                        (Value::Pct(a), Value::Num(b)) => Ok(Value::Num(a + b)),
-                        (Value::Pct(a), Value::Pct(b)) => Ok(Value::Num(a + b)),
+                    // string + string keeps your behavior
+                    if let (Value::Str(a), Value::Str(b)) = (&lv, &rv) {
+                        return Ok(Value::Str(a.clone() + b));
+                    }
 
-                        (l, r) => Err(rt(
-                            "T0204",
-                            format!("'+' expects two numbers or two strings; got {} and {}",
-                                    fmt_value_raw(&l), fmt_value_raw(&r)),
-                            sp.clone(),
-                        )),
-                    };
+                    // numeric path with formatting inheritance
+                    let (lu, lspec) = take_owned_unformatted(lv);
+                    let (ru, rspec) = take_owned_unformatted(rv);
+                    let a = as_num(lu, span_of_expr(lhs), "addition: left operand")?;
+                    let b = as_num(ru, span_of_expr(rhs), "addition: right operand")?;
+                    let out = Value::Num(a + b);
+                    Ok(reapply_format(out, lspec, rspec))
                 }
                 "++" => {
                     let lv = eval_expr(lhs, sess)?;
@@ -3590,25 +3767,32 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "-" => {
                     let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    return match (lv, rv) {
-                        (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a - b)),
-                        (Value::Num(a), Value::Pct(b)) => Ok(Value::Num(a - b)),
-                        (Value::Pct(a), Value::Num(b)) => Ok(Value::Num(a - b)),
-                        (Value::Pct(a), Value::Pct(b)) => Ok(Value::Num(a - b)),
-
-                        (l, r) => Err(rt(
-                            "T0204",
-                            format!("'-' expects two numbers; got {} and {}",
-                                    fmt_value_raw(&l), fmt_value_raw(&r)),
-                            sp.clone(),
-                        )),
-                    };
+                    let (lu, lspec) = take_owned_unformatted(lv);
+                    let (ru, rspec) = take_owned_unformatted(rv);
+                    let a = as_num(lu, span_of_expr(lhs), "subtraction: left operand")?;
+                    let b = as_num(ru, span_of_expr(rhs), "subtraction: right operand")?;
+                    let out = Value::Num(a - b);
+                    Ok(reapply_format(out, lspec, rspec))
                 }
-                "*" => { let (a,b) = bin_nums(lhs, rhs, sess, "multiplication")?; Ok(Value::Num(a * b)) }
+                "*" => {
+                    let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
+                    let (lu, lspec) = take_owned_unformatted(lv);
+                    let (ru, rspec) = take_owned_unformatted(rv);
+                    let a = as_num(lu, span_of_expr(lhs), "multiplication: left")?;
+                    let b = as_num(ru, span_of_expr(rhs), "multiplication: right")?;
+                    let out = Value::Num(a * b);
+                    Ok(reapply_format(out, lspec, rspec))
+                }
+
                 "/" => {
-                    let (a,b) = bin_nums(lhs, rhs, sess, "division")?;
+                    let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
+                    let (lu, lspec) = take_owned_unformatted(lv);
+                    let (ru, rspec) = take_owned_unformatted(rv);
+                    let a = as_num(lu, span_of_expr(lhs), "division: left")?;
+                    let b = as_num(ru, span_of_expr(rhs), "division: right")?;
                     if b == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
-                    Ok(Value::Num(a / b))
+                    let out = Value::Num(a / b);
+                    Ok(reapply_format(out, lspec, rspec))
                 }
                 "%" => {
                     let (a,b) = bin_nums(lhs, rhs, sess, "modulo")?;
@@ -3661,12 +3845,24 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 // comparisons (bool)
-                "==" => { let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?; Ok(Value::Bool(lv == rv)) }
-                "!=" => { let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?; Ok(Value::Bool(lv != rv)) }
+                "==" => {
+                    let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
+                    let (la, _) = strip_format(&lv);
+                    let (rb, _) = strip_format(&rv);
+                    Ok(Value::Bool(la == rb))
+                }
+                "!=" => {
+                    let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
+                    let (la, _) = strip_format(&lv);
+                    let (rb, _) = strip_format(&rv);
+                    Ok(Value::Bool(la != rb))
+                }
                 "<" | "<=" | ">" | ">=" => {
                     let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    let b = match (op.as_str(), lv, rv) {
+                    let (la, _) = strip_format(&lv);
+                    let (rb, _) = strip_format(&rv);
+                    let b = match (op.as_str(), la, rb) {
                         ("<",  Value::Num(a), Value::Num(b)) => a <  b,
                         ("<=", Value::Num(a), Value::Num(b)) => a <= b,
                         (">",  Value::Num(a), Value::Num(b)) => a >  b,
