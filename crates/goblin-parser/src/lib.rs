@@ -721,6 +721,120 @@ impl<'t> Parser<'t> {
         closed
     }
 
+    fn parse_format_args_pexpr_after_lparen(&mut self) -> Result<Vec<PExpr>, String> {
+        // 1) DEC: must be an integer literal token
+        let Some(tok) = self.peek() else {
+            return Err(s_help(
+                "P05F1",
+                "Expected a decimal count as the first argument to format(..)",
+                "Example: num.format(2 , .)"
+            ));
+        };
+
+        let dec_lit = if tok.kind == TokenKind::Int {
+            let lit = tok.value.clone().unwrap_or_default();
+            self.i += 1; // consume int
+            PExpr::Int(lit)
+        } else {
+            return Err(s_help(
+                "P05F2",
+                "format(..) requires an integer for the number of decimal places",
+                "Use something like: format(2 , .)"
+            ));
+        };
+
+        // If immediately ')', it's the 1-arg form
+        if self.eat_op(")") {
+            return Ok(vec![dec_lit]);
+        }
+
+        // Accept: ',', '.', '_', apostrophe ('''), or the identifier/string "none"
+        let consume_thousands = |this: &mut Parser| -> Result<PExpr, String> {
+            // First, handle operator separators without borrowing a token
+            if this.peek_op(",") { this.i += 1; return Ok(PExpr::Char(',')); }
+            if this.peek_op(".") { this.i += 1; return Ok(PExpr::Char('.')); }
+            if this.peek_op("_") { this.i += 1; return Ok(PExpr::Char('_')); }
+            // If your lexer emits a bare apostrophe as an op, uncomment:
+            // if this.peek_op("'") { this.i += 1; return Ok(PExpr::Char('\'')); }
+
+            // Identifier: `none`
+            if let Some(t) = this.peek() {
+                let is_none_ident = matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("none");
+                if is_none_ident {
+                    this.i += 1;
+                    return Ok(PExpr::Str("none".into()));
+                }
+            }
+
+            // String literals: ",", ".", "_", "'", "none"
+            if let Some(t) = this.peek() {
+                let is_string = matches!(t.kind, TokenKind::String);
+                if is_string {
+                    // clone the string BEFORE advancing, so we don't hold a borrow
+                    let s = t.value.as_deref().unwrap_or_default().to_string();
+                    this.i += 1;
+                    return match s.as_str() {
+                        ","    => Ok(PExpr::Char(',')),
+                        "."    => Ok(PExpr::Char('.')),
+                        "_"    => Ok(PExpr::Char('_')),
+                        "'"    => Ok(PExpr::Char('\'')),
+                        "none" => Ok(PExpr::Str("none".into())),
+                        _ => Err(s_help("P05F3",
+                                        "format: unknown thousands separator",
+                                        "Use ',', '.', '_', \"'\", or 'none'")),
+                    };
+                }
+            }
+
+            Err(s_help(
+                "P05F4",
+                "Expected a thousands separator after the decimals in format(..)",
+                "Use ',', '.', '_', \"'\", or 'none': format(2 , .)"
+            ))
+        };
+
+        // Decimal marker: must be '.' or ','
+        let consume_decimal = |this: &mut Parser| -> Result<PExpr, String> {
+            // Operators first
+            if this.peek_op(".") { this.i += 1; return Ok(PExpr::Char('.')); }
+            if this.peek_op(",") { this.i += 1; return Ok(PExpr::Char(',')); }
+
+            // String literals: "." or ","
+            if let Some(t) = this.peek() {
+                if matches!(t.kind, TokenKind::String) {
+                    let s = t.value.as_deref().unwrap_or_default().to_string();
+                    this.i += 1;
+                    return match s.as_str() {
+                        "." => Ok(PExpr::Char('.')),
+                        "," => Ok(PExpr::Char(',')),
+                        _ => Err(s_help("P05F5",
+                                        "format: decimal marker must be '.' or ','",
+                                        "Example: format(2 , .)")),
+                    };
+                }
+            }
+
+            Err(s_help(
+                "P05F6",
+                "Expected a decimal marker '.' or ',' after the thousands separator",
+                "Example: format(2 , .)"
+            ))
+        };
+
+        let sep_th = consume_thousands(self)?;
+        let sep_dec = consume_decimal(self)?;
+
+        if !self.eat_op(")") {
+            return Err(s_help(
+                "P05F7",
+                "Expected ')' to close format(..)",
+                "Close the call: num.format(2 , .)"
+            ));
+        }
+
+        Ok(vec![dec_lit, sep_th, sep_dec])
+    }
+
     fn apply_postfix_ops(&mut self, mut expr: PExpr) -> PExpr {
         // decide if token after an op starts an expression; keeps "**" and "//" postfix
         // from stealing binary uses like `a ** 2` or `a // 2`
@@ -5463,31 +5577,42 @@ impl<'t> Parser<'t> {
 
             // ---------- dot-call: .name or .name(args...) (call-only) ----------
             if self.eat_op(".") {
-                // Dot is for calling only. It must be followed by an identifier.
-                let Some(opname) = self.eat_ident() else {
-                    return Err(s_help(
-                        "P0504",
-                        "Expected a callable name after '.'",
-                        "Use '.' only to call: Player.take_damage(30) or Player.status",
-                    ));
-                };
+                // require identifier after '.'
+                let name_tok = self
+                    .eat_ident()
+                    .ok_or_else(|| s_help("P.DOTID", "Expected identifier after '.'", "Example: obj.method(...)"))?;
+                let opname = name_tok.as_str().to_string();
 
                 if self.eat_op("(") {
-                    // normal arg list (may be empty)
-                    let args = if self.eat_op(")") { vec![] } else { self.parse_args_paren()? };
+                    // Special-case: .format(...)
+                    if opname == "format" {
+                        // Parses: format(DEC)  or  format(DEC THOUSANDS DECIMAL)
+                        // Example: x.format(2 , .)   // US  -> thousands ','  decimal '.'
+                        //          x.format(2 . ,)   // EU  -> thousands '.'  decimal ','
+                        //          x.format(2 "none" .) // no thousands sep, decimal '.'
+                        let args = self.parse_format_args_pexpr_after_lparen()?;
 
-                    // NEW: if LHS was produced by postfix '?', lower to OptCall(lhs, name, args)
-                    lhs = match lhs {
-                        PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, args),
-                        other                  => PExpr::Call(Box::new(other), opname, args),
-                    };
+                        lhs = match lhs {
+                            PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, args),
+                            other                  => PExpr::Call(Box::new(other),  opname, args),
+                        };
+                    } else {
+                        // Fallback: normal comma-separated args (may be empty)
+                        let args = if self.eat_op(")") { vec![] } else { self.parse_args_paren()? };
+
+                        lhs = match lhs {
+                            PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, args),
+                            other                  => PExpr::Call(Box::new(other),  opname, args),
+                        };
+                    }
                 } else {
                     // zero-arg sugar: obj.foo  ==  obj.foo()
                     lhs = match lhs {
-                        PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, vec![]), // NEW: optional zero-arg call
-                        other                  => PExpr::Call(Box::new(other), opname, vec![]),
+                        PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, vec![]),
+                        other                  => PExpr::Call(Box::new(other),  opname, vec![]),
                     };
                 }
+
                 continue;
             }
 
