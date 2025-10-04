@@ -1113,10 +1113,11 @@ fn value_kind_str(v: &Value) -> &'static str {
 
 fn as_num(v: Value, at: Span, label: &str) -> Result<f64, Diag> {
     match v {
-        Value::Formatted(inner, _) => as_num(*inner, at, label), // unwrap recursively
+        Value::Int(i)   => Ok(i as f64),
         Value::Float(n) => Ok(n),
-        Value::Pct(p) => Ok(p),
-        _ => Err(need_number(label, at)),
+        Value::Pct(p)   => Ok(p),
+        Value::Big(d)   => d.to_f64().ok_or_else(|| rt("T0201", format!("{label} expects a number"), at)),
+        _ => Err(rt("T0201", format!("{label} expects a number"), at)),
     }
 }
 
@@ -1363,40 +1364,40 @@ fn eval_builtin(
         "round" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d)   => Value::Big(d.round_dp(0)),
-                Value::Int(i)   => Value::Int(*i),
-                Value::Float(f) => Value::Float(f.round()),
-                Value::Pct(p)   => Value::Float(p.round()),
+                Value::Int(i)    => Value::Int(*i),                  // already integral
+                Value::Float(f)  => Value::Float(f.round()),
+                Value::Pct(p)    => Value::Float(p.round()),
+                Value::Big(d)    => Value::Big(d.round_dp(0)),
                 _ => return Err(rt("T0402", "round requires a number", sp.clone())),
             }
         }
         "floor" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d)   => Value::Big(d.floor()),
-                Value::Int(i)   => Value::Int(*i),
-                Value::Float(f) => Value::Float(f.floor()),
-                Value::Pct(p)   => Value::Float(p.floor()),
+                Value::Int(i)    => Value::Int(*i),                  // already integral
+                Value::Float(f)  => Value::Float(f.floor()),
+                Value::Pct(p)    => Value::Float(p.floor()),
+                Value::Big(d)    => Value::Big(d.floor()),
                 _ => return Err(rt("T0402", "floor requires a number", sp.clone())),
             }
         }
         "ceil" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d)   => Value::Big(d.ceil()),
-                Value::Int(i)   => Value::Int(*i),
-                Value::Float(f) => Value::Float(f.ceil()),
-                Value::Pct(p)   => Value::Float(p.ceil()),
+                Value::Int(i)    => Value::Int(*i),
+                Value::Float(f)  => Value::Float(f.ceil()),
+                Value::Pct(p)    => Value::Float(p.ceil()),
+                Value::Big(d)    => Value::Big(d.ceil()),
                 _ => return Err(rt("T0402", "ceil requires a number", sp.clone())),
             }
         }
         "abs" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d)   => Value::Big(d.abs()),
-                Value::Int(i)   => Value::Int(i.abs()),
-                Value::Float(f) => Value::Float(f.abs()),
-                Value::Pct(p)   => Value::Float(p.abs()),
+                Value::Int(i)    => Value::Int(i.abs()),
+                Value::Float(f)  => Value::Float(f.abs()),
+                Value::Pct(p)    => Value::Float(p.abs()),
+                Value::Big(d)    => Value::Big(d.abs()),
                 _ => return Err(rt("T0402", "abs requires a number", sp.clone())),
             }
         }
@@ -1407,6 +1408,9 @@ fn eval_builtin(
             if any_big {
                 let base = to_big_for_math(&args[0], sp.clone(), "pow (base)")?;
                 match &args[1] {
+                    Value::Int(ei) => {
+                        Value::Big(decimal_powi(base, *ei)?)
+                    }
                     Value::Big(e) => {
                         let et = e.trunc();
                         if *e == et {
@@ -1911,36 +1915,40 @@ fn call_action_by_name(
         "round" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.round_dp(0)),
-                Value::Float(f) => Value::Float(f.round()),
-                Value::Pct(p)   => Value::Float(p.round()),
+                Value::Int(i)    => Value::Int(*i),                  // already integral
+                Value::Float(f)  => Value::Float(f.round()),
+                Value::Pct(p)    => Value::Float(p.round()),
+                Value::Big(d)    => Value::Big(d.round_dp(0)),
                 _ => return Err(rt("T0402", "round requires a number", sp.clone())),
             }
         }
         "floor" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.floor()),
-                Value::Float(f) => Value::Float(f.round()),
-                Value::Pct(p)   => Value::Float(p.round()),
+                Value::Int(i)    => Value::Int(*i),                  // already integral
+                Value::Float(f)  => Value::Float(f.floor()),
+                Value::Pct(p)    => Value::Float(p.floor()),
+                Value::Big(d)    => Value::Big(d.floor()),
                 _ => return Err(rt("T0402", "floor requires a number", sp.clone())),
             }
         }
         "ceil" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.ceil()),
-                Value::Float(f) => Value::Float(f.round()),
-                Value::Pct(p)   => Value::Float(p.round()),
+                Value::Int(i)    => Value::Int(*i),                  // already integral
+                Value::Float(f)  => Value::Float(f.ceil()),
+                Value::Pct(p)    => Value::Float(p.ceil()),
+                Value::Big(d)    => Value::Big(d.ceil()),
                 _ => return Err(rt("T0402", "ceil requires a number", sp.clone())),
             }
         }
         "abs" => {
             arity(1)?;
             match &args[0] {
-                Value::Big(d) => Value::Big(d.abs()),
-                Value::Float(f) => Value::Float(f.round()),
-                Value::Pct(p)   => Value::Float(p.round()),
+                Value::Int(i)    => Value::Int(i.abs()),
+                Value::Float(f)  => Value::Float(f.abs()),
+                Value::Pct(p)    => Value::Float(p.abs()),
+                Value::Big(d)    => Value::Big(d.abs()),
                 _ => return Err(rt("T0402", "abs requires a number", sp.clone())),
             }
         }
@@ -4266,9 +4274,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Postfix(expr, op, sp) => {
             let v = eval_expr(expr, sess)?;
             match op.as_str() {
-                "%"  => {
+                "%" => {
                     let n = as_num(v, span_of_expr(expr), "percent literal")?;
-                    Ok(Value::Pct(n / 100.0))     
+                    Ok(Value::Pct(n / 100.0))
                 }
                 "**" => Ok(Value::Float(as_num(v, span_of_expr(expr), "postfix square")?.powf(2.0))),
                 "//" => {
