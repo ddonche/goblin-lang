@@ -1,0 +1,33 @@
+@Person = name: "{name}", age: 25
+    act greet()
+        say "Hello, I'm {name} and I'm {age} years old"
+    end
+end
+
+alice|Person = "Alice", 30
+alice >> name
+alice.greet()
+
+/// Test field modification
+alice >> age = 31
+alice.greet()
+
+/// Test with defaults
+bob|Person = "Bob"
+bob.greet()
+
+/// Test another class
+@Counter = value: 0
+    act increment()
+        value = value + 1
+    end
+    
+    act get()
+        value
+    end
+end
+
+c|Counter = 5
+say c.get()
+c.increment()
+say c.get()

@@ -21,6 +21,7 @@ pub struct BindStmt {
     pub is_const: bool,   // true if preceded by 'imm'
     pub mode: BindMode,   // Normal or Shadow
     pub span: Span,
+    pub class_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]

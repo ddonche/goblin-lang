@@ -30,6 +30,7 @@ use goblin_ast as ast;
 use goblin_diagnostics::Span;
 use serde_json as sj;
 use goblin_ast::BindMode;
+use goblin_ast::{Expr, ActionDecl};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use std::str::FromStr;
@@ -209,6 +210,10 @@ pub enum Value {
     Unit,
     CtrlSkip,  
     CtrlStop,
+    Object {
+        class_name: String,
+        fields: BTreeMap<String, Value>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -303,6 +308,16 @@ impl fmt::Display for Value {
             Value::Bool(b)  => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::Nil      => write!(f, "nil"),
             Value::Big(d)   => write!(f, "{}", d),
+            Value::Object { class_name, fields } => {
+                write!(f, "{}{{", class_name)?;
+                let mut first = true;
+                for (k, v) in fields.iter() {
+                    if !first { write!(f, ", ")?; }
+                    first = false;
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, "}}")
+            }
 
             // ---- Array (single arm) ----
             Value::Array(xs) => {
@@ -374,6 +389,7 @@ pub struct Session {
     history: Vec<Value>,                               // v(n)
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
     pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
+    pub classes: BTreeMap<String, ast::ClassDecl>,
     pub loop_depth: i32,
     rng_state: u128,
     pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding 
@@ -387,11 +403,11 @@ impl Session {
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
+            classes: BTreeMap::new(),  // ADD THIS
             loop_depth: 0,
             rng_state: seed,
             consts: vec![BTreeMap::new()],
         }
-
     }
 
     pub fn get_var_mut(&mut self, name: &str) -> Option<&mut Value> {
@@ -595,6 +611,14 @@ fn to_json(v: &Value) -> sj::Value {
         Value::Nil | Value::Unit => sj::Value::Null,
         Value::CtrlSkip | Value::CtrlStop => sj::Value::String("control".to_string()),
         Value::Formatted(_, _) => unreachable!("peeled above"),
+        Value::Object { class_name, fields } => {
+            let mut obj = serde_json::Map::new();
+            obj.insert("__class".to_string(), sj::Value::String(class_name.clone()));
+            for (k, v) in fields {
+                obj.insert(k.clone(), to_json(v));
+            }
+            sj::Value::Object(obj)
+        }
     }
 }
 
@@ -1108,6 +1132,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::Unit                => "unit",
         Value::CtrlSkip | Value::CtrlStop => "control",
         Value::Formatted(_, _)     => "formatted",
+        Value::Object { .. } => "object",
     }
 }
 
@@ -1231,9 +1256,19 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             Ok(None)
         }
 
+        ast::Stmt::Class(decl) => {
+            sess.classes.insert(decl.name.clone(), decl.clone());
+            Ok(None)
+        }
+
         ast::Stmt::Bind(b) => {
             // name + span
             let (name, name_span) = (&b.name.0, b.name.1.clone());
+
+            // Check if this is object instantiation
+            if let Some(class_name) = &b.class_name {
+                return instantiate_object(sess, name, class_name, &b.expr, name_span, b.is_const);
+            }
 
             // evaluate RHS once
             let rhs = eval_expr(&b.expr, sess)?;
@@ -3871,14 +3906,67 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // Plain assignment (ident = expr)
         ast::Expr::Assign(lhs, rhs, _sp) => {
-            let name = if let ast::Expr::Ident(n, _) = &**lhs {
-                n.clone()
-            } else {
-                return Err(rt("P0801", "left-hand side of assignment must be a name", span_of_expr(lhs)));
-            };
-            let v = eval_expr(rhs, sess)?;
-            sess.set_var(name, v.clone());
-            Ok(v)
+            // Check for field assignment: object >> field = value
+            // Could be Binary or Member depending on how parser handles >>
+            match &**lhs {
+                ast::Expr::Member(obj_expr, field_name, _) => {
+                    // Field assignment via Member syntax
+                    let var_name = match &**obj_expr {
+                        ast::Expr::Ident(n, _) => n.clone(),
+                        _ => return Err(rt("P0804", "can only assign to fields of object variables", span_of_expr(lhs))),
+                    };
+                    
+                    let new_value = eval_expr(rhs, sess)?;
+                    
+                    let obj_slot = sess.get_var_mut(&var_name)
+                        .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs)))?;
+                    
+                    match obj_slot {
+                        Value::Object { fields, .. } => {
+                            fields.insert(field_name.clone(), new_value.clone());
+                            return Ok(new_value);
+                        }
+                        _ => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
+                    }
+                }
+                
+                ast::Expr::Binary(obj_expr, op, field_expr, _) if op == ">>" => {
+                    // Field assignment via Binary syntax (if parser uses this)
+                    let var_name = match &**obj_expr {
+                        ast::Expr::Ident(n, _) => n.clone(),
+                        _ => return Err(rt("P0804", "can only assign to fields of object variables", span_of_expr(lhs))),
+                    };
+                    
+                    let field_name = match &**field_expr {
+                        ast::Expr::Ident(n, _) => n.clone(),
+                        _ => return Err(rt("P0804", "field name required after >>", span_of_expr(lhs))),
+                    };
+                    
+                    let new_value = eval_expr(rhs, sess)?;
+                    
+                    let obj_slot = sess.get_var_mut(&var_name)
+                        .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs)))?;
+                    
+                    match obj_slot {
+                        Value::Object { fields, .. } => {
+                            fields.insert(field_name, new_value.clone());
+                            return Ok(new_value);
+                        }
+                        _ => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
+                    }
+                }
+                
+                ast::Expr::Ident(name, _) => {
+                    // Simple assignment: name = expr
+                    let v = eval_expr(rhs, sess)?;
+                    sess.set_var(name.clone(), v.clone());
+                    return Ok(v);
+                }
+                
+                _ => {
+                    return Err(rt("P0801", "left-hand side of assignment must be a name or field access", span_of_expr(lhs)));
+                }
+            }
         }
 
         // ---- Collections ----
@@ -4035,7 +4123,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         None => Err(rt("R0403", format!("missing key '{}'", name), sp.clone())),
                     }
                 }
-                _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
+                // ADD THIS CASE
+                Value::Object { fields, .. } => {
+                    fields.get(name)
+                        .cloned()
+                        .ok_or_else(|| rt("R0403", format!("no field '{}'", name), sp.clone()))
+                }
+                _ => Err(rt("T0402", "member access requires a map or object", span_of_expr(base))),
             }
         }
 
@@ -4162,7 +4256,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
             // Mutating casts for function form when arg is a plain identifier.
-            // Examples: float(x), int(x), big(x)
             if args.is_empty() {
                 if matches!(name.as_str(), "float" | "f" | "int" | "i" | "big" | "b" | "str" | "string" | "pct" | "percent") {
                     if let ast::Expr::Ident(var_name, _) = &**base {
@@ -4173,12 +4266,14 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                 }
             }
-            // Special-case: <expr>.type   (no args) — decide from AST text for number literals
+            
+            // Special-case: <expr>.type
             if name == "type" && args.is_empty() {
                 let recv = eval_expr(base, sess)?;
                 return Ok(Value::Str(value_kind_str(&recv).to_string()));
             }
-
+            
+            // Bang methods
             if name.ends_with('!') {
                 let recv_ident = match &**base {
                     ast::Expr::Ident(n, _) => Some(n.as_str()),
@@ -4190,8 +4285,23 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 };
                 return mutate_via_call_name(sess, name, recv_ident, args, sp.clone());
             }
-
-            // existing receiver-call path
+            
+            // Object method calls - check if receiver is a variable holding an object
+            if let ast::Expr::Ident(var_name, _) = &**base {
+                let recv = eval_expr(base, sess)?;
+                if let Value::Object { class_name, mut fields } = recv {
+                    let result = call_object_method(sess, &class_name, &mut fields, name, args, sp.clone())?;
+                    
+                    // Update the object variable with modified fields
+                    let updated_obj = Value::Object { class_name, fields };
+                    sess.set_var(var_name.clone(), updated_obj);
+                    
+                    return Ok(result);
+                }
+                // Fall through if not an object
+            }
+            
+            // Regular method calls (non-objects or non-variables)
             let recv = eval_expr(base, sess)?;
             let mut argv = Vec::with_capacity(args.len() + 1);
             argv.push(recv);
@@ -4303,6 +4413,24 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         // ---- Binary & assignment ----
         ast::Expr::Binary(lhs, op, rhs, sp) => {
             match op.as_str() {
+                ">>" => {
+                    // Field access: object >> field
+                    let obj = eval_expr(lhs, sess)?;
+                    
+                    let field_name = match &**rhs {
+                        ast::Expr::Ident(name, _) => name.clone(),
+                        _ => return Err(rt("P0803", "right side of >> must be a field name", sp.clone())),
+                    };
+                    
+                    match obj {
+                        Value::Object { fields, .. } => {
+                            fields.get(&field_name)
+                                .cloned()
+                                .ok_or_else(|| rt("R0403", format!("no field '{}'", field_name), sp.clone()))
+                        }
+                        _ => Err(rt("T0403", ">> requires an object on the left side", sp.clone()))
+                    }
+                }
                 // arithmetic
                 "+" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
@@ -4743,4 +4871,128 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
     }
+}
+
+fn call_object_method(
+    sess: &mut Session,
+    class_name: &str,
+    fields: &mut BTreeMap<String, Value>,
+    method_name: &str,
+    arg_exprs: &[ast::Expr],
+    sp: Span,
+) -> Result<Value, Diag> {
+    let class = sess.classes.get(class_name)
+        .ok_or_else(|| rt("R0116", format!("class '{}' not found", class_name), sp.clone()))?
+        .clone();
+    
+    let action = class.actions.iter()
+        .find(|a| a.name == method_name)
+        .ok_or_else(|| rt("R0404", format!("no action '{}' in class '{}'", method_name, class_name), sp.clone()))?
+        .clone();
+    
+    let mut arg_vals = Vec::with_capacity(arg_exprs.len());
+    for a in arg_exprs {
+        arg_vals.push(eval_expr(a, sess)?);
+    }
+    
+    sess.push_frame();
+    sess.set_var("self".to_string(), Value::Map(fields.clone()));
+    
+    // Bind each field as a variable
+    for (field_name, field_value) in fields.iter() {
+        sess.set_var(field_name.clone(), field_value.clone());
+    }
+    
+    // Bind parameters
+    for (i, param) in action.params.iter().enumerate() {
+        if i < arg_vals.len() {
+            sess.set_var(param.name.clone(), arg_vals[i].clone());
+        } else if let Some(def_expr) = &param.default {
+            let def_val = eval_expr(def_expr, sess)?;
+            sess.set_var(param.name.clone(), def_val);
+        } else {
+            sess.pop_frame();
+            return Err(rt("A0402", format!("missing required parameter '{}'", param.name), sp));
+        }
+    }
+    
+    let result = {
+        let ast::ActionBody::Block(stmts) = &action.body;
+        let mut last = Value::Unit;
+        for stmt in stmts {
+            if let Some(v) = eval_stmt(stmt, sess)? {
+                match v {
+                    Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
+                    other => last = other,
+                }
+            }
+        }
+        last
+    };
+    
+    // CRITICAL: Copy modified field values back BEFORE popping frame
+    let current_frame = sess.env.last().expect("has frame");
+    let field_names: Vec<String> = fields.keys().cloned().collect();
+    for field_name in field_names {
+        if let Some(modified_value) = current_frame.get(&field_name) {
+            fields.insert(field_name, modified_value.clone());
+        }
+    }
+    
+    sess.pop_frame();
+    Ok(result)
+}
+
+fn instantiate_object(
+    sess: &mut Session,
+    var_name: &str,
+    class_name: &str,
+    expr: &ast::Expr,
+    span: Span,
+    is_const: bool,
+) -> Result<Option<Value>, Diag> {
+    // Get class definition
+    let class = sess.classes.get(class_name)
+        .ok_or_else(|| rt("R0115", format!("unknown class '{}'", class_name), span.clone()))?
+        .clone();
+    
+    // Evaluate RHS expression
+    let rhs_val = eval_expr(expr, sess)?;
+    
+    // Convert to array of values
+    let values = match rhs_val {
+        Value::Array(vals) => vals,
+        single => vec![single],
+    };
+    
+    // Match values to fields positionally
+    let mut field_map = BTreeMap::new();
+    let mut value_idx = 0;
+    
+    for field in &class.fields {
+        let value = if value_idx < values.len() {
+            let val = &values[value_idx];
+            value_idx += 1;
+            
+            // Check for skip marker (Unit represents :: or nc)
+            if matches!(val, Value::Unit) {
+                eval_expr(&field.default, sess)?
+            } else {
+                val.clone()
+            }
+        } else {
+            // No more values - use default
+            eval_expr(&field.default, sess)?
+        };
+        
+        field_map.insert(field.name.clone(), value);
+    }
+    
+    let obj = Value::Object {
+        class_name: class_name.to_string(),
+        fields: field_map,
+    };
+    
+    sess.define_local(var_name.to_string(), obj, is_const);
+    Ok(None)
 }

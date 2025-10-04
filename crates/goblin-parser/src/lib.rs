@@ -133,9 +133,9 @@ fn parse_int_literal_to_i128(s: &str) -> Option<i128> {
 #[derive(Debug, Clone)]
 struct PAction {
     name: String,
-    params: Vec<(String, Option<PExpr>)>, // (param name, optional default)
-    body: Vec<PExpr>,                     // lowered later
-    is_single: bool,                      // action Foo() = expr
+    params: Vec<(String, Option<PExpr>)>,
+    body: Vec<ast::Stmt>,  // <-- Changed from Vec<PExpr>
+    is_single: bool,
 }
 
 
@@ -1875,7 +1875,7 @@ impl<'t> Parser<'t> {
             return Ok(PAction {
                 name,
                 params,
-                body: vec![expr],
+                body: vec![ast::Stmt::Expr(self.lower_expr(expr))],
                 is_single: true,
             });
         }
@@ -1912,7 +1912,7 @@ impl<'t> Parser<'t> {
         // parse_action_after_keyword set body (Vec<PExpr>) when '=' was present.
         if !pa.body.is_empty() {
             let body_stmts: Vec<ast::Stmt> = pa.body.into_iter()
-                .map(|pe| ast::Stmt::Expr(self.lower_expr(pe)))
+                .map(|stmt| stmt)
                 .collect();
 
             let act = ast::ActionDecl {
@@ -2020,7 +2020,6 @@ impl<'t> Parser<'t> {
     // === BEGIN: parse_bind_stmt ================================================
     fn parse_bind_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
-
         // 1) Optional 'imm'
         let is_const = if self.peek_word("imm") {
             let _ = self.eat_word("imm");
@@ -2028,7 +2027,6 @@ impl<'t> Parser<'t> {
         } else {
             false
         };
-
         // 2) IDENT (capture span + text)
         let (name_text, name_span) = {
             let Some(t) = self.peek().cloned() else {
@@ -2045,7 +2043,27 @@ impl<'t> Parser<'t> {
                 }
             }
         };
-
+        
+        // NEW: Check for |ClassName pattern (object instantiation)
+        let class_name = if self.peek_op("|") {
+            self.i += 1; // consume |
+            let Some(class_tok) = self.peek().cloned() else {
+                return Err(s_help("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
+            };
+            match class_tok.kind {
+                TokenKind::Ident => {
+                    let cname = class_tok.value.clone().unwrap_or_default();
+                    self.i += 1; // consume class name
+                    Some(cname)
+                }
+                _ => {
+                    return Err(s_help("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
+                }
+            }
+        } else {
+            None
+        };
+        
         // 3) Operator: '=' (Normal) or '[=' (Shadow)
         let (mode, op_span) = if self.peek_op("=") {
             let sp = self.peek().unwrap().span.clone();
@@ -2062,18 +2080,36 @@ impl<'t> Parser<'t> {
                 "Use '=' for a normal assign, or '[=' (shadow) to declare+init in the current scope.",
             ));
         };
-
-        // 4) RHS expression (no nested assignment on RHS)
-        let rhs_pe = self.parse_coalesce()?;
-        let rhs = self.lower_expr(rhs_pe);
+        // 4) RHS expression
+        let rhs = if class_name.is_some() {
+            // Object instantiation: parse comma-separated values as an array
+            let mut values = Vec::new();
+            loop {
+                let val_pe = self.parse_coalesce()?;
+                values.push(self.lower_expr(val_pe));
+                
+                if !self.peek_op(",") {
+                    break;
+                }
+                self.i += 1; // eat comma
+            }
+            
+            // Wrap in an Array expression
+            ast::Expr::Array(values, op_span.clone())
+        } else {
+            // Normal binding: single expression
+            let rhs_pe = self.parse_coalesce()?;
+            self.lower_expr(rhs_pe)
+        };
 
         // 5) Build Stmt::Bind
         Ok(ast::Stmt::Bind(ast::BindStmt {
             name: (name_text, name_span),
-            expr: rhs,
+            expr: rhs,  // Use the conditional rhs
             is_const,
             mode,
             span: op_span,
+            class_name,
         }))
     }
     // === END: parse_bind_stmt ==================================================
@@ -2595,20 +2631,20 @@ impl<'t> Parser<'t> {
                         return Err(s_help(
                             "P0906",
                             "Expected a class name after '@'",
-                            "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
+                            "Start with a capitalized name: @Player = username: \"john\", health: 100",
                         ));
                     }
-                    self.i += 1; // eat AtIdent
+                    self.i += 1;
                     (nm, tok0.span.col_start)
                 }
                 TokenKind::Op(ref op) if op == "@" => {
                     let at_col = tok0.span.col_start;
-                    self.i += 1; // eat '@'
+                    self.i += 1;
                     let Some(nm) = self.eat_ident() else {
                         return Err(s_help(
                             "P0906",
                             "Expected a class name after '@'",
-                            "Start with a capitalized name: @Player = username: \"john\" :: health: 100",
+                            "Start with a capitalized name: @Player = username: \"john\", health: 100",
                         ));
                     };
                     (nm, at_col)
@@ -2617,7 +2653,7 @@ impl<'t> Parser<'t> {
                     return Err(s_help(
                         "P0905",
                         "Expected '@' to start a class declaration",
-                        "Start the class like: @Player = username: \"john\" :: health: 100",
+                        "Start the class like: @Player = username: \"john\", health: 100",
                     ));
                 }
             }
@@ -2625,9 +2661,10 @@ impl<'t> Parser<'t> {
             return Err(s_help(
                 "P0905",
                 "Expected '@' to start a class declaration",
-                "Start the class like: @Player = username: \"john\" :: health: 100",
+                "Start the class like: @Player = username: \"john\", health: 100",
             ));
         };
+        
         if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
             return Err(s_help(
                 "P0907",
@@ -2635,17 +2672,17 @@ impl<'t> Parser<'t> {
                 "Rename it to start with uppercase: Player",
             ));
         }
+        
         if self.peek_op("!") {
             self.i += 1;
         }
 
         if self.eat_op("(") {
-            // forbid parentheses after class name
             if self.peek_op("(") {
                 return Err(s_help(
                     "P0710",
                     "Parentheses are not allowed after a class name.",
-                    "Put fields after '=': @Player = username: \"john\" :: health: 100",
+                    "Put fields after '=': @Player = username: \"john\", health: 100",
                 ));
             }
         }
@@ -2654,15 +2691,15 @@ impl<'t> Parser<'t> {
             return Err(s_help(
                 "P0908",
                 &format!("You need '=' after the class name '{}'", name),
-                "Write it like: @Player = username: \"john\" :: health: 100",
+                "Write it like: @Player = username: \"john\", health: 100",
             ));
         }
         
-        // No nc in class header
         let fields = self.parse_field_chain_line_class()?;
 
         self.eat_semi_separators();
         let mut actions: Vec<PAction> = Vec::new();
+        
         loop {
             self.skip_newlines();
             if self.eat_layout_until_close(hdr_col) || self.peek_block_close() {
@@ -2683,6 +2720,7 @@ impl<'t> Parser<'t> {
                 }
                 break;
             }
+            
             if self.is_eof() {
                 return Err(s_help(
                     "P0909",
@@ -2690,9 +2728,10 @@ impl<'t> Parser<'t> {
                         "I reached the end of the file, but the class '{}' is still open (missing 'end' or 'xx')",
                         name
                     ),
-                    "Close the class with 'end' or 'xx' (crossbones): @Player = username: \"john\" :: health: 100 end",
+                    "Close the class with 'end' or 'xx' (crossbones): @Player = username: \"john\", health: 100 end",
                 ));
             }
+            
             if let Some(tok) = self.peek() {
                 if tok.span.col_start == hdr_col {
                     let is_act_kw = matches!(&tok.kind, TokenKind::Act | TokenKind::Action)
@@ -2703,10 +2742,12 @@ impl<'t> Parser<'t> {
                     }
                 }
             }
+            
             let act_tok = match self.peek() {
                 Some(t) => t.clone(),
                 None => break,
             };
+            
             let kw = match &act_tok.kind {
                 TokenKind::Act => {
                     self.i += 1;
@@ -2732,19 +2773,23 @@ impl<'t> Parser<'t> {
                     ));
                 }
             };
+            
             let act_line = act_tok.span.line_start;
             let act_col = act_tok.span.col_start;
             let action = self.parse_action_after_keyword(kw)?;
             self.enforce_inline_brace_policy(act_line, "action")?;
+            
             if !action.body.is_empty() {
                 actions.push(action);
                 continue;
             }
+            
             let body = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
                 p.skip_newlines();
                 p.eat_layout_until_close(act_col)
                     || (p.peek_block_close() && p.toks[p.i].span.col_start == act_col)
             })?;
+            
             self.skip_stmt_separators();
             if self.block_closed_hard {
                 self.block_closed_hard = false;
@@ -2768,23 +2813,16 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-            // Convert ast::Stmt to PExpr for PAction::body
+            
+            // NEW: Just use the body directly as statements
             actions.push(PAction {
                 name: action.name,
                 params: action.params,
-                body: body
-                    .into_iter()
-                    .map(|stmt| match stmt {
-                        ast::Stmt::Expr(expr) => match expr {
-                            ast::Expr::Ident(name, _) => PExpr::Ident(name), // Ignore Span
-                            _ => PExpr::Ident("expr".into()), // Fallback for other ast::Expr variants
-                        },
-                        _ => PExpr::Ident("stmt".into()), // Fallback for non-expression statements
-                    })
-                    .collect(),
+                body: body,  // Already Vec<ast::Stmt>
                 is_single: false,
             });
         }
+        
         Ok(PExpr::ClassDecl { name, fields, actions })
     }
 
@@ -3395,22 +3433,25 @@ impl<'t> Parser<'t> {
 
         // ---- Friendly guard: looks like a class header but missing '@'
         // Pattern: Capitalized Ident '=' Ident ':'  (e.g., A = n: 1)
-        if let Some(t0) = self.peek().cloned() {
-            if let TokenKind::Ident = t0.kind {
-                if let Some(name) = t0.value.as_deref() {
-                    if !name.is_empty() && name.chars().next().unwrap().is_ascii_uppercase() {
-                        let t1 = self.toks.get(self.i + 1);
-                        let t2 = self.toks.get(self.i + 2);
-                        let t3 = self.toks.get(self.i + 3);
-                        let is_eq = matches!(t1.map(|t| &t.kind), Some(TokenKind::Op(op)) if op == "=");
-                        let is_field_name = matches!(t2.map(|t| &t.kind), Some(TokenKind::Ident));
-                        let is_colon = matches!(t3.map(|t| &t.kind), Some(TokenKind::Op(op)) if op == ":");
-                        if is_eq && is_field_name && is_colon {
-                            return Err(s_help(
-                                "P0906",
-                                "Classes must start with '@'.",
-                                &format!("Write '@{} = ...' and close the block with 'end' or 'xx'.", name),
-                            ));
+        if let Some(t0) = self.peek() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                if let Some(t1) = self.toks.get(self.i + 1) {
+                    // Check for IDENT = or IDENT [=
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "=")
+                        || matches!(t1.kind, TokenKind::Shadow)
+                    {
+                        return self.parse_bind_stmt();
+                    }
+                    // NEW: Check for IDENT | IDENT = (object instantiation)
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|") {
+                        if let Some(t2) = self.toks.get(self.i + 2) {
+                            if matches!(t2.kind, TokenKind::Ident) {
+                                if let Some(t3) = self.toks.get(self.i + 3) {
+                                    if matches!(t3.kind, TokenKind::Op(ref s) if s == "=") {
+                                        return self.parse_bind_stmt();
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -3533,20 +3574,15 @@ impl<'t> Parser<'t> {
                             .map(|(pname, def_pe)| ast::Param {
                                 name: pname,
                                 type_name: None,
-                                default: def_pe.map(|pe| self.lower_expr(pe)), // PExpr -> Expr
-                                span: sp.clone(), // <-- was action_span.clone()
+                                default: def_pe.map(|pe| self.lower_expr(pe)),
+                                span: sp.clone(),
                             })
-                            .collect();
-
-                        let body_stmts: Vec<ast::Stmt> = pa.body
-                            .into_iter()
-                            .map(|pex| ast::Stmt::Expr(self.lower_expr(pex)))
                             .collect();
 
                         ast::ActionDecl {
                             name: pa.name,
                             params,
-                            body: ast::ActionBody::Block(body_stmts),
+                            body: ast::ActionBody::Block(pa.body),  // Already Vec<ast::Stmt>
                             span: sp.clone(),
                             ret: None,
                         }
