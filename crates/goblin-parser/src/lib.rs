@@ -48,6 +48,11 @@ enum PExpr {
         fields: Vec<(String, PExpr)>,
         actions: Vec<PAction>,
     },
+    EnumVariant {
+        enum_name: String,
+        variant_name: String,
+        fields: Option<Vec<(String, PExpr)>>,
+    },
     // Applying a named template/type to named fields, e.g. Pet: name: "Fluffy" :: age: 3
     TemplateApply {
         type_name: String,
@@ -138,16 +143,24 @@ struct PAction {
     is_single: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PEnumDecl {
+    name: String,
+    variants: Vec<PEnumVariant>,
+}
+
+#[derive(Debug, Clone)]
+struct PEnumVariant {
+    name: String,
+    fields: Vec<(String, Option<PExpr>)>,  // field name, optional default
+}
 
 #[derive(Debug, Clone)]
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class {
-        name: String,
-        fields: Vec<(String, PExpr)>,
-        actions: Vec<PAction>,
-    },
+    Class { name: String, fields: Vec<(String, PExpr)>, actions: Vec<PAction> },
+    Enum(PEnumDecl),
 }
 
 #[derive(Clone, Debug)]
@@ -690,6 +703,7 @@ impl<'t> Parser<'t> {
             Array(xs)   => xs.iter().all(Self::key_expr_is_side_effect_free),
             Object(kvs) => kvs.iter().all(|(_,v)| Self::key_expr_is_side_effect_free(v)),
             StrInterp(ps) => ps.iter().all(|p| matches!(p, StrPart::Text(_) | StrPart::LValue{..})),
+            PExpr::EnumVariant { .. } => true,
 
             // harmless leaves in your PExpr
             Ident(_) | Int(_) | Float(_) | IntWithUnit(_,_) | FloatWithUnit(_,_)
@@ -1312,6 +1326,18 @@ impl<'t> Parser<'t> {
                     .map(|(k, v)| (k, Self::lower_expr_preview(v, sp.clone())))
                     .collect();
                 ast::Expr::Object(fields, sp)
+            }
+            PExpr::EnumVariant { enum_name, variant_name, fields } => {
+                ast::Expr::EnumVariant {
+                    enum_name,
+                    variant_name,
+                    fields: fields.map(|flds| 
+                        flds.into_iter()
+                            .map(|(k, v)| (k, Self::lower_expr_preview(v, sp.clone())))
+                            .collect()
+                    ),
+                    span: sp,
+                }
             }
 
             // Calls
@@ -2826,6 +2852,135 @@ impl<'t> Parser<'t> {
         Ok(PExpr::ClassDecl { name, fields, actions })
     }
 
+    fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
+        
+        // Get enum name
+        let Some(name) = self.eat_ident() else {
+            return Err(s_help(
+                "P1001",
+                "You need to give your enum a name",
+                "Write it like: enum Status",
+            ));
+        };
+        
+        // Enum names should be capitalized (optional check, matching your class style)
+        if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            return Err(s_help(
+                "P1002",
+                &format!("Enum names must start with a capital letter (found '{}')", name),
+                "Rename it to start with uppercase: Status",
+            ));
+        }
+        
+        let hdr_col = self.toks.get(self.i.saturating_sub(2))
+            .map(|t| t.span.col_start)
+            .unwrap_or(0);
+        
+        // Expect newline + indent for variants
+        self.skip_newlines();
+        
+        let mut variants = Vec::new();
+        
+        loop {
+            self.skip_newlines();
+            
+            // Check for end of enum block
+            if self.eat_layout_until_close(hdr_col) || self.peek_block_close() {
+                if self.peek_block_close() {
+                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if col != hdr_col {
+                        return Err(s_help(
+                            "P1003",
+                            &format!("This closer is misaligned: expected column {}, found column {}", hdr_col, col),
+                            "Align 'end' or 'xx' with the enum header",
+                        ));
+                    }
+                    self.expect_block_close("enum")?;
+                }
+                break;
+            }
+            
+            if self.is_eof() {
+                return Err(s_help(
+                    "P1004",
+                    &format!("The enum '{}' is missing its closing 'end' or 'xx'", name),
+                    "Close the enum with 'end' or 'xx' (crossbones)",
+                ));
+            }
+            
+            // Parse variant name
+            let Some(variant_name) = self.eat_ident() else {
+                return Err(s_help(
+                    "P1005",
+                    "Expected a variant name",
+                    "Use a simple identifier like: idle or loading",
+                ));
+            };
+            
+            // Check for variant fields: { x: int, y: int }
+            let mut fields = Vec::new();
+            if self.eat_op("{") {
+                loop {
+                    self.skip_newlines();
+                    
+                    if self.eat_op("}") {
+                        break;
+                    }
+                    
+                    let Some(field_name) = self.eat_ident() else {
+                        return Err(s_help(
+                            "P1006",
+                            "Expected a field name",
+                            "Write it like: x: int",
+                        ));
+                    };
+                    
+                    if !self.eat_op(":") {
+                        return Err(s_help(
+                            "P1007",
+                            "Expected ':' after field name",
+                            "Write it like: x: int",
+                        ));
+                    }
+                    
+                    // For now, just parse the type as an identifier/expression
+                    // (we'll ignore types in the interpreter for Phase 1)
+                    let type_expr = self.parse_coalesce()?;
+                    
+                    fields.push((field_name, Some(type_expr)));
+                    
+                    self.skip_newlines();
+                    if !self.eat_op(",") {
+                        if !self.peek_op("}") {
+                            return Err(s_help(
+                                "P1008",
+                                "Expected ',' or '}' after field",
+                                "Separate fields with commas: { x: int, y: int }",
+                            ));
+                        }
+                    }
+                }
+            }
+            
+            variants.push(PEnumVariant {
+                name: variant_name,
+                fields,
+            });
+            
+            self.skip_stmt_separators();
+        }
+        
+        if variants.is_empty() {
+            return Err(s_help(
+                "P1009",
+                &format!("Enum '{}' has no variants", name),
+                "Add at least one variant: idle or loading",
+            ));
+        }
+        
+        Ok(PEnumDecl { name, variants })
+    }
+
     fn parse_decl(&mut self) -> Result<PDecl, String> {
         if let Some(t) = self.peek() {
             let kind = t.kind.clone();
@@ -2847,10 +3002,14 @@ impl<'t> Parser<'t> {
                     }
                 }
 
-                // Free-standing actions
                 TokenKind::Ident => {
                     let kw = val.as_deref().unwrap_or("");
                     match kw {
+                        "enum" => {
+                            let _ = self.eat_ident();
+                            let enum_decl = self.parse_enum_decl()?;
+                            return Ok(PDecl::Enum(enum_decl));
+                        }
                         "act" | "action" => {
                             let _ = self.eat_ident();
                             let act = self.parse_action_after_keyword(kw)?;
@@ -2994,7 +3153,16 @@ impl<'t> Parser<'t> {
         let cond_pe = self.parse_assign()?;
         let cond = self.lower_expr(cond_pe);
 
-        // THEN block: stop at else/end/xx (block helper likely consumes the stopper)
+        // Skip the newline and indent after the condition
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // THEN block: stop at else/end/xx
         let then_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
             if let Some(t) = p.peek() {
                 match &t.kind {
@@ -3007,10 +3175,29 @@ impl<'t> Parser<'t> {
             }
         })?;
 
-        // Optional ELSE block (same stop semantics; likely consumes its own 'end/xx')
+        // Consume the Dedent that ended the block
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Optional ELSE block
         let else_stmts = if let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("else") {
                 let _ = self.eat_ident(); // 'else'
+                
+                // Skip newline and indent after 'else'
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                
                 Some(self.parse_stmt_block_until(|p: &mut Parser<'_>| {
                     if let Some(t2) = p.peek() {
                         match &t2.kind {
@@ -3029,21 +3216,27 @@ impl<'t> Parser<'t> {
             None
         };
 
-        // Closer: be tolerant. If 'end' or 'xx' is present, consume it; otherwise
-        // assume parse_stmt_block_until already consumed the closer.
+        // Consume Dedent after else block
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Closer: be tolerant. If 'end' or 'xx' is present, consume it
         if let Some(t) = self.peek() {
             match &t.kind {
                 TokenKind::Ident if t.value.as_deref() == Some("end") => {
-                    let _ = self.eat_ident(); // consume closer if still here
+                    let _ = self.eat_ident();
                 }
                 TokenKind::Op(op) if op == "xx" => {
                     let _ = self.eat_op("xx");
                 }
-                _ => {
-                    // do nothing — closer already eaten by block parser
-                }
+                _ => {}
             }
-        } // else: EOF is also fine if the block helper consumed closer at file end
+        }
 
         // Convert stmt blocks -> arrays of exprs for FreeCall("if", ...)
         let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
@@ -3085,6 +3278,15 @@ impl<'t> Parser<'t> {
         let cond_pe = PExpr::Prefix("!".into(), Box::new(cond_pe));
         let cond = self.lower_expr(cond_pe);
 
+        // ADD THIS: Skip the newline and indent after the condition
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
         // THEN block: stop at else/end/xx
         let then_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
             if let Some(t) = p.peek() {
@@ -3102,6 +3304,16 @@ impl<'t> Parser<'t> {
         let else_stmts = if let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("else") {
                 let _ = self.eat_ident(); // 'else'
+                
+                // ADD THIS: Skip newline and indent after 'else'
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                
                 Some(self.parse_stmt_block_until(|p: &mut Parser<'_>| {
                     if let Some(t2) = p.peek() {
                         match &t2.kind {
@@ -3166,6 +3378,15 @@ impl<'t> Parser<'t> {
         let cond_pe = self.parse_assign()?;
         let cond = self.lower_expr(cond_pe);
 
+        // ADD THIS: Skip the newline and indent after the condition
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
         // BODY block: stop at end/xx
         let body_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
             if let Some(t) = p.peek() {
@@ -3216,8 +3437,6 @@ impl<'t> Parser<'t> {
 
         let mut out: Vec<ast::Stmt> = Vec::new();
 
-        // ===== INDENT / KEYWORD MODE =====
-        // Here we rely on explicit stoppers like 'else'/'end'/'xx', but we DO NOT consume them.
         loop {
             // Skip any number of blank lines between statements
             while let Some(t) = self.peek() {
@@ -3233,9 +3452,10 @@ impl<'t> Parser<'t> {
                 break;
             }
 
-            // Also stop (without consuming) if we see a closer token at this level.
+            // Also stop (without consuming) if we see a closer token OR dedent at this level.
             if let Some(t) = self.peek() {
                 match &t.kind {
+                    TokenKind::Dedent => break,  // <- ADD THIS
                     TokenKind::Ident if matches!(t.value.as_deref(), Some("end") | Some("else")) => break,
                     TokenKind::Op(op) if op == "xx" => break,
                     _ => {}
@@ -3477,6 +3697,15 @@ impl<'t> Parser<'t> {
             return self.parse_free_action("action");
         }
 
+        // -------- enum declarations --------
+        if self.peek_ident() == Some("enum") {
+            let _ = self.eat_ident(); // consume 'enum'
+            let start_i = self.i;
+            let enum_decl = self.parse_enum_decl()?;
+            let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+            return self.lower_enum_stmt(enum_decl, sp);
+        }
+
         // -------- free action: dedicated token from the lexer --------
         if let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Act) {
@@ -3546,6 +3775,45 @@ impl<'t> Parser<'t> {
         let expr_pe = self.parse_assign()?;
         self.in_stmt = was;
         Ok(ast::Stmt::Expr(self.lower_expr(expr_pe)))
+    }
+
+    fn lower_enum_stmt(
+        &mut self,
+        pe: PEnumDecl,
+        sp: goblin_diagnostics::Span,
+    ) -> Result<ast::Stmt, String> {
+        let variants_ast: Vec<ast::EnumVariant> = pe.variants
+            .into_iter()
+            .map(|pv| {
+                let fields_ast = if pv.fields.is_empty() {
+                    None
+                } else {
+                    Some(
+                        pv.fields
+                            .into_iter()
+                            .map(|(fname, _type_expr)| ast::FieldDecl {
+                                name: fname,
+                                private: false,
+                                default: None, // enum fields don't have defaults in Phase 1
+                                span: sp.clone(),
+                            })
+                            .collect()
+                    )
+                };
+                
+                ast::EnumVariant {
+                    name: pv.name,
+                    fields: fields_ast,
+                    span: sp.clone(),
+                }
+            })
+            .collect();
+        
+        Ok(ast::Stmt::Enum(ast::EnumDecl {
+            name: pe.name,
+            variants: variants_ast,
+            span: sp,
+        }))
     }
 
     // Helper: lower a parsed class PExpr into Stmt::Class (fields + actions)
@@ -5696,24 +5964,79 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            // ---------- namespaced free call: Ns::func(...) ----------
+            // ---------- namespaced free call OR enum variant: Ns::func(...) or Enum::variant ----------
             if matches!(&lhs, PExpr::Ident(_)) && self.peek_op("::") {
                 let ns = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
                 let _ = self.eat_op("::");
-                let Some(opname) = self.eat_ident() else { return Err(s_help(
-                    "P0510",
-                    "Expected a name after '::'",
-                    "Write it like: module_name::Action",
-                )); };
-
+                let Some(name) = self.eat_ident() else { 
+                    return Err(s_help(
+                        "P0510",
+                        "Expected a name after '::'",
+                        "Write it like: Status::idle or Module::action()",
+                    )); 
+                };
+                
+                // Check if this is a call (has parentheses or colon args)
                 if self.eat_op("(") {
                     let args = if self.eat_op(")") { vec![] } else { self.parse_args_paren()? };
-                    lhs = PExpr::NsCall(ns, opname, args);
+                    lhs = PExpr::NsCall(ns, name, args);
                 } else if self.eat_op(":") {
                     let args = self.parse_args_colon()?;
-                    lhs = PExpr::NsCall(ns, opname, args);
+                    lhs = PExpr::NsCall(ns, name, args);
+                } else if self.eat_op("{") {
+                    // Enum variant with fields: Message::move { x: 10, y: 20 }
+                    let mut fields = Vec::new();
+                    
+                    loop {
+                        self.skip_newlines();
+                        
+                        if self.eat_op("}") {
+                            break;
+                        }
+                        
+                        let Some(field_name) = self.eat_ident() else {
+                            return Err(s_help(
+                                "P1010",
+                                "Expected a field name",
+                                "Write it like: { x: 10, y: 20 }",
+                            ));
+                        };
+                        
+                        if !self.eat_op(":") {
+                            return Err(s_help(
+                                "P1011",
+                                "Expected ':' after field name",
+                                "Write it like: { x: 10, y: 20 }",
+                            ));
+                        }
+                        
+                        let value = self.parse_coalesce()?;
+                        fields.push((field_name, value));
+                        
+                        self.skip_newlines();
+                        if !self.eat_op(",") {
+                            if !self.peek_op("}") {
+                                return Err(s_help(
+                                    "P1012",
+                                    "Expected ',' or '}' after field value",
+                                    "Separate fields with commas: { x: 10, y: 20 }",
+                                ));
+                            }
+                        }
+                    }
+                    
+                    lhs = PExpr::EnumVariant {
+                        enum_name: ns,
+                        variant_name: name,
+                        fields: Some(fields),
+                    };
                 } else {
-                    lhs = PExpr::NsCall(ns, opname, vec![]);
+                    // No call syntax, no fields - simple enum variant
+                    lhs = PExpr::EnumVariant {
+                        enum_name: ns,
+                        variant_name: name,
+                        fields: None,
+                    };
                 }
                 continue;
             }

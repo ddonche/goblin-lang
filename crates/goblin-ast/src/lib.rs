@@ -30,6 +30,7 @@ pub enum Stmt {
     Class(ClassDecl),
     Action(ActionDecl),
     Bind(BindStmt),
+    Enum(EnumDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,20 @@ pub struct ActionDecl {
 }
 
 #[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Option<Vec<FieldDecl>>,  // Reuse your existing FieldDecl
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     // Literals & identifiers
     Nil(Span),
@@ -102,4 +117,10 @@ pub enum Expr {
     Postfix(Box<Expr>, String, Span),
     Binary(Box<Expr>, String, Box<Expr>, Span),
     Assign(Box<Expr>, Box<Expr>, Span),
+    EnumVariant {
+        enum_name: String,
+        variant_name: String,
+        fields: Option<Vec<(String, Expr)>>,  // field name -> value
+        span: Span,
+    },
 }

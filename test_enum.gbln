@@ -1,0 +1,27 @@
+enum Status
+    idle
+    active { task: str }
+    error { code: int, message: str }
+end
+
+s1 = Status::idle
+say s1
+
+s2 = Status::active { task: "processing" }
+say s2
+say s2 >> task
+
+s3 = Status::error { code: 404, message: "Not found" }
+say s3
+say s3 >> code
+say s3 >> message
+
+if s1 == Status::idle
+    say "s1 is idle"
+end
+
+if s2 == Status::idle
+    say "s2 is idle"
+else
+    say "s2 is not idle"
+end

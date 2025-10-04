@@ -213,6 +213,11 @@ pub enum Value {
         class_name: String,
         fields: BTreeMap<String, Value>,
     },
+    Enum {                              // <- ADD THIS
+        enum_name: String,
+        variant_name: String,
+        fields: Option<BTreeMap<String, Value>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +333,23 @@ impl fmt::Display for Value {
                 write!(f, "]")
             }
 
+            Value::Enum { enum_name, variant_name, fields } => {
+                write!(f, "{}::{}", enum_name, variant_name)?;
+                if let Some(field_map) = fields {
+                    write!(f, " {{")?;
+                    let mut first = true;
+                    for (k, v) in field_map {
+                        if !first {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, " {}: {}", k, v)?;
+                        first = false;
+                    }
+                    write!(f, " }}")?;
+                }
+                Ok(())
+            }
+
             // ---- Map ----
             Value::Map(map) => {
                 write!(f, "{{")?;
@@ -389,6 +411,7 @@ pub struct Session {
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
     pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
     pub classes: BTreeMap<String, ast::ClassDecl>,
+    pub enums: BTreeMap<String, ast::EnumDecl>,
     pub loop_depth: i32,
     rng_state: u128,
     pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding 
@@ -402,7 +425,8 @@ impl Session {
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
-            classes: BTreeMap::new(),  // ADD THIS
+            classes: BTreeMap::new(), 
+            enums: BTreeMap::new(),
             loop_depth: 0,
             rng_state: seed,
             consts: vec![BTreeMap::new()],
@@ -617,6 +641,9 @@ fn to_json(v: &Value) -> sj::Value {
                 obj.insert(k.clone(), to_json(v));
             }
             sj::Value::Object(obj)
+        }
+        Value::Enum { enum_name, variant_name, .. } => {
+            sj::Value::String(format!("{}::{}", enum_name, variant_name))
         }
     }
 }
@@ -998,7 +1025,8 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Prefix(_, _, sp)
         | ast::Expr::Postfix(_, _, sp)
         | ast::Expr::Binary(_, _, _, sp)
-        | ast::Expr::Assign(_, _, sp) => sp.clone(),
+        | ast::Expr::Assign(_, _, sp)
+        | ast::Expr::EnumVariant { span: sp, .. } => sp.clone(),
     }
 }
 
@@ -1132,6 +1160,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::CtrlSkip | Value::CtrlStop => "control",
         Value::Formatted(_, _)     => "formatted",
         Value::Object { .. } => "object",
+        Value::Enum { .. } => "enum",
     }
 }
 
@@ -1257,6 +1286,12 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
         ast::Stmt::Class(decl) => {
             sess.classes.insert(decl.name.clone(), decl.clone());
+            Ok(None)
+        }
+
+        ast::Stmt::Enum(decl) => {
+            // Store the enum definition in the session
+            sess.enums.insert(decl.name.clone(), decl.clone());
             Ok(None)
         }
 
@@ -3902,6 +3937,62 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             ));
         }
 
+        ast::Expr::EnumVariant { enum_name, variant_name, fields, span } => {
+            // Look up the enum definition and extract what we need
+            let (variant_fields, _enum_exists) = {
+                let enum_decl = sess.enums.get(enum_name).ok_or_else(|| Diag {
+                    code: "E1002".into(),
+                    message: format!("Unknown enum: {}", enum_name),
+                    span: span.clone(),
+                })?;
+                
+                // Find the variant
+                let variant = enum_decl.variants.iter()
+                    .find(|v| &v.name == variant_name)
+                    .ok_or_else(|| Diag {
+                        code: "E1003".into(),
+                        message: format!("Unknown variant '{}' for enum '{}'", variant_name, enum_name),
+                        span: span.clone(),
+                    })?;
+                
+                // Clone the field names we need to validate
+                (variant.fields.clone(), true)
+            }; // enum_decl reference dropped here
+            
+            // Now we can mutably borrow sess to evaluate fields
+            let field_values = if let Some(field_exprs) = fields {
+                let mut field_map = BTreeMap::new();
+                
+                for (field_name, field_expr) in field_exprs {
+                    let value = eval_expr(field_expr, sess)?;
+                    field_map.insert(field_name.clone(), value);
+                }
+                
+                // Validate that provided fields match the variant's definition
+                if let Some(expected_fields) = &variant_fields {
+                    for field_decl in expected_fields {
+                        if !field_map.contains_key(&field_decl.name) {
+                            return Err(Diag {
+                                code: "E1004".into(),
+                                message: format!("Missing field '{}' for variant '{}'", field_decl.name, variant_name),
+                                span: span.clone(),
+                            });
+                        }
+                    }
+                }
+                
+                Some(field_map)
+            } else {
+                None
+            };
+            
+            Ok(Value::Enum {
+                enum_name: enum_name.clone(),
+                variant_name: variant_name.clone(),
+                fields: field_values,
+            })
+        }
+
         // Plain assignment (ident = expr)
         ast::Expr::Assign(lhs, rhs, _sp) => {
             // Check for field assignment: object >> field = value
@@ -4111,25 +4202,32 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
 
-        // ---- Member access on maps (syntax from parser; you’re not using dot in code, but handle it) ----
-        ast::Expr::Member(base, name, sp) => {
-            let base_v = eval_expr(base, sess)?;
-            match base_v {
-                Value::Map(map) => {
-                    match map.get(name) {
-                        Some(v) => Ok(v.clone()),
-                        None => Err(rt("R0403", format!("missing key '{}'", name), sp.clone())),
-                    }
-                }
-                // ADD THIS CASE
-                Value::Object { fields, .. } => {
-                    fields.get(name)
-                        .cloned()
-                        .ok_or_else(|| rt("R0403", format!("no field '{}'", name), sp.clone()))
-                }
-                _ => Err(rt("T0402", "member access requires a map or object", span_of_expr(base))),
-            }
-        }
+       // ---- Member access on maps (syntax from parser; you're not using dot in code, but handle it) ----
+       ast::Expr::Member(base, name, sp) => {
+           let base_v = eval_expr(base, sess)?;
+           match base_v {
+               Value::Map(map) => {
+                   match map.get(name) {
+                       Some(v) => Ok(v.clone()),
+                       None => Err(rt("R0403", format!("missing key '{}'", name), sp.clone())),
+                   }
+               }
+               Value::Object { fields, .. } => {
+                   fields.get(name)
+                       .cloned()
+                       .ok_or_else(|| rt("R0403", format!("no field '{}'", name), sp.clone()))
+               }
+               Value::Enum { fields: Some(field_map), variant_name, .. } => {
+                   field_map.get(name)
+                       .cloned()
+                       .ok_or_else(|| rt("R0404", format!("variant '{}' has no field '{}'", variant_name, name), sp.clone()))
+               }
+               Value::Enum { fields: None, variant_name, .. } => {
+                   Err(rt("E1005", format!("variant '{}' has no fields", variant_name), sp.clone()))
+               }
+               _ => Err(rt("T0402", "member access requires a map, object, or enum", span_of_expr(base))),
+           }
+       }
 
         ast::Expr::OptMember(base, name, _sp) => {
             let base_v = eval_expr(base, sess)?;
@@ -4412,7 +4510,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Binary(lhs, op, rhs, sp) => {
             match op.as_str() {
                 ">>" => {
-                    // Field access: object >> field
+                    // Field access: object >> field or enum >> field
                     let obj = eval_expr(lhs, sess)?;
                     
                     let field_name = match &**rhs {
@@ -4426,7 +4524,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 .cloned()
                                 .ok_or_else(|| rt("R0403", format!("no field '{}'", field_name), sp.clone()))
                         }
-                        _ => Err(rt("T0403", ">> requires an object on the left side", sp.clone()))
+                        Value::Enum { fields: Some(field_map), variant_name, .. } => {
+                            field_map.get(&field_name)
+                                .cloned()
+                                .ok_or_else(|| rt("R0404", format!("variant '{}' has no field '{}'", variant_name, field_name), sp.clone()))
+                        }
+                        Value::Enum { fields: None, variant_name, .. } => {
+                            Err(rt("E1005", format!("variant '{}' has no fields", variant_name), sp.clone()))
+                        }
+                        _ => Err(rt("T0403", ">> requires an object or enum on the left side", sp.clone()))
                     }
                 }
                 // arithmetic
