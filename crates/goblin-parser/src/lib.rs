@@ -53,6 +53,8 @@ enum PExpr {
         variant_name: String,
         fields: Option<Vec<(String, PExpr)>>,
     },
+    Judge(Vec<(PExpr, PExpr)>),      // condition-value pairs
+    JudgeAll(Vec<(PExpr, PExpr)>),   // condition-value pairs
     // Applying a named template/type to named fields, e.g. Pet: name: "Fluffy" :: age: 3
     TemplateApply {
         type_name: String,
@@ -712,6 +714,7 @@ impl<'t> Parser<'t> {
             // conservative default for constructs that shouldn't appear in keys
             ClassDecl { .. } => false,
             PExpr::TemplateApply { .. } => false,
+            PExpr::Judge(_) | PExpr::JudgeAll(_) => false,
         }
     }
 
@@ -1338,6 +1341,50 @@ impl<'t> Parser<'t> {
                     ),
                     span: sp,
                 }
+            }
+
+            PExpr::Judge(pairs) => {
+                let arms = pairs
+                    .into_iter()
+                    .map(|(cond_expr, val_expr)| {
+                        // Check if this is an "else" arm
+                        let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
+                            None
+                        } else {
+                            Some(Box::new(Self::lower_expr_preview(cond_expr, sp.clone())))
+                        };
+                        
+                        ast::JudgeArm {
+                            condition,
+                            value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
+                            span: sp.clone(),
+                        }
+                    })
+                    .collect();
+                
+                ast::Expr::Judge { arms, span: sp }
+            }
+
+            PExpr::JudgeAll(pairs) => {
+                // For now, treat judge_all the same as judge (we'll implement the "all" logic later)
+                let arms = pairs
+                    .into_iter()
+                    .map(|(cond_expr, val_expr)| {
+                        let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
+                            None
+                        } else {
+                            Some(Box::new(Self::lower_expr_preview(cond_expr, sp.clone())))
+                        };
+                        
+                        ast::JudgeArm {
+                            condition,
+                            value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
+                            span: sp.clone(),
+                        }
+                    })
+                    .collect();
+                
+                ast::Expr::Judge { arms, span: sp }
             }
 
             // Calls
@@ -4756,19 +4803,17 @@ impl<'t> Parser<'t> {
         Ok(lhs)
     }
 
-    fn parse_kv_bind_list_judge(&mut self) -> Result<Vec<(String, PExpr)>, String> {
+    fn parse_kv_bind_list_judge(&mut self) -> Result<Vec<(PExpr, PExpr)>, String> {
         use goblin_lexer::TokenKind;
-        // Capture the header column for alignment (assume called after 'judge'/'judge_all')
         let hdr_tok_i = self.i.saturating_sub(1);
         let hdr_col = self.toks[hdr_tok_i].span.col_start;
-        let mut out: Vec<(String, PExpr)> = Vec::new();
+        let mut out: Vec<(PExpr, PExpr)> = Vec::new();
+        
         loop {
-            // Stop when we see a block closer 'end' or '}' (caller will consume it)
             self.skip_newlines();
             if self.eat_layout_until_close(hdr_col) || self.peek_block_close() {
                 break;
             }
-            // Check for EOF
             if self.is_eof() {
                 return Err(s_help(
                     "P0212",
@@ -4776,91 +4821,53 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-            // Capture everything from here up to the first ':' at nesting level 0
-            let start_i = self.i;
-            let mut depth_paren = 0i32;
-            let mut depth_brack = 0i32;
-            let mut depth_brace = 0i32;
-            let mut end_i: Option<usize> = None;
-            while let Some(tok) = self.toks.get(self.i) {
-                match &tok.kind {
-                    TokenKind::Op(op) if op == ":" => {
-                        if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
-                            end_i = Some(self.i);
-                            break;
-                        }
-                        // ':' inside nested ()/[]/{} – part of the expression
-                        self.i += 1;
-                    }
-                    TokenKind::Op(op) if op == "(" => {
-                        depth_paren += 1;
-                        self.i += 1;
-                    }
-                    TokenKind::Op(op) if op == ")" => {
-                        depth_paren -= 1;
-                        self.i += 1;
-                    }
-                    TokenKind::Op(op) if op == "[" => {
-                        depth_brack += 1;
-                        self.i += 1;
-                    }
-                    TokenKind::Op(op) if op == "]" => {
-                        depth_brack -= 1;
-                        self.i += 1;
-                    }
-                    TokenKind::Op(op) if op == "{" => {
-                        depth_brace += 1;
-                        self.i += 1;
-                    }
-                    TokenKind::Op(op) if op == "}" => {
-                        depth_brace -= 1;
-                        self.i += 1;
-                    }
-                    // Treat layout as whitespace while searching for the first ':' at top level
-                    TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
-                        if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 =>
-                    {
-                        self.i += 1;
-                    }
-                    // Any other token – keep scanning
-                    _ => {
-                        self.i += 1;
-                    }
-                }
-            }
-            let Some(colon_i) = end_i else {
+
+            // Check for "else:" special case
+            let is_else = if let Some(tok) = self.peek() {
+                matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("else")
+            } else {
+                false
+            };
+
+            let condition = if is_else {
+                let _ = self.eat_ident(); // consume 'else'
+                None
+            } else {
+                // SUSPEND colon-call parsing while parsing the condition
+                self.suspend_colon_call += 1;
+                let cond = self.parse_judge_condition();
+                self.suspend_colon_call -= 1;
+                Some(cond?)
+            };
+
+            if !self.eat_op(":") {
                 return Err(s_help(
                     "P0811",
                     "You need ':' after the condition in 'judge'",
                     "Write it like: judge x > 5: \"big\"",
                 ));
-            };
-            // Build a readable key string from tokens [start_i .. colon_i)
-            let mut parts: Vec<String> = Vec::new();
-            for t in &self.toks[start_i..colon_i] {
-                match &t.kind {
-                    TokenKind::Op(op) => parts.push(op.clone()),
-                    _ => parts.push(t.value.clone().unwrap_or_default()),
-                }
             }
-            // Simple join with spaces; keeps operators recognizable
-            let key_text = parts.join(" ").trim().to_string();
-            // Consume the ':'
-            self.i = colon_i;
-            let _ = self.eat_op(":");
-            // Optional layout after ':'
+
             self.skip_newlines();
-            self.eat_layout_until_close(0); // Handle Dedent after ':'
-            // Parse value expression
+            self.eat_layout_until_close(0);
+            
             let val = self.parse_assign()?;
-            out.push((key_text, val));
-            // Allow trailing commas or line breaks between pairs
+            
+            let cond_expr = condition.unwrap_or_else(|| PExpr::Ident("else".to_string()));
+            out.push((cond_expr, val));
+
             self.eat_semi_separators();
             if self.peek_block_close() {
                 break;
             }
         }
         Ok(out)
+    }
+
+    fn parse_judge_condition(&mut self) -> Result<PExpr, String> {
+        // Just parse a comparison expression
+        // parse_compare() stops before ':' naturally because ':' is not a comparison operator
+        self.parse_compare()
     }
 
     fn parse_unary(&mut self) -> Result<PExpr, String> {
@@ -4922,7 +4929,7 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-            return Ok(PExpr::Object(pairs));
+            return Ok(PExpr::Judge(pairs));
         }
         // expression-form: judge_all …
         if let Some("judge_all") = self.peek_ident() {
@@ -4963,7 +4970,7 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-            return Ok(PExpr::Object(pairs));
+            return Ok(PExpr::JudgeAll(pairs));
         }
         
         // PICK / REAP (expression form)

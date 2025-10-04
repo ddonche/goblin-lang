@@ -1016,7 +1016,7 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Member(_, _, sp)
         | ast::Expr::OptMember(_, _, sp)
         | ast::Expr::Index(_, _, sp)
-        | ast::Expr::Slice(_, _, _, sp)                
+        | ast::Expr::Slice(_, _, _, sp)
         | ast::Expr::Slice3(_, _, _, _, sp)
         | ast::Expr::Call(_, _, _, sp)
         | ast::Expr::OptCall(_, _, _, sp)
@@ -1026,7 +1026,8 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Postfix(_, _, sp)
         | ast::Expr::Binary(_, _, _, sp)
         | ast::Expr::Assign(_, _, sp)
-        | ast::Expr::EnumVariant { span: sp, .. } => sp.clone(),
+        | ast::Expr::EnumVariant { span: sp, .. }
+        | ast::Expr::Judge { span: sp, .. } => sp.clone(),
     }
 }
 
@@ -3991,6 +3992,33 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 variant_name: variant_name.clone(),
                 fields: field_values,
             })
+        }
+
+        ast::Expr::Judge { arms, span } => {
+            // Evaluate each arm until one matches
+            for arm in arms {
+                // Check if this is the else arm (condition is None)
+                let matches = if let Some(cond) = &arm.condition {
+                    let cond_val = eval_expr(cond, sess)?;
+                    // Convert to boolean
+                    match cond_val {
+                        Value::Bool(b) => b,
+                        Value::Nil => false,
+                        _ => true, // Truthy: non-nil, non-false values
+                    }
+                } else {
+                    // else arm - always matches
+                    true
+                };
+                
+                if matches {
+                    // First match wins - evaluate and return this arm's value
+                    return eval_expr(&arm.value, sess);
+                }
+            }
+            
+            // No arm matched and no else provided
+            Ok(Value::Nil)
         }
 
         // Plain assignment (ident = expr)

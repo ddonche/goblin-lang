@@ -86,6 +86,13 @@ pub struct EnumVariant {
 }
 
 #[derive(Debug, Clone)]
+pub struct JudgeArm {
+    pub condition: Option<Box<Expr>>,  // None for else
+    pub value: Box<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     // Literals & identifiers
     Nil(Span),
@@ -117,10 +124,16 @@ pub enum Expr {
     Postfix(Box<Expr>, String, Span),
     Binary(Box<Expr>, String, Box<Expr>, Span),
     Assign(Box<Expr>, Box<Expr>, Span),
+
+    // Other
     EnumVariant {
         enum_name: String,
         variant_name: String,
         fields: Option<Vec<(String, Expr)>>,  // field name -> value
+        span: Span,
+    },
+    Judge {
+        arms: Vec<JudgeArm>,
         span: Span,
     },
 }
