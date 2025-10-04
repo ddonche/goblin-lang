@@ -43,8 +43,8 @@ pub struct ClassDecl {
 #[derive(Debug, Clone)]
 pub struct FieldDecl {
     pub name: String,
-    pub private: bool,       // parser currently sets false; hook for '#field' later
-    pub default: Expr,
+    pub private: bool,
+    pub default: Option<Expr>,  // CHANGE: Expr -> Option<Expr>
     pub span: Span,
 }
 

@@ -898,17 +898,23 @@ fn run_run(path: &std::path::Path) -> i32 {
     //    - print value only if non-empty (so `say` prints once, and `Unit` doesn't add a blank line)
     let mut sess = Session::new();
     for stmt in &module.items {
-        if let goblin_ast::Stmt::Expr(_e) = stmt {
-            match sess.eval_module(&module) {
-                Ok(Some(val)) => {
-                    let echo = format!("{}", val);
-                    if !echo.is_empty() { println!("{}", echo); }
+        match stmt {
+            goblin_ast::Stmt::Expr(e) => {
+                match sess.eval_expr(e) {
+                    Ok(val) => {
+                        let echo = format!("{}", val);
+                        if !echo.is_empty() { println!("{}", echo); }
+                    }
+                    Err(d) => { eprintln!("{}", d); break; }
                 }
-                Ok(None) => {}
-                Err(d) => eprintln!("{}", d),
+            }
+            _ => {
+                if let Err(d) = sess.eval_stmt(stmt) {
+                    eprintln!("{}", d);
+                    break;
+                }
             }
         }
-        // non-expr statements are ignored in Stage 1 (same as REPL/session)
     }
 
     0

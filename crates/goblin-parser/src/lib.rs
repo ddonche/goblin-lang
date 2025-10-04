@@ -3562,7 +3562,7 @@ impl<'t> Parser<'t> {
                     .map(|(fname, fexpr)| ast::FieldDecl {
                         name: fname,
                         private: false, // adjust if you support private fields
-                        default: self.lower_expr(fexpr),
+                        default: Some(self.lower_expr(fexpr)),
                         span: sp.clone(),
                     })
                     .collect();
@@ -4929,7 +4929,7 @@ impl<'t> Parser<'t> {
                 let mut clamp_max: Option<PExpr> = None;
 
                 // helper to parse compact suffix trail inside a single token, e.g. "k3r1!d2"
-                let mut parse_trail = |raw: &str,
+                let parse_trail = |raw: &str,
                                        keep_high: &mut Option<String>,
                                        drop_low:  &mut Option<String>,
                                        reroll_eq: &mut Option<String>,
@@ -5167,7 +5167,6 @@ impl<'t> Parser<'t> {
                             last_span = Some(t.span.clone());
                             continue;
                         },
-
                         // keep your existing 'unit' trailer arm as-is
                         (TokenKind::Op(op), Some(raw)) => {
                             if op.as_str() == "unit" {
@@ -5184,16 +5183,6 @@ impl<'t> Parser<'t> {
                             self.i += 1;
                             last_span = Some(t.span.clone());
                             continue;
-                        }
-                        (TokenKind::Op(op), Some(raw)) => {
-                            if op.as_str() == "unit" {
-                                parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
-                                self.i += 1;
-                                last_span = Some(t.span.clone());
-                                continue;
-                            } else {
-                                break;
-                            }
                         }
                         _ => break,
                     }

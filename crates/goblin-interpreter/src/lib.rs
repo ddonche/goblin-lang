@@ -30,7 +30,6 @@ use goblin_ast as ast;
 use goblin_diagnostics::Span;
 use serde_json as sj;
 use goblin_ast::BindMode;
-use goblin_ast::{Expr, ActionDecl};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use std::str::FromStr;
@@ -572,7 +571,7 @@ fn reapply_format(result: Value, left_spec: Option<FormatSpec>, right_spec: Opti
         result
     }
 }
-
+#[allow(dead_code)]
 fn want_str(v: &Value, label: &str, sp: Span) -> Result<String, Diag> {
     match v {
         Value::Str(s)  => Ok(s.clone()),
@@ -580,7 +579,7 @@ fn want_str(v: &Value, label: &str, sp: Span) -> Result<String, Diag> {
         _ => Err(rt("T0205", format!("{label} expects a string"), sp)),
     }
 }
-
+#[allow(dead_code)]
 fn want_char(v: &Value, label: &str, sp: Span) -> Result<char, Diag> {
     match v {
         Value::Char(c) => Ok(*c),
@@ -836,7 +835,7 @@ fn either_is_big(a: &Value, b: &Value) -> bool {
 }
 
 #[inline]
-fn decimal_powi(mut base: Decimal, mut exp: i64) -> Result<Decimal, Diag> {
+fn decimal_powi(base: Decimal, mut exp: i64) -> Result<Decimal, Diag> {
     use rust_decimal::Decimal;
     if exp == 0 { return Ok(Decimal::ONE); }
     let neg = exp < 0;
@@ -946,7 +945,7 @@ fn rng_u01(sess: &mut Session) -> f64 {
 fn rt(code: &str, msg: impl Into<String>, span: Span) -> Diag {
     Diag { code: code.to_string(), message: msg.into(), span }
 }
-
+#[allow(dead_code)]
 fn not_impl(stage: &str, what: &str, span: Span) -> Diag {
     rt("R0000", format!("{what} is not implemented in {stage}"), span)
 }
@@ -1009,7 +1008,7 @@ fn as_bool(v: Value, at: Span, label: &str) -> Result<bool, Diag> {
         _ => Err(rt("T0303", format!("{label} requires a boolean"), at)),
     }
 }
-
+#[allow(dead_code)]
 fn eval_args_to_values(args: &[ast::Expr], sess: &mut Session) -> Result<Vec<Value>, Diag> {
     let mut out = Vec::with_capacity(args.len());
     for a in args {
@@ -1145,7 +1144,7 @@ fn as_num(v: Value, at: Span, label: &str) -> Result<f64, Diag> {
         _ => Err(rt("T0201", format!("{label} expects a number"), at)),
     }
 }
-
+#[allow(dead_code)]
 fn bin_nums(lhs: &ast::Expr, rhs: &ast::Expr, sess: &mut Session, label: &str) -> Result<(f64, f64), Diag> {
     let lv = eval_expr(lhs, sess)?;
     let rv = eval_expr(rhs, sess)?;
@@ -1325,8 +1324,6 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 }
             }
         }
-
-        ast::Stmt::Class(_c) => Ok(None),
     }
 }
 
@@ -1356,6 +1353,7 @@ fn expect_array<'a>(e: &'a ast::Expr, label: &str) -> Result<&'a [ast::Expr], Di
 }
 
 // Try a shadowable builtin. Returns Ok(Some(Value)) if handled, Ok(None) if unknown.
+#[allow(dead_code)]
 fn eval_builtin(
     name: &str,
     args: &[Value],
@@ -1368,7 +1366,7 @@ fn eval_builtin(
             Err(rt("A0402", format!("wrong number of arguments: expected {}, got {}", wanted, args.len()), sp.clone()))
         } else { Ok(()) }
     };
-    let want_num = |v: &Value, label: &str| -> Result<f64, Diag> {
+    let _want_num = |v: &Value, label: &str| -> Result<f64, Diag> {
         match v {
             Value::Float(n) => Ok(*n),
             _ => Err(need_number(label, sp.clone())),
@@ -2168,13 +2166,13 @@ fn call_action_by_name(
             }
 
             // ---------- helpers for numeric domains ----------
-            let within_digits = |v: i64, d: i64| -> bool {
+            let _within_digits = |v: i64, d: i64| -> bool {
                 if d <= 0 { return true; }
                 let min = 10_i64.pow((d - 1) as u32);
                 let max = 10_i64.pow(d as u32) - 1;
                 v >= min && v <= max
             };
-            let has_unique_digits = |mut v: i64, d: i64| -> bool {
+            let _has_unique_digits = |mut v: i64, d: i64| -> bool {
                 if !unique_digits { return true; }
                 if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; } // no leading-zero width
                 let mut seen = [false; 10];
@@ -2606,7 +2604,7 @@ fn call_action_by_name(
                     if keep_mask[i] { kept_vals.push(v); } else { dropped_vals.push(v); }
                 }
 
-                let mut kept_sum: i64 = kept_vals.iter().sum();
+                let kept_sum: i64 = kept_vals.iter().sum();
                 let mut total = kept_sum + modifier;
                 if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) {
                     let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
@@ -2913,7 +2911,7 @@ fn call_action_by_name(
             // --- String case: treat as array of runes/chars ---
             if let Value::Str(s) = &args[0] {
                 let mut results: Vec<Value> = Vec::with_capacity(char_len(s));
-                let mut all_text = true;       // all Char or Str
+                let mut _all_text = true;       // all Char or Str
                 let mut any_non_text = false;  // any non Char/Str
 
                 for c in s.chars() {
@@ -4362,7 +4360,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         Value::Int(i)    => Value::Int(i),
                         Value::Float(f)  => Value::Float(f),
                         Value::Pct(p)    => Value::Pct(p),
-                        other            => return Err(need_number("unary '+'", span_of_expr(expr)).into()),
+                        _other            => return Err(need_number("unary '+'", span_of_expr(expr)).into()),
                     };
 
                     Ok(reapply_format(out, uspec, None))
@@ -4658,8 +4656,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
                 "><" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
-                    let (lu, lspec) = take_owned_unformatted(lv);
-                    let (ru, rspec) = take_owned_unformatted(rv);
+                    let (lu, _lspec) = take_owned_unformatted(lv);
+                    let (ru, _rspec) = take_owned_unformatted(rv);
 
                     let out = if either_is_big(&lu, &ru) {
                         let a = to_big_for_math(&lu, span_of_expr(lhs), "divmod: left")?;
@@ -4976,13 +4974,13 @@ fn instantiate_object(
             
             // Check for skip marker (Unit represents :: or nc)
             if matches!(val, Value::Unit) {
-                eval_expr(&field.default, sess)?
+                eval_expr(field.default.as_ref().unwrap(), sess)?
             } else {
                 val.clone()
             }
         } else {
             // No more values - use default
-            eval_expr(&field.default, sess)?
+            eval_expr(field.default.as_ref().unwrap(), sess)?
         };
         
         field_map.insert(field.name.clone(), value);
