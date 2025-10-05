@@ -46,6 +46,16 @@ fn main() {
 
     let mut args = env::args().skip(1).collect::<Vec<_>>();
 
+    // Handle 'goblin new <project-name>'
+    if !args.is_empty() && args[0] == "new" {
+        if args.len() < 2 {
+            eprintln!("Usage: goblin new <project-name>");
+            std::process::exit(1);
+        }
+        create_project(&args[1]);
+        return;
+    }
+
     // REPL when no args
     if args.is_empty() {
         std::process::exit(run_repl());
@@ -87,6 +97,52 @@ fn main() {
         "usage: goblin-cli lex --check\n       goblin-cli parse <file>\n       goblin-cli gql-parse <file|->"
     );
     std::process::exit(2);
+}
+
+fn create_project(name: &str) {
+    let path = Path::new(name);
+    
+    if path.exists() {
+        eprintln!("Error: Directory '{}' already exists", name);
+        std::process::exit(1);
+    }
+    
+    fs::create_dir(path).expect("Failed to create project directory");
+    
+    fs::write(path.join("goblin.yaml"), goblin_yaml(name))
+        .expect("Failed to create goblin.yaml");
+    
+    fs::write(path.join("main.gbln"), MAIN_GBLN)
+        .expect("Failed to create main.gbln");
+    
+    fs::write(path.join("README.md"), readme_md(name))
+        .expect("Failed to create README.md");
+    
+    println!("Created new Goblin project: {}", name);
+    println!("  cd {}", name);
+    println!("  goblin main.gbln");
+}
+
+fn goblin_yaml(name: &str) -> String {
+    format!(r#"name: {}
+version: 0.1.0
+entry: main.gbln
+"#, name)
+}
+
+const MAIN_GBLN: &str = r#"/// Main entry point
+say "Hello from Goblin!"
+"#;
+
+fn readme_md(name: &str) -> String {
+    format!(r#"# {}
+
+A Goblin project.
+
+## Running
+```bash
+goblin main.gbln
+"#, name)
 }
 
 fn run_lex_check() -> i32 {
