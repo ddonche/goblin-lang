@@ -1814,6 +1814,44 @@ fn call_action_by_name(
             Value::Bool(bound)
         }
 
+        "is_type" => {
+            // recv.is_type(typename)
+            if args.len() != 2 {
+                return Err(rt("A0402", "is_type expects 1 argument", sp.clone()));
+            }
+            
+            let recv = &args[0];
+            let type_name = match &args[1] {
+                Value::Str(s) => s.as_str(),
+                _ => return Err(rt("T0400", "is_type expects a string type name", sp.clone())),
+            };
+            
+            let can_convert = match (recv, type_name) {
+                // String to int conversion check
+                (Value::Str(s), "int") => {
+                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+                    Decimal::from_str(&cleaned).is_ok()
+                }
+                // String to float conversion check
+                (Value::Str(s), "float") => {
+                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+                    Decimal::from_str(&cleaned).is_ok() || cleaned.parse::<f64>().is_ok()
+                }
+                // Already the correct type
+                (Value::Int(_), "int") => true,
+                (Value::Float(_), "float") => true,
+                (Value::Bool(_), "bool") => true,
+                (Value::Str(_), "str") => true,
+                (Value::Big(_), "big") => true,
+                (Value::Pct(_), "pct") => true,
+                // Numeric types can convert between each other
+                (Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_), "int" | "float" | "big" | "pct") => true,
+                _ => false,
+            };
+            
+            Value::Bool(can_convert)
+        }
+
         "input" | "ask" => {
             // Expect 0 or 1 argument (optional prompt)
             let prompt = if args.is_empty() {
@@ -4397,6 +4435,74 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             }
                         }
                     }
+                    sess.loop_depth -= 1;
+                    Ok(Value::Unit)
+                }
+
+                "for" => {
+                    if args.len() != 3 {
+                        return Err(rt("A0460", "for expects [var_name, iterable, body]", sp.clone()));
+                    }
+                    
+                    let var_name_expr = eval_expr(&args[0], sess)?;
+                    let var_name = match var_name_expr {
+                        Value::Str(s) => s,
+                        _ => return Err(rt("A0461", "for: var_name must be string", sp.clone())),
+                    };
+                    
+                    let iterable_val = eval_expr(&args[1], sess)?;
+                    let items = match iterable_val {
+                        Value::Array(arr) => arr,
+                        Value::Str(s) => s.chars().map(|c| Value::Char(c)).collect(),
+                        _ => return Err(rt("A0462", "for: can only iterate over arrays or strings", sp.clone())),
+                    };
+                    
+                    let body_es = expect_array(&args[2], "body")?;
+                    sess.loop_depth += 1;
+                    
+                    'outer: for item in items {
+                        sess.set_var(var_name.clone(), item);
+                        for e in body_es {
+                            let v = eval_expr(e, sess)?;
+                            match v {
+                                Value::CtrlSkip => continue 'outer,
+                                Value::CtrlStop => break 'outer,
+                                _ => {}
+                            }
+                        }
+                    }
+                    
+                    sess.loop_depth -= 1;
+                    Ok(Value::Unit)
+                }
+
+                "repeat" => {
+                    if args.len() != 2 {
+                        return Err(rt("A0450", "repeat expects [count, body_block]", sp.clone()));
+                    }
+                    
+                    // Evaluate count once
+                    let count_val = eval_expr(&args[0], sess)?;
+                    let count = match count_val {
+                        Value::Int(n) if n >= 0 => n as usize,
+                        Value::Int(n) => return Err(rt("A0451", format!("repeat count must be non-negative, got {}", n), sp.clone())),
+                        _ => return Err(rt("A0452", "repeat count must be an integer", sp.clone())),
+                    };
+                    
+                    let body_es = expect_array(&args[1], "body_block")?;
+                    sess.loop_depth += 1;
+                    
+                    'outer: for _ in 0..count {
+                        for e in body_es {
+                            let v = eval_expr(e, sess)?;
+                            match v {
+                                Value::CtrlSkip => continue 'outer,  // skip to next iteration
+                                Value::CtrlStop => break 'outer,      // exit repeat entirely
+                                _ => {}
+                            }
+                        }
+                    }
+                    
                     sess.loop_depth -= 1;
                     Ok(Value::Unit)
                 }

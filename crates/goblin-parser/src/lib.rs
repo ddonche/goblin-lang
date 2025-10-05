@@ -3317,7 +3317,7 @@ impl<'t> Parser<'t> {
             None
         };
 
-        // Consume Dedent after else block
+        // Skip dedents/newlines after else block
         while let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
                 self.i += 1;
@@ -3326,7 +3326,7 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // Closer: be tolerant. If 'end' or 'xx' is present, consume it
+        // NOW try to consume the closer (but don't make it "tolerant" - it should error if 'end' is missing)
         if let Some(t) = self.peek() {
             match &t.kind {
                 TokenKind::Ident if t.value.as_deref() == Some("end") => {
@@ -3335,8 +3335,12 @@ impl<'t> Parser<'t> {
                 TokenKind::Op(op) if op == "xx" => {
                     let _ = self.eat_op("xx");
                 }
-                _ => {}
+                _ => {
+                    return Err(s_help("P0320", "Expected 'end' to close if block", "Add 'end' at the same indentation as 'if'"));
+                }
             }
+        } else {
+            return Err(s_help("P0321", "Expected 'end' to close if block", "Add 'end' before end of file"));
         }
 
         // Convert stmt blocks -> arrays of exprs for FreeCall("if", ...)
@@ -3345,10 +3349,19 @@ impl<'t> Parser<'t> {
                 .into_iter()
                 .map(|s| match s {
                     ast::Stmt::Expr(e) => Ok(e),
+                    ast::Stmt::Bind(b) => {
+                        // Convert binding to assignment expression
+                        // name = expr  →  Assign(Ident(name), expr)
+                        Ok(ast::Expr::Assign(
+                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
+                            Box::new(b.expr),
+                            b.span
+                        ))
+                    }
                     _ => Err(s_help(
                         "P0311",
-                        "Only expression statements are allowed inside an 'if' block here.",
-                        "Use value/call/assignment lines inside 'if'; declarations must be outside.",
+                        "Only expressions and variable assignments are allowed inside control flow blocks.",
+                        "Move class/action/enum declarations outside the if/while/unless block.",
                     )),
                 })
                 .collect()
@@ -3433,13 +3446,30 @@ impl<'t> Parser<'t> {
             None
         };
 
-        // Tolerant closer: 'end' or 'xx' if still present
+        // Skip dedents/newlines after else block
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // NOW try to consume the closer (but don't make it "tolerant" - it should error if 'end' is missing)
         if let Some(t) = self.peek() {
             match &t.kind {
-                TokenKind::Ident if t.value.as_deref() == Some("end") => { let _ = self.eat_ident(); }
-                TokenKind::Op(op) if op == "xx" => { let _ = self.eat_op("xx"); }
-                _ => {}
+                TokenKind::Ident if t.value.as_deref() == Some("end") => {
+                    let _ = self.eat_ident();
+                }
+                TokenKind::Op(op) if op == "xx" => {
+                    let _ = self.eat_op("xx");
+                }
+                _ => {
+                    return Err(s_help("P0320", "Expected 'end' to close if block", "Add 'end' at the same indentation as 'if'"));
+                }
             }
+        } else {
+            return Err(s_help("P0321", "Expected 'end' to close if block", "Add 'end' before end of file"));
         }
 
         // Convert stmt blocks -> arrays of exprs (same contract as 'if')
@@ -3448,10 +3478,19 @@ impl<'t> Parser<'t> {
                 .into_iter()
                 .map(|s| match s {
                     ast::Stmt::Expr(e) => Ok(e),
+                    ast::Stmt::Bind(b) => {
+                        // Convert binding to assignment expression
+                        // name = expr  →  Assign(Ident(name), expr)
+                        Ok(ast::Expr::Assign(
+                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
+                            Box::new(b.expr),
+                            b.span
+                        ))
+                    }
                     _ => Err(s_help(
                         "P0311",
-                        "Only expression statements are allowed inside an 'unless' block here.",
-                        "Use value/call/assignment lines inside 'unless'; declarations must be outside.",
+                        "Only expressions and variable assignments are allowed inside control flow blocks.",
+                        "Move class/action/enum declarations outside the if/while/unless block.",
                     )),
                 })
                 .collect()
@@ -3466,6 +3505,100 @@ impl<'t> Parser<'t> {
         }
 
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("if".to_string(), args, span)))
+    }
+
+    fn parse_for_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        
+        debug_assert_eq!(self.peek_ident().as_deref(), Some("for"));
+        let _ = self.eat_ident();
+        
+        // Parse loop variable: for name in ...
+        let Some(var_name) = self.eat_ident() else {
+            return Err(s_help("P0330", "Expected variable name after 'for'", "Write: for item in items"));
+        };
+        
+        // Expect 'in' keyword
+        if self.peek_ident() != Some("in") {
+            return Err(s_help("P0331", "Expected 'in' after loop variable", "Write: for item in items"));
+        }
+        let _ = self.eat_ident();
+        
+        // Parse iterable expression
+        let iterable_pe = self.parse_assign()?;
+        let iterable = self.lower_expr(iterable_pe);
+        
+        // Skip newline/indent
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Parse body
+        let body_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+            if let Some(t) = p.peek() {
+                match &t.kind {
+                    TokenKind::Ident => matches!(t.value.as_deref(), Some("end")),
+                    TokenKind::Op(op) => op == "xx",
+                    _ => false,
+                }
+            } else {
+                true
+            }
+        })?;
+        
+        // Skip dedents
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Consume closer
+        if let Some(t) = self.peek() {
+            match &t.kind {
+                TokenKind::Ident if t.value.as_deref() == Some("end") => {
+                    let _ = self.eat_ident();
+                }
+                TokenKind::Op(op) if op == "xx" => {
+                    let _ = self.eat_op("xx");
+                }
+                _ => {
+                    return Err(s_help("P0332", "Expected 'end' to close for loop", "Add 'end'"));
+                }
+            }
+        }
+        
+        // Convert body
+        let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
+            stmts.into_iter().map(|s| match s {
+                ast::Stmt::Expr(e) => Ok(e),
+                ast::Stmt::Bind(b) => {
+                    Ok(ast::Expr::Assign(
+                        Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
+                        Box::new(b.expr),
+                        b.span
+                    ))
+                }
+                _ => Err(s_help("P0333", "Only expressions allowed in for loop", "Move declarations outside")),
+            }).collect()
+        };
+        
+        let span = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i.saturating_sub(1));
+        let body_arr = ast::Expr::Array(to_exprs(body_stmts)?, span.clone());
+        
+        // FreeCall("for", [var_name_str, iterable, body[]])
+        let args = vec![
+            ast::Expr::Str(var_name, span.clone()),
+            iterable,
+            body_arr
+        ];
+        Ok(ast::Stmt::Expr(ast::Expr::FreeCall("for".to_string(), args, span)))
     }
 
     fn parse_while_stmt(&mut self) -> Result<ast::Stmt, String> {
@@ -3501,33 +3634,137 @@ impl<'t> Parser<'t> {
             }
         })?;
 
-        // Tolerant closer: 'end' or 'xx' if still present
+        // Skip dedents/newlines after body
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Then consume closer
         if let Some(t) = self.peek() {
             match &t.kind {
-                TokenKind::Ident if t.value.as_deref() == Some("end") => { let _ = self.eat_ident(); }
-                TokenKind::Op(op) if op == "xx" => { let _ = self.eat_op("xx"); }
+                TokenKind::Ident if t.value.as_deref() == Some("end") => { 
+                    let _ = self.eat_ident(); 
+                }
+                TokenKind::Op(op) if op == "xx" => { 
+                    let _ = self.eat_op("xx"); 
+                }
                 _ => {}
             }
         }
 
+        eprintln!("DEBUG: after consuming 'end', i={}, next token={:?}", self.i, self.peek().map(|t| (&t.kind, &t.value)));
+
         // Convert stmt list -> expr array
         let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
-            stmts.into_iter().map(|s| match s {
-                ast::Stmt::Expr(e) => Ok(e),
-                _ => Err(s_help(
-                    "P0313",
-                    "Only expression statements are allowed inside a 'while' block here.",
-                    "Use value/call/assignment lines inside 'while'; declarations must be outside.",
-                )),
-            }).collect()
+            stmts
+                .into_iter()
+                .map(|s| match s {
+                    ast::Stmt::Expr(e) => Ok(e),
+                    ast::Stmt::Bind(b) => {
+                        // Convert binding to assignment expression
+                        // name = expr  →  Assign(Ident(name), expr)
+                        Ok(ast::Expr::Assign(
+                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
+                            Box::new(b.expr),
+                            b.span
+                        ))
+                    }
+                    _ => Err(s_help(
+                        "P0311",
+                        "Only expressions and variable assignments are allowed inside control flow blocks.",
+                        "Move class/action/enum declarations outside the if/while/unless block.",
+                    )),
+                })
+                .collect()
         };
-
         let span = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i.saturating_sub(1));
         let body_arr = ast::Expr::Array(to_exprs(body_stmts)?, span.clone());
 
         // Lower to FreeCall("while", [cond, body[]])
         let args = vec![cond, body_arr];
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("while".to_string(), args, span)))
+    }
+
+    fn parse_repeat_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        
+        debug_assert_eq!(self.peek_ident().as_deref(), Some("repeat"));
+        let _ = self.eat_ident();
+        
+        // Parse count expression
+        let count_pe = self.parse_assign()?;
+        let count = self.lower_expr(count_pe);
+        
+        // Skip newline/indent after count
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Parse body block
+        let body_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+            if let Some(t) = p.peek() {
+                match &t.kind {
+                    TokenKind::Ident => matches!(t.value.as_deref(), Some("end")),
+                    TokenKind::Op(op) => op == "xx",
+                    _ => false,
+                }
+            } else {
+                true
+            }
+        })?;
+        
+        // Skip dedents/newlines
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Consume closer
+        if let Some(t) = self.peek() {
+            match &t.kind {
+                TokenKind::Ident if t.value.as_deref() == Some("end") => {
+                    let _ = self.eat_ident();
+                }
+                TokenKind::Op(op) if op == "xx" => {
+                    let _ = self.eat_op("xx");
+                }
+                _ => {
+                    return Err(s_help("P0322", "Expected 'end' to close repeat block", "Add 'end'"));
+                }
+            }
+        }
+        
+        // Convert body to expressions
+        let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
+            stmts.into_iter().map(|s| match s {
+                ast::Stmt::Expr(e) => Ok(e),
+                ast::Stmt::Bind(b) => {
+                    Ok(ast::Expr::Assign(
+                        Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
+                        Box::new(b.expr),
+                        b.span
+                    ))
+                }
+                _ => Err(s_help("P0323", "Only expressions allowed in repeat block", "Move declarations outside")),
+            }).collect()
+        };
+        
+        let span = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i.saturating_sub(1));
+        let body_arr = ast::Expr::Array(to_exprs(body_stmts)?, span.clone());
+        
+        let args = vec![count, body_arr];
+        Ok(ast::Stmt::Expr(ast::Expr::FreeCall("repeat".to_string(), args, span)))
     }
 
     fn parse_stmt_block_until<F>(&mut self, mut stop: F) -> Result<Vec<ast::Stmt>, String>
@@ -3567,7 +3804,8 @@ impl<'t> Parser<'t> {
             }
 
             // Parse one statement
-            out.push(self.parse_stmt()?);
+            let stmt = self.parse_stmt()?;
+            out.push(stmt);
         }
 
         Ok(out)
@@ -3783,16 +4021,28 @@ impl<'t> Parser<'t> {
         if self.peek_ident() == Some("if") {
             return self.parse_if_stmt();
         }
+
         if self.peek_ident() == Some("unless") {
             return self.parse_unless_stmt();
         }
+
         if self.peek_ident() == Some("while") {
             return self.parse_while_stmt();
         }
+
+        if let Some("for") = self.peek_ident() {
+            return self.parse_for_stmt();
+        }
+
+        if let Some("repeat") = self.peek_ident() {
+            return self.parse_repeat_stmt();
+        }
+
         if self.peek_ident() == Some("act") {
             let _ = self.eat_ident(); // 'act'
             return self.parse_free_action("act");
         }
+
         if self.peek_ident() == Some("action") {
             let _ = self.eat_ident(); // 'action'
             return self.parse_free_action("action");

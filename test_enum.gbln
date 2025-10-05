@@ -1,5 +1,11 @@
-name = input("What's your name? ")
-say "Hello," ++ name
-
-age = input("How old are you? ")
-say "You are" ++ age ++ "years old"
+numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+for num in numbers
+    if num == 3 or num == 7
+        skip
+    end
+    if num == 9
+        say "Stopping at" ++ num
+        stop
+    end
+    say "Number:" ++ num
+end
