@@ -131,7 +131,7 @@ entry: main.gbln
 }
 
 const MAIN_GBLN: &str = r#"/// Main entry point
-say "Hello from Goblin!"
+say "Welcome to the Horde!"
 "#;
 
 fn readme_md(name: &str) -> String {
