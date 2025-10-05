@@ -1814,6 +1814,34 @@ fn call_action_by_name(
             Value::Bool(bound)
         }
 
+        "input" | "ask" => {
+            // Expect 0 or 1 argument (optional prompt)
+            let prompt = if args.is_empty() {
+                ""
+            } else {
+                match &args[0] {
+                    Value::Str(s) => s.as_str(),
+                    _ => return Err(rt("R0100", "input/ask expects a string prompt", sp.clone())),
+                }
+            };
+            
+            // Print prompt if provided
+            if !prompt.is_empty() {
+                print!("{}", prompt);
+                use std::io::Write;
+                std::io::stdout().flush().unwrap();
+            }
+            
+            // Read line from stdin
+            let mut buffer = String::new();
+            std::io::stdin()
+                .read_line(&mut buffer)
+                .map_err(|e| rt("R0101", format!("Failed to read input: {}", e), sp.clone()))?;
+            
+            // Trim newline and return as string
+            Value::Str(buffer.trim_end().to_string())
+        }
+
         // ----- Introspection -----
         "type" => {
             arity(1)?;
@@ -4024,31 +4052,49 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             })
         }
 
-        ast::Expr::Judge { using: _, arms, span: _ } => {
-            // Evaluate each arm until one matches
-            for arm in arms {
-                // Check if this is the else arm (condition is None)
-                let matches = if let Some(cond) = &arm.condition {
-                    let cond_val = eval_expr(cond, sess)?;
-                    // Convert to boolean
-                    match cond_val {
-                        Value::Bool(b) => b,
-                        Value::Nil => false,
-                        _ => true, // Truthy: non-nil, non-false values
+        ast::Expr::Judge { using: _, arms, all, .. } => {
+            if *all {
+                // judge_all: collect ALL matching results
+                let mut results = Vec::new();
+                for arm in arms {
+                    let matches = if let Some(cond) = &arm.condition {
+                        let cond_val = eval_expr(cond, sess)?;
+                        match cond_val {
+                            Value::Bool(b) => b,
+                            Value::Nil => false,
+                            _ => true,
+                        }
+                    } else {
+                        true  // else arm always matches
+                    };
+                    
+                    if matches {
+                        results.push(eval_expr(&arm.value, sess)?);
                     }
-                } else {
-                    // else arm - always matches
-                    true
-                };
-                
-                if matches {
-                    // First match wins - evaluate and return this arm's value
-                    return eval_expr(&arm.value, sess);
                 }
+                Ok(Value::Array(results))
+            } else {
+                // judge: return FIRST match only (existing behavior)
+                for arm in arms {
+                    let matches = if let Some(cond) = &arm.condition {
+                        let cond_val = eval_expr(cond, sess)?;
+                        match cond_val {
+                            Value::Bool(b) => b,
+                            Value::Nil => false,
+                            _ => true,
+                        }
+                    } else {
+                        true  // else arm
+                    };
+                    
+                    if matches {
+                        return eval_expr(&arm.value, sess);
+                    }
+                }
+                
+                // No arm matched
+                Ok(Value::Nil)
             }
-            
-            // No arm matched and no else provided
-            Ok(Value::Nil)
         }
 
         // Plain assignment (ident = expr)

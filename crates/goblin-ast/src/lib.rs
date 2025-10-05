@@ -135,6 +135,7 @@ pub enum Expr {
     Judge {
         using: Option<Box<Expr>>,
         arms: Vec<JudgeArm>,
+        all: bool,
         span: Span,
     },
 }

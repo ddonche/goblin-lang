@@ -1408,6 +1408,7 @@ impl<'t> Parser<'t> {
                 ast::Expr::Judge { 
                     using: using.map(|u| Box::new(Self::lower_expr_preview(*u, sp.clone()))),
                     arms, 
+                    all: false,
                     span: sp 
                 }
             }
@@ -1435,6 +1436,7 @@ impl<'t> Parser<'t> {
                 ast::Expr::Judge { 
                     using: using.map(|u| Box::new(Self::lower_expr_preview(*u, sp.clone()))),
                     arms, 
+                    all: true,
                     span: sp 
                 }
             }

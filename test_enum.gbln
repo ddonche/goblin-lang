@@ -1,45 +1,5 @@
-enum Status
-    idle
-    loading
-    ready
-    error
-end
+name = input("What's your name? ")
+say "Hello," ++ name
 
-enum Priority
-    low
-    medium
-    high
-    critical
-end
-
-status = Status::idle
-judge status using Status
-    idle:    say "System is idle"
-    loading: say "Processing..."
-    ready:   say "Ready to proceed"
-    error:   say "Error occurred"
-end
-
-priority = Priority::high
-judge priority using Priority
-    low:      say "Low priority"
-    medium:   say "Medium priority"
-    high:     say "High priority alert"
-    critical: say "CRITICAL - Immediate action required"
-end
-
-score = 95
-judge using score
-    >= 90: say "A"
-    >= 80: say "B"
-    >= 70: say "C"
-    else:  say "F"
-end
-
-x = 42
-judge
-    x > 100: say "large"
-    x > 50:  say "medium"
-    x > 0:   say "small"
-    else:    say "invalid"
-end
+age = input("How old are you? ")
+say "You are" ++ age ++ "years old"
