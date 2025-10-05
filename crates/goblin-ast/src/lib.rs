@@ -133,6 +133,7 @@ pub enum Expr {
         span: Span,
     },
     Judge {
+        using: Option<Box<Expr>>,
         arms: Vec<JudgeArm>,
         span: Span,
     },

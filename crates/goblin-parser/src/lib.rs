@@ -53,8 +53,16 @@ enum PExpr {
         variant_name: String,
         fields: Option<Vec<(String, PExpr)>>,
     },
-    Judge(Vec<(PExpr, PExpr)>),      // condition-value pairs
-    JudgeAll(Vec<(PExpr, PExpr)>),   // condition-value pairs
+    Judge {
+        using: Option<Box<PExpr>>,
+        using_enum: Option<String>,
+        pairs: Vec<(PExpr, PExpr)>,
+    },
+    JudgeAll {
+        using: Option<Box<PExpr>>,
+        using_enum: Option<String>,
+        pairs: Vec<(PExpr, PExpr)>,
+    },
     // Applying a named template/type to named fields, e.g. Pet: name: "Fluffy" :: age: 3
     TemplateApply {
         type_name: String,
@@ -275,6 +283,34 @@ impl<'t> Parser<'t> {
         self.parse_primary_impl()
     }
 
+    fn expand_condition(subject: &PExpr, cond: &PExpr, using_enum: &Option<String>) -> PExpr {
+        match cond {
+            // Binary with empty LHS placeholder: "" >= 90  =>  subject >= 90
+            PExpr::Binary(lhs, op, rhs) if matches!(lhs.as_ref(), PExpr::Ident(s) if s.is_empty()) => {
+                PExpr::Binary(Box::new(subject.clone()), op.clone(), rhs.clone())
+            }
+            
+            // Bare identifier with enum context: idle  =>  subject == Enum::idle
+            PExpr::Ident(variant_name) if using_enum.is_some() && variant_name != "else" => {
+                let enum_name = using_enum.as_ref().unwrap();
+                // Create: subject == Enum::variant
+                let enum_variant = PExpr::NsCall(
+                    enum_name.clone(),
+                    variant_name.clone(),
+                    vec![]
+                );
+                PExpr::Binary(
+                    Box::new(subject.clone()),
+                    "==".to_string(),
+                    Box::new(enum_variant)
+                )
+            }
+            
+            // Already has LHS or else: just return as-is
+            _ => cond.clone()
+        }
+    }
+
     fn parse_assign(&mut self) -> Result<PExpr, String> {
         use goblin_lexer::TokenKind;
 
@@ -387,8 +423,14 @@ impl<'t> Parser<'t> {
         let op = op.unwrap();
         let _ = self.eat_op(op);
 
-        // Allow newline(s) before RHS
-        self.skip_newlines();
+        // Allow newline(s) and indent before RHS
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
 
         // Parse RHS as expression (disable nested assignment while parsing RHS)
         let prev_in_stmt = self.in_stmt;
@@ -714,7 +756,7 @@ impl<'t> Parser<'t> {
             // conservative default for constructs that shouldn't appear in keys
             ClassDecl { .. } => false,
             PExpr::TemplateApply { .. } => false,
-            PExpr::Judge(_) | PExpr::JudgeAll(_) => false,
+            PExpr::Judge { .. } | PExpr::JudgeAll { .. } => false,
         }
     }
 
@@ -1343,48 +1385,58 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            PExpr::Judge(pairs) => {
-                let arms = pairs
-                    .into_iter()
-                    .map(|(cond_expr, val_expr)| {
-                        // Check if this is an "else" arm
-                        let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
-                            None
+            PExpr::Judge { using, using_enum, pairs } => {
+                let arms = pairs.into_iter().map(|(cond_expr, val_expr)| {
+                    let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
+                        None
+                    } else {
+                        let expanded = if let Some(ref subj) = using {
+                            Self::expand_condition(subj, &cond_expr, &using_enum)
                         } else {
-                            Some(Box::new(Self::lower_expr_preview(cond_expr, sp.clone())))
+                            cond_expr
                         };
-                        
-                        ast::JudgeArm {
-                            condition,
-                            value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
-                            span: sp.clone(),
-                        }
-                    })
-                    .collect();
+                        Some(Box::new(Self::lower_expr_preview(expanded, sp.clone())))
+                    };
+                    
+                    ast::JudgeArm {
+                        condition,
+                        value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
+                        span: sp.clone(),
+                    }
+                }).collect();
                 
-                ast::Expr::Judge { arms, span: sp }
+                ast::Expr::Judge { 
+                    using: using.map(|u| Box::new(Self::lower_expr_preview(*u, sp.clone()))),
+                    arms, 
+                    span: sp 
+                }
             }
 
-            PExpr::JudgeAll(pairs) => {
-                // For now, treat judge_all the same as judge (we'll implement the "all" logic later)
-                let arms = pairs
-                    .into_iter()
-                    .map(|(cond_expr, val_expr)| {
-                        let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
-                            None
+            PExpr::JudgeAll { using, using_enum, pairs } => {
+                let arms = pairs.into_iter().map(|(cond_expr, val_expr)| {
+                    let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
+                        None
+                    } else {
+                        let expanded = if let Some(ref subj) = using {
+                            Self::expand_condition(subj, &cond_expr, &using_enum)
                         } else {
-                            Some(Box::new(Self::lower_expr_preview(cond_expr, sp.clone())))
+                            cond_expr
                         };
-                        
-                        ast::JudgeArm {
-                            condition,
-                            value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
-                            span: sp.clone(),
-                        }
-                    })
-                    .collect();
+                        Some(Box::new(Self::lower_expr_preview(expanded, sp.clone())))
+                    };
+                    
+                    ast::JudgeArm {
+                        condition,
+                        value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
+                        span: sp.clone(),
+                    }
+                }).collect();
                 
-                ast::Expr::Judge { arms, span: sp }
+                ast::Expr::Judge { 
+                    using: using.map(|u| Box::new(Self::lower_expr_preview(*u, sp.clone()))),
+                    arms, 
+                    span: sp 
+                }
             }
 
             // Calls
@@ -3967,6 +4019,193 @@ impl<'t> Parser<'t> {
     fn parse_primary_impl(&mut self) -> Result<PExpr, String> {
         use goblin_lexer::TokenKind;
 
+        // Skip layout tokens before parsing primary expression
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // expression-form: judge …
+        if let Some("judge") = self.peek_ident() {
+            let header_tok_i = self.i;
+            let header_line = self.toks[header_tok_i].span.line_start;
+            let header_col = self.toks[header_tok_i].span.col_start;
+            let _ = self.eat_ident();
+            
+            self.suspend_colon_call += 1;
+
+            // NEW ORDER: Parse subject FIRST, then check for 'using EnumName'
+            let mut using_expr = None;
+            let mut using_enum = None;
+            
+            // Check if there's a subject expression before 'using'
+            // If next token is 'using', there's no explicit subject (shorthand form)
+            // Otherwise, parse the subject first
+            if self.peek_ident() != Some("using") && !self.peek_newline_or_eof() && !self.peek_op("{") {
+                // Parse subject expression: judge status using Status
+                //                                  ^^^^^^
+                let subject = self.parse_compare()?;
+                using_expr = Some(Box::new(subject));
+            }
+            
+            // Now check for 'using EnumName'
+            if self.peek_ident() == Some("using") {
+                let _ = self.eat_ident(); // consume 'using'
+                self.skip_newlines();
+                
+                let Some(name) = self.eat_ident() else {
+                    self.suspend_colon_call -= 1;
+                    return Err(s_help(
+                        "P0814",
+                        "Expected a name after 'using'",
+                        "Write: judge using score or judge status using Status",
+                    ));
+                };
+                
+                // Check if this is capitalized (enum name) or lowercase (subject expression)
+                let is_capitalized = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                
+                if is_capitalized {
+                    // It's an enum name: judge using Status
+                    using_enum = Some(name);
+                } else {
+                    // It's a subject variable: judge using score
+                    using_expr = Some(Box::new(PExpr::Ident(name)));
+                }
+            }
+            
+            if self.peek_op("{") {
+                self.suspend_colon_call -= 1;
+                return Err(s_help(
+                    "P0812",
+                    "Don't put '{' after 'judge'",
+                    "Use indentation and close with 'end' or 'xx' (crossbones): judge x > 5: \"big\" end",
+                ));
+            }
+            self.forbid_next_line_brace(header_line, header_col, "judge")?;
+            self.skip_newlines();
+            self.eat_layout_until_close(header_col);
+            
+            let pairs = self.parse_kv_bind_list_judge()?;
+            self.suspend_colon_call -= 1;
+            
+            self.skip_newlines();
+            if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if col != header_col {
+                    let closer = self.peek_ident().unwrap_or("}");
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, header_col, col
+                        ),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge header.",
+                    ));
+                }
+                self.expect_block_close("judge")?;
+            } else if !self.eat_layout_until_close(header_col) {
+                return Err(s_help(
+                    "P0212",
+                    "This judge block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
+            return Ok(PExpr::Judge {
+                using: using_expr,
+                using_enum,
+                pairs,
+            });
+        }
+
+        // expression-form: judge_all …
+        if let Some("judge_all") = self.peek_ident() {
+            let header_tok_i = self.i;
+            let header_line = self.toks[header_tok_i].span.line_start;
+            let header_col = self.toks[header_tok_i].span.col_start;
+            let _ = self.eat_ident();
+            
+            self.suspend_colon_call += 1;
+
+            // NEW ORDER: Parse subject FIRST, then check for 'using EnumName'
+            let mut using_expr = None;
+            let mut using_enum = None;
+            
+            // Check if there's a subject expression before 'using'
+            // If next token is 'using', there's no explicit subject (shorthand form)
+            // Otherwise, parse the subject first
+            if self.peek_ident() == Some("using") {
+                let _ = self.eat_ident(); // consume 'using'
+                self.skip_newlines();
+                
+                let Some(name) = self.eat_ident() else {
+                    self.suspend_colon_call -= 1;
+                    return Err(s_help(
+                        "P0814",
+                        "Expected a name after 'using'",
+                        "Write: judge using score or judge status using Status",
+                    ));
+                };
+                
+                // Check if this is capitalized (enum name) or lowercase (subject expression)
+                let is_capitalized = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                
+                if is_capitalized {
+                    // It's an enum name: judge using Status
+                    using_enum = Some(name);
+                } else {
+                    // It's a subject variable: judge using score
+                    using_expr = Some(Box::new(PExpr::Ident(name)));
+                }
+            }
+            
+            if self.peek_op("{") {
+                self.suspend_colon_call -= 1;
+                return Err(s_help(
+                    "P0813",
+                    "Don't put '{' after 'judge_all'",
+                    "Use indentation and close with 'end' or 'xx' (crossbones): judge_all x > 5: \"big\" end",
+                ));
+            }
+            self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
+            self.skip_newlines();
+            self.eat_layout_until_close(header_col);
+            
+            let pairs = self.parse_kv_bind_list_judge()?;
+            self.suspend_colon_call -= 1;
+            
+            self.skip_newlines();
+            if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if col != header_col {
+                    let closer = self.peek_ident().unwrap_or("}");
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, header_col, col
+                        ),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge_all header.",
+                    ));
+                }
+                self.expect_block_close("judge_all")?;
+            } else if !self.eat_layout_until_close(header_col) {
+                return Err(s_help(
+                    "P0212",
+                    "This judge_all block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
+            }
+            return Ok(PExpr::JudgeAll {
+                using: using_expr,
+                using_enum,
+                pairs,
+            });
+        }
+
         // --- blob literal special-case: blob "..." | blob 0xDEAD... ---
         if let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Blob) {
@@ -4067,7 +4306,7 @@ impl<'t> Parser<'t> {
                 self.i += 1; // eat the ident
 
                 // DEPRECATE old `Type: ...`
-                if self.peek_op(":") {
+                if self.peek_op(":") && self.suspend_colon_call == 0 {
                     return Err(s_help(
                         "P0998",
                         "Object construction has moved to 'name | Type = ...'.",
@@ -4830,14 +5069,13 @@ impl<'t> Parser<'t> {
             };
 
             let condition = if is_else {
-                let _ = self.eat_ident(); // consume 'else'
+                let _ = self.eat_ident();
                 None
             } else {
-                // SUSPEND colon-call parsing while parsing the condition
-                self.suspend_colon_call += 1;
-                let cond = self.parse_judge_condition();
-                self.suspend_colon_call -= 1;
-                Some(cond?)
+                let before_i = self.i;
+                let cond = self.parse_judge_condition()?;
+
+                Some(cond)
             };
 
             if !self.eat_op(":") {
@@ -4865,8 +5103,29 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_judge_condition(&mut self) -> Result<PExpr, String> {
-        // Just parse a comparison expression
-        // parse_compare() stops before ':' naturally because ':' is not a comparison operator
+        // Check if this is a shorthand comparison operator without LHS
+        if self.peek_op(">=") || self.peek_op("<=") || self.peek_op(">") || 
+           self.peek_op("<") || self.peek_op("==") || self.peek_op("!=") {
+            let op = if self.eat_op(">=") { ">=" }
+                    else if self.eat_op("<=") { "<=" }
+                    else if self.eat_op(">") { ">" }
+                    else if self.eat_op("<") { "<" }
+                    else if self.eat_op("==") { "==" }
+                    else if self.eat_op("!=") { "!=" }
+                    else { unreachable!() };
+            
+            self.skip_newlines();
+            let rhs = self.parse_additive()?;
+            
+            return Ok(PExpr::Binary(
+                Box::new(PExpr::Ident(String::new())),
+                op.to_string(),
+                Box::new(rhs)
+            ));
+        }
+        
+        // For enum matching, bare identifiers are valid (will be expanded later)
+        // Just parse a normal expression
         self.parse_compare()
     }
 
@@ -4889,88 +5148,6 @@ impl<'t> Parser<'t> {
                     ));
                 }
             }
-        }
-        // expression-form: judge …
-        if let Some("judge") = self.peek_ident() {
-            let header_tok_i = self.i;
-            let header_line = self.toks[header_tok_i].span.line_start;
-            let header_col = self.toks[header_tok_i].span.col_start;
-            let _ = self.eat_ident(); // 'judge'
-            if self.peek_op("{") {
-                return Err(s_help(
-                    "P0812",
-                    "Don't put '{' after 'judge'",
-                    "Use indentation and close with 'end' or 'xx' (crossbones): judge x > 5: \"big\" end",
-                ));
-            }
-            self.forbid_next_line_brace(header_line, header_col, "judge")?;
-            self.skip_newlines();
-            self.eat_layout_until_close(header_col); // Handle Dedent before parsing pairs
-            let pairs = self.parse_kv_bind_list_judge()?;
-            self.skip_newlines();
-            if self.peek_block_close() {
-                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-                if col != header_col {
-                    let closer = self.peek_ident().unwrap_or("}");
-                    return Err(s_help(
-                        "P0222",
-                        &format!(
-                            "This '{}' closer is misaligned: expected column {}, found column {}",
-                            closer, header_col, col
-                        ),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge header.",
-                    ));
-                }
-                self.expect_block_close("judge")?;
-            } else if !self.eat_layout_until_close(header_col) {
-                return Err(s_help(
-                    "P0212",
-                    "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
-            }
-            return Ok(PExpr::Judge(pairs));
-        }
-        // expression-form: judge_all …
-        if let Some("judge_all") = self.peek_ident() {
-            let header_tok_i = self.i;
-            let header_line = self.toks[header_tok_i].span.line_start;
-            let header_col = self.toks[header_tok_i].span.col_start;
-            let _ = self.eat_ident(); // 'judge_all'
-            if self.peek_op("{") {
-                return Err(s_help(
-                    "P0813",
-                    "Don't put '{' after 'judge_all'",
-                    "Use indentation and close with 'end' or 'xx' (crossbones): judge_all x > 5: \"big\" end",
-                ));
-            }
-            self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
-            self.skip_newlines();
-            self.eat_layout_until_close(header_col); // Handle Dedent before parsing pairs
-            let pairs = self.parse_kv_bind_list_judge()?;
-            self.skip_newlines();
-            if self.peek_block_close() {
-                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-                if col != header_col {
-                    let closer = self.peek_ident().unwrap_or("}");
-                    return Err(s_help(
-                        "P0222",
-                        &format!(
-                            "This '{}' closer is misaligned: expected column {}, found column {}",
-                            closer, header_col, col
-                        ),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge_all header.",
-                    ));
-                }
-                self.expect_block_close("judge_all")?;
-            } else if !self.eat_layout_until_close(header_col) {
-                return Err(s_help(
-                    "P0212",
-                    "This judge_all block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
-            }
-            return Ok(PExpr::JudgeAll(pairs));
         }
         
         // PICK / REAP (expression form)

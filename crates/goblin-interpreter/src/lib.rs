@@ -3929,13 +3929,43 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
 
-        ast::Expr::NsCall(ns, name, _args, sp) => {
-            // Keep this explicit until Stage 4 adds namespaced call semantics.
-            return Err(rt(
+        ast::Expr::NsCall(ns, name, args, sp) => {
+            // Check if this is an enum variant access
+            if let Some(enum_def) = sess.enums.get(ns) {
+                // Verify the variant exists
+                let _variant = enum_def.variants.iter()
+                    .find(|v| v.name == *name)
+                    .ok_or_else(|| rt(
+                        "R0001",
+                        format!("Enum '{}' has no variant '{}'", ns, name),
+                        sp.clone(),
+                    ))?;
+                
+                // For simple variants (no fields), args should be empty
+                if args.is_empty() {
+                    return Ok(Value::Enum {
+                        enum_name: ns.clone(),
+                        variant_name: name.clone(),
+                        fields: None,
+                    });
+                }
+                
+                // For variants with fields (if args provided)
+                // This would handle Status::move { x: 10, y: 20 } syntax
+                // For now, just return error if args provided
+                return Err(rt(
+                    "R0002",
+                    format!("Enum variant '{}::{}' with arguments not yet implemented", ns, name),
+                    sp.clone(),
+                ));
+            }
+            
+            // Not an enum - keep old error for actual namespaced calls
+            Err(rt(
                 "R0000",
                 format!("namespaced call '{}::{}' not implemented", ns, name),
                 sp.clone(),
-            ));
+            ))
         }
 
         ast::Expr::EnumVariant { enum_name, variant_name, fields, span } => {
@@ -3994,7 +4024,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             })
         }
 
-        ast::Expr::Judge { arms, span } => {
+        ast::Expr::Judge { using: _, arms, span: _ } => {
             // Evaluate each arm until one matches
             for arm in arms {
                 // Check if this is the else arm (condition is None)
