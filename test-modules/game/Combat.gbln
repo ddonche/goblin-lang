@@ -1,0 +1,14 @@
+//// 
+Combat module
+act fight(attacker, defender)
+    say (attacker >> name) ++ "attacks" ++ (defender >> name) + "!"
+end
+////
+
+act fight(attacker, defender)
+    a = attacker >> name
+    b = " attacks "
+    c = defender >> name
+    msg = a + b + c + "!"
+    say msg
+end

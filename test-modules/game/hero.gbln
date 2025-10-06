@@ -1,0 +1,5 @@
+/// Hero module
+act generate()
+    say "Generating a hero..."
+    { name: "Brave Knight", health: 100 }
+end

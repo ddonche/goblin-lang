@@ -1,0 +1,11 @@
+name: test-modules
+version: 0.1.0
+entry: main.gbln
+
+# Define module paths for your project
+# Format: alias: ./path/to/folder
+module_paths:
+  game: ./game
+  # game: ./game
+  # data: ./data
+  # utils: ./utils
