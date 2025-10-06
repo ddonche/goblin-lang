@@ -2211,62 +2211,116 @@ impl<'t> Parser<'t> {
         };
         // 4) RHS expression
         let rhs = if class_name.is_some() {
-            // Object instantiation: expect { field: value, ... }
+            // Object instantiation: expect { field: value, ... } or { val1, val2, ... }
             if !self.eat_op("{") {
                 return Err(s_help(
                     "P0412",
                     "Expected '{' after class name in object construction",
-                    "Write: user|User = { id: 1, name: \"Alice\" }",
+                    "Write: user|User = { id: 1, name: \"Alice\" } or user|User = { 1, \"Alice\" }",
                 ));
             }
             
-            // Parse object literal
+            // Parse object literal - detect if it's named or positional
             self.skip_newlines();
-            let mut pairs = Vec::new();
             
-            if !self.peek_op("}") {
-                loop {
-                    let Some(key) = self.eat_ident() else {
-                        return Err(s_help(
-                            "P0413",
-                            "Expected a field name",
-                            "Write: { id: 1, name: \"Alice\" }",
-                        ));
-                    };
-                    
-                    if !self.eat_op(":") {
-                        return Err(s_help(
-                            "P0414",
-                            "Expected ':' after field name",
-                            "Write: { id: 1, name: \"Alice\" }",
-                        ));
+            if self.peek_op("}") {
+                // Empty object
+                self.i += 1;
+                ast::Expr::Array(vec![], op_span.clone())
+            } else {
+                // Check if first element is named (has ':' after identifier)
+                let is_named = if let Some(tok) = self.peek() {
+                    if matches!(tok.kind, TokenKind::Ident) {
+                        // Look ahead for ':'
+                        let mut j = self.i + 1;
+                        while let Some(t) = self.toks.get(j) {
+                            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                                j += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        matches!(self.toks.get(j), Some(t) if matches!(t.kind, TokenKind::Op(ref s) if s == ":"))
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                
+                if is_named {
+                    // Named fields: { id: 1, name: "Alice" }
+                    let mut pairs = Vec::new();
                     
-                    self.skip_newlines();
-                    let val_pe = self.parse_coalesce()?;
-                    pairs.push((key, self.lower_expr(val_pe)));
-                    
-                    self.skip_newlines();
-                    if self.eat_op(",") {
+                    loop {
+                        let Some(key) = self.eat_ident() else {
+                            return Err(s_help(
+                                "P0413",
+                                "Expected a field name",
+                                "Write: { id: 1, name: \"Alice\" }",
+                            ));
+                        };
+                        
+                        if !self.eat_op(":") {
+                            return Err(s_help(
+                                "P0414",
+                                "Expected ':' after field name",
+                                "Write: { id: 1, name: \"Alice\" }",
+                            ));
+                        }
+                        
                         self.skip_newlines();
-                        if self.peek_op("}") { break; }
-                        continue;
+                        let val_pe = self.parse_coalesce()?;
+                        pairs.push((key, self.lower_expr(val_pe)));
+                        
+                        self.skip_newlines();
+                        if self.eat_op(",") {
+                            self.skip_newlines();
+                            if self.peek_op("}") { break; }
+                            continue;
+                        }
+                        break;
                     }
-                    break;
+                    
+                    self.skip_newlines();
+                    if !self.eat_op("}") {
+                        return Err(s_help(
+                            "P0415",
+                            "Expected '}' to close object construction",
+                            "Write: { id: 1, name: \"Alice\" }",
+                        ));
+                    }
+                    
+                    ast::Expr::Object(pairs, op_span.clone())
+                } else {
+                    // Positional values: { 1, "Alice", "email@example.com" }
+                    let mut values = Vec::new();
+                    
+                    loop {
+                        let val_pe = self.parse_coalesce()?;
+                        values.push(self.lower_expr(val_pe));
+                        
+                        self.skip_newlines();
+                        if self.eat_op(",") {
+                            self.skip_newlines();
+                            if self.peek_op("}") { break; }
+                            continue;
+                        }
+                        break;
+                    }
+                    
+                    self.skip_newlines();
+                    if !self.eat_op("}") {
+                        return Err(s_help(
+                            "P0416",
+                            "Expected '}' to close object construction",
+                            "Write: { 1, \"Alice\", \"email@example.com\" }",
+                        ));
+                    }
+                    
+                    ast::Expr::Array(values, op_span.clone())
                 }
             }
-            
-            self.skip_newlines();
-            if !self.eat_op("}") {
-                return Err(s_help(
-                    "P0415",
-                    "Expected '}' to close object construction",
-                    "Write: { id: 1, name: \"Alice\" }",
-                ));
-            }
-            
-            // Convert pairs to Object expression
-            ast::Expr::Object(pairs, op_span.clone())
         } else {
             // Normal binding: single expression
             let rhs_pe = self.parse_coalesce()?;

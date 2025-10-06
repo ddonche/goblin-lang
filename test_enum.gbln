@@ -1,8 +1,22 @@
+/// Test 1: Basic class with action
 @User = 
     id!: 0,
     name: "Default",
     email?: nil
+    
+    act greet
+        say "Hello, " ++ name
+    end
+end
 
+user|User = { id: 1, name: "Alice", email: "alice@example.com" }
+user.greet
+
+/// Test 2: Full nullable and readonly test (final working version)
+@User = 
+    id!: 0,
+    name: "Default",
+    email?: nil
     act greet
         say "Hello, " ++ name
     end
@@ -12,7 +26,7 @@
     end
 end
 
-user1|User = { id: 1, name: "Alice", email: "alice@example.com" }
+user1|User = { 1, "Alice", "alice@example.com" }
 user1.greet
 user1.show_email
 
@@ -21,4 +35,234 @@ user2.greet
 user2.show_email
 
 /// Test readonly - this should fail at runtime
-user1 >> id = 999
+/// user1 >> id = 999
+
+////
+Other tests
+From another session
+////
+
+/// Test 1: Basic class with string interpolation and actions
+@Person = name: "{name}", age: 25
+    act greet()
+        say "Hello, I'm {name} and I'm {age} years old"
+    end
+end
+
+/// Test 2: Object instantiation with all values
+alice|Person = { name: "Alice", age: 30 }
+
+/// Test 3: Field access
+alice >> name
+
+/// Test 4: Method call
+alice.greet()
+
+/// Test 5: Field assignment
+alice >> age = 31
+alice.greet()
+
+/// Test 6: Using default values (skipping age)
+bob|Person = { name: "Bob" }
+bob.greet()
+
+/// Test 7: Class with numeric field and methods that access fields
+@Counter = value: 0
+    act increment()
+        value = value + 1
+    end
+    
+    act get()
+        value
+    end
+end
+
+/// Test 8: Object instantiation with single value
+c|Counter = { value: 5 }
+
+/// Test 9: Method that reads a field
+say c.get()
+
+/// Test 10: Method that modifies a field
+c.increment()
+
+/// Test 11: Verify field modification persisted
+say c.get()
+
+//// 
+Other tests 
+From another session
+////
+
+/// Enum definition and matching tests
+enum Status
+    idle
+    loading
+    ready
+    error
+end
+
+enum Priority
+    low
+    medium
+    high
+    critical
+end
+
+status = Status::idle
+judge status using Status
+    idle:    say "System is idle"
+    loading: say "Processing..."
+    ready:   say "Ready to proceed"
+    error:   say "Error occurred"
+end
+
+priority = Priority::high
+judge priority using Priority
+    low:      say "Low priority"
+    medium:   say "Medium priority"
+    high:     say "High priority alert"
+    critical: say "CRITICAL - Immediate action required"
+end
+
+score = 95
+judge using score
+    >= 90: say "A"
+    >= 80: say "B"
+    >= 70: say "C"
+    else:  say "F"
+end
+
+x = 42
+judge
+    x > 100: say "large"
+    x > 50:  say "medium"
+    x > 0:   say "small"
+    else:    say "invalid"
+end
+
+/// judge_all test
+balance = 45
+trial_days = 5
+has_new_features = true
+maintenance_scheduled = false
+
+notifications = 
+    judge_all
+        balance < 50: "Low balance warning"
+        trial_days < 7: "Trial expiring soon"
+        has_new_features: "Check out new tools"
+        maintenance_scheduled: "Maintenance tonight"
+        else: "All systems normal"
+    end
+
+say notifications
+
+/// User input and validation test
+name = ask("What's your name? ")
+say "Hello," ++ name
+
+age_str = ask("How old are you? ")
+if age_str.is_type("int")
+    say "You are" ++ int(age_str) ++ "years old"
+else
+    say "You must enter a number"
+end
+
+/// Input validation loop with while
+valid = false
+while !valid
+    age_str = ask("How old are you? ")
+    if age_str.is_type("int")
+        say "You are" ++ int(age_str) ++ "years old"
+        valid = true
+    else
+        say "You must enter a number"
+    end
+end
+
+/// repeat loop tests
+repeat 3
+    say "Loading..."
+end
+
+enemy_count = 5
+repeat enemy_count
+    say "Spawning enemy"
+end
+
+repeat 10
+    say "Attempt"
+    stop
+end
+say "Done"
+
+repeat 5
+    say "Before"
+    skip
+    say "After (shouldn't print)"
+end
+
+/// repeat with conditionals
+say "=== Testing skip with conditional ==="
+i = 0
+repeat 5
+    i = i + 1
+    if i == 3
+        say "Skipping iteration 3"
+        skip
+    end
+    say "Completed iteration" ++ i
+end
+
+say ""
+say "=== Testing stop with conditional ==="
+total = 0
+repeat 10
+    total = total + 1
+    say "Iteration" ++ total
+    if total == 4
+        say "Stopping at iteration 4"
+        stop
+    end
+end
+say "Final total:" ++ total
+
+say ""
+say "=== Testing skip and stop together ==="
+n = 0
+repeat 10
+    n = n + 1
+    if n == 3 or n == 5
+        say "Skipping" ++ n
+        skip
+    end
+    if n == 7
+        say "Stopping at" ++ n
+        stop
+    end
+    say "Processing" ++ n
+end
+
+/// for loop tests
+names = ["Alice", "Bob", "Charlie"]
+for name in names
+    say "Hello," ++ name
+end
+
+word = "Goblin"
+for char in word
+    say char
+end
+
+numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+for num in numbers
+    if num == 3 or num == 7
+        skip
+    end
+    if num == 9
+        say "Stopping at" ++ num
+        stop
+    end
+    say "Number:" ++ num
+end
