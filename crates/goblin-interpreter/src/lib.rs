@@ -166,6 +166,13 @@ impl<'a> SeqView<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ClassRelations {
+    pub of_relations: BTreeMap<String, (String, String)>, // field_name -> (class_name, as_name)
+    pub with_relations: Vec<String>,  // class names
+    pub re_relations: Vec<String>,    // class names
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Int(i64),
@@ -391,6 +398,7 @@ pub struct Session {
     pub loop_depth: i32,
     rng_state: u128,
     pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding 
+    pub relationship_graph: BTreeMap<String, ClassRelations>,
 }
 
 impl Session {
@@ -406,6 +414,7 @@ impl Session {
             loop_depth: 0,
             rng_state: seed,
             consts: vec![BTreeMap::new()],
+            relationship_graph: BTreeMap::new(),
         }
     }
 
@@ -1262,6 +1271,33 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         }
 
         ast::Stmt::Class(decl) => {
+            // Build relationship metadata
+            let mut relations = ClassRelations {
+                of_relations: BTreeMap::new(),
+                with_relations: Vec::new(),
+                re_relations: Vec::new(),
+            };
+            
+            for field in &decl.fields {
+                if let Some(ref rel) = field.relation {
+                    match rel {
+                        ast::RelationDef::Of { class_name, as_name } => {
+                            relations.of_relations.insert(
+                                field.name.clone(),
+                                (class_name.clone(), as_name.clone())
+                            );
+                        }
+                        ast::RelationDef::With { class_name } => {
+                            relations.with_relations.push(class_name.clone());
+                        }
+                        ast::RelationDef::Re { class_name } => {
+                            relations.re_relations.push(class_name.clone());
+                        }
+                    }
+                }
+            }
+            
+            sess.relationship_graph.insert(decl.name.clone(), relations);
             sess.classes.insert(decl.name.clone(), decl.clone());
             Ok(None)
         }
@@ -5364,8 +5400,49 @@ fn instantiate_object(
     
     match rhs_val {
         Value::Map(provided_fields) => {
-            // Named field construction: { id: 1, name: "Alice", email: "x@y.com" }
+            // Named field construction: { name: "Alice", author: user_obj }
             for field in &class.fields {
+                // Handle relationship fields
+                if let Some(ref relation) = field.relation {
+                    match relation {
+                        ast::RelationDef::Of { class_name: _, as_name } => {
+                            // 'of' relation: stores a foreign key
+                            let fk_field_name = format!("{}_id", as_name);
+                            
+                            if let Some(provided_val) = provided_fields.get(&field.name) {
+                                // Extract ID if value is an object
+                                let id_val = match provided_val {
+                                    Value::Object { fields: obj_fields, .. } => {
+                                        obj_fields.get("id")
+                                            .cloned()
+                                            .unwrap_or(Value::Nil)
+                                    }
+                                    // Assume it's already an ID
+                                    other => other.clone(),
+                                };
+                                
+                                // Store both the FK field and optionally the relation field
+                                field_map.insert(fk_field_name, id_val.clone());
+                                field_map.insert(field.name.clone(), id_val);
+                            } else if field.nullable {
+                                field_map.insert(fk_field_name, Value::Nil);
+                                field_map.insert(field.name.clone(), Value::Nil);
+                            } else {
+                                return Err(rt("R9003",
+                                    format!("'of' relation '{}' requires a value", field.name),
+                                    span.clone()));
+                            }
+                        }
+                        ast::RelationDef::With { .. } | ast::RelationDef::Re { .. } => {
+                            // 'with' and 're' are reverse/many-to-many metadata only
+                            // No storage needed - skip this field
+                            continue;
+                        }
+                    }
+                    continue;
+                }
+                
+                // Normal field handling
                 let value = if let Some(val) = provided_fields.get(&field.name) {
                     // User provided this field
                     if matches!(val, Value::Nil) && !field.nullable {
@@ -5391,29 +5468,62 @@ fn instantiate_object(
             }
         }
         Value::Array(values) => {
-            // Positional construction (existing logic)
+            // Positional construction
             let mut value_idx = 0;
             
             for field in &class.fields {
+                // Handle relationship fields
+                if let Some(ref relation) = field.relation {
+                    match relation {
+                        ast::RelationDef::Of { class_name: _, as_name } => {
+                            let fk_field_name = format!("{}_id", as_name);
+                            
+                            if value_idx < values.len() {
+                                let val = &values[value_idx];
+                                value_idx += 1;
+                                
+                                let id_val = match val {
+                                    Value::Object { fields: obj_fields, .. } => {
+                                        obj_fields.get("id")
+                                            .cloned()
+                                            .unwrap_or(Value::Nil)
+                                    }
+                                    other => other.clone(),
+                                };
+                                
+                                field_map.insert(fk_field_name, id_val.clone());
+                                field_map.insert(field.name.clone(), id_val);
+                            } else if field.nullable {
+                                field_map.insert(fk_field_name, Value::Nil);
+                                field_map.insert(field.name.clone(), Value::Nil);
+                            } else {
+                                return Err(rt("R9003",
+                                    format!("'of' relation '{}' requires a value", field.name),
+                                    span.clone()));
+                            }
+                        }
+                        ast::RelationDef::With { .. } | ast::RelationDef::Re { .. } => {
+                            // Skip - no storage
+                            continue;
+                        }
+                    }
+                    continue;
+                }
+                
+                // Normal field handling
                 let value = if value_idx < values.len() {
                     let val = &values[value_idx];
                     value_idx += 1;
                     
                     if matches!(val, Value::Unit) {
-                        if field.nullable {
-                            if let Some(default_expr) = &field.default {
-                                eval_expr(default_expr, sess)?
-                            } else {
-                                Value::Nil
-                            }
+                        if let Some(default_expr) = &field.default {
+                            eval_expr(default_expr, sess)?
+                        } else if field.nullable {
+                            Value::Nil
                         } else {
-                            if let Some(default_expr) = &field.default {
-                                eval_expr(default_expr, sess)?
-                            } else {
-                                return Err(rt("T0998", 
-                                    format!("non-nullable field '{}' requires a value", field.name), 
-                                    span.clone()));
-                            }
+                            return Err(rt("T0998", 
+                                format!("non-nullable field '{}' requires a value", field.name), 
+                                span.clone()));
                         }
                     } else {
                         if matches!(val, Value::Nil) && !field.nullable {

@@ -45,10 +45,18 @@ pub struct ClassDecl {
 pub struct FieldDecl {
     pub name: String,
     pub private: bool,
-    pub nullable: bool,      // NEW: true if field has `?` suffix
-    pub readonly: bool,      // NEW: true if field has `!` prefix
+    pub nullable: bool,      // true if field has `?` suffix
+    pub readonly: bool,      // true if field has `!` prefix
+    pub relation: Option<RelationDef>,
     pub default: Option<Expr>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum RelationDef {  // Changed from 'enum' to 'pub enum'
+    Of { class_name: String, as_name: String },
+    With { class_name: String },
+    Re { class_name: String },
 }
 
 #[derive(Debug, Clone)]

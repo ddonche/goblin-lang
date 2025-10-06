@@ -2,10 +2,9 @@
 #![allow(unused_assignments)]
 #![allow(unused_variables)]
 
-use goblin_ast as ast;
+use goblin_ast::{self as ast, RelationDef};
 use goblin_diagnostics::{Diagnostic, Span};
 use goblin_lexer::{Token, TokenKind};
-
 mod diagnostics_ext;
 pub use diagnostics_ext::{s, s_help, derr, derr_help, derr_expected_found};
 
@@ -45,7 +44,7 @@ enum PExpr {
     Time(String),
     ClassDecl {
         name: String,
-        fields: Vec<(String, PExpr, bool, bool)>,
+        fields: Vec<(String, PExpr, bool, bool, Option<RelationDef>)>,
         actions: Vec<PAction>,
     },
     EnumVariant {
@@ -173,7 +172,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool)>, actions: Vec<PAction> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, Option<RelationDef>)>, actions: Vec<PAction> },
     Enum(PEnumDecl),
 }
 
@@ -2941,7 +2940,7 @@ impl<'t> Parser<'t> {
         }
 
         // ── Fields (single-line OR multi-line). Commas and newlines are both allowed.
-        let mut fields: Vec<(String, PExpr, bool, bool)> = Vec::new();
+        let mut fields: Vec<(String, PExpr, bool, bool, Option<RelationDef>)> = Vec::new();
 
         loop {
             // Skip layout
@@ -2972,7 +2971,52 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            // Parse one field: name[!][?] : expr
+            // Check if this is a relation keyword first (BEFORE eating ident)
+            let first_ident = self.peek_ident();
+            
+            if first_ident == Some("with") || first_ident == Some("of") || first_ident == Some("re") {
+                // This is a relation declaration, not a regular field
+                let rel_keyword = self.eat_ident().unwrap();
+                
+                let Some(class_name) = self.eat_ident() else {
+                    return Err(s_help("P0920", 
+                        &format!("Expected class name after '{}'", rel_keyword),
+                        &format!("Write: {} ClassName", rel_keyword)));
+                };
+                
+                let (relation, field_name) = if rel_keyword == "of" {
+                    if self.peek_ident() != Some("as") {
+                        return Err(s_help("P0921", "Expected 'as' after class name", "Write: of User as author"));
+                    }
+                    self.i += 1; // eat 'as'
+                    let Some(as_name) = self.eat_ident() else {
+                        return Err(s_help("P0922", "Expected relation name after 'as'", "Write: of User as author"));
+                    };
+                    (Some(RelationDef::Of { class_name: class_name.clone(), as_name: as_name.clone() }), as_name)
+                } else if rel_keyword == "with" {
+                    (Some(RelationDef::With { class_name: class_name.clone() }), class_name.to_lowercase())
+                } else { // "re"
+                    (Some(RelationDef::Re { class_name: class_name.clone() }), class_name.to_lowercase())
+                };
+                
+                let field_expr = PExpr::Nil;
+                fields.push((field_name, field_expr, false, false, relation));
+                
+                // Skip layout/separators
+                while let Some(tok) = self.peek() {
+                    if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                self.eat_op("::");
+                self.eat_op(",");
+                
+                continue;
+            }
+
+            // Parse regular field: name[!][?] : expr
             let Some(mut fname) = self.eat_ident() else { break; };
 
             // Modifiers: ? (nullable), ! (readonly) as suffixes
@@ -2987,6 +3031,7 @@ impl<'t> Parser<'t> {
                 fname.truncate(fname.len() - 1);
             }
 
+            // Normal field: expect ':' and value
             if !self.eat_op(":") {
                 return Err(s_help(
                     "P0904",
@@ -2994,7 +3039,6 @@ impl<'t> Parser<'t> {
                     "Write it like username: \"john\" or email?: \"\" or id!: 0",
                 ));
             }
-
             // Skip layout before the value expression
             while let Some(tok) = self.peek() {
                 if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
@@ -3005,7 +3049,7 @@ impl<'t> Parser<'t> {
             }
 
             let fexpr = self.parse_assign()?;
-            fields.push((fname, fexpr, readonly, nullable));
+            fields.push((fname, fexpr, readonly, nullable, None));
 
             // Skip layout after the value
             while let Some(tok) = self.peek() {
@@ -3022,9 +3066,6 @@ impl<'t> Parser<'t> {
         }
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
-        // If we're in the REPL and we've parsed at least one field, and the buffer ends (EoF),
-        // implicitly close the class. This enables:
-        //   @User = name: "{name}", age: 40
         if is_repl && !fields.is_empty() && self.is_eof() {
             return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new() });
         }
@@ -4371,6 +4412,7 @@ impl<'t> Parser<'t> {
                                 private: false,
                                 nullable: false,  
                                 readonly: false,
+                                relation: None,
                                 default: None, // enum fields don't have defaults in Phase 1
                                 span: sp.clone(),
                             })
@@ -4404,11 +4446,12 @@ impl<'t> Parser<'t> {
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
-                    .map(|(fname, fexpr, readonly, nullable)| ast::FieldDecl {
+                    .map(|(fname, fexpr, readonly, nullable, relation)| ast::FieldDecl {
                         name: fname,
                         private: false,
                         nullable,
                         readonly,
+                        relation,
                         default: Some(self.lower_expr(fexpr)),
                         span: sp.clone(),
                     })
