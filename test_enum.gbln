@@ -266,3 +266,12 @@ for num in numbers
     end
     say "Number:" ++ num
 end
+
+
+/// UUID IN CLASS/OBJ
+
+@User = name: "{name}", age: 40
+alice|User = { "Alice", 41 }
+
+alice *>>            // { name: "Alice", age: 41 }
+alice *>> show_ids   // { id: "uuid-...", name: "Alice", age: 41 }

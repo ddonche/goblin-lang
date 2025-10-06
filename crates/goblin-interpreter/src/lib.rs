@@ -1,28 +1,3 @@
-// goblin-interpreter/src/lib.rs
-//! Stage 1–3 interpreter on the real Goblin AST.
-//!
-//! Implemented (per your repo so far):
-//! - literals: numbers/strings/bools/nil  (escapes handled by lexer)
-//! - unary +/- and logical not: "!" and "not"
-//! - postfix: %, !, ^ (ceil), _ (floor), ** (square), // (sqrt)
-//! - infix math: + - * / // % ** ><
-//! - percent family: N% literal, `N %o X` == (N/100)*X, `N% of X` == (N/100)*X (parser lowers "of")
-//! - comparisons: == != < <= > >= (num/num or str/str)
-//! - logic: and/or (aliases &&, <>), coalesce ??
-//! - strings: "a" + "b", and "a" ++ "b" (space-join, stringifies rhs/lhs)
-//! - string interpolation at runtime: "Hello {name}" with {{ and }} escapes
-//! - vars: `name = expr`, compound: += -= *= /= //= %= **=
-//! - arrays & maps: [..], {k: v}; indexing: arr[i], map["key"]
-//! - member access (from parser): Member/OptMember work on maps (name key); OptMember nil-propagates
-//! - free calls: v(n), say(x)
-//! - control flow (parser lowers to free calls):
-//!     if(cond) { then[] [, else[]] } -> FreeCall("if", [cond, then[], else?[]])
-//!     while(cond) { body[] }         -> FreeCall("while", [cond, body[]])
-//!
-//! Not implemented yet:
-//! - namespaced/receiver calls (Call/OptCall/NsCall) -> clear "not implemented" diag
-//! - classes/actions execution semantics beyond registering free actions (Stage 4)
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -4770,6 +4745,36 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "^" => Ok(Value::Float(as_num(v, span_of_expr(expr), "ceil")?.ceil())),
                 "_" => Ok(Value::Float(as_num(v, span_of_expr(expr), "floor")?.floor())),
                 "?" => Ok(Value::Bool(!matches!(v, Value::Nil))),
+                "*>>" | "*>>:show_ids" => {
+                    let show_ids = op.ends_with(":show_ids");
+                    match v {
+                        Value::Object { fields, .. } => {
+                            // move fields into a plain map; optionally hide ids
+                            let mut out = std::collections::BTreeMap::new();
+                            for (k, val) in fields {
+                                if !show_ids && (k == "id" || k.ends_with("_id")) { continue; }
+                                out.insert(k, val);
+                            }
+                            Ok(Value::Map(out))
+                        }
+                        Value::Map(m) => {
+                            if show_ids { Ok(Value::Map(m)) } else {
+                                let mut out = std::collections::BTreeMap::new();
+                                for (k, v) in m {
+                                    if k == "id" || k.ends_with("_id") { continue; }
+                                    out.insert(k, v);
+                                }
+                                Ok(Value::Map(out))
+                            }
+                        }
+                        other => Err(rt(
+                            "E2401",
+                            format!("'*>>' expects object or map; got {:?}", other),
+                            sp.clone(),
+                        )),
+                    }
+                }
+
                 _ => Err(rt("R0003", format!("postfix operator '{}' not implemented", op), sp.clone())),
             }
         }

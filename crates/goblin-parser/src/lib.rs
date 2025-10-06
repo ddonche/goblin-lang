@@ -69,6 +69,10 @@ enum PExpr {
         pairs: Vec<(String, PExpr)>,
         span: goblin_diagnostics::Span,
     },
+    Dump {
+        expr: Box<PExpr>,
+        show_ids: bool,   // keep the flag; we’ll always false for now
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -729,6 +733,7 @@ impl<'t> Parser<'t> {
             // recurse through composites (note the .as_ref() since we have &PExpr)
             Binary(l,_,r) => Self::key_expr_is_side_effect_free(l.as_ref()) && Self::key_expr_is_side_effect_free(r.as_ref()),
             Prefix(_,x) | Postfix(x,_) | IsBound(x) => Self::key_expr_is_side_effect_free(x.as_ref()),
+            Dump { expr, .. } => Self::key_expr_is_side_effect_free(expr.as_ref()),
             Index(x,y) => Self::key_expr_is_side_effect_free(x.as_ref()) && Self::key_expr_is_side_effect_free(y.as_ref()),
             Member(x,_) | OptMember(x,_) => Self::key_expr_is_side_effect_free(x.as_ref()),
 
@@ -1494,6 +1499,11 @@ impl<'t> Parser<'t> {
             PExpr::Prefix(op, expr) => {
                 let expr = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
                 ast::Expr::Prefix(op, expr, sp)
+            }
+            PExpr::Dump { expr, show_ids } => {
+                let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                let op = if show_ids { "*>>:show_ids".to_string() } else { "*>>".to_string() };
+                ast::Expr::Postfix(obj, op, sp)
             }
             PExpr::Postfix(expr, op) => {
                 let expr = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
@@ -6309,6 +6319,29 @@ impl<'t> Parser<'t> {
             if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());   continue; }
             if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());   continue; }
             if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());   continue; }
+
+            // NEW: dump postfix `*>>` (no disambiguation needed; it's never binary)
+            if self.eat_op("*>>") {
+                // Optional: consume an inline flag `show_ids`
+                let mut show_ids = false;
+                if let Some(tok) = self.toks.get(self.i) {
+                    if let goblin_lexer::TokenKind::Ident = tok.kind {
+                        if tok.value.as_deref() == Some("show_ids") {
+                            self.i += 1;
+                            show_ids = true;
+                        }
+                    }
+                }
+                // Represent as a generic postfix so it fits your existing evaluator infra.
+                // In eval, treat op=="*>>" (and maybe with `show_ids`) specially.
+                if show_ids {
+                    // Encode the flag by appending suffix; evaluator can check for it.
+                    lhs = PExpr::Postfix(Box::new(lhs), "*>>:show_ids".to_string());
+                } else {
+                    lhs = PExpr::Postfix(Box::new(lhs), "*>>".to_string());
+                }
+                continue;
+            }
 
             // ---- percent family (tight) --------------------------------------------
 
