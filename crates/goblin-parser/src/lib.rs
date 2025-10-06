@@ -2848,7 +2848,16 @@ impl<'t> Parser<'t> {
 
     fn parse_class_decl(&mut self) -> Result<PExpr, String> {
         use goblin_lexer::TokenKind;
-        let (name, hdr_col) = if let Some(tok0) = self.peek().cloned() {
+
+        // Detect REPL input by filename
+        let is_repl = self
+            .toks
+            .get(0)
+            .map(|t| t.span.file.as_str() == "<repl>")
+            .unwrap_or(false);
+
+        // ── Header: @Name = …
+        let (name, hdr_col, hdr_line) = if let Some(tok0) = self.peek().cloned() {
             match tok0.kind {
                 TokenKind::AtIdent => {
                     let nm = tok0.value.clone().unwrap_or_default();
@@ -2860,10 +2869,11 @@ impl<'t> Parser<'t> {
                         ));
                     }
                     self.i += 1;
-                    (nm, tok0.span.col_start)
+                    (nm, tok0.span.col_start, tok0.span.line_start)
                 }
                 TokenKind::Op(ref op) if op == "@" => {
                     let at_col = tok0.span.col_start;
+                    let at_line = tok0.span.line_start;
                     self.i += 1;
                     let Some(nm) = self.eat_ident() else {
                         return Err(s_help(
@@ -2872,7 +2882,7 @@ impl<'t> Parser<'t> {
                             "Start with a capitalized name: @Player = username: \"john\", health: 100",
                         ));
                     };
-                    (nm, at_col)
+                    (nm, at_col, at_line)
                 }
                 _ => {
                     return Err(s_help(
@@ -2889,7 +2899,7 @@ impl<'t> Parser<'t> {
                 "Start the class like: @Player = username: \"john\", health: 100",
             ));
         };
-        
+
         if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
             return Err(s_help(
                 "P0907",
@@ -2897,7 +2907,7 @@ impl<'t> Parser<'t> {
                 "Rename it to start with uppercase: Player",
             ));
         }
-        
+
         if self.peek_op("!") {
             self.i += 1;
         }
@@ -2919,92 +2929,10 @@ impl<'t> Parser<'t> {
                 "Write it like: @Player = username: \"john\", health: 100",
             ));
         }
-        
-        // Parse fields - support both single-line and multi-line with modifiers
+
+        // ── Fields (single-line OR multi-line). Commas and newlines are both allowed.
         let mut fields: Vec<(String, PExpr, bool, bool)> = Vec::new();
-        
-        loop {
-            // Skip layout tokens (newlines, indent, dedent)
-            while let Some(tok) = self.peek() {
-                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
-                    self.i += 1;
-                } else {
-                    break;
-                }
-            }
-            
-            // Check for block closers or action keywords
-            if self.peek_block_close() || self.is_eof() {
-                break;
-            }
-            
-            if let Some(tok) = self.peek() {
-                if matches!(tok.kind, TokenKind::Ident) {
-                    let val = tok.value.as_deref();
-                    if matches!(val, Some("act") | Some("action") | Some("end")) {
-                        break;
-                    }
-                }
-                if matches!(tok.kind, TokenKind::Act | TokenKind::Action) {
-                    break;
-                }
-            }
-            
-            // Parse one field: name[!][?] : expr
-            let Some(mut fname) = self.eat_ident() else {
-                break;
-            };
-            
-            // Check for modifiers: ! (readonly) and ? (nullable)
-            let mut readonly = false;
-            let mut nullable = false;
 
-            if fname.ends_with('?') {
-                nullable = true;
-                fname = fname[..fname.len()-1].to_string();
-            }
-            if fname.ends_with('!') {
-                readonly = true;
-                fname = fname[..fname.len()-1].to_string();
-            }
-            
-            if !self.eat_op(":") {
-                return Err(s_help(
-                    "P0904",
-                    "You need a ':' after the field name (and any modifiers)",
-                    "Write it like username: \"john\" or email?: \"\" or id!: 0",
-                ));
-            }
-            
-            // Skip layout before expression
-            while let Some(tok) = self.peek() {
-                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
-                    self.i += 1;
-                } else {
-                    break;
-                }
-            }
-            
-            let fexpr = self.parse_assign()?;
-            fields.push((fname, fexpr, readonly, nullable));
-            
-            // Skip layout after expression
-            while let Some(tok) = self.peek() {
-                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
-                    self.i += 1;
-                } else {
-                    break;
-                }
-            }
-            
-            // Optional separator (:: or ,)
-            self.eat_op("::");
-            self.eat_op(",");
-        }
-
-        // Now look for actions (optional) or class closer
-        let mut actions: Vec<PAction> = Vec::new();
-        
         loop {
             // Skip layout
             while let Some(tok) = self.peek() {
@@ -3014,8 +2942,107 @@ impl<'t> Parser<'t> {
                     break;
                 }
             }
-            
-            // If we hit end/xx at correct column, we're done
+
+            // Stop if a closer/action/EOF is coming
+            if self.peek_block_close() || self.is_eof() {
+                break;
+            }
+            if let Some(tok) = self.peek() {
+                // Keywords that start action blocks or explicit closers
+                if matches!(tok.kind, TokenKind::Ident)
+                    && matches!(
+                        tok.value.as_deref(),
+                        Some("act") | Some("action") | Some("end") | Some("xx")
+                    )
+                {
+                    break;
+                }
+                if matches!(tok.kind, TokenKind::Act | TokenKind::Action) {
+                    break;
+                }
+            }
+
+            // Parse one field: name[!][?] : expr
+            let Some(mut fname) = self.eat_ident() else { break; };
+
+            // Modifiers: ? (nullable), ! (readonly) as suffixes
+            let mut readonly = false;
+            let mut nullable = false;
+            if fname.ends_with('?') {
+                nullable = true;
+                fname.truncate(fname.len() - 1);
+            }
+            if fname.ends_with('!') {
+                readonly = true;
+                fname.truncate(fname.len() - 1);
+            }
+
+            if !self.eat_op(":") {
+                return Err(s_help(
+                    "P0904",
+                    "You need a ':' after the field name (and any modifiers)",
+                    "Write it like username: \"john\" or email?: \"\" or id!: 0",
+                ));
+            }
+
+            // Skip layout before the value expression
+            while let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let fexpr = self.parse_assign()?;
+            fields.push((fname, fexpr, readonly, nullable));
+
+            // Skip layout after the value
+            while let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Optional separator (:: or ,)
+            self.eat_op("::");
+            self.eat_op(",");
+        }
+
+        // ── SINGLE-LINE / REPL AUTO-CLOSE:
+        // If we're in the REPL and we've parsed at least one field, and the buffer ends (EoF),
+        // implicitly close the class. This enables:
+        //   @User = name: "{name}", age: 40
+        if is_repl && !fields.is_empty() && self.is_eof() {
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new() });
+        }
+
+        // ── Actions / explicit closer (multi-line file mode continues)
+        let mut actions: Vec<PAction> = Vec::new();
+
+        loop {
+            // Skip layout
+            while let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Allow inline closer on the same line as header (optional)
+            if let Some(tok) = self.peek().cloned() {
+                let is_inline_ident = matches!(tok.kind, TokenKind::Ident)
+                    && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
+                if is_inline_ident && tok.span.line_start == hdr_line {
+                    self.i += 1; // consume 'end'/'xx'
+                    return Ok(PExpr::ClassDecl { name, fields, actions });
+                }
+            }
+
+            // Proper block closer (on its own line), enforce alignment
             if self.peek_block_close() {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != hdr_col {
@@ -3032,7 +3059,12 @@ impl<'t> Parser<'t> {
                 self.expect_block_close("class")?;
                 break;
             }
-            
+
+            // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
+            if is_repl && self.is_eof() {
+                return Ok(PExpr::ClassDecl { name, fields, actions });
+            }
+
             if self.is_eof() {
                 return Err(s_help(
                     "P0909",
@@ -3043,17 +3075,16 @@ impl<'t> Parser<'t> {
                     "Close the class with 'end' or 'xx' (crossbones): @Player = username: \"john\", health: 100 end",
                 ));
             }
-            
-            // Check if next token is an action keyword
+
+            // Next token must start an action
             let act_tok = match self.peek() {
                 Some(t) => t.clone(),
                 None => break,
             };
-            
             let is_action_kw = matches!(act_tok.kind, TokenKind::Act | TokenKind::Action)
                 || (matches!(act_tok.kind, TokenKind::Ident)
                     && matches!(act_tok.value.as_deref(), Some("act") | Some("action")));
-            
+
             if !is_action_kw {
                 return Err(s_help(
                     "P0910",
@@ -3061,7 +3092,7 @@ impl<'t> Parser<'t> {
                     "Add an action or close the class: act run(a) ... end, or end",
                 ));
             }
-            
+
             // Parse the action
             let kw = match &act_tok.kind {
                 TokenKind::Act => {
@@ -3082,24 +3113,26 @@ impl<'t> Parser<'t> {
                 }
                 _ => unreachable!(),
             };
-            
+
             let act_line = act_tok.span.line_start;
             let act_col = act_tok.span.col_start;
             let action = self.parse_action_after_keyword(kw)?;
             self.enforce_inline_brace_policy(act_line, "action")?;
-            
+
             if !action.body.is_empty() {
                 actions.push(action);
                 continue;
             }
-            
+
+            // Action body in block form
             let body = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
                 p.skip_newlines();
                 p.eat_layout_until_close(act_col)
                     || (p.peek_block_close() && p.toks[p.i].span.col_start == act_col)
             })?;
-            
+
             self.skip_stmt_separators();
+
             if self.block_closed_hard {
                 self.block_closed_hard = false;
             } else if self.peek_block_close() {
@@ -3122,15 +3155,15 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-            
+
             actions.push(PAction {
                 name: action.name,
                 params: action.params,
-                body: body,
+                body,
                 is_single: false,
             });
         }
-        
+
         Ok(PExpr::ClassDecl { name, fields, actions })
     }
 

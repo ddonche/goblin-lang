@@ -5327,6 +5327,18 @@ fn instantiate_object(
     let class = sess.classes.get(class_name)
         .ok_or_else(|| rt("R0115", format!("unknown class '{}'", class_name), span.clone()))?
         .clone();
+
+    // === Auto-ID generation (readonly) ===
+    let r = sess.next_u128();
+    let time_hi_and_version = ((r >> 64) as u16 & 0x0FFF) | 0x4000;      // version 4
+    let clock_seq_hi_and_reserved = ((r >> 48) as u16 & 0x3FFF) | 0x8000; // variant 10
+    let id_str = format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        (r >> 96) as u32,
+        (r >> 80) as u16,
+        time_hi_and_version,
+        clock_seq_hi_and_reserved,
+        ((r & 0x0000_FFFF_FFFF_FFFFu128) >> 16) as u64
+    );
     
     // Evaluate RHS expression
     let rhs_val = eval_expr(expr, sess)?;
@@ -5340,6 +5352,10 @@ fn instantiate_object(
             readonly_fields.insert(field.name.clone());
         }
     }
+
+    // Inject auto-generated id as readonly field
+    field_map.insert("id".to_string(), Value::Str(id_str.clone()));
+    readonly_fields.insert("id".to_string());
     
     match rhs_val {
         Value::Map(provided_fields) => {
