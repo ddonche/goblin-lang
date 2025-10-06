@@ -45,7 +45,7 @@ enum PExpr {
     Time(String),
     ClassDecl {
         name: String,
-        fields: Vec<(String, PExpr)>,
+        fields: Vec<(String, PExpr, bool, bool)>,
         actions: Vec<PAction>,
     },
     EnumVariant {
@@ -169,7 +169,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr)>, actions: Vec<PAction> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool)>, actions: Vec<PAction> },
     Enum(PEnumDecl),
 }
 
@@ -200,6 +200,7 @@ pub struct Parser<'t> {
     rec_depth: usize,
     last_progress_check: usize,
     suspend_colon_call: usize,
+    in_object_construction: bool,
 }
 
 fn is_block_starter_name(name: &str) -> bool {
@@ -216,6 +217,7 @@ impl<'t> Parser<'t> {
             rec_depth: 0,
             last_progress_check: 0,
             suspend_colon_call: 0,
+            in_object_construction: false,
         }
     } 
 
@@ -2209,20 +2211,62 @@ impl<'t> Parser<'t> {
         };
         // 4) RHS expression
         let rhs = if class_name.is_some() {
-            // Object instantiation: parse comma-separated values as an array
-            let mut values = Vec::new();
-            loop {
-                let val_pe = self.parse_coalesce()?;
-                values.push(self.lower_expr(val_pe));
-                
-                if !self.peek_op(",") {
-                    break;
-                }
-                self.i += 1; // eat comma
+            // Object instantiation: expect { field: value, ... }
+            if !self.eat_op("{") {
+                return Err(s_help(
+                    "P0412",
+                    "Expected '{' after class name in object construction",
+                    "Write: user|User = { id: 1, name: \"Alice\" }",
+                ));
             }
             
-            // Wrap in an Array expression
-            ast::Expr::Array(values, op_span.clone())
+            // Parse object literal
+            self.skip_newlines();
+            let mut pairs = Vec::new();
+            
+            if !self.peek_op("}") {
+                loop {
+                    let Some(key) = self.eat_ident() else {
+                        return Err(s_help(
+                            "P0413",
+                            "Expected a field name",
+                            "Write: { id: 1, name: \"Alice\" }",
+                        ));
+                    };
+                    
+                    if !self.eat_op(":") {
+                        return Err(s_help(
+                            "P0414",
+                            "Expected ':' after field name",
+                            "Write: { id: 1, name: \"Alice\" }",
+                        ));
+                    }
+                    
+                    self.skip_newlines();
+                    let val_pe = self.parse_coalesce()?;
+                    pairs.push((key, self.lower_expr(val_pe)));
+                    
+                    self.skip_newlines();
+                    if self.eat_op(",") {
+                        self.skip_newlines();
+                        if self.peek_op("}") { break; }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            
+            self.skip_newlines();
+            if !self.eat_op("}") {
+                return Err(s_help(
+                    "P0415",
+                    "Expected '}' to close object construction",
+                    "Write: { id: 1, name: \"Alice\" }",
+                ));
+            }
+            
+            // Convert pairs to Object expression
+            ast::Expr::Object(pairs, op_span.clone())
         } else {
             // Normal binding: single expression
             let rhs_pe = self.parse_coalesce()?;
@@ -2822,29 +2866,116 @@ impl<'t> Parser<'t> {
             ));
         }
         
-        let fields = self.parse_field_chain_line_class()?;
+        // Parse fields - support both single-line and multi-line with modifiers
+        let mut fields: Vec<(String, PExpr, bool, bool)> = Vec::new();
+        
+        loop {
+            // Skip layout tokens (newlines, indent, dedent)
+            while let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+            
+            // Check for block closers or action keywords
+            if self.peek_block_close() || self.is_eof() {
+                break;
+            }
+            
+            if let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Ident) {
+                    let val = tok.value.as_deref();
+                    if matches!(val, Some("act") | Some("action") | Some("end")) {
+                        break;
+                    }
+                }
+                if matches!(tok.kind, TokenKind::Act | TokenKind::Action) {
+                    break;
+                }
+            }
+            
+            // Parse one field: name[!][?] : expr
+            let Some(mut fname) = self.eat_ident() else {
+                break;
+            };
+            
+            // Check for modifiers: ! (readonly) and ? (nullable)
+            let mut readonly = false;
+            let mut nullable = false;
 
-        self.eat_semi_separators();
+            if fname.ends_with('?') {
+                nullable = true;
+                fname = fname[..fname.len()-1].to_string();
+            }
+            if fname.ends_with('!') {
+                readonly = true;
+                fname = fname[..fname.len()-1].to_string();
+            }
+            
+            if !self.eat_op(":") {
+                return Err(s_help(
+                    "P0904",
+                    "You need a ':' after the field name (and any modifiers)",
+                    "Write it like username: \"john\" or email?: \"\" or id!: 0",
+                ));
+            }
+            
+            // Skip layout before expression
+            while let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+            
+            let fexpr = self.parse_assign()?;
+            fields.push((fname, fexpr, readonly, nullable));
+            
+            // Skip layout after expression
+            while let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+            
+            // Optional separator (:: or ,)
+            self.eat_op("::");
+            self.eat_op(",");
+        }
+
+        // Now look for actions (optional) or class closer
         let mut actions: Vec<PAction> = Vec::new();
         
         loop {
-            self.skip_newlines();
-            if self.eat_layout_until_close(hdr_col) || self.peek_block_close() {
-                if self.peek_block_close() {
-                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-                    if col != hdr_col {
-                        let closer = self.peek_ident().unwrap_or("}");
-                        return Err(s_help(
-                            "P0222",
-                            &format!(
-                                "This '{}' closer is misaligned: expected column {}, found column {}",
-                                closer, hdr_col, col
-                            ),
-                            "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the class header.",
-                        ));
-                    }
-                    self.expect_block_close("class")?;
+            // Skip layout
+            while let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+                    self.i += 1;
+                } else {
+                    break;
                 }
+            }
+            
+            // If we hit end/xx at correct column, we're done
+            if self.peek_block_close() {
+                let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if col != hdr_col {
+                    let closer = self.peek_ident().unwrap_or("xx");
+                    return Err(s_help(
+                        "P0222",
+                        &format!(
+                            "This '{}' closer is misaligned: expected column {}, found column {}",
+                            closer, hdr_col, col
+                        ),
+                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the class header.",
+                    ));
+                }
+                self.expect_block_close("class")?;
                 break;
             }
             
@@ -2859,22 +2990,25 @@ impl<'t> Parser<'t> {
                 ));
             }
             
-            if let Some(tok) = self.peek() {
-                if tok.span.col_start == hdr_col {
-                    let is_act_kw = matches!(&tok.kind, TokenKind::Act | TokenKind::Action)
-                        || (matches!(&tok.kind, TokenKind::Ident)
-                            && (tok.value.as_deref() == Some("act") || tok.value.as_deref() == Some("action")));
-                    if !is_act_kw {
-                        break;
-                    }
-                }
-            }
-            
+            // Check if next token is an action keyword
             let act_tok = match self.peek() {
                 Some(t) => t.clone(),
                 None => break,
             };
             
+            let is_action_kw = matches!(act_tok.kind, TokenKind::Act | TokenKind::Action)
+                || (matches!(act_tok.kind, TokenKind::Ident)
+                    && matches!(act_tok.value.as_deref(), Some("act") | Some("action")));
+            
+            if !is_action_kw {
+                return Err(s_help(
+                    "P0910",
+                    "Inside a class, only 'act', 'action', or a closing 'end'/'xx' are allowed here",
+                    "Add an action or close the class: act run(a) ... end, or end",
+                ));
+            }
+            
+            // Parse the action
             let kw = match &act_tok.kind {
                 TokenKind::Act => {
                     self.i += 1;
@@ -2892,13 +3026,7 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_ident();
                     "action"
                 }
-                _ => {
-                    return Err(s_help(
-                        "P0910",
-                        "Inside a class, only 'act', 'action', or a closing 'end'/'xx' are allowed here",
-                        "Add an action or close the class: act run(a) ... end, or end",
-                    ));
-                }
+                _ => unreachable!(),
             };
             
             let act_line = act_tok.span.line_start;
@@ -2941,11 +3069,10 @@ impl<'t> Parser<'t> {
                 ));
             }
             
-            // NEW: Just use the body directly as statements
             actions.push(PAction {
                 name: action.name,
                 params: action.params,
-                body: body,  // Already Vec<ast::Stmt>
+                body: body,
                 is_single: false,
             });
         }
@@ -4145,6 +4272,8 @@ impl<'t> Parser<'t> {
                             .map(|(fname, _type_expr)| ast::FieldDecl {
                                 name: fname,
                                 private: false,
+                                nullable: false,  
+                                readonly: false,
                                 default: None, // enum fields don't have defaults in Phase 1
                                 span: sp.clone(),
                             })
@@ -4178,9 +4307,11 @@ impl<'t> Parser<'t> {
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
-                    .map(|(fname, fexpr)| ast::FieldDecl {
+                    .map(|(fname, fexpr, readonly, nullable)| ast::FieldDecl {
                         name: fname,
-                        private: false, // adjust if you support private fields
+                        private: false,
+                        nullable,
+                        readonly,
                         default: Some(self.lower_expr(fexpr)),
                         span: sp.clone(),
                     })
@@ -4558,7 +4689,7 @@ impl<'t> Parser<'t> {
                 self.i += 1; // eat the ident
 
                 // DEPRECATE old `Type: ...`
-                if self.peek_op(":") && self.suspend_colon_call == 0 {
+                if self.peek_op(":") && self.suspend_colon_call == 0 && !self.in_object_construction {
                     return Err(s_help(
                         "P0998",
                         "Object construction has moved to 'name | Type = ...'.",

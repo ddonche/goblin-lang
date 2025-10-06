@@ -23,7 +23,7 @@
 //! - namespaced/receiver calls (Call/OptCall/NsCall) -> clear "not implemented" diag
 //! - classes/actions execution semantics beyond registering free actions (Stage 4)
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use goblin_ast as ast;
@@ -212,8 +212,9 @@ pub enum Value {
     Object {
         class_name: String,
         fields: BTreeMap<String, Value>,
+        readonly_fields: BTreeSet<String>,
     },
-    Enum {                              // <- ADD THIS
+    Enum {                              
         enum_name: String,
         variant_name: String,
         fields: Option<BTreeMap<String, Value>>,
@@ -312,7 +313,7 @@ impl fmt::Display for Value {
             Value::Bool(b)  => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::Nil      => write!(f, "nil"),
             Value::Big(d)   => write!(f, "{}", d),
-            Value::Object { class_name, fields } => {
+            Value::Object { class_name, fields, .. } => {
                 write!(f, "{}{{", class_name)?;
                 let mut first = true;
                 for (k, v) in fields.iter() {
@@ -634,7 +635,7 @@ fn to_json(v: &Value) -> sj::Value {
         Value::Nil | Value::Unit => sj::Value::Null,
         Value::CtrlSkip | Value::CtrlStop => sj::Value::String("control".to_string()),
         Value::Formatted(_, _) => unreachable!("peeled above"),
-        Value::Object { class_name, fields } => {
+        Value::Object { class_name, fields, .. } => {
             let mut obj = serde_json::Map::new();
             obj.insert("__class".to_string(), sj::Value::String(class_name.clone()));
             for (k, v) in fields {
@@ -4141,7 +4142,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             // Could be Binary or Member depending on how parser handles >>
             match &**lhs {
                 ast::Expr::Member(obj_expr, field_name, _) => {
-                    // Field assignment via Member syntax
                     let var_name = match &**obj_expr {
                         ast::Expr::Ident(n, _) => n.clone(),
                         _ => return Err(rt("P0804", "can only assign to fields of object variables", span_of_expr(lhs))),
@@ -4149,11 +4149,40 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     
                     let new_value = eval_expr(rhs, sess)?;
                     
+                    let class_name = match sess.get_var(&var_name) {
+                        Some(Value::Object { class_name, .. }) => class_name.clone(),
+                        Some(_) => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
+                        None => return Err(rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs))),
+                    };
+                    
+                    let class = sess.classes.get(&class_name)
+                        .ok_or_else(|| rt("R0115", format!("unknown class '{}'", class_name), span_of_expr(lhs)))?
+                        .clone();
+                    
+                    let field_decl = class.fields.iter()
+                        .find(|f| &f.name == field_name)
+                        .ok_or_else(|| rt("R0403", format!("no field '{}'", field_name), span_of_expr(lhs)))?
+                        .clone();
+                    
                     let obj_slot = sess.get_var_mut(&var_name)
                         .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs)))?;
                     
                     match obj_slot {
-                        Value::Object { fields, .. } => {
+                        Value::Object { fields, readonly_fields, .. } => {
+                            // Check if field is readonly
+                            if readonly_fields.contains(field_name) {
+                                return Err(rt("P9001", 
+                                    format!("cannot modify readonly field '{}'", field_name), 
+                                    span_of_expr(lhs)));
+                            }
+                            
+                            // Check nullable constraint
+                            if matches!(new_value, Value::Nil) && !field_decl.nullable {
+                                return Err(rt("T9002", 
+                                    format!("cannot assign nil to non-nullable field '{}'", field_name), 
+                                    span_of_expr(rhs)));
+                            }
+                            
                             fields.insert(field_name.clone(), new_value.clone());
                             return Ok(new_value);
                         }
@@ -4162,7 +4191,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
                 
                 ast::Expr::Binary(obj_expr, op, field_expr, _) if op == ">>" => {
-                    // Field assignment via Binary syntax (if parser uses this)
                     let var_name = match &**obj_expr {
                         ast::Expr::Ident(n, _) => n.clone(),
                         _ => return Err(rt("P0804", "can only assign to fields of object variables", span_of_expr(lhs))),
@@ -4175,11 +4203,38 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     
                     let new_value = eval_expr(rhs, sess)?;
                     
+                    let class_name = match sess.get_var(&var_name) {
+                        Some(Value::Object { class_name, .. }) => class_name.clone(),
+                        Some(_) => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
+                        None => return Err(rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs))),
+                    };
+                    
+                    let class = sess.classes.get(&class_name)
+                        .ok_or_else(|| rt("R0115", format!("unknown class '{}'", class_name), span_of_expr(lhs)))?
+                        .clone();
+                    
+                    let field_decl = class.fields.iter()
+                        .find(|f| f.name == field_name)
+                        .ok_or_else(|| rt("R0403", format!("no field '{}'", field_name), span_of_expr(lhs)))?
+                        .clone();
+                    
                     let obj_slot = sess.get_var_mut(&var_name)
                         .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs)))?;
                     
                     match obj_slot {
-                        Value::Object { fields, .. } => {
+                        Value::Object { fields, readonly_fields, .. } => {
+                            if readonly_fields.contains(&field_name) {
+                                return Err(rt("P9001", 
+                                    format!("cannot modify readonly field '{}'", field_name), 
+                                    span_of_expr(lhs)));
+                            }
+                            
+                            if matches!(new_value, Value::Nil) && !field_decl.nullable {
+                                return Err(rt("T9002", 
+                                    format!("cannot assign nil to non-nullable field '{}'", field_name), 
+                                    span_of_expr(rhs)));
+                            }
+                            
                             fields.insert(field_name, new_value.clone());
                             return Ok(new_value);
                         }
@@ -4595,16 +4650,19 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             // Object method calls - check if receiver is a variable holding an object
             if let ast::Expr::Ident(var_name, _) = &**base {
                 let recv = eval_expr(base, sess)?;
-                if let Value::Object { class_name, mut fields } = recv {
+                if let Value::Object { class_name, mut fields, readonly_fields } = recv {
                     let result = call_object_method(sess, &class_name, &mut fields, name, args, sp.clone())?;
                     
                     // Update the object variable with modified fields
-                    let updated_obj = Value::Object { class_name, fields };
+                    let updated_obj = Value::Object { 
+                        class_name, 
+                        fields,
+                        readonly_fields,  // Preserve readonly set
+                    };
                     sess.set_var(var_name.clone(), updated_obj);
                     
                     return Ok(result);
                 }
-                // Fall through if not an object
             }
             
             // Regular method calls (non-objects or non-variables)
@@ -5273,38 +5331,103 @@ fn instantiate_object(
     // Evaluate RHS expression
     let rhs_val = eval_expr(expr, sess)?;
     
-    // Convert to array of values
-    let values = match rhs_val {
-        Value::Array(vals) => vals,
-        single => vec![single],
-    };
-    
-    // Match values to fields positionally
     let mut field_map = BTreeMap::new();
-    let mut value_idx = 0;
+    let mut readonly_fields = BTreeSet::new();
     
+    // Mark readonly fields
     for field in &class.fields {
-        let value = if value_idx < values.len() {
-            let val = &values[value_idx];
-            value_idx += 1;
-            
-            // Check for skip marker (Unit represents :: or nc)
-            if matches!(val, Value::Unit) {
-                eval_expr(field.default.as_ref().unwrap(), sess)?
-            } else {
-                val.clone()
+        if field.readonly {
+            readonly_fields.insert(field.name.clone());
+        }
+    }
+    
+    match rhs_val {
+        Value::Map(provided_fields) => {
+            // Named field construction: { id: 1, name: "Alice", email: "x@y.com" }
+            for field in &class.fields {
+                let value = if let Some(val) = provided_fields.get(&field.name) {
+                    // User provided this field
+                    if matches!(val, Value::Nil) && !field.nullable {
+                        return Err(rt("T0999", 
+                            format!("cannot assign nil to non-nullable field '{}'", field.name), 
+                            span.clone()));
+                    }
+                    val.clone()
+                } else {
+                    // Field not provided - use default or error
+                    if let Some(default_expr) = &field.default {
+                        eval_expr(default_expr, sess)?
+                    } else if field.nullable {
+                        Value::Nil
+                    } else {
+                        return Err(rt("T0998", 
+                            format!("non-nullable field '{}' requires a value", field.name), 
+                            span.clone()));
+                    }
+                };
+                
+                field_map.insert(field.name.clone(), value);
             }
-        } else {
-            // No more values - use default
-            eval_expr(field.default.as_ref().unwrap(), sess)?
-        };
-        
-        field_map.insert(field.name.clone(), value);
+        }
+        Value::Array(values) => {
+            // Positional construction (existing logic)
+            let mut value_idx = 0;
+            
+            for field in &class.fields {
+                let value = if value_idx < values.len() {
+                    let val = &values[value_idx];
+                    value_idx += 1;
+                    
+                    if matches!(val, Value::Unit) {
+                        if field.nullable {
+                            if let Some(default_expr) = &field.default {
+                                eval_expr(default_expr, sess)?
+                            } else {
+                                Value::Nil
+                            }
+                        } else {
+                            if let Some(default_expr) = &field.default {
+                                eval_expr(default_expr, sess)?
+                            } else {
+                                return Err(rt("T0998", 
+                                    format!("non-nullable field '{}' requires a value", field.name), 
+                                    span.clone()));
+                            }
+                        }
+                    } else {
+                        if matches!(val, Value::Nil) && !field.nullable {
+                            return Err(rt("T0999", 
+                                format!("cannot assign nil to non-nullable field '{}'", field.name), 
+                                span.clone()));
+                        }
+                        val.clone()
+                    }
+                } else {
+                    if let Some(default_expr) = &field.default {
+                        eval_expr(default_expr, sess)?
+                    } else if field.nullable {
+                        Value::Nil
+                    } else {
+                        return Err(rt("T0998", 
+                            format!("non-nullable field '{}' requires a value", field.name), 
+                            span.clone()));
+                    }
+                };
+                
+                field_map.insert(field.name.clone(), value);
+            }
+        }
+        single => {
+            return Err(rt("T0997", 
+                format!("expected object literal or array for class construction, got {:?}", single), 
+                span));
+        }
     }
     
     let obj = Value::Object {
         class_name: class_name.to_string(),
         fields: field_map,
+        readonly_fields,
     };
     
     sess.define_local(var_name.to_string(), obj, is_const);

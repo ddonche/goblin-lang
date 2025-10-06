@@ -45,7 +45,9 @@ pub struct ClassDecl {
 pub struct FieldDecl {
     pub name: String,
     pub private: bool,
-    pub default: Option<Expr>,  // CHANGE: Expr -> Option<Expr>
+    pub nullable: bool,      // NEW: true if field has `?` suffix
+    pub readonly: bool,      // NEW: true if field has `!` prefix
+    pub default: Option<Expr>,
     pub span: Span,
 }
 

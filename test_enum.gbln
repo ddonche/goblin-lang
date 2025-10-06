@@ -1,11 +1,24 @@
-numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-for num in numbers
-    if num == 3 or num == 7
-        skip
+@User = 
+    id!: 0,
+    name: "Default",
+    email?: nil
+
+    act greet
+        say "Hello, " ++ name
     end
-    if num == 9
-        say "Stopping at" ++ num
-        stop
+    
+    act show_email
+        say email ?? "No email provided"
     end
-    say "Number:" ++ num
 end
+
+user1|User = { id: 1, name: "Alice", email: "alice@example.com" }
+user1.greet
+user1.show_email
+
+user2|User = { id: 2, name: "Bob", email: nil }
+user2.greet
+user2.show_email
+
+/// Test readonly - this should fail at runtime
+user1 >> id = 999
