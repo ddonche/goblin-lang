@@ -4303,6 +4303,11 @@ impl<'t> Parser<'t> {
             return self.parse_repeat_stmt();
         }
 
+        // Check for import statements
+        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Import)) {
+            return self.parse_import();
+        }
+
         if self.peek_ident() == Some("act") {
             let _ = self.eat_ident(); // 'act'
             return self.parse_free_action("act");
@@ -4492,6 +4497,50 @@ impl<'t> Parser<'t> {
                 "Start the class like: @Player = username: \"john\" :: health: 100",
             )),
         }
+    }
+
+    fn parse_import(&mut self) -> Result<ast::Stmt, String> {
+        let start_span = if let Some(tok) = self.peek() {
+            tok.span.clone()
+        } else {
+            // Create a synthetic span if no token available
+            goblin_diagnostics::Span::new("<unknown>", 0, 0, 0, 0, 0, 0)
+        };
+        
+        // Consume 'import' keyword
+        if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Import)) {
+            return Err(s_help("P1001", "Expected 'import'", "import game/hero"));
+        }
+        self.i += 1;
+        
+        // Parse module path: game/hero
+        let mut path_parts = Vec::new();
+        loop {
+            let Some(part) = self.eat_ident() else {
+                return Err(s_help("P1002", "Expected module path after 'import'", "import game/hero"));
+            };
+            path_parts.push(part);
+            
+            if !self.eat_op("/") {
+                break;
+            }
+        }
+        
+        let path = path_parts.join("/");
+        
+        // Optional 'as alias'
+        let alias = if self.peek_ident() == Some("as") {
+            self.i += 1; // eat 'as'
+            self.eat_ident()
+        } else {
+            None
+        };
+        
+        Ok(ast::Stmt::Import(ast::ImportStmt { 
+            path, 
+            alias, 
+            span: start_span 
+        }))
     }
 
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {

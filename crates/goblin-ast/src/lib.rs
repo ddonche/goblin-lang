@@ -31,6 +31,7 @@ pub enum Stmt {
     Action(ActionDecl),
     Bind(BindStmt),
     Enum(EnumDecl),
+    Import(ImportStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,13 @@ pub enum RelationDef {  // Changed from 'enum' to 'pub enum'
     Of { class_name: String, as_name: String },
     With { class_name: String },
     Re { class_name: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportStmt {
+    pub path: String,           // "game/hero"
+    pub alias: Option<String>,  // Some("game_hero") for "as game_hero"
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

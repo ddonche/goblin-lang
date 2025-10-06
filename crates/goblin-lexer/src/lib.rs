@@ -33,6 +33,9 @@ pub enum TokenKind {
     Op(String),
     Money,
     Eof,
+    Import,
+    Export,
+    Vault,
 }
 
 impl TokenKind {
@@ -1187,6 +1190,15 @@ fn lex_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
         }
         "action" => {
             state.push_token(TokenKind::Action, start_i, start_col, None);
+        }
+        "import" => {
+            state.push_token(TokenKind::Import, start_i, start_col, None);
+        }
+        "export" => {
+            state.push_token(TokenKind::Export, start_i, start_col, None);
+        }
+        "vault" => {
+            state.push_token(TokenKind::Vault, start_i, start_col, None);
         }
         _ => {
             state.push_token(TokenKind::Ident, start_i, start_col, Some(name));

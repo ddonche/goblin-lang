@@ -13,6 +13,8 @@ goblin-ast = { path = "../goblin-ast" }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features = ["Win32_System_Console"] }
 tempfile = "3"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
 
 [[bin]]
 name = "goblin"               # <— this is the installed executable name

@@ -11,6 +11,8 @@ use goblin_gql::{parse_query as gql_parse, pretty as gql_pretty};
 use goblin_lexer::{lex, TokenKind};
 use goblin_parser::Parser;
 
+pub mod config;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     OkMode,
@@ -127,10 +129,21 @@ fn goblin_yaml(name: &str) -> String {
     format!(r#"name: {}
 version: 0.1.0
 entry: main.gbln
+
+# Define module paths for your project
+# Format: alias: ./path/to/folder
+module_paths:
+  # game: ./game
+  # data: ./data
+  # utils: ./utils
 "#, name)
 }
 
 const MAIN_GBLN: &str = r#"/// Main entry point
+/// Example imports (uncomment when you create modules):
+/// import game/hero
+/// import data/weapons
+
 say "Welcome to the Horde!"
 "#;
 
@@ -140,8 +153,15 @@ fn readme_md(name: &str) -> String {
 A Goblin project.
 
 ## Running
-```bash
-goblin main.gbln
+Run your main file:
+    goblin main.gbln
+
+## Project Structure
+Organize your code into modules by:
+1. Adding folders (e.g., game/, data/)
+2. Registering them in goblin.yaml under module_paths
+3. Creating .gbln files in those folders
+4. Importing them: import game/hero
 "#, name)
 }
 
@@ -560,6 +580,9 @@ fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
         TokenKind::Int => ExpectTok::Kind("INT".into()),
         TokenKind::Act => ExpectTok::Kind("ACT".into()),
         TokenKind::Action => ExpectTok::Kind("ACTION".into()),
+        TokenKind::Import => ExpectTok::Kind("IMPORT".into()),
+        TokenKind::Export => ExpectTok::Kind("EXPORT".into()),
+        TokenKind::Vault => ExpectTok::Kind("VAULT".into()),
         TokenKind::Float => ExpectTok::Kind("FLOAT".into()),
         TokenKind::String => ExpectTok::Kind("STRING".into()),
         TokenKind::Char     => ExpectTok::Kind("char".into()),

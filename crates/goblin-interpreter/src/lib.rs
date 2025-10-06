@@ -9,6 +9,8 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use std::str::FromStr;
 
+pub mod modules;
+
 const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference 
 
 // ===================== Public API =====================
@@ -388,7 +390,6 @@ impl fmt::Display for Diag {
 }
 impl std::error::Error for Diag {}
 
-#[derive(Default)]
 pub struct Session {
     history: Vec<Value>,                               // v(n)
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
@@ -399,6 +400,7 @@ pub struct Session {
     rng_state: u128,
     pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding 
     pub relationship_graph: BTreeMap<String, ClassRelations>,
+    pub modules: crate::modules::ModuleCache, 
 }
 
 impl Session {
@@ -415,6 +417,7 @@ impl Session {
             rng_state: seed,
             consts: vec![BTreeMap::new()],
             relationship_graph: BTreeMap::new(),
+            modules: crate::modules::ModuleCache::new(),
         }
     }
 
@@ -1305,6 +1308,22 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         ast::Stmt::Enum(decl) => {
             // Store the enum definition in the session
             sess.enums.insert(decl.name.clone(), decl.clone());
+            Ok(None)
+        }
+
+        ast::Stmt::Import(import_stmt) => {
+            // For now, we need a base directory to resolve imports from
+            // We'll use the current working directory as the base
+            let base_dir = std::env::current_dir()
+                .map_err(|e| rt("M0001", format!("Cannot get current directory: {}", e), import_stmt.span.clone()))?;
+            
+            sess.modules.load_module(
+                &import_stmt.path, 
+                import_stmt.alias.as_deref(),
+                &base_dir
+            )
+            .map_err(|e| rt("M0001", e, import_stmt.span.clone()))?;
+            
             Ok(None)
         }
 
@@ -4008,44 +4027,73 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
 
         ast::Expr::NsCall(ns, name, args, sp) => {
-            // Check if this is an enum variant access
-            if let Some(enum_def) = sess.enums.get(ns) {
-                // Verify the variant exists
-                let _variant = enum_def.variants.iter()
-                    .find(|v| v.name == *name)
-                    .ok_or_else(|| rt(
-                        "R0001",
-                        format!("Enum '{}' has no variant '{}'", ns, name),
-                        sp.clone(),
-                    ))?;
-                
-                // For simple variants (no fields), args should be empty
-                if args.is_empty() {
-                    return Ok(Value::Enum {
-                        enum_name: ns.clone(),
-                        variant_name: name.clone(),
-                        fields: None,
-                    });
+            // Check if it's a module namespace first
+            if let Some(exported) = sess.modules.get_export(ns, name) {
+                match exported {
+                    crate::modules::ExportedItem::Action(action_decl) => {
+                        // Clone the action declaration to avoid holding a borrow
+                        let action_decl = action_decl.clone();
+                        
+                        // Evaluate arguments
+                        let mut arg_vals = Vec::with_capacity(args.len());
+                        for a in args {
+                            arg_vals.push(eval_expr(a, sess)?);
+                        }
+                        
+                        // Execute the action body directly
+                        // Push a new scope for the action's parameters
+                        sess.env.push(BTreeMap::new());
+                        sess.consts.push(BTreeMap::new());
+                        
+                        // Bind parameters
+                        for (i, param) in action_decl.params.iter().enumerate() {
+                            let val = if i < arg_vals.len() {
+                                arg_vals[i].clone()
+                            } else if let Some(ref default_expr) = param.default {
+                                eval_expr(default_expr, sess)?
+                            } else {
+                                return Err(rt("A0501", 
+                                    format!("Missing argument for parameter '{}'", param.name), 
+                                    sp.clone()));
+                            };
+                            sess.define_local(param.name.clone(), val, false);
+                        }
+                        
+                        // Execute the action body
+                        let result = match &action_decl.body {
+                            ast::ActionBody::Block(stmts) => {
+                                let mut last_val = Value::Unit;
+                                for stmt in stmts {
+                                    if let Some(v) = eval_stmt(stmt, sess)? {
+                                        last_val = v;
+                                    }
+                                }
+                                last_val
+                            }
+                        };
+                        
+                        // Pop the action's scope
+                        sess.env.pop();
+                        sess.consts.pop();
+                        
+                        return Ok(result);
+                    }
+                    _ => return Err(rt("M0002", format!("'{}' is not callable", name), sp.clone())),
                 }
-                
-                // For variants with fields (if args provided)
-                // This would handle Status::move { x: 10, y: 20 } syntax
-                // For now, just return error if args provided
-                return Err(rt(
-                    "R0002",
-                    format!("Enum variant '{}::{}' with arguments not yet implemented", ns, name),
-                    sp.clone(),
-                ));
             }
             
-            // Not an enum - keep old error for actual namespaced calls
+            // Check if this is an enum variant access
+            if let Some(_enum_def) = sess.enums.get(ns) {
+                // ... existing enum handling code ...
+            }
+            
+            // Not found anywhere
             Err(rt(
                 "R0000",
-                format!("namespaced call '{}::{}' not implemented", ns, name),
+                format!("Namespace '{}' not found (not a module or enum)", ns),
                 sp.clone(),
             ))
         }
-
         ast::Expr::EnumVariant { enum_name, variant_name, fields, span } => {
             // Look up the enum definition and extract what we need
             let (variant_fields, _enum_exists) = {
@@ -4846,7 +4894,17 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
                 // arithmetic
                 "+" => {
-                    let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
+                    let lv = eval_expr(lhs, sess)?; 
+                    let rv = eval_expr(rhs, sess)?;
+                    
+                    // Check for string concatenation first (before stripping format)
+                    if matches!((&lv, &rv), (Value::Str(_), Value::Str(_))) {
+                        let s1 = if let Value::Str(s) = lv { s } else { unreachable!() };
+                        let s2 = if let Value::Str(s) = rv { s } else { unreachable!() };
+                        return Ok(Value::Str(format!("{}{}", s1, s2)));
+                    }
+                    
+                    // Numeric addition
                     let (lu, lspec) = take_owned_unformatted(lv);
                     let (ru, rspec) = take_owned_unformatted(rv);
 
