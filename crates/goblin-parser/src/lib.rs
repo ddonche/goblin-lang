@@ -5804,11 +5804,18 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
 
             // <count>: integer literal (lexer may give "1_6" as a single Int token)
+            // OR default to 1 if 'from' immediately follows (sugar: `pick from xs`)
             let mut count_txt = String::new();
-            let mut count = match self.peek() {
+            let mut count: i128;
+
+            match self.peek() {
+                // Normal numeric form: pick 3 from items
                 Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
                     count_txt = t.value.clone().unwrap_or_default();
-                    if let Some(v) = parse_int_literal_to_i128(&count_txt) { self.i += 1; v } else {
+                    if let Some(v) = parse_int_literal_to_i128(&count_txt) {
+                        self.i += 1;
+                        count = v;
+                    } else {
                         return Err(s_help(
                             "P1401",
                             &format!("You need a number after '{}'", verb),
@@ -5816,6 +5823,13 @@ impl<'t> Parser<'t> {
                         ));
                     }
                 }
+
+                // NEW: allow sugar form: pick from items  → defaults to count = 1
+                _ if self.peek_ident() == Some("from") => {
+                    count = 1;
+                }
+
+                // Otherwise, still error
                 _ => {
                     return Err(s_help(
                         "P1401",
@@ -5823,7 +5837,9 @@ impl<'t> Parser<'t> {
                         &format!("Write it like: {} 5 from items", verb),
                     ));
                 }
-            };
+            }
+
+            // No negatives allowed
             if count < 0 {
                 return Err(s_help(
                     "P1402",
@@ -5831,6 +5847,7 @@ impl<'t> Parser<'t> {
                     &format!("Use a positive number: {} 3 from items", verb),
                 ));
             }
+
             self.skip_newlines();
 
             // Digit shorthand is ONLY for 'pick', never for 'reap'

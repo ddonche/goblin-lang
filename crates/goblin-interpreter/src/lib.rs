@@ -1221,23 +1221,39 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
                 if j >= b.len() {
                     return Err(rt("P0604", "There's an unclosed '{' in this string.", sp.clone()));
                 }
-                let inner = s[start..j].trim();
-                if !is_ident(inner) {
-                    return Err(rt("P0103", "Expected a name (identifier) inside { ... }", sp.clone()));
+
+                // raw contents between braces (keep whitespace for literal echo)
+                let inner_raw = &s[start..j];
+                let inner_trim = inner_raw.trim();
+
+                // Only interpolate {ident}. Anything else is emitted literally.
+                if !is_ident(inner_trim) {
+                    out.push('{');
+                    out.push_str(inner_raw);
+                    out.push('}');
+                    i = j + 1;
+                    continue;
                 }
-                match sess.get_var(inner) {
+
+                // Interpolate {ident}
+                match sess.get_var(inner_trim) {
                     Some(v) => out.push_str(&fmt_value_raw(v)),
                     None => {
                         // Fallback: if there's a `self` map in scope, allow `{field}` to read `self[field]`
                         if let Some(Value::Map(m)) = sess.get_var("self") {
-                            if let Some(v) = m.get(inner) {
+                            if let Some(v) = m.get(inner_trim) {
                                 out.push_str(&fmt_value_raw(v));
-                                // continue
                             } else {
-                                return Err(rt("R0110", format!("unknown identifier '{}'", inner), sp.clone()))
+                                let err = || rt(
+                                    "R0110",
+                                    format!("Unknown name '{}'\n\nhelp: Declare it, or qualify it (e.g., module::name).", inner_trim),
+                                    sp.clone(),
+                                );
+                                return Err(err());
                             }
                         } else {
-                            return Err(rt("R0110", format!("unknown identifier '{}'", inner), sp.clone()))
+                            let err = || rt("R0110", format!("Unknown name '{}'", inner_trim), sp.clone());
+                            return Err(err());
                         }
                     }
                 }
@@ -2238,25 +2254,35 @@ fn call_action_by_name(
             }
         }
 
-        // ----- Collections -----
+        // ----- Collections / Numbers -----
+        // Builtin: pick({ count, digits?, unique?, allow_dups?, src? | range_start?, range_end?, range_inclusive? })
         "pick" => {
             use std::collections::{BTreeMap, BTreeSet};
 
             // ---- validate arg ----
             if args.len() != 1 {
-                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
+                return Err(rt(
+                    "A0402",
+                    format!("wrong number of arguments: expected 1, got {}", args.len()),
+                    sp.clone(),
+                ));
             }
             let cfg = match &args[0] {
                 Value::Map(m) => m.clone(),
                 _ => return Err(rt("T0401", "pick expects a config object", sp.clone())),
             };
 
-            // ---- small getters ----
+            // ---- small getters (accept Int or Float; Str optional) ----
             let get_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
             let get_num = |m: &BTreeMap<String, Value>, k: &str| -> Option<f64> {
-                m.get(k).and_then(|v| if let Value::Float(n) = v { Some(*n) } else { None })
+                match m.get(k)? {
+                    Value::Float(n) => Some(*n),
+                    Value::Int(i)   => Some(*i as f64),
+                    Value::Str(s)   => s.parse::<f64>().ok(), // keep if you want to be permissive
+                    _ => None,
+                }
             };
             let get_arr = |m: &BTreeMap<String, Value>, k: &str| -> Option<Vec<Value>> {
                 m.get(k).and_then(|v| if let Value::Array(xs) = v { Some(xs.clone()) } else { None })
@@ -2269,8 +2295,12 @@ fn call_action_by_name(
             }
             let n_out = count as usize;
 
-            let digits_opt = get_num(&cfg, "digits").map(|d| d as i64);
-            if let Some(d) = digits_opt { if d < 1 { return Err(rt("P1407", "digits must be >= 1", sp.clone())); } }
+            let digits_opt_i64: Option<i64> = get_num(&cfg, "digits").map(|d| d as i64);
+            if let Some(d) = digits_opt_i64 {
+                if d < 1 {
+                    return Err(rt("P1407", "digits must be >= 1", sp.clone()));
+                }
+            }
             let unique_digits = get_bool(&cfg, "unique").unwrap_or(false);
 
             let src_array = get_arr(&cfg, "src");
@@ -2282,15 +2312,16 @@ fn call_action_by_name(
                 None => if src_array.is_some() { false } else { true },
             };
 
-            // ---- RNG: fast 128-bit LCG ----
-
+            // ---- handy finisher ----
             let finish = |mut items: Vec<Value>| -> Value {
                 if n_out == 1 { items.pop().unwrap_or(Value::Nil) } else { Value::Array(items) }
             };
 
             // ================== Collections ==================
             if let Some(arr) = src_array {
-                if arr.is_empty() { return Err(rt("R0701", "cannot pick from an empty collection", sp.clone())); }
+                if arr.is_empty() {
+                    return Err(rt("R0701", "cannot pick from an empty collection", sp.clone()));
+                }
                 if !allow_dups && n_out > arr.len() {
                     return Err(rt("R0701", format!("cannot pick {} distinct items from {}", n_out, arr.len()), sp.clone()));
                 }
@@ -2316,15 +2347,15 @@ fn call_action_by_name(
             }
 
             // ---------- helpers for numeric domains ----------
-            let _within_digits = |v: i64, d: i64| -> bool {
+            let within_digits = |v: i64, d: i64| -> bool {
                 if d <= 0 { return true; }
                 let min = 10_i64.pow((d - 1) as u32);
                 let max = 10_i64.pow(d as u32) - 1;
                 v >= min && v <= max
             };
-            let _has_unique_digits = |mut v: i64, d: i64| -> bool {
+            let has_unique_digits = |mut v: i64, d: i64| -> bool {
                 if !unique_digits { return true; }
-                if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; } // no leading-zero width
+                if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; } // disallow shorter widths
                 let mut seen = [false; 10];
                 if v == 0 { return false; }
                 while v > 0 {
@@ -2337,43 +2368,20 @@ fn call_action_by_name(
             };
 
             // ================== Numeric Range (optional digits) ==================
-            // IMPORTANT: handle range BEFORE pure-digits to avoid any retry loops.
             if has_range {
                 let a = get_num(&cfg, "range_start").ok_or_else(|| rt("T0201", "range bounds must be numbers", sp.clone()))?;
                 let b = get_num(&cfg, "range_end").ok_or_else(|| rt("T0201", "range bounds must be numbers", sp.clone()))?;
                 if a.fract() != 0.0 || b.fract() != 0.0 {
                     return Err(rt("T0201", "range bounds must be integers", sp.clone()));
                 }
-
                 let mut lo = a as i64;
                 let mut hi = b as i64;
                 if lo > hi { std::mem::swap(&mut lo, &mut hi); }
                 let inc = get_bool(&cfg, "range_inclusive").unwrap_or(false);
 
-                let d = digits_opt.unwrap_or(0);
+                let d = digits_opt_i64.unwrap_or(0);
 
-                // filters
-                let within_digits = |v: i64, d: i64| -> bool {
-                    if d <= 0 { return true; }
-                    let min = 10_i64.pow((d - 1) as u32);
-                    let max = 10_i64.pow(d as u32) - 1;
-                    v >= min && v <= max
-                };
-                let has_unique_digits = |mut v: i64, d: i64| -> bool {
-                    if !unique_digits { return true; }
-                    if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; } // no leading-zero width
-                    let mut seen = [false; 10];
-                    if v == 0 { return false; }
-                    while v > 0 {
-                        let dd = (v % 10) as usize;
-                        if seen[dd] { return false; }
-                        seen[dd] = true;
-                        v /= 10;
-                    }
-                    true
-                };
-
-                // Build finite pool.
+                // Build finite pool with filters.
                 let mut pool: Vec<i64> = Vec::new();
                 if inc {
                     for v in lo..=hi {
@@ -2391,8 +2399,6 @@ fn call_action_by_name(
                 if !allow_dups && n_out > pool.len() {
                     return Err(rt("R0701", "not enough values in range for !dups", sp.clone()));
                 }
-
-                // RNG
 
                 let out_vals: Vec<Value> = if allow_dups {
                     let mut out = Vec::with_capacity(n_out);
@@ -2417,7 +2423,7 @@ fn call_action_by_name(
             }
 
             // ================== Pure Digits (no range) ==================
-            if let Some(d) = digits_opt {
+            if let Some(d) = digits_opt_i64 {
                 // Feasibility for !dups
                 let domain_size = if unique_digits {
                     // 1st digit 1..9, then P(9, d-1)
@@ -2459,11 +2465,10 @@ fn call_action_by_name(
                     }
                 };
 
-                // allow_dups:
                 let out = if allow_dups {
                     let mut out = Vec::with_capacity(n_out);
                     for _ in 0..n_out {
-                        out.push(Value::Int(gen_one() as i64));
+                        out.push(Value::Int(gen_one()));
                     }
                     out
                 } else {
@@ -2477,15 +2482,19 @@ fn call_action_by_name(
                         attempts_left -= 1;
                         set.insert(gen_one());
                     }
-                    set.into_iter().map(|v| Value::Int(v as i64)).collect()
+                    set.into_iter().map(|v| Value::Int(v)).collect()
                 };
 
                 return Ok(finish(out));
             }
 
-            // nothing recognized
-            return Err(rt("P1408", "pick needs a source: `from <collection>` or a numeric form", sp.clone()));
-        }
+            // If we got here, there was neither `src` nor any numeric form.
+            return Err(rt(
+                "P1408",
+                "pick needs a source: `from <collection>` or a numeric form",
+                sp.clone(),
+            ));
+        },
 
         //===== SEEDS =====
         "rand_seed" => {
@@ -2497,9 +2506,10 @@ fn call_action_by_name(
             Value::Unit
         }
 
-        // ====== roll (numeric result) ======
+        // ====== roll (numeric result, INT) ======
         "roll" => {
             use std::collections::BTreeMap;
+
             if args.len() != 1 {
                 return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
             }
@@ -2508,38 +2518,48 @@ fn call_action_by_name(
                 _ => return Err(rt("T0401", "roll expects a config object", sp.clone())),
             };
 
-            // --- helpers ---
-            let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
-                match m.get(k) {
-                    Some(Value::Float(n)) if n.fract() == 0.0 => Ok(*n as i64),
-                    Some(_) => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
-                    None => Err(rt("T0201", &format!("missing roll field '{k}'"), sp.clone())),
+            // --- helpers: hard-cast to i64 (truncate for non-integers) ---
+            let cast_i64_from_value = |v: &Value| -> Option<i64> {
+                match v {
+                    Value::Int(i) => Some(*i),
+                    Value::Float(f) => Some(f.trunc() as i64),
+                    #[allow(unreachable_patterns)]
+                    Value::Big(d) => { #[allow(deprecated)] d.trunc().to_i64() },
+                    Value::Str(s) => {
+                        let cleaned = s.trim().trim_start_matches('+').replace('_', "");
+                        cleaned.parse::<i128>().ok().and_then(|x| i64::try_from(x).ok())
+                    }
+                    _ => None,
                 }
             };
-            let get_i64_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
-                m.get(k).and_then(|v| if let Value::Float(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
+            let req_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+                match m.get(k) {
+                    Some(v) => cast_i64_from_value(v)
+                        .ok_or_else(|| rt("T0201", format!("roll '{k}' must be an integer-like value"), sp.clone())),
+                    None => Err(rt("T0201", format!("missing roll field '{k}'"), sp.clone())),
+                }
             };
-            let get_bool_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
-                m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
+            let opt_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+                m.get(k).and_then(|v| cast_i64_from_value(v))
+            };
+            let opt_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+                m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
 
-            let count    = get_i64(cfg, "count")?;
-            let sides    = get_i64(cfg, "sides")?;
-            let modifier = get_i64_opt(cfg, "modifier").or_else(|| get_i64_opt(cfg, "mod")).unwrap_or(0);
-
-            if count <= 0 || sides <= 0 {
-                return Err(rt("T0201", "roll count and sides must be > 0", sp.clone()));
-            }
+            // ---- read fields (now always i64 thanks to casting) ----
+            let count    = req_i64(cfg, "count")?;
+            let sides    = req_i64(cfg, "sides")?;
+            let modifier = opt_i64(cfg, "modifier").or_else(|| opt_i64(cfg, "mod")).unwrap_or(0);
 
             // extras
-            let keep_high = get_i64_opt(cfg, "keep_high").unwrap_or(0);
-            let drop_low  = get_i64_opt(cfg, "drop_low").unwrap_or(0);
-            let reroll_eq = get_i64_opt(cfg, "reroll_eq");
-            let explode   = get_bool_opt(cfg, "explode").unwrap_or(false);
-            let adv       = get_bool_opt(cfg, "adv").unwrap_or(false);
-            let dis       = get_bool_opt(cfg, "dis").unwrap_or(false);
-            let clamp_lo  = get_i64_opt(cfg, "clamp_min");
-            let clamp_hi  = get_i64_opt(cfg, "clamp_max");
+            let keep_high = opt_i64(cfg, "keep_high").unwrap_or(0);
+            let drop_low  = opt_i64(cfg, "drop_low").unwrap_or(0);
+            let reroll_eq = opt_i64(cfg, "reroll_eq");
+            let explode   = opt_bool(cfg, "explode").unwrap_or(false);
+            let adv       = opt_bool(cfg, "adv").unwrap_or(false);
+            let dis       = opt_bool(cfg, "dis").unwrap_or(false);
+            let clamp_lo  = opt_i64(cfg, "clamp_min");
+            let clamp_hi  = opt_i64(cfg, "clamp_max");
 
             if adv || dis && count != 1 {
                 return Err(rt("T0201","adv/dis requires a single die (count=1)", sp.clone()));
@@ -2577,7 +2597,7 @@ fn call_action_by_name(
                 }
             };
 
-            // === produce a plain Value (no Ok, no return) ===
+            // === produce a plain Value::Int ===
             let result_num: i64 = if adv || dis {
                 let a = roll_one(sides);
                 let b = roll_one(sides);
@@ -2616,12 +2636,13 @@ fn call_action_by_name(
                 total
             };
 
-            Value::Float(result_num as f64)
+            Value::Int(result_num)
         },
 
         // ====== roll_detail (map with values / kept / dropped / sum / total) ======
         "roll_detail" => {
             use std::collections::BTreeMap;
+
             if args.len() != 1 {
                 return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
             }
@@ -2630,40 +2651,50 @@ fn call_action_by_name(
                 _ => return Err(rt("T0401", "roll_detail expects a config object", sp.clone())),
             };
 
-            // --- helpers ---
-            let get_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
-                match m.get(k) {
-                    Some(Value::Float(n)) if n.fract() == 0.0 => Ok(*n as i64),
-                    Some(_) => Err(rt("T0201", &format!("roll '{k}' must be an integer"), sp.clone())),
-                    None => Err(rt("T0201", &format!("missing roll field '{k}'"), sp.clone())),
+            // --- helpers: hard-cast to i64 (truncate for non-integers) ---
+            let cast_i64_from_value = |v: &Value| -> Option<i64> {
+                match v {
+                    Value::Int(i) => Some(*i),
+                    Value::Float(f) => Some(f.trunc() as i64),
+                    #[allow(unreachable_patterns)]
+                    Value::Big(d) => { #[allow(deprecated)] d.trunc().to_i64() },
+                    Value::Str(s) => {
+                        let cleaned = s.trim().trim_start_matches('+').replace('_', "");
+                        cleaned.parse::<i128>().ok().and_then(|x| i64::try_from(x).ok())
+                    }
+                    _ => None,
                 }
             };
-            let get_i64_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
-                m.get(k).and_then(|v| if let Value::Float(n)=v { if n.fract()==0.0 { Some(*n as i64) } else { None } } else { None })
+            let req_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+                match m.get(k) {
+                    Some(v) => cast_i64_from_value(v)
+                        .ok_or_else(|| rt("T0201", format!("roll '{k}' must be an integer-like value"), sp.clone())),
+                    None => Err(rt("T0201", format!("missing roll field '{k}'"), sp.clone())),
+                }
             };
-            let get_bool_opt = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
-                m.get(k).and_then(|v| if let Value::Bool(b)=v { Some(*b) } else { None })
+            let opt_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+                m.get(k).and_then(|v| cast_i64_from_value(v))
+            };
+            let opt_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+                m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
 
-            let count    = get_i64(cfg, "count")?;
-            let sides    = get_i64(cfg, "sides")?;
-            let modifier = get_i64_opt(cfg, "modifier").or_else(|| get_i64_opt(cfg, "mod")).unwrap_or(0);
-
-            if count <= 0 || sides <= 0 {
-                return Err(rt("T0201", "roll count and sides must be > 0", sp.clone()));
-            }
+            // ---- read fields (now always i64 thanks to casting) ----
+            let count    = req_i64(cfg, "count")?;
+            let sides    = req_i64(cfg, "sides")?;
+            let modifier = opt_i64(cfg, "modifier").or_else(|| opt_i64(cfg, "mod")).unwrap_or(0);
 
             // extras
-            let keep_high = get_i64_opt(cfg, "keep_high").unwrap_or(0);
-            let drop_low  = get_i64_opt(cfg, "drop_low").unwrap_or(0);
-            let reroll_eq = get_i64_opt(cfg, "reroll_eq");
-            let explode   = get_bool_opt(cfg, "explode").unwrap_or(false);
-            let adv       = get_bool_opt(cfg, "adv").unwrap_or(false);
-            let dis       = get_bool_opt(cfg, "dis").unwrap_or(false);
-            let clamp_lo  = get_i64_opt(cfg, "clamp_min");
-            let clamp_hi  = get_i64_opt(cfg, "clamp_max");
+            let keep_high = opt_i64(cfg, "keep_high").unwrap_or(0);
+            let drop_low  = opt_i64(cfg, "drop_low").unwrap_or(0);
+            let reroll_eq = opt_i64(cfg, "reroll_eq");
+            let explode   = opt_bool(cfg, "explode").unwrap_or(false);
+            let adv       = opt_bool(cfg, "adv").unwrap_or(false);
+            let dis       = opt_bool(cfg, "dis").unwrap_or(false);
+            let clamp_lo  = opt_i64(cfg, "clamp_min");
+            let clamp_hi  = opt_i64(cfg, "clamp_max");
 
-            if (adv || dis) && count != 1 {
+            if adv || dis && count != 1 {
                 return Err(rt("T0201","adv/dis requires a single die (count=1)", sp.clone()));
             }
             if keep_high > 0 && drop_low > 0 {
@@ -2675,6 +2706,7 @@ fn call_action_by_name(
                 }
             }
 
+            // RNG (same as roll)
             let mut roll_one = |s: i64| -> i64 {
                 let mut r = rng_roll_1_to_s(sess, s);
                 if let Some(face) = reroll_eq {
@@ -2715,19 +2747,19 @@ fn call_action_by_name(
 
                 let mut out = BTreeMap::<String, Value>::new();
                 out.insert("count".into(),    Value::Int(1));
-                out.insert("sides".into(),    Value::Int(sides as i64));
-                out.insert("modifier".into(), Value::Int(modifier as i64));
-                out.insert("values".into(),   Value::Array(vec![Value::Int(a as i64), Value::Int(b as i64)]));
-                out.insert("kept".into(),     Value::Array(vec![Value::Int(chosen as i64)]));
-                out.insert("dropped".into(),  Value::Array(vec![Value::Int(dropped_val as i64)]));
-                out.insert("sum".into(),      Value::Int(chosen as i64));
-                out.insert("total".into(),    Value::Int(total as i64));
+                out.insert("sides".into(),    Value::Int(sides));
+                out.insert("modifier".into(), Value::Int(modifier));
+                out.insert("values".into(),   Value::Array(vec![Value::Int(a), Value::Int(b)]));
+                out.insert("kept".into(),     Value::Array(vec![Value::Int(chosen)]));
+                out.insert("dropped".into(),  Value::Array(vec![Value::Int(dropped_val)]));
+                out.insert("sum".into(),      Value::Int(chosen));
+                out.insert("total".into(),    Value::Int(total));
                 out.insert("adv".into(),      Value::Bool(adv));
                 out.insert("dis".into(),      Value::Bool(dis));
-                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x as i64)); }
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x)); }
                 if explode { out.insert("explode".into(), Value::Bool(true)); }
-                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo as i64)); }
-                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi as i64)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi)); }
                 Value::Map(out)
             } else {
                 // N dice, mark kept vs dropped explicitly
@@ -2763,20 +2795,20 @@ fn call_action_by_name(
                 }
 
                 let mut out = BTreeMap::<String, Value>::new();
-                out.insert("count".into(),    Value::Int(count as i64));
-                out.insert("sides".into(),    Value::Int(sides as i64));
-                out.insert("modifier".into(), Value::Int(modifier as i64));
-                out.insert("values".into(),   Value::Array(vals.iter().copied().map(|v| Value::Int(v as i64)).collect()));
-                out.insert("kept".into(),     Value::Array(kept_vals.iter().copied().map(|v| Value::Int(v as i64)).collect()));
-                out.insert("dropped".into(),  Value::Array(dropped_vals.iter().copied().map(|v| Value::Int(v as i64)).collect()));
-                out.insert("sum".into(),      Value::Int(kept_sum as i64));
-                out.insert("total".into(),    Value::Int(total as i64));
-                if keep_high > 0 { out.insert("keep_high".into(), Value::Int(keep_high as i64)); }
-                if drop_low  > 0 { out.insert("drop_low".into(),  Value::Int(drop_low  as i64)); }
-                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x as i64)); }
+                out.insert("count".into(),    Value::Int(count));
+                out.insert("sides".into(),    Value::Int(sides));
+                out.insert("modifier".into(), Value::Int(modifier));
+                out.insert("values".into(),   Value::Array(vals.into_iter().map(Value::Int).collect()));
+                out.insert("kept".into(),     Value::Array(kept_vals.into_iter().map(Value::Int).collect()));
+                out.insert("dropped".into(),  Value::Array(dropped_vals.into_iter().map(Value::Int).collect()));
+                out.insert("sum".into(),      Value::Int(kept_sum));
+                out.insert("total".into(),    Value::Int(total));
+                if keep_high > 0 { out.insert("keep_high".into(), Value::Int(keep_high)); }
+                if drop_low  > 0 { out.insert("drop_low".into(),  Value::Int(drop_low)); }
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x)); }
                 if explode { out.insert("explode".into(), Value::Bool(true)); }
-                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo as i64)); }
-                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi as i64)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi)); }
                 Value::Map(out)
             };
 
@@ -3841,9 +3873,21 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             // Receiver style: xs.put_at!(...)
             let mut vals = Vec::with_capacity(arg_exprs.len() + 1);
             // receiver value first
-            let recv_val = sess.get_var(base_ident)
+            let recv_val = sess
+                .get_var(base_ident)
                 .cloned()
-                .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", base_ident), sp.clone()))?;
+                .ok_or_else(|| {
+                    // Build a message with an optional help paragraph.
+                    let mut msg = format!("Unknown identifier '{}'", base_ident);
+                    if base_ident == "from" {
+                        // Your formatter treats lines starting with `help:` (or 2nd paragraph) as help text.
+                        msg.push_str(
+                            "\n\nhelp: `from` was parsed as a name here. After `pick`, either provide a count \
+                             (e.g., `pick 1 from items`) or enable the sugar so `pick from items` defaults to 1.",
+                        );
+                    }
+                    rt("R0110", msg, sp.clone())
+                })?;
             vals.push(recv_val);
             // then args
             for a in arg_exprs { vals.push(eval_expr(a, sess)?); }

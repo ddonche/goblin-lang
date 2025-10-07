@@ -973,7 +973,6 @@ fn run_repl() -> i32 {
     0
 }
 
-
 fn run_run(path: &std::path::Path) -> i32 {
     use goblin_interpreter::Session;
 

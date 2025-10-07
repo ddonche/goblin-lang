@@ -1,5 +1,5 @@
 
-/// This does not work right
+/// This works
 act fight(attacker, defender)
     /// say attacker >> name ++ "attacks" ++ defender >> name + "!"
     say((attacker >> name) ++ "attacks" ++ (defender >> name) + "!") <---- this also works
