@@ -1,10 +1,11 @@
-//// 
-Combat module
-act fight(attacker, defender)
-    say (attacker >> name) ++ "attacks" ++ (defender >> name) + "!"
-end
-////
 
+/// This does not work right
+act fight(attacker, defender)
+    /// say attacker >> name ++ "attacks" ++ defender >> name + "!"
+    say((attacker >> name) ++ "attacks" ++ (defender >> name) + "!") <---- this also works
+end
+
+//// This works right
 act fight(attacker, defender)
     a = attacker >> name
     b = " attacks "
@@ -12,3 +13,4 @@ act fight(attacker, defender)
     msg = a + b + c + "!"
     say msg
 end
+////

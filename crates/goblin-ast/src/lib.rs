@@ -62,9 +62,26 @@ pub enum RelationDef {  // Changed from 'enum' to 'pub enum'
 
 #[derive(Debug, Clone)]
 pub struct ImportStmt {
-    pub path: String,           // "game/hero"
-    pub alias: Option<String>,  // Some("game_hero") for "as game_hero"
+    pub items: ImportItems,
+    pub alias: Option<String>,  // Only used for single-path imports
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportItems {
+    /// Single path: import game/hero
+    Path(String),
+    /// Multiple items from source: import { hero, Combat } from game
+    Named {
+        items: Vec<ImportItem>,
+        source: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportItem {
+    pub name: String,
+    pub alias: Option<String>,  // For: import { hero as h } from game
 }
 
 #[derive(Debug, Clone)]

@@ -1312,17 +1312,34 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         }
 
         ast::Stmt::Import(import_stmt) => {
-            // For now, we need a base directory to resolve imports from
-            // We'll use the current working directory as the base
             let base_dir = std::env::current_dir()
                 .map_err(|e| rt("M0001", format!("Cannot get current directory: {}", e), import_stmt.span.clone()))?;
             
-            sess.modules.load_module(
-                &import_stmt.path, 
-                import_stmt.alias.as_deref(),
-                &base_dir
-            )
-            .map_err(|e| rt("M0001", e, import_stmt.span.clone()))?;
+            match &import_stmt.items {
+                ast::ImportItems::Path(path) => {
+                    // Single path import: import game/hero
+                    sess.modules.load_module(
+                        path,
+                        import_stmt.alias.as_deref(),
+                        &base_dir
+                    )
+                    .map_err(|e| rt("M0001", e, import_stmt.span.clone()))?;
+                }
+                ast::ImportItems::Named { items, source } => {
+                    // Multiple named imports: import { hero, Combat } from game
+                    for item in items {
+                        let full_path = format!("{}/{}", source, item.name);
+                        let namespace = item.alias.as_deref().unwrap_or(&item.name);
+                        
+                        sess.modules.load_module(
+                            &full_path,
+                            Some(namespace),
+                            &base_dir
+                        )
+                        .map_err(|e| rt("M0001", e, import_stmt.span.clone()))?;
+                    }
+                }
+            }
             
             Ok(None)
         }
@@ -4807,6 +4824,23 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Postfix(expr, op, sp) => {
             let v = eval_expr(expr, sess)?;
             match op.as_str() {
+                // ---------- MUTATING POSTFIX OPS ----------
+                "++" => {
+                    // expr++  ==>  expr = expr + 1
+                    let one = ast::Expr::Number("1".to_string(), sp.clone());
+                    let rhs = ast::Expr::Binary(expr.clone(), "+".to_string(), Box::new(one), sp.clone());
+                    let assign = ast::Expr::Assign(expr.clone(), Box::new(rhs), sp.clone());
+                    return eval_expr(&assign, sess); // reuse existing Assign semantics
+                }
+                "--" => {
+                    // expr--  ==>  expr = expr - 1
+                    let one = ast::Expr::Number("1".to_string(), sp.clone());
+                    let rhs = ast::Expr::Binary(expr.clone(), "-".to_string(), Box::new(one), sp.clone());
+                    let assign = ast::Expr::Assign(expr.clone(), Box::new(rhs), sp.clone());
+                    return eval_expr(&assign, sess);
+                }
+
+                // ---------- NON-MUTATING POSTFIX OPS ----------
                 "%" => {
                     let n = as_num(v, span_of_expr(expr), "percent literal")?;
                     Ok(Value::Pct(n / 100.0))
@@ -4894,20 +4928,27 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
                 // arithmetic
                 "+" => {
-                    let lv = eval_expr(lhs, sess)?; 
+                    let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    
-                    // Check for string concatenation first (before stripping format)
-                    if matches!((&lv, &rv), (Value::Str(_), Value::Str(_))) {
-                        let s1 = if let Value::Str(s) = lv { s } else { unreachable!() };
-                        let s2 = if let Value::Str(s) = rv { s } else { unreachable!() };
-                        return Ok(Value::Str(format!("{}{}", s1, s2)));
-                    }
-                    
-                    // Numeric addition
+
+                    // If either side is a string, do string concat (after removing formatting wrappers)
                     let (lu, lspec) = take_owned_unformatted(lv);
                     let (ru, rspec) = take_owned_unformatted(rv);
 
+                    match (&lu, &ru) {
+                        (Value::Str(a), Value::Str(b)) => {
+                            return Ok(Value::Str(format!("{a}{b}")));
+                        }
+                        (Value::Str(a), other) => {
+                            return Ok(Value::Str(format!("{a}{}", fmt_value_raw(other))));
+                        }
+                        (other, Value::Str(b)) => {
+                            return Ok(Value::Str(format!("{}{b}", fmt_value_raw(other))));
+                        }
+                        _ => { /* fall through to numeric ladder below using lu/ru */ }
+                    }
+
+                    // ---- NUMERIC ADDITION ----
                     let out = match (&lu, &ru) {
                         (Value::Int(a),   Value::Int(b)) => {
                             if let Some(r) = int_checked_add(*a, *b) { Value::Int(r) }
@@ -4933,13 +4974,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "++" => {
                     let lv = eval_expr(lhs, sess)?;
                     let rv = eval_expr(rhs, sess)?;
-                    let ls = fmt_value_raw(&lv);
-                    let rs = fmt_value_raw(&rv);
+
+                    // Remove any formatting wrappers first so Str stays bare (no quotes)
+                    let (lu, _) = take_owned_unformatted(lv);
+                    let (ru, _) = take_owned_unformatted(rv);
+
+                    // Bare string for Str; fall back to your raw formatter for non-strings
+                    let ls = match &lu { Value::Str(s) => s.clone(), _ => fmt_value_raw(&lu) };
+                    let rs = match &ru { Value::Str(s) => s.clone(), _ => fmt_value_raw(&ru) };
+
                     let out = if ls.is_empty() { rs }
                               else if rs.is_empty() { ls }
                               else { format!("{ls} {rs}") };
+
+                    let out = out.trim_matches('"').to_string();
                     Ok(Value::Str(out))
-                },
+                }
 
                 "-" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;

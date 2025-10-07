@@ -1960,7 +1960,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 state.tokens.push(Token::simple_op("*".to_string(), state.span(start_i, start_col)));
             }
 
-            // Plus family
+            // Plus family — longest match first!
             b'+' if state.peek(1) == Some(b'+') => {
                 let start_i = state.i;
                 let start_col = state.col;

@@ -4503,7 +4503,6 @@ impl<'t> Parser<'t> {
         let start_span = if let Some(tok) = self.peek() {
             tok.span.clone()
         } else {
-            // Create a synthetic span if no token available
             goblin_diagnostics::Span::new("<unknown>", 0, 0, 0, 0, 0, 0)
         };
         
@@ -4513,34 +4512,99 @@ impl<'t> Parser<'t> {
         }
         self.i += 1;
         
-        // Parse module path: game/hero
-        let mut path_parts = Vec::new();
-        loop {
-            let Some(part) = self.eat_ident() else {
-                return Err(s_help("P1002", "Expected module path after 'import'", "import game/hero"));
-            };
-            path_parts.push(part);
+        self.skip_newlines();
+        
+        // Check for '{' (grouped imports)
+        if self.eat_op("{") {
+            // Parse: import { item1, item2 as alias2 } from source
+            self.skip_newlines();
             
-            if !self.eat_op("/") {
+            let mut items = Vec::new();
+            
+            // Parse comma-separated list of items
+            loop {
+                let Some(name) = self.eat_ident() else {
+                    return Err(s_help("P1010", "Expected item name", "import { hero, Combat } from game"));
+                };
+                
+                // Optional 'as alias'
+                let alias = if self.peek_ident() == Some("as") {
+                    self.i += 1; // eat 'as'
+                    self.eat_ident()
+                } else {
+                    None
+                };
+                
+                items.push(ast::ImportItem { name, alias });
+                
+                self.skip_newlines();
+                
+                if self.eat_op(",") {
+                    self.skip_newlines();
+                    if self.peek_op("}") {
+                        break; // trailing comma
+                    }
+                    continue;
+                }
                 break;
             }
-        }
-        
-        let path = path_parts.join("/");
-        
-        // Optional 'as alias'
-        let alias = if self.peek_ident() == Some("as") {
-            self.i += 1; // eat 'as'
-            self.eat_ident()
+            
+            self.skip_newlines();
+            
+            if !self.eat_op("}") {
+                return Err(s_help("P1011", "Expected '}' to close import list", "import { hero, Combat } from game"));
+            }
+            
+            self.skip_newlines();
+            
+            // Expect 'from'
+            if self.peek_ident() != Some("from") {
+                return Err(s_help("P1012", "Expected 'from' after import list", "import { hero, Combat } from game"));
+            }
+            self.i += 1; // eat 'from'
+            
+            self.skip_newlines();
+            
+            // Parse source (single identifier or path)
+            let Some(source) = self.eat_ident() else {
+                return Err(s_help("P1013", "Expected source path after 'from'", "import { hero } from game"));
+            };
+            
+            Ok(ast::Stmt::Import(ast::ImportStmt {
+                items: ast::ImportItems::Named { items, source },
+                alias: None,
+                span: start_span,
+            }))
         } else {
-            None
-        };
-        
-        Ok(ast::Stmt::Import(ast::ImportStmt { 
-            path, 
-            alias, 
-            span: start_span 
-        }))
+            // Parse: import game/hero or import game/hero as h
+            let mut path_parts = Vec::new();
+            loop {
+                let Some(part) = self.eat_ident() else {
+                    return Err(s_help("P1002", "Expected module path after 'import'", "import game/hero"));
+                };
+                path_parts.push(part);
+                
+                if !self.eat_op("/") {
+                    break;
+                }
+            }
+            
+            let path = path_parts.join("/");
+            
+            // Optional 'as alias'
+            let alias = if self.peek_ident() == Some("as") {
+                self.i += 1; // eat 'as'
+                self.eat_ident()
+            } else {
+                None
+            };
+            
+            Ok(ast::Stmt::Import(ast::ImportStmt {
+                items: ast::ImportItems::Path(path),
+                alias,
+                span: start_span,
+            }))
+        }
     }
 
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {
@@ -4895,6 +4959,7 @@ impl<'t> Parser<'t> {
                         let _ = self.eat_op("(");
                         self.skip_newlines();
                         if !self.peek_op(")") {
+                            // IMPORTANT: parse the FULL expression (additive chain etc.)
                             let expr = self.parse_coalesce()?;
                             self.skip_newlines();
                             if !self.eat_op(")") {
@@ -4910,11 +4975,13 @@ impl<'t> Parser<'t> {
                         }
                     } else {
                         // no-paren form: say <expr>
-                        let expr = self.parse_coalesce()?;
+                        // IMPORTANT: full expression, not just coalesce/primary
+                        let expr = self.parse_additive()?;       // ← not parse_coalesce
                         args.push(expr);
                     }
 
-                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("say".to_string(), args)));
+                    // CRUCIAL: do NOT allow postfix ops on say
+                    return Ok(PExpr::FreeCall("say".to_string(), args));
                 }
 
                 if name == "skip" {
@@ -5026,7 +5093,14 @@ impl<'t> Parser<'t> {
                     };
 
                     if starts_expr {
-                        // Parse exactly one argument expression (same entry point as `say`)
+                        // Special-case: `say` should consume a FULL expression as its single arg,
+                        // and must NOT allow postfix chaining on the call itself.
+                        if name == "say" {
+                            let arg = self.parse_additive()?;   // <-- full expr (handles ++, +, >>, etc.)
+                            return Ok(PExpr::FreeCall(name, vec![arg])); // <-- no apply_postfix_ops here
+                        }
+
+                        // All other bare calls keep the existing behavior.
                         let arg = self.parse_coalesce()?;
                         return Ok(self.apply_postfix_ops(PExpr::FreeCall(name, vec![arg])));
                     }
@@ -5521,46 +5595,39 @@ impl<'t> Parser<'t> {
         let mut lhs = self.parse_multiplicative()?;
 
         loop {
+            // allow chaining inside say() expressions
+
             if self.eat_op("++") {
                 self.skip_newlines();
                 let mut rhs = self.parse_multiplicative()?;
-
-                // Desugar RHS `N%s` => `(N% of lhs)`
                 if let PExpr::Postfix(inner, op) = &rhs {
                     if op == "%s" {
                         let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
                         rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
                     }
                 }
-
                 lhs = PExpr::Binary(Box::new(lhs), "++".to_string(), Box::new(rhs));
                 continue;
             } else if self.eat_op("+") {
                 self.skip_newlines();
                 let mut rhs = self.parse_multiplicative()?;
-
-                // Desugar RHS `N%s` => `(N% of lhs)`
                 if let PExpr::Postfix(inner, op) = &rhs {
                     if op == "%s" {
                         let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
                         rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
                     }
                 }
-
                 lhs = PExpr::Binary(Box::new(lhs), "+".to_string(), Box::new(rhs));
                 continue;
             } else if self.eat_op("-") {
                 self.skip_newlines();
                 let mut rhs = self.parse_multiplicative()?;
-
-                // Desugar RHS `N%s` => `(N% of lhs)`
                 if let PExpr::Postfix(inner, op) = &rhs {
                     if op == "%s" {
                         let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
                         rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
                     }
                 }
-
                 lhs = PExpr::Binary(Box::new(lhs), "-".to_string(), Box::new(rhs));
                 continue;
             }
