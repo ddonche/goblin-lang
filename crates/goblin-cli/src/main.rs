@@ -48,6 +48,28 @@ fn main() {
 
     let mut args = env::args().skip(1).collect::<Vec<_>>();
 
+    // --version / -v
+    if args.len() == 1 && (args[0] == "--version" || args[0] == "-v") {
+        println!("Goblin v{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    // --help / -h
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        println!(
+            "Goblin Language CLI\n\
+             usage:\n\
+             \n  goblin new <project-name>\n\
+             \n  goblin run [<file>]\n\
+             \n  goblin repl\n\
+             \n  goblin lex --check\n\
+             \n  goblin parse <file>\n\
+             \n  goblin gql-parse <file|->\n\
+             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version"
+        );
+        return;
+    }
+
     // Handle 'goblin new <project-name>'
     if !args.is_empty() && args[0] == "new" {
         if args.len() < 2 {
@@ -90,13 +112,36 @@ fn main() {
         std::process::exit(run_gql_parse(input));
     }
 
+    // NEW: `goblin-cli run [<file>]`
+    if !args.is_empty() && args[0] == "run" {
+        args.remove(0);
+
+        // If a file was provided, use it; otherwise resolve from goblin.yaml
+        let target: PathBuf = if let Some(path) = args.get(0) {
+            PathBuf::from(path)
+        } else {
+            match resolve_entry_from_yaml(&env::current_dir().unwrap_or_else(|_| PathBuf::from("."))) {
+                Some(p) => p,
+                None => {
+                    eprintln!(
+                        "No entry file provided and could not find `entry:` in goblin.yaml.\n\
+                         usage: goblin-cli run <file>\n       (or add `entry: main.gbln` to goblin.yaml and run `goblin run`)"
+                    );
+                    std::process::exit(2);
+                }
+            }
+        };
+
+        std::process::exit(run_run(target.as_path()));
+    }
+
     // Run script file if a single path argument is provided
     if args.len() == 1 && is_probable_file(&args[0]) {
         std::process::exit(run_run(Path::new(&args[0])));
     }
 
     eprintln!(
-        "usage: goblin-cli lex --check\n       goblin-cli parse <file>\n       goblin-cli gql-parse <file|->"
+        "usage: goblin-cli run <file>\n       goblin-cli run\n       goblin-cli lex --check\n       goblin-cli parse <file>\n       goblin-cli gql-parse <file|->"
     );
     std::process::exit(2);
 }
@@ -1002,4 +1047,21 @@ fn run_run(path: &std::path::Path) -> i32 {
 fn is_probable_file(s: &str) -> bool {
     let p = std::path::Path::new(s);
     p.exists() || s.ends_with(".gbln")
+}
+
+fn resolve_entry_from_yaml(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let p = cwd.join("goblin.yaml");
+    let text = std::fs::read_to_string(&p).ok()?;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("entry:") {
+            if let Some(rest) = t.splitn(2, ':').nth(1) {
+                let val = rest.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return Some(cwd.join(val));
+                }
+            }
+        }
+    }
+    None
 }
