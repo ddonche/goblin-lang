@@ -1,3 +1,90 @@
+@Player = 
+    name: "{name}", 
+    health: 50
+    act heal_by(amount)
+        health = min(100, health + amount)
+        return health
+    xx
+end
+
+player1|Player = { name: "Rook", health: 70 }
+
+action apply(list, fn)
+    for v in list
+        fn(v)
+    xx
+    return
+xx
+
+apply([10, 5], player1.heal_by)
+say "Final health: "
+say (player1 >> health)
+
+
+/// single return
+action calculate_tax(income, rate)
+    tax_amount = income * rate
+    return tax_amount
+xx
+total = calculate_tax(50000, 0.15)
+say "tax=" ++ total
+
+/// multiple returns
+action divide_with_remainder(a, b)
+    q = a // b
+    r = a % b
+    return q, r
+xx
+res = divide_with_remainder(17, 5)
+say "q=" ++ (res >> q) ++ " r=" ++ (res >> r)
+
+/// bare return (early exit)
+action early_exit(flag)
+    if flag
+        return
+    xx
+    x = 42
+    return x
+xx
+v1 = early_exit(true)
+v2 = early_exit(false)
+say "early_nil?=" ++ (v1 == nil)
+say "early_x=" ++ (v2 >> x)
+
+/// fallthrough = nil
+action falloff()
+    a = 10
+    b = 20
+xx
+f = falloff()
+say "falloff_nil?=" ++ (f == nil)
+
+/// bound method reference
+@Player = 
+    name: "{name}", 
+    health: 50
+    act heal_by(amount)
+        health = min(100, health + amount)
+        return health
+    xx
+end
+player1|Player = { name: "Rook", health: 70 }
+action apply(list, fn)
+    for v in list
+        fn(v)
+    xx
+    return
+xx
+apply([10, 5], player1.heal_by)
+say "hp_after_apply=" ++ (player1 >> health)
+
+/// field access via >>
+m = divide_with_remainder(10, 3)
+say "field_q=" ++ (m >> q)
+
+
+
+
 /// Test both import styles
 
 /// Single path import

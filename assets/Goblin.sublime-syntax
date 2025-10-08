@@ -1,0 +1,134 @@
+%YAML 1.2
+---
+name: Goblin
+file_extensions:
+  - gbln
+scope: source.goblin
+
+contexts:
+  prototype:
+    - include: comments
+
+  main:
+    - include: comments
+    - include: strings
+    - include: keywords
+    - include: builtins
+    - include: types
+    - include: booleans
+    - include: nulls
+    - include: assignment_targets
+    - include: functions
+    - include: money
+    - include: percent
+    - include: dice
+    - include: template_names
+    - include: private_variables
+    - include: binding_separators
+    - include: numbers
+    - include: operators
+    - include: punctuation
+
+  comments:
+    # Simplified block comment to avoid multiline regex issues
+    - match: '////'
+      scope: punctuation.definition.comment.goblin
+      push:
+        - meta_scope: comment.block.goblin
+        - match: '////'
+          scope: punctuation.definition.comment.goblin
+          pop: true
+    # Single-line comment
+    - match: '///.*$'
+      scope: comment.line.triple-slash.goblin
+
+  strings:
+    # Simplified string pattern, handling interpolation separately
+    - match: '"'
+      scope: punctuation.definition.string.begin.goblin
+      push:
+        - meta_scope: string.quoted.double.goblin
+        - match: '\\.'
+          scope: constant.character.escape.goblin
+        - match: '{'
+          scope: punctuation.section.interpolation.begin.goblin
+          push:
+            - meta_scope: meta.interpolation.goblin
+            - match: '[a-zA-Z_][a-zA-Z0-9_.]*'
+              scope: variable.other.interpolation.goblin
+            - match: '}'
+              scope: punctuation.section.interpolation.end.goblin
+              pop: true
+        - match: '"'
+          scope: punctuation.definition.string.end.goblin
+          pop: true
+
+  keywords:
+    - match: '\b(if|else|elif|end|xx|act|action|unless|while|for|where|in|imm|attempt|rescue|ensure|return|skip|jump|until|stop|assert|enum|trait|use|import|export|impl|via|expose|vault|morph|judge|banish|unbanish|set|settle|test|as)\b'
+      scope: keyword.control.goblin
+
+  builtins:
+    - match: '\b(pick|reap|usurp|shuffle|sort|add|insert|replace|len|roll|roll_detail|freq|mode|sample_weighted|min|max|abs|floor|ceil|round|pow|sum|error|warn|say|read_text|write_text|read_json|write_json|read_csv|write_csv|read_yaml|write_yaml)\b'
+      scope: support.function.goblin
+
+  types:
+    - match: '\b(int|float|bool|money|pct|string|big|i|f|b|str)\b'
+      scope: storage.type.goblin
+
+  booleans:
+    - match: '\b(true|false)\b'
+      scope: constant.language.goblin
+
+  nulls:
+    - match: '\bnil\b'
+      scope: constant.language.nil.goblin
+
+  assignment_targets:
+    # Simplified to avoid complex lookahead
+    - match: '\b[a-zA-Z_][a-zA-Z0-9_]*\s*(?==[^=])'
+      scope: variable.other.assignment.goblin
+
+  functions:
+    - match: '\b[a-zA-Z_][a-zA-Z0-9_]*\s*(?=\()'
+      scope: entity.name.function.goblin
+
+  money:
+    - match: '(?:\$|EUR|GBP|JPY|£|€|¥|USD)\s*\d+(?:\.\d{2})?'
+      scope: constant.numeric.money.goblin
+
+  percent:
+    - match: '\d+(?:\.\d+)?%\s*(?:of\s+\w+|\b)'
+      scope: constant.numeric.percent.goblin
+
+  dice:
+    - match: '\d+d\d+(?:[+-]\d+)?'
+      scope: constant.numeric.dice.goblin
+
+  template_names:
+    - match: '@[a-zA-Z_][a-zA-Z0-9_]*'
+      scope: variable.other.template.goblin
+
+  private_variables:
+    - match: '#[a-zA-Z_][a-zA-Z0-9_]*'
+      scope: variable.other.private.goblin
+
+  binding_separators:
+    - match: '::'
+      scope: punctuation.separator.binding.goblin
+
+  numbers:
+    - match: '\b\d+(?:\.\d+)?\b'
+      scope: constant.numeric.goblin
+
+  operators:
+    # Split operators to avoid regex complexity
+    - match: '(?:==|!=|===|!==|<=|>=|<|>|&&|\|\||\bnot\b|[=+\-*\/%])'
+      scope: keyword.operator.goblin
+    - match: '(?:\?\?|\?\.|>>|\*\*|\/\/|\+\+|--|\^\^|\|>)'
+      scope: keyword.operator.special.goblin
+    - match: '\b(and|or)\b'
+      scope: keyword.operator.logical.goblin
+
+  punctuation:
+    - match: '[{}()[\\],;]'
+      scope: punctuation.goblin
