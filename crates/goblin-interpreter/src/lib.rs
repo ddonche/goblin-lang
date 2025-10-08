@@ -1163,11 +1163,11 @@ fn as_num(v: Value, at: Span, label: &str) -> Result<f64, Diag> {
     }
 }
 #[allow(dead_code)]
-fn bin_nums(lhs: &ast::Expr, rhs: &ast::Expr, sess: &mut Session, label: &str) -> Result<(f64, f64), Diag> {
+fn bin_nums(lhs: &ast::Expr, rhs: &ast::Expr, sess: &mut Session, label: &str, sp: Span) -> Result<(f64, f64), Diag> {
     let lv = eval_expr(lhs, sess)?;
     let rv = eval_expr(rhs, sess)?;
-    let ln = as_num(lv, span_of_expr(lhs), &format!("{label}: left operand"))?;
-    let rn = as_num(rv, span_of_expr(rhs), &format!("{label}: right operand"))?;
+    let ln = as_num(lv, sp.clone(), &format!("{label}: left operand"))?;
+    let rn = as_num(rv, sp.clone(), &format!("{label}: right operand"))?;
     Ok((ln, rn))
 }
 
@@ -1280,7 +1280,7 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
     Ok(out)
 }
 
-fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
+fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {  
     match s {
         ast::Stmt::Expr(e) => Ok(Some(eval_expr(e, sess)?)),
 
@@ -1360,6 +1360,29 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             Ok(None)
         }
 
+        ast::Stmt::Return(rs) => {
+            use std::collections::BTreeMap;
+
+            let ret = match rs.names.len() {
+                0 => Value::Nil,
+                1 => {
+                    let name = &rs.names[0];
+                    sess.get_var(name).cloned().unwrap_or(Value::Nil)
+                }
+                _ => {
+                    let mut map = BTreeMap::new();
+                    for name in &rs.names {
+                        let v = sess.get_var(name).cloned().unwrap_or(Value::Nil);
+                        map.insert(name.clone(), v);
+                    }
+                    Value::Map(map)
+                }
+            };
+
+            sess.set_var("__return__".to_string(), ret);
+            return Ok(Some(Value::CtrlStop));
+        }
+
         ast::Stmt::Bind(b) => {
             // name + span
             let (name, name_span) = (&b.name.0, b.name.1.clone());
@@ -1371,7 +1394,6 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
             // evaluate RHS once
             let rhs = eval_expr(&b.expr, sess)?;
-
             match b.mode {
                 BindMode::Shadow => {
                     // Always create a new local in the *current* frame.
@@ -1444,11 +1466,11 @@ fn as_array_like<'a>(v: &'a Value) -> Option<&'a [Value]> {
     }
 }
 
-fn expect_array<'a>(e: &'a ast::Expr, label: &str) -> Result<&'a [ast::Expr], Diag> {
+fn expect_array<'a>(e: &'a ast::Expr, label: &str, sp: Span) -> Result<&'a [ast::Expr], Diag> {
     if let ast::Expr::Array(items, _) = e {
         Ok(items.as_slice())
     } else {
-        Err(rt("P0314", format!("{label} must be an array of expressions"), span_of_expr(e)))
+        Err(rt("P0314", format!("{label} must be an array of expressions"), sp))
     }
 }
 
@@ -1633,58 +1655,108 @@ fn eval_builtin(
         }
 
         "min" => {
-            arity(1)?;
-            match &args[0] {
-                Value::Array(xs) => {
-                    let mut it = xs.iter();
-                    let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
-                    // Big-aware selection
-                    let any_big = xs.iter().any(|v| matches!(v, Value::Big(_)));
-                    if any_big {
-                        let mut m = to_big_for_math(first, sp.clone(), "min")?;
-                        for v in it {
-                            let dv = to_big_for_math(v, sp.clone(), "min")?;
-                            if dv < m { m = dv; }
-                        }
-                        Value::Big(m)
-                    } else {
-                        let mut m = to_f64_for_math(first, sp.clone(), "min")?;
-                        for v in it {
-                            let fv = to_f64_for_math(v, sp.clone(), "min")?;
-                            if fv < m { m = fv; }
-                        }
-                        Value::Float(m)
-                    }
-                }
-                _ => return Err(rt("T0401", "min expects an array of numbers", sp.clone())),
+            if args.is_empty() {
+                return Err(rt("A0402", "min requires at least 1 argument", sp.clone()));
             }
+            
+            let result = if args.len() == 1 {
+                match &args[0] {
+                    Value::Array(xs) => {
+                        // ... your existing array min logic, but RETURN the Value
+                        let mut it = xs.iter();
+                        let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
+                        let any_big = xs.iter().any(|v| matches!(v, Value::Big(_)));
+                        if any_big {
+                            let mut m = to_big_for_math(first, sp.clone(), "min")?;
+                            for v in it {
+                                let dv = to_big_for_math(v, sp.clone(), "min")?;
+                                if dv < m { m = dv; }
+                            }
+                            Value::Big(m)
+                        } else {
+                            let mut m = to_f64_for_math(first, sp.clone(), "min")?;
+                            for v in it {
+                                let fv = to_f64_for_math(v, sp.clone(), "min")?;
+                                if fv < m { m = fv; }
+                            }
+                            Value::Float(m)
+                        }
+                    }
+                    _ => return Err(rt("T0401", "min with 1 arg expects an array", sp.clone())),
+                }
+            } else {
+                // Multiple args: find min of the args themselves
+                let any_big = args.iter().any(|v| matches!(v, Value::Big(_)));
+                if any_big {
+                    let mut m = to_big_for_math(&args[0], sp.clone(), "min")?;
+                    for v in &args[1..] {
+                        let dv = to_big_for_math(v, sp.clone(), "min")?;
+                        if dv < m { m = dv; }
+                    }
+                    Value::Big(m)
+                } else {
+                    let mut m = to_f64_for_math(&args[0], sp.clone(), "min")?;
+                    for v in &args[1..] {
+                        let fv = to_f64_for_math(v, sp.clone(), "min")?;
+                        if fv < m { m = fv; }
+                    }
+                    Value::Float(m)
+                }
+            };
+            
+            result  // Return the result
         }
 
         "max" => {
-            arity(1)?;
-            match &args[0] {
-                Value::Array(xs) => {
-                    let mut it = xs.iter();
-                    let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
-                    let any_big = xs.iter().any(|v| matches!(v, Value::Big(_)));
-                    if any_big {
-                        let mut m = to_big_for_math(first, sp.clone(), "max")?;
-                        for v in it {
-                            let dv = to_big_for_math(v, sp.clone(), "max")?;
-                            if dv > m { m = dv; }
-                        }
-                        Value::Big(m)
-                    } else {
-                        let mut m = to_f64_for_math(first, sp.clone(), "max")?;
-                        for v in it {
-                            let fv = to_f64_for_math(v, sp.clone(), "max")?;
-                            if fv > m { m = fv; }
-                        }
-                        Value::Float(m)
-                    }
-                }
-                _ => return Err(rt("T0401", "max expects an array of numbers", sp.clone())),
+            if args.is_empty() {
+                return Err(rt("A0402", "max requires at least 1 argument", sp.clone()));
             }
+            
+            let result = if args.len() == 1 {
+                match &args[0] {
+                    Value::Array(xs) => {
+                        let mut it = xs.iter();
+                        let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
+                        let any_big = xs.iter().any(|v| matches!(v, Value::Big(_)));
+                        if any_big {
+                            let mut m = to_big_for_math(first, sp.clone(), "max")?;
+                            for v in it {
+                                let dv = to_big_for_math(v, sp.clone(), "max")?;
+                                if dv > m { m = dv; }
+                            }
+                            Value::Big(m)
+                        } else {
+                            let mut m = to_f64_for_math(first, sp.clone(), "max")?;
+                            for v in it {
+                                let fv = to_f64_for_math(v, sp.clone(), "max")?;
+                                if fv > m { m = fv; }
+                            }
+                            Value::Float(m)
+                        }
+                    }
+                    _ => return Err(rt("T0401", "max with 1 arg expects an array", sp.clone())),
+                }
+            } else {
+                // Multiple args: find max of the args themselves
+                let any_big = args.iter().any(|v| matches!(v, Value::Big(_)));
+                if any_big {
+                    let mut m = to_big_for_math(&args[0], sp.clone(), "max")?;
+                    for v in &args[1..] {
+                        let dv = to_big_for_math(v, sp.clone(), "max")?;
+                        if dv > m { m = dv; }
+                    }
+                    Value::Big(m)
+                } else {
+                    let mut m = to_f64_for_math(&args[0], sp.clone(), "max")?;
+                    for v in &args[1..] {
+                        let fv = to_f64_for_math(v, sp.clone(), "max")?;
+                        if fv > m { m = fv; }
+                    }
+                    Value::Float(m)
+                }
+            };
+            
+            result
         }
 
         // ---------- String case & transforms ----------
@@ -1762,8 +1834,10 @@ fn call_action_by_name(
     args: Vec<Value>,
     sp: Span,
 ) -> Result<Value, Diag> {
+
     // Prefer user-defined actions (shadowable)
     if let Some(decl) = sess.actions.get(name).cloned() {
+
         let params = &decl.params;
         if args.len() > params.len() {
             return Err(rt("A0402",
@@ -1792,7 +1866,12 @@ fn call_action_by_name(
             for st in stmts {
                 if let Some(v) = eval_stmt(st, sess)? {
                     match v {
-                        Value::CtrlSkip | Value::CtrlStop => { /* ignore outside loops */ }
+                        Value::CtrlSkip => { /* keep going */ }
+                        Value::CtrlStop => {
+                            let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
+                            sess.pop_frame();  // <-- ADD THIS
+                            return Ok(rv);
+                        }
                         other => last = other,
                     }
                 }
@@ -2203,54 +2282,6 @@ fn call_action_by_name(
                     }
                     Value::Float(n.sqrt())     // <-- no trailing semicolon
                 }
-            }
-        }
-
-        // ----- Array<number> stats -----
-        "sum" => {
-            arity(1)?;
-            if let Some(xs) = as_array_like(&args[0]) {
-                let mut acc = 0.0;
-                for v in xs { acc += want_num(v, "sum")?; }
-                Value::Float(acc)
-            } else {
-                return Err(rt("T0401", "sum expects an array of numbers", sp.clone()));
-            }
-        }
-        "avg" => {
-            arity(1)?;
-            if let Some(xs) = as_array_like(&args[0]) {
-                if xs.is_empty() { Value::Float(0.0) } else {
-                    let mut acc = 0.0;
-                    for v in xs { acc += want_num(v, "avg")?; }
-                    Value::Float(acc / xs.len() as f64)
-                }
-            } else {
-                return Err(rt("T0401", "avg expects an array of numbers", sp.clone()));
-            }
-        }
-        "min" => {
-            arity(1)?;
-            if let Some(xs) = as_array_like(&args[0]) {
-                let mut it = xs.iter();
-                let first = it.next().ok_or_else(|| rt("R0404", "min of empty array", sp.clone()))?;
-                let mut m = want_num(first, "min")?;
-                for v in it { m = m.min(want_num(v, "min")?); }
-                Value::Float(m)
-            } else {
-                return Err(rt("T0401", "min expects an array of numbers", sp.clone()));
-            }
-        }
-        "max" => {
-            arity(1)?;
-            if let Some(xs) = as_array_like(&args[0]) {
-                let mut it = xs.iter();
-                let first = it.next().ok_or_else(|| rt("R0404", "max of empty array", sp.clone()))?;
-                let mut m = want_num(first, "max")?;
-                for v in it { m = m.max(want_num(v, "max")?); }
-                Value::Float(m)
-            } else {
-                return Err(rt("T0401", "max expects an array of numbers", sp.clone()));
             }
         }
 
@@ -3856,189 +3887,193 @@ fn call_action_by_name(
 }
 
 // ===================== Evaluation =====================
+fn mutate_via_call_name(
+    sess: &mut Session,
+    name: &str,        // "put_at!"
+    recv_ident: Option<&str>,
+    arg_exprs: &[ast::Expr],
+    sp: Span,
+) -> Result<Value, Diag> {
+    let base = name.strip_suffix('!')
+        .ok_or_else(|| rt("R0800", "internal: expected bang name", sp.clone()))?;
 
-fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
-    fn mutate_via_call_name(
-        sess: &mut Session,
-        name: &str,        // "put_at!"
-        recv_ident: Option<&str>,
-        arg_exprs: &[ast::Expr],
-        sp: Span,
-    ) -> Result<Value, Diag> {
-        let base = name.strip_suffix('!')
-            .ok_or_else(|| rt("R0800", "internal: expected bang name", sp.clone()))?;
-
-        // Determine the target variable name and build argv for the pure version
-        let (target_name, argv_vals): (String, Vec<Value>) = if let Some(base_ident) = recv_ident {
-            // Receiver style: xs.put_at!(...)
-            let mut vals = Vec::with_capacity(arg_exprs.len() + 1);
-            // receiver value first
-            let recv_val = sess
-                .get_var(base_ident)
-                .cloned()
-                .ok_or_else(|| {
-                    // Build a message with an optional help paragraph.
-                    let mut msg = format!("Unknown identifier '{}'", base_ident);
-                    if base_ident == "from" {
-                        // Your formatter treats lines starting with `help:` (or 2nd paragraph) as help text.
-                        msg.push_str(
-                            "\n\nhelp: `from` was parsed as a name here. After `pick`, either provide a count \
-                             (e.g., `pick 1 from items`) or enable the sugar so `pick from items` defaults to 1.",
-                        );
-                    }
-                    rt("R0110", msg, sp.clone())
-                })?;
-            vals.push(recv_val);
-            // then args
-            for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
-            (base_ident.to_string(), vals)
-        } else {
-            // Free-call style: put_at!(xs, ...)
-            if arg_exprs.is_empty() {
-                return Err(rt("A0402",
-                    format!("'{}' requires a target variable as first argument", name), sp.clone()));
-            }
-            let tgt = match &arg_exprs[0] {
-                ast::Expr::Ident(n, _) => n.clone(),
-                other => {
-                    return Err(rt("P0802",
-                        &format!("'{}' requires a variable name (not an expression) as first argument", name),
-                        span_of_expr(other)));
+    // Determine the target variable name and build argv for the pure version
+    let (target_name, argv_vals): (String, Vec<Value>) = if let Some(base_ident) = recv_ident {
+        // Receiver style: xs.put_at!(...)
+        let mut vals = Vec::with_capacity(arg_exprs.len() + 1);
+        // receiver value first
+        let recv_val = sess
+            .get_var(base_ident)
+            .cloned()
+            .ok_or_else(|| {
+                // Build a message with an optional help paragraph.
+                let mut msg = format!("Unknown identifier '{}'", base_ident);
+                if base_ident == "from" {
+                    // Your formatter treats lines starting with `help:` (or 2nd paragraph) as help text.
+                    msg.push_str(
+                        "\n\nhelp: `from` was parsed as a name here. After `pick`, either provide a count \
+                         (e.g., `pick 1 from items`) or enable the sugar so `pick from items` defaults to 1.",
+                    );
                 }
+                rt("R0110", msg, sp.clone())
+            })?;
+        vals.push(recv_val);
+        // then args
+        for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
+        (base_ident.to_string(), vals)
+    } else {
+        // Free-call style: put_at!(xs, ...)
+        if arg_exprs.is_empty() {
+            return Err(rt("A0402",
+                format!("'{}' requires a target variable as first argument", name), sp.clone()));
+        }
+        let tgt = match &arg_exprs[0] {
+            ast::Expr::Ident(n, _) => n.clone(),
+            other => {
+                return Err(rt("P0802",
+                    &format!("'{}' requires a variable name (not an expression) as first argument", name),
+                    sp.clone()));
+            }
+        };
+        let mut vals = Vec::with_capacity(arg_exprs.len());
+        for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
+        (tgt, vals)
+    };
+
+    // Special-case destructive reap!: mutate target and return removed value(s)
+    if base == "reap" {
+        // Figure out target variable & optional count expr
+        let (target_name, count_expr_opt): (String, Option<&ast::Expr>) = if let Some(base_ident) = recv_ident {
+            // xs.reap!() or xs.reap!(count)
+            (base_ident.to_string(), arg_exprs.get(0))
+        } else {
+            // reap!(xs) or reap!(xs, count)
+            let Some(first) = arg_exprs.get(0) else {
+                return Err(rt("A0402","reap! expects (xs) or (xs, count)", sp.clone()));
             };
-            let mut vals = Vec::with_capacity(arg_exprs.len());
-            for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
-            (tgt, vals)
+            let ast::Expr::Ident(n, _) = first else {
+                return Err(rt("P0802","reap!: first argument must be a variable name", sp.clone()));
+            };
+            (n.clone(), arg_exprs.get(1))
         };
 
-        // Special-case destructive reap!: mutate target and return removed value(s)
-        if base == "reap" {
-            // Figure out target variable & optional count expr
-            let (target_name, count_expr_opt): (String, Option<&ast::Expr>) = if let Some(base_ident) = recv_ident {
-                // xs.reap!() or xs.reap!(count)
-                (base_ident.to_string(), arg_exprs.get(0))
-            } else {
-                // reap!(xs) or reap!(xs, count)
-                let Some(first) = arg_exprs.get(0) else {
-                    return Err(rt("A0402","reap! expects (xs) or (xs, count)", sp.clone()));
-                };
-                let ast::Expr::Ident(n, _) = first else {
-                    return Err(rt("P0802","reap!: first argument must be a variable name", span_of_expr(first)));
-                };
-                (n.clone(), arg_exprs.get(1))
-            };
-
-            // Parse count (default 1)
-            let count: usize = if let Some(e) = count_expr_opt {
-                let v = eval_expr(e, sess)?;
-                let n = as_num(v, span_of_expr(e), "reap!(..., count)")?;
-                if n <= 0.0 || n.fract() != 0.0 {
-                    return Err(rt("T0201","reap! count must be a positive integer", sp.clone()));
-                }
-                n as usize
-            } else { 1 };
-
-            // 1) Read-only: figure out length and type *without* mut-borrowing slot
-            enum CollKind { Arr(usize), Seq(usize), Str(usize) }
-            let kind_len = match sess.get_var(&target_name) {
-                Some(Value::Array(xs)) => {
-                    if xs.is_empty() { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
-                    CollKind::Arr(xs.len())
-                }
-                Some(Value::Seq(xs)) => {
-                    let len = xs.len();
-                    if len == 0 { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
-                    CollKind::Seq(len)
-                }
-                Some(Value::Str(s)) => {
-                    let n = s.chars().count();
-                    if n == 0 { return Err(rt("R0701","cannot reap from an empty string", sp.clone())); }
-                    CollKind::Str(n)
-                }
-                Some(_) => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
-                None => return Err(rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone())),
-            };
-
-            let len = match kind_len { CollKind::Arr(n)|CollKind::Seq(n)|CollKind::Str(n) => n };
-            if count > len {
-                return Err(rt("R0701", format!("not enough to sample: requested {count}, have {len}"), sp.clone()));
+        // Parse count (default 1)
+        let count: usize = if let Some(e) = count_expr_opt {
+            let v = eval_expr(e, sess)?;
+            let n = as_num(v, sp.clone(), "reap!(..., count)")?;
+            if n <= 0.0 || n.fract() != 0.0 {
+                return Err(rt("T0201","reap! count must be a positive integer", sp.clone()));
             }
+            n as usize
+        } else { 1 };
 
-            // 2) RNG picks BEFORE any mutable borrow of the slot
-            fn sample_indices(sess: &mut Session, len: usize, k: usize) -> Vec<usize> {
-                let mut idxs: Vec<usize> = (0..len).collect();
-                for i in 0..k {
-                    let j = i + rng_bounded(sess, (len - i) as u64) as usize;
-                    idxs.swap(i, j);
-                }
-                idxs[..k].to_vec()
+        // 1) Read-only: figure out length and type *without* mut-borrowing slot
+        enum CollKind { Arr(usize), Seq(usize), Str(usize) }
+        let kind_len = match sess.get_var(&target_name) {
+            Some(Value::Array(xs)) => {
+                if xs.is_empty() { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
+                CollKind::Arr(xs.len())
             }
-            let picks = sample_indices(sess, len, count);
-
-            // 3) Now mut-borrow slot and remove at descending indices
-            let slot = sess.get_var_mut(&target_name)
-                .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone()))?;
-
-            let finish_vals = |mut items: Vec<Value>| -> Value {
-                if items.len() == 1 { items.pop().unwrap() } else { Value::Array(items) }
-            };
-
-            match slot {
-                // Arrays
-                Value::Array(vecd) => {
-                    let mut removed: Vec<Value> = Vec::with_capacity(count);
-                    let mut sorted = picks.clone();
-                    sorted.sort_unstable_by(|a,b| b.cmp(a)); // remove safely
-                    for i in sorted { removed.push(vecd.remove(i)); }
-                    removed.reverse(); // report in draw order
-                    return Ok(finish_vals(removed));
-                }
-                // Adaptive seq
-                Value::Seq(seq) => {
-                    let mut removed: Vec<Value> = Vec::with_capacity(count);
-                    let mut sorted = picks.clone();
-                    sorted.sort_unstable_by(|a,b| b.cmp(a));
-                    for i in sorted {
-                        if let Some(v) = seq.remove(i) { removed.push(v); }
-                    }
-                    removed.reverse();
-                    return Ok(finish_vals(removed));
-                }
-                // Strings (Unicode scalar semantics)
-                Value::Str(s) => {
-                    // Build removed string from the original contents (draw order)
-                    let original = s.clone();
-                    let mut removed_s = String::new();
-                    for idx in &picks {
-                        if let Some(ch) = slice_char(&original, *idx) {
-                            removed_s.push_str(&ch);
-                        }
-                    }
-                    // Mutate the string by deleting chosen scalars (descending index order)
-                    let mut sorted = picks.clone();
-                    sorted.sort_unstable_by(|a,b| b.cmp(a));
-                    for idx in sorted {
-                        if let Some(new_s) = str_delete_at(s, idx) { *s = new_s; }
-                    }
-                    return Ok(Value::Str(removed_s));
-                }
-                _ => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
+            Some(Value::Seq(xs)) => {
+                let len = xs.len();
+                if len == 0 { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
+                CollKind::Seq(len)
             }
+            Some(Value::Str(s)) => {
+                let n = s.chars().count();
+                if n == 0 { return Err(rt("R0701","cannot reap from an empty string", sp.clone())); }
+                CollKind::Str(n)
+            }
+            Some(_) => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
+            None => return Err(rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone())),
+        };
+
+        let len = match kind_len { CollKind::Arr(n)|CollKind::Seq(n)|CollKind::Str(n) => n };
+        if count > len {
+            return Err(rt("R0701", format!("not enough to sample: requested {count}, have {len}"), sp.clone()));
         }
 
-        // Call the pure version to compute the updated value
-        let updated = call_action_by_name(sess, base, argv_vals, sp.clone())?;
+        // 2) RNG picks BEFORE any mutable borrow of the slot
+        fn sample_indices(sess: &mut Session, len: usize, k: usize) -> Vec<usize> {
+            let mut idxs: Vec<usize> = (0..len).collect();
+            for i in 0..k {
+                let j = i + rng_bounded(sess, (len - i) as u64) as usize;
+                idxs.swap(i, j);
+            }
+            idxs[..k].to_vec()
+        }
+        let picks = sample_indices(sess, len, count);
 
-        // Write back to the target binding
-        if let Some(slot) = sess.get_var_mut(&target_name) {
-            *slot = updated;
-            Ok(Value::Unit) // or Ok(slot.clone()) if you want echo
-        } else {
-            Err(rt("R0110",
-                format!("unknown identifier '{}'", target_name), sp.clone()))
+        // 3) Now mut-borrow slot and remove at descending indices
+        let slot = sess.get_var_mut(&target_name)
+            .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone()))?;
+
+        let finish_vals = |mut items: Vec<Value>| -> Value {
+            if items.len() == 1 { items.pop().unwrap() } else { Value::Array(items) }
+        };
+
+        match slot {
+            // Arrays
+            Value::Array(vecd) => {
+                let mut removed: Vec<Value> = Vec::with_capacity(count);
+                let mut sorted = picks.clone();
+                sorted.sort_unstable_by(|a,b| b.cmp(a)); // remove safely
+                for i in sorted { removed.push(vecd.remove(i)); }
+                removed.reverse(); // report in draw order
+                return Ok(finish_vals(removed));
+            }
+            // Adaptive seq
+            Value::Seq(seq) => {
+                let mut removed: Vec<Value> = Vec::with_capacity(count);
+                let mut sorted = picks.clone();
+                sorted.sort_unstable_by(|a,b| b.cmp(a));
+                for i in sorted {
+                    if let Some(v) = seq.remove(i) { removed.push(v); }
+                }
+                removed.reverse();
+                return Ok(finish_vals(removed));
+            }
+            // Strings (Unicode scalar semantics)
+            Value::Str(s) => {
+                // Build removed string from the original contents (draw order)
+                let original = s.clone();
+                let mut removed_s = String::new();
+                for idx in &picks {
+                    if let Some(ch) = slice_char(&original, *idx) {
+                        removed_s.push_str(&ch);
+                    }
+                }
+                // Mutate the string by deleting chosen scalars (descending index order)
+                let mut sorted = picks.clone();
+                sorted.sort_unstable_by(|a,b| b.cmp(a));
+                for idx in sorted {
+                    if let Some(new_s) = str_delete_at(s, idx) { *s = new_s; }
+                }
+                return Ok(Value::Str(removed_s));
+            }
+            _ => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
         }
     }
 
+    // Call the pure version to compute the updated value
+    let updated = call_action_by_name(sess, base, argv_vals, sp.clone())?;
+
+    // Write back to the target binding
+    if let Some(slot) = sess.get_var_mut(&target_name) {
+        *slot = updated;
+        Ok(Value::Unit) // or Ok(slot.clone()) if you want echo
+    } else {
+        Err(rt("R0110",
+            format!("unknown identifier '{}'", target_name), sp.clone()))
+    }
+}
+
+fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if count > 1000 {
+        panic!("eval_expr called over 1000 times!");
+    }
     match e {
         // ---- Literals & identifiers ----
         ast::Expr::Nil(_) => Ok(Value::Nil),
@@ -4082,8 +4117,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Char(c, _sp) => Ok(Value::Char(*c)),
         ast::Expr::Ident(name, sp) => {
             match sess.get_var(name) {
-                Some(v) => Ok(v.clone()),
-                None => Err(rt("R0110", format!("unknown identifier '{}'", name), sp.clone())),
+                Some(v) => {
+                    Ok(v.clone())
+                }
+                None => {
+                    Err(rt("R0110", format!("unknown identifier '{}'", name), sp.clone()))
+                }
             }
         }
 
@@ -4257,108 +4296,121 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
 
         // Plain assignment (ident = expr)
-        ast::Expr::Assign(lhs, rhs, _sp) => {
+        ast::Expr::Assign(lhs, rhs, sp) => {
             // Check for field assignment: object >> field = value
             // Could be Binary or Member depending on how parser handles >>
             match &**lhs {
-                ast::Expr::Member(obj_expr, field_name, _) => {
-                    let var_name = match &**obj_expr {
-                        ast::Expr::Ident(n, _) => n.clone(),
-                        _ => return Err(rt("P0804", "can only assign to fields of object variables", span_of_expr(lhs))),
-                    };
-                    
-                    let new_value = eval_expr(rhs, sess)?;
-                    
-                    let class_name = match sess.get_var(&var_name) {
-                        Some(Value::Object { class_name, .. }) => class_name.clone(),
-                        Some(_) => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
-                        None => return Err(rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs))),
-                    };
-                    
-                    let class = sess.classes.get(&class_name)
-                        .ok_or_else(|| rt("R0115", format!("unknown class '{}'", class_name), span_of_expr(lhs)))?
-                        .clone();
-                    
-                    let field_decl = class.fields.iter()
-                        .find(|f| &f.name == field_name)
-                        .ok_or_else(|| rt("R0403", format!("no field '{}'", field_name), span_of_expr(lhs)))?
-                        .clone();
-                    
-                    let obj_slot = sess.get_var_mut(&var_name)
-                        .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs)))?;
-                    
-                    match obj_slot {
-                        Value::Object { fields, readonly_fields, .. } => {
-                            // Check if field is readonly
-                            if readonly_fields.contains(field_name) {
-                                return Err(rt("P9001", 
-                                    format!("cannot modify readonly field '{}'", field_name), 
-                                    span_of_expr(lhs)));
+                ast::Expr::Member(base, name, sp) => {
+                    let base_v = eval_expr(base, sess)?;
+                    match base_v {
+                        // object field OR method reference
+                        Value::Object { class_name, fields, readonly_fields: _ } => {
+                            // 1) If it's a method name on this class, return a bound-method wrapper
+                            if let Some(class) = sess.classes.get(&class_name) {
+                                if class.actions.iter().any(|a| a.name == *name) {
+                                    let mut m = BTreeMap::new();
+                                    m.insert("__kind__".to_string(), Value::Str("__bound_action__".to_string()));
+                                    m.insert("__name__".to_string(), Value::Str(name.to_string()));
+                                    // If the receiver is an identifier, capture its var name so mutations persist
+                                    if let ast::Expr::Ident(var_name, _) = &**base {
+                                        m.insert("__var__".to_string(), Value::Str(var_name.clone()));
+                                    } else {
+                                        // Otherwise capture the value so it can still be called (mutations won't persist)
+                                        m.insert(
+                                            "__recv__".to_string(),
+                                            Value::Object {
+                                                class_name: class_name.clone(),
+                                                fields: fields.clone(),
+                                                readonly_fields: BTreeSet::new(),
+                                            },
+                                        );
+                                    }
+                                    return Ok(Value::Map(m));
+                                }
                             }
-                            
-                            // Check nullable constraint
-                            if matches!(new_value, Value::Nil) && !field_decl.nullable {
-                                return Err(rt("T9002", 
-                                    format!("cannot assign nil to non-nullable field '{}'", field_name), 
-                                    span_of_expr(rhs)));
+
+                            // 2) Otherwise: normal field lookup
+                            match fields.get(name) {
+                                Some(v) => Ok(v.clone()),
+                                None => Err(rt("R0403", format!("no field '{}'", name), sp.clone())),
                             }
-                            
-                            fields.insert(field_name.clone(), new_value.clone());
-                            return Ok(new_value);
                         }
-                        _ => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
+
+                        // map key
+                        Value::Map(map) => {
+                            match map.get(name) {
+                                Some(v) => Ok(v.clone()),
+                                None => Err(rt("R0403", format!("missing key '{}'", name), sp.clone())),
+                            }
+                        }
+
+                        // enum field on a variant-with-fields
+                        Value::Enum { fields: Some(field_map), variant_name, .. } => {
+                            match field_map.get(name) {
+                                Some(v) => Ok(v.clone()),
+                                None => Err(rt("R0404", format!("variant '{}' has no field '{}'", variant_name, name), sp.clone())),
+                            }
+                        }
+
+                        // enum variant with no fields
+                        Value::Enum { fields: None, variant_name, .. } => {
+                            Err(rt("E1005", format!("variant '{}' has no fields", variant_name), sp.clone()))
+                        }
+
+                        // everything else is a type error for member access
+                        _ => Err(rt("T0402", "member access requires a map, object, or enum", sp.clone())),
                     }
                 }
                 
                 ast::Expr::Binary(obj_expr, op, field_expr, _) if op == ">>" => {
                     let var_name = match &**obj_expr {
                         ast::Expr::Ident(n, _) => n.clone(),
-                        _ => return Err(rt("P0804", "can only assign to fields of object variables", span_of_expr(lhs))),
+                        _ => return Err(rt("P0804", "can only assign to fields of object variables", sp.clone())),
                     };
                     
                     let field_name = match &**field_expr {
                         ast::Expr::Ident(n, _) => n.clone(),
-                        _ => return Err(rt("P0804", "field name required after >>", span_of_expr(lhs))),
+                        _ => return Err(rt("P0804", "field name required after >>", sp.clone())),
                     };
                     
                     let new_value = eval_expr(rhs, sess)?;
                     
                     let class_name = match sess.get_var(&var_name) {
                         Some(Value::Object { class_name, .. }) => class_name.clone(),
-                        Some(_) => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
-                        None => return Err(rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs))),
+                        Some(_) => return Err(rt("T0403", "not an object", sp.clone())),
+                        None => return Err(rt("R0110", format!("unknown variable '{}'", var_name), sp.clone())),
                     };
                     
                     let class = sess.classes.get(&class_name)
-                        .ok_or_else(|| rt("R0115", format!("unknown class '{}'", class_name), span_of_expr(lhs)))?
+                        .ok_or_else(|| rt("R0115", format!("unknown class '{}'", class_name), sp.clone()))?
                         .clone();
                     
                     let field_decl = class.fields.iter()
                         .find(|f| f.name == field_name)
-                        .ok_or_else(|| rt("R0403", format!("no field '{}'", field_name), span_of_expr(lhs)))?
+                        .ok_or_else(|| rt("R0403", format!("no field '{}'", field_name), sp.clone()))?
                         .clone();
                     
                     let obj_slot = sess.get_var_mut(&var_name)
-                        .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), span_of_expr(lhs)))?;
+                        .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), sp.clone()))?;
                     
                     match obj_slot {
                         Value::Object { fields, readonly_fields, .. } => {
                             if readonly_fields.contains(&field_name) {
                                 return Err(rt("P9001", 
                                     format!("cannot modify readonly field '{}'", field_name), 
-                                    span_of_expr(lhs)));
+                                    sp.clone()));
                             }
                             
                             if matches!(new_value, Value::Nil) && !field_decl.nullable {
                                 return Err(rt("T9002", 
                                     format!("cannot assign nil to non-nullable field '{}'", field_name), 
-                                    span_of_expr(rhs)));
+                                    sp.clone()));
                             }
                             
                             fields.insert(field_name, new_value.clone());
                             return Ok(new_value);
                         }
-                        _ => return Err(rt("T0403", "not an object", span_of_expr(lhs))),
+                        _ => return Err(rt("T0403", "not an object", sp.clone())),
                     }
                 }
                 
@@ -4370,7 +4422,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
                 
                 _ => {
-                    return Err(rt("P0801", "left-hand side of assignment must be a name or field access", span_of_expr(lhs)));
+                    return Err(rt("P0801", "left-hand side of assignment must be a name or field access", sp.clone()));
                 }
             }
         }
@@ -4398,7 +4450,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             match (b, i) {
                 (Value::Array(items), Value::Int(n)) => {
                     if n < 0 {
-                        return Err(rt("T0201", "index must be a non-negative integer", span_of_expr(idx)));
+                        return Err(rt("T0201", "index must be a non-negative integer", sp.clone()));
                     }
                     let k = n as usize;
                     items.get(k).cloned().ok_or_else(|| rt("R0402", "array index out of bounds", sp.clone()))
@@ -4406,8 +4458,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 (Value::Map(map), Value::Str(key)) => {
                     map.get(&key).cloned().ok_or_else(|| rt("R0403", format!("missing key '{}'", key), sp.clone()))
                 }
-                (Value::Map(_), _) => Err(rt("T0201", "map index must be a string key", span_of_expr(idx))),
-                _ => Err(rt("T0401", "indexing requires an array or map", span_of_expr(base))),
+                (Value::Map(_), _) => Err(rt("T0201", "map index must be a string key", sp.clone())),
+                _ => Err(rt("T0401", "indexing requires an array or map", sp.clone())),
             }
         }
 
@@ -4529,10 +4581,36 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                        None => Err(rt("R0403", format!("missing key '{}'", name), sp.clone())),
                    }
                }
-               Value::Object { fields, .. } => {
-                   fields.get(name)
-                       .cloned()
-                       .ok_or_else(|| rt("R0403", format!("no field '{}'", name), sp.clone()))
+               Value::Object { class_name, fields, readonly_fields: _ } => {
+                   // 1) If it's a method name on this class, return a bound-method wrapper
+                   if let Some(class) = sess.classes.get(&class_name) {
+                       if class.actions.iter().any(|a| a.name == *name) {
+                           let mut m = BTreeMap::new();
+                           m.insert("__kind__".to_string(), Value::Str("__bound_action__".to_string()));
+                           m.insert("__name__".to_string(), Value::Str(name.to_string()));
+                           // If the receiver is an identifier, capture its var name so mutations persist
+                           if let ast::Expr::Ident(var_name, _) = &**base {
+                               m.insert("__var__".to_string(), Value::Str(var_name.clone()));
+                           } else {
+                               // Otherwise capture the value so it can still be called (mutations won't persist)
+                               m.insert(
+                                   "__recv__".to_string(),
+                                   Value::Object {
+                                       class_name: class_name.clone(),
+                                       fields: fields.clone(),
+                                       readonly_fields: BTreeSet::new(),
+                                   },
+                               );
+                           }
+                           return Ok(Value::Map(m));
+                       }
+                   }
+
+                   // 2) Otherwise: normal field lookup
+                   match fields.get(name) {
+                       Some(v) => Ok(v.clone()),
+                       None => Err(rt("R0403", format!("no field '{}'", name), sp.clone())),
+                   }
                }
                Value::Enum { fields: Some(field_map), variant_name, .. } => {
                    field_map.get(name)
@@ -4542,23 +4620,115 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                Value::Enum { fields: None, variant_name, .. } => {
                    Err(rt("E1005", format!("variant '{}' has no fields", variant_name), sp.clone()))
                }
-               _ => Err(rt("T0402", "member access requires a map, object, or enum", span_of_expr(base))),
+               _ => Err(rt("T0402", "member access requires a map, object, or enum", sp.clone())),
            }
        }
 
-        ast::Expr::OptMember(base, name, _sp) => {
+        ast::Expr::OptMember(base, name, sp) => {
             let base_v = eval_expr(base, sess)?;
             match base_v {
                 Value::Nil => Ok(Value::Nil),
                 Value::Map(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
-                _ => Err(rt("T0402", "member access requires a map", span_of_expr(base))),
+                _ => Err(rt("T0402", "member access requires a map", sp.clone())),
             }
         }
 
         // ---- Free calls ----
         ast::Expr::FreeCall(name, args, sp) => {
-            // Mutating casts for function form when arg is a plain identifier.
-            // Examples: float(x), int(x), big(x)
+            // ============ BOUND METHOD DISPATCH - MUST BE FIRST ============
+            let bound_method_opt: Option<(String, Option<String>, Option<Value>)> = {
+                if let Some(callee_val) = sess.get_var(name) {
+                    if let Value::Map(m) = callee_val {
+                        let is_bound = matches!(m.get("__kind__"), Some(Value::Str(s)) if s == "__bound_action__");
+                        if is_bound {
+                            let method_name = match m.get("__name__") {
+                                Some(Value::Str(s)) => {
+                                    s.clone()
+                                }
+                                _ => return Err(rt("R04BA", "bound action missing __name__", sp.clone())),
+                            };
+                            
+                            let var_name_opt = m.get("__var__").and_then(|v| {
+                                if let Value::Str(s) = v { 
+                                    Some(s.clone()) 
+                                } else { 
+                                    None 
+                                }
+                            });
+                            
+                            let recv_opt = m.get("__recv__").cloned();                            
+                            Some((method_name, var_name_opt, recv_opt))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some((method_name, var_name_opt, recv_opt)) = bound_method_opt {
+                // Evaluate arguments
+                let mut arg_vals = Vec::with_capacity(args.len());
+                for a in args {
+                    arg_vals.push(eval_expr(a, sess)?);
+                }
+
+                // Case A: captured variable receiver
+                if let Some(var_name) = var_name_opt {
+                    let (mut fields, class_name, readonly_fields) = {
+                        let slot = sess.get_var_mut(&var_name)
+                            .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), sp.clone()))?;
+                        let taken = std::mem::replace(slot, Value::Nil);
+                        match taken {
+                            Value::Object { class_name, fields, readonly_fields } => (fields, class_name, readonly_fields),
+                            other => {
+                                *slot = other;
+                                return Err(rt("T04BA",
+                                    format!("bound receiver '{}' is not an object", var_name),
+                                    sp.clone()));
+                            }
+                        }
+                    };
+
+                    let result = call_object_method_with_values(
+                        sess,
+                        &class_name,
+                        &mut fields,
+                        &method_name,
+                        arg_vals,
+                        sp.clone()
+                    )?;
+
+                    // Restore object
+                    {
+                        let slot = sess.get_var_mut(&var_name)
+                            .ok_or_else(|| rt("R0110", format!("unknown variable '{}'", var_name), sp.clone()))?;
+                        *slot = Value::Object { class_name, fields, readonly_fields };
+                    }
+
+                    return Ok(result);
+                }
+
+                // Case B: captured value receiver
+                if let Some(Value::Object { class_name, mut fields, .. }) = recv_opt {
+                    return call_object_method_with_values(
+                        sess,
+                        &class_name,
+                        &mut fields,
+                        &method_name,
+                        arg_vals,
+                        sp.clone()
+                    );
+                }
+
+                return Err(rt("R04BA", "bound action missing receiver (__var__ or __recv__)", sp.clone()));
+            }
+            // ============ END BOUND METHOD DISPATCH ============
+
+            // ---- Mutating casts for function form when arg is a plain identifier ----
             if matches!(name.as_str(), "float" | "int" | "big" | "str" | "pct" | "f" | "i" | "b" | "string" | "percent")
                && args.len() == 1
             {
@@ -4569,6 +4739,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     return Ok(out);
                 }
             }
+
             // ---- bang builtins: put_at!(), delete_all!(), reap!(), ... ----
             if name.ends_with('!') {
                 // no receiver here (free call): target must be first argument Ident
@@ -4582,25 +4753,26 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         return Err(rt("P0315", "if expects [cond, then_block, (else_block)]", sp.clone()));
                     }
                     let cond_v = eval_expr(&args[0], sess)?;
-                    if as_bool(cond_v, span_of_expr(&args[0]), "if condition")? {
-                        let then_es = expect_array(&args[1], "then_block")?;
+                    if as_bool(cond_v, sp.clone(), "if condition")? {
+                        let then_es = expect_array(&args[1], "then_block", sp.clone())?;
                         Ok(eval_expr_list(then_es, sess)?.unwrap_or(Value::Unit))
                     } else if args.len() == 3 {
-                        let else_es = expect_array(&args[2], "else_block")?;
+                        let else_es = expect_array(&args[2], "else_block", sp.clone())?;
                         Ok(eval_expr_list(else_es, sess)?.unwrap_or(Value::Unit))
                     } else {
                         Ok(Value::Unit)
                     }
                 }
+
                 "while" => {
                     if args.len() != 2 {
                         return Err(rt("P0316", "while expects [cond, body_block]", sp.clone()));
                     }
-                    let body_es = expect_array(&args[1], "body_block")?;
+                    let body_es = expect_array(&args[1], "body_block", sp.clone())?;
                     sess.loop_depth += 1;
                     'outer: loop {
                         let c = eval_expr(&args[0], sess)?;
-                        if !as_bool(c, span_of_expr(&args[0]), "while condition")? { break; }
+                        if !as_bool(c, sp.clone(), "while condition")? { break; }
                         for e in body_es {
                             let v = eval_expr(e, sess)?;
                             match v {
@@ -4618,23 +4790,23 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     if args.len() != 3 {
                         return Err(rt("A0460", "for expects [var_name, iterable, body]", sp.clone()));
                     }
-                    
+
                     let var_name_expr = eval_expr(&args[0], sess)?;
                     let var_name = match var_name_expr {
                         Value::Str(s) => s,
                         _ => return Err(rt("A0461", "for: var_name must be string", sp.clone())),
                     };
-                    
+
                     let iterable_val = eval_expr(&args[1], sess)?;
                     let items = match iterable_val {
                         Value::Array(arr) => arr,
-                        Value::Str(s) => s.chars().map(|c| Value::Char(c)).collect(),
+                        Value::Str(s) => s.chars().map(Value::Char).collect(),
                         _ => return Err(rt("A0462", "for: can only iterate over arrays or strings", sp.clone())),
                     };
-                    
-                    let body_es = expect_array(&args[2], "body")?;
+
+                    let body_es = expect_array(&args[2], "body", sp.clone())?;
                     sess.loop_depth += 1;
-                    
+
                     'outer: for item in items {
                         sess.set_var(var_name.clone(), item);
                         for e in body_es {
@@ -4646,7 +4818,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             }
                         }
                     }
-                    
+
                     sess.loop_depth -= 1;
                     Ok(Value::Unit)
                 }
@@ -4655,7 +4827,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     if args.len() != 2 {
                         return Err(rt("A0450", "repeat expects [count, body_block]", sp.clone()));
                     }
-                    
+
                     // Evaluate count once
                     let count_val = eval_expr(&args[0], sess)?;
                     let count = match count_val {
@@ -4663,10 +4835,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         Value::Int(n) => return Err(rt("A0451", format!("repeat count must be non-negative, got {}", n), sp.clone())),
                         _ => return Err(rt("A0452", "repeat count must be an integer", sp.clone())),
                     };
-                    
-                    let body_es = expect_array(&args[1], "body_block")?;
+
+                    let body_es = expect_array(&args[1], "body_block", sp.clone())?;
                     sess.loop_depth += 1;
-                    
+
                     'outer: for _ in 0..count {
                         for e in body_es {
                             let v = eval_expr(e, sess)?;
@@ -4677,7 +4849,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             }
                         }
                     }
-                    
+
                     sess.loop_depth -= 1;
                     Ok(Value::Unit)
                 }
@@ -4688,6 +4860,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                     Ok(Value::CtrlSkip)
                 }
+
                 "stop" => {
                     if sess.loop_depth <= 0 {
                         return Err(rt("R0502", "'stop' used outside of a loop", sp.clone()));
@@ -4701,7 +4874,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         return Err(rt("P0703", "v(n) requires exactly one numeric argument", sp.clone()));
                     }
                     let n_val = eval_expr(&args[0], sess)?;
-                    let n = as_num(n_val, span_of_expr(&args[0]), "v(n)")?;
+                    let n = as_num(n_val, sp.clone(), "v(n)")?;
                     if n < 1.0 || n.fract() != 0.0 {
                         return Err(rt("P0703", "v(n) requires a positive integer", sp.clone()));
                     }
@@ -4717,7 +4890,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let printed = if args.is_empty() { Value::Unit } else { eval_expr(&args[0], sess)? };
                     match printed {
                         Value::Str(s) => {
-                            let rendered = render_interpolated(&s, sess, &span_of_expr(&args[0]))?;
+                            let rendered = render_interpolated(&s, sess, &sp.clone())?;
                             println!("{}", rendered);
                         }
                         other => println!("{}", fmt_value_raw(&other)),
@@ -4761,15 +4934,17 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     other => {
                         return Err(rt("P0802",
                             &format!("'{}' requires a variable receiver (e.g. xs.{}(...))", name, name),
-                            span_of_expr(other)));
+                            sp.clone()));
                     }
                 };
                 return mutate_via_call_name(sess, name, recv_ident, args, sp.clone());
             }
             
-            // Object method calls - check if receiver is a variable holding an object
+            // Evaluate base ONCE, then decide what to do
+            let recv = eval_expr(base, sess)?;
+            
+            // Object method calls - check if receiver is an object AND base is a variable
             if let ast::Expr::Ident(var_name, _) = &**base {
-                let recv = eval_expr(base, sess)?;
                 if let Value::Object { class_name, mut fields, readonly_fields } = recv {
                     let result = call_object_method(sess, &class_name, &mut fields, name, args, sp.clone())?;
                     
@@ -4777,7 +4952,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let updated_obj = Value::Object { 
                         class_name, 
                         fields,
-                        readonly_fields,  // Preserve readonly set
+                        readonly_fields,
                     };
                     sess.set_var(var_name.clone(), updated_obj);
                     
@@ -4785,10 +4960,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
             
-            // Regular method calls (non-objects or non-variables)
-            let recv = eval_expr(base, sess)?;
+            // Regular method calls on non-object values (or object non-variables)
             let mut argv = Vec::with_capacity(args.len() + 1);
-            argv.push(recv);
+            argv.push(recv);  // Use the already-evaluated recv
             for a in args { argv.push(eval_expr(a, sess)?); }
             call_action_by_name(sess, name, argv, sp.clone())
         }
@@ -4822,7 +4996,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 "-" => {
                     let v = eval_expr(expr, sess)?;
                     let (u, uspec) = take_owned_unformatted(v);
-
                     let out = match u {
                         Value::Big(d)    => Value::Big(-d),
                         Value::Int(i)    => {
@@ -4831,24 +5004,21 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         Value::Float(f)  => Value::Float(-f),
                         Value::Pct(p)    => Value::Pct(-p),
-                        _other           => return Err(need_number("unary '-'", span_of_expr(expr)).into()),
+                        _other           => return Err(need_number("unary '-'", sp.clone()).into()),  // Change this line
                     };
-
                     Ok(reapply_format(out, uspec, None))
                 }
 
                 "+" => {
                     let v = eval_expr(expr, sess)?;
                     let (u, uspec) = take_owned_unformatted(v);
-
                     let out = match u {
                         Value::Big(d)    => Value::Big(d),
                         Value::Int(i)    => Value::Int(i),
                         Value::Float(f)  => Value::Float(f),
                         Value::Pct(p)    => Value::Pct(p),
-                        _other            => return Err(need_number("unary '+'", span_of_expr(expr)).into()),
+                        _other           => return Err(need_number("unary '+'", sp.clone()).into()),  // Changed here
                     };
-
                     Ok(reapply_format(out, uspec, None))
                 }
 
@@ -4886,17 +5056,17 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                 // ---------- NON-MUTATING POSTFIX OPS ----------
                 "%" => {
-                    let n = as_num(v, span_of_expr(expr), "percent literal")?;
+                    let n = as_num(v, sp.clone(), "percent literal")?;
                     Ok(Value::Pct(n / 100.0))
                 }
-                "**" => Ok(Value::Float(as_num(v, span_of_expr(expr), "postfix square")?.powf(2.0))),
+                "**" => Ok(Value::Float(as_num(v, sp.clone(), "postfix square")?.powf(2.0))),
                 "//" => {
-                    let n = as_num(v, span_of_expr(expr), "postfix sqrt")?;
+                    let n = as_num(v, sp.clone(), "postfix sqrt")?;
                     if n < 0.0 { return Err(rt("R0204", "sqrt domain (cannot sqrt negative)", sp.clone())); }
                     Ok(Value::Float(n.sqrt()))
                 }
                 "!" => {
-                    let n = as_num(v, span_of_expr(expr), "factorial")?;
+                    let n = as_num(v, sp.clone(), "factorial")?;
                     if n < 0.0 { return Err(rt("R0202", "factorial requires non-negative integer", sp.clone())); }
                     if n.fract() != 0.0 { return Err(rt("R0203", "factorial requires integer", sp.clone())); }
                     let mut acc: u128 = 1;
@@ -4904,8 +5074,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     for i in 2..=k { acc = acc.saturating_mul(i); }
                     Ok(Value::Float(acc as f64))
                 }
-                "^" => Ok(Value::Float(as_num(v, span_of_expr(expr), "ceil")?.ceil())),
-                "_" => Ok(Value::Float(as_num(v, span_of_expr(expr), "floor")?.floor())),
+                "^" => Ok(Value::Float(as_num(v, sp.clone(), "ceil")?.ceil())),
+                "_" => Ok(Value::Float(as_num(v, sp.clone(), "floor")?.floor())),
                 "?" => Ok(Value::Bool(!matches!(v, Value::Nil))),
                 "*>>" | "*>>:show_ids" => {
                     let show_ids = op.ends_with(":show_ids");
@@ -4972,13 +5142,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
                 // arithmetic
                 "+" => {
-                    let lv = eval_expr(lhs, sess)?;
-                    let rv = eval_expr(rhs, sess)?;
-
+                    let lhs_clone = lhs.clone();
+                    let rhs_clone = rhs.clone();
+                    let lv = eval_expr(&lhs_clone, sess)?;
+                    let rv = eval_expr(&rhs_clone, sess)?;
+                    
                     // If either side is a string, do string concat (after removing formatting wrappers)
                     let (lu, lspec) = take_owned_unformatted(lv);
                     let (ru, rspec) = take_owned_unformatted(rv);
-
+                    
                     match (&lu, &ru) {
                         (Value::Str(a), Value::Str(b)) => {
                             return Ok(Value::Str(format!("{a}{b}")));
@@ -4991,27 +5163,28 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         _ => { /* fall through to numeric ladder below using lu/ru */ }
                     }
-
+                    
                     // ---- NUMERIC ADDITION ----
                     let out = match (&lu, &ru) {
-                        (Value::Int(a),   Value::Int(b)) => {
+                        (Value::Int(a), Value::Int(b)) => {
                             if let Some(r) = int_checked_add(*a, *b) { Value::Int(r) }
                             else { Value::Big(rust_decimal::Decimal::from(*a) + rust_decimal::Decimal::from(*b)) }
                         }
-                        (Value::Int(a),   Value::Float(b)) | (Value::Float(b), Value::Int(a)) =>
+                        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) =>
                             Value::Float((*a as f64) + *b),
                         (Value::Float(a), Value::Float(b)) =>
                             Value::Float(*a + *b),
-                        (Value::Big(_),   _) | (_, Value::Big(_)) => {
-                            let da = to_decimal(&lu)?; let db = to_decimal(&ru)?;
+                        (Value::Big(_), _) | (_, Value::Big(_)) => {
+                            let da = to_decimal(&lu)?; 
+                            let db = to_decimal(&ru)?;
                             Value::Big(da + db)
                         }
-                        (Value::Pct(a),   Value::Pct(b)) => Value::Pct(*a + *b),
-                        (Value::Pct(a),   _) => Value::Float(*a + to_f64_for_math(&ru, span_of_expr(rhs), "addition: rhs")?),
-                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, span_of_expr(lhs), "addition: lhs")? + *b),
+                        (Value::Pct(a), Value::Pct(b)) => Value::Pct(*a + *b),
+                        (Value::Pct(a), _) => Value::Float(*a + to_f64_for_math(&ru, sp.clone(), "addition: rhs")?),
+                        (_, Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, sp.clone(), "addition: lhs")? + *b),
                         _ => return Err(need_number("addition", sp.clone()).into()),
                     };
-
+                    
                     Ok(reapply_format(out, lspec, rspec))
                 }
 
@@ -5053,8 +5226,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             Value::Big(da - db)
                         }
                         (Value::Pct(a),   Value::Pct(b)) => Value::Pct(*a - *b),
-                        (Value::Pct(a),   _) => Value::Float(*a - to_f64_for_math(&ru, span_of_expr(rhs), "subtraction: rhs")?),
-                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, span_of_expr(lhs), "subtraction: lhs")? - *b),
+                        (Value::Pct(a),   _) => Value::Float(*a - to_f64_for_math(&ru, sp.clone(), "subtraction: rhs")?),
+                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, sp.clone(), "subtraction: lhs")? - *b),
                         _ => return Err(need_number("subtraction", sp.clone()).into()),
                     };
 
@@ -5080,8 +5253,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             Value::Big(da * db)
                         }
                         (Value::Pct(a),   Value::Pct(b)) => Value::Pct(*a * *b),
-                        (Value::Pct(a),   _) => Value::Float(*a * to_f64_for_math(&ru, span_of_expr(rhs), "multiplication: rhs")?),
-                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, span_of_expr(lhs), "multiplication: lhs")? * *b),
+                        (Value::Pct(a),   _) => Value::Float(*a * to_f64_for_math(&ru, sp.clone(), "multiplication: rhs")?),
+                        (_,               Value::Pct(b)) => Value::Float(to_f64_for_math(&lu, sp.clone(), "multiplication: lhs")? * *b),
                         _ => return Err(need_number("multiplication", sp.clone()).into()),
                     };
 
@@ -5095,38 +5268,38 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                     let out = match (&lu, &ru) {
                         (Value::Int(a),   Value::Int(b)) => {
-                            if *b == 0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            if *b == 0 { return Err(rt("R0203","division by zero", sp.clone())); }
                             if a % b == 0 { Value::Int(a / b) } else { Value::Float((*a as f64) / (*b as f64)) }
                         }
                         (Value::Int(a),   Value::Float(b)) => {
-                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", sp.clone())); }
                             Value::Float((*a as f64) / *b)
                         }
                         (Value::Float(a), Value::Int(b)) => {
-                            if *b == 0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            if *b == 0 { return Err(rt("R0203","division by zero", sp.clone())); }
                             Value::Float(*a / (*b as f64))
                         }
                         (Value::Float(a), Value::Float(b)) => {
-                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", sp.clone())); }
                             Value::Float(*a / *b)
                         }
                         (Value::Big(_),   _) | (_, Value::Big(_)) => {
                             let da = to_decimal(&lu)?; let db = to_decimal(&ru)?;
-                            if db.is_zero() { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            if db.is_zero() { return Err(rt("R0203","division by zero", sp.clone())); }
                             Value::Big(da / db)
                         }
                         (Value::Pct(a),   Value::Pct(b)) => {
-                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", sp.clone())); }
                             Value::Float(*a / *b)
                         }
                         (Value::Pct(a),   _) => {
-                            let denom = to_f64_for_math(&ru, span_of_expr(rhs), "division: rhs")?;
-                            if denom == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
+                            let denom = to_f64_for_math(&ru, sp.clone(), "division: rhs")?;
+                            if denom == 0.0 { return Err(rt("R0203","division by zero", sp.clone())); }
                             Value::Float(*a / denom)
                         }
                         (_,               Value::Pct(b)) => {
-                            if *b == 0.0 { return Err(rt("R0203","division by zero", span_of_expr(rhs))); }
-                            let num = to_f64_for_math(&lu, span_of_expr(lhs), "division: lhs")?;
+                            if *b == 0.0 { return Err(rt("R0203","division by zero", sp.clone())); }
+                            let num = to_f64_for_math(&lu, sp.clone(), "division: lhs")?;
                             Value::Float(num / *b)
                         }
                         _ => return Err(need_number("division", sp.clone()).into()),
@@ -5142,16 +5315,16 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                     let out = if either_is_big(&lu, &ru) {
                         // Euclidean-style remainder with Decimal: r = a - floor(a/b) * b
-                        let a = to_big_for_math(&lu, span_of_expr(lhs), "modulo: left")?;
-                        let b = to_big_for_math(&ru, span_of_expr(rhs), "modulo: right")?;
+                        let a = to_big_for_math(&lu, sp.clone(), "modulo: left")?;
+                        let b = to_big_for_math(&ru, sp.clone(), "modulo: right")?;
                         if b.is_zero() { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         let q = (a / b).floor();         // Decimal::floor
                         let r = a - q * b;
                         Value::Big(r)
                     } else {
                         // Keep your existing behavior for f64
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "modulo: left")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "modulo: right")?;
+                        let a = to_f64_for_math(&lu, sp.clone(), "modulo: left")?;
+                        let b = to_f64_for_math(&ru, sp.clone(), "modulo: right")?;
                         if b == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         let q = (a / b).floor();
                         let r = a - q * b;
@@ -5165,13 +5338,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (ru, rspec) = take_owned_unformatted(rv);
 
                     let out = if either_is_big(&lu, &ru) {
-                        let a = to_big_for_math(&lu, span_of_expr(lhs), "floor division: left")?;
-                        let b = to_big_for_math(&ru, span_of_expr(rhs), "floor division: right")?;
+                        let a = to_big_for_math(&lu, sp.clone(), "floor division: left")?;
+                        let b = to_big_for_math(&ru, sp.clone(), "floor division: right")?;
                         if b.is_zero() { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         Value::Big((a / b).floor())
                     } else {
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "floor division: left")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "floor division: right")?;
+                        let a = to_f64_for_math(&lu, sp.clone(), "floor division: left")?;
+                        let b = to_f64_for_math(&ru, sp.clone(), "floor division: right")?;
                         if (b) == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         Value::Float((a / b).floor())
                     };
@@ -5184,7 +5357,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                     let out = if either_is_big(&lu, &ru) {
                         // Promote base to Decimal
-                        let base = to_big_for_math(&lu, span_of_expr(lhs), "power: base")?;
+                        let base = to_big_for_math(&lu, sp.clone(), "power: base")?;
 
                         // Try to use integer exponent in Decimal space (precise)
                         match &ru {
@@ -5210,12 +5383,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                     Value::Float(bf.powf(*f))
                                 }
                             }
-                            _ => return Err(need_number("power: exponent", span_of_expr(rhs))),
+                            _ => return Err(need_number("power: exponent", sp.clone())),
                         }
                     } else {
                         // pure float
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "power: base")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "power: exponent")?;
+                        let a = to_f64_for_math(&lu, sp.clone(), "power: base")?;
+                        let b = to_f64_for_math(&ru, sp.clone(), "power: exponent")?;
                         Value::Float(a.powf(b))
                     };
 
@@ -5227,15 +5400,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let (ru, _rspec) = take_owned_unformatted(rv);
 
                     let out = if either_is_big(&lu, &ru) {
-                        let a = to_big_for_math(&lu, span_of_expr(lhs), "divmod: left")?;
-                        let b = to_big_for_math(&ru, span_of_expr(rhs), "divmod: right")?;
+                        let a = to_big_for_math(&lu, sp.clone(), "divmod: left")?;
+                        let b = to_big_for_math(&ru, sp.clone(), "divmod: right")?;
                         if b.is_zero() { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         let q = (a / b).floor();
                         let r = a - q * b;
                         Value::Pair(Box::new(Value::Big(q)), Box::new(Value::Big(r)))
                     } else {
-                        let a = to_f64_for_math(&lu, span_of_expr(lhs), "divmod: left")?;
-                        let b = to_f64_for_math(&ru, span_of_expr(rhs), "divmod: right")?;
+                        let a = to_f64_for_math(&lu, sp.clone(), "divmod: left")?;
+                        let b = to_f64_for_math(&ru, sp.clone(), "divmod: right")?;
                         if b == 0.0 { return Err(rt("R0201", "divide by zero", sp.clone())); }
                         let q = (a / b).floor();
                         let r = a - q * b;
@@ -5253,12 +5426,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let rv  = eval_expr(rhs, sess)?;
                     match lv {
                         Value::Pct(p) => {
-                            let rnum = as_num(rv, span_of_expr(rhs), "'of' right")?;
+                            let rnum = as_num(rv, sp.clone(), "'of' right")?;
                             Ok(Value::Float(p * rnum))
                         }
                         _ => {
-                            let lnum = as_num(lv,  span_of_expr(lhs),  "'of' left")?;
-                            let rnum = as_num(rv,  span_of_expr(rhs),  "'of' right")?;
+                            let lnum = as_num(lv,  sp.clone(),  "'of' left")?;
+                            let rnum = as_num(rv,  sp.clone(),  "'of' right")?;
                             Ok(Value::Float(lnum * rnum))
                         }
                     }
@@ -5269,9 +5442,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let rv  = eval_expr(rhs, sess)?;
                     let p = match lv {
                         Value::Pct(p) => p,
-                        other         => as_num(other, span_of_expr(lhs), "percent-of-other")? / 100.0,
+                        other         => as_num(other, sp.clone(), "percent-of-other")? / 100.0,
                     };
-                    let b = as_num(rv, span_of_expr(rhs), "percent-of-other")?;
+                    let b = as_num(rv, sp.clone(), "percent-of-other")?;
                     Ok(Value::Float(p * b))
                 }
 
@@ -5285,12 +5458,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let eqv = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
-                            let a = to_big_for_math(&la, span_of_expr(lhs), "== left")?;
-                            let b = to_big_for_math(&rb, span_of_expr(rhs), "== right")?;
+                            let a = to_big_for_math(&la, sp.clone(), "== left")?;
+                            let b = to_big_for_math(&rb, sp.clone(), "== right")?;
                             a == b
                         } else {
-                            let a = to_f64_for_math(&la, span_of_expr(lhs), "== left")?;
-                            let b = to_f64_for_math(&rb, span_of_expr(rhs), "== right")?;
+                            let a = to_f64_for_math(&la, sp.clone(), "== left")?;
+                            let b = to_f64_for_math(&rb, sp.clone(), "== right")?;
                             a == b
                         }
                     } else {
@@ -5308,12 +5481,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let neqv = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
-                            let a = to_big_for_math(&la, span_of_expr(lhs), "!= left")?;
-                            let b = to_big_for_math(&rb, span_of_expr(rhs), "!= right")?;
+                            let a = to_big_for_math(&la, sp.clone(), "!= left")?;
+                            let b = to_big_for_math(&rb, sp.clone(), "!= right")?;
                             a != b
                         } else {
-                            let a = to_f64_for_math(&la, span_of_expr(lhs), "!= left")?;
-                            let b = to_f64_for_math(&rb, span_of_expr(rhs), "!= right")?;
+                            let a = to_f64_for_math(&la, sp.clone(), "!= left")?;
+                            let b = to_f64_for_math(&rb, sp.clone(), "!= right")?;
                             a != b
                         }
                     } else {
@@ -5331,8 +5504,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let b = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
-                            let a = to_big_for_math(&la, span_of_expr(lhs), "compare left")?;
-                            let c = to_big_for_math(&rb, span_of_expr(rhs), "compare right")?;
+                            let a = to_big_for_math(&la, sp.clone(), "compare left")?;
+                            let c = to_big_for_math(&rb, sp.clone(), "compare right")?;
                             match op.as_str() {
                                 "<"  => a <  c,
                                 "<=" => a <= c,
@@ -5341,8 +5514,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 _    => unreachable!(),
                             }
                         } else {
-                            let a = to_f64_for_math(&la, span_of_expr(lhs), "compare left")?;
-                            let c = to_f64_for_math(&rb, span_of_expr(rhs), "compare right")?;
+                            let a = to_f64_for_math(&la, sp.clone(), "compare left")?;
+                            let c = to_f64_for_math(&rb, sp.clone(), "compare right")?;
                             match op.as_str() {
                                 "<"  => a <  c,
                                 "<=" => a <= c,
@@ -5408,15 +5581,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let name = if let ast::Expr::Ident(n, _) = &**lhs {
                         n.clone()
                     } else {
-                        return Err(rt("P0801", "left-hand side of compound assign must be a name", span_of_expr(lhs)));
+                        return Err(rt("P0801", "left-hand side of compound assign must be a name", sp.clone()));
                     };
                     let old = match sess.get_var(&name) {
                         Some(v) => v.clone(),
-                        None => return Err(rt("R0110", format!("unknown identifier '{}'", name), span_of_expr(lhs))),
+                        None => return Err(rt("R0110", format!("unknown identifier '{}'", name), sp.clone())),
                     };
                     let rv = eval_expr(rhs, sess)?;
-                    let a = as_num(old, span_of_expr(lhs), "compound assign (left value)")?;
-                    let b = as_num(rv,  span_of_expr(rhs), "compound assign (right value)")?;
+                    let a = as_num(old, sp.clone(), "compound assign (left value)")?;
+                    let b = as_num(rv,  sp.clone(), "compound assign (right value)")?;
                     let new = match op.as_str() {
                         "+=" => a + b,
                         "-=" => a - b,
@@ -5436,6 +5609,86 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
     }
+}
+
+fn call_object_method_with_values(
+    sess: &mut Session,
+    class_name: &str,
+    fields: &mut BTreeMap<String, Value>,
+    method_name: &str,
+    arg_vals: Vec<Value>,
+    sp: Span,
+) -> Result<Value, Diag> {
+    let class = sess.classes.get(class_name)
+        .ok_or_else(|| rt("R0116", format!("class '{}' not found", class_name), sp.clone()))?
+        .clone();
+    
+    let action = class.actions.iter()
+        .find(|a| a.name == method_name)
+        .ok_or_else(|| rt("R0404", format!("no action '{}' in class '{}'", method_name, class_name), sp.clone()))?
+        .clone();
+    
+    // Check if we have enough arguments
+    let required_params: Vec<_> = action.params.iter()
+        .filter(|p| p.default.is_none())
+        .collect();
+    
+    if arg_vals.len() < required_params.len() {
+        return Err(rt("A0402", 
+            format!("missing required parameter '{}' (got {} args, need at least {})", 
+                required_params[arg_vals.len()].name,
+                arg_vals.len(),
+                required_params.len()), 
+            sp));
+    }
+    
+    sess.push_frame();
+    sess.set_var("self".to_string(), Value::Map(fields.clone()));
+    
+    // Bind each field as a variable
+    for (field_name, field_value) in fields.iter() {
+        sess.set_var(field_name.clone(), field_value.clone());
+    }
+    
+    // Bind parameters
+    for (i, param) in action.params.iter().enumerate() {
+        if i < arg_vals.len() {
+            sess.set_var(param.name.clone(), arg_vals[i].clone());
+        } else if let Some(def_expr) = &param.default {
+            let def_val = eval_expr(def_expr, sess)?;
+            sess.set_var(param.name.clone(), def_val);
+        } else {
+            // This should never happen due to check above, but just in case
+            sess.pop_frame();
+            return Err(rt("A0402", format!("missing required parameter '{}'", param.name), sp));
+        }
+    }
+    
+    let result = {
+        let ast::ActionBody::Block(stmts) = &action.body;
+        let mut last = Value::Unit;
+        for stmt in stmts {
+            if let Some(v) = eval_stmt(stmt, sess)? {
+                match v {
+                    Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
+                    other => last = other,
+                }
+            }
+        }
+        last
+    };
+    
+    // Copy modified field values back
+    let current_frame = sess.env.last().expect("has frame");
+    let field_names: Vec<String> = fields.keys().cloned().collect();
+    for field_name in field_names {
+        if let Some(modified_value) = current_frame.get(&field_name) {
+            fields.insert(field_name, modified_value.clone());
+        }
+    }
+    
+    sess.pop_frame();
+    Ok(result)
 }
 
 fn call_object_method(

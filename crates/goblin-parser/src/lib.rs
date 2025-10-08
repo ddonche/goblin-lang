@@ -766,7 +766,40 @@ impl<'t> Parser<'t> {
         }
     }
 
-    // Add helper to eat layout and detect closes (non-consuming peek variant for peek_block_close)
+    // Non-consuming version - checks if we'd hit a close, handles Dedent/Indent pairs
+    fn peek_layout_until_close(&self, _opening_indent: u32) -> bool {
+        let mut j = self.i;
+        let mut saw_dedent = false;
+        
+        while let Some(t) = self.toks.get(j) {
+            match t.kind {
+                goblin_lexer::TokenKind::Newline => { 
+                    j += 1; 
+                    continue; 
+                }
+                goblin_lexer::TokenKind::Dedent => {
+                    saw_dedent = true;
+                    j += 1;
+                    continue;
+                }
+                goblin_lexer::TokenKind::Indent => { 
+                    // If we saw a dedent, this indent cancels it
+                    if saw_dedent {
+                        saw_dedent = false;
+                    }
+                    j += 1;
+                    continue; 
+                }
+                _ => {
+                    // Reached actual content - return whether we have unmatched dedent
+                    return saw_dedent;
+                }
+            }
+        }
+        // EOF - return whether we saw dedent
+        saw_dedent
+    }
+    // Consuming version - actually advances position
     fn eat_layout_until_close(&mut self, opening_indent: u32) -> bool {
         let mut closed = false;
         while let Some(t) = self.peek() {
@@ -774,12 +807,10 @@ impl<'t> Parser<'t> {
                 goblin_lexer::TokenKind::Newline => { self.i += 1; continue; }
                 goblin_lexer::TokenKind::Dedent => {
                     self.i += 1;
-                    // Optional: Check if current indent <= opening_indent (need lexer to expose indent level in Dedent)
-                    // For now, any Dedent signals potential close
                     closed = true;
                     break;
                 }
-                goblin_lexer::TokenKind::Indent => { self.i += 1; continue; } // Eat but don't close
+                goblin_lexer::TokenKind::Indent => { self.i += 1; continue; }
                 _ => break,
             }
         }
@@ -1627,6 +1658,61 @@ impl<'t> Parser<'t> {
         Ok(())
     }
 
+    fn parse_return_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        // Expect ident "return"
+        let start_i = self.i;
+        match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::Ident) && self.peek_ident() == Some("return") => {
+                self.i += 1; // consume 'return'
+            }
+            _ => {
+                return Err(s_help(
+                    "P0600",
+                    "Internal parser error: parse_return_stmt called when next token is not 'return'",
+                    "Parser bug.",
+                ));
+            }
+        }
+        // Optional: comma-separated identifiers. No expressions allowed.
+        let mut names: Vec<String> = Vec::new();
+        if let Some(name) = self.eat_ident() {
+            names.push(name);
+            while self.eat_op(",") {
+                let Some(n2) = self.eat_ident() else {
+                    return Err(s_help(
+                        "P0602",
+                        "Expected an identifier after ',' in return list",
+                        "Write `return a, b` (identifiers only).",
+                    ));
+                };
+                names.push(n2);
+            }
+            // After identifiers, only terminators are allowed on the same stmt.
+            if let Some(tok) = self.peek() {
+                let ok = match &tok.kind {
+                    TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent => true,
+                    TokenKind::Op(s) if s == ";" || s == "xx" => true,
+                    TokenKind::Ident if self.peek_ident() == Some("end") => true,
+                    _ => false,
+                };
+                if !ok {
+                    return Err(s_help(
+                        "P0601",
+                        "Return can only list identifiers, not expressions",
+                        "Use `return total` or `return a, b` — not `return (a+b)` or `return 1`.",
+                    ));
+                }
+            }
+        }
+        // else: bare `return` → names stays empty
+        
+        // DON'T consume trailing newline - let the block parser handle it
+        
+        let span = Parser::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Return(ast::ReturnStmt { names, span }))
+    }
+
     fn parse_field_chain_line_class(&mut self) -> Result<Vec<(String, PExpr)>, String> {
         let mut out = Vec::new();
 
@@ -2092,10 +2178,17 @@ impl<'t> Parser<'t> {
 
         // Parse the indented block until a closer aligned with the header column.
         let body_stmts = self.parse_stmt_block_until(|p: &mut Parser<'_>| {
+            let before_i = p.i;
             p.skip_newlines();
-            // stop if dedented back to header column, or a closer ('end' / 'xx') at header col
-            p.eat_layout_until_close(hdr_col)
-                || (p.peek_block_close() && p.toks[p.i].span.col_start == hdr_col)
+            let after_skip = p.i;
+            let peek_layout = p.peek_layout_until_close(hdr_col);
+            let peek_close = p.peek_block_close();
+            let curr_col = p.peek().map(|t| t.span.col_start).unwrap_or(0);
+            let curr_tok = p.peek().map(|t| (t.value.as_deref(), t.span.line_start));
+            
+            let result = peek_layout || (peek_close && p.toks[p.i].span.col_start == hdr_col);
+            
+            result
         })?;
 
         // Consume the closer (if still present) and validate alignment.
@@ -2113,6 +2206,7 @@ impl<'t> Parser<'t> {
                 ));
             }
             self.expect_block_close("action")?;
+
         } else if !self.eat_layout_until_close(hdr_col) {
             return Err(s_help(
                 "P0212",
@@ -2438,15 +2532,49 @@ impl<'t> Parser<'t> {
     // Do we see a block closer at the current position?  (allowed: 'end' or 'xx')
     fn peek_block_close(&mut self) -> bool {
         let save_i = self.i;
-        self.skip_newlines();
-        let j = self.i;
-        self.eat_layout_until_close(0); // Temp eat for peek
-        let is_close = match self.toks.get(j) {
-            Some(t) => {
-                t.value.as_deref() == Some("end") || t.value.as_deref() == Some("xx") || matches!(t.kind, ::goblin_lexer::TokenKind::Dedent)
+        
+        // Skip newlines and matched Dedent/Indent pairs
+        while let Some(tok) = self.toks.get(self.i) {
+            match tok.kind {
+                ::goblin_lexer::TokenKind::Newline => {
+                    self.i += 1;
+                }
+                ::goblin_lexer::TokenKind::Dedent => {
+                    // Look ahead to see if there's a matching Indent
+                    let mut j = self.i + 1;
+                    // Skip newlines between Dedent and potential Indent
+                    while let Some(t) = self.toks.get(j) {
+                        if matches!(t.kind, ::goblin_lexer::TokenKind::Newline) {
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    // If we find an Indent, skip both the Dedent and Indent
+                    if let Some(t) = self.toks.get(j) {
+                        if matches!(t.kind, ::goblin_lexer::TokenKind::Indent) {
+                            self.i = j + 1; // Skip past the Indent
+                            continue;
+                        }
+                    }
+                    // Unmatched Dedent - this IS a closer
+                    self.i = save_i;
+                    return true;
+                }
+                _ => break,
             }
-            None => true, // EOF closes
+        }
+        
+        // Now check if we see a closer
+        let is_close = match self.toks.get(self.i) {
+            Some(t) => {
+                t.value.as_deref() == Some("end") 
+                || t.value.as_deref() == Some("xx")
+            }
+            None => true,
         };
+        
+        // Restore position
         self.i = save_i;
         is_close
     }
@@ -3623,6 +3751,12 @@ impl<'t> Parser<'t> {
                             b.span
                         ))
                     }
+                    ast::Stmt::Return(ret_stmt) => {
+                        let values: Vec<ast::Expr> = ret_stmt.names.iter()
+                            .map(|name| ast::Expr::Ident(name.clone(), ret_stmt.span.clone()))
+                            .collect();
+                        Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
+                    }
                     _ => Err(s_help(
                         "P0311",
                         "Only expressions and variable assignments are allowed inside control flow blocks.",
@@ -3921,8 +4055,6 @@ impl<'t> Parser<'t> {
             }
         }
 
-        eprintln!("DEBUG: after consuming 'end', i={}, next token={:?}", self.i, self.peek().map(|t| (&t.kind, &t.value)));
-
         // Convert stmt list -> expr array
         let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
             stmts
@@ -4037,28 +4169,25 @@ impl<'t> Parser<'t> {
         F: FnMut(&mut Parser<'_>) -> bool,
     {
         use goblin_lexer::TokenKind;
-
         let mut out: Vec<ast::Stmt> = Vec::new();
-
         loop {
-            // Skip any number of blank lines between statements
+            // Skip any number of blank lines AND layout tokens between statements
             while let Some(t) = self.peek() {
-                if matches!(t.kind, TokenKind::Newline) {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
                     self.i += 1;
                 } else {
                     break;
                 }
             }
-
+            
             // If caller's stopper says "stop now", we stop BEFORE the stopper token.
             if stop(self) {
                 break;
             }
-
-            // Also stop (without consuming) if we see a closer token OR dedent at this level.
+            
+            // Also stop (without consuming) if we see a closer token
             if let Some(t) = self.peek() {
                 match &t.kind {
-                    TokenKind::Dedent => break,  // <- ADD THIS
                     TokenKind::Ident if matches!(t.value.as_deref(), Some("end") | Some("else")) => break,
                     TokenKind::Op(op) if op == "xx" => break,
                     _ => {}
@@ -4067,12 +4196,11 @@ impl<'t> Parser<'t> {
                 // EOF — just return what we have; caller will decide if that's an error.
                 break;
             }
-
+            
             // Parse one statement
             let stmt = self.parse_stmt()?;
             out.push(stmt);
         }
-
         Ok(out)
     }
 
@@ -4254,6 +4382,10 @@ impl<'t> Parser<'t> {
 
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
+
+        if self.peek_ident() == Some("return") {
+            return self.parse_return_stmt();
+        }
 
         // ---- Friendly guard: looks like a class header but missing '@'
         // Pattern: Capitalized Ident '=' Ident ':'  (e.g., A = n: 1)
@@ -6762,11 +6894,22 @@ impl<'t> Parser<'t> {
                         };
                     }
                 } else {
-                    // zero-arg sugar: obj.foo  ==  obj.foo()
-                    lhs = match lhs {
-                        PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, vec![]),
-                        other                  => PExpr::Call(Box::new(other),  opname, vec![]),
+                    let is_method_reference = match self.toks.get(self.i) {
+                        Some(tok) => matches!(&tok.kind,
+                            goblin_lexer::TokenKind::Newline |
+                            goblin_lexer::TokenKind::Eof
+                        ) || matches!(&tok.kind, goblin_lexer::TokenKind::Op(s) if s == "," || s == ")"),
+                        None => true,
                     };
+                    
+                    if is_method_reference {
+                        lhs = PExpr::Member(Box::new(lhs), opname);
+                    } else {
+                        lhs = match lhs {
+                            PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, vec![]),
+                            other                  => PExpr::Call(Box::new(other),  opname, vec![]),
+                        };
+                    }
                 }
 
                 continue;

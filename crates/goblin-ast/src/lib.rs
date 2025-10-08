@@ -32,6 +32,7 @@ pub enum Stmt {
     Bind(BindStmt),
     Enum(EnumDecl),
     Import(ImportStmt),
+    Return(ReturnStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,12 @@ pub struct ActionDecl {
     pub body: ActionBody,
     pub span: Span,
     pub ret: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReturnStmt {
+    pub names: Vec<String>, // identifiers only; empty = bare return
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
