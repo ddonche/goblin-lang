@@ -13,6 +13,7 @@ contexts:
     - include: comments
     - include: strings
     - include: keywords
+    - include: imports
     - include: builtins
     - include: types
     - include: booleans
@@ -63,8 +64,14 @@ contexts:
           scope: punctuation.definition.string.end.goblin
           pop: true
 
+  imports:
+      - match: '\bimport\b'
+        scope: keyword.import.goblin
+      - match: '::'
+        scope: keyword.import.goblin
+
   keywords:
-    - match: '\b(if|else|elif|end|xx|act|action|unless|while|for|where|in|imm|attempt|rescue|ensure|return|skip|jump|until|stop|assert|enum|trait|use|import|export|impl|via|expose|vault|morph|judge|banish|unbanish|set|settle|test|as)\b'
+    - match: '\b(if|else|elif|end|xx|act|action|unless|while|for|where|in|imm|attempt|rescue|ensure|return|skip|jump|until|stop|assert|enum|trait|use|export|impl|via|expose|vault|morph|judge|banish|unbanish|set|settle|test|as)\b'
       scope: keyword.control.goblin
 
   builtins:

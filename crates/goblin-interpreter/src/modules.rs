@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use goblin_ast as ast;
+use crate::Value;
 
 pub struct ModuleCache {
     loaded: BTreeMap<String, Module>,
@@ -10,6 +11,7 @@ pub struct Module {
     pub namespace: String,
     pub ast: ast::Module,
     pub exports: BTreeMap<String, ExportedItem>,
+    pub env: BTreeMap<String, Value>,
 }
 
 #[derive(Clone)]
@@ -26,23 +28,22 @@ impl ModuleCache {
         }
     }
     
-    pub fn load_module(&mut self, import_path: &str, alias: Option<&str>, base_dir: &std::path::Path) -> Result<String, String> {
-        // Resolve namespace (alias or last part of path)
+    pub fn load_module(
+        &mut self, 
+        import_path: &str, 
+        alias: Option<&str>, 
+        base_dir: &std::path::Path
+    ) -> Result<(String, Option<ast::Module>), String> {
         let namespace = if let Some(a) = alias {
             a.to_string()
         } else {
             import_path.split('/').last().unwrap().to_string()
         };
         
-        // Check for namespace collision
         if self.loaded.contains_key(&namespace) {
-            return Err(format!(
-                "Namespace collision: '{}' is already imported. Use 'import {} as other_name'",
-                namespace, import_path
-            ));
+            return Ok((namespace, None));
         }
         
-        // For now, simple path resolution: base_dir/import_path.gbln
         let mut file_path = base_dir.to_path_buf();
         for part in import_path.split('/') {
             file_path.push(part);
@@ -53,7 +54,6 @@ impl ModuleCache {
             return Err(format!("Module file not found: {}", file_path.display()));
         }
         
-        // Load and parse
         let source = std::fs::read_to_string(&file_path)
             .map_err(|e| format!("Failed to read module: {}", e))?;
         
@@ -64,7 +64,6 @@ impl ModuleCache {
         let module_ast = parser.parse_module()
             .map_err(|diags| format!("Parse error in module '{}': {:?}", import_path, diags))?;
         
-        // Extract exports (for now, export everything)
         let mut exports = BTreeMap::new();
         for stmt in &module_ast.items {
             match stmt {
@@ -84,16 +83,26 @@ impl ModuleCache {
         let module = Module {
             path: import_path.to_string(),
             namespace: namespace.clone(),
-            ast: module_ast,
+            ast: module_ast.clone(),
             exports,
+            env: BTreeMap::new(),
         };
-        
         self.loaded.insert(namespace.clone(), module);
         
-        Ok(namespace)
+        Ok((namespace, Some(module_ast)))
     }
     
     pub fn get_export(&self, namespace: &str, name: &str) -> Option<&ExportedItem> {
         self.loaded.get(namespace)?.exports.get(name)
+    }
+    
+    pub fn get_module_env(&self, namespace: &str) -> Option<&BTreeMap<String, Value>> {
+        self.loaded.get(namespace).map(|m| &m.env)
+    }
+    
+    pub fn set_module_var(&mut self, namespace: &str, name: String, value: Value) {
+        if let Some(module) = self.loaded.get_mut(namespace) {
+            module.env.insert(name, value);
+        }
     }
 }
