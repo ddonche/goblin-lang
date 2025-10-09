@@ -180,4 +180,8 @@ pub enum Expr {
         all: bool,
         span: Span,
     },
+    Block {
+        stmts: Vec<Expr>,
+        span: Span,
+    },
 }

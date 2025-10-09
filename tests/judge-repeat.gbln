@@ -1,0 +1,18 @@
+/// Test repeat inside judge
+
+act test_it(building_type)
+  items = []
+  
+  judge
+    building_type == "blacksmith":
+      repeat 3
+        items = items.put_last("sword")
+      end
+      
+    else: items = ["default"]
+  end
+  
+  return items
+end
+result = test_it("blacksmith")
+say result

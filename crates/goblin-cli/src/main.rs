@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use goblin_gql::{parse_query as gql_parse, pretty as gql_pretty};
 use goblin_lexer::{lex, TokenKind};
 use goblin_parser::Parser;
+use goblin_interpreter::{Session, Value};
 
 pub mod config;
 
@@ -974,8 +975,10 @@ fn run_repl() -> i32 {
 }
 
 fn run_run(path: &std::path::Path) -> i32 {
+    eprintln!("Size of ast::Expr: {}", std::mem::size_of::<goblin_ast::Expr>());
+    eprintln!("Size of Value: {}", std::mem::size_of::<Value>());
     use goblin_interpreter::Session;
-
+    
     // 1) read the file
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -984,7 +987,7 @@ fn run_run(path: &std::path::Path) -> i32 {
             return 1;
         }
     };
-
+    
     // 2) lex (match the label logic used elsewhere so spans look nice)
     let label = match path.file_name().and_then(|n| n.to_str()) {
         Some(name) if name.starts_with("goblin_") && name.ends_with(".gbln") => "<snippet>".to_string(),
@@ -1001,7 +1004,7 @@ fn run_run(path: &std::path::Path) -> i32 {
             return 1;
         }
     };
-
+    
     // 3) parse
     let parser = goblin_parser::Parser::new(&tokens);
     let module = match parser.parse_module() {
@@ -1015,32 +1018,36 @@ fn run_run(path: &std::path::Path) -> i32 {
             return 1;
         }
     };
-
-    // 4) interpret — mirror REPL behavior:
-    //    - evaluate each top-level expression
-    //    - print value only if non-empty (so `say` prints once, and `Unit` doesn't add a blank line)
-    let mut sess = Session::new();
-    for stmt in &module.items {
-        match stmt {
-            goblin_ast::Stmt::Expr(e) => {
-                match sess.eval_expr(e) {
-                    Ok(val) => {
-                        let echo = format!("{}", val);
-                        if !echo.is_empty() { println!("{}", echo); }
+    
+    // 4) interpret with larger stack (8MB instead of default 1MB on Windows)
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut sess = Session::new();
+            for stmt in &module.items {
+                match stmt {
+                    goblin_ast::Stmt::Expr(e) => {
+                        match sess.eval_expr(e) {
+                            Ok(val) => {
+                                let echo = format!("{}", val);
+                                if !echo.is_empty() { println!("{}", echo); }
+                            }
+                            Err(d) => { eprintln!("{}", d); return 1; }
+                        }
                     }
-                    Err(d) => { eprintln!("{}", d); break; }
+                    _ => {
+                        if let Err(d) = sess.eval_stmt(stmt) {
+                            eprintln!("{}", d);
+                            return 1;
+                        }
+                    }
                 }
             }
-            _ => {
-                if let Err(d) = sess.eval_stmt(stmt) {
-                    eprintln!("{}", d);
-                    break;
-                }
-            }
-        }
-    }
-
-    0
+            0
+        })
+        .unwrap()
+        .join()
+        .unwrap()
 }
 
 fn is_probable_file(s: &str) -> bool {

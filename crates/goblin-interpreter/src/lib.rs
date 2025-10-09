@@ -1040,7 +1040,8 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Binary(_, _, _, sp)
         | ast::Expr::Assign(_, _, sp)
         | ast::Expr::EnumVariant { span: sp, .. }
-        | ast::Expr::Judge { span: sp, .. } => sp.clone(),
+        | ast::Expr::Judge { span: sp, .. } 
+        | ast::Expr::Block { span: sp, .. } => sp.clone(),
     }
 }
 
@@ -4175,11 +4176,15 @@ fn mutate_via_call_name(
 
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
     
-    static DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    // Track which expressions we've visited
+        let ptr = e as *const ast::Expr;
+        
+        static DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let depth = DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if depth > 200 {
+                
+        if depth > 50 {
             DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            panic!("EVAL STACK OVERFLOW at depth {}: {:?}", depth, e);
+            panic!("EVAL STACK OVERFLOW at depth {}", depth);
         }
 
     match e {
@@ -4232,6 +4237,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Err(rt("R0110", format!("unknown identifier '{}'", name), sp.clone()))
                 }
             }
+        }
+        ast::Expr::Block { stmts, .. } => {
+            // Execute each statement in sequence
+            let mut last_value = Value::Nil;
+            for stmt in stmts {
+                last_value = eval_expr(stmt, sess)?;
+            }
+            // Return the value of the last statement
+            Ok(last_value)
         }
 
         ast::Expr::NsCall(ns, name, args, sp) => {
@@ -4966,6 +4980,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
+            
             // Mutating casts for function form when arg is a plain identifier.
             if args.is_empty() {
                 if matches!(name.as_str(), "float" | "f" | "int" | "i" | "big" | "b" | "str" | "string" | "pct" | "percent") {
@@ -4978,27 +4993,19 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
             
+            
             // Special-case: <expr>.type
             if name == "type" && args.is_empty() {
                 let recv = eval_expr(base, sess)?;
                 return Ok(Value::Str(value_kind_str(&recv).to_string()));
             }
-            
+                        
             // Bang methods
             if name.ends_with('!') {
-                let recv_ident = match &**base {
-                    ast::Expr::Ident(n, _) => Some(n.as_str()),
-                    _other => {
-                        return Err(rt("P0802",
-                            &format!("'{}' requires a variable receiver (e.g. xs.{}(...))", name, name),
-                            sp.clone()));
-                    }
-                };
-                return mutate_via_call_name(sess, name, recv_ident, args, sp.clone());
             }
             
-            // Evaluate base ONCE, then decide what to do
-            let recv = eval_expr(base, sess)?;
+            let base_ref: &ast::Expr = base;  // Explicit conversion
+            let recv = eval_expr(base_ref, sess)?;
             
             // Object method calls - check if receiver is an object AND base is a variable
             if let ast::Expr::Ident(var_name, _) = &**base {
