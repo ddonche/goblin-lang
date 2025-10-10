@@ -825,158 +825,165 @@ fn run_repl() -> i32 {
     use goblin_ast as ast;
 
     println!("{}", repl_banner());
-    let mut sess = Session::new();
-    let mut n: usize = 1;
+    
+    // Run REPL in a thread with 8MB stack (Windows default is only 1MB)
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let mut sess = Session::new();
+            let mut n: usize = 1;
 
-    // Accumulator for multi-line input and a tiny depth counter for blocks.
-    let mut buf = String::new();
-    let mut depth: i32 = 0;
+            // Accumulator for multi-line input and a tiny depth counter for blocks.
+            let mut buf = String::new();
+            let mut depth: i32 = 0;
 
-    loop {
-        // Primary prompt for a fresh form; continuation prompt inside a form.
-        if buf.is_empty() {
-            print!("gbln({}): ", n);
-        } else {
-            print!("...       ");
-        }
-        if io::stdout().flush().is_err() { return 1; }
-
-        let mut line = String::new();
-        let read = io::stdin().read_line(&mut line).unwrap_or(0);
-        if read == 0 { println!(); break; } // Ctrl+D/Z
-
-        let trimmed = line.trim_end();
-
-        // Allow exit/quit only when not inside a pending block.
-        if buf.is_empty() && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit")) {
-            break;
-        }
-
-        // --- Easter egg: `enhance ...` — print "<rest> has been enhanced." ---
-        if buf.is_empty() {
-            let s0 = trimmed.trim_start();
-            if let Some(rest) = s0.strip_prefix("enhance") {
-                // must be end-of-line or whitespace after the keyword
-                if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-                    let payload = rest.trim();
-                    if payload.is_empty() {
-                        println!("Enhance what?");
-                    } else {
-                        println!("{payload} has been enhanced.");
-                    }
-                    n += 1;
-                    continue; // handled; do not buffer/parse this line
+            loop {
+                // Primary prompt for a fresh form; continuation prompt inside a form.
+                if buf.is_empty() {
+                    print!("gbln({}): ", n);
+                } else {
+                    print!("...       ");
                 }
-            }
-        }
+                if io::stdout().flush().is_err() { return 1; }
 
-        // Append this line to the buffer we’ll parse as a unit.
-        buf.push_str(trimmed);
-        buf.push('\n');
+                let mut line = String::new();
+                let read = io::stdin().read_line(&mut line).unwrap_or(0);
+                if read == 0 { println!(); break; } // Ctrl+D/Z
 
-        // ----- Update block depth from THIS line only -----
-        // Do it with a simple string scan (no braces; only keywords matter here).
-        {
-            let s = trimmed.trim_start();
+                let trimmed = line.trim_end();
 
-            // helper: does this line start a block keyword?
-            let starts_block_kw = |kw: &str| -> bool {
-                s == kw || s.starts_with(kw) && s[kw.len()..].starts_with(char::is_whitespace)
-            };
+                // Allow exit/quit only when not inside a pending block.
+                if buf.is_empty() && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit")) {
+                    break;
+                }
 
-            // 1) control-flow headers always open a block on their line
-            if starts_block_kw("if") || starts_block_kw("while") || starts_block_kw("unless") {
-                depth += 1;
-            }
-
-            // 2) action header: open a block UNLESS it's the single-line form `= ...` at top level
-            if s.starts_with("act ") || s.starts_with("act(") || s.starts_with("action ") || s.starts_with("action(") {
-                // scan for '=' that is NOT inside parens
-                let mut paren = 0i32;
-                let mut has_eq_outside = false;
-                for ch in s.chars() {
-                    match ch {
-                        '(' => paren += 1,
-                        ')' => if paren > 0 { paren -= 1; },
-                        '=' if paren == 0 => { has_eq_outside = true; break; }
-                        _ => {}
+                // --- Easter egg: `enhance ...` — print "<rest> has been enhanced." ---
+                if buf.is_empty() {
+                    let s0 = trimmed.trim_start();
+                    if let Some(rest) = s0.strip_prefix("enhance") {
+                        // must be end-of-line or whitespace after the keyword
+                        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                            let payload = rest.trim();
+                            if payload.is_empty() {
+                                println!("Enhance what?");
+                            } else {
+                                println!("{payload} has been enhanced.");
+                            }
+                            n += 1;
+                            continue; // handled; do not buffer/parse this line
+                        }
                     }
                 }
-                if !has_eq_outside {
-                    depth += 1; // multiline action; keep buffering
+
+                // Append this line to the buffer we'll parse as a unit.
+                buf.push_str(trimmed);
+                buf.push('\n');
+
+                // ----- Update block depth from THIS line only -----
+                // Do it with a simple string scan (no braces; only keywords matter here).
+                {
+                    let s = trimmed.trim_start();
+
+                    // helper: does this line start a block keyword?
+                    let starts_block_kw = |kw: &str| -> bool {
+                        s == kw || s.starts_with(kw) && s[kw.len()..].starts_with(char::is_whitespace)
+                    };
+
+                    // 1) control-flow headers always open a block on their line
+                    if starts_block_kw("if") || starts_block_kw("while") || starts_block_kw("unless") {
+                        depth += 1;
+                    }
+
+                    // 2) action header: open a block UNLESS it's the single-line form `= ...` at top level
+                    if s.starts_with("act ") || s.starts_with("act(") || s.starts_with("action ") || s.starts_with("action(") {
+                        // scan for '=' that is NOT inside parens
+                        let mut paren = 0i32;
+                        let mut has_eq_outside = false;
+                        for ch in s.chars() {
+                            match ch {
+                                '(' => paren += 1,
+                                ')' => if paren > 0 { paren -= 1; },
+                                '=' if paren == 0 => { has_eq_outside = true; break; }
+                                _ => {}
+                            }
+                        }
+                        if !has_eq_outside {
+                            depth += 1; // multiline action; keep buffering
+                        }
+                    }
+
+                    // 3) closers
+                    if s == "end" { depth -= 1; }
+                    if s == "xx"  { depth -= 1; }
+
+                    if depth < 0 { depth = 0; } // never "owe" an opener
                 }
-            }
 
-            // 3) closers
-            if s == "end" { depth -= 1; }
-            if s == "xx"  { depth -= 1; }
+                // If we're still inside a block, keep reading lines.
+                if depth > 0 { continue; }
 
-            if depth < 0 { depth = 0; } // never “owe” an opener
-        }
+                // We're at top level (depth == 0): try to parse+eval the whole buffer.
+                if buf.trim().is_empty() {
+                    buf.clear();
+                    continue;
+                }
 
-        // If we're still inside a block, keep reading lines.
-        if depth > 0 { continue; }
+                let toks = match lex(&buf, "<repl>") {
+                    Ok(t) => t,
+                    Err(diags) => {
+                        eprintln!("{}", diags[0]);
+                        buf.clear();
+                        depth = 0;
+                        continue;
+                    }
+                };
 
-        // We’re at top level (depth == 0): try to parse+eval the whole buffer.
-        if buf.trim().is_empty() {
-            buf.clear();
-            continue;
-        }
+                let parser = Parser::new(&toks);
+                let module = match parser.parse_module() {
+                    Ok(m) => m,
+                    Err(diags) => {
+                        eprintln!("{}", diags[0]);
+                        buf.clear();
+                        depth = 0;
+                        continue;
+                    }
+                };
 
-        let toks = match lex(&buf, "<repl>") {
-            Ok(t) => t,
-            Err(diags) => {
-                eprintln!("{}", diags[0]);
+                // Evaluate every top-level statement (expressions *and* declarations).
+                for stmt in &module.items {
+                    match stmt {
+                        // Expressions: push to history via eval_expr
+                        ast::Stmt::Expr(e) => match sess.eval_expr(e) {
+                            Ok(val) => {
+                                let echo = format!("{val}");
+                                if !echo.is_empty() { println!("{echo}"); }
+                            }
+                            Err(d) => { eprintln!("{d}"); break; }
+                        },
+
+                        // Decls (act/action/class): let the interpreter register them
+                        _ => {
+                            if let Err(d) = sess.eval_stmt(stmt) {
+                                eprintln!("{d}");
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Reset for the next form.
                 buf.clear();
                 depth = 0;
-                continue;
+                n += 1;
             }
-        };
-
-        let parser = Parser::new(&toks);
-        let module = match parser.parse_module() {
-            Ok(m) => m,
-            Err(diags) => {
-                eprintln!("{}", diags[0]);
-                buf.clear();
-                depth = 0;
-                continue;
-            }
-        };
-
-        // Evaluate every top-level statement (expressions *and* declarations).
-        for stmt in &module.items {
-            match stmt {
-                // Expressions: push to history via eval_expr
-                ast::Stmt::Expr(e) => match sess.eval_expr(e) {
-                    Ok(val) => {
-                        let echo = format!("{val}");
-                        if !echo.is_empty() { println!("{echo}"); }
-                    }
-                    Err(d) => { eprintln!("{d}"); break; }
-                },
-
-                // Decls (act/action/class): let the interpreter register them
-                _ => {
-                    if let Err(d) = sess.eval_stmt(stmt) {
-                        eprintln!("{d}");
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Reset for the next form.
-        buf.clear();
-        depth = 0;
-        n += 1;
-    }
-    0
+            0
+        })
+        .unwrap()
+        .join()
+        .unwrap()
 }
 
 fn run_run(path: &std::path::Path) -> i32 {
-    eprintln!("Size of ast::Expr: {}", std::mem::size_of::<goblin_ast::Expr>());
-    eprintln!("Size of Value: {}", std::mem::size_of::<Value>());
     use goblin_interpreter::Session;
     
     // 1) read the file

@@ -1710,8 +1710,10 @@ impl<'t> Parser<'t> {
 
     fn parse_return_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
-        // Expect ident "return"
+
         let start_i = self.i;
+
+        // expect literal 'return'
         match self.peek() {
             Some(t) if matches!(t.kind, TokenKind::Ident) && self.peek_ident() == Some("return") => {
                 self.i += 1; // consume 'return'
@@ -1724,43 +1726,54 @@ impl<'t> Parser<'t> {
                 ));
             }
         }
-        // Optional: comma-separated identifiers. No expressions allowed.
-        let mut names: Vec<String> = Vec::new();
-        if let Some(name) = self.eat_ident() {
-            names.push(name);
-            while self.eat_op(",") {
-                let Some(n2) = self.eat_ident() else {
-                    return Err(s_help(
-                        "P0602",
-                        "Expected an identifier after ',' in return list",
-                        "Write `return a, b` (identifiers only).",
-                    ));
-                };
-                names.push(n2);
-            }
-            // After identifiers, only terminators are allowed on the same stmt.
-            if let Some(tok) = self.peek() {
-                let ok = match &tok.kind {
-                    TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent => true,
-                    TokenKind::Op(s) if s == ";" || s == "xx" => true,
-                    TokenKind::Ident if self.peek_ident() == Some("end") => true,
-                    _ => false,
-                };
-                if !ok {
-                    return Err(s_help(
-                        "P0601",
-                        "Return can only list identifiers, not expressions",
-                        "Use `return total` or `return a, b` — not `return (a+b)` or `return 1`.",
-                    ));
-                }
+
+        let mut values: Vec<ast::Expr> = Vec::new();
+
+        // what counts as a stmt terminator (NO self capture here)
+        let is_terminator = |tok: &goblin_lexer::Token| match &tok.kind {
+            TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent => true,
+            TokenKind::Op(s) if s == ";" || s == "xx" => true,
+            _ => false,
+        };
+
+        // bare `return` is valid
+        if let Some(tok) = self.peek() {
+            if is_terminator(tok) {
+                let span = Parser::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+                return Ok(ast::Stmt::Return(ast::ReturnStmt { values, span }));
             }
         }
-        // else: bare `return` → names stays empty
-        
-        // DON'T consume trailing newline - let the block parser handle it
-        
+
+        // `return` expr (',' expr)*
+        let first = self.parse_expr().map_err(|_| s_help(
+            "P0603",
+            "Invalid expression after 'return'",
+            "Use `return expr` or `return a, b`.",
+        ))?;
+        values.push(first);
+
+        while self.eat_op(",") {
+            let expr = self.parse_expr().map_err(|_| s_help(
+                "P0603",
+                "Invalid expression in return list",
+                "Separate expressions with commas, e.g., `return a+b, lower(name)`.",
+            ))?;
+            values.push(expr);
+        }
+
+        // after values, only terminators allowed; don't consume them here
+        if let Some(tok) = self.peek() {
+            if !is_terminator(tok) {
+                return Err(s_help(
+                    "P0601",
+                    "Invalid tokens after return values",
+                    "End the line after `return expr` or `return a, b`.",
+                ));
+            }
+        }
+
         let span = Parser::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        Ok(ast::Stmt::Return(ast::ReturnStmt { names, span }))
+        Ok(ast::Stmt::Return(ast::ReturnStmt { values, span }))
     }
 
     fn parse_field_chain_line_class(&mut self) -> Result<Vec<(String, PExpr)>, String> {
@@ -3765,9 +3778,7 @@ impl<'t> Parser<'t> {
                         ))
                     }
                     ast::Stmt::Return(ret_stmt) => {
-                        let values: Vec<ast::Expr> = ret_stmt.names.iter()
-                            .map(|name| ast::Expr::Ident(name.clone(), ret_stmt.span.clone()))
-                            .collect();
+                        let values: Vec<ast::Expr> = ret_stmt.values.clone();
                         Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
                     }
                     _ => Err(s_help(
@@ -5811,9 +5822,6 @@ impl<'t> Parser<'t> {
                 ));
             }
             
-            // Save the column where this case starts (the CONDITION line, not the value)
-            let case_line_col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(hdr_col);
-            
             // Check for "else:" special case
             let is_else = if let Some(tok) = self.peek() {
                 matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("else")
@@ -5837,70 +5845,21 @@ impl<'t> Parser<'t> {
                 ));
             }
             
-            // Check if the value starts on a new line with deeper indentation
-            let mut peek_i = self.i;
-            while peek_i < self.toks.len() {
-                let tok = &self.toks[peek_i];
-                if !matches!(tok.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
-                    break;
-                }
-                peek_i += 1;
-            }
-            
-            let value_col = if peek_i < self.toks.len() {
-                self.toks[peek_i].span.col_start
-            } else {
-                case_line_col
-            };
-            
-            let val = if value_col > case_line_col {
-                // Multi-line block - the VALUE is indented deeper than the condition
-                // We want to stop when we're back at the CASE level (case_line_col) or less
-                self.skip_newlines();
-                let block_stmts = self.parse_indented_block(case_line_col, &["else", "end"])?;
-                
-                // Convert statements to expressions
-                let exprs: Vec<ast::Expr> = block_stmts.into_iter().map(|s| match s {
-                    ast::Stmt::Expr(e) => Ok(e),
-                    ast::Stmt::Bind(b) => {
-                        Ok(ast::Expr::Assign(
-                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                            Box::new(b.expr),
-                            b.span
-                        ))
-                    }
-                    ast::Stmt::Return(r) => {
-                        let values: Vec<ast::Expr> = r.names.iter()
-                            .map(|name| ast::Expr::Ident(name.clone(), r.span.clone()))
-                            .collect();
-                        Ok(ast::Expr::FreeCall("return".to_string(), values, r.span))
-                    }
-                    _ => Err(s_help(
-                        "P0815",
-                        "Can't use class/action/enum declarations inside judge cases",
-                        "Move declarations outside the judge block"
-                    ))
-                }).collect::<Result<Vec<_>, _>>()?;
-                
-                PExpr::Block(exprs)
-            } else {
-                // Single line - value is on same line as condition
-                self.skip_newlines();
-                self.eat_layout_until_close(0);
-                self.parse_assign()?
-            };
-            
-            self.skip_newlines();
-            self.eat_layout_until_close(hdr_col);
+            // Parse single-line value (expression stops naturally at newline)
+            let val = self.parse_assign()?;
             
             let cond_expr = condition.unwrap_or_else(|| PExpr::Ident("else".to_string()));
             out.push((cond_expr, val));
-            self.eat_semi_separators();
+            
+            // Skip newlines and consume layout tokens before checking for block close
+            self.skip_newlines();
             
             if self.peek_block_close() {
+                self.eat_layout_until_close(hdr_col);
                 break;
             }
         }
+        
         Ok(out)
     }
 
@@ -5953,9 +5912,7 @@ impl<'t> Parser<'t> {
                 }
                 ast::Stmt::Return(r) => {
                     // Convert return to FreeCall
-                    let values: Vec<ast::Expr> = r.names.iter()
-                        .map(|name| ast::Expr::Ident(name.clone(), r.span.clone()))
-                        .collect();
+                    let values: Vec<ast::Expr> = r.values.clone();
                     ast::Expr::FreeCall("return".to_string(), values, r.span)
                 }
                 _ => {

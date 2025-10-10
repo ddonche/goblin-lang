@@ -109,7 +109,7 @@ pub struct ActionDecl {
 
 #[derive(Debug, Clone)]
 pub struct ReturnStmt {
-    pub names: Vec<String>, // identifiers only; empty = bare return
+    pub values: Vec<Expr>, // expressions; empty = bare return
     pub span: Span,
 }
 
@@ -184,4 +184,35 @@ pub enum Expr {
         stmts: Vec<Expr>,
         span: Span,
     },
+}
+
+impl Expr {
+    pub fn span(&self) -> &Span {
+        match self {
+            Expr::Nil(sp) => sp,
+            Expr::Bool(_, sp) => sp,
+            Expr::Number(_, sp) => sp,
+            Expr::Str(_, sp) => sp,
+            Expr::Char(_, sp) => sp,
+            Expr::Ident(_, sp) => sp,
+            Expr::Slice(_, _, _, sp) => sp,
+            Expr::Slice3(_, _, _, _, sp) => sp,
+            Expr::Array(_, sp) => sp,
+            Expr::Object(_, sp) => sp,
+            Expr::Member(_, _, sp) => sp,
+            Expr::OptMember(_, _, sp) => sp,
+            Expr::Index(_, _, sp) => sp,
+            Expr::Call(_, _, _, sp) => sp,
+            Expr::OptCall(_, _, _, sp) => sp,
+            Expr::FreeCall(_, _, sp) => sp,
+            Expr::NsCall(_, _, _, sp) => sp,
+            Expr::Prefix(_, _, sp) => sp,
+            Expr::Postfix(_, _, sp) => sp,  
+            Expr::Binary(_, _, _, sp) => sp,
+            Expr::Assign(_, _, sp) => sp,
+            Expr::EnumVariant { span, .. } => span,
+            Expr::Judge { span, .. } => span,
+            Expr::Block { span, .. } => span,  
+        }
+    }
 }

@@ -1224,6 +1224,145 @@ fn clamp_range(mut start: isize, mut end: isize, len: usize) -> (usize, usize) {
     (start as usize, end as usize)
 }
 
+fn parse_dice_string(s: &str) -> Result<BTreeMap<String, Value>, String> {
+    use std::collections::BTreeMap;
+    
+    let s = s.trim();
+    let mut cfg = BTreeMap::new();
+    
+    // Find the 'd' separator
+    let d_pos = s.find('d').ok_or("Missing 'd' in dice notation")?;
+    let count: i64 = s[..d_pos].parse().map_err(|_| "Invalid dice count")?;
+    
+    let mut rest = &s[d_pos+1..];
+    
+    // Parse sides (digits until we hit a non-digit)
+    let mut sides_end = 0;
+    for (i, ch) in rest.char_indices() {
+        if ch.is_ascii_digit() {
+            sides_end = i + 1;
+        } else {
+            break;
+        }
+    }
+    
+    if sides_end == 0 {
+        return Err("Missing number of sides".to_string());
+    }
+    
+    let sides: i64 = rest[..sides_end].parse().map_err(|_| "Invalid sides")?;
+    rest = &rest[sides_end..];
+    
+    cfg.insert("count".to_string(), Value::Int(count));
+    cfg.insert("sides".to_string(), Value::Int(sides));
+    cfg.insert("modifier".to_string(), Value::Int(0)); // default
+    
+    // Parse the rest: modifiers and options
+    let mut i = 0;
+    let chars: Vec<char> = rest.chars().collect();
+    
+    while i < chars.len() {
+        match chars[i] {
+            '+' | '-' => {
+                // Modifier: +3 or -2
+                let sign = if chars[i] == '-' { -1 } else { 1 };
+                i += 1;
+                
+                // Check if it's +adv or +dis
+                if i < chars.len() && chars[i].is_alphabetic() {
+                    let word_start = i;
+                    while i < chars.len() && chars[i].is_alphabetic() {
+                        i += 1;
+                    }
+                    let word: String = chars[word_start..i].iter().collect();
+                    
+                    if word == "adv" {
+                        cfg.insert("adv".to_string(), Value::Bool(true));
+                    } else if word == "dis" {
+                        cfg.insert("dis".to_string(), Value::Bool(true));
+                    } else {
+                        return Err(format!("Unknown modifier: {}", word));
+                    }
+                } else {
+                    // Numeric modifier
+                    let num_start = i;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    if i == num_start {
+                        return Err("Expected number after +/-".to_string());
+                    }
+                    let num: String = chars[num_start..i].iter().collect();
+                    let modifier: i64 = num.parse().map_err(|_| "Invalid modifier")?;
+                    cfg.insert("modifier".to_string(), Value::Int(sign * modifier));
+                }
+            }
+            
+            'k' => {
+                // keep_high: k3
+                i += 1;
+                let num_start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i == num_start {
+                    return Err("Expected number after 'k'".to_string());
+                }
+                let num: String = chars[num_start..i].iter().collect();
+                let n: i64 = num.parse().map_err(|_| "Invalid keep_high number")?;
+                cfg.insert("keep_high".to_string(), Value::Int(n));
+            }
+            
+            'd' | 'x' => {
+                // drop_low: d2 or x2
+                i += 1;
+                let num_start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i == num_start {
+                    return Err("Expected number after 'd/x'".to_string());
+                }
+                let num: String = chars[num_start..i].iter().collect();
+                let n: i64 = num.parse().map_err(|_| "Invalid drop_low number")?;
+                cfg.insert("drop_low".to_string(), Value::Int(n));
+            }
+            
+            'r' => {
+                // reroll_eq: r1
+                i += 1;
+                let num_start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i == num_start {
+                    return Err("Expected number after 'r'".to_string());
+                }
+                let num: String = chars[num_start..i].iter().collect();
+                let n: i64 = num.parse().map_err(|_| "Invalid reroll_eq number")?;
+                cfg.insert("reroll_eq".to_string(), Value::Int(n));
+            }
+            
+            '!' => {
+                // explode
+                cfg.insert("explode".to_string(), Value::Bool(true));
+                i += 1;
+            }
+            
+            ' ' => {
+                // Skip whitespace
+                i += 1;
+            }
+            
+            _ => {
+                return Err(format!("Unexpected character: '{}'", chars[i]));
+            }
+        }
+    }
+    
+    Ok(cfg)
+}
+
 // Render "Hello {name}" by looking identifiers up in the Session env.
 // Supports "{{" -> "{" and "}}" -> "}".
 fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Diag> {
@@ -1417,19 +1556,51 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         ast::Stmt::Return(rs) => {
             use std::collections::BTreeMap;
 
-            let ret = match rs.names.len() {
-                0 => Value::Nil,
-                1 => {
-                    let name = &rs.names[0];
-                    sess.get_var(name).cloned().unwrap_or(Value::Nil)
-                }
-                _ => {
-                    let mut map = BTreeMap::new();
-                    for name in &rs.names {
-                        let v = sess.get_var(name).cloned().unwrap_or(Value::Nil);
-                        map.insert(name.clone(), v);
+            // Evaluate each returned expression and (when possible) capture an identifier label
+            let mut vals: Vec<Value> = Vec::new();
+            let mut labels: Vec<Option<String>> = Vec::new();
+
+            for e in &rs.values {
+                match e {
+                    ast::Expr::Ident(name, _) => {
+                        labels.push(Some(name.clone()));
+                        vals.push(sess.get_var(name).cloned().unwrap_or(Value::Nil));
                     }
-                    Value::Map(map)
+                    _ => {
+                        labels.push(None);
+                        vals.push(eval_expr(e, sess)?);
+                    }
+                }
+            }
+
+            let ret = match vals.len() {
+                0 => Value::Nil,
+                1 => vals.into_iter().next().unwrap(),
+                _ => {
+                    // If ALL are labeled (identifiers), return a Map keyed by names (back-compat)
+                    if labels.iter().all(|l| l.is_some()) {
+                        let mut map = BTreeMap::new();
+                        for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
+                            map.insert(lab.unwrap(), v);
+                        }
+                        Value::Map(map)
+                    } else {
+                        // Mixed/literal returns: build a Map
+                        // - Identifiers keep their real names
+                        // - Unlabeled expressions get positional keys: "_1", "_2", ...
+                        let mut map = BTreeMap::new();
+                        let mut idx = 1usize;
+                        for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
+                            if let Some(name) = lab {
+                                map.insert(name, v);
+                            } else {
+                                let key = format!("_{}", idx);
+                                map.insert(key, v);
+                                idx += 1;
+                            }
+                        }
+                        Value::Map(map)
+                    }
                 }
             };
 
@@ -2952,6 +3123,26 @@ fn call_action_by_name(
             detail_out
         },
 
+        "roll_str" | "roll_detail_str" => {
+            let is_detail = name == "roll_detail_str";
+            
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("{} expects 1 argument", name), sp.clone()));
+            }
+            
+            let dice_str = match &args[0] {
+                Value::Str(s) => s.as_str(),
+                _ => return Err(rt("T0401", format!("{} expects a string", name), sp.clone())),
+            };
+            
+            let cfg = parse_dice_string(dice_str)
+                .map_err(|e| rt("T0401", format!("Invalid dice notation '{}': {}", dice_str, e), sp.clone()))?;
+            
+            // Call existing roll/roll_detail logic
+            let roll_fn = if is_detail { "roll_detail" } else { "roll" };
+            return call_action_by_name(sess, roll_fn, vec![Value::Map(cfg)], sp.clone());
+        }
+
         // ----- String case & transforms -----
         "upper" => { arity(1)?; map_str_1(&args[0], "upper", &|s| s.to_uppercase())? }
         "lower" => { arity(1)?; map_str_1(&args[0], "lower", &|s| s.to_lowercase())? }
@@ -3361,9 +3552,9 @@ fn call_action_by_name(
 
         "grab_at" => {
             arity(2)?;
-            let idx = match &args[1] {
-                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
-                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
+                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
+                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
             };
             match &args[0] {
                 Value::Str(s) => {
@@ -3451,9 +3642,9 @@ fn call_action_by_name(
 
         "put_at" => {
             arity(3)?;
-            let idx = match &args[1] {
-                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
-                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
+                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
+                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
             };
             match (&args[0], &args[2]) {
                 (Value::Str(s), Value::Str(sub)) => {
@@ -3514,9 +3705,9 @@ fn call_action_by_name(
 
         "update_at" => {
             arity(3)?;
-            let idx = match &args[1] {
-                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
-                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
+                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
+                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
             };
             match (&args[0], &args[2]) {
                 (Value::Str(s), Value::Str(with)) => {
@@ -3620,9 +3811,9 @@ fn call_action_by_name(
 
         "delete_at" => {
             arity(2)?;
-            let idx = match &args[1] {
-                Value::Float(n) if *n >= 0.0 && n.fract()==0.0 => *n as usize,
-                _ => return Err(rt("T0201","index must be a non-negative integer", sp.clone())),
+            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
+                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
+                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
             };
             match &args[0] {
                 Value::Str(s) => {
@@ -3707,7 +3898,7 @@ fn call_action_by_name(
             // Resolve count (default 1), must be positive integer
             let n_out: usize = match cfg.get("count") {
                 None => 1,
-                Some(Value::Float(n)) if *n > 0.0 && n.fract()==0.0 => *n as usize,
+                Some(Value::Int(n)) if *n > 0 => *n as usize,
                 Some(_) => return Err(rt("T0201", "reap 'count' must be a positive integer", sp.clone())),
             };
 
@@ -3993,6 +4184,200 @@ fn call_action_by_name(
 }
 
 // ===================== Evaluation =====================
+
+/// Represents a parsed lvalue path for mutation
+#[derive(Debug, Clone)]
+enum LValuePath {
+    /// Simple variable: `items`
+    Var(String),
+    /// Field access: `building >> items`
+    Field {
+        base: Box<LValuePath>,
+        field: String,
+    },
+    /// Index access: `buildings[0]`
+    Index {
+        base: Box<LValuePath>,
+        index: Value,
+    },
+}
+
+/// Parse an expression into an lvalue path for mutation
+fn parse_lvalue(expr: &ast::Expr, sess: &mut Session) -> Result<LValuePath, Diag> {
+    match expr {
+        // Simple identifier
+        ast::Expr::Ident(name, _) => Ok(LValuePath::Var(name.clone())),
+        
+        // Field access via >> (parsed as Member)
+        ast::Expr::Member(obj_expr, field_name, _) => {
+            let base = parse_lvalue(obj_expr, sess)?;
+            Ok(LValuePath::Field {
+                base: Box::new(base),
+                field: field_name.clone(),
+            })
+        }
+        
+        // Field access: obj >> field (Binary form - keep this for compatibility)
+        ast::Expr::Binary(obj_expr, op, field_expr, sp) if op == ">>" => {
+            let base = parse_lvalue(obj_expr, sess)?;
+            let field_name = match &**field_expr {
+                ast::Expr::Ident(n, _) => n.clone(),
+                _ => return Err(rt("P0804", "field name required after >>", sp.clone())),
+            };
+            Ok(LValuePath::Field {
+                base: Box::new(base),
+                field: field_name,
+            })
+        }
+        
+        // Index access: obj[index]
+        ast::Expr::Index(base_expr, index_expr, _) => {
+            let base = parse_lvalue(base_expr, sess)?;
+            let index_val = eval_expr(index_expr, sess)?;
+            Ok(LValuePath::Index {
+                base: Box::new(base),
+                index: index_val,
+            })
+        }
+        
+        _ => {
+            eprintln!("DEBUG: Unhandled expression type in parse_lvalue");
+            Err(rt("P0802", "expected a variable name or field access", expr.span().clone()))
+        }
+    }
+}
+
+/// Get a mutable reference to the value at the end of an lvalue path
+fn get_lvalue_mut<'a>(
+    path: &LValuePath,
+    sess: &'a mut Session,
+    sp: &Span,
+) -> Result<&'a mut Value, Diag> {
+    match path {
+        LValuePath::Var(name) => {
+            sess.get_var_mut(name)
+                .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", name), sp.clone()))
+        }
+        
+        LValuePath::Field { base, field } => {
+            let base_val = get_lvalue_mut(base, sess, sp)?;
+            
+            match base_val {
+                Value::Object { fields, readonly_fields, .. } => {
+                    if readonly_fields.contains(field) {
+                        return Err(rt("P9001", 
+                            format!("cannot modify readonly field '{}'", field), 
+                            sp.clone()));
+                    }
+                    fields.get_mut(field)
+                        .ok_or_else(|| rt("R0403", format!("no field '{}'", field), sp.clone()))
+                }
+                
+                Value::Map(map) => {
+                    map.get_mut(field)
+                        .ok_or_else(|| rt("R0403", format!("missing key '{}'", field), sp.clone()))
+                }
+                
+                Value::Enum { fields: Some(field_map), variant_name, .. } => {
+                    field_map.get_mut(field)
+                        .ok_or_else(|| rt("R0404", 
+                            format!("variant '{}' has no field '{}'", variant_name, field), 
+                            sp.clone()))
+                }
+                
+                _ => Err(rt("T0402", "member access requires a map, object, or enum", sp.clone())),
+            }
+        }
+        
+        LValuePath::Index { base, index } => {
+            let base_val = get_lvalue_mut(base, sess, sp)?;
+            
+            let idx = match index {
+                Value::Int(n) if *n >= 0 => *n as usize,
+                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
+            };
+            
+            match base_val {
+                Value::Array(arr) => {
+                    if idx >= arr.len() {
+                        return Err(rt("R0402", "index out of bounds", sp.clone()));
+                    }
+                    Ok(&mut arr[idx])
+                }
+                
+                _ => Err(rt("T0401", "index access requires an array or seq", sp.clone())),
+            }
+        }
+    }
+}
+
+/// Evaluate an lvalue path to get its current value (for building argv)
+fn eval_lvalue(path: &LValuePath, sess: &mut Session, sp: &Span) -> Result<Value, Diag> {
+    match path {
+        LValuePath::Var(name) => {
+            sess.get_var(name)
+                .cloned()
+                .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", name), sp.clone()))
+        }
+        
+        LValuePath::Field { base, field } => {
+            let base_val = eval_lvalue(base, sess, sp)?;
+            
+            match base_val {
+                Value::Object { fields, .. } => {
+                    fields.get(field)
+                        .cloned()
+                        .ok_or_else(|| rt("R0403", format!("no field '{}'", field), sp.clone()))
+                }
+                
+                Value::Map(map) => {
+                    map.get(field)
+                        .cloned()
+                        .ok_or_else(|| rt("R0403", format!("missing key '{}'", field), sp.clone()))
+                }
+                
+                Value::Enum { fields: Some(field_map), variant_name, .. } => {
+                    field_map.get(field)
+                        .cloned()
+                        .ok_or_else(|| rt("R0404", 
+                            format!("variant '{}' has no field '{}'", variant_name, field), 
+                            sp.clone()))
+                }
+                
+                _ => Err(rt("T0402", "member access requires a map, object, or enum", sp.clone())),
+            }
+        }
+        
+        LValuePath::Index { base, index } => {
+            let base_val = eval_lvalue(base, sess, sp)?;
+            
+            let idx = match index {
+                Value::Int(n) if *n >= 0 => *n as usize,
+                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
+            };
+            
+            match base_val {
+                Value::Array(arr) => {
+                    if idx >= arr.len() {
+                        return Err(rt("R0402", "index out of bounds", sp.clone()));
+                    }
+                    Ok(arr[idx].clone())
+                }
+                
+                Value::Str(s) => {
+                    let chars: Vec<char> = s.chars().collect();
+                    if idx >= chars.len() {
+                        return Err(rt("R0402", "index out of bounds", sp.clone()));
+                    }
+                    Ok(Value::Char(chars[idx]))
+                }
+                
+                _ => Err(rt("T0401", "index access requires an array, seq, or string", sp.clone())),
+            }
+        }
+    }
+}
+
 fn mutate_via_call_name(
     sess: &mut Session,
     name: &str,        // "put_at!"
@@ -4003,19 +4388,18 @@ fn mutate_via_call_name(
     let base = name.strip_suffix('!')
         .ok_or_else(|| rt("R0800", "internal: expected bang name", sp.clone()))?;
 
-    // Determine the target variable name and build argv for the pure version
-    let (target_name, argv_vals): (String, Vec<Value>) = if let Some(base_ident) = recv_ident {
+    // Determine the target lvalue path and build argv for the pure version
+    let (target_path, argv_vals): (LValuePath, Vec<Value>) = if let Some(base_ident) = recv_ident {
         // Receiver style: xs.put_at!(...)
         let mut vals = Vec::with_capacity(arg_exprs.len() + 1);
-        // receiver value first
+        
+        // Get receiver value
         let recv_val = sess
             .get_var(base_ident)
             .cloned()
             .ok_or_else(|| {
-                // Build a message with an optional help paragraph.
                 let mut msg = format!("Unknown identifier '{}'", base_ident);
                 if base_ident == "from" {
-                    // Your formatter treats lines starting with `help:` (or 2nd paragraph) as help text.
                     msg.push_str(
                         "\n\nhelp: `from` was parsed as a name here. After `pick`, either provide a count \
                          (e.g., `pick 1 from items`) or enable the sugar so `pick from items` defaults to 1.",
@@ -4024,74 +4408,64 @@ fn mutate_via_call_name(
                 rt("R0110", msg, sp.clone())
             })?;
         vals.push(recv_val);
-        // then args
-        for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
-        (base_ident.to_string(), vals)
+        
+        // Evaluate remaining arguments
+        for a in arg_exprs { 
+            vals.push(eval_expr(a, sess)?); 
+        }
+        
+        (LValuePath::Var(base_ident.to_string()), vals)
     } else {
-        // Free-call style: put_at!(xs, ...)
+        // Free-call style: put_at!(xs, ...) or put_at!(obj >> field, ...)
         if arg_exprs.is_empty() {
             return Err(rt("A0402",
                 format!("'{}' requires a target variable as first argument", name), sp.clone()));
         }
-        let tgt = match &arg_exprs[0] {
-            ast::Expr::Ident(n, _) => n.clone(),
-            _other => {
-                return Err(rt("P0802",
-                    &format!("'{}' requires a variable name (not an expression) as first argument", name),
-                    sp.clone()));
-            }
-        };
+        
+        // Parse the first argument as an lvalue path
+        let target_path = parse_lvalue(&arg_exprs[0], sess)?;
+        
+        // Build argv: first element is the current value at the lvalue
         let mut vals = Vec::with_capacity(arg_exprs.len());
-        for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
-        (tgt, vals)
+        vals.push(eval_lvalue(&target_path, sess, &sp)?);
+        
+        // Evaluate remaining arguments
+        for a in &arg_exprs[1..] { 
+            vals.push(eval_expr(a, sess)?); 
+        }
+        
+        (target_path, vals)
     };
 
     // Special-case destructive reap!: mutate target and return removed value(s)
     if base == "reap" {
-        // Figure out target variable & optional count expr
-        let (target_name, count_expr_opt): (String, Option<&ast::Expr>) = if let Some(base_ident) = recv_ident {
-            // xs.reap!() or xs.reap!(count)
-            (base_ident.to_string(), arg_exprs.get(0))
-        } else {
-            // reap!(xs) or reap!(xs, count)
-            let Some(first) = arg_exprs.get(0) else {
-                return Err(rt("A0402","reap! expects (xs) or (xs, count)", sp.clone()));
-            };
-            let ast::Expr::Ident(n, _) = first else {
-                return Err(rt("P0802","reap!: first argument must be a variable name", sp.clone()));
-            };
-            (n.clone(), arg_exprs.get(1))
-        };
-
         // Parse count (default 1)
-        let count: usize = if let Some(e) = count_expr_opt {
-            let v = eval_expr(e, sess)?;
-            let n = as_num(v, sp.clone(), "reap!(..., count)")?;
+        let count: usize = if argv_vals.len() > 1 {
+            let n = as_num(argv_vals[1].clone(), sp.clone(), "reap!(..., count)")?;
             if n <= 0.0 || n.fract() != 0.0 {
                 return Err(rt("T0201","reap! count must be a positive integer", sp.clone()));
             }
             n as usize
         } else { 1 };
 
-        // 1) Read-only: figure out length and type *without* mut-borrowing slot
+        // Get length and type
         enum CollKind { Arr(usize), Seq(usize), Str(usize) }
-        let kind_len = match sess.get_var(&target_name) {
-            Some(Value::Array(xs)) => {
+        let kind_len = match &argv_vals[0] {
+            Value::Array(xs) => {
                 if xs.is_empty() { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
                 CollKind::Arr(xs.len())
             }
-            Some(Value::Seq(xs)) => {
+            Value::Seq(xs) => {
                 let len = xs.len();
                 if len == 0 { return Err(rt("R0701","cannot reap from an empty collection", sp.clone())); }
                 CollKind::Seq(len)
             }
-            Some(Value::Str(s)) => {
+            Value::Str(s) => {
                 let n = s.chars().count();
                 if n == 0 { return Err(rt("R0701","cannot reap from an empty string", sp.clone())); }
                 CollKind::Str(n)
             }
-            Some(_) => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
-            None => return Err(rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone())),
+            _ => return Err(rt("T0401","reap! expects an array/seq/string variable", sp.clone())),
         };
 
         let len = match kind_len { CollKind::Arr(n)|CollKind::Seq(n)|CollKind::Str(n) => n };
@@ -4099,7 +4473,7 @@ fn mutate_via_call_name(
             return Err(rt("R0701", format!("not enough to sample: requested {count}, have {len}"), sp.clone()));
         }
 
-        // 2) RNG picks BEFORE any mutable borrow of the slot
+        // Sample indices
         fn sample_indices(sess: &mut Session, len: usize, k: usize) -> Vec<usize> {
             let mut idxs: Vec<usize> = (0..len).collect();
             for i in 0..k {
@@ -4110,25 +4484,22 @@ fn mutate_via_call_name(
         }
         let picks = sample_indices(sess, len, count);
 
-        // 3) Now mut-borrow slot and remove at descending indices
-        let slot = sess.get_var_mut(&target_name)
-            .ok_or_else(|| rt("R0110", format!("unknown identifier '{}'", target_name), sp.clone()))?;
+        // Get mutable reference to the target
+        let slot = get_lvalue_mut(&target_path, sess, &sp)?;
 
         let finish_vals = |mut items: Vec<Value>| -> Value {
             if items.len() == 1 { items.pop().unwrap() } else { Value::Array(items) }
         };
 
         match slot {
-            // Arrays
             Value::Array(vecd) => {
                 let mut removed: Vec<Value> = Vec::with_capacity(count);
                 let mut sorted = picks.clone();
-                sorted.sort_unstable_by(|a,b| b.cmp(a)); // remove safely
+                sorted.sort_unstable_by(|a,b| b.cmp(a));
                 for i in sorted { removed.push(vecd.remove(i)); }
-                removed.reverse(); // report in draw order
+                removed.reverse();
                 return Ok(finish_vals(removed));
             }
-            // Adaptive seq
             Value::Seq(seq) => {
                 let mut removed: Vec<Value> = Vec::with_capacity(count);
                 let mut sorted = picks.clone();
@@ -4139,9 +4510,7 @@ fn mutate_via_call_name(
                 removed.reverse();
                 return Ok(finish_vals(removed));
             }
-            // Strings (Unicode scalar semantics)
             Value::Str(s) => {
-                // Build removed string from the original contents (draw order)
                 let original = s.clone();
                 let mut removed_s = String::new();
                 for idx in &picks {
@@ -4149,7 +4518,6 @@ fn mutate_via_call_name(
                         removed_s.push_str(&ch);
                     }
                 }
-                // Mutate the string by deleting chosen scalars (descending index order)
                 let mut sorted = picks.clone();
                 sorted.sort_unstable_by(|a,b| b.cmp(a));
                 for idx in sorted {
@@ -4164,28 +4532,27 @@ fn mutate_via_call_name(
     // Call the pure version to compute the updated value
     let updated = call_action_by_name(sess, base, argv_vals, sp.clone())?;
 
-    // Write back to the target binding
-    if let Some(slot) = sess.get_var_mut(&target_name) {
-        *slot = updated;
-        Ok(Value::Unit) // or Ok(slot.clone()) if you want echo
-    } else {
-        Err(rt("R0110",
-            format!("unknown identifier '{}'", target_name), sp.clone()))
+    // Write back to the target lvalue
+    let slot = get_lvalue_mut(&target_path, sess, &sp)?;
+    *slot = updated;
+    
+    Ok(Value::Unit)
+}
+
+struct DepthGuard(&'static std::sync::atomic::AtomicUsize);
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
     
-    // Track which expressions we've visited
-        let ptr = e as *const ast::Expr;
-        
-        static DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let depth = DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                
-        if depth > 50 {
-            DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            panic!("EVAL STACK OVERFLOW at depth {}", depth);
-        }
+        
+        // Ensure we always decrement, even on error
+        let _guard = DepthGuard(&DEPTH);
 
     match e {
         // ---- Literals & identifiers ----
@@ -4715,6 +5082,63 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
        // ---- Member access on maps (syntax from parser; you're not using dot in code, but handle it) ----
        ast::Expr::Member(base, name, sp) => {
            let base_v = eval_expr(base, sess)?;
+           
+           // Check if this is a builtin method on a primitive type
+           let is_builtin_method = matches!(name.as_str(), 
+               // Collection methods
+               "count" | "len" | "length" |
+               // String transforms
+               "upper" | "lower" | "title" | "slug" | "mixed" |
+               "trim" | "trim_lead" | "trim_trail" |
+               // Collection operations  
+               "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
+               "freq" | "mode" |
+               // String operations
+               "split" | "join" | "lines" | "words" | "chars" |
+               "has" | "find" | "find_all" |
+               "before" | "after" | "before_last" | "after_last" | "between" |
+               "replace" |
+               // Numeric
+               "round" | "floor" | "ceil" | "abs" | "sqrt" |
+               // Type operations
+               "type" | "backend" | "metrics"
+           );
+           
+           if is_builtin_method {
+               // Check if the value type supports this method
+               let valid = match name.as_str() {
+                   "count" | "len" | "length" => {
+                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_))
+                   }
+                   "upper" | "lower" | "title" | "slug" | "mixed" | 
+                   "trim" | "trim_lead" | "trim_trail" |
+                   "reverse_chars" | "lines" | "words" | "chars" |
+                   "has" | "find" | "find_all" | "before" | "after" | 
+                   "before_last" | "after_last" | "between" | "replace" => {
+                       matches!(base_v, Value::Str(_))
+                   }
+                   "reverse" | "shuffle" | "sort" | "unique" | "dups" | 
+                   "freq" | "mode" => {
+                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_))
+                   }
+                   "split" => {
+                       matches!(base_v, Value::Str(_))
+                   }
+                   "join" => {
+                       matches!(base_v, Value::Array(_) | Value::Seq(_))
+                   }
+                   "round" | "floor" | "ceil" | "abs" | "sqrt" => {
+                       matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_))
+                   }
+                   "type" | "backend" | "metrics" => true, // Works on any type
+                   _ => false,
+               };
+               
+               if valid {
+                   // Call the builtin function with base_v as first argument
+                   return call_action_by_name(sess, name, vec![base_v], sp.clone());
+               }
+           }
            match base_v {
                Value::Map(map) => {
                    match map.get(name) {

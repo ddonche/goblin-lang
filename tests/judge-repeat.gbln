@@ -1,18 +1,20 @@
-/// Test repeat inside judge
-
 act test_it(building_type)
   items = []
   
   judge
-    building_type == "blacksmith":
-      repeat 3
-        items = items.put_last("sword")
-      end
-      
-    else: items = ["default"]
+    building_type == "Warrior": ["sword", "shield", "armor"]
+    building_type == "Mage":    ["staff", "robe", "spellbook"]
+    else: ["stick"]
   end
-  
-  return items
 end
-result = test_it("blacksmith")
+
+result = test_it("Warrior")
 say result
+
+command = "look"
+judge using command
+  "look": say "You look around"
+  "go": say "You go somewhere"
+  "help": say "Help text"
+  else: say "Unknown command"
+end
