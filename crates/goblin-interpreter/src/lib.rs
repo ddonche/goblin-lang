@@ -1031,6 +1031,7 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Index(_, _, sp)
         | ast::Expr::Slice(_, _, _, sp)
         | ast::Expr::Slice3(_, _, _, _, sp)
+        | ast::Expr::TupleAssign(_,_, sp)
         | ast::Expr::Call(_, _, _, sp)
         | ast::Expr::OptCall(_, _, _, sp)
         | ast::Expr::FreeCall(_, _, sp)
@@ -2053,6 +2054,420 @@ fn eval_builtin(
     Ok(Some(out))
 }
 
+// ===================== Collection Operation Refactoring =====================
+
+#[derive(Debug, Clone)]
+enum Position {
+    First,
+    Last,
+    At(Value),
+    Where(String),
+    All,
+}
+
+#[derive(Debug, Clone)]
+enum Operation {
+    Grab,
+    Put(Value),
+    Update(Value),
+    Delete,
+}
+
+fn collection_operation(
+    coll: &Value,
+    pos: Position,
+    op: Operation,
+    sp: &Span,
+    sess: &mut Session,
+) -> Result<Value, Diag> {
+    match coll {
+        // ==================== MAP ====================
+        Value::Map(map) => {
+            match pos {
+                Position::First => {
+                    match &op {
+                        Operation::Grab => {
+                            map.iter().next()
+                                .map(|(_, v)| v.clone())
+                                .ok_or_else(|| rt("R0701", "empty map", sp.clone()))
+                        }
+                        Operation::Put(v) => {
+                            let mut out = map.clone();
+                            // Maps don't have a natural "first" position, so we can't really "put first"
+                            // For now, just add it with a special key or error
+                            Err(rt("T0401", "put_first not meaningful for maps", sp.clone()))
+                        }
+                        Operation::Update(v) => {
+                            let first_key = map.keys().next()
+                                .ok_or_else(|| rt("R0701", "empty map", sp.clone()))?
+                                .clone();
+                            let mut out = map.clone();
+                            out.insert(first_key, v.clone());
+                            Ok(Value::Map(out))
+                        }
+                        Operation::Delete => {
+                            let first_key = map.keys().next()
+                                .ok_or_else(|| rt("R0701", "empty map", sp.clone()))?
+                                .clone();
+                            let mut out = map.clone();
+                            out.remove(&first_key);
+                            Ok(Value::Map(out))
+                        }
+                    }
+                }
+                
+                Position::Last => {
+                    match &op {
+                        Operation::Grab => {
+                            map.iter().last()
+                                .map(|(_, v)| v.clone())
+                                .ok_or_else(|| rt("R0701", "empty map", sp.clone()))
+                        }
+                        _ => Err(rt("T0401", "operation not meaningful for maps", sp.clone()))
+                    }
+                }
+                
+                Position::At(key_val) => {
+                    let key = match key_val {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(rt("T0205", "map key must be string", sp.clone())),
+                    };
+                    
+                    match &op {
+                        Operation::Grab => {
+                            map.get(&key)
+                                .cloned()
+                                .ok_or_else(|| rt("R0403", format!("no key '{}'", key), sp.clone()))
+                        }
+                        Operation::Put(v) => {
+                            let mut out = map.clone();
+                            out.insert(key, v.clone());
+                            Ok(Value::Map(out))
+                        }
+                        Operation::Update(v) => {
+                            if !map.contains_key(&key) {
+                                return Err(rt("R0403", format!("no key '{}'", key), sp.clone()));
+                            }
+                            let mut out = map.clone();
+                            out.insert(key, v.clone());
+                            Ok(Value::Map(out))
+                        }
+                        Operation::Delete => {
+                            let mut out = map.clone();
+                            out.remove(&key);
+                            Ok(Value::Map(out))
+                        }
+                    }
+                }
+                
+                Position::Where(pred) => {
+                    match &op {
+                        Operation::Grab => {
+                            let mut out_map = BTreeMap::new();
+                            for (k, v) in map {
+                                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                                if matches!(ok_v, Value::Bool(true)) {
+                                    out_map.insert(k.clone(), v.clone());
+                                }
+                            }
+                            Ok(Value::Map(out_map))
+                        }
+                        _ => Err(rt("T0401", "operation not yet implemented for maps with where", sp.clone()))
+                    }
+                }
+                
+                Position::All => {
+                    match &op {
+                        Operation::Grab => Ok(Value::Map(map.clone())),
+                        Operation::Delete => Ok(Value::Map(BTreeMap::new())),
+                        _ => Err(rt("T0401", "operation not meaningful for maps", sp.clone()))
+                    }
+                }
+            }
+        }
+
+        // ==================== STRING ====================
+        Value::Str(s) => {
+            let len = char_len(s);
+            
+            match pos {
+                Position::First => {
+                    match &op {
+                        Operation::Grab => {
+                            if s.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(Value::Char(s.chars().next().unwrap()))
+                        }
+                        Operation::Put(v) => {
+                            let sub = match v {
+                                Value::Str(t) => t.clone(),
+                                _ => return Err(rt("T0205", "string operation expects string", sp.clone())),
+                            };
+                            Ok(Value::Str(format!("{}{}", sub, s)))
+                        }
+                        Operation::Update(v) => {
+                            if s.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            let with = match v {
+                                Value::Str(t) => t,
+                                _ => return Err(rt("T0205", "string operation expects string", sp.clone())),
+                            };
+                            Ok(Value::Str(str_update_at(s, 0, with).unwrap()))
+                        }
+                        Operation::Delete => {
+                            if len == 0 { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(Value::Str(str_delete_at(s, 0).unwrap()))
+                        }
+                    }
+                }
+                
+                Position::Last => {
+                    match &op {
+                        Operation::Grab => {
+                            if s.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(Value::Char(s.chars().rev().next().unwrap()))
+                        }
+                        Operation::Put(v) => {
+                            let sub = match v {
+                                Value::Str(t) => t,
+                                _ => return Err(rt("T0205", "string operation expects string", sp.clone())),
+                            };
+                            Ok(Value::Str(format!("{}{}", s, sub)))
+                        }
+                        Operation::Update(v) => {
+                            if len == 0 { return Err(rt("R0701", "empty", sp.clone())); }
+                            let with = match v {
+                                Value::Str(t) => t,
+                                _ => return Err(rt("T0205", "string operation expects string", sp.clone())),
+                            };
+                            Ok(Value::Str(str_update_at(s, len - 1, with).unwrap()))
+                        }
+                        Operation::Delete => {
+                            if len == 0 { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(Value::Str(str_delete_at(s, len - 1).unwrap()))
+                        }
+                    }
+                }
+                
+                Position::At(idx_val) => {
+                    let idx = match idx_val {
+                        Value::Int(n) if n >= 0 => n as usize,
+                        _ => return Err(rt("T0201", "string index must be non-negative integer", sp.clone())),
+                    };
+                    
+                    match &op {
+                        Operation::Grab => {
+                            if idx >= len { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            Ok(Value::Char(s.chars().nth(idx).unwrap()))
+                        }
+                        Operation::Put(v) => {
+                            if idx > len { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            let sub = match v {
+                                Value::Str(t) => t,
+                                _ => return Err(rt("T0205", "string operation expects string", sp.clone())),
+                            };
+                            Ok(Value::Str(str_insert_at(s, idx, sub).unwrap()))
+                        }
+                        Operation::Update(v) => {
+                            if idx >= len { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            let with = match v {
+                                Value::Str(t) => t,
+                                _ => return Err(rt("T0205", "string operation expects string", sp.clone())),
+                            };
+                            Ok(Value::Str(str_update_at(s, idx, with).unwrap()))
+                        }
+                        Operation::Delete => {
+                            if idx >= len { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            Ok(Value::Str(str_delete_at(s, idx).unwrap()))
+                        }
+                    }
+                }
+                
+                Position::Where(pred) => {
+                    match &op {
+                        Operation::Grab | Operation::Delete => {
+                            let keep = matches!(&op, Operation::Grab);
+                            let mut out = String::new();
+                            for c in s.chars() {
+                                let ok_v = call_action_by_name(sess, &pred, vec![Value::Char(c)], sp.clone())?;
+                                let matches = matches!(ok_v, Value::Bool(true));
+                                if matches == keep {
+                                    out.push(c);
+                                }
+                            }
+                            Ok(Value::Str(out))
+                        }
+                        Operation::Update(v) => {
+                            let with = match v {
+                                Value::Str(t) => t,
+                                _ => return Err(rt("T0205", "string update expects string", sp.clone())),
+                            };
+                            let mut out = String::new();
+                            for i in 0..len {
+                                let ch = slice_char(s, i).unwrap();
+                                let ok_v = call_action_by_name(sess, &pred, vec![Value::Str(ch.clone())], sp.clone())?;
+                                if matches!(ok_v, Value::Bool(true)) {
+                                    out.push_str(with);
+                                } else {
+                                    out.push_str(&ch);
+                                }
+                            }
+                            Ok(Value::Str(out))
+                        }
+                        _ => Err(rt("T0401", "operation not supported", sp.clone()))
+                    }
+                }
+                
+                Position::All => {
+                    match &op {
+                        Operation::Grab => Ok(Value::Str(s.clone())),
+                        Operation::Delete => Ok(Value::Str(String::new())),
+                        Operation::Update(v) => {
+                            let sub = match v {
+                                Value::Str(t) => t,
+                                _ => return Err(rt("T0205", "string update expects string", sp.clone())),
+                            };
+                            Ok(Value::Str(sub.repeat(len)))
+                        }
+                        _ => Err(rt("T0401", "operation not supported", sp.clone()))
+                    }
+                }
+            }
+        }
+
+        // ==================== ARRAY/SEQ ====================
+        _ => {
+            let xs = as_array_like(coll)
+                .ok_or_else(|| rt("T0401", "operation expects array/seq/string/map", sp.clone()))?;
+            
+            match pos {
+                Position::First => {
+                    match &op {
+                        Operation::Grab => {
+                            if xs.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(xs[0].clone())
+                        }
+                        Operation::Put(v) => {
+                            let mut out = Vec::with_capacity(xs.len() + 1);
+                            out.push(v.clone());
+                            out.extend(xs.iter().cloned());
+                            Ok(Value::Array(out))
+                        }
+                        Operation::Update(v) => {
+                            if xs.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            let mut out = xs.to_vec();
+                            out[0] = v.clone();
+                            Ok(Value::Array(out))
+                        }
+                        Operation::Delete => {
+                            if xs.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(Value::Array(xs.iter().skip(1).cloned().collect()))
+                        }
+                    }
+                }
+                
+                Position::Last => {
+                    match &op {
+                        Operation::Grab => {
+                            if xs.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(xs[xs.len() - 1].clone())
+                        }
+                        Operation::Put(v) => {
+                            let mut out = xs.to_vec();
+                            out.push(v.clone());
+                            Ok(Value::Array(out))
+                        }
+                        Operation::Update(v) => {
+                            if xs.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            let mut out = xs.to_vec();
+                            let idx = out.len() - 1;
+                            out[idx] = v.clone();
+                            Ok(Value::Array(out))
+                        }
+                        Operation::Delete => {
+                            if xs.is_empty() { return Err(rt("R0701", "empty", sp.clone())); }
+                            Ok(Value::Array(xs.iter().take(xs.len() - 1).cloned().collect()))
+                        }
+                    }
+                }
+                
+                Position::At(idx_val) => {
+                    let idx = match idx_val {
+                        Value::Int(n) if n >= 0 => n as usize,
+                        _ => return Err(rt("T0201", "array index must be non-negative integer", sp.clone())),
+                    };
+                    
+                    match &op {
+                        Operation::Grab => {
+                            if idx >= xs.len() { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            Ok(xs[idx].clone())
+                        }
+                        Operation::Put(v) => {
+                            if idx > xs.len() { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            let mut out = Vec::with_capacity(xs.len() + 1);
+                            out.extend(xs.iter().take(idx).cloned());
+                            out.push(v.clone());
+                            out.extend(xs.iter().skip(idx).cloned());
+                            Ok(Value::Array(out))
+                        }
+                        Operation::Update(v) => {
+                            if idx >= xs.len() { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            let mut out = xs.to_vec();
+                            out[idx] = v.clone();
+                            Ok(Value::Array(out))
+                        }
+                        Operation::Delete => {
+                            if idx >= xs.len() { return Err(rt("R0402", "out of bounds", sp.clone())); }
+                            let mut out = Vec::with_capacity(xs.len().saturating_sub(1));
+                            for (i, v) in xs.iter().enumerate() {
+                                if i != idx { out.push(v.clone()); }
+                            }
+                            Ok(Value::Array(out))
+                        }
+                    }
+                }
+                
+                Position::Where(pred) => {
+                    match &op {
+                        Operation::Grab | Operation::Delete => {
+                            let keep = matches!(&op, Operation::Grab);
+                            let mut out = Vec::new();
+                            for v in xs {
+                                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
+                                let matches = matches!(ok_v, Value::Bool(true));
+                                if matches == keep {
+                                    out.push(v.clone());
+                                }
+                            }
+                            Ok(Value::Array(out))
+                        }
+                        Operation::Update(v) => {
+                            let mut out = Vec::with_capacity(xs.len());
+                            for item in xs {
+                                let ok_v = call_action_by_name(sess, &pred, vec![item.clone()], sp.clone())?;
+                                if matches!(ok_v, Value::Bool(true)) {
+                                    out.push(v.clone());
+                                } else {
+                                    out.push(item.clone());
+                                }
+                            }
+                            Ok(Value::Array(out))
+                        }
+                        _ => Err(rt("T0401", "operation not supported", sp.clone()))
+                    }
+                }
+                
+                Position::All => {
+                    match &op {
+                        Operation::Grab => Ok(Value::Array(xs.to_vec())),
+                        Operation::Delete => Ok(Value::Array(vec![])),
+                        Operation::Update(v) => Ok(Value::Array(vec![v.clone(); xs.len()])),
+                        _ => Err(rt("T0401", "operation not supported", sp.clone()))
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn call_action_by_name(
     sess: &mut Session,
     name: &str,
@@ -2162,7 +2577,7 @@ fn call_action_by_name(
 
     // Shared helpers
 
-    let want_bool = |v: &Value, label: &str| -> Result<bool, Diag> {
+    let _want_bool = |v: &Value, label: &str| -> Result<bool, Diag> {
         match v {
             Value::Bool(b) => Ok(*b),
             _ => Err(rt("T0203", format!("{label} expects a boolean"), sp.clone())),
@@ -2588,12 +3003,9 @@ fn call_action_by_name(
                 match m.get(k)? {
                     Value::Float(n) => Some(*n),
                     Value::Int(i)   => Some(*i as f64),
-                    Value::Str(s)   => s.parse::<f64>().ok(), // keep if you want to be permissive
+                    Value::Str(s)   => s.parse::<f64>().ok(),
                     _ => None,
                 }
-            };
-            let get_arr = |m: &BTreeMap<String, Value>, k: &str| -> Option<Vec<Value>> {
-                m.get(k).and_then(|v| if let Value::Array(xs) = v { Some(xs.clone()) } else { None })
             };
 
             // ---- base config ----
@@ -2611,13 +3023,29 @@ fn call_action_by_name(
             }
             let unique_digits = get_bool(&cfg, "unique").unwrap_or(false);
 
-            let src_array = get_arr(&cfg, "src");
-            let has_range  = cfg.contains_key("range_start") && cfg.contains_key("range_end");
+            let has_range = cfg.contains_key("range_start") && cfg.contains_key("range_end");
+
+            // Check for collection source (array, seq, or map)
+            enum CollectionSource {
+                Array(Vec<Value>),
+                Seq(Vec<Value>),
+                Map(BTreeMap<String, Value>),
+            }
+
+            let src_collection: Option<CollectionSource> = if let Some(Value::Array(arr)) = cfg.get("src") {
+                Some(CollectionSource::Array(arr.clone()))
+            } else if let Some(Value::Seq(seq)) = cfg.get("src") {
+                Some(CollectionSource::Seq(seq.to_vec()))
+            } else if let Some(Value::Map(m)) = cfg.get("src") {
+                Some(CollectionSource::Map(m.clone()))
+            } else {
+                None
+            };
 
             // default allow_dups: collections => false; numeric (range/digits) => true
             let allow_dups = match get_bool(&cfg, "allow_dups") {
                 Some(b) => b,
-                None => if src_array.is_some() { false } else { true },
+                None => if src_collection.is_some() { false } else { true },
             };
 
             // ---- handy finisher ----
@@ -2626,32 +3054,74 @@ fn call_action_by_name(
             };
 
             // ================== Collections ==================
-            if let Some(arr) = src_array {
-                if arr.is_empty() {
-                    return Err(rt("R0701", "cannot pick from an empty collection", sp.clone()));
-                }
-                if !allow_dups && n_out > arr.len() {
-                    return Err(rt("R0701", format!("cannot pick {} distinct items from {}", n_out, arr.len()), sp.clone()));
-                }
+            if let Some(coll) = src_collection {
+                match coll {
+                    CollectionSource::Array(arr) | CollectionSource::Seq(arr) => {
+                        if arr.is_empty() {
+                            return Err(rt("R0701", "cannot pick from an empty collection", sp.clone()));
+                        }
+                        if !allow_dups && n_out > arr.len() {
+                            return Err(rt("R0701", format!("cannot pick {} distinct items from {}", n_out, arr.len()), sp.clone()));
+                        }
 
-                let out = if allow_dups {
-                    let mut out = Vec::with_capacity(n_out);
-                    for _ in 0..n_out {
-                        out.push(arr[rng_index(sess, arr.len())].clone());
+                        let out = if allow_dups {
+                            let mut out = Vec::with_capacity(n_out);
+                            for _ in 0..n_out {
+                                out.push(arr[rng_index(sess, arr.len())].clone());
+                            }
+                            out
+                        } else {
+                            // without replacement: partial Fisher–Yates over indices
+                            let mut idxs: Vec<usize> = (0..arr.len()).collect();
+                            let mut out = Vec::with_capacity(n_out);
+                            for i in 0..n_out {
+                                let j = i + rng_index(sess, arr.len() - i);
+                                idxs.swap(i, j);
+                                out.push(arr[idxs[i]].clone());
+                            }
+                            out
+                        };
+                        return Ok(finish(out));
                     }
-                    out
-                } else {
-                    // without replacement: partial Fisher–Yates over indices
-                    let mut idxs: Vec<usize> = (0..arr.len()).collect();
-                    let mut out = Vec::with_capacity(n_out);
-                    for i in 0..n_out {
-                        let j = i + rng_index(sess, arr.len() - i);
-                        idxs.swap(i, j);
-                        out.push(arr[idxs[i]].clone());
+                    
+                    CollectionSource::Map(map) => {
+                        if map.is_empty() {
+                            return Err(rt("R0701", "cannot pick from an empty map", sp.clone()));
+                        }
+                        
+                        let entries: Vec<(String, Value)> = map.iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        
+                        if !allow_dups && n_out > entries.len() {
+                            return Err(rt("R0701", format!("cannot pick {} distinct entries from {}", n_out, entries.len()), sp.clone()));
+                        }
+
+                        let out = if allow_dups {
+                            let mut out = Vec::with_capacity(n_out);
+                            for _ in 0..n_out {
+                                let idx = rng_index(sess, entries.len());
+                                let mut pair = BTreeMap::new();
+                                pair.insert(entries[idx].0.clone(), entries[idx].1.clone());
+                                out.push(Value::Map(pair));
+                            }
+                            out
+                        } else {
+                            let mut idxs: Vec<usize> = (0..entries.len()).collect();
+                            let mut out = Vec::with_capacity(n_out);
+                            for i in 0..n_out {
+                                let j = i + rng_index(sess, entries.len() - i);
+                                idxs.swap(i, j);
+                                let mut pair = BTreeMap::new();
+                                pair.insert(entries[idxs[i]].0.clone(), entries[idxs[i]].1.clone());
+                                out.push(Value::Map(pair));
+                            }
+                            out
+                        };
+                        
+                        return Ok(finish(out));
                     }
-                    out
-                };
-                return Ok(finish(out));
+                }
             }
 
             // ---------- helpers for numeric domains ----------
@@ -2663,7 +3133,7 @@ fn call_action_by_name(
             };
             let has_unique_digits = |mut v: i64, d: i64| -> bool {
                 if !unique_digits { return true; }
-                if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; } // disallow shorter widths
+                if d > 0 && v < 10_i64.pow((d - 1) as u32) { return false; }
                 let mut seen = [false; 10];
                 if v == 0 { return false; }
                 while v > 0 {
@@ -2802,7 +3272,7 @@ fn call_action_by_name(
                 "pick needs a source: `from <collection>` or a numeric form",
                 sp.clone(),
             ));
-        },
+        }
 
         //===== SEEDS =====
         "rand_seed" => {
@@ -3516,422 +3986,187 @@ fn call_action_by_name(
         }
 
         // collections CRUD style
+        // Inside the match name { ... } block in call_action_by_name, replace all these functions:
+
         "grab_first" => {
             arity(1)?;
-            match &args[0] {
-                Value::Str(s) => {
-                    if s.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    let c = s.chars().next().unwrap();
-                    Value::Char(c)
-                }
-                _ => {
-                    let xs = as_array_like(&args[0])
-                        .ok_or_else(|| rt("T0401","grab_first expects array/seq/string", sp.clone()))?;
-                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    xs[0].clone()
-                }
-            }
+            collection_operation(&args[0], Position::First, Operation::Grab, &sp, sess)?
         }
 
         "grab_last" => {
             arity(1)?;
-            match &args[0] {
-                Value::Str(s) => {
-                    if s.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    let c = s.chars().rev().next().unwrap();
-                    Value::Char(c)
-                }
-                _ => {
-                    let xs = as_array_like(&args[0])
-                        .ok_or_else(|| rt("T0401","grab_last expects array/seq/string", sp.clone()))?;
-                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    xs[xs.len()-1].clone()
-                }
-            }
+            collection_operation(&args[0], Position::Last, Operation::Grab, &sp, sess)?
         }
 
         "grab_at" => {
             arity(2)?;
-            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
-                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
-                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
-            };
-            match &args[0] {
-                Value::Str(s) => {
-                    let n = s.chars().count();
-                    if idx >= n { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    let c = s.chars().nth(idx).unwrap();
-                    Value::Char(c)
-                }
-                _ => {
-                    let xs = as_array_like(&args[0])
-                        .ok_or_else(|| rt("T0401","grab_at expects array/seq/string", sp.clone()))?;
-                    if idx >= xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    xs[idx].clone()
-                }
-            }
+            collection_operation(&args[0], Position::At(args[1].clone()), Operation::Grab, &sp, sess)?
         }
 
         "grab_where" => {
             arity(2)?;
-            let pred = match &args[1] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205", "grab_where expects the predicate action name as a string", sp.clone())),
-            };
-
-            match &args[0] {
-                Value::Str(s) => {
-                    let mut out = String::new();
-                    for c in s.chars() {
-                        let ok_v = call_action_by_name(sess, &pred, vec![Value::Char(c)], sp.clone())?;
-                        if matches!(ok_v, Value::Bool(true)) {
-                            out.push(c);
-                        }
-                    }
-                    Value::Str(out)
-                }
-                _ => {
-                    let xs = as_array_like(&args[0])
-                        .ok_or_else(|| rt("T0401","grab_where expects array/seq/string", sp.clone()))?;
-                    let mut out_vec = Vec::new();
-                    for v in xs.iter() {
-                        let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                        if matches!(ok_v, Value::Bool(true)) { out_vec.push(v.clone()); }
-                    }
-                    Value::Array(out_vec)
-                }
-            }
+            let pred = want_str(&args[1], "grab_where predicate")?;
+            collection_operation(&args[0], Position::Where(pred), Operation::Grab, &sp, sess)?
         }
 
         "grab_all" => {
             arity(1)?;
-            match &args[0] {
-                Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_) => args[0].clone(),
-                _ => return Err(rt("T0401", "grab_all expects a collection", sp.clone())),
-            }
+            collection_operation(&args[0], Position::All, Operation::Grab, &sp, sess)?
         }
 
         "put_first" => {
             arity(2)?;
-            match (&args[0], &args[1]) {
-                (Value::Str(s), Value::Str(sub)) => Value::Str(format!("{}{}", sub, s)),
-                (Value::Str(_), _) => return Err(rt("T0205","put_first(string, ...) expects a string to insert", sp.clone())),
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","put_first expects array/seq/string", sp.clone()))?;
-                    let mut out = Vec::with_capacity(xs.len()+1);
-                    out.push(args[1].clone());
-                    out.extend(xs.iter().cloned());
-                    Value::Array(out)
-                }
-            }
+            collection_operation(&args[0], Position::First, Operation::Put(args[1].clone()), &sp, sess)?
         }
 
         "put_last" => {
             arity(2)?;
-            match (&args[0], &args[1]) {
-                (Value::Str(s), Value::Str(sub)) => Value::Str(format!("{}{}", s, sub)),
-                (Value::Str(_), _) => return Err(rt("T0205","put_last(string, ...) expects a string to insert", sp.clone())),
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","put_last expects array/seq/string", sp.clone()))?;
-                    let mut out = xs.to_vec();
-                    out.push(args[1].clone());
-                    Value::Array(out)
-                }
-            }
+            collection_operation(&args[0], Position::Last, Operation::Put(args[1].clone()), &sp, sess)?
         }
 
         "put_at" => {
             arity(3)?;
-            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
-                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
-                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
-            };
-            match (&args[0], &args[2]) {
-                (Value::Str(s), Value::Str(sub)) => {
-                    let n = char_len(s);
-                    if idx > n { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    Value::Str(str_insert_at(s, idx, sub).unwrap())
-                }
-                (Value::Str(_), _) => return Err(rt("T0205","put_at(string, ...) expects a string to insert", sp.clone())),
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","put_at expects array/seq/string", sp.clone()))?;
-                    if idx > xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    let mut out = Vec::with_capacity(xs.len()+1);
-                    out.extend(xs.iter().take(idx).cloned());
-                    out.push(args[2].clone());
-                    out.extend(xs.iter().skip(idx).cloned());
-                    Value::Array(out)
-                }
-            }
+            collection_operation(&args[0], Position::At(args[1].clone()), Operation::Put(args[2].clone()), &sp, sess)?
         }
 
         "update_first" => {
             arity(2)?;
-            match (&args[0], &args[1]) {
-                (Value::Str(s), Value::Str(with)) => {
-                    if s.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    Value::Str(str_update_at(s, 0, with).unwrap())
-                }
-                (Value::Str(_), _) => return Err(rt("T0205","update_first(string, ...) expects a string", sp.clone())),
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_first expects array/seq/string", sp.clone()))?;
-                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    let mut out = xs.to_vec();
-                    out[0] = args[1].clone();
-                    Value::Array(out)
-                }
-            }
+            collection_operation(&args[0], Position::First, Operation::Update(args[1].clone()), &sp, sess)?
         }
 
         "update_last" => {
             arity(2)?;
-            match (&args[0], &args[1]) {
-                (Value::Str(s), Value::Str(with)) => {
-                    let n = char_len(s);
-                    if n == 0 { return Err(rt("R0701","empty", sp.clone())); }
-                    Value::Str(str_update_at(s, n-1, with).unwrap())
-                }
-                (Value::Str(_), _) => return Err(rt("T0205","update_last(string, ...) expects a string", sp.clone())),
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_last expects array/seq/string", sp.clone()))?;
-                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    let mut out = xs.to_vec();
-                    let k = out.len()-1;
-                    out[k] = args[1].clone();
-                    Value::Array(out)
-                }
-            }
+            collection_operation(&args[0], Position::Last, Operation::Update(args[1].clone()), &sp, sess)?
         }
 
         "update_at" => {
             arity(3)?;
-            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
-                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
-                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
-            };
-            match (&args[0], &args[2]) {
-                (Value::Str(s), Value::Str(with)) => {
-                    let n = char_len(s);
-                    if idx >= n { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    Value::Str(str_update_at(s, idx, with).unwrap())
-                }
-                (Value::Str(_), _) => return Err(rt("T0205","update_at(string, ...) expects a string", sp.clone())),
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_at expects array/seq/string", sp.clone()))?;
-                    if idx >= xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    let mut out = xs.to_vec();
-                    out[idx] = args[2].clone();
-                    Value::Array(out)
-                }
-            }
+            collection_operation(&args[0], Position::At(args[1].clone()), Operation::Update(args[2].clone()), &sp, sess)?
         }
 
         "update_where" => {
             arity(3)?;
-            let pred = match &args[1] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205","update_where expects a predicate action name (string)", sp.clone())),
-            };
-            match (&args[0], &args[2]) {
-                (Value::Str(s), Value::Str(with)) => {
-                    let mut out = String::new();
-                    for i in 0..char_len(s) {
-                        let ch = slice_char(s, i).unwrap();
-                        let ok_v = call_action_by_name(sess, &pred, vec![Value::Str(ch.clone())], sp.clone())?;
-                        if want_bool(&ok_v, "update_where predicate")? { out.push_str(with); } else { out.push_str(&ch); }
-                    }
-                    Value::Str(out)
-                }
-                (Value::Str(_), _) => return Err(rt("T0205","update_where on string expects a string replacement", sp.clone())),
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","update_where expects array/seq/string", sp.clone()))?;
-                    let withv = args[2].clone();
-                    let mut out: Vec<Value> = Vec::with_capacity(xs.len());
-                    for v in xs.iter() {
-                        let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                        out.push(if want_bool(&ok_v, "update_where predicate")? { withv.clone() } else { v.clone() });
-                    }
-                    Value::Array(out)
-                }
-            }
+            let pred = want_str(&args[1], "update_where predicate")?;
+            collection_operation(&args[0], Position::Where(pred), Operation::Update(args[2].clone()), &sp, sess)?
         }
 
         "update_all" => {
-            if args.len() != 2 {
-                return Err(rt("A0402",
-                    format!("wrong number of arguments: expected 2, got {}", args.len()),
-                    sp.clone()));
-            }
-            let withv = args[1].clone();
-            match &args[0] {
-                Value::Array(xs) => Value::Array(vec![withv; xs.len()]),
-                Value::Seq(s)    => Value::Seq(Seq::from_vec(vec![withv; s.len()])),
-                Value::Str(s)    => {
-                    let sub = match &withv {
-                        Value::Str(t) => t.clone(),
-                        _ => return Err(rt("T0205", "update_all(string, ...) expects a string replacement", sp.clone())),
-                    };
-                    let n = char_len(s);
-                    Value::Str(sub.repeat(n))
-                }
-                _ => return Err(rt("T0401", "update_all expects array/seq/string", sp.clone())),
-            }
+            arity(2)?;
+            collection_operation(&args[0], Position::All, Operation::Update(args[1].clone()), &sp, sess)?
         }
 
         "delete_first" => {
             arity(1)?;
-            match &args[0] {
-                Value::Str(s) => {
-                    if char_len(s) == 0 { return Err(rt("R0701","empty", sp.clone())); }
-                    Value::Str(str_delete_at(s, 0).unwrap())
-                }
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_first expects array/seq/string", sp.clone()))?;
-                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    Value::Array(xs.iter().skip(1).cloned().collect())
-                }
-            }
+            collection_operation(&args[0], Position::First, Operation::Delete, &sp, sess)?
         }
 
         "delete_last" => {
             arity(1)?;
-            match &args[0] {
-                Value::Str(s) => {
-                    let n = char_len(s);
-                    if n == 0 { return Err(rt("R0701","empty", sp.clone())); }
-                    Value::Str(str_delete_at(s, n-1).unwrap())
-                }
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_last expects array/seq/string", sp.clone()))?;
-                    if xs.is_empty() { return Err(rt("R0701","empty", sp.clone())); }
-                    Value::Array(xs.iter().take(xs.len()-1).cloned().collect())
-                }
-            }
+            collection_operation(&args[0], Position::Last, Operation::Delete, &sp, sess)?
         }
 
         "delete_at" => {
             arity(2)?;
-            let idx = match &args[1] {  // Changed from 'index' to '&args[1]'
-                Value::Int(n) if n >= &0 => *n as usize,  // Changed *n >= 0 to n >= &0
-                _ => return Err(rt("T0201", "index must be a non-negative integer", sp.clone())),
-            };
-            match &args[0] {
-                Value::Str(s) => {
-                    let n = char_len(s);
-                    if idx >= n { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    Value::Str(str_delete_at(s, idx).unwrap())
-                }
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_at expects array/seq/string", sp.clone()))?;
-                    if idx >= xs.len() { return Err(rt("R0402","index out of bounds", sp.clone())); }
-                    let mut out = Vec::with_capacity(xs.len().saturating_sub(1));
-                    for (i, v) in xs.iter().enumerate() {
-                        if i != idx { out.push(v.clone()); }
-                    }
-                    Value::Array(out)
-                }
-            }
+            collection_operation(&args[0], Position::At(args[1].clone()), Operation::Delete, &sp, sess)?
         }
 
         "delete_where" => {
             arity(2)?;
-            let pred = match &args[1] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(rt("T0205","delete_where expects a predicate action name (string)", sp.clone())),
-            };
-            match &args[0] {
-                Value::Str(s) => {
-                    let mut out = String::new();
-                    for i in 0..char_len(s) {
-                        let ch = slice_char(s, i).unwrap();
-                        let ok_v = call_action_by_name(sess, &pred, vec![Value::Str(ch.clone())], sp.clone())?;
-                        if !want_bool(&ok_v, "delete_where predicate")? { out.push_str(&ch); }
-                    }
-                    Value::Str(out)
-                }
-                _ => {
-                    let xs = as_array_like(&args[0]).ok_or_else(|| rt("T0401","delete_where expects array/seq/string", sp.clone()))?;
-                    let mut kept: Vec<Value> = Vec::with_capacity(xs.len());
-                    for v in xs.iter() {
-                        let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                        if !want_bool(&ok_v, "delete_where predicate")? { kept.push(v.clone()); }
-                    }
-                    Value::Array(kept)
-                }
-            }
+            let pred = want_str(&args[1], "delete_where predicate")?;
+            collection_operation(&args[0], Position::Where(pred), Operation::Delete, &sp, sess)?
         }
 
         "delete_all" => {
             arity(1)?;
-            match &args[0] {
-                Value::Str(_)   => Value::Str(String::new()),
-                Value::Array(_) => Value::Array(vec![]),
-                Value::Seq(_)   => Value::Seq(Seq::from_vec(vec![])),
-                Value::Map(_)   => { use std::collections::BTreeMap; Value::Map(BTreeMap::new()) }
-                _ => return Err(rt("T0401","delete_all expects a collection", sp.clone())),
-            }
+            collection_operation(&args[0], Position::All, Operation::Delete, &sp, sess)?
         }
 
         // ===== Replace & remove =====
         "reap" => {
-            // Expect exactly one config map: { src: <array|seq>, count?: int }
             if args.len() != 1 {
-                return Err(rt(
-                    "A0402",
-                    format!("wrong number of arguments: expected 1, got {}", args.len()),
-                    sp.clone()
-                ));
+                return Err(rt("A0402", format!("wrong number of arguments: expected 1, got {}", args.len()), sp.clone()));
             }
             let cfg = match &args[0] {
                 Value::Map(m) => m,
                 _ => return Err(rt("T0401", "reap expects a config object", sp.clone())),
             };
 
-            // Pull src
             let srcv = cfg.get("src")
                 .ok_or_else(|| rt("T0401", "reap: missing 'src'", sp.clone()))?;
 
-            // Accept both Array and Seq via the read-only array-like view
-            let s: &[Value] = as_array_like(srcv)
-                .ok_or_else(|| rt("T0401", "reap: 'src' must be an array/seq", sp.clone()))?;
-
-            // Resolve count (default 1), must be positive integer
             let n_out: usize = match cfg.get("count") {
                 None => 1,
                 Some(Value::Int(n)) if *n > 0 => *n as usize,
                 Some(_) => return Err(rt("T0201", "reap 'count' must be a positive integer", sp.clone())),
             };
 
-            if s.is_empty() {
-                return Err(rt("R0701", "cannot reap from an empty collection", sp.clone()));
-            }
-            if n_out > s.len() {
-                return Err(rt(
-                    "R0701",
-                    format!("not enough to sample: requested {n_out}, have {}", s.len()),
-                    sp.clone()
-                ));
-            }
+            match srcv {
+                Value::Array(_) | Value::Seq(_) => {
+                    // Your existing array/seq logic
+                    let s: &[Value] = as_array_like(srcv)
+                        .ok_or_else(|| rt("T0401", "reap: 'src' must be an array/seq/map", sp.clone()))?;
+                    
+                    if s.is_empty() {
+                        return Err(rt("R0701", "cannot reap from an empty collection", sp.clone()));
+                    }
+                    if n_out > s.len() {
+                        return Err(rt("R0701", format!("not enough to sample: requested {n_out}, have {}", s.len()), sp.clone()));
+                    }
 
-            // Sample n unique indices without replacement (partial Fisher–Yates over indices)
-            let len = s.len();
-            let mut idxs: Vec<usize> = (0..len).collect();
-            for i in 0..n_out {
-                let j = i + rng_index(sess, len - i);
-                idxs.swap(i, j);
-            }
+                    let len = s.len();
+                    let mut idxs: Vec<usize> = (0..len).collect();
+                    for i in 0..n_out {
+                        let j = i + rng_index(sess, len - i);
+                        idxs.swap(i, j);
+                    }
 
-            // Collect items in draw order
-            let mut items: Vec<Value> = Vec::with_capacity(n_out);
-            for &i in &idxs[..n_out] {
-                items.push(s[i].clone());
-            }
+                    let mut items: Vec<Value> = Vec::with_capacity(n_out);
+                    for &i in &idxs[..n_out] {
+                        items.push(s[i].clone());
+                    }
 
-            // Return: single value if count==1, else array
-            if n_out == 1 {
-                items.pop().unwrap()
-            } else {
-                Value::Array(items)
+                    if n_out == 1 {
+                        items.pop().unwrap()
+                    } else {
+                        Value::Array(items)
+                    }
+                }
+                
+                Value::Map(map) => {
+                    // NEW: Map support
+                    if map.is_empty() {
+                        return Err(rt("R0701", "cannot reap from an empty map", sp.clone()));
+                    }
+                    
+                    let entries: Vec<(String, Value)> = map.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    
+                    if n_out > entries.len() {
+                        return Err(rt("R0701", format!("not enough to sample: requested {n_out}, have {}", entries.len()), sp.clone()));
+                    }
+
+                    let mut idxs: Vec<usize> = (0..entries.len()).collect();
+                    for i in 0..n_out {
+                        let j = i + rng_index(sess, entries.len() - i);
+                        idxs.swap(i, j);
+                    }
+
+                    let mut items: Vec<Value> = Vec::with_capacity(n_out);
+                    for &i in &idxs[..n_out] {
+                        let mut pair = BTreeMap::new();
+                        pair.insert(entries[i].0.clone(), entries[i].1.clone());
+                        items.push(Value::Map(pair));
+                    }
+
+                    if n_out == 1 {
+                        items.pop().unwrap()
+                    } else {
+                        Value::Array(items)
+                    }
+                }
+                
+                _ => return Err(rt("T0401", "reap: 'src' must be an array/seq/map", sp.clone()))
             }
         }
 
@@ -4539,20 +4774,7 @@ fn mutate_via_call_name(
     Ok(Value::Unit)
 }
 
-struct DepthGuard(&'static std::sync::atomic::AtomicUsize);
-impl Drop for DepthGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
-    
-    static DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let depth = DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        
-        // Ensure we always decrement, even on error
-        let _guard = DepthGuard(&DEPTH);
 
     match e {
         // ---- Literals & identifiers ----
@@ -4800,6 +5022,45 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 
                 // No arm matched
                 Ok(Value::Nil)
+            }
+        }
+
+        ast::Expr::TupleAssign(names, rhs, sp) => {
+            let rhs_val = eval_expr(rhs, sess)?;
+            
+            match &rhs_val {
+                Value::Map(map) => {
+                    // Assign each variable by trying positional key first, then named key
+                    for (i, name) in names.iter().enumerate() {
+                        let positional_key = format!("_{}", i + 1);
+                        
+                        // Try positional key first (_1, _2, etc.)
+                        let val = if let Some(v) = map.get(&positional_key) {
+                            v.clone()
+                        } else if let Some(v) = map.get(name) {
+                            // Fall back to named key matching variable name
+                            v.clone()
+                        } else {
+                            return Err(rt("R0501", 
+                                format!("function didn't return a value for position {} (variable '{}')", i + 1, name), 
+                                sp.clone()));
+                        };
+                        
+                        sess.set_var(name.clone(), val);
+                    }
+                    
+                    Ok(rhs_val)
+                }
+                _ => {
+                    if names.len() == 1 {
+                        sess.set_var(names[0].clone(), rhs_val.clone());
+                        Ok(rhs_val)
+                    } else {
+                        Err(rt("T0501", 
+                            format!("expected function to return {} values, but got a single value", names.len()), 
+                            sp.clone()))
+                    }
+                }
             }
         }
 
@@ -5214,7 +5475,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
 
             if let Some(m) = found_bound_method {
-                let method_name = match m.get("__name__") {
+                let _method_name = match m.get("__name__") {
                     Some(Value::Str(s)) => s.clone(),
                     _ => return Err(rt("R04BA", "bound action missing __name__", sp.clone())),
                 };
@@ -5360,6 +5621,55 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     if sess.loop_depth <= 0 {
                         return Err(rt("R0502", "'stop' used outside of a loop", sp.clone()));
                     }
+                    Ok(Value::CtrlStop)
+                }
+
+                "return" => {
+                    // return was called as FreeCall from inside an if block
+                    let mut vals: Vec<Value> = Vec::with_capacity(args.len());
+                    let mut labels: Vec<Option<String>> = Vec::with_capacity(args.len());
+
+                    for e in args {
+                        match e {
+                            ast::Expr::Ident(name, _) => {
+                                labels.push(Some(name.clone()));
+                                vals.push(sess.get_var(name).cloned().unwrap_or(Value::Nil));
+                            }
+                            _ => {
+                                labels.push(None);
+                                vals.push(eval_expr(e, sess)?);
+                            }
+                        }
+                    }
+
+                    let ret = match vals.len() {
+                        0 => Value::Nil,
+                        1 => vals.into_iter().next().unwrap(),
+                        _ => {
+                            if labels.iter().all(|l| l.is_some()) {
+                                let mut map = BTreeMap::new();
+                                for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
+                                    map.insert(lab.unwrap(), v);
+                                }
+                                Value::Map(map)
+                            } else {
+                                let mut map = BTreeMap::new();
+                                let mut idx = 1usize;
+                                for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
+                                    if let Some(name) = lab {
+                                        map.insert(name, v);
+                                    } else {
+                                        let key = format!("_{}", idx);
+                                        map.insert(key, v);
+                                        idx += 1;
+                                    }
+                                }
+                                Value::Map(map)
+                            }
+                        }
+                    };
+
+                    sess.set_var("__return__".to_string(), ret);
                     Ok(Value::CtrlStop)
                 }
 

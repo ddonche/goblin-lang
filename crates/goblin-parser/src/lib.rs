@@ -42,6 +42,7 @@ enum PExpr {
     Str(String),
     StrInterp(Vec<StrPart>),
     Time(String),
+    TupleAssign(Vec<String>, Box<PExpr>, Span),
     ClassDecl {
         name: String,
         fields: Vec<(String, PExpr, bool, bool, Option<RelationDef>)>,
@@ -387,6 +388,79 @@ impl<'t> Parser<'t> {
         }
         // ---------- END typed-LHS lookahead ----------
 
+        // Check for tuple assignment: name1, name2, ... = expr
+        if let Some(t0) = self.peek() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                // Try to collect comma-separated identifiers
+                let start_pos = self.i;
+                let mut idents = vec![];
+                
+                loop {
+                    if let Some(t) = self.peek() {
+                        if matches!(t.kind, TokenKind::Ident) {
+                            let name = t.value.clone().unwrap_or_default();
+                            idents.push(name);
+                            self.i += 1;
+                            
+                            // Check for comma
+                            if self.peek_op(",") {
+                                self.eat_op(",");
+                                continue; // Get next identifier
+                            } else {
+                                // No comma, check if we have '='
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                
+                // If we have multiple identifiers followed by '=', it's tuple assignment
+                if idents.len() > 1 && self.peek_op("=") {
+                    if !self.in_stmt {
+                        return Err(s_help(
+                            "P0301",
+                            "You can't use assignment (=) inside an expression.",
+                            "Put the assignment on its own line.",
+                        ));
+                    }
+                    
+                    let _ = self.eat_op("=");
+                    
+                    // Allow newlines before RHS
+                    while let Some(t) = self.peek() {
+                        if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                            self.i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    // Parse RHS
+                    let prev_in_stmt = self.in_stmt;
+                    self.in_stmt = false;
+                    let rhs = self.parse_coalesce()?;
+                    self.in_stmt = prev_in_stmt;
+                    
+                    // Get span from start to current position
+                    let span = self.toks.get(start_pos)
+                        .map(|t| t.span.clone())
+                        .unwrap_or_else(|| {
+                            // Create a dummy span if we can't find one
+                            Span::new("", 0, 0, 0, 0, 0, 0)
+                        });
+                    
+                    return Ok(PExpr::TupleAssign(idents, Box::new(rhs), span));
+                } else {
+                    // Not tuple assignment, backtrack
+                    self.i = start_pos;
+                }
+            }
+        }
+
         // Fallback: parse potential LHS as a normal expression
         let lhs = self.parse_coalesce()?;
 
@@ -724,46 +798,56 @@ impl<'t> Parser<'t> {
     fn key_expr_is_side_effect_free(e: &PExpr) -> bool {
         use PExpr::*;
         match e {
-            // disallow anything that could invoke user code or assign
-            Call(..) | FreeCall(..) | NsCall(..) | OptCall(..) | Assign(..) => false,
-
-            & PExpr::Money(_) => true,
-
-            // recurse through composites (note the .as_ref() since we have &PExpr)
-            Binary(l,_,r) => Self::key_expr_is_side_effect_free(l.as_ref()) && Self::key_expr_is_side_effect_free(r.as_ref()),
-            Prefix(_,x) | Postfix(x,_) | IsBound(x) => Self::key_expr_is_side_effect_free(x.as_ref()),
+            // Disallow anything that could invoke user code or assign
+            Call(..) | FreeCall(..) | NsCall(..) | OptCall(..) | Assign(..) | TupleAssign(..) => false,
+            
+            // Simple literals
+            Money(_) | Ident(_) | Int(_) | Float(_) | IntWithUnit(_,_) | FloatWithUnit(_,_)
+            | Bool(_) | Nil | Str(_) | Char(_) | BlobStr(_) | BlobNum(_) | Date(_) | Time(_) 
+            | DateTime { .. } | EnumVariant { .. } => true,
+            
+            // Binary operations - recurse both sides
+            Binary(l, _, r) => {
+                Self::key_expr_is_side_effect_free(l.as_ref()) 
+                    && Self::key_expr_is_side_effect_free(r.as_ref())
+            }
+            
+            // Unary operations - recurse
+            Prefix(_, x) | Postfix(x, _) | IsBound(x) => {
+                Self::key_expr_is_side_effect_free(x.as_ref())
+            }
+            
             Dump { expr, .. } => Self::key_expr_is_side_effect_free(expr.as_ref()),
-            Index(x,y) => Self::key_expr_is_side_effect_free(x.as_ref()) && Self::key_expr_is_side_effect_free(y.as_ref()),
-            Member(x,_) | OptMember(x,_) => Self::key_expr_is_side_effect_free(x.as_ref()),
-
-            Slice(x,a,b) => {
-                if !Self::key_expr_is_side_effect_free(x.as_ref()) { return false; }
-                if let Some(bx) = a.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
-                if let Some(bx) = b.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
-                true
+            
+            // Index and member access - recurse
+            Index(x, y) => {
+                Self::key_expr_is_side_effect_free(x.as_ref()) 
+                    && Self::key_expr_is_side_effect_free(y.as_ref())
             }
-            Slice3(x,a,b,c) => {
-                if !Self::key_expr_is_side_effect_free(x.as_ref()) { return false; }
-                if let Some(bx) = a.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
-                if let Some(bx) = b.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
-                if let Some(bx) = c.as_ref() { if !Self::key_expr_is_side_effect_free(bx.as_ref()) { return false; } }
-                true
+            Member(x, _) | OptMember(x, _) => Self::key_expr_is_side_effect_free(x.as_ref()),
+            
+            // Slice operations - check all parts
+            Slice(x, a, b) => {
+                Self::key_expr_is_side_effect_free(x.as_ref())
+                    && a.as_ref().map_or(true, |bx| Self::key_expr_is_side_effect_free(bx.as_ref()))
+                    && b.as_ref().map_or(true, |bx| Self::key_expr_is_side_effect_free(bx.as_ref()))
             }
-
-            Array(xs)   => xs.iter().all(Self::key_expr_is_side_effect_free),
-            Object(kvs) => kvs.iter().all(|(_,v)| Self::key_expr_is_side_effect_free(v)),
+            Slice3(x, a, b, c) => {
+                Self::key_expr_is_side_effect_free(x.as_ref())
+                    && a.as_ref().map_or(true, |bx| Self::key_expr_is_side_effect_free(bx.as_ref()))
+                    && b.as_ref().map_or(true, |bx| Self::key_expr_is_side_effect_free(bx.as_ref()))
+                    && c.as_ref().map_or(true, |bx| Self::key_expr_is_side_effect_free(bx.as_ref()))
+            }
+            
+            // Collections - check all elements
+            Array(xs) => xs.iter().all(Self::key_expr_is_side_effect_free),
+            Object(kvs) => kvs.iter().all(|(_, v)| Self::key_expr_is_side_effect_free(v)),
+            
+            // String interpolation - only safe if no expressions
             StrInterp(ps) => ps.iter().all(|p| matches!(p, StrPart::Text(_) | StrPart::LValue{..})),
-            PExpr::EnumVariant { .. } => true,
-
-            // harmless leaves in your PExpr
-            Ident(_) | Int(_) | Float(_) | IntWithUnit(_,_) | FloatWithUnit(_,_)
-            | Bool(_) | Nil | Str(_) | Char(_) | BlobStr(_) | BlobNum(_) | Date(_) | Time(_) | DateTime { .. } => true,
-
-            // conservative default for constructs that shouldn't appear in keys
-            ClassDecl { .. } => false,
-            PExpr::TemplateApply { .. } => false,
-            PExpr::Judge { .. } | PExpr::JudgeAll { .. } => false,
-            PExpr::Block(_) => false,
+            
+            // Conservative defaults for complex constructs
+            ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) => false,
         }
     }
 
@@ -1599,6 +1683,10 @@ impl<'t> Parser<'t> {
                 let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
                 ast::Expr::Assign(lhs, rhs, sp)
             }
+            PExpr::TupleAssign(names, rhs, tuple_sp) => {
+                let rhs = Box::new(Self::lower_expr_preview(*rhs, tuple_sp.clone()));
+                ast::Expr::TupleAssign(names, rhs, tuple_sp)
+            }
 
             // Template-style object construction: FreeCall("Type", [Object(pairs)], span)
             PExpr::TemplateApply { type_name, pairs, span } => {
@@ -1710,9 +1798,7 @@ impl<'t> Parser<'t> {
 
     fn parse_return_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
-
         let start_i = self.i;
-
         // expect literal 'return'
         match self.peek() {
             Some(t) if matches!(t.kind, TokenKind::Ident) && self.peek_ident() == Some("return") => {
@@ -1726,16 +1812,20 @@ impl<'t> Parser<'t> {
                 ));
             }
         }
-
         let mut values: Vec<ast::Expr> = Vec::new();
-
-        // what counts as a stmt terminator (NO self capture here)
+        // what counts as a stmt terminator
         let is_terminator = |tok: &goblin_lexer::Token| match &tok.kind {
             TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent => true,
-            TokenKind::Op(s) if s == ";" || s == "xx" => true,
+            TokenKind::Op(s) if s == "xx" => true,
+            TokenKind::Ident => {
+                if let Some(ref s) = tok.value {
+                    matches!(s.as_str(), "else" | "end" | "elif")
+                } else {
+                    false
+                }
+            }
             _ => false,
         };
-
         // bare `return` is valid
         if let Some(tok) = self.peek() {
             if is_terminator(tok) {
@@ -1743,24 +1833,25 @@ impl<'t> Parser<'t> {
                 return Ok(ast::Stmt::Return(ast::ReturnStmt { values, span }));
             }
         }
-
         // `return` expr (',' expr)*
-        let first = self.parse_expr().map_err(|_| s_help(
+        let first_pe = self.parse_assign().map_err(|_| s_help(
             "P0603",
             "Invalid expression after 'return'",
             "Use `return expr` or `return a, b`.",
         ))?;
+        let first = self.lower_expr(first_pe);
         values.push(first);
-
+        
         while self.eat_op(",") {
-            let expr = self.parse_expr().map_err(|_| s_help(
+            let expr_pe = self.parse_assign().map_err(|_| s_help(
                 "P0603",
                 "Invalid expression in return list",
                 "Separate expressions with commas, e.g., `return a+b, lower(name)`.",
             ))?;
+            let expr = self.lower_expr(expr_pe);
             values.push(expr);
         }
-
+        
         // after values, only terminators allowed; don't consume them here
         if let Some(tok) = self.peek() {
             if !is_terminator(tok) {
@@ -1771,7 +1862,7 @@ impl<'t> Parser<'t> {
                 ));
             }
         }
-
+        
         let span = Parser::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         Ok(ast::Stmt::Return(ast::ReturnStmt { values, span }))
     }
@@ -3889,6 +3980,10 @@ impl<'t> Parser<'t> {
                             b.span
                         ))
                     }
+                    ast::Stmt::Return(ret_stmt) => {
+                        let values: Vec<ast::Expr> = ret_stmt.values.clone();
+                        Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
+                    }
                     _ => Err(s_help(
                         "P0311",
                         "Only expressions and variable assignments are allowed inside control flow blocks.",
@@ -3982,6 +4077,10 @@ impl<'t> Parser<'t> {
                         b.span
                     ))
                 }
+                ast::Stmt::Return(ret_stmt) => {
+                    let values: Vec<ast::Expr> = ret_stmt.values.clone();
+                    Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
+                }
                 _ => Err(s_help("P0333", "Only expressions allowed in for loop", "Move declarations outside")),
             }).collect()
         };
@@ -4063,6 +4162,10 @@ impl<'t> Parser<'t> {
                             b.span
                         ))
                     }
+                    ast::Stmt::Return(ret_stmt) => {
+                        let values: Vec<ast::Expr> = ret_stmt.values.clone();
+                        Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
+                    }
                     _ => Err(s_help(
                         "P0311",
                         "Only expressions and variable assignments are allowed inside control flow blocks.",
@@ -4140,6 +4243,10 @@ impl<'t> Parser<'t> {
                         Box::new(b.expr),
                         b.span
                     ))
+                }
+                ast::Stmt::Return(ret_stmt) => {
+                    let values: Vec<ast::Expr> = ret_stmt.values.clone();
+                    Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
                 }
                 _ => Err(s_help("P0323", "Only expressions allowed in repeat block", "Move declarations outside")),
             }).collect()

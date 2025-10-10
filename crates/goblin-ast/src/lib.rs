@@ -145,6 +145,7 @@ pub enum Expr {
     Ident(String, Span),
     Slice(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>, Span),
     Slice3(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>, Option<Box<Expr>>, Span),
+    TupleAssign(Vec<String>, Box<Expr>, Span),
 
     // Collections & objects
     Array(Vec<Expr>, Span),
@@ -197,6 +198,7 @@ impl Expr {
             Expr::Ident(_, sp) => sp,
             Expr::Slice(_, _, _, sp) => sp,
             Expr::Slice3(_, _, _, _, sp) => sp,
+            Expr::TupleAssign(_, _, sp) => sp,
             Expr::Array(_, sp) => sp,
             Expr::Object(_, sp) => sp,
             Expr::Member(_, _, sp) => sp,
