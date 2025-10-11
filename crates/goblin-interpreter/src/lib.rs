@@ -2689,6 +2689,11 @@ fn call_action_by_name(
         }
 
         "input" | "ask" => {
+            // ADD THIS GUARD FIRST:
+            if std::env::var("GOBLIN_NONINTERACTIVE").ok().as_deref() == Some("1") {
+                return Err(rt("N0501", "interactive input is disabled in non-interactive mode", sp.clone()));
+            }
+
             // Expect 0 or 1 argument (optional prompt)
             let prompt = if args.is_empty() {
                 ""
@@ -4080,6 +4085,15 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::All, Operation::Delete, &sp, sess)?
         }
 
+        // ===== File IO Stuff =====
+        "file_exists" => {
+            if args.len() != 1 {
+                return Err(rt("A0402", format!("file_exists expects 1 arg, got {}", args.len()), sp.clone()));
+            }
+            let path = want_str(&args[0], "file_exists")?;
+            Value::Bool(std::path::Path::new(&path).exists())
+        }
+
         // ===== Replace & remove =====
         "reap" => {
             if args.len() != 1 {
@@ -4386,8 +4400,12 @@ fn call_action_by_name(
             from_json(&vj)
         }
 
-        // ----- Unknown -----
-        other => return Err(rt("A0401", format!("unknown action '{}'", other), sp.clone())),
+        other => {
+            if let Some(v) = eval_builtin(other, &args, sess, &sp)? {
+                return Ok(v);
+            }
+            return Err(rt("A0401", format!("unknown action '{}'", other), sp.clone()));
+        },
     };
 
     Ok(out)
@@ -4597,6 +4615,51 @@ fn mutate_via_call_name(
 ) -> Result<Value, Diag> {
     let base = name.strip_suffix('!')
         .ok_or_else(|| rt("R0800", "internal: expected bang name", sp.clone()))?;
+
+    // Special cases that don't follow the lvalue pattern
+    match base {
+        "write_json" => {
+            // write_json!(path, value, pretty=false)
+            if arg_exprs.len() < 2 || arg_exprs.len() > 3 {
+                return Err(rt("A0402", format!("write_json! expects 2 or 3 args, got {}", arg_exprs.len()), sp.clone()));
+            }
+            
+            let vpath = eval_expr(&arg_exprs[0], sess)?;
+            let vval = eval_expr(&arg_exprs[1], sess)?;
+            let pretty = if arg_exprs.len() == 3 {
+                let vpretty = eval_expr(&arg_exprs[2], sess)?;
+                as_bool(vpretty, sp.clone(), "write_json! pretty")?
+            } else { 
+                false 
+            };
+
+            let j = to_json(&vval);
+            let out = if pretty {
+                sj::to_string_pretty(&j)
+            } else {
+                sj::to_string(&j)
+            }.map_err(|e| rt("J0002", format!("json stringify failed: {e}"), sp.clone()))?;
+
+            let path = want_str(&vpath, "write_json! path", sp.clone())?;
+            std::fs::write(&path, out)
+                .map_err(|e| rt("J0004", format!("write_json!: {e}"), sp.clone()))?;
+            
+            return Ok(Value::Unit);
+        }
+        
+        "create_dir" => {
+            if arg_exprs.len() != 1 {
+                return Err(rt("A0402", format!("create_dir! expects 1 arg, got {}", arg_exprs.len()), sp.clone()));
+            }
+            let vpath = eval_expr(&arg_exprs[0], sess)?;
+            let path = want_str(&vpath, "create_dir!", sp.clone())?;
+            std::fs::create_dir_all(&path)
+                .map_err(|e| rt("FS0001", format!("create_dir!: {e}"), sp.clone()))?;
+            return Ok(Value::Unit);
+        }
+        
+        _ => {} // Fall through to normal lvalue-based mutations
+    }
 
     // Determine the target lvalue path and build argv for the pure version
     let (target_path, argv_vals): (LValuePath, Vec<Value>) = if let Some(base_ident) = recv_ident {
@@ -5585,53 +5648,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Unit)
                 }
 
-                "write_json!" => {
-                    // write_json!(path, value, pretty=false)
-                    if args.len() < 2 || args.len() > 3 {
-                        return Err(rt("A0402", format!("write_json! expects 2 or 3 args, got {}", args.len()), sp.clone()));
-                    }
-                    
-                    let vpath = eval_expr(&args[0], sess)?;
-                    let vval = eval_expr(&args[1], sess)?;
-                    let pretty = if args.len() == 3 {
-                        let vpretty = eval_expr(&args[2], sess)?;
-                        as_bool(vpretty, sp.clone(), "write_json! pretty")?
-                    } else { 
-                        false 
-                    };
-
-                    let j = to_json(&vval);
-                    let out = if pretty {
-                        sj::to_string_pretty(&j)
-                    } else {
-                        sj::to_string(&j)
-                    }.map_err(|e| rt("J0002", format!("json stringify failed: {e}"), sp.clone()))?;
-
-                    let path = want_str(&vpath, "write_json! path", sp.clone())?;
-                    std::fs::write(&path, out)
-                        .map_err(|e| rt("J0004", format!("write_json!: {e}"), sp.clone()))?;
-                    
-                    Ok(Value::Unit)
+                "write_json" => {
+                    return Err(rt("M0001", "write_json requires mutation operator: use write_json!(...)", sp.clone()));
                 }
 
-                "file_exists" => {
-                    if args.len() != 1 {
-                        return Err(rt("A0402", format!("file_exists expects 1 arg, got {}", args.len()), sp.clone()));
-                    }
-                    let vpath = eval_expr(&args[0], sess)?;
-                    let path = want_str(&vpath, "file_exists", sp.clone())?;
-                    Ok(Value::Bool(std::path::Path::new(&path).exists()))
-                }
-
-                "create_dir!" => {
-                    if args.len() != 1 {
-                        return Err(rt("A0402", format!("create_dir! expects 1 arg, got {}", args.len()), sp.clone()));
-                    }
-                    let vpath = eval_expr(&args[0], sess)?;
-                    let path = want_str(&vpath, "create_dir!", sp.clone())?;
-                    std::fs::create_dir_all(&path)
-                        .map_err(|e| rt("FS0001", format!("create_dir!: {e}"), sp.clone()))?;
-                    Ok(Value::Unit)
+                "create_dir" => {
+                    return Err(rt("M0001", "create_dir requires mutation operator: use create_dir!(...)", sp.clone()));
                 }
 
                 "attempt" => {

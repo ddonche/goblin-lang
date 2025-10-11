@@ -5485,7 +5485,7 @@ impl<'t> Parser<'t> {
                 fn is_no_parens_freecall(name: &str) -> bool {
                     matches!(name, "upper" | "lower" | "title" | "slug" | "mixed" | "reverse_chars" | "count"
                         | "trim" | "trim_lead" | "trim_trail" | "lines" | "words" | "chars" | "reverse" | "minimize" | "parse_bool"
-                        | "json_parse" | "json_stringify" | "json_stringify_pretty" | "read_json" | "write_json!")
+                        | "json_parse" | "json_stringify" | "json_stringify_pretty" | "read_json" | "write_json")
                 }
 
                 if is_no_parens_freecall(&name) {
