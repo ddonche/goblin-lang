@@ -530,6 +530,9 @@ name = "goblin-host"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "goblin-diagnostics",
+ "goblin-interpreter",
+ "goblin-source",
  "reqwest",
  "thiserror 1.0.69",
  "tokio",

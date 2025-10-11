@@ -490,6 +490,94 @@ impl Host {
                                 if want_close { break 'conn; } else { continue 'conn; }
                             }
 
+                            // === Dynamic Goblin API Execution (via CLI) ===
+                            if path.starts_with("/api/") {
+                                use std::path::PathBuf;
+
+                                // e.g. /api/hello  OR  /api/users/list
+                                let api_rel = path.trim_start_matches("/api/"); 
+
+                                // SECURITY: deny traversal
+                                if api_rel.contains("..") || api_rel.contains('\0') {
+                                    let resp = b"HTTP/1.1 400 Bad Request\r\n\
+                                                 Content-Type: text/plain; charset=utf-8\r\n\
+                                                 Connection: close\r\n\
+                                                 Content-Length: 12\r\n\r\nbad request";
+                                    let _ = socket.write_all(resp).await;
+                                    log.done(400, 12);
+                                    break 'conn;
+                                }
+
+                                // Project-local API dir (parallel to ./public)
+                                let api_dir = PathBuf::from("./api");
+                                let script_path = api_dir.join(format!("{api_rel}.gbln"));
+
+                                if script_path.exists() {
+                                    match exec_goblin_script_via_cli(&script_path) {
+                                        Ok(body) => {
+                                            // naive JSON detection; otherwise text/plain
+                                            let trimmed = body.trim_start();
+                                            let ctype = if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                                                "application/json; charset=utf-8"
+                                            } else {
+                                                "text/plain; charset=utf-8"
+                                            };
+
+                                            let headers = format!(
+                                                "HTTP/1.1 200 OK\r\n\
+                                                 Content-Type: {ctype}\r\n\
+                                                 Content-Length: {}\r\n\
+                                                 Connection: {connection_header}\r\n\
+                                                 x-goblin-web-contract: {}\r\n\
+                                                 \r\n",
+                                                body.len(),
+                                                crate::CONTRACT_VERSION
+                                            );
+                                            if socket.write_all(headers.as_bytes()).await.is_ok() {
+                                                let _ = socket.write_all(body.as_bytes()).await;
+                                            }
+                                            log.done(200, body.len());
+                                            if want_close { break 'conn; } else { continue 'conn; }
+                                        }
+                                        Err(err) => {
+                                            let msg = format!("Goblin runtime error:\n{err}");
+                                            let headers = format!(
+                                                "HTTP/1.1 500 Internal Server Error\r\n\
+                                                 Content-Type: text/plain; charset=utf-8\r\n\
+                                                 Content-Length: {}\r\n\
+                                                 Connection: {connection_header}\r\n\
+                                                 x-goblin-web-contract: {}\r\n\
+                                                 \r\n",
+                                                msg.len(),
+                                                crate::CONTRACT_VERSION
+                                            );
+                                            if socket.write_all(headers.as_bytes()).await.is_ok() {
+                                                let _ = socket.write_all(msg.as_bytes()).await;
+                                            }
+                                            log.done(500, msg.len());
+                                            if want_close { break 'conn; } else { continue 'conn; }
+                                        }
+                                    }
+                                } else {
+                                    // 404 for missing script
+                                    let body = "API script not found";
+                                    let headers = format!(
+                                        "HTTP/1.1 404 Not Found\r\n\
+                                         Content-Type: text/plain; charset=utf-8\r\n\
+                                         Content-Length: {}\r\n\
+                                         Connection: {connection_header}\r\n\
+                                         x-goblin-web-contract: {}\r\n\
+                                         \r\n",
+                                        body.len(),
+                                        crate::CONTRACT_VERSION
+                                    );
+                                    if socket.write_all(headers.as_bytes()).await.is_ok() {
+                                        let _ = socket.write_all(body.as_bytes()).await;
+                                    }
+                                    log.done(404, body.len());
+                                    if want_close { break 'conn; } else { continue 'conn; }
+                                }
+                            }
                             // ---- PROXY (GET-only; dev convenience) ----
                             // Runs before static serving so /api etc. are forwarded to your backend.
                             if method.eq_ignore_ascii_case("GET") && !proxies.is_empty() {
@@ -784,3 +872,26 @@ pub enum HostError {
 
 // Re-export version string for info endpoints.
 pub const CONTRACT_VERSION: &str = "v0";
+
+fn exec_goblin_script_via_cli(script_path: &std::path::Path) -> Result<String, String> {
+    use std::process::{Command, Stdio};
+
+    // NOTE: call the goblin CLI binary that your workspace produces.
+    // If your CLI binary is named "goblin", this will find it in PATH.
+    // If you keep it local, use absolute path to target/debug/goblin (Windows: goblin.exe).
+    let output = Command::new("goblin")
+        .arg(script_path.as_os_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to spawn goblin CLI: {e}"))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(format!("goblin script error: {err}"));
+    }
+
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
+    Ok(out)
+}

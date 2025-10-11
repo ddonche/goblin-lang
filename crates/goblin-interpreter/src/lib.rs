@@ -4385,30 +4385,6 @@ fn call_action_by_name(
                 .map_err(|e| rt("J0001", format!("json parse failed: {e}"), sp.clone()))?;
             from_json(&vj)
         }
-        "write_json!" => {
-            // write_json!(path, value, pretty=false)
-            if args.len() < 2 || args.len() > 3 {
-                return Err(rt("A0402", format!("write_json! expects 2 or 3 args, got {}", args.len()), sp.clone()));
-            }
-            let vpath = args[0].clone();
-            let vval   = args[1].clone();
-            let pretty = if args.len() == 3 {
-                let vpretty = args[2].clone();
-                as_bool(vpretty, sp.clone(), "write_json! pretty")?
-            } else { false };
-
-            let j = to_json(&vval);
-            let out = if pretty {
-                sj::to_string_pretty(&j)
-            } else {
-                sj::to_string(&j)
-            }.map_err(|e| rt("J0002", format!("json stringify failed: {e}"), sp.clone()))?;
-
-            let path = want_str(&vpath, "write_json! path")?;
-            std::fs::write(&path, out)
-                .map_err(|e| rt("J0004", format!("write_json!: {e}"), sp.clone()))?;
-            Value::Unit
-        }
 
         // ----- Unknown -----
         other => return Err(rt("A0401", format!("unknown action '{}'", other), sp.clone())),
@@ -5607,6 +5583,112 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                     sess.loop_depth -= 1;
                     Ok(Value::Unit)
+                }
+
+                "write_json!" => {
+                    // write_json!(path, value, pretty=false)
+                    if args.len() < 2 || args.len() > 3 {
+                        return Err(rt("A0402", format!("write_json! expects 2 or 3 args, got {}", args.len()), sp.clone()));
+                    }
+                    
+                    let vpath = eval_expr(&args[0], sess)?;
+                    let vval = eval_expr(&args[1], sess)?;
+                    let pretty = if args.len() == 3 {
+                        let vpretty = eval_expr(&args[2], sess)?;
+                        as_bool(vpretty, sp.clone(), "write_json! pretty")?
+                    } else { 
+                        false 
+                    };
+
+                    let j = to_json(&vval);
+                    let out = if pretty {
+                        sj::to_string_pretty(&j)
+                    } else {
+                        sj::to_string(&j)
+                    }.map_err(|e| rt("J0002", format!("json stringify failed: {e}"), sp.clone()))?;
+
+                    let path = want_str(&vpath, "write_json! path", sp.clone())?;
+                    std::fs::write(&path, out)
+                        .map_err(|e| rt("J0004", format!("write_json!: {e}"), sp.clone()))?;
+                    
+                    Ok(Value::Unit)
+                }
+
+                "file_exists" => {
+                    if args.len() != 1 {
+                        return Err(rt("A0402", format!("file_exists expects 1 arg, got {}", args.len()), sp.clone()));
+                    }
+                    let vpath = eval_expr(&args[0], sess)?;
+                    let path = want_str(&vpath, "file_exists", sp.clone())?;
+                    Ok(Value::Bool(std::path::Path::new(&path).exists()))
+                }
+
+                "create_dir!" => {
+                    if args.len() != 1 {
+                        return Err(rt("A0402", format!("create_dir! expects 1 arg, got {}", args.len()), sp.clone()));
+                    }
+                    let vpath = eval_expr(&args[0], sess)?;
+                    let path = want_str(&vpath, "create_dir!", sp.clone())?;
+                    std::fs::create_dir_all(&path)
+                        .map_err(|e| rt("FS0001", format!("create_dir!: {e}"), sp.clone()))?;
+                    Ok(Value::Unit)
+                }
+
+                "attempt" => {
+                    // args: [attempt_body_array, rescue_blocks_array, ensure_body_array?]
+                    if args.is_empty() {
+                        return Err(rt("E0350", "attempt requires at least one argument", sp.clone()));
+                    }
+                    
+                    // Get the attempt body expressions
+                    let attempt_es = expect_array(&args[0], "attempt_block", sp.clone())?;
+                    
+                    let rescue_blocks_es = if args.len() > 1 {
+                        expect_array(&args[1], "rescue_blocks", sp.clone())?
+                    } else {
+                        &[]
+                    };
+                    
+                    // Try to execute attempt block
+                    let mut result = Value::Unit;
+                    let mut had_error = false;
+                    
+                    for e in attempt_es {
+                        match eval_expr(e, sess) {
+                            Ok(v) => result = v,
+                            Err(_err) => {
+                                had_error = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // If error occurred, execute first rescue block
+                    if had_error && rescue_blocks_es.len() > 0 {
+                        // Each rescue block is [var_name_or_nil, body_array]
+                        let rescue_info_es = expect_array(&rescue_blocks_es[0], "rescue_info", sp.clone())?;
+                        
+                        if rescue_info_es.len() >= 2 {
+                            // rescue_info_es[1] is the rescue body array
+                            let rescue_body_es = expect_array(&rescue_info_es[1], "rescue_body", sp.clone())?;
+                            
+                            // Execute rescue block
+                            result = Value::Unit;
+                            for e in rescue_body_es {
+                                result = eval_expr(e, sess)?;
+                            }
+                        }
+                    }
+                    
+                    // Execute ensure block if present (should always run)
+                    if args.len() > 2 {
+                        let ensure_es = expect_array(&args[2], "ensure_block", sp.clone())?;
+                        for e in ensure_es {
+                            let _ = eval_expr(e, sess)?;
+                        }
+                    }
+                    
+                    Ok(result)
                 }
 
                 "skip" => {

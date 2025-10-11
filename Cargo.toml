@@ -1,4 +1,6 @@
 [workspace]
+resolver = "2"
+
 members = [
   "crates/goblin-source",
   "crates/goblin-diagnostics",
@@ -8,8 +10,6 @@ members = [
   "crates/goblin-interpreter",
   "crates/goblin-cli",
   "crates/goblin-gql",
-  "crates/goblin-host",        # ← new
-  "crates/goblin-devserver",   # ← new
-  # "crates/goblin-vfs",       # ← optional
+  "crates/goblin-host",
+  "crates/goblin-devserver",
 ]
-resolver = "2"

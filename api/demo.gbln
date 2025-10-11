@@ -1,0 +1,24 @@
+/// “constructor”
+action make_player(name, health)
+    return { name: name, health: health }
+xx
+
+/// “method”: takes the record explicitly and returns an updated one
+action heal_by(player, amount)
+    new_hp = min([100, (player >> health) + amount])
+    return { name: (player >> name), health: new_hp }
+xx
+
+p = make_player("Rook", 70)
+p = heal_by(p, 10)
+p = heal_by(p, 5)
+say "hp=" ++ (p >> health)
+
+/// multi-return stays the same
+action divide_with_remainder(a, b)
+    q = a // b
+    r = a % b
+    return q, r
+xx
+res = divide_with_remainder(10, 3)
+say "q=" ++ (res >> q) ++ " r=" ++ (res >> r)

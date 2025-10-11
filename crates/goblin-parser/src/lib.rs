@@ -4299,6 +4299,197 @@ impl<'t> Parser<'t> {
         Ok(out)
     }
 
+    fn parse_attempt_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+
+        let start_i = self.i;
+        let attempt_col = self.toks[start_i].span.col_start;
+
+        // 'attempt'
+        debug_assert_eq!(self.peek_ident().as_deref(), Some("attempt"));
+        let _ = self.eat_ident();
+
+        // Skip newline and indent after 'attempt'
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // ATTEMPT block: stop at rescue/ensure/end
+        let attempt_stmts = self.parse_indented_block(attempt_col, &["rescue", "ensure", "end"])?;
+
+        // Consume dedents/newlines
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Optional RESCUE block(s)
+        let mut rescue_blocks = Vec::new();
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("rescue") {
+                let _ = self.eat_ident(); // 'rescue'
+                
+                // Optional error binding: rescue ErrorType as e
+                // For Chapter 4, we just need simple rescue with no binding
+                // You can extend this later for full error type matching
+                let error_var = if let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() != Some("ensure") && t.value.as_deref() != Some("end") {
+                        // Simple case: rescue <var_name> (no type matching for now)
+                        self.eat_ident()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                
+                // Skip newline and indent after 'rescue'
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                
+                let rescue_stmts = self.parse_indented_block(attempt_col, &["rescue", "ensure", "end"])?;
+                rescue_blocks.push((error_var, rescue_stmts));
+                
+                // Consume dedents/newlines
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Optional ENSURE block
+        let ensure_stmts = if let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("ensure") {
+                let _ = self.eat_ident(); // 'ensure'
+                
+                // Skip newline and indent after 'ensure'
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                
+                Some(self.parse_indented_block(attempt_col, &["end"])?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Skip dedents/newlines
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Consume the closer
+        if let Some(t) = self.peek() {
+            match &t.kind {
+                TokenKind::Ident if t.value.as_deref() == Some("end") => {
+                    let _ = self.eat_ident();
+                }
+                TokenKind::Op(op) if op == "xx" => {
+                    let _ = self.eat_op("xx");
+                }
+                _ => {
+                    return Err(s_help("P0350", "Expected 'end' or 'xx' to close attempt block", "Add 'end' or 'xx'"));
+                }
+            }
+        } else {
+            return Err(s_help("P0351", "Expected 'end' or 'xx' to close attempt block", "Add 'end' or 'xx' before end of file"));
+        }
+
+        // Convert stmt blocks -> arrays of exprs
+        let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
+            stmts
+                .into_iter()
+                .map(|s| match s {
+                    ast::Stmt::Expr(e) => Ok(e),
+                    ast::Stmt::Bind(b) => {
+                        Ok(ast::Expr::Assign(
+                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
+                            Box::new(b.expr),
+                            b.span
+                        ))
+                    }
+                    ast::Stmt::Return(ret_stmt) => {
+                        let values: Vec<ast::Expr> = ret_stmt.values.clone();
+                        Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
+                    }
+                    _ => Err(s_help(
+                        "P0352",
+                        "Only expressions allowed inside attempt/rescue/ensure blocks.",
+                        "Move declarations outside the block.",
+                    )),
+                })
+                .collect()
+        };
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let attempt_arr = ast::Expr::Array(to_exprs(attempt_stmts)?, span.clone());
+
+        // Build args: [attempt_block, rescue_blocks_array, ensure_block_opt]
+        let mut args = vec![attempt_arr];
+        
+        // Add rescue blocks as array of [error_var_opt, rescue_body]
+        if !rescue_blocks.is_empty() {
+            let rescue_exprs: Vec<ast::Expr> = rescue_blocks
+                .into_iter()
+                .map(|(var_opt, stmts)| {
+                    let body = ast::Expr::Array(to_exprs(stmts).unwrap(), span.clone());
+                    if let Some(var) = var_opt {
+                        // [var_name, body]
+                        ast::Expr::Array(vec![
+                            ast::Expr::Str(var, span.clone()),
+                            body
+                        ], span.clone())
+                    } else {
+                        // [nil, body]
+                        ast::Expr::Array(vec![
+                            ast::Expr::Ident("nil".to_string(), span.clone()),
+                            body
+                        ], span.clone())
+                    }
+                })
+                .collect();
+            args.push(ast::Expr::Array(rescue_exprs, span.clone()));
+        } else {
+            // No rescue blocks
+            args.push(ast::Expr::Array(vec![], span.clone()));
+        }
+        
+        // Add ensure block if present
+        if let Some(ensure_block) = ensure_stmts {
+            args.push(ast::Expr::Array(to_exprs(ensure_block)?, span.clone()));
+        }
+
+        Ok(ast::Stmt::Expr(ast::Expr::FreeCall("attempt".to_string(), args, span)))
+    }
+
     pub fn parse_module(mut self) -> ParseResult<ast::Module> {
         // --- front-gate: disallow '=' or ':' as the first non-newline token ---
         {
@@ -4528,6 +4719,10 @@ impl<'t> Parser<'t> {
 
         if let Some("repeat") = self.peek_ident() {
             return self.parse_repeat_stmt();
+        }
+
+        if self.peek_ident() == Some("attempt") {
+            return self.parse_attempt_stmt();
         }
 
         // Check for import statements
