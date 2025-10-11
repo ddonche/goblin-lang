@@ -1210,6 +1210,7 @@ fn is_ident(name: &str) -> bool {
 // Convert a Value to a non-negative usize (for slice indices)
 fn want_usize_index(v: Value, label: &str, sp: Span) -> Result<usize, Diag> {
     match v {
+        Value::Int(n) if n >= 0 => Ok(n as usize),
         Value::Float(n) if n.is_finite() && n.fract() == 0.0 && n >= 0.0 => Ok(n as usize),
         _ => Err(rt("T0201", format!("{label} must be a non-negative integer"), sp)),
     }
@@ -2716,31 +2717,29 @@ fn call_action_by_name(
         }
 
         // ----- Introspection -----
-        "type" => {
+        "valtype" | "vt" => {
             arity(1)?;
             let recv = match &args[0] {
                 Value::Formatted(inner, _) => &**inner,
                 other => other,
             };
-
             let kind = match recv {
-                Value::Nil                         => "nil",
-                Value::Bool(_)                     => "bool",
-                Value::Float(n) if n.is_finite()
-                                  && n.fract() == 0.0 => "int",
-                Value::Big(_)                      => "big",
-                Value::Float(_)                    => "float",
-                Value::Int(_)                      => "int",
-                Value::Pct(_)                      => "pct",
-                Value::Str(_)                      => "str",
-                Value::Char(_)                     => "char",
-                Value::Array(_)                    => "array",
-                Value::Map(_)                      => "map",
-                Value::Pair(_, _)                  => "pair",
-                Value::Seq(_)                      => "seq",
-                Value::Unit                        => "unit",
-                Value::CtrlSkip | Value::CtrlStop  => "control",
-            _ => "unknown",
+                Value::Nil => "nil",
+                Value::Bool(_) => "bool",
+                Value::Float(n) if n.is_finite() && n.fract() == 0.0 => "int",
+                Value::Big(_) => "big",
+                Value::Float(_) => "float",
+                Value::Int(_) => "int",
+                Value::Pct(_) => "pct",
+                Value::Str(_) => "str",
+                Value::Char(_) => "char",
+                Value::Array(_) => "array",
+                Value::Map(_) => "map",
+                Value::Pair(_, _) => "pair",
+                Value::Seq(_) => "seq",
+                Value::Unit => "unit",
+                Value::CtrlSkip | Value::CtrlStop => "control",
+                _ => "unknown",
             };
             Value::Str(kind.to_string())
         }
@@ -5362,7 +5361,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                // Numeric
                "round" | "floor" | "ceil" | "abs" | "sqrt" |
                // Type operations
-               "type" | "backend" | "metrics"
+               "valtype" | "vt" | "backend" | "metrics"
            );
            
            if is_builtin_method {
@@ -5391,7 +5390,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                    "round" | "floor" | "ceil" | "abs" | "sqrt" => {
                        matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_))
                    }
-                   "type" | "backend" | "metrics" => true, // Works on any type
+                   "valtype" | "vt" | "backend" | "metrics" => true, // Works on any type
                    _ => false,
                };
                
@@ -5728,8 +5727,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
             
             
-            // Special-case: <expr>.type
-            if name == "type" && args.is_empty() {
+            // Special-case: <expr>.valtype or <expr>.vt
+            if (name == "valtype" || name == "vt") && args.is_empty() {
                 let recv = eval_expr(base, sess)?;
                 return Ok(Value::Str(value_kind_str(&recv).to_string()));
             }
@@ -5767,16 +5766,14 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         ast::Expr::OptCall(base, name, args, sp) => {
             // Support ?.type (nil-propagating)
-            if name == "type" && args.is_empty() {
+            if (name == "valtype" || name == "vt") && args.is_empty() {
                 // If syntactically `nil`, short-circuit to nil
                 if matches!(&**base, ast::Expr::Nil(_)) { return Ok(Value::Nil); }
-
                 // Otherwise evaluate; nil still short-circuits
                 let recv = eval_expr(base, sess)?;
                 if matches!(recv, Value::Nil) { return Ok(Value::Nil); }
-
                 // For non-nil, reuse the existing builtin classification
-                return call_action_by_name(sess, "type", vec![recv], sp.clone());
+                return call_action_by_name(sess, "valtype", vec![recv], sp.clone());
             }
 
             // normal optional-call path
