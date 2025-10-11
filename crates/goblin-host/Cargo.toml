@@ -1,0 +1,13 @@
+[package]
+name = "goblin-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Goblin embedded HTTP host engine (dev/prod)"
+
+[dependencies]
+chrono = { version = "0.4.42", features = ["clock"] }
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }

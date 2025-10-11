@@ -1,12 +1,15 @@
 [workspace]
 members = [
-    "crates/goblin-source",
-    "crates/goblin-diagnostics",
-    "crates/goblin-lexer",
-    "crates/goblin-ast",
-    "crates/goblin-parser",
-    "crates/goblin-interpreter",
-    "crates/goblin-cli", "crates/goblin-gql",
-    "crates/goblin-gql",
+  "crates/goblin-source",
+  "crates/goblin-diagnostics",
+  "crates/goblin-lexer",
+  "crates/goblin-ast",
+  "crates/goblin-parser",
+  "crates/goblin-interpreter",
+  "crates/goblin-cli",
+  "crates/goblin-gql",
+  "crates/goblin-host",        # ← new
+  "crates/goblin-devserver",   # ← new
+  # "crates/goblin-vfs",       # ← optional
 ]
 resolver = "2"

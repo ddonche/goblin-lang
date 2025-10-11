@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use goblin_gql::{parse_query as gql_parse, pretty as gql_pretty};
 use goblin_lexer::{lex, TokenKind};
 use goblin_parser::Parser;
-use goblin_interpreter::{Session, Value};
+use goblin_interpreter;
 
 pub mod config;
 
@@ -43,6 +43,28 @@ fn enable_utf8_console() {
     }
 }
 
+fn run_devserver(host: String, port: u16) -> i32 {
+    // Block on the async devserver using a Tokio runtime
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let result = rt.block_on(async move {
+        use goblin_devserver::{start, DevOptions};
+        let opts = DevOptions { host, port, proxies: Vec::new() };
+        start(opts).await
+    });
+
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{}", e);
+            1
+        }
+    }
+}
+
 fn main() {
     #[cfg(windows)]
         enable_utf8_console();
@@ -63,6 +85,7 @@ fn main() {
              \n  goblin new <project-name>\n\
              \n  goblin run [<file>]\n\
              \n  goblin repl\n\
+             \n  goblin start [--host <host>] [--port <port>]\n\
              \n  goblin lex --check\n\
              \n  goblin parse <file>\n\
              \n  goblin gql-parse <file|->\n\
@@ -79,6 +102,52 @@ fn main() {
         }
         create_project(&args[1]);
         return;
+    }
+
+    // `goblin start [--host H] [--port P] [--proxy /pfx=URL]...`
+    if !args.is_empty() && args[0] == "start" {
+        args.remove(0);
+
+        let mut host = String::from("0.0.0.0");
+        let mut port: u16 = 5173;
+        let mut proxies: Vec<(String, String)> = Vec::new();
+
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--host" => {
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]..."); std::process::exit(2); }
+                    host = args[i + 1].clone(); i += 2;
+                }
+                "--port" | "-p" => {
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]..."); std::process::exit(2); }
+                    port = args[i + 1].parse().unwrap_or_else(|_| { eprintln!("invalid port: {}", args[i + 1]); std::process::exit(2); });
+                    i += 2;
+                }
+                "--proxy" => {
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start --proxy /prefix=URL"); std::process::exit(2); }
+                    let spec = &args[i + 1];
+                    if let Some((prefix, url)) = spec.split_once('=') {
+                        let pfx = prefix.trim().to_string();
+                        let url = url.trim().to_string();
+                        if !pfx.starts_with('/') { eprintln!("proxy prefix must start with '/': {}", pfx); std::process::exit(2); }
+                        if !(url.starts_with("http://") || url.starts_with("https://")) { eprintln!("proxy URL must start with http:// or https://: {}", url); std::process::exit(2); }
+                        proxies.push((pfx, url));
+                    } else {
+                        eprintln!("invalid --proxy spec (expected /prefix=URL): {}", spec);
+                        std::process::exit(2);
+                    }
+                    i += 2;
+                }
+                other => {
+                    eprintln!("unknown start option: {}", other);
+                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]...");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        std::process::exit(run_devserver_with_proxies(host, port, proxies));
     }
 
     // REPL when no args
@@ -142,7 +211,7 @@ fn main() {
     }
 
     eprintln!(
-        "usage: goblin-cli run <file>\n       goblin-cli run\n       goblin-cli lex --check\n       goblin-cli parse <file>\n       goblin-cli gql-parse <file|->"
+        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
     );
     std::process::exit(2);
 }
@@ -1077,4 +1146,31 @@ fn resolve_entry_from_yaml(cwd: &std::path::Path) -> Option<std::path::PathBuf> 
         }
     }
     None
+}
+
+// =======================================================
+// Devserver launcher with proxy support
+// =======================================================
+fn run_devserver_with_proxies(host: String, port: u16, proxies: Vec<(String, String)>) -> i32 {
+    // Create a Tokio runtime manually (CLI entrypoints can’t be async)
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    // Block on async start
+    let result = rt.block_on(async move {
+        use goblin_devserver::{start, DevOptions};
+        let opts = DevOptions { host, port, proxies: Vec::new() };
+        start(opts).await
+    });
+
+    // Convert Result to exit code
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{}", e);
+            1
+        }
+    }
 }
