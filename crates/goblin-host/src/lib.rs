@@ -492,40 +492,17 @@ impl Host {
 
                             // === Dynamic Goblin API Execution (via CLI) ===
                             if path.starts_with("/api/") {
-                                use std::path::PathBuf;
+                                use tokio::io::AsyncWriteExt; // ensure in scope
 
-                                // e.g. /api/hello  OR  /api/users/list
-                                let api_rel = path.trim_start_matches("/api/"); 
-
-                                // SECURITY: deny traversal
-                                if api_rel.contains("..") || api_rel.contains('\0') {
-                                    let resp = b"HTTP/1.1 400 Bad Request\r\n\
-                                                 Content-Type: text/plain; charset=utf-8\r\n\
-                                                 Connection: close\r\n\
-                                                 Content-Length: 12\r\n\r\nbad request";
-                                    let _ = socket.write_all(resp).await;
-                                    log.done(400, 12);
-                                    break 'conn;
-                                }
-
-                                // Project-local API dir (parallel to ./public)
-                                let api_dir = PathBuf::from("./api");
-                                let script_path = api_dir.join(format!("{api_rel}.gbln"));
+                                let api_rel = path.trim_start_matches("/api/");
+                                let script_path = std::path::PathBuf::from("./api").join(format!("{api_rel}.gbln"));
 
                                 if script_path.exists() {
-                                    match exec_goblin_script_via_cli(&script_path) {
+                                    match exec_goblin_script_via_cli_timeout(&script_path, 5000).await {
                                         Ok(body) => {
-                                            // naive JSON detection; otherwise text/plain
-                                            let trimmed = body.trim_start();
-                                            let ctype = if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                                                "application/json; charset=utf-8"
-                                            } else {
-                                                "text/plain; charset=utf-8"
-                                            };
-
                                             let headers = format!(
                                                 "HTTP/1.1 200 OK\r\n\
-                                                 Content-Type: {ctype}\r\n\
+                                                 Content-Type: text/plain; charset=utf-8\r\n\
                                                  Content-Length: {}\r\n\
                                                  Connection: {connection_header}\r\n\
                                                  x-goblin-web-contract: {}\r\n\
@@ -539,8 +516,25 @@ impl Host {
                                             log.done(200, body.len());
                                             if want_close { break 'conn; } else { continue 'conn; }
                                         }
-                                        Err(err) => {
-                                            let msg = format!("Goblin runtime error:\n{err}");
+                                        Err(ExecErr::Timeout) => {
+                                            let body = "504 Gateway Timeout: Goblin script exceeded time limit";
+                                            let headers = format!(
+                                                "HTTP/1.1 504 Gateway Timeout\r\n\
+                                                 Content-Type: text/plain; charset=utf-8\r\n\
+                                                 Content-Length: {}\r\n\
+                                                 Connection: {connection_header}\r\n\
+                                                 x-goblin-web-contract: {}\r\n\
+                                                 \r\n",
+                                                body.len(),
+                                                crate::CONTRACT_VERSION
+                                            );
+                                            let _ = socket.write_all(headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(504, body.len());
+                                            if want_close { break 'conn; } else { continue 'conn; }
+                                        }
+                                        Err(ExecErr::NonZero(err)) => {
+                                            let body = format!("Goblin runtime error:\n{err}");
                                             let headers = format!(
                                                 "HTTP/1.1 500 Internal Server Error\r\n\
                                                  Content-Type: text/plain; charset=utf-8\r\n\
@@ -548,18 +542,33 @@ impl Host {
                                                  Connection: {connection_header}\r\n\
                                                  x-goblin-web-contract: {}\r\n\
                                                  \r\n",
-                                                msg.len(),
+                                                body.len(),
                                                 crate::CONTRACT_VERSION
                                             );
-                                            if socket.write_all(headers.as_bytes()).await.is_ok() {
-                                                let _ = socket.write_all(msg.as_bytes()).await;
-                                            }
-                                            log.done(500, msg.len());
+                                            let _ = socket.write_all(headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(500, body.len());
+                                            if want_close { break 'conn; } else { continue 'conn; }
+                                        }
+                                        Err(ExecErr::Spawn(err)) => {
+                                            let body = format!("Goblin spawn error:\n{err}");
+                                            let headers = format!(
+                                                "HTTP/1.1 500 Internal Server Error\r\n\
+                                                 Content-Type: text/plain; charset=utf-8\r\n\
+                                                 Content-Length: {}\r\n\
+                                                 Connection: {connection_header}\r\n\
+                                                 x-goblin-web-contract: {}\r\n\
+                                                 \r\n",
+                                                body.len(),
+                                                crate::CONTRACT_VERSION
+                                            );
+                                            let _ = socket.write_all(headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(500, body.len());
                                             if want_close { break 'conn; } else { continue 'conn; }
                                         }
                                     }
                                 } else {
-                                    // 404 for missing script
                                     let body = "API script not found";
                                     let headers = format!(
                                         "HTTP/1.1 404 Not Found\r\n\
@@ -571,13 +580,13 @@ impl Host {
                                         body.len(),
                                         crate::CONTRACT_VERSION
                                     );
-                                    if socket.write_all(headers.as_bytes()).await.is_ok() {
-                                        let _ = socket.write_all(body.as_bytes()).await;
-                                    }
+                                    let _ = socket.write_all(headers.as_bytes()).await;
+                                    let _ = socket.write_all(body.as_bytes()).await;
                                     log.done(404, body.len());
                                     if want_close { break 'conn; } else { continue 'conn; }
                                 }
                             }
+
                             // ---- PROXY (GET-only; dev convenience) ----
                             // Runs before static serving so /api etc. are forwarded to your backend.
                             if method.eq_ignore_ascii_case("GET") && !proxies.is_empty() {
@@ -873,25 +882,47 @@ pub enum HostError {
 // Re-export version string for info endpoints.
 pub const CONTRACT_VERSION: &str = "v0";
 
-fn exec_goblin_script_via_cli(script_path: &std::path::Path) -> Result<String, String> {
-    use std::process::{Command, Stdio};
+// REPLACE the old exec_goblin_script_via_cli(...) with this async version:
 
-    // NOTE: call the goblin CLI binary that your workspace produces.
-    // If your CLI binary is named "goblin", this will find it in PATH.
-    // If you keep it local, use absolute path to target/debug/goblin (Windows: goblin.exe).
-    let output = Command::new("goblin")
-        .arg(script_path.as_os_str())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to spawn goblin CLI: {e}"))?;
+#[derive(Debug)]
+enum ExecErr {
+    Spawn(String),
+    Timeout,
+    NonZero(String),
+}
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(format!("goblin script error: {err}"));
+async fn exec_goblin_script_via_cli_timeout(
+    script_path: &std::path::Path,
+    timeout_ms: u64,
+) -> Result<String, ExecErr> {
+    use tokio::process::Command;
+    use tokio::time::{timeout, Duration};
+    use std::process::Stdio;
+
+    let mut cmd = Command::new("goblin");
+    cmd.kill_on_drop(true); // child will be terminated if dropped
+    cmd.arg(script_path.as_os_str())
+       .env("GOBLIN_NONINTERACTIVE", "1")
+       .stdin(Stdio::null())
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+
+    let child = cmd.spawn()
+        .map_err(|e| ExecErr::Spawn(format!("failed to spawn goblin CLI: {e}")))?;
+
+    match timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await {
+        Err(_) => {
+            // Timed out: the future (and thus the Child) will be dropped here.
+            // Because kill_on_drop(true) is set, the subprocess is terminated.
+            Err(ExecErr::Timeout)
+        }
+        Ok(Ok(out)) => {
+            if !out.status.success() {
+                Err(ExecErr::NonZero(String::from_utf8_lossy(&out.stderr).into_owned()))
+            } else {
+                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+            }
+        }
+        Ok(Err(e)) => Err(ExecErr::Spawn(format!("wait_with_output failed: {e}"))),
     }
-
-    let out = String::from_utf8_lossy(&output.stdout).into_owned();
-    Ok(out)
 }

@@ -103,7 +103,7 @@ user2.show_email
 /// Test readonly - this should fail at runtime
 /// user1 >> id = 999
 
-////
+//// 
 Other tests
 From another session
 ////
@@ -271,6 +271,8 @@ repeat 10
 end
 say "Final total:" ++ total
 
+stop
+
 say ""
 say "=== Testing skip and stop together ==="
 n = 0
@@ -341,6 +343,9 @@ a = big(12345678901234567890)
 b = big(12345678901234567889)
 say min([a, b])
 say max(a, b)
+
+/// sneaky: will trigger T0205 (map index must be a string key)
+garbage = {"name": "Alice"}
 
 say "errors"
 ///say min([])          /// expect R0404: min of empty array
