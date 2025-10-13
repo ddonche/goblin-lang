@@ -1,6 +1,6 @@
 //! Interpreter-side helpers to build rich diagnostics from runtime paths.
 
-use goblin_diagnostics::{Diagnostic, Severity, Span};
+use goblin_diagnostics::{Diagnostic, Severity, Span, LabeledSpan};
 
 /// Base URL for error docs (anchors appended as #CODE)
 pub const ERROR_DOCS_BASE: &str = "https://goblinlang.org/docs/errors";
@@ -23,6 +23,78 @@ pub fn rt<L: SourceLookup>(
     if let Some(line_text) = lookup.source_line(&primary_span.file, primary_span.line_start) {
         d = d.with_snippet(line_text, primary_span.col_start, primary_span.col_end);
     }
+    d
+}
+
+// diagnostics.rs (or wherever your helpers live)
+pub fn import_failed_focus_inner(
+    import_name: &str,
+    import_site: goblin_diagnostics::Span,
+    inner: &goblin_diagnostics::Diagnostic,
+    base_dir: &std::path::Path,
+) -> goblin_diagnostics::Diagnostic {
+    use crate::diagnostics::rtcode;
+    use goblin_diagnostics::{Diagnostic, Severity, LabeledSpan};
+
+    fn strip_to_relative(path: &str, base: &std::path::Path) -> String {
+        let pb = std::path::Path::new(path);
+        if let Ok(rel) = pb.strip_prefix(base) {
+            rel.to_string_lossy().replace('\\', "/")
+        } else {
+            pb.to_string_lossy().replace('\\', "/")
+        }
+    }
+
+    // Primary = where the real error occurred.
+    let mut d = Diagnostic::new_with_code(
+        Severity::Error,
+        rtcode::IMPORT_FAILED,
+        "import-failed",
+        format!("import of ‘{}’ failed", import_name),
+        inner.primary_span.clone(),
+    );
+
+    // Preserve caret/snippet if present.
+    let (hs, he) = (
+        inner.highlight_start.unwrap_or(inner.primary_span.col_start),
+        inner.highlight_end.unwrap_or(inner.primary_span.col_end),
+    );
+    if let Some(line) = inner.source_line.clone() {
+        d = d.with_snippet(line, hs, he);
+    }
+
+    // Import site: keep the full original Span (no path rewriting here).
+    d = d.with_secondary(LabeledSpan {
+        span: import_site.clone(),
+        label: Some("imported here".to_string()),
+    });
+
+    // Thread inner secondaries unchanged (keep full paths).
+    for sec in &inner.secondary_spans {
+        d = d.with_secondary(sec.clone());
+    }
+
+    // Inner headline + a normalized “at …” note + inner docs link.
+    if inner.code != rtcode::IMPORT_FAILED {
+        let head = inner.message.lines().next().unwrap_or(&inner.message);
+        let note = if inner.code == "UNKNOWN" {
+            format!("caused by {}", head)
+        } else {
+            format!("caused by {}: {}", inner.code, head)
+        };
+        d = d.with_note(note);
+
+        let at_file = strip_to_relative(&inner.primary_span.file, base_dir);
+        d = d.with_note(format!("at {}:{}:{}", at_file, inner.primary_span.line_start, inner.primary_span.col_start));
+
+        if inner.code != "UNKNOWN" {
+            d = d.with_note(format!("see {}", inner.docs_link(crate::diagnostics::ERROR_DOCS_BASE)));
+        }
+    }
+
+    for h in &inner.help { d = d.with_help(h.clone()); }
+    for n in &inner.notes { d = d.with_note(n.clone()); }
+
     d
 }
 

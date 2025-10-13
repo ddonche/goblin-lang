@@ -2017,10 +2017,15 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         }
 
         ast::Stmt::Import(import_stmt) => {
+            use std::path::{Path, PathBuf};
+            use goblin_diagnostics::{Diagnostic, Severity, Span};
+            use crate::diagnostics::rtcode;
+            type Diag = goblin_diagnostics::Diagnostic;
+
             let base_dir = std::env::current_dir().map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
-                    rtcode::IMPORT_IO,              // R0501
+                    rtcode::IMPORT_IO,          // R0501
                     "import-io",
                     format!("cannot get current directory: {}", e),
                     import_stmt.span.clone(),
@@ -2030,21 +2035,99 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 .with_link("https://goblinlang.org/docs/errors#R0501")
             })?;
 
-            // Helper to execute a loaded module
-            fn execute_module(sess: &mut Session, namespace: String, module_ast: ast::Module) -> Result<(), Diag> {
+            // --- Resolver that returns (namespace, Some(module_ast)) or a *Diagnostic* error ---
+            fn resolve_module(
+                import_name: &str,
+                alias: Option<&str>,
+                base_dir: &Path,
+            ) -> Result<(String, Option<ast::Module>), Diag> {
+                use goblin_diagnostics::{Diagnostic, Severity, Span};
+                use crate::diagnostics::rtcode;
+
+                // Namespace = alias or last path segment
+                let namespace = alias
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| import_name.rsplit('/').next().unwrap_or(import_name).to_string());
+
+                // Map "game/state" to "<base>/game/state.gbln"
+                let mut p = PathBuf::from(base_dir);
+                for seg in import_name.split('/') {
+                    if seg.is_empty() { continue; }
+                    p.push(seg);
+                }
+                if p.extension().is_none() {
+                    p.set_extension("gbln");
+                }
+                let file_label = p.display().to_string();
+
+                // 1) Read
+                let src = std::fs::read_to_string(&p).map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::IMPORT_IO,            // R0501
+                        "import-io",
+                        format!("read error: {}", e),
+                        Span {
+                            file: file_label.clone(),
+                            start: 0, end: 0,
+                            line_start: 1, col_start: 1,
+                            line_end: 1, col_end: 1,
+                        },
+                    )
+                })?;
+
+                // 2) Lex  (bubble the *first* lexer diagnostic directly)
+                let toks = goblin_lexer::lex(&src, &file_label)
+                    .map_err(|mut ds| ds.remove(0))?;
+
+                // 3) Parse (bubble the *first* parser diagnostic directly)
+                let parser = goblin_parser::Parser::new(&toks);
+                let module = parser.parse_module()
+                    .map_err(|mut ds| ds.remove(0))?;
+
+                Ok((namespace, Some(module)))
+            }
+
+            // Execute a loaded module, wrapping inner errors back to the import site.
+            fn execute_module_wrapped(
+                sess: &mut Session,
+                namespace: String,
+                module_ast: ast::Module,
+                import_span: &Span,
+                import_name: &str,
+                base_dir: &Path,
+            ) -> Result<(), Diag> {
                 let old_module = sess.current_module.clone();
                 sess.current_module = Some(namespace);
 
                 // First pass: imports
                 for stmt in &module_ast.items {
                     if matches!(stmt, ast::Stmt::Import(_)) {
-                        eval_stmt(stmt, sess)?;
+                        if let Err(inner) = eval_stmt(stmt, sess) {
+                            let wrapped = crate::diagnostics::import_failed_focus_inner(
+                                import_name,
+                                import_span.clone(),
+                                &inner,
+                                &base_dir,
+                            );
+                            sess.current_module = old_module;
+                            return Err(wrapped);
+                        }
                     }
                 }
                 // Second pass: everything else
                 for stmt in &module_ast.items {
                     if !matches!(stmt, ast::Stmt::Import(_)) {
-                        eval_stmt(stmt, sess)?;
+                        if let Err(inner) = eval_stmt(stmt, sess) {
+                            let wrapped = crate::diagnostics::import_failed_focus_inner(
+                                import_name,
+                                import_span.clone(),
+                                &inner,
+                                &base_dir,
+                            );
+                            sess.current_module = old_module;
+                            return Err(wrapped);
+                        }
                     }
                 }
 
@@ -2053,50 +2136,43 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             }
 
             match &import_stmt.items {
+                // import game/state as state
                 ast::ImportItems::Path(path) => {
-                    let (namespace, maybe_ast) = sess
-                        .modules
-                        .load_module(path, import_stmt.alias.as_deref(), &base_dir)
-                        .map_err(|e| {
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                rtcode::IMPORT_FAILED,   // R0502
-                                "import-failed",
-                                e,
+                    let (namespace, maybe_ast) = resolve_module(path, import_stmt.alias.as_deref(), &base_dir)
+                        .map_err(|inner: Diag| {
+                            crate::diagnostics::import_failed_focus_inner(
+                                path,
                                 import_stmt.span.clone(),
+                                &inner,
+                                &base_dir,
                             )
-                            .with_help("Check that the path exists and is readable. Use an absolute path or a correct relative path.")
-                            .with_help("If this is a module name, ensure the module can be resolved from the current directory.")
-                            .with_link("https://goblinlang.org/docs/errors#R0502")
                         })?;
 
                     if let Some(module_ast) = maybe_ast {
-                        execute_module(sess, namespace, module_ast)?;
+                        execute_module_wrapped(sess, namespace, module_ast, &import_stmt.span, path, &base_dir)?;
                     }
                 }
+
+                // import { hero, world as w } from game
                 ast::ImportItems::Named { items, source } => {
                     for item in items {
                         let full_path = format!("{}/{}", source, item.name);
-                        let namespace_str = item.alias.as_deref().unwrap_or(&item.name);
+                        let ns_alias  = item.alias.as_deref().unwrap_or(&item.name);
 
-                        let (namespace, maybe_ast) = sess
-                            .modules
-                            .load_module(&full_path, Some(namespace_str), &base_dir)
-                            .map_err(|e| {
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::IMPORT_FAILED,   // R0502
-                                    "import-failed",
-                                    e,
+                        let (namespace, maybe_ast) = resolve_module(&full_path, Some(ns_alias), &base_dir)
+                            .map_err(|inner: Diag| {
+                                crate::diagnostics::import_failed_focus_inner(
+                                    &full_path,
                                     import_stmt.span.clone(),
+                                    &inner,
+                                    &base_dir,
                                 )
-                                .with_help("Verify the named import exists at the resolved path and is readable.")
-                                .with_help("If you meant to import a symbol, ensure it is exposed by that module.")
-                                .with_link("https://goblinlang.org/docs/errors#R0502")
                             })?;
 
                         if let Some(module_ast) = maybe_ast {
-                            execute_module(sess, namespace, module_ast)?;
+                            execute_module_wrapped(
+                                sess, namespace, module_ast, &import_stmt.span, &full_path, &base_dir
+                            )?;
                         }
                     }
                 }

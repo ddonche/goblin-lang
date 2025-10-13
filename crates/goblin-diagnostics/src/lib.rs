@@ -202,14 +202,28 @@ impl Diagnostic {
 /// Minimal pretty printer that follows the guide's first line format.
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // First line
+        // ---- headline ----
         if self.code == "UNKNOWN" {
             writeln!(f, "{}: {}: {}", self.severity, self.category, self.message)?;
         } else {
             writeln!(f, "{}: {}: {}: {}", self.severity, self.code, self.category, self.message)?;
         }
 
-        // === Try get the source line (use attached snippet first; else read file) ===
+        // ---- helper: show path relative to CWD (else fallback to basename) ----
+        fn display_path(full: &str) -> String {
+            use std::path::Path;
+            let p = Path::new(full);
+            if let Ok(cwd) = std::env::current_dir() {
+                if let Ok(rel) = p.strip_prefix(&cwd) {
+                    return rel.to_string_lossy().replace('\\', "/");
+                }
+            }
+            p.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| full.to_string())
+        }
+
+        // ---- fetch source line (prefer attached snippet; else read file) ----
         let mut line_for_print: Option<String> = self.source_line.clone();
         if line_for_print.is_none() {
             if let Ok(src) = std::fs::read_to_string(&self.primary_span.file) {
@@ -220,16 +234,15 @@ impl fmt::Display for Diagnostic {
             }
         }
 
-        // === Derive start/end columns (prefer explicit highlight range) ===
-        // If not provided, recompute from byte offsets so columns are line-relative.
+        // ---- derive start/end columns (prefer explicit highlight range) ----
         let (s_col, e_col) = if let (Some(s), Some(e)) = (self.highlight_start, self.highlight_end) {
             (s, e)
-        } else if let Ok(src_again) = std::fs::read_to_string(&self.primary_span.file) {
-            // Find byte offset where this line begins
+        } else if let Ok(src) = std::fs::read_to_string(&self.primary_span.file) {
+            // find byte offset where this line begins
             let mut cursor: usize = 0;
             let target = self.primary_span.line_start.saturating_sub(1) as usize;
             let mut line_start_byte: Option<usize> = None;
-            for (i, ln) in src_again.split_inclusive('\n').enumerate() {
+            for (i, ln) in src.split_inclusive('\n').enumerate() {
                 if i == target {
                     line_start_byte = Some(cursor);
                     break;
@@ -249,18 +262,20 @@ impl fmt::Display for Diagnostic {
             (self.primary_span.col_start, self.primary_span.col_end)
         };
 
-        // === Location header (use s_col so it matches the caret) ===
+        // ---- location header (normalized path; start column matches caret) ----
         writeln!(
             f,
             "  ┌─ {}:{}:{}",
-            self.primary_span.file, self.primary_span.line_start, s_col
+            display_path(&self.primary_span.file),
+            self.primary_span.line_start,
+            s_col
         )?;
 
-        // === Snippet + carets ===
+        // ---- snippet + carets ----
         if let Some(ref line) = line_for_print {
             writeln!(f, "{:>4} | {}", self.primary_span.line_start, line)?;
 
-            // Tab-aware padding (tab stop = 4)
+            // tab-aware padding (tab stop = 4)
             fn visual_width_up_to(s: &str, tabw: usize) -> usize {
                 let mut w = 0usize;
                 for ch in s.chars() {
@@ -288,9 +303,14 @@ impl fmt::Display for Diagnostic {
             writeln!(f, "     | {}{}", pad, carets)?;
         }
 
-        // Secondary spans
+        // ---- secondary spans (normalized path) ----
         for sec in &self.secondary_spans {
-            let where_ = format!("{}:{}:{}", sec.span.file, sec.span.line_start, sec.span.col_start);
+            let where_ = format!(
+                "{}:{}:{}",
+                display_path(&sec.span.file),
+                sec.span.line_start,
+                sec.span.col_start
+            );
             if let Some(lbl) = &sec.label {
                 writeln!(f, "  = note: {} → {}", where_, lbl)?;
             } else {
@@ -298,7 +318,7 @@ impl fmt::Display for Diagnostic {
             }
         }
 
-        // Help & notes
+        // ---- help & notes ----
         for h in &self.help {
             writeln!(f, "  = help: {}", h)?;
         }
@@ -306,7 +326,7 @@ impl fmt::Display for Diagnostic {
             writeln!(f, "  = note: {}", n)?;
         }
 
-        // Docs link
+        // ---- docs link ----
         if self.code != "UNKNOWN" {
             writeln!(f, "  = link: {}", self.docs_link(DEFAULT_ERROR_DOCS_BASE))?;
         }
