@@ -206,21 +206,10 @@ impl fmt::Display for Diagnostic {
         if self.code == "UNKNOWN" {
             writeln!(f, "{}: {}: {}", self.severity, self.category, self.message)?;
         } else {
-            writeln!(
-                f,
-                "{}: {}: {}: {}",
-                self.severity, self.code, self.category, self.message
-            )?;
+            writeln!(f, "{}: {}: {}: {}", self.severity, self.code, self.category, self.message)?;
         }
 
-        // Location header
-        writeln!(
-            f,
-            "  ┌─ {}:{}:{}",
-            self.primary_span.file, self.primary_span.line_start, self.primary_span.col_start
-        )?;
-
-        // === Fallback: load source line from disk if no snippet was attached ===
+        // === Try get the source line (use attached snippet first; else read file) ===
         let mut line_for_print: Option<String> = self.source_line.clone();
         if line_for_print.is_none() {
             if let Ok(src) = std::fs::read_to_string(&self.primary_span.file) {
@@ -231,60 +220,59 @@ impl fmt::Display for Diagnostic {
             }
         }
 
-        if let Some(ref line) = line_for_print {
-            // Try to derive start/end columns from byte offsets relative to this line.
-            // This fixes cases where col_start/col_end were set to global offsets.
-            let (s_col, e_col) = {
-                // Prefer explicit highlight range if provided
-                if let (Some(s), Some(e)) = (self.highlight_start, self.highlight_end) {
-                    (s, e)
-                } else if let Ok(src_again) = std::fs::read_to_string(&self.primary_span.file) {
-                    // Find the byte offset where this line begins
-                    let mut cursor: usize = 0;
-                    let target = self.primary_span.line_start.saturating_sub(1) as usize;
-                    let mut line_start_byte: Option<usize> = None;
-
-                    for (i, ln) in src_again.split_inclusive('\n').enumerate() {
-                        if i == target {
-                            line_start_byte = Some(cursor);
-                            break;
-                        }
-                        cursor += ln.as_bytes().len();
-                    }
-
-                    if let Some(ls) = line_start_byte {
-                        // Clamp the span to the current line and convert to 1-based columns
-                        let start = self.primary_span.start.max(ls);
-                        let end   = self.primary_span.end.max(start);
-                        let col_s = (start - ls) as u32 + 1;
-                        let col_e = (end.saturating_sub(1).saturating_sub(ls)) as u32 + 1;
-                        (col_s, col_e)
-                    } else {
-                        (self.primary_span.col_start, self.primary_span.col_end)
-                    }
-                } else {
-                    (self.primary_span.col_start, self.primary_span.col_end)
+        // === Derive start/end columns (prefer explicit highlight range) ===
+        // If not provided, recompute from byte offsets so columns are line-relative.
+        let (s_col, e_col) = if let (Some(s), Some(e)) = (self.highlight_start, self.highlight_end) {
+            (s, e)
+        } else if let Ok(src_again) = std::fs::read_to_string(&self.primary_span.file) {
+            // Find byte offset where this line begins
+            let mut cursor: usize = 0;
+            let target = self.primary_span.line_start.saturating_sub(1) as usize;
+            let mut line_start_byte: Option<usize> = None;
+            for (i, ln) in src_again.split_inclusive('\n').enumerate() {
+                if i == target {
+                    line_start_byte = Some(cursor);
+                    break;
                 }
-            };
+                cursor += ln.as_bytes().len();
+            }
+            if let Some(ls) = line_start_byte {
+                let start = self.primary_span.start.max(ls);
+                let end   = self.primary_span.end.max(start);
+                let col_s = (start - ls) as u32 + 1;
+                let col_e = (end.saturating_sub(1).saturating_sub(ls)) as u32 + 1;
+                (col_s, col_e)
+            } else {
+                (self.primary_span.col_start, self.primary_span.col_end)
+            }
+        } else {
+            (self.primary_span.col_start, self.primary_span.col_end)
+        };
 
-            // Print the source line
+        // === Location header (use s_col so it matches the caret) ===
+        writeln!(
+            f,
+            "  ┌─ {}:{}:{}",
+            self.primary_span.file, self.primary_span.line_start, s_col
+        )?;
+
+        // === Snippet + carets ===
+        if let Some(ref line) = line_for_print {
             writeln!(f, "{:>4} | {}", self.primary_span.line_start, line)?;
 
-            // Draw carets with tab expansion so alignment is correct (tab stop = 4)
+            // Tab-aware padding (tab stop = 4)
             fn visual_width_up_to(s: &str, tabw: usize) -> usize {
                 let mut w = 0usize;
                 for ch in s.chars() {
                     if ch == '\t' {
-                        let next = ((w / tabw) + 1) * tabw;
-                        w = next;
+                        w = ((w / tabw) + 1) * tabw;
                     } else {
-                        w += 1; // treat other chars as width 1
+                        w += 1;
                     }
                 }
                 w
             }
 
-            // Compute prefix (chars before the highlight start, 1-based columns)
             let start_idx = s_col.saturating_sub(1) as usize;
             let end_idx   = if e_col >= s_col { (e_col - 1) as usize } else { start_idx };
 
@@ -302,10 +290,7 @@ impl fmt::Display for Diagnostic {
 
         // Secondary spans
         for sec in &self.secondary_spans {
-            let where_ = format!(
-                "{}:{}:{}",
-                sec.span.file, sec.span.line_start, sec.span.col_start
-            );
+            let where_ = format!("{}:{}:{}", sec.span.file, sec.span.line_start, sec.span.col_start);
             if let Some(lbl) = &sec.label {
                 writeln!(f, "  = note: {} → {}", where_, lbl)?;
             } else {
@@ -321,7 +306,7 @@ impl fmt::Display for Diagnostic {
             writeln!(f, "  = note: {}", n)?;
         }
 
-        // Docs link (only if we have a real code)
+        // Docs link
         if self.code != "UNKNOWN" {
             writeln!(f, "  = link: {}", self.docs_link(DEFAULT_ERROR_DOCS_BASE))?;
         }
