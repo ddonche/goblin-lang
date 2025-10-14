@@ -11,6 +11,7 @@ use goblin_gql::{parse_query as gql_parse, pretty as gql_pretty};
 use goblin_lexer::{lex, TokenKind};
 use goblin_parser::Parser;
 use goblin_interpreter;
+use std::collections::BTreeMap;
 
 pub mod config;
 
@@ -43,6 +44,7 @@ fn enable_utf8_console() {
     }
 }
 
+#[allow(dead_code)]
 fn run_devserver(host: String, port: u16) -> i32 {
     // Block on the async devserver using a Tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -63,6 +65,57 @@ fn run_devserver(host: String, port: u16) -> i32 {
             1
         }
     }
+}
+
+#[allow(dead_code)]
+fn read_module_paths_from_yaml(cwd: &Path) -> BTreeMap<String, PathBuf> {
+    let mut out = BTreeMap::new();
+    let p = cwd.join("goblin.yaml");
+    let Ok(text) = std::fs::read_to_string(&p) else { return out; };
+
+    // very small, indentation-based parser for:
+    // module_paths:
+    //   alias: ./dir
+    let mut in_section = false;
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+
+        if !in_section {
+            if trimmed.starts_with("module_paths:") {
+                in_section = true;
+            }
+            continue;
+        }
+
+        // we’re inside module_paths: — accept only indented "key: value"
+        let leading_ws = line.len() - trimmed.len();
+        if leading_ws == 0 {
+            // section ended
+            break;
+        }
+
+        // ignore comments-only lines
+        if trimmed.starts_with('#') { continue; }
+
+        // parse "key: value"
+        if let Some((k, v)) = trimmed.split_once(':') {
+            let key = k.trim();
+            if key.is_empty() { continue; }
+            let mut val = v.trim();
+
+            // strip optional quotes
+            if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+                val = &val[1..val.len().saturating_sub(1)];
+            }
+
+            if !val.is_empty() {
+                out.insert(key.to_string(), cwd.join(val));
+            }
+        }
+    }
+    out
 }
 
 fn main() {
@@ -1151,7 +1204,7 @@ fn resolve_entry_from_yaml(cwd: &std::path::Path) -> Option<std::path::PathBuf> 
 // =======================================================
 // Devserver launcher with proxy support
 // =======================================================
-fn run_devserver_with_proxies(host: String, port: u16, proxies: Vec<(String, String)>) -> i32 {
+fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, String)>) -> i32 {
     // Create a Tokio runtime manually (CLI entrypoints can’t be async)
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

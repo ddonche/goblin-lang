@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -2017,8 +2018,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         }
 
         ast::Stmt::Import(import_stmt) => {
-            use std::path::{Path, PathBuf};
-            use goblin_diagnostics::{Diagnostic, Severity, Span};
+            use std::path::Path;
+            use goblin_diagnostics::{Diagnostic, Severity};
             use crate::diagnostics::rtcode;
             type Diag = goblin_diagnostics::Diagnostic;
 
@@ -2035,65 +2036,12 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 .with_link("https://goblinlang.org/docs/errors#R0501")
             })?;
 
-            // --- Resolver that returns (namespace, Some(module_ast)) or a *Diagnostic* error ---
-            fn resolve_module(
-                import_name: &str,
-                alias: Option<&str>,
-                base_dir: &Path,
-            ) -> Result<(String, Option<ast::Module>), Diag> {
-                use goblin_diagnostics::{Diagnostic, Severity, Span};
-                use crate::diagnostics::rtcode;
-
-                // Namespace = alias or last path segment
-                let namespace = alias
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| import_name.rsplit('/').next().unwrap_or(import_name).to_string());
-
-                // Map "game/state" to "<base>/game/state.gbln"
-                let mut p = PathBuf::from(base_dir);
-                for seg in import_name.split('/') {
-                    if seg.is_empty() { continue; }
-                    p.push(seg);
-                }
-                if p.extension().is_none() {
-                    p.set_extension("gbln");
-                }
-                let file_label = p.display().to_string();
-
-                // 1) Read
-                let src = std::fs::read_to_string(&p).map_err(|e| {
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        rtcode::IMPORT_IO,            // R0501
-                        "import-io",
-                        format!("read error: {}", e),
-                        Span {
-                            file: file_label.clone(),
-                            start: 0, end: 0,
-                            line_start: 1, col_start: 1,
-                            line_end: 1, col_end: 1,
-                        },
-                    )
-                })?;
-
-                // 2) Lex  (bubble the *first* lexer diagnostic directly)
-                let toks = goblin_lexer::lex(&src, &file_label)
-                    .map_err(|mut ds| ds.remove(0))?;
-
-                // 3) Parse (bubble the *first* parser diagnostic directly)
-                let parser = goblin_parser::Parser::new(&toks);
-                let module = parser.parse_module()
-                    .map_err(|mut ds| ds.remove(0))?;
-
-                Ok((namespace, Some(module)))
-            }
-
             // Execute a loaded module, wrapping inner errors back to the import site.
             fn execute_module_wrapped(
                 sess: &mut Session,
                 namespace: String,
                 module_ast: ast::Module,
-                import_span: &Span,
+                import_span: &goblin_diagnostics::Span,
                 import_name: &str,
                 base_dir: &Path,
             ) -> Result<(), Diag> {
@@ -2138,8 +2086,18 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             match &import_stmt.items {
                 // import game/state as state
                 ast::ImportItems::Path(path) => {
-                    let (namespace, maybe_ast) = resolve_module(path, import_stmt.alias.as_deref(), &base_dir)
-                        .map_err(|inner: Diag| {
+                    let (namespace, maybe_ast) = sess.modules
+                        .load_module(path, import_stmt.alias.as_deref(), &base_dir)
+                        .map_err(|msg| {
+                            // Turn the String into a proper Diagnostic so import_failed_* can wrap it.
+                            let inner = Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO,          // R0501
+                                "import-io",
+                                format!("read error: {}", msg),
+                                import_stmt.span.clone(),
+                            )
+                            .with_link("https://goblinlang.org/docs/errors#R0501");
                             crate::diagnostics::import_failed_focus_inner(
                                 path,
                                 import_stmt.span.clone(),
@@ -2149,7 +2107,15 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         })?;
 
                     if let Some(module_ast) = maybe_ast {
-                        execute_module_wrapped(sess, namespace, module_ast, &import_stmt.span, path, &base_dir)?;
+                        // ModuleCache is already populated by load_module; now execute it.
+                        execute_module_wrapped(
+                            sess,
+                            namespace,
+                            module_ast,
+                            &import_stmt.span,
+                            path,
+                            &base_dir,
+                        )?;
                     }
                 }
 
@@ -2159,8 +2125,17 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         let full_path = format!("{}/{}", source, item.name);
                         let ns_alias  = item.alias.as_deref().unwrap_or(&item.name);
 
-                        let (namespace, maybe_ast) = resolve_module(&full_path, Some(ns_alias), &base_dir)
-                            .map_err(|inner: Diag| {
+                        let (namespace, maybe_ast) = sess.modules
+                            .load_module(&full_path, Some(ns_alias), &base_dir)
+                            .map_err(|msg| {
+                                let inner = Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::IMPORT_IO,      // R0501
+                                    "import-io",
+                                    format!("read error: {}", msg),
+                                    import_stmt.span.clone(),
+                                )
+                                .with_link("https://goblinlang.org/docs/errors#R0501");
                                 crate::diagnostics::import_failed_focus_inner(
                                     &full_path,
                                     import_stmt.span.clone(),
@@ -2171,7 +2146,12 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
                         if let Some(module_ast) = maybe_ast {
                             execute_module_wrapped(
-                                sess, namespace, module_ast, &import_stmt.span, &full_path, &base_dir
+                                sess,
+                                namespace,
+                                module_ast,
+                                &import_stmt.span,
+                                &full_path,
+                                &base_dir,
                             )?;
                         }
                     }
@@ -2330,6 +2310,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
     }
 }
 
+#[allow(dead_code)]
 fn eval_expr_list(exprs: &[ast::Expr], sess: &mut Session) -> Result<Option<Value>, Diag> {
     let mut last: Option<Value> = None;
     for e in exprs {
@@ -2981,7 +2962,7 @@ fn collection_operation(
                                     .with_link("https://goblinlang.org/docs/errors#R0701")
                                 })
                         }
-                        Operation::Put(v) => {
+                        Operation::Put(_v) => {
                             // Maps don't have a natural "first" position.
                             Err(
                                 Diagnostic::new_with_code(
@@ -4324,6 +4305,155 @@ fn call_action_by_name(
             Value::Str(kind.to_string())
         }
 
+        // ----- Type predicates (total; arity=1; return Bool) -----
+        "is_nil" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Nil))
+        }
+
+        "is_bool" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Bool(_)))
+        }
+
+        "is_int" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            let is_int_like_float = match v {
+                Value::Float(n) => n.is_finite() && n.fract() == 0.0,
+                _ => false,
+            };
+            Value::Bool(matches!(v, Value::Int(_)) || is_int_like_float)
+        }
+
+        "is_float" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            // float but NOT "int-like" (to mirror valtype -> "int" classification)
+            let is_proper_float = match v {
+                Value::Float(n) => !(n.is_finite() && n.fract() == 0.0),
+                _ => false,
+            };
+            Value::Bool(is_proper_float)
+        }
+
+        "is_big" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Big(_)))
+        }
+
+        "is_pct" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Pct(_)))
+        }
+
+        "is_num" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            let is_int_like_float = matches!(v, Value::Float(n) if n.is_finite() && n.fract()==0.0);
+            Value::Bool(
+                matches!(v, Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_))
+                || is_int_like_float
+            )
+        }
+
+        "is_str" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Str(_)))
+        }
+
+        "is_char" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Char(_)))
+        }
+
+        "is_array" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Array(_)))
+        }
+
+        "is_map" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Map(_)))
+        }
+
+        "is_pair" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Pair(_, _)))
+        }
+
+        "is_seq" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Seq(_)))
+        }
+
+        "is_unit" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::Unit))
+        }
+
+        "is_control" => {
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+            Value::Bool(matches!(v, Value::CtrlSkip | Value::CtrlStop))
+        }
+
         "format" => {
             // Usage:
             //   n.format(dec)                     // decimals only
@@ -4908,7 +5038,7 @@ fn call_action_by_name(
                         Severity::Error,
                         crate::diagnostics::rtcode::POSITIVE_INT_EXPECTED, // T0202
                         "pick-count-not-integer",
-                        "pick ‘count’ must be a positive integer",
+                        "pick 'count' must be a positive integer",
                         sp.clone(),
                     )
                     .with_help("Provide an integer ≥ 1, e.g. { count: 3 }")
@@ -4925,7 +5055,7 @@ fn call_action_by_name(
                             Severity::Error,
                             crate::diagnostics::rtcode::POSITIVE_INT_EXPECTED, // T0202
                             "digits-positive-int",
-                            "‘digits’ must be a positive integer (>= 1)",
+                            "'digits' must be a positive integer (>= 1)",
                             sp.clone(),
                         )
                         .with_help("Provide an integer ≥ 1, e.g. { digits: 3 }")
@@ -4978,7 +5108,7 @@ fn call_action_by_name(
                                     "cannot pick from an empty collection",
                                     sp.clone(),
                                 )
-                                .with_help("Provide a non-empty source for ‘pick’, or handle the empty case.")
+                                .with_help("Provide a non-empty source for 'pick', or handle the empty case.")
                                 .with_link("https://goblinlang.org/docs/errors#R0701"),
                             );
                         }
@@ -4995,7 +5125,7 @@ fn call_action_by_name(
                                     ),
                                     sp.clone(),
                                 )
-                                .with_help("Reduce ‘count’, enable ‘allow_dups’, or supply a larger source.")
+                                .with_help("Reduce 'count', enable 'allow_dups', or supply a larger source.")
                                 .with_link("https://goblinlang.org/docs/errors#R0703"),
                             );
                         }
@@ -5052,7 +5182,7 @@ fn call_action_by_name(
                                     ),
                                     sp.clone(),
                                 )
-                                .with_help("Reduce ‘count’ or enable allow_dups: true.")
+                                .with_help("Reduce 'count' or enable allow_dups: true.")
                                 .with_link("https://goblinlang.org/docs/errors#R0704"),
                             );
                         }
@@ -5107,8 +5237,89 @@ fn call_action_by_name(
 
             // ================== Numeric Range (optional digits) ==================
             if has_range {
-                let a = get_num(&cfg, "range_start").ok_or_else(|| rt("T0201", "range bounds must be numbers", sp.clone()))?;
-                let b = get_num(&cfg, "range_end").ok_or_else(|| rt("T0201", "range bounds must be numbers", sp.clone()))?;
+                // Try to get numeric bounds first
+                let a_num = get_num(&cfg, "range_start");
+                let b_num = get_num(&cfg, "range_end");
+                
+                // Check if we have string bounds instead (for character ranges)
+                let a_str = cfg.get("range_start").and_then(|v| if let Value::Str(s) = v { Some(s) } else { None });
+                let b_str = cfg.get("range_end").and_then(|v| if let Value::Str(s) = v { Some(s) } else { None });
+                
+                // Character range handling
+                if let (Some(a_s), Some(b_s)) = (a_str, b_str) {
+                    if a_s.len() == 1 && b_s.len() == 1 {
+                        let start_char = a_s.chars().next().unwrap();
+                        let end_char = b_s.chars().next().unwrap();
+                        let inc = get_bool(&cfg, "range_inclusive").unwrap_or(false);
+                        
+                        // Build character pool
+                        let mut pool: Vec<char> = if inc {
+                            (start_char..=end_char).collect()
+                        } else {
+                            (start_char..end_char).collect()
+                        };
+                        
+                        if pool.is_empty() {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::INVALID_RANGE_NO_VALUES,
+                                    "invalid-range-no-values",
+                                    "invalid character range (no values)",
+                                    sp.clone(),
+                                )
+                                .with_help("Ensure start character comes before or equals end character.")
+                                .with_link("https://goblinlang.org/docs/errors#R0702"),
+                            );
+                        }
+                        
+                        if !allow_dups && n_out > pool.len() {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::SAMPLE_TOO_LARGE,
+                                    "sample-too-large",
+                                    &format!(
+                                        "requested sample of {} exceeds available {} characters in range",
+                                        n_out,
+                                        pool.len()
+                                    ),
+                                    sp.clone(),
+                                )
+                                .with_help("Reduce 'count' or set 'with dups'.")
+                                .with_link("https://goblinlang.org/docs/errors#R0704"),
+                            );
+                        }
+                        
+                        let picked_chars: Vec<char> = if allow_dups {
+                            let mut out = Vec::with_capacity(n_out);
+                            for _ in 0..n_out {
+                                out.push(pool[rng_index(sess, pool.len())]);
+                            }
+                            out
+                        } else {
+                            // Without replacement: partial Fisher–Yates
+                            for i in 0..n_out {
+                                let j = i + rng_index(sess, pool.len() - i);
+                                pool.swap(i, j);
+                            }
+                            (0..n_out).map(|i| pool[i]).collect()
+                        };
+                        
+                        // Auto-join character ranges into a string
+                        if n_out == 1 {
+                            return Ok(Value::Str(picked_chars[0].to_string()));
+                        } else {
+                            let joined: String = picked_chars.iter().collect();
+                            return Ok(Value::Str(joined));
+                        }
+                    }
+                }
+                
+                // Original numeric range handling
+                let a = a_num.ok_or_else(|| rt("T0201", "range bounds must be numbers or single characters", sp.clone()))?;
+                let b = b_num.ok_or_else(|| rt("T0201", "range bounds must be numbers or single characters", sp.clone()))?;
+                
                 if a.fract() != 0.0 || b.fract() != 0.0 {
                     return Err(
                         Diagnostic::new_with_code(
@@ -5118,7 +5329,7 @@ fn call_action_by_name(
                             "range bounds must be integers",
                             sp.clone(),
                         )
-                        .with_help("Use whole numbers for ‘range_start’ and ‘range_end’ (e.g., 1 and 10).")
+                        .with_help("Use whole numbers for 'range_start' and 'range_end' (e.g., 1 and 10).")
                         .with_link("https://goblinlang.org/docs/errors#T0204"),
                     );
                 }
@@ -5167,7 +5378,7 @@ fn call_action_by_name(
                             ),
                             sp.clone(),
                         )
-                        .with_help("Reduce ‘count’ or set allow_dups: true.")
+                        .with_help("Reduce 'count' or set allow_dups: true.")
                         .with_link("https://goblinlang.org/docs/errors#R0704"),
                     );
                 }
@@ -5220,7 +5431,7 @@ fn call_action_by_name(
                             ),
                             sp.clone(),
                         )
-                        .with_help("Reduce ‘count’ or set allow_dups: true.")
+                        .with_help("Reduce 'count' or set allow_dups: true.")
                         .with_link("https://goblinlang.org/docs/errors#R0704"),
                     );
                 }
@@ -5271,7 +5482,7 @@ fn call_action_by_name(
                                     "could not generate enough distinct values",
                                     sp.clone(),
                                 )
-                                .with_help("Lower ‘count’, relax uniqueness (unique: false / allow_dups: true), or widen the digit space.")
+                                .with_help("Lower 'count', relax uniqueness (unique: false / allow_dups: true), or widen the digit space.")
                                 .with_link("https://goblinlang.org/docs/errors#R0703"),
                             );
                         }
@@ -8310,13 +8521,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
         }
+        
         ast::Expr::Block { stmts, .. } => {
-            // Execute each statement in sequence
-            let mut last_value = Value::Nil;
+            let mut last_value = Value::Nil; // or Value::Unit if that’s your “no value”
             for stmt in stmts {
-                last_value = eval_expr(stmt, sess)?;
+                // eval_stmt: Result<Option<Value>, Diag>
+                if let Some(v) = eval_stmt(stmt, sess)? {
+                    last_value = v;
+                }
             }
-            // Return the value of the last statement
             Ok(last_value)
         }
 
@@ -9169,40 +9382,43 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
            let base_v = eval_expr(base, sess)?;
            
            // Check if this is a builtin method on a primitive type
-           let is_builtin_method = matches!(name.as_str(), 
-               // Collection methods
-               "count" | "len" | "length" |
-               // String transforms
-               "upper" | "lower" | "title" | "slug" | "mixed" |
-               "trim" | "trim_lead" | "trim_trail" |
-               // Collection operations  
-               "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
-               "freq" | "mode" |
-               // String operations
-               "split" | "join" | "lines" | "words" | "chars" |
-               "has" | "find" | "find_all" |
-               "before" | "after" | "before_last" | "after_last" | "between" |
-               "replace" |
-               // Numeric
-               "round" | "floor" | "ceil" | "abs" | "sqrt" |
-               // Type operations
-               "valtype" | "vt" | "backend" | "metrics"
-           );
-           
+           let is_builtin_method =
+               matches!(name.as_str(),
+                   // Collection methods
+                   "count" | "len" | "length" |
+                   // String transforms
+                   "upper" | "lower" | "title" | "slug" | "mixed" |
+                   "trim" | "trim_lead" | "trim_trail" |
+                   // Collection operations
+                   "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
+                   "freq" | "mode" |
+                   // String operations
+                   "split" | "join" | "lines" | "words" | "chars" |
+                   "has" | "find" | "find_all" |
+                   "before" | "after" | "before_last" | "after_last" | "between" |
+                   "replace" |
+                   // Numeric
+                   "round" | "floor" | "ceil" | "abs" | "sqrt" |
+                   // Type operations
+                   "valtype" | "vt" | "backend" | "metrics"
+               )
+               // NEW: any is_* predicate is also a builtin method (postfix sugar)
+               || name.starts_with("is_");
+
            if is_builtin_method {
                // Check if the value type supports this method
                let valid = match name.as_str() {
                    "count" | "len" | "length" => {
                        matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_))
                    }
-                   "upper" | "lower" | "title" | "slug" | "mixed" | 
+                   "upper" | "lower" | "title" | "slug" | "mixed" |
                    "trim" | "trim_lead" | "trim_trail" |
                    "reverse_chars" | "lines" | "words" | "chars" |
-                   "has" | "find" | "find_all" | "before" | "after" | 
+                   "has" | "find" | "find_all" | "before" | "after" |
                    "before_last" | "after_last" | "between" | "replace" => {
                        matches!(base_v, Value::Str(_))
                    }
-                   "reverse" | "shuffle" | "sort" | "unique" | "dups" | 
+                   "reverse" | "shuffle" | "sort" | "unique" | "dups" |
                    "freq" | "mode" => {
                        matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_))
                    }
@@ -9216,14 +9432,17 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                        matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_))
                    }
                    "valtype" | "vt" | "backend" | "metrics" => true, // Works on any type
+                   // NEW: all is_* predicates are valid on any value
+                   _ if name.starts_with("is_") => true,
                    _ => false,
                };
-               
+
                if valid {
                    // Call the builtin function with base_v as first argument
                    return call_action_by_name(sess, name, vec![base_v], sp.clone());
                }
            }
+
            match base_v {
                Value::Map(map) => {
                    match map.get(name) {
@@ -9415,18 +9634,17 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 sp.clone(),
                             )
                             .with_help("Usage: if(cond, then_block[, else_block])")
-                            .with_help("‘then_block’/‘else_block’ must be arrays of expressions.")
+                            .with_help("‘then_block’/‘else_block’ must be block expressions.")
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
 
                     let cond_v = eval_expr(&args[0], sess)?;
                     if as_bool(cond_v, sp.clone(), "if condition")? {
-                        let then_es = expect_array(&args[1], "then_block", sp.clone())?;
-                        Ok(eval_expr_list(then_es, sess)?.unwrap_or(Value::Unit))
+                        // args[1] is now an Expr::Block; eval_expr will execute it
+                        Ok(eval_expr(&args[1], sess)?)
                     } else if args.len() == 3 {
-                        let else_es = expect_array(&args[2], "else_block", sp.clone())?;
-                        Ok(eval_expr_list(else_es, sess)?.unwrap_or(Value::Unit))
+                        Ok(eval_expr(&args[2], sess)?)
                     } else {
                         Ok(Value::Unit)
                     }
@@ -9443,23 +9661,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 sp.clone(),
                             )
                             .with_help("Usage: while(cond, body_block)")
-                            .with_help("‘body_block’ must be an array of expressions.")
+                            .with_help("‘body_block’ must be a block expression.")
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
 
-                    let body_es = expect_array(&args[1], "body_block", sp.clone())?;
                     sess.loop_depth += 1;
                     'outer: loop {
                         let c = eval_expr(&args[0], sess)?;
                         if !as_bool(c, sp.clone(), "while condition")? { break; }
-                        for e in body_es {
-                            let v = eval_expr(e, sess)?;
-                            match v {
-                                Value::CtrlSkip => continue 'outer,
-                                Value::CtrlStop => break 'outer,
-                                _ => {}
-                            }
+
+                        // Body is now an Expr::Block; eval_expr will execute its statements.
+                        let v = eval_expr(&args[1], sess)?;
+                        match v {
+                            Value::CtrlSkip => continue 'outer,
+                            Value::CtrlStop => break 'outer,
+                            _ => {}
                         }
                     }
                     sess.loop_depth -= 1;
@@ -9476,7 +9693,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 &format!("Wrong number of arguments (expected 3, got {})", args.len()),
                                 sp.clone(),
                             )
-                            .with_help("Usage: for([var_name, iterable, body])")
+                            .with_help("Usage: for(var_name, iterable, body_block)")
+                            .with_help("‘body_block’ must be a block expression.")
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
@@ -9494,7 +9712,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                     "‘for’ var_name must be a string.",
                                     sp.clone(),
                                 )
-                                .with_help("Example: for([\"x\", [1,2,3], [ say x ]])")
+                                .with_help("Example: for(\"x\", [1,2,3], { say x }))")
                                 .with_link("https://goblinlang.org/docs/errors#T0205"),
                             )
                         }
@@ -9520,34 +9738,19 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                     };
 
-                    // body (expects array/block)
-                    let body_es = expect_array(&args[2], "body", sp.clone()).map_err(|_| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::EXPECTED_ARRAY, // P0314
-                            "expected-array",
-                            "‘for’ body must be an array (block).",
-                            sp.clone(),
-                        )
-                        .with_help("Example: for([\"x\", [1,2,3], [ say x ]])")
-                        .with_link("https://goblinlang.org/docs/errors#P0314")
-                    })?;
-
+                    // Body is now an Expr::Block; eval_expr will execute its statements each iteration.
                     sess.loop_depth += 1;
-
                     'outer: for item in items {
                         sess.set_var(var_name.clone(), item);
-                        for e in body_es {
-                            let v = eval_expr(e, sess)?;
-                            match v {
-                                Value::CtrlSkip => continue 'outer,
-                                Value::CtrlStop => break 'outer,
-                                _ => {}
-                            }
+                        let v = eval_expr(&args[2], sess)?;
+                        match v {
+                            Value::CtrlSkip => continue 'outer,
+                            Value::CtrlStop => break 'outer,
+                            _ => {}
                         }
                     }
-
                     sess.loop_depth -= 1;
+
                     Ok(Value::Unit)
                 }
 
@@ -9562,7 +9765,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 &format!("Wrong number of arguments (expected 2, got {})", args.len()),
                                 sp.clone(),
                             )
-                            .with_help("Usage: repeat([count, body_block])")
+                            .with_help("Usage: repeat(count, body_block)")
+                            .with_help("‘body_block’ must be a block expression.")
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
@@ -9593,35 +9797,21 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                     "‘repeat’ count must be an integer.",
                                     sp.clone(),
                                 )
-                                .with_help("Example: repeat([3, [ say \"hi\" ]])")
+                                .with_help("Example: repeat(3, { say \"hi\" })")
                                 .with_link("https://goblinlang.org/docs/errors#T0204"),
                             )
                         }
                     };
 
-                    // body
-                    let body_es = expect_array(&args[1], "body_block", sp.clone()).map_err(|_| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::EXPECTED_ARRAY, // P0314
-                            "expected-array",
-                            "‘repeat’ body_block must be an array (block).",
-                            sp.clone(),
-                        )
-                        .with_help("Example: repeat([2, [ say \"hi\" ]])")
-                        .with_link("https://goblinlang.org/docs/errors#P0314")
-                    })?;
-
                     // execute
                     sess.loop_depth += 1;
                     'outer: for _ in 0..count {
-                        for e in body_es {
-                            let v = eval_expr(e, sess)?;
-                            match v {
-                                Value::CtrlSkip => continue 'outer,
-                                Value::CtrlStop => break 'outer,
-                                _ => {}
-                            }
+                        // Body is now an Expr::Block; eval_expr will execute its statements.
+                        let v = eval_expr(&args[1], sess)?;
+                        match v {
+                            Value::CtrlSkip => continue 'outer,
+                            Value::CtrlStop => break 'outer,
+                            _ => {}
                         }
                     }
                     sess.loop_depth -= 1;
@@ -9657,7 +9847,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "attempt" => {
-                    // args: [attempt_body_array, rescue_blocks_array, ensure_body_array?]
+                    // args: [attempt_block, rescue_blocks_array?, ensure_block?]
                     if args.is_empty() {
                         return Err(
                             Diagnostic::new_with_code(
@@ -9667,57 +9857,41 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 "‘attempt’ requires at least 1 argument.",
                                 sp.clone(),
                             )
-                            .with_help("Usage: attempt([attempt_block], [rescue_blocks][, ensure_block])")
+                            .with_help("Usage: attempt(block, rescue_blocks[, ensure_block])")
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
 
-                    // Get the attempt body expressions
-                    let attempt_es = expect_array(&args[0], "attempt_block", sp.clone())?;
-
+                    // Optional rescue blocks array (still an array, but each entry is [var_or_nil, block])
                     let rescue_blocks_es = if args.len() > 1 {
                         expect_array(&args[1], "rescue_blocks", sp.clone())?
                     } else {
                         &[]
                     };
 
-                    // Try to execute attempt block
+                    // Run attempt block
                     let mut result = Value::Unit;
                     let mut had_error = false;
-
-                    for e in attempt_es {
-                        match eval_expr(e, sess) {
-                            Ok(v) => result = v,
-                            Err(_err) => {
-                                had_error = true;
-                                break;
-                            }
+                    match eval_expr(&args[0], sess) {
+                        Ok(v) => result = v,
+                        Err(_err) => {
+                            had_error = true;
                         }
                     }
 
-                    // If error occurred, execute first rescue block
-                    if had_error && rescue_blocks_es.len() > 0 {
-                        // Each rescue block is [var_name_or_nil, body_array]
+                    // If error occurred, execute the first rescue block (if any)
+                    if had_error && !rescue_blocks_es.is_empty() {
+                        // Each rescue block is [var_name_or_nil, body_block]
                         let rescue_info_es = expect_array(&rescue_blocks_es[0], "rescue_info", sp.clone())?;
-
                         if rescue_info_es.len() >= 2 {
-                            // rescue_info_es[1] is the rescue body array
-                            let rescue_body_es = expect_array(&rescue_info_es[1], "rescue_body", sp.clone())?;
-
-                            // Execute rescue block
-                            result = Value::Unit;
-                            for e in rescue_body_es {
-                                result = eval_expr(e, sess)?;
-                            }
+                            // Index 1 is the rescue body (now a block expression); run it
+                            result = eval_expr(&rescue_info_es[1], sess)?;
                         }
                     }
 
-                    // Execute ensure block if present (should always run)
+                    // Ensure block always runs if present (now a block expression)
                     if args.len() > 2 {
-                        let ensure_es = expect_array(&args[2], "ensure_block", sp.clone())?;
-                        for e in ensure_es {
-                            let _ = eval_expr(e, sess)?;
-                        }
+                        let _ = eval_expr(&args[2], sess)?;
                     }
 
                     Ok(result)

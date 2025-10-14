@@ -1,3 +1,9 @@
+
+/// pull 4 codes
+repeat 4
+    say upper pick 4 from "a"..."z" without dups
+xx
+
 /// single return
 action calculate_tax(income, rate)
     tax_amount = income * rate

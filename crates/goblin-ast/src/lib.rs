@@ -182,9 +182,9 @@ pub enum Expr {
         span: Span,
     },
     Block {
-        stmts: Vec<Expr>,
+        stmts: Vec<Stmt>,  
         span: Span,
-    },
+    }
 }
 
 impl Expr {

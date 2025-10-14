@@ -29,41 +29,41 @@ impl ModuleCache {
     }
     
     pub fn load_module(
-        &mut self, 
-        import_path: &str, 
-        alias: Option<&str>, 
-        base_dir: &std::path::Path
+        &mut self,
+        import_path: &str,
+        alias: Option<&str>,
+        base_dir: &std::path::Path,
     ) -> Result<(String, Option<ast::Module>), String> {
         let namespace = if let Some(a) = alias {
             a.to_string()
         } else {
             import_path.split('/').last().unwrap().to_string()
         };
-        
+
         if self.loaded.contains_key(&namespace) {
             return Ok((namespace, None));
         }
-        
+
         let mut file_path = base_dir.to_path_buf();
         for part in import_path.split('/') {
             file_path.push(part);
         }
         file_path.set_extension("gbln");
-        
+
         if !file_path.exists() {
             return Err(format!("Module file not found: {}", file_path.display()));
         }
-        
+
         let source = std::fs::read_to_string(&file_path)
             .map_err(|e| format!("Failed to read module: {}", e))?;
-        
+
         let tokens = goblin_lexer::lex(&source, &file_path.to_string_lossy())
             .map_err(|diags| format!("Lex error in module '{}': {:?}", import_path, diags))?;
-        
+
         let parser = goblin_parser::Parser::new(&tokens);
         let module_ast = parser.parse_module()
             .map_err(|diags| format!("Parse error in module '{}': {:?}", import_path, diags))?;
-        
+
         let mut exports = BTreeMap::new();
         for stmt in &module_ast.items {
             match stmt {
@@ -79,7 +79,7 @@ impl ModuleCache {
                 _ => {}
             }
         }
-        
+
         let module = Module {
             path: import_path.to_string(),
             namespace: namespace.clone(),
@@ -88,7 +88,7 @@ impl ModuleCache {
             env: BTreeMap::new(),
         };
         self.loaded.insert(namespace.clone(), module);
-        
+
         Ok((namespace, Some(module_ast)))
     }
     

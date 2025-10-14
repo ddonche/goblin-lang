@@ -1,5 +1,5 @@
 //! goblin-devserver: thin wrapper around goblin-host for dev UX.
-
+#[allow(unused_imports)]
 use goblin_host::{HostBuilder, HostError};
 use anyhow::Result;
 

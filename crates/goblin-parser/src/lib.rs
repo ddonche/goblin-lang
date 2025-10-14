@@ -919,20 +919,12 @@ impl<'t> Parser<'t> {
             if let Some(t) = p.toks.get(j) {
                 let tok_col = t.span.col_start;
                 
-                if tok_col <= start_col {
-                    let should_stop = match &t.kind {
-                        TokenKind::Ident => {
-                            let stops = stop_keywords.iter().any(|kw| t.value.as_deref() == Some(kw));
-                            stops
-                        }
-                        TokenKind::Op(op) if op == "xx" => {
-                            true
-                        }
-                        _ => {
-                            false
-                        }
-                    };
-                    should_stop
+                if tok_col == start_col {
+                    match &t.kind {
+                        TokenKind::Ident => stop_keywords.iter().any(|kw| t.value.as_deref() == Some(kw)),
+                        TokenKind::Op(op) if op == "xx" => true,
+                        _ => false,
+                    }
                 } else {
                     false
                 }
@@ -1484,6 +1476,63 @@ impl<'t> Parser<'t> {
         Some((exclusive, lo, hi))
     }
 
+    fn preview_char_range(&mut self) -> Option<(bool, char, char)> {
+        let save = self.i;
+        
+        // low endpoint - single char string like "a"
+        let lo = match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::String) => {
+                if let Some(ref s) = t.value {
+                    if s.len() == 1 {
+                        let c = s.chars().next().unwrap();
+                        self.i += 1;
+                        c
+                    } else {
+                        self.i = save;
+                        return None;
+                    }
+                } else {
+                    self.i = save;
+                    return None;
+                }
+            }
+            _ => { self.i = save; return None; }
+        };
+        
+        // dots: "..." or ".."
+        let exclusive = if self.eat_op("...") {
+            false
+        } else if self.eat_op("..") {
+            true
+        } else {
+            self.i = save;
+            return None;
+        };
+        
+        // high endpoint
+        let hi = match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::String) => {
+                if let Some(ref s) = t.value {
+                    if s.len() == 1 {
+                        let c = s.chars().next().unwrap();
+                        self.i += 1;
+                        c
+                    } else {
+                        self.i = save;
+                        return None;
+                    }
+                } else {
+                    self.i = save;
+                    return None;
+                }
+            }
+            _ => { self.i = save; return None; }
+        };
+        
+        self.i = save;
+        Some((exclusive, lo, hi))
+    }
+
     fn lower_expr_preview(pe: PExpr, sp: Span) -> ast::Expr {
         match pe {
             // Basic literals and identifiers
@@ -1606,9 +1655,14 @@ impl<'t> Parser<'t> {
             }
 
             PExpr::Block(exprs) => {
+                // exprs: Vec<ast::Expr>  →  stmts: Vec<ast::Stmt>
+                let stmts: Vec<ast::Stmt> = exprs.into_iter()
+                    .map(ast::Stmt::Expr)
+                    .collect();
+
                 ast::Expr::Block {
-                    stmts: exprs,
-                    span: sp
+                    stmts,
+                    span: sp,
                 }
             }
 
@@ -2340,15 +2394,10 @@ impl<'t> Parser<'t> {
             self.block_closed_hard = false;
         } else if self.peek_block_close() {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-            if col != hdr_col {
-                return Err(s_help(
-                    "P0222",
-                    &format!("This closer is misaligned: expected column {}, found column {}", hdr_col, col),
-                    "Align the closer with its header (same column), placing 'end' or 'xx' (crossbones) directly under the action header.",
-                ));
+            if col == hdr_col {
+                self.expect_block_close("action")?;
             }
-            self.expect_block_close("action")?;
-
+            // else: it's a nested block's closer; ignore and keep parsing
         } else if !self.eat_layout_until_close(hdr_col) {
             return Err(s_help(
                 "P0212",
@@ -3882,11 +3931,14 @@ impl<'t> Parser<'t> {
         };
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        let then_arr = ast::Expr::Array(to_exprs(then_stmts)?, span.clone());
 
-        let mut args = vec![cond, then_arr];
-        if let Some(else_block) = else_stmts {
-            args.push(ast::Expr::Array(to_exprs(else_block)?, span.clone()));
+        // Bodies are statement blocks now; no P0311 conversion.
+        let then_block = ast::Expr::Block { stmts: then_stmts, span: span.clone() };
+
+        let mut args = vec![cond, then_block];
+        if let Some(else_stmts) = else_stmts {
+            let else_block = ast::Expr::Block { stmts: else_stmts, span: span.clone() };
+            args.push(else_block);
         }
 
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("if".to_string(), args, span)))
@@ -3994,11 +4046,14 @@ impl<'t> Parser<'t> {
         };
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        let then_arr = ast::Expr::Array(to_exprs(then_stmts)?, span.clone());
 
-        let mut args = vec![cond, then_arr];
-        if let Some(else_block) = else_stmts {
-            args.push(ast::Expr::Array(to_exprs(else_block)?, span.clone()));
+        // Bodies are statement blocks now; no P0311 conversion.
+        let then_block = ast::Expr::Block { stmts: then_stmts, span: span.clone() };
+
+        let mut args = vec![cond, then_block];
+        if let Some(else_stmts) = else_stmts {
+            let else_block = ast::Expr::Block { stmts: else_stmts, span: span.clone() };
+            args.push(else_block);
         }
 
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("if".to_string(), args, span)))
@@ -4086,13 +4141,15 @@ impl<'t> Parser<'t> {
         };
         
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        let body_arr = ast::Expr::Array(to_exprs(body_stmts)?, span.clone());
-        
-        // FreeCall("for", [var_name_str, iterable, body[]])
+
+        // Body is a statement block now.
+        let body_block = ast::Expr::Block { stmts: body_stmts, span: span.clone() };
+
+        // FreeCall("for", [var_name_str, iterable, body_block])
         let args = vec![
             ast::Expr::Str(var_name, span.clone()),
             iterable,
-            body_arr
+            body_block,
         ];
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("for".to_string(), args, span)))
     }
@@ -4175,10 +4232,11 @@ impl<'t> Parser<'t> {
                 .collect()
         };
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        let body_arr = ast::Expr::Array(to_exprs(body_stmts)?, span.clone());
 
-        // Lower to FreeCall("while", [cond, body[]])
-        let args = vec![cond, body_arr];
+        // Body is a statement block now; no P0311 conversion.
+        let body_block = ast::Expr::Block { stmts: body_stmts, span: span.clone() };
+
+        let args = vec![cond, body_block];
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("while".to_string(), args, span)))
     }
 
@@ -4253,9 +4311,11 @@ impl<'t> Parser<'t> {
         };
         
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        let body_arr = ast::Expr::Array(to_exprs(body_stmts)?, span.clone());
-        
-        let args = vec![count, body_arr];
+
+        // Body is a statement block now; no P0323 conversion.
+        let body_block = ast::Expr::Block { stmts: body_stmts, span: span.clone() };
+
+        let args = vec![count, body_block];
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("repeat".to_string(), args, span)))
     }
 
@@ -4280,18 +4340,6 @@ impl<'t> Parser<'t> {
                 break;
             }
             
-            // Also stop (without consuming) if we see a closer token
-            if let Some(t) = self.peek() {
-                match &t.kind {
-                    TokenKind::Ident if matches!(t.value.as_deref(), Some("end") | Some("else")) => break,
-                    TokenKind::Op(op) if op == "xx" => break,
-                    _ => {}
-                }
-            } else {
-                // EOF — just return what we have; caller will decide if that's an error.
-                break;
-            }
-            
             // Parse one statement
             let stmt = self.parse_stmt()?;
             out.push(stmt);
@@ -4309,7 +4357,7 @@ impl<'t> Parser<'t> {
         debug_assert_eq!(self.peek_ident().as_deref(), Some("attempt"));
         let _ = self.eat_ident();
 
-        // Skip newline and indent after 'attempt'
+        // Skip newline/indent after 'attempt'
         while let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
                 self.i += 1;
@@ -4321,7 +4369,7 @@ impl<'t> Parser<'t> {
         // ATTEMPT block: stop at rescue/ensure/end
         let attempt_stmts = self.parse_indented_block(attempt_col, &["rescue", "ensure", "end"])?;
 
-        // Consume dedents/newlines
+        // Consume dedents/newlines after attempt body (match other blocks)
         while let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
                 self.i += 1;
@@ -4330,112 +4378,107 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // Optional RESCUE block(s)
-        let mut rescue_blocks = Vec::new();
-        while let Some(t) = self.peek() {
-            if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("rescue") {
-                let _ = self.eat_ident(); // 'rescue'
-                
-                // Optional error binding: rescue ErrorType as e
-                // For Chapter 4, we just need simple rescue with no binding
-                // You can extend this later for full error type matching
-                let error_var = if let Some(t) = self.peek() {
-                    if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() != Some("ensure") && t.value.as_deref() != Some("end") {
-                        // Simple case: rescue <var_name> (no type matching for now)
-                        self.eat_ident()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                
-                // Skip newline and indent after 'rescue'
-                while let Some(t) = self.peek() {
-                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
-                        self.i += 1;
-                    } else {
-                        break;
-                    }
-                }
-                
-                let rescue_stmts = self.parse_indented_block(attempt_col, &["rescue", "ensure", "end"])?;
-                rescue_blocks.push((error_var, rescue_stmts));
-                
-                // Consume dedents/newlines
-                while let Some(t) = self.peek() {
-                    if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
-                        self.i += 1;
-                    } else {
-                        break;
-                    }
-                }
-            } else {
+        // Optional RESCUE blocks (0..*)
+        let mut rescue_blocks: Vec<(Option<String>, Vec<ast::Stmt>)> = Vec::new();
+        loop {
+            if self.peek_ident().as_deref() != Some("rescue") {
                 break;
+            }
+            let _ = self.eat_ident(); // 'rescue'
+
+            // Optional error binding: `rescue err`
+            // (Only bind if next ident isn't 'ensure' or 'end')
+            let error_var = match self.peek_ident().as_deref() {
+                Some("ensure") | Some("end") => None,
+                Some(_) => self.eat_ident(), // Some(var_name)
+                None => None,
+            };
+
+            // Skip newline/indent after 'rescue'
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Rescue body: stop at rescue/ensure/end
+            let rescue_stmts = self.parse_indented_block(attempt_col, &["rescue", "ensure", "end"])?;
+            rescue_blocks.push((error_var, rescue_stmts));
+
+            // Consume dedents/newlines after each rescue body
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
             }
         }
 
         // Optional ENSURE block
-        let ensure_stmts = if let Some(t) = self.peek() {
-            if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("ensure") {
-                let _ = self.eat_ident(); // 'ensure'
-                
-                // Skip newline and indent after 'ensure'
-                while let Some(t) = self.peek() {
-                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
-                        self.i += 1;
-                    } else {
-                        break;
-                    }
+        let ensure_stmts = if self.peek_ident().as_deref() == Some("ensure") {
+            let _ = self.eat_ident(); // 'ensure'
+
+            // Skip newline/indent after 'ensure'
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                    self.i += 1;
+                } else {
+                    break;
                 }
-                
-                Some(self.parse_indented_block(attempt_col, &["end"])?)
-            } else {
-                None
             }
+
+            // Ensure body: stop at end
+            let body = self.parse_indented_block(attempt_col, &["end"])?;
+
+            // Consume dedents/newlines after ensure body
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            Some(body)
         } else {
             None
         };
 
-        // Skip dedents/newlines
-        while let Some(t) = self.peek() {
-            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
-                self.i += 1;
-            } else {
-                break;
-            }
-        }
-
-        // Consume the closer
+        // Consume the closer ('end' or 'xx') — same pattern as others
         if let Some(t) = self.peek() {
             match &t.kind {
-                TokenKind::Ident if t.value.as_deref() == Some("end") => {
-                    let _ = self.eat_ident();
-                }
-                TokenKind::Op(op) if op == "xx" => {
-                    let _ = self.eat_op("xx");
-                }
+                TokenKind::Ident if t.value.as_deref() == Some("end") => { let _ = self.eat_ident(); }
+                TokenKind::Op(op) if op == "xx" => { let _ = self.eat_op("xx"); }
                 _ => {
-                    return Err(s_help("P0350", "Expected 'end' or 'xx' to close attempt block", "Add 'end' or 'xx'"));
+                    return Err(s_help(
+                        "P0351",
+                        "Expected 'end' or 'xx' to close attempt block",
+                        "Add 'end' or 'xx' at the same indentation as 'attempt'",
+                    ));
                 }
             }
         } else {
-            return Err(s_help("P0351", "Expected 'end' or 'xx' to close attempt block", "Add 'end' or 'xx' before end of file"));
+            return Err(s_help(
+                "P0351",
+                "Expected 'end' or 'xx' to close attempt block",
+                "Add 'end' or 'xx' before end of file",
+            ));
         }
 
-        // Convert stmt blocks -> arrays of exprs
+        // ------ Lower inner stmt blocks to arrays of exprs (expressions only inside) ------
         let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
             stmts
                 .into_iter()
                 .map(|s| match s {
                     ast::Stmt::Expr(e) => Ok(e),
-                    ast::Stmt::Bind(b) => {
-                        Ok(ast::Expr::Assign(
-                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                            Box::new(b.expr),
-                            b.span
-                        ))
-                    }
+                    ast::Stmt::Bind(b) => Ok(ast::Expr::Assign(
+                        Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
+                        Box::new(b.expr),
+                        b.span,
+                    )),
                     ast::Stmt::Return(ret_stmt) => {
                         let values: Vec<ast::Expr> = ret_stmt.values.clone();
                         Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
@@ -4450,41 +4493,30 @@ impl<'t> Parser<'t> {
         };
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        let attempt_arr = ast::Expr::Array(to_exprs(attempt_stmts)?, span.clone());
 
-        // Build args: [attempt_block, rescue_blocks_array, ensure_block_opt]
-        let mut args = vec![attempt_arr];
-        
-        // Add rescue blocks as array of [error_var_opt, rescue_body]
-        if !rescue_blocks.is_empty() {
-            let rescue_exprs: Vec<ast::Expr> = rescue_blocks
-                .into_iter()
-                .map(|(var_opt, stmts)| {
-                    let body = ast::Expr::Array(to_exprs(stmts).unwrap(), span.clone());
-                    if let Some(var) = var_opt {
-                        // [var_name, body]
-                        ast::Expr::Array(vec![
-                            ast::Expr::Str(var, span.clone()),
-                            body
-                        ], span.clone())
-                    } else {
-                        // [nil, body]
-                        ast::Expr::Array(vec![
-                            ast::Expr::Ident("nil".to_string(), span.clone()),
-                            body
-                        ], span.clone())
-                    }
-                })
-                .collect();
-            args.push(ast::Expr::Array(rescue_exprs, span.clone()));
-        } else {
-            // No rescue blocks
-            args.push(ast::Expr::Array(vec![], span.clone()));
-        }
-        
-        // Add ensure block if present
-        if let Some(ensure_block) = ensure_stmts {
-            args.push(ast::Expr::Array(to_exprs(ensure_block)?, span.clone()));
+        // attempt body as a statement block
+        let attempt_block = ast::Expr::Block { stmts: attempt_stmts, span: span.clone() };
+
+        // rescue blocks -> Array of [var_or_nil, Block]
+        let rescues_expr = {
+            let mut pairs: Vec<ast::Expr> = Vec::new();
+            for (var_opt, stmts) in rescue_blocks {
+                // If your var_opt is a String: use it directly.
+                // If it's an Ident (String, Span): use the String part.
+                let var_expr = match var_opt {
+                    Some(name) => ast::Expr::Str(name, span.clone()),
+                    None => ast::Expr::Ident("nil".into(), span.clone()),
+                };
+                let body_block = ast::Expr::Block { stmts, span: span.clone() };
+                pairs.push(ast::Expr::Array(vec![var_expr, body_block], span.clone()));
+            }
+            ast::Expr::Array(pairs, span.clone())
+        };
+
+        let mut args = vec![attempt_block, rescues_expr];
+
+        if let Some(ens) = ensure_stmts {
+            args.push(ast::Expr::Block { stmts: ens, span: span.clone() });
         }
 
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall("attempt".to_string(), args, span)))
@@ -5087,33 +5119,30 @@ impl<'t> Parser<'t> {
         }
 
         // expression-form: judge …
+        // expression-form: judge …
         if let Some("judge") = self.peek_ident() {
             let header_tok_i = self.i;
             let header_line = self.toks[header_tok_i].span.line_start;
-            let header_col = self.toks[header_tok_i].span.col_start;
+            let header_col  = self.toks[header_tok_i].span.col_start;
             let _ = self.eat_ident();
-            
+
             self.suspend_colon_call += 1;
 
-            // NEW ORDER: Parse subject FIRST, then check for 'using EnumName'
-            let mut using_expr = None;
-            let mut using_enum = None;
-            
-            // Check if there's a subject expression before 'using'
-            // If next token is 'using', there's no explicit subject (shorthand form)
-            // Otherwise, parse the subject first
+            // Parse subject FIRST, then optional 'using EnumName'
+            let mut using_expr: Option<Box<PExpr>> = None;
+            let mut using_enum: Option<String> = None;
+
+            // If next token is not 'using' and not newline/eof/'{', parse subject
             if self.peek_ident() != Some("using") && !self.peek_newline_or_eof() && !self.peek_op("{") {
-                // Parse subject expression: judge status using Status
-                //                                  ^^^^^^
                 let subject = self.parse_compare()?;
                 using_expr = Some(Box::new(subject));
             }
-            
-            // Now check for 'using EnumName'
+
+            // Optional 'using <Name>'
             if self.peek_ident() == Some("using") {
-                let _ = self.eat_ident(); // consume 'using'
+                let _ = self.eat_ident(); // 'using'
                 self.skip_newlines();
-                
+
                 let Some(name) = self.eat_ident() else {
                     self.suspend_colon_call -= 1;
                     return Err(s_help(
@@ -5122,19 +5151,15 @@ impl<'t> Parser<'t> {
                         "Write: judge using score or judge status using Status",
                     ));
                 };
-                
-                // Check if this is capitalized (enum name) or lowercase (subject expression)
-                let is_capitalized = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-                
-                if is_capitalized {
-                    // It's an enum name: judge using Status
+
+                let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                if is_cap {
                     using_enum = Some(name);
                 } else {
-                    // It's a subject variable: judge using score
                     using_expr = Some(Box::new(PExpr::Ident(name)));
                 }
             }
-            
+
             if self.peek_op("{") {
                 self.suspend_colon_call -= 1;
                 return Err(s_help(
@@ -5144,13 +5169,23 @@ impl<'t> Parser<'t> {
                 ));
             }
             self.forbid_next_line_brace(header_line, header_col, "judge")?;
+
+            // Enter the block: consume Indent(s) only; do NOT eat to close here.
             self.skip_newlines();
-            self.eat_layout_until_close(header_col);
-            
-            let pairs = self.parse_kv_bind_list_judge()?;
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, goblin_lexer::TokenKind::Indent) { self.i += 1; } else { break; }
+            }
+
+            // Parse arms with known header column.
+            let pairs = self.parse_kv_bind_list_judge(header_col)?;
             self.suspend_colon_call -= 1;
-            
-            self.skip_newlines();
+
+            // IMPORTANT: consume pending Dedent/Newline before checking the aligned closer
+            while let Some(t) = self.peek() {
+                use goblin_lexer::TokenKind::*;
+                if matches!(t.kind, Dedent | Newline) { self.i += 1; } else { break; }
+            }
+
             if self.peek_block_close() {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != header_col {
@@ -5172,6 +5207,7 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
+
             return Ok(PExpr::Judge {
                 using: using_expr,
                 using_enum,
@@ -5183,22 +5219,19 @@ impl<'t> Parser<'t> {
         if let Some("judge_all") = self.peek_ident() {
             let header_tok_i = self.i;
             let header_line = self.toks[header_tok_i].span.line_start;
-            let header_col = self.toks[header_tok_i].span.col_start;
+            let header_col  = self.toks[header_tok_i].span.col_start;
             let _ = self.eat_ident();
-            
+
             self.suspend_colon_call += 1;
 
-            // NEW ORDER: Parse subject FIRST, then check for 'using EnumName'
-            let mut using_expr = None;
-            let mut using_enum = None;
-            
-            // Check if there's a subject expression before 'using'
-            // If next token is 'using', there's no explicit subject (shorthand form)
-            // Otherwise, parse the subject first
+            // NEW ORDER: only 'using <Name>' form here
+            let mut using_expr: Option<Box<PExpr>> = None;
+            let mut using_enum: Option<String> = None;
+
             if self.peek_ident() == Some("using") {
-                let _ = self.eat_ident(); // consume 'using'
+                let _ = self.eat_ident(); // 'using'
                 self.skip_newlines();
-                
+
                 let Some(name) = self.eat_ident() else {
                     self.suspend_colon_call -= 1;
                     return Err(s_help(
@@ -5207,19 +5240,15 @@ impl<'t> Parser<'t> {
                         "Write: judge using score or judge status using Status",
                     ));
                 };
-                
-                // Check if this is capitalized (enum name) or lowercase (subject expression)
-                let is_capitalized = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-                
-                if is_capitalized {
-                    // It's an enum name: judge using Status
+
+                let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                if is_cap {
                     using_enum = Some(name);
                 } else {
-                    // It's a subject variable: judge using score
                     using_expr = Some(Box::new(PExpr::Ident(name)));
                 }
             }
-            
+
             if self.peek_op("{") {
                 self.suspend_colon_call -= 1;
                 return Err(s_help(
@@ -5229,13 +5258,23 @@ impl<'t> Parser<'t> {
                 ));
             }
             self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
+
+            // Enter the block: consume Indent(s) only; do NOT eat to close here.
             self.skip_newlines();
-            self.eat_layout_until_close(header_col);
-            
-            let pairs = self.parse_kv_bind_list_judge()?;
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, goblin_lexer::TokenKind::Indent) { self.i += 1; } else { break; }
+            }
+
+            // Parse arms with known header column.
+            let pairs = self.parse_kv_bind_list_judge(header_col)?;
             self.suspend_colon_call -= 1;
-            
-            self.skip_newlines();
+
+            // IMPORTANT: consume pending Dedent/Newline before checking the aligned closer
+            while let Some(t) = self.peek() {
+                use goblin_lexer::TokenKind::*;
+                if matches!(t.kind, Dedent | Newline) { self.i += 1; } else { break; }
+            }
+
             if self.peek_block_close() {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != header_col {
@@ -5257,6 +5296,7 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
+
             return Ok(PExpr::JudgeAll {
                 using: using_expr,
                 using_enum,
@@ -6103,19 +6143,46 @@ impl<'t> Parser<'t> {
         Ok(lhs)
     }
 
-    fn parse_kv_bind_list_judge(&mut self) -> Result<Vec<(PExpr, PExpr)>, String> {
+    fn parse_kv_bind_list_judge(&mut self, hdr_col: u32) -> Result<Vec<(PExpr, PExpr)>, String> {
         use goblin_lexer::TokenKind;
-        let hdr_tok_i = self.i.saturating_sub(1);
-        let hdr_col = self.toks[hdr_tok_i].span.col_start;
         let mut out: Vec<(PExpr, PExpr)> = Vec::new();
-        
+
         loop {
+            // Only skip newlines here; do NOT eat layout-to-close.
             self.skip_newlines();
-            
-            if self.eat_layout_until_close(hdr_col) || self.peek_block_close() {
-                break;
+
+            // If we are at an aligned closer for the whole judge block, leave it to the caller.
+            if let Some(t) = self.peek() {
+                match &t.kind {
+                    TokenKind::Ident if t.value.as_deref() == Some("end") && t.span.col_start == hdr_col => break,
+                    TokenKind::Op(op) if op == "xx" && t.span.col_start == hdr_col => break,
+                    _ => {}
+                }
+            } else {
+                return Err(s_help(
+                    "P0212",
+                    "This judge block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones).",
+                ));
             }
-            
+
+            // Consume any Indent tokens to get to the arm start ('==', 'else', or explicit expr).
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Indent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // If we see a dedent that took us back to the header column, the block is done.
+            if let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Dedent) {
+                    // Do not consume it here; outer caller handles layout/closer.
+                    break;
+                }
+            }
+
             if self.is_eof() {
                 return Err(s_help(
                     "P0212",
@@ -6123,22 +6190,30 @@ impl<'t> Parser<'t> {
                     "Close the block with 'end' or 'xx' (crossbones).",
                 ));
             }
-            
+
+            // Remember the column of THIS arm ('=='/else/cond) so we can stop its body on dedent.
+            let arm_col: u32 = self
+                .toks
+                .get(self.i)
+                .map(|t| t.span.col_start)
+                .unwrap_or(hdr_col);
+
             // Check for "else:" special case
             let is_else = if let Some(tok) = self.peek() {
                 matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("else")
             } else {
                 false
             };
-            
+
             let condition = if is_else {
                 let _ = self.eat_ident();
                 None
             } else {
+                // Allow shorthand operators '==', '!=', '>', '>=', '<', '<=' at arm start
                 let cond = self.parse_judge_condition()?;
                 Some(cond)
             };
-            
+
             if !self.eat_op(":") {
                 return Err(s_help(
                     "P0811",
@@ -6146,22 +6221,37 @@ impl<'t> Parser<'t> {
                     "Write it like: judge x > 5: \"big\"",
                 ));
             }
-            
-            // Parse single-line value (expression stops naturally at newline)
-            let val = self.parse_assign()?;
-            
+
+            // Multiline arm body? (newline + indent) → parse statements until dedent back to arm_col.
+            let val = if self.peek_newline_or_eof() {
+                self.skip_newlines();
+
+                // Require an Indent to start the arm body
+                match self.peek() {
+                    Some(t) if matches!(t.kind, TokenKind::Indent) => { self.i += 1; }
+                    _ => {
+                        return Err(s_help(
+                            "P0816",
+                            "Expected an indented block after ':' in judge arm",
+                            "Start the arm body on the next line and indent it.",
+                        ));
+                    }
+                }
+
+                // Parse statements until we dedent back to THIS arm's column or hit next arm/closer.
+                self.parse_stmt_sequence_until_dedent_or_next_case(arm_col)?
+            } else {
+                // Single-line arm value (expression until newline)
+                self.parse_assign()?
+            };
+
             let cond_expr = condition.unwrap_or_else(|| PExpr::Ident("else".to_string()));
             out.push((cond_expr, val));
-            
-            // Skip newlines and consume layout tokens before checking for block close
+
+            // Prepare for next arm or the closing token; do NOT consume closers here.
             self.skip_newlines();
-            
-            if self.peek_block_close() {
-                self.eat_layout_until_close(hdr_col);
-                break;
-            }
         }
-        
+
         Ok(out)
     }
 

@@ -1,0 +1,69 @@
+act inner()
+    say "inner"
+end
+
+act demo()
+    if true
+        act nested()
+            say "nested"
+        end
+        nested()
+    else
+        say "else"
+    end
+
+    while false
+        act never()
+            say "never"
+        end
+    end
+
+    repeat 2
+        inner()
+    end
+
+    for ch in "ab"
+        say ch
+    end
+
+    attempt
+        missing()
+    rescue e
+        say "rescued"
+    ensure
+        say "ensured"
+    end
+end
+
+demo()
+
+act demo2()
+    choice = "2"
+    total = 0
+
+    judge using choice
+        == "1":
+            say "match one"
+            total = total + 1
+        == "2":
+            say "match two-a"
+            total = total + 2
+            say "match two-b"
+        else:
+            say "no match"
+            total = -1
+    end
+
+    say total
+end
+
+demo2()
+
+//// pull 50 codes
+repeat 50
+    say upper pick 2 from "a"..."z" unique with dups
+xx
+////
+
+/// pull 50 codes
+say pick 50_4 unique with dups

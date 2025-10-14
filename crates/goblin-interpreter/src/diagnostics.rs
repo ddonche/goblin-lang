@@ -1,5 +1,5 @@
 //! Interpreter-side helpers to build rich diagnostics from runtime paths.
-
+#[allow(unused_imports)]
 use goblin_diagnostics::{Diagnostic, Severity, Span, LabeledSpan};
 
 /// Base URL for error docs (anchors appended as #CODE)

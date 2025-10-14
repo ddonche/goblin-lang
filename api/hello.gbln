@@ -1,2 +1,18 @@
-name = "Goblin"
-say "Hello, {name}!"
+act outer(a, b)
+    say "outer start"
+
+    act helper(n)
+        return n * 2
+    end
+
+    x = helper(a)
+    y = helper(b)
+
+    attempt
+        risky = read_json("missing.json")
+    rescue err
+        risky = []
+    end
+
+    return x + y
+end
