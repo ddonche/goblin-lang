@@ -120,9 +120,9 @@ act dayzero_decode_str(code)
     d3 = dig_at(s, 3)   <--- dist 1..4
 
     judge
-        min(d0, d1, d2, d3) < 0: return "ERR"    <--- all must be digits
-        d2 < 1 <> d2 > 8:       return "ERR"    <--- dir cannot be 0 or 9
-        d3 < 1 <> d3 > 4:       return "ERR"    <--- dist limited to 1..4
+        min(d0, d1, d2, d3) < 0: return "ERROR: you must enter only digits"    <--- all must be digits
+        d2 < 1 <> d2 > 8:       return "ERROR: third digit cannot be 0 or 9"    <--- dir cannot be 0 or 9
+        d3 < 1 <> d3 > 4:       return "ERROR: last digit must be 1-4"    <--- dist limited to 1..4
     end
 
     return dayzero_decode4(d0, d1, d2, d3)

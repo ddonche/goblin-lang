@@ -2216,6 +2216,113 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             return Ok(Some(Value::CtrlStop));
         }
 
+        // =======================
+        // eval_stmt arms (drop-in)
+        // =======================
+
+        ast::Stmt::Judge(js) => {
+            // First match wins; run `else` only if no non-else matched.
+            let mut else_arm: Option<&ast::JudgeArmStmt> = None;
+
+            for arm in &js.arms {
+                match &arm.condition {
+                    None => { // else
+                        else_arm = Some(arm);
+                    }
+                    Some(cond) => {
+                        let v = eval_expr(cond.as_ref(), sess)?;
+                        if as_bool(v, arm.span.clone(), "judge condition")? {
+                            match &arm.body {
+                                ast::JudgeArmBody::Expr(e) => {
+                                    let _ = eval_expr(e, sess)?;  // discard value in stmt form
+                                }
+                                ast::JudgeArmBody::Stmts(stmts) => {
+                                    for s in stmts {
+                                        if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
+                                            return Ok(Some(Value::CtrlStop)); // propagate return
+                                        }
+                                    }
+                                }
+                            }
+                            return Ok(None); // short-circuit on first match
+                        }
+                    }
+                }
+            }
+
+            // No non-else matched → run else if present
+            if let Some(arm) = else_arm {
+                match &arm.body {
+                    ast::JudgeArmBody::Expr(e) => {
+                        let _ = eval_expr(e, sess)?;
+                    }
+                    ast::JudgeArmBody::Stmts(stmts) => {
+                        for s in stmts {
+                            if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
+                                return Ok(Some(Value::CtrlStop));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(None)
+        },
+
+        // NEW: statement-form judge_all (inclusive fan-out)
+        ast::Stmt::JudgeAll(js) => {
+            // Collect all matching non-else arms in source order; remember a single else arm.
+            let mut hits: Vec<&ast::JudgeArmStmt> = Vec::new();
+            let mut else_arm: Option<&ast::JudgeArmStmt> = None;
+
+            for arm in &js.arms {
+                match &arm.condition {
+                    None => { else_arm = Some(arm); }
+                    Some(cond) => {
+                        let v = eval_expr(cond.as_ref(), sess)?;
+                        if as_bool(v, arm.span.clone(), "judge_all condition")? {
+                            hits.push(arm);
+                        }
+                    }
+                }
+            }
+
+            if hits.is_empty() {
+                // Only then run else
+                if let Some(arm) = else_arm {
+                    match &arm.body {
+                        ast::JudgeArmBody::Expr(e) => {
+                            let _ = eval_expr(e, sess)?;
+                        }
+                        ast::JudgeArmBody::Stmts(stmts) => {
+                            for s in stmts {
+                                if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
+                                    return Ok(Some(Value::CtrlStop)); // stop all on return
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(None);
+            }
+
+            // Execute all matches in order; stop immediately if a body returns.
+            for arm in hits {
+                match &arm.body {
+                    ast::JudgeArmBody::Expr(e) => {
+                        let _ = eval_expr(e, sess)?;
+                    }
+                    ast::JudgeArmBody::Stmts(stmts) => {
+                        for s in stmts {
+                            if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
+                                return Ok(Some(Value::CtrlStop));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(None)
+        },
+
         ast::Stmt::Bind(b) => {
             // name + span
             let (name, name_span) = (&b.name.0, b.name.1.clone());
@@ -8881,47 +8988,56 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             })
         }
 
+        // ========================
+        // eval_expr arm (drop-in)
+        // ========================
+
         ast::Expr::Judge { using: _, arms, all, .. } => {
             if *all {
-                // judge_all: collect ALL matching results
-                let mut results = Vec::new();
+                // Expression-form judge_all: collect values for all matches.
+                // Include `else` only if no other arm matched.
+                let mut out: Vec<Value> = Vec::new();
+                let mut else_arm: Option<&ast::JudgeArm> = None;
+
                 for arm in arms {
-                    let matches = if let Some(cond) = &arm.condition {
-                        let cond_val = eval_expr(cond, sess)?;
-                        match cond_val {
-                            Value::Bool(b) => b,
-                            Value::Nil => false,
-                            _ => true,
+                    match &arm.condition {
+                        None => { else_arm = Some(arm); }
+                        Some(cond) => {
+                            let v = eval_expr(cond.as_ref(), sess)?;
+                            if as_bool(v, arm.span.clone(), "judge_all condition")? {
+                                out.push(eval_expr(arm.value.as_ref(), sess)?);
+                            }
                         }
-                    } else {
-                        true  // else arm always matches
-                    };
-                    
-                    if matches {
-                        results.push(eval_expr(&arm.value, sess)?);
                     }
                 }
-                Ok(Value::Array(results))
+
+                if out.is_empty() {
+                    if let Some(arm) = else_arm {
+                        out.push(eval_expr(arm.value.as_ref(), sess)?);
+                    }
+                }
+
+                Ok(Value::Array(out))
             } else {
-                // judge: return FIRST match only (existing behavior)
+                // Expression-form judge: first match wins; else only if none matched.
+                let mut else_arm: Option<&ast::JudgeArm> = None;
+
                 for arm in arms {
-                    let matches = if let Some(cond) = &arm.condition {
-                        let cond_val = eval_expr(cond, sess)?;
-                        match cond_val {
-                            Value::Bool(b) => b,
-                            Value::Nil => false,
-                            _ => true,
+                    match &arm.condition {
+                        None => { else_arm = Some(arm); }
+                        Some(cond) => {
+                            let v = eval_expr(cond.as_ref(), sess)?;
+                            if as_bool(v, arm.span.clone(), "judge condition")? {
+                                return eval_expr(arm.value.as_ref(), sess);
+                            }
                         }
-                    } else {
-                        true  // else arm
-                    };
-                    
-                    if matches {
-                        return eval_expr(&arm.value, sess);
                     }
                 }
-                
-                // No arm matched
+
+                if let Some(arm) = else_arm {
+                    return eval_expr(arm.value.as_ref(), sess);
+                }
+
                 Ok(Value::Nil)
             }
         }

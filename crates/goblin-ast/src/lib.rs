@@ -32,6 +32,8 @@ pub enum Stmt {
     Bind(BindStmt),
     Enum(EnumDecl),
     Import(ImportStmt),
+    Judge(JudgeStmt),
+    JudgeAll(JudgeAllStmt),
     Return(ReturnStmt),
 }
 
@@ -110,6 +112,34 @@ pub struct ActionDecl {
 #[derive(Debug, Clone)]
 pub struct ReturnStmt {
     pub values: Vec<Expr>, // expressions; empty = bare return
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum JudgeArmBody {
+    Expr(Expr),
+    Stmts(Vec<Stmt>),
+}
+
+/// One arm of a **statement-form** judge.
+/// `condition = None` means this is the implicit `else` arm.
+#[derive(Debug, Clone)]
+pub struct JudgeArmStmt {
+    pub condition: Option<Box<Expr>>, // None for `else`
+    pub body: JudgeArmBody,
+    pub span: Span,
+}
+
+/// Statement-form judge node. Independent from the expression form (`Expr::Judge`).
+#[derive(Debug, Clone)]
+pub struct JudgeStmt {
+    pub arms: Vec<JudgeArmStmt>,          // one or more arms
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct JudgeAllStmt {
+    pub arms: Vec<JudgeArmStmt>,
     pub span: Span,
 }
 

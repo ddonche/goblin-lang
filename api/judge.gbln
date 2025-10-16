@@ -1,0 +1,161 @@
+/// === Mixed judge / judge_all capability tests ===
+
+/// Enums for enum-matching tests
+enum Status
+    idle
+    loading
+    ready
+    error
+end
+
+enum Priority
+    low
+    medium
+    high
+    critical
+end
+
+/// 1) judge: mixed statements + expressions + blocks
+say "=== judge: mixed bodies ==="
+x = 42
+hit = "none"
+
+judge
+    x > 100: hit = "gt100"                  /// inline statement
+    x > 40: "inline-expr-ok"               /// inline expression (no visible effect)
+    x > 0:
+        say "block ok"                                   /// indented block
+        hit = "gt0"
+    else:
+        hit = "else"
+end
+
+say ("hit=" + hit)
+
+/// 2) judge: first-match short-circuit with subject shorthand
+say "=== judge: first-match short-circuit ==="
+x = 75
+hit = "unset"
+judge using x
+    >= 50:  hit = "large"           /// should set, later arms skipped
+    >= 10:  hit = "medium"
+    else:   hit = "small"
+end
+say ("hit=" + hit)   /// expect: hit=large
+
+/// 3) judge: inline statements with trailing comments (<--- & ///)
+say "=== judge: inline stmt + comments ==="
+y = 5
+flag = "unset"
+judge
+    y > 0: flag = "pos"      <--- goblin line comment
+    else:  flag = "nonpos"   /// goblin doc-style comment
+end
+say ("flag=" + flag)  /// expect: flag=pos
+
+/// 4) judge: enum subject + mixed bodies
+say "=== judge: enum subject + mixed bodies ==="
+status = Status::loading
+seen = "none"
+
+judge status using Status
+    idle:    say "idle"                      /// inline statement
+    loading: "compile-only-expression"       /// inline expression (no visible effect)
+    ready:
+        say "block body ok"                  /// block
+        seen = "after-block"
+    else:    seen = "else"
+end
+
+say ("seen=" + seen)  /// expect: still "none" because loading arm was expression-only
+
+/// 5) judge: return propagation from a block arm
+say "=== judge: return propagation ==="
+act judge_return_demo(v)
+    say "start"
+    judge using v
+        >= 10:
+            say "about to return"
+            return "DONE"
+        else:
+            say "else"
+    end
+    say "unreachable"
+end
+
+say judge_return_demo(12)  /// expect: "start", "about to return", then returns "DONE"
+
+/// 6) judge_all: multiple matches (side effects in order)
+say "=== judge_all: multi-match order ==="
+n = 6
+judge_all
+    n > 0:         say "pos"
+    n % 2 == 0:    say "even"
+    n % 3 == 0:    say "div3"
+    n > 100:       say "gt100"
+end
+/// expect lines (in this order): pos, even, div3
+
+/// 7) judge_all: subject shorthand + mixed bodies
+say "=== judge_all: subject shorthand + mixed bodies ==="
+score = 85
+seen = "start"
+
+judge_all using score
+    >= 80: say "hit-80"
+    >= 70:
+        say "hit-70-block"
+        seen = "updated"
+    >= 90: "compile-only-expression"   /// expression arm: allowed, no visible effect
+    else:  say "fallback"
+end
+
+say ("seen=" + seen)  /// expect: seen=updated; printed: hit-80, hit-70-block
+
+/// 8) judge_all: return inside one arm stops subsequent arms
+say "=== judge_all: return short-circuits ==="
+act demo_jall_return(x)
+    judge_all using x
+        >= 90: say "A"
+        >= 80:
+            say "B"
+            return "done"
+        >= 70: say "C"
+        else:  say "F"
+    end
+    say "unreachable"
+end
+
+say demo_jall_return(85)  /// expect prints: B, then returns "done"; no C/else/unreachable
+
+/// 9) judge_all: expression-form remains (returns array)
+say "=== judge_all: expression-form remains ==="
+balance = 45
+trial_days = 5
+has_new_features = true
+maintenance_scheduled = false
+
+notifications =
+    judge_all
+        balance < 50: "Low balance warning"
+        trial_days < 7: "Trial expiring soon"
+        has_new_features: "Check out new tools"
+        maintenance_scheduled: "Maintenance tonight"
+        else: "All systems normal"
+    end
+
+say notifications  /// expect array of 3 strings: low balance, trial, new tools
+
+say "=== judge_all: else-only ==="
+x = -1
+judge_all
+    x > 0: say "pos"
+    else:  say "none"
+end
+
+say "=== judge: no match, no else ==="
+x = -1
+judge
+    x > 0: say "pos"
+end
+say "done"
