@@ -181,6 +181,7 @@ enum Priority
     critical
 end
 
+say "=== testing judge with enum ==="
 status = Status::idle
 judge status using Status
     idle:    say "System is idle"
@@ -197,6 +198,7 @@ judge priority using Priority
     critical: say "CRITICAL - Immediate action required"
 end
 
+say "=== testing judge ==="
 score = 95
 judge using score
     >= 90: say "A"
@@ -213,7 +215,15 @@ judge
     else:    say "invalid"
 end
 
+a = -1
+b = 2
+judge
+    a < 0 <> b < 0: 1
+    else: 0
+end
+
 /// judge_all test
+say "=== testing judge_all ==="
 balance = 45
 trial_days = 5
 has_new_features = true
@@ -277,7 +287,7 @@ repeat 10
 end
 say "Final total:" ++ total
 
-stop
+///stop
 
 say ""
 say "=== Testing skip and stop together ==="

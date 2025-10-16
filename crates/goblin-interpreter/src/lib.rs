@@ -2845,6 +2845,84 @@ fn eval_builtin(
             result
         }
 
+        "clamp" => {
+            // ---- arity ----
+            if args.len() != 3 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 3, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: clamp(value, lo, hi)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            // ---- local numeric coercion (self-contained; no want_num, no fmt_value_raw) ----
+            let as_f64 = |v: &Value, who: &str| -> Result<f64, Diagnostic> {
+                match v {
+                    Value::Int(i)   => Ok(*i as f64),
+                    Value::Float(f) => Ok(*f),
+                    // If/when you want these, add proper conversions:
+                    // Value::Pct(p)   => Ok(*p),
+                    // Value::Big(b)   => b.to_f64().ok_or_else(|| Diagnostic::new_with_code(
+                    //     Severity::Error,
+                    //     crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                    //     "type-mismatch",
+                    //     &format!("‘clamp’ cannot convert Big to f64 for {}", who),
+                    //     sp.clone(),
+                    // )),
+                    _ => Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            &format!("‘clamp’ expects numeric arguments for {}; got non-numeric", who),
+                            sp.clone(),
+                        )
+                        .with_help("Pass Int or Float.")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    ),
+                }
+            };
+
+            // NOTE: no `?` here; unwrap or early-return Err so this arm yields a Value
+            let x  = match as_f64(&args[0], "value") { Ok(v) => v, Err(e) => return Err(e) };
+            let lo = match as_f64(&args[1], "lo")    { Ok(v) => v, Err(e) => return Err(e) };
+            let hi = match as_f64(&args[2], "hi")    { Ok(v) => v, Err(e) => return Err(e) };
+
+            if lo > hi {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::MATH_DOMAIN, // R0207
+                        "math-domain",
+                        "clamp: lo must be ≤ hi.",
+                        sp.clone(),
+                    )
+                    .with_help("Swap the bounds or make them equal.")
+                    .with_link("https://goblinlang.org/docs/errors#R0207"),
+                );
+            }
+
+            let y = if x < lo { lo } else if x > hi { hi } else { x };
+
+            // Preserve intness if all inputs are Int; else Float.
+            let all_int =
+                matches!(args[0], Value::Int(_)) &&
+                matches!(args[1], Value::Int(_)) &&
+                matches!(args[2], Value::Int(_));
+
+            if all_int {
+                Value::Int(y as i64)
+            } else {
+                Value::Float(y)
+            }
+        }
+
         // ---------- String case & transforms ----------
         "upper" => {
             arity(1)?;
@@ -8534,34 +8612,33 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
 
         ast::Expr::NsCall(ns, name, args, sp) => {
-            // Check if it's a module namespace first
-            if let Some(exported) = sess.modules.get_export(ns, name) {
+            use goblin_diagnostics::{Diagnostic, Severity};
+
+            // 1) Module namespace? (call exported action)
+            if let Some(exported) = sess.modules.get_export(ns, name).cloned() {
                 match exported {
                     crate::modules::ExportedItem::Action(action_decl) => {
-                        // Clone the action declaration to avoid holding a borrow
-                        let action_decl = action_decl.clone();
-                        
-                        // Evaluate arguments
+                        // Evaluate arguments (no active borrows of `modules` now)
                         let mut arg_vals = Vec::with_capacity(args.len());
                         for a in args {
                             arg_vals.push(eval_expr(a, sess)?);
                         }
-                        
-                        // Push a new scope for the action's parameters
+
+                        // New scope for parameters
                         sess.env.push(BTreeMap::new());
                         sess.consts.push(BTreeMap::new());
-                        
-                        // Set current module so the function can access module vars
+
                         let old_module = sess.current_module.clone();
                         sess.current_module = Some(ns.to_string());
-                        
-                        // Bind parameters
+
+                        // Bind parameters (with defaults)
                         for (i, param) in action_decl.params.iter().enumerate() {
                             let val = if i < arg_vals.len() {
                                 arg_vals[i].clone()
                             } else if let Some(ref default_expr) = param.default {
                                 eval_expr(default_expr, sess)?
                             } else {
+                                // restore
                                 sess.current_module = old_module;
                                 sess.env.pop();
                                 sess.consts.pop();
@@ -8579,15 +8656,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             };
                             sess.define_local(param.name.clone(), val, false);
                         }
-                        
-                        // Execute the action body
+
+                        // Execute body
                         let result = match &action_decl.body {
                             ast::ActionBody::Block(stmts) => {
                                 let mut last_val = Value::Unit;
                                 for stmt in stmts {
                                     if let Some(v) = eval_stmt(stmt, sess)? {
                                         match v {
-                                            Value::CtrlSkip => { /* keep going */ }
+                                            Value::CtrlSkip => { /* continue */ }
                                             Value::CtrlStop => {
                                                 let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
                                                 sess.env.pop();
@@ -8602,12 +8679,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 last_val
                             }
                         };
-                        
-                        // Restore module context and pop scope
+
+                        // restore
                         sess.current_module = old_module;
                         sess.env.pop();
                         sess.consts.pop();
-                        
+
                         return Ok(result);
                     }
                     _ => {
@@ -8620,24 +8697,103 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 sp.clone(),
                             )
                             .with_help("Call an action name, or ensure the value is an action.")
-                            .with_link("https://goblinlang.org/docs/errors#M0002")
+                            .with_link("https://goblinlang.org/docs/errors#M0002"),
                         );
                     }
                 }
             }
-            
-            // Check if this is an enum variant access
-            if let Some(_enum_def) = sess.enums.get(ns) {
-                // Return the variant name as a string for now
-                // You can expand this to handle enum values properly
-                return Ok(Value::Str(format!("{}::{}", ns, name)));
+
+            // 2) Enum namespace? (construct variant value)
+            if let Some(enum_decl) = sess.enums.get(ns).cloned() {
+                // Find the variant definition
+                let variant = enum_decl.variants.iter()
+                    .find(|v| v.name == *name)
+                    .ok_or_else(|| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::UNKNOWN_ENUM_VARIANT, // R0118
+                            "unknown-variant",
+                            &format!("unknown variant ‘{}’ for enum ‘{}’", name, ns),
+                            sp.clone(),
+                        )
+                        .with_help("Check the variant name or add it to the enum definition.")
+                        .with_link("https://goblinlang.org/docs/errors#R0118")
+                    })?;
+
+                // Allowed forms:
+                // - Unit variant: Status::idle            (args.len()==0)
+                // - Named fields:  Error::Io{ code: 5 }   (parser usually builds EnumVariant node,
+                //   but if it arrives here as NsCall with one Map arg, accept it)
+                //
+                // Anything else → wrong arity/type.
+
+                let fields_opt = if args.is_empty() {
+                    None
+                } else if args.len() == 1 {
+                    let map_val = eval_expr(&args[0], sess)?;
+                    match map_val {
+                        Value::Map(m) => {
+                            // If the variant declares required fields, ensure they exist.
+                            if let Some(expected_fields) = &variant.fields {
+                                for field_decl in expected_fields {
+                                    if !m.contains_key(&field_decl.name) {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403 (used for missing field)
+                                                "missing-variant-field",
+                                                &format!("missing field ‘{}’ for variant ‘{}’", field_decl.name, name),
+                                                sp.clone(),
+                                            )
+                                            .with_help("Provide all required fields for this enum variant.")
+                                            .with_help(&format!("Example: {}::{}{{ {}: <value>, ... }}", ns, name, field_decl.name))
+                                            .with_link("https://goblinlang.org/docs/errors#R0403"),
+                                        );
+                                    }
+                                }
+                            }
+                            Some(m)
+                        }
+                        other => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                    "type-mismatch",
+                                    &format!("enum variant ‘{}::{}’ expects a map for named fields", ns, name),
+                                    sp.clone(),
+                                )
+                                .with_help("Provide a map: Variant{ field1: value, field2: value }")
+                                .with_link("https://goblinlang.org/docs/errors#T0205"),
+                            );
+                        }
+                    }
+                } else {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                            "wrong-arity",
+                            &format!("Wrong number of arguments to enum variant ‘{}::{}’ (expected 0 or 1 map, got {})", ns, name, args.len()),
+                            sp.clone(),
+                        )
+                        .with_help("Use unit form: Enum::Variant  or  named-fields form: Enum::Variant{ field: value }")
+                        .with_link("https://goblinlang.org/docs/errors#R0301"),
+                    );
+                };
+
+                return Ok(Value::Enum {
+                    enum_name: ns.clone(),
+                    variant_name: name.clone(),
+                    fields: fields_opt,
+                });
             }
-            
-            // Not found anywhere
+
+            // 3) Not a module, not an enum → unknown namespace
             return Err(
                 Diagnostic::new_with_code(
                     Severity::Error,
-                    crate::diagnostics::rtcode::NAMESPACE_NOT_FOUND, // R0115 (NEW)
+                    crate::diagnostics::rtcode::NAMESPACE_NOT_FOUND, // R0115
                     "namespace-not-found",
                     &format!("Namespace ‘{}’ not found (not a module or enum).", ns),
                     sp.clone(),
@@ -8646,6 +8802,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 .with_link("https://goblinlang.org/docs/errors#R0115"),
             );
         }
+
         ast::Expr::EnumVariant { enum_name, variant_name, fields, span } => {
             // Look up the enum definition and extract what we need
             let (variant_fields, _enum_exists) = {
@@ -9382,6 +9539,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
            let base_v = eval_expr(base, sess)?;
            
            // Check if this is a builtin method on a primitive type
+           // Detect builtin instance methods (postfix sugar)
            let is_builtin_method =
                matches!(name.as_str(),
                    // Collection methods
@@ -9389,56 +9547,62 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                    // String transforms
                    "upper" | "lower" | "title" | "slug" | "mixed" |
                    "trim" | "trim_lead" | "trim_trail" |
-                   // Collection operations
+                   // Collection ops
                    "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
                    "freq" | "mode" |
-                   // String operations
+                   // String ops
                    "split" | "join" | "lines" | "words" | "chars" |
                    "has" | "find" | "find_all" |
                    "before" | "after" | "before_last" | "after_last" | "between" |
                    "replace" |
                    // Numeric
                    "round" | "floor" | "ceil" | "abs" | "sqrt" |
-                   // Type operations
-                   "valtype" | "vt" | "backend" | "metrics"
+                   // Type ops
+                   "valtype" | "vt" | "backend" | "metrics" |
+                   // NEW: postfix casts
+                   "int" | "float" | "str" | "bool" | "big" | "pct"
                )
                // NEW: any is_* predicate is also a builtin method (postfix sugar)
                || name.starts_with("is_");
 
            if is_builtin_method {
-               // Check if the value type supports this method
+               // Validate support by receiver type, then forward to action
                let valid = match name.as_str() {
-                   "count" | "len" | "length" => {
-                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_))
-                   }
+                   "count" | "len" | "length" =>
+                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_)),
+
                    "upper" | "lower" | "title" | "slug" | "mixed" |
                    "trim" | "trim_lead" | "trim_trail" |
                    "reverse_chars" | "lines" | "words" | "chars" |
                    "has" | "find" | "find_all" | "before" | "after" |
-                   "before_last" | "after_last" | "between" | "replace" => {
-                       matches!(base_v, Value::Str(_))
-                   }
-                   "reverse" | "shuffle" | "sort" | "unique" | "dups" |
-                   "freq" | "mode" => {
-                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_))
-                   }
-                   "split" => {
-                       matches!(base_v, Value::Str(_))
-                   }
-                   "join" => {
-                       matches!(base_v, Value::Array(_) | Value::Seq(_))
-                   }
-                   "round" | "floor" | "ceil" | "abs" | "sqrt" => {
-                       matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_))
-                   }
-                   "valtype" | "vt" | "backend" | "metrics" => true, // Works on any type
-                   // NEW: all is_* predicates are valid on any value
+                   "before_last" | "after_last" | "between" | "replace" =>
+                       matches!(base_v, Value::Str(_)),
+
+                   "reverse" | "shuffle" | "sort" | "unique" | "dups" | "freq" | "mode" =>
+                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_)),
+
+                   "split" =>
+                       matches!(base_v, Value::Str(_)),
+
+                   "join"  =>
+                       matches!(base_v, Value::Array(_) | Value::Seq(_)),
+
+                   "round" | "floor" | "ceil" | "abs" | "sqrt" =>
+                       matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_)),
+
+                   // Works on any type
+                   "valtype" | "vt" | "backend" | "metrics" => true,
+
+                   // NEW: postfix casts work on any value (they’ll error inside the action if needed)
+                   "int" | "float" | "str" | "bool" | "big" | "pct" => true,
+
+                   // NEW: any is_* predicate allowed on any value
                    _ if name.starts_with("is_") => true,
+
                    _ => false,
                };
 
                if valid {
-                   // Call the builtin function with base_v as first argument
                    return call_action_by_name(sess, name, vec![base_v], sp.clone());
                }
            }

@@ -67,3 +67,48 @@ xx
 
 /// pull 50 codes
 say pick 50_4 unique with dups
+
+/// generate random code names
+adj = ["agile", "albino", "angry", "arcane", "arctic", "arid", "atomic", "bad", "bayou", "black", "blazing", "bloody", "blue", "brass", "brave", "brazen", "candy", "chaotic", "chill", "cloud", "coal",
+        "cold", "copper", "crimson", "crystal", "cyclone", "dark", "deep", "deft", "desert", "diamond", "dim", "dirty", "dusty", "eastern", "ebony", "feral",  
+        "flying", "forlorn", "frozen", "galactic", "glass", "golden", "gray", "green", "grim", "highland", "holy", "hurricane",
+        "intrepid", "iron", "ivory", "jade", "jolly", "jungle", "liquid", "lost", "mad", "majestic", "marble", "metal", "mountain", "morbid", "naked", "native", "noble", "northern", "nuclear",
+        "obsidian", "ocean", "onyx", "orange", 
+        "paper", "pearl", "poison", "porcelain", "profane", "proud", "purple", "rage", "red", "risen", "ruby", "rusty", "sand", "scarlet", "sea", "silent", 
+        "silver", "sky", "sleeping", "slick", 
+        "snow", "solar", "sonic", "southern", "steel", "stellar", "stone", "storm", "sugar", "swamp", "swift", "thunder", "torn", 
+        "violet", "vivid", "vulgar", "western", "white", "wicked", "wild", "withered", "wooden", "worn", "wretched"]
+
+noun = ["alien", "android", "angel", "arrow", "assassin", "avenger", "badger", "bandit", "banshee", "baron", "bear", "beast", "bee", "bird", "bishop", "blade", "blizzard", 
+        "boar", "bobcat", "boss", "boxer", "bronco", "bull", "bullet", "bushman", "cannon", "cardinal", "casino", "castle", "cat", "champion", "charger", "chariot", "cheetah", "chief", "cigar", "claw", 
+        "cobra", "colt", "corpse", "cougar", "cowboy", "creature", 
+        "cricket", "cyborg", "dart", "death", "demon", "devil", "dingo", "diver", "dog", "dragon", "drifter",
+        "duke", "eagle", "emperor", "explorer", "falcon", "fang", "fighter", "fist", "flame", "fortress", "fox", "frog", "fugitive",
+        "gator", "ghost", "gladiator", "goat", "goblin", "golem", "gorilla", "grenade", "griffon", "guardian",
+        "gunslinger", "hammer", "hangman", "hatchet", "hawk", "hellcat", "hero", "horn", "hornet", "hunter", "hyena", "jackal", "jackpot", "jaguar", "jester", "judge", "katana", "killer", "king", 
+        "knife", "knight", "knuckle", 
+        "kraken", "lance", "lion", "lizard", "lord", "lynx", "magnum", "maverick", "missile", "mongrel", "monk", "monster", "moon", "mummy", "musket", "mustang", "nightmare", 
+        "nomad", "odin", "orchid", "outcast", "outlaw", "paladin", "panther", 
+        "pegasus", "phantom", "pirate", "pistol", "player", "pony", "priest", "prince", "princess", "python", "queen", 
+        "raider", "ram", "ranger", "raptor", "rat", "ratchet", "razor", "reaper", "renegade", "rhino", "rifle", "riot", "robot", "rocket", "rogue", "saber", "saddle", "saint", "salamander", "samurai", 
+        "scorpion", "scoundrel", "scout", "sentry", "sentinel", "shaman", "shark", 
+        "sheriff", "shield", "shooter", "shotgun", "shrike", "skeleton", "slingshot", "smoke", "snake", "soldier", "spear", "spectre", "spider", "spire", "stag", "stalker", "stallion", "star", 
+        "steed", "stinger", "talon", "thor", "thorn",  
+        "tiger", "tomahawk", "toad", "tooth", "tornado", "torpedo", "tower", "trigger", "troll", "tumbleweed", "tusk", "typhoon", "unicorn", "valor", "vampire", "venom", "viking", "villain", 
+        "viper", "vulture", "warlock", 
+        "warrior", "watchman", "widow", "witch", "wizard", 
+        "wolf", "wolverine", "yeti", "zephyr", "zeus", "zombie"]
+
+act get_codename 
+    repeat 50
+        f = reap! 1 from adj 
+        l = reap! 1 from noun
+        cn = f ++ l
+        num1 = pick 1 from 0...9
+        num2 = pick 1 from 0...9 
+        num3 = num1.str + num2.str
+        say cn ++ num3
+    end
+end
+
+get_codename()

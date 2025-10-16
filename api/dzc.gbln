@@ -111,15 +111,20 @@ end
 act dayzero_decode_str(code)
     s = code + ""
     if len(s) != 4
-        return "ERR"
+        return "ERR"                               <--- wrong length
     end
-    d0 = dig_at(s, 0)
-    d1 = dig_at(s, 1)
-    d2 = dig_at(s, 2)
-    d3 = dig_at(s, 3)
-    if d0 < 0 <> d1 < 0 <> d2 < 0 <> d3 < 0
-        return "ERR"
+
+    d0 = dig_at(s, 0)   <--- col 0..9 (assumed valid)
+    d1 = dig_at(s, 1)   <--- row 1..9 (assumed valid)
+    d2 = dig_at(s, 2)   <--- dir 1..8
+    d3 = dig_at(s, 3)   <--- dist 1..4
+
+    judge
+        min(d0, d1, d2, d3) < 0: return "ERR"    <--- all must be digits
+        d2 < 1 <> d2 > 8:       return "ERR"    <--- dir cannot be 0 or 9
+        d3 < 1 <> d3 > 4:       return "ERR"    <--- dist limited to 1..4
     end
+
     return dayzero_decode4(d0, d1, d2, d3)
 end
 

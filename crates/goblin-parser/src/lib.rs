@@ -5119,7 +5119,6 @@ impl<'t> Parser<'t> {
         }
 
         // expression-form: judge …
-        // expression-form: judge …
         if let Some("judge") = self.peek_ident() {
             let header_tok_i = self.i;
             let header_line = self.toks[header_tok_i].span.line_start;
@@ -6348,7 +6347,7 @@ impl<'t> Parser<'t> {
         
         // For enum matching, bare identifiers are valid (will be expanded later)
         // Just parse a normal expression
-        let expr = self.parse_compare()?;
+        let expr = self.parse_or()?;
         
         Ok(expr)
     }
