@@ -98,6 +98,7 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub enum ActionBody {
     Block(Vec<Stmt>),
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone)]

@@ -106,6 +106,7 @@ fn weak_etag(len: u64, mtime: Option<SystemTime>) -> String {
 }
 
 /// Split an If-None-Match header into normalized tags (e.g., `W/"abc"`).
+#[allow(dead_code)]
 fn parse_if_none_match(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|s| s.trim())

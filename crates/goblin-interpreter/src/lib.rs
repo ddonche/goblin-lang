@@ -4096,22 +4096,30 @@ fn call_action_by_name(
             for (k, v) in bound { sess.set_var(k, v); }
 
             let ret = {
-                let ast::ActionBody::Block(stmts) = &action_decl.body;
-                let mut last = Value::Unit;
-                for st in stmts {
-                    if let Some(v) = eval_stmt(st, sess)? {
-                        match v {
-                            Value::CtrlSkip => { /* keep going */ }
-                            Value::CtrlStop => {
-                                let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
-                                sess.pop_frame();
-                                return Ok(rv);
+                match &action_decl.body {
+                    ast::ActionBody::Block(stmts) => {
+                        let mut last = Value::Unit;
+                        for st in stmts {
+                            if let Some(v) = eval_stmt(st, sess)? {
+                                match v {
+                                    Value::CtrlSkip => { /* keep going */ }
+                                    Value::CtrlStop => {
+                                        let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
+                                        sess.pop_frame();
+                                        return Ok(rv);
+                                    }
+                                    other => last = other,
+                                }
                             }
-                            other => last = other,
                         }
+                        last
+                    }
+                    ast::ActionBody::Expr(expr) => {
+                        // single-line action (`=> expr`) — implicit return of the expr value
+                        // no frame pops here; keep semantics identical to normal fallthrough
+                        eval_expr(expr, sess)?
                     }
                 }
-                last
             };
 
             sess.pop_frame();
@@ -4164,24 +4172,32 @@ fn call_action_by_name(
         for (k, v) in bound { sess.set_var(k, v); }
 
         let ret = {
-            let ast::ActionBody::Block(stmts) = &decl.body;
-            let mut last = Value::Unit;
-            for st in stmts {
-                if let Some(v) = eval_stmt(st, sess)? {
-                    match v {
-                        Value::CtrlSkip => { /* keep going */ }
-                        Value::CtrlStop => {
-                            let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
-                            sess.pop_frame();  // <-- ADD THIS
-                            return Ok(rv);
+            match &decl.body {
+                ast::ActionBody::Block(stmts) => {
+                    let mut last = Value::Unit;
+                    for st in stmts {
+                        if let Some(v) = eval_stmt(st, sess)? {
+                            match v {
+                                Value::CtrlSkip => { /* keep going */ }
+                                Value::CtrlStop => {
+                                    let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
+                                    sess.pop_frame();  // <-- keep this
+                                    return Ok(rv);
+                                }
+                                other => last = other,
+                            }
                         }
-                        other => last = other,
                     }
+                    last
+                }
+                ast::ActionBody::Expr(expr) => {
+                    // single-line action (`=> expr`) — implicit return value
+                    // No frame pops here; mirror normal fallthrough semantics.
+                    eval_expr(expr, sess)?
                 }
             }
-            last
         };
-
+        
         sess.pop_frame();
         return Ok(ret);
     }
@@ -4637,6 +4653,65 @@ fn call_action_by_name(
                 other => other,
             };
             Value::Bool(matches!(v, Value::CtrlSkip | Value::CtrlStop))
+        }
+
+        "is_digit" => {
+            arity(1)?;
+            let b = match &args[0] {
+                // single char
+                Value::Char(c) => *c >= '0' && *c <= '9',
+
+                // string: true iff non-empty and every char is 0..9
+                Value::Str(s)  => !s.is_empty() && s.chars().all(|c| c >= '0' && c <= '9'),
+
+                // everything else: not digits
+                _ => false,
+            };
+            Value::Bool(b)
+        }
+
+        "is_alpha" => {
+            // Polymorphic ASCII letter check.
+            // - Char or 1+ length Str: true iff *every* char is A..Z or a..z
+            // - Empty string => false
+            // - Other types => false
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+
+            let is_ascii_alpha = |c: char| (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+
+            let ok = match v {
+                Value::Char(c) => is_ascii_alpha(*c),
+                Value::Str(s) => {
+                    let mut iter = s.chars();
+                    match iter.next() {
+                        None => false, // empty string -> false
+                        Some(first) => {
+                            if !is_ascii_alpha(first) { false } else { iter.all(is_ascii_alpha) }
+                        }
+                    }
+                }
+                _ => false,
+            };
+
+            Value::Bool(ok)
+        }
+
+        "digits" => {
+            arity(1)?;
+            let s = match &args[0] {
+                Value::Str(s) => s,
+                _ => return Ok(Value::Nil),
+            };
+            let mut out = Vec::with_capacity(s.len());
+            for ch in s.chars() {
+                if ch < '0' || ch > '9' { return Ok(Value::Nil); }
+                out.push(Value::Int((ch as i64) - ('0' as i64)));
+            }
+            Value::Array(out)
         }
 
         "format" => {
@@ -8785,6 +8860,11 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 }
                                 last_val
                             }
+
+                            // NEW: single-line action `=> expr` — implicit return of the expression value
+                            ast::ActionBody::Expr(expr) => {
+                                eval_expr(expr, sess)?
+                            }
                         };
 
                         // restore
@@ -9650,183 +9730,194 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
 
-       // ---- Member access on maps (syntax from parser; you're not using dot in code, but handle it) ----
-       ast::Expr::Member(base, name, sp) => {
-           let base_v = eval_expr(base, sess)?;
-           
-           // Check if this is a builtin method on a primitive type
-           // Detect builtin instance methods (postfix sugar)
-           let is_builtin_method =
-               matches!(name.as_str(),
-                   // Collection methods
-                   "count" | "len" | "length" |
-                   // String transforms
-                   "upper" | "lower" | "title" | "slug" | "mixed" |
-                   "trim" | "trim_lead" | "trim_trail" |
-                   // Collection ops
-                   "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
-                   "freq" | "mode" |
-                   // String ops
-                   "split" | "join" | "lines" | "words" | "chars" |
-                   "has" | "find" | "find_all" |
-                   "before" | "after" | "before_last" | "after_last" | "between" |
-                   "replace" |
-                   // Numeric
-                   "round" | "floor" | "ceil" | "abs" | "sqrt" |
-                   // Type ops
-                   "valtype" | "vt" | "backend" | "metrics" |
-                   // NEW: postfix casts
-                   "int" | "float" | "str" | "bool" | "big" | "pct"
-               )
-               // NEW: any is_* predicate is also a builtin method (postfix sugar)
-               || name.starts_with("is_");
+        // ---- Member access on maps (syntax from parser; you're not using dot in code, but handle it) ----
+        ast::Expr::Member(base, name, sp) => {
+            let base_v = eval_expr(base, sess)?;
+            
+            // Check if this is a builtin method on a primitive type
+            // Detect builtin instance methods (postfix sugar)
+            let is_builtin_method =
+                matches!(name.as_str(),
+                    // Collection methods
+                    "count" | "len" | "length" |
+                    // String transforms
+                    "upper" | "lower" | "title" | "slug" | "mixed" |
+                    "trim" | "trim_lead" | "trim_trail" |
+                    // Collection ops
+                    "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
+                    "freq" | "mode" |
+                    // String ops
+                    "split" | "join" | "lines" | "words" | "chars" | "digits" |
+                    "has" | "find" | "find_all" |
+                    "before" | "after" | "before_last" | "after_last" | "between" |
+                    "replace" |
+                    // Numeric
+                    "round" | "floor" | "ceil" | "abs" | "sqrt" |
+                    // Type ops
+                    "valtype" | "vt" | "backend" | "metrics" |
+                    // NEW: postfix casts
+                    "int" | "float" | "str" | "bool" | "big" | "pct"
+                )
+                // Any is_* predicate is also a builtin method (postfix sugar)
+                || name.starts_with("is_");
 
-           if is_builtin_method {
-               // Validate support by receiver type, then forward to action
-               let valid = match name.as_str() {
-                   "count" | "len" | "length" =>
-                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_)),
+            if is_builtin_method {
+                // Validate support by receiver type, then forward to action
+                let valid = match name.as_str() {
+                    "count" | "len" | "length" =>
+                        matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_)),
 
-                   "upper" | "lower" | "title" | "slug" | "mixed" |
-                   "trim" | "trim_lead" | "trim_trail" |
-                   "reverse_chars" | "lines" | "words" | "chars" |
-                   "has" | "find" | "find_all" | "before" | "after" |
-                   "before_last" | "after_last" | "between" | "replace" =>
-                       matches!(base_v, Value::Str(_)),
+                    "upper" | "lower" | "title" | "slug" | "mixed" |
+                    "trim" | "trim_lead" | "trim_trail" |
+                    "reverse_chars" | "lines" | "words" |
+                    "has" | "find" | "find_all" | "before" | "after" |
+                    "before_last" | "after_last" | "between" | "replace" =>
+                        matches!(base_v, Value::Str(_)),
 
-                   "reverse" | "shuffle" | "sort" | "unique" | "dups" | "freq" | "mode" =>
-                       matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_)),
+                    // Allow .chars on Str or Char (per helper behavior)
+                    "chars" =>
+                        matches!(base_v, Value::Str(_) | Value::Char(_)),
 
-                   "split" =>
-                       matches!(base_v, Value::Str(_)),
+                    // digits: Str or Char -> Array[Int] | Nil (per helper behavior)
+                    "digits" =>
+                        matches!(base_v, Value::Str(_) | Value::Char(_)),
 
-                   "join"  =>
-                       matches!(base_v, Value::Array(_) | Value::Seq(_)),
+                    "reverse" | "shuffle" | "sort" | "unique" | "dups" | "freq" | "mode" =>
+                        matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_)),
 
-                   "round" | "floor" | "ceil" | "abs" | "sqrt" =>
-                       matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_)),
+                    "split" =>
+                        matches!(base_v, Value::Str(_)),
 
-                   // Works on any type
-                   "valtype" | "vt" | "backend" | "metrics" => true,
+                    "join"  =>
+                        matches!(base_v, Value::Array(_) | Value::Seq(_)),
 
-                   // NEW: postfix casts work on any value (they’ll error inside the action if needed)
-                   "int" | "float" | "str" | "bool" | "big" | "pct" => true,
+                    "round" | "floor" | "ceil" | "abs" | "sqrt" =>
+                        matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_)),
 
-                   // NEW: any is_* predicate allowed on any value
-                   _ if name.starts_with("is_") => true,
+                    // Works on any type
+                    "valtype" | "vt" | "backend" | "metrics" => true,
 
-                   _ => false,
-               };
+                    // Postfix casts work on any value (they’ll error inside the action if needed)
+                    "int" | "float" | "str" | "bool" | "big" | "pct" => true,
 
-               if valid {
-                   return call_action_by_name(sess, name, vec![base_v], sp.clone());
-               }
-           }
+                    // Any is_* predicate allowed on any value (e.g., is_digits, is_alpha, is_int, …)
+                    _ if name.starts_with("is_") => true,
 
-           match base_v {
-               Value::Map(map) => {
-                   match map.get(name) {
-                       Some(v) => Ok(v.clone()),
-                       None => Err(
-                           Diagnostic::new_with_code(
-                               Severity::Error,
-                               crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                               "missing-key",
-                               &format!("missing key ‘{}’", name),
-                               sp.clone(),
-                           )
-                           .with_help("Ensure the key exists before accessing it.")
-                           .with_link("https://goblinlang.org/docs/errors#R0403"),
-                       ),
-                   }
-               }
+                    _ => false,
+                };
 
-               Value::Object { class_name, fields, readonly_fields: _ } => {
-                   // 1) If it's a method name on this class, return a bound-method wrapper
-                   if let Some(class) = sess.classes.get(&class_name) {
-                       if class.actions.iter().any(|a| a.name == *name) {
-                           let mut m = BTreeMap::new();
-                           m.insert("__kind__".to_string(), Value::Str("__bound_action__".to_string()));
-                           m.insert("__name__".to_string(), Value::Str(name.to_string()));
-                           // If the receiver is an identifier, capture its var name so mutations persist
-                           if let ast::Expr::Ident(var_name, _) = &**base {
-                               m.insert("__var__".to_string(), Value::Str(var_name.clone()));
-                           } else {
-                               // Otherwise capture the value so it can still be called (mutations won't persist)
-                               m.insert(
-                                   "__recv__".to_string(),
-                                   Value::Object {
-                                       class_name: class_name.clone(),
-                                       fields: fields.clone(),
-                                       readonly_fields: BTreeSet::new(),
-                                   },
-                               );
-                           }
-                           return Ok(Value::Map(m));
-                       }
-                   }
+                if valid {
+                    // NOTE: If you support method args (e.g., "split" delimiter), make sure you’re
+                    // passing them through here along with base_v. If you already do that above,
+                    // keep it; otherwise adapt this to collect/evaluate extra args.
+                    return call_action_by_name(sess, name, vec![base_v], sp.clone());
+                }
+            }
 
-                   // 2) Otherwise: normal field lookup
-                   match fields.get(name) {
-                       Some(v) => Ok(v.clone()),
-                       None => Err(
-                           Diagnostic::new_with_code(
-                               Severity::Error,
-                               crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                               "no-such-field",
-                               &format!("no field ‘{}’", name),
-                               sp.clone(),
-                           )
-                           .with_help("Check the object’s fields or correct the field name.")
-                           .with_link("https://goblinlang.org/docs/errors#R0403"),
-                       ),
-                   }
-               }
+            match base_v {
+                Value::Map(map) => {
+                    match map.get(name) {
+                        Some(v) => Ok(v.clone()),
+                        None => Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                                "missing-key",
+                                &format!("missing key ‘{}’", name),
+                                sp.clone(),
+                            )
+                            .with_help("Ensure the key exists before accessing it.")
+                            .with_link("https://goblinlang.org/docs/errors#R0403"),
+                        ),
+                    }
+                }
 
-               Value::Enum { fields: Some(field_map), variant_name, .. } => {
-                   field_map.get(name)
-                       .cloned()
-                       .ok_or_else(|| 
-                           Diagnostic::new_with_code(
-                               Severity::Error,
-                               crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                               "no-such-field",
-                               &format!("variant ‘{}’ has no field ‘{}’", variant_name, name),
-                               sp.clone(),
-                           )
-                           .with_help("Check the variant’s declared fields or correct the field name.")
-                           .with_link("https://goblinlang.org/docs/errors#R0403")
-                       )
-               }
+                Value::Object { class_name, fields, readonly_fields: _ } => {
+                    // 1) If it's a method name on this class, return a bound-method wrapper
+                    if let Some(class) = sess.classes.get(&class_name) {
+                        if class.actions.iter().any(|a| a.name == *name) {
+                            let mut m = BTreeMap::new();
+                            m.insert("__kind__".to_string(), Value::Str("__bound_action__".to_string()));
+                            m.insert("__name__".to_string(), Value::Str(name.to_string()));
+                            // If the receiver is an identifier, capture its var name so mutations persist
+                            if let ast::Expr::Ident(var_name, _) = &**base {
+                                m.insert("__var__".to_string(), Value::Str(var_name.clone()));
+                            } else {
+                                // Otherwise capture the value so it can still be called (mutations won't persist)
+                                m.insert(
+                                    "__recv__".to_string(),
+                                    Value::Object {
+                                        class_name: class_name.clone(),
+                                        fields: fields.clone(),
+                                        readonly_fields: BTreeSet::new(),
+                                    },
+                                );
+                            }
+                            return Ok(Value::Map(m));
+                        }
+                    }
 
-               Value::Enum { fields: None, variant_name, .. } => {
-                   Err(
-                       Diagnostic::new_with_code(
-                           Severity::Error,
-                           crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                           "no-fields-on-variant",
-                           &format!("variant ‘{}’ has no fields", variant_name),
-                           sp.clone(),
-                       )
-                       .with_help("Use a variant that declares fields, or remove the field access.")
-                       .with_link("https://goblinlang.org/docs/errors#R0403")
-                   )
-               }
-               _ => {
-                   return Err(
-                       Diagnostic::new_with_code(
-                           Severity::Error,
-                           crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                           "member-access-type",
-                           "member access requires a map, object, or enum.",
-                           sp.clone(),
-                       )
-                       .with_help("Use ‘obj.field’ only on a map/object/enum variant.")
-                       .with_link("https://goblinlang.org/docs/errors#T0205")
-                   );
-               }
-           }
-       }
+                    // 2) Otherwise: normal field lookup
+                    match fields.get(name) {
+                        Some(v) => Ok(v.clone()),
+                        None => Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                                "no-such-field",
+                                &format!("no field ‘{}’", name),
+                                sp.clone(),
+                            )
+                            .with_help("Check the object’s fields or correct the field name.")
+                            .with_link("https://goblinlang.org/docs/errors#R0403"),
+                        ),
+                    }
+                }
+
+                Value::Enum { fields: Some(field_map), variant_name, .. } => {
+                    field_map.get(name)
+                        .cloned()
+                        .ok_or_else(|| 
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                                "no-such-field",
+                                &format!("variant ‘{}’ has no field ‘{}’", variant_name, name),
+                                sp.clone(),
+                            )
+                            .with_help("Check the variant’s declared fields or correct the field name.")
+                            .with_link("https://goblinlang.org/docs/errors#R0403")
+                        )
+                }
+
+                Value::Enum { fields: None, variant_name, .. } => {
+                    Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                            "no-fields-on-variant",
+                            &format!("variant ‘{}’ has no fields", variant_name),
+                            sp.clone(),
+                        )
+                        .with_help("Use a variant that declares fields, or remove the field access.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    )
+                }
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "member-access-type",
+                            "member access requires a map, object, or enum.",
+                            sp.clone(),
+                        )
+                        .with_help("Use ‘obj.field’ only on a map/object/enum variant.")
+                        .with_link("https://goblinlang.org/docs/errors#T0205")
+                    );
+                }
+            }
+        }
 
         ast::Expr::OptMember(base, name, sp) => {
             let base_v = eval_expr(base, sess)?;
@@ -11707,17 +11798,24 @@ fn call_object_method_with_values(
     }
 
     let result = {
-        let ast::ActionBody::Block(stmts) = &action.body;
-        let mut last = Value::Unit;
-        for stmt in stmts {
-            if let Some(v) = eval_stmt(stmt, sess)? {
-                match v {
-                    Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
-                    other => last = other,
+        match &action.body {
+            ast::ActionBody::Block(stmts) => {
+                let mut last = Value::Unit;
+                for stmt in stmts {
+                    if let Some(v) = eval_stmt(stmt, sess)? {
+                        match v {
+                            Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
+                            other => last = other,
+                        }
+                    }
                 }
+                last
+            }
+            ast::ActionBody::Expr(expr) => {
+                // single-line action (`=> expr`) — implicit return of the expr value
+                eval_expr(expr, sess)?
             }
         }
-        last
     };
 
     // Copy modified field values back
@@ -11810,17 +11908,24 @@ fn call_object_method(
     }
 
     let result = {
-        let ast::ActionBody::Block(stmts) = &action.body;
-        let mut last = Value::Unit;
-        for stmt in stmts {
-            if let Some(v) = eval_stmt(stmt, sess)? {
-                match v {
-                    Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
-                    other => last = other,
+        match &action.body {
+            ast::ActionBody::Block(stmts) => {
+                let mut last = Value::Unit;
+                for stmt in stmts {
+                    if let Some(v) = eval_stmt(stmt, sess)? {
+                        match v {
+                            Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
+                            other => last = other,
+                        }
+                    }
                 }
+                last
+            }
+            ast::ActionBody::Expr(expr) => {
+                // single-line action (`=> expr`) — implicit return of the expr value
+                eval_expr(expr, sess)?
             }
         }
-        last
     };
 
     // CRITICAL: Copy modified field values back BEFORE popping frame

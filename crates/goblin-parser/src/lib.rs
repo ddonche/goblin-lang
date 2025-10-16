@@ -2256,6 +2256,8 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_action_after_keyword(&mut self, kw: &str) -> Result<PAction, String> {
+        use goblin_lexer::TokenKind;
+
         // name
         let Some(name) = self.eat_ident() else {
             return Err(s_help(
@@ -2301,18 +2303,23 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // single-line form:  act foo = expr
-        if self.eat_op("=") {
-            let expr = self.parse_coalesce()?;
-            return Ok(PAction {
-                name,
-                params,
-                body: vec![ast::Stmt::Expr(self.lower_expr(expr))],
-                is_single: true,
-            });
+        // single-line form (LEGACY):  act foo = expr
+        // IMPORTANT: only fire when the *current* token is exactly "=" (NOT "=>")
+        if let Some(tok) = self.toks.get(self.i) {
+            if matches!(&tok.kind, TokenKind::Op(op) if op == "=") {
+                // consume '=' exactly (do not use eat_op here to avoid swallowing '=>')
+                self.i += 1;
+                let expr = self.parse_coalesce()?;
+                return Ok(PAction {
+                    name,
+                    params,
+                    body: vec![ast::Stmt::Expr(self.lower_expr(expr))],
+                    is_single: true,
+                });
+            }
         }
 
-        // multi-line form: body parsed by parse_free_action
+        // multi-line form: body parsed later by parse_free_action
         Ok(PAction { name, params, body: Vec::new(), is_single: false })
     }
 
@@ -2325,7 +2332,7 @@ impl<'t> Parser<'t> {
         let hdr_line    = hdr_start.span.line_start;
         let hdr_col     = hdr_start.span.col_start;
 
-        // Parse: name, (params), optional "= expr" (single-line), otherwise no body here
+        // Parse: name, (params), legacy "= expr" (handled by helper), otherwise no body yet
         let action_start = self.i;
         let pa = self.parse_action_after_keyword(kw)?;
         let action_span = Self::span_from_tokens(self.toks, action_start, self.i.saturating_sub(1));
@@ -2340,12 +2347,39 @@ impl<'t> Parser<'t> {
             })
             .collect();
 
-        // ---------- SINGLE-LINE FORM: `action name(...) = expr` ----------
-        // parse_action_after_keyword set body (Vec<ast::Stmt>) when '=' was present.
+        // ---------- NEW: SINGLE-LINE '=> expr' FORM ----------
+        // Skip separators between ')' and '=>'
+        let mut j = self.i;
+        while let Some(tok) = self.toks.get(j) {
+            match &tok.kind {
+                TokenKind::Newline => { j += 1; continue; }
+                TokenKind::Op(s) if s == ";" => { j += 1; continue; }
+                _ => break,
+            }
+        }
+        if let Some(tok) = self.toks.get(j) {
+            if matches!(tok.kind, TokenKind::Op(ref s) if s == "=>") {
+                // consume skipped separators + '=>'
+                self.i = j + 1;
+
+                // parse with same entry point as legacy/param defaults
+                let pexpr = self.parse_coalesce()?;
+                let expr  = self.lower_expr(pexpr);
+
+                let act = ast::ActionDecl {
+                    name: pa.name,
+                    params,
+                    body: ast::ActionBody::Expr(expr), // implicit return
+                    span: action_span,
+                    ret: None,
+                };
+                return Ok(ast::Stmt::Action(act));
+            }
+        }
+
+        // ---------- LEGACY SINGLE-LINE: `action name(...) = expr` ----------
         if !pa.body.is_empty() {
-            let body_stmts: Vec<ast::Stmt> = pa.body.into_iter()
-                .map(|stmt| stmt)
-                .collect();
+            let body_stmts: Vec<ast::Stmt> = pa.body.into_iter().collect();
 
             let act = ast::ActionDecl {
                 name: pa.name,
@@ -2358,7 +2392,6 @@ impl<'t> Parser<'t> {
         }
 
         // ---------- BLOCK FORM (layout, no braces) ----------
-        // If the next non-blank token on a *new line* is '{', that's a map, not a block.
         if let Some(prev_tok) = self.toks.get(self.i.saturating_sub(1)) {
             let mut j = self.i;
             while let Some(tok) = self.toks.get(j) {
@@ -2381,23 +2414,18 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // Policy: no inline braces for blocks; enforce your existing rule.
         self.enforce_inline_brace_policy(hdr_line, kw)?;
 
-        // Parse the indented block until a closer aligned with the header column.
         let body_stmts = self.parse_indented_block(hdr_col, &["end"])?;
 
-        // Consume the closer (if still present) and validate alignment.
         self.skip_stmt_separators();
         if self.block_closed_hard {
-            // a hard closer like 'xx' already consumed inside helper
             self.block_closed_hard = false;
         } else if self.peek_block_close() {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col == hdr_col {
                 self.expect_block_close("action")?;
             }
-            // else: it's a nested block's closer; ignore and keep parsing
         } else if !self.eat_layout_until_close(hdr_col) {
             return Err(s_help(
                 "P0212",
@@ -2406,7 +2434,6 @@ impl<'t> Parser<'t> {
             ));
         }
 
-        // Build AST action
         let act = ast::ActionDecl {
             name: pa.name,
             params,
