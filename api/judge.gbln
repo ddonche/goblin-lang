@@ -159,3 +159,50 @@ judge
     x > 0: say "pos"
 end
 say "done"
+
+/// --- Smoke test: header `return <expr>` on judge / judge_all ---
+
+/// 1) judge: empty arms inherit default return; explicit body overrides it
+say "=== judge header return ==="
+act f(n)
+    judge return "BAD"
+        n < 0:         /// empty → default return "BAD"
+        n == 0:        /// empty → default return "BAD"
+        else: say "ok" <--- explicit body → no default return here
+    end
+    return "ok"
+end
+
+say f(-1)   /// expect: BAD
+say f(0)    /// expect: BAD
+say f(7)    /// prints "ok", then expect: ok
+
+
+/// 2) judge_all: inclusive until an empty arm matches (default return fires)
+say "=== judge_all header return ==="
+act g(x)
+    judge_all using x return "STOP"
+        >= 80: say "B"     <--- explicit body (runs)
+        >= 50:             /// empty → default return "STOP" (short-circuits remaining arms)
+        >= 30: say "C"     <--- unreachable if x >= 50
+        else:  say "F"     <--- runs only if no earlier match
+    end
+    say "unreachable"
+end
+
+say g(85)   /// prints: B, then expect: STOP  (no "C", no "F", no "unreachable")
+say g(20)   /// prints: F, then prints "unreachable"  (no default return triggered)
+
+
+/// 3) judge_all: no matches → empty else inherits default return
+say "=== judge_all header return (else inherits) ==="
+act h(x)
+    judge_all return "NONE"
+        x > 100:          /// no match
+        x < -100:         /// no match
+        else:             /// empty → default return "NONE"
+    end
+    say "unreachable"
+end
+
+say h(0)    /// expect: NONE  (no "unreachable")

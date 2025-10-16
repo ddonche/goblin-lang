@@ -6199,77 +6199,65 @@ impl<'t> Parser<'t> {
         use goblin_lexer::TokenKind;
         use ast::{JudgeArmBody, JudgeArmStmt, JudgeStmt, Stmt};
 
-        // ----- Header location for alignment checks -----
         let header_tok_i = self.i;
         let header_line  = self.toks[header_tok_i].span.line_start;
         let header_col   = self.toks[header_tok_i].span.col_start;
 
-        // 'judge'
         debug_assert_eq!(self.peek_ident().as_deref(), Some("judge"));
         let _ = self.eat_ident();
 
-        // Match expr-form behavior around ':' after the header
         self.suspend_colon_call += 1;
 
-        // ----- Optional header: [<subject>] [using <EnumOrExpr>] -----
-        // We mirror the expression-form order: subject first (if any), then optional `using`.
-        let mut using_expr: Option<Box<PExpr>> = None;   // subject to expand against
-        let mut using_enum: Option<String> = None;       // enum name for variant sugar
+        // Header: [<subject>] [using <EnumOrExpr>] [return <expr>]
+        let mut using_expr: Option<Box<PExpr>> = None;
+        let mut using_enum: Option<String> = None;
+        let mut default_body: Option<ast::JudgeArmBody> = None;
 
-        // If next token is not 'using' and not newline/eof/'{', parse a subject expression
-        if self.peek_ident() != Some("using") && !self.peek_newline_or_eof() && !self.peek_op("{") {
-            let subject = self.parse_compare()?; // same entry used in expr-form
+        if self.peek_ident() != Some("using")
+            && self.peek_ident() != Some("return")
+            && !self.peek_newline_or_eof()
+            && !self.peek_op("{")
+        {
+            let subject = self.parse_compare()?;
             using_expr = Some(Box::new(subject));
         }
 
-        // Optional: 'using <Name>'
         if self.peek_ident() == Some("using") {
-            let _ = self.eat_ident(); // 'using'
+            let _ = self.eat_ident();
             self.skip_newlines();
-
             let Some(name) = self.eat_ident() else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0814",
-                    "Expected a name after 'using'",
-                    "Write: judge status using Status  or  judge using score",
-                ));
+                return Err(s_help("P0814","Expected a name after 'using'","Write: judge status using Status  or  judge using score"));
             };
-
-            // Uppercase => enum name; lowercase => treat as subject expr ident
             let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-            if is_cap {
-                using_enum = Some(name);
-            } else {
-                using_expr = Some(Box::new(PExpr::Ident(name)));
-            }
+            if is_cap { using_enum = Some(name); } else { using_expr = Some(Box::new(PExpr::Ident(name))); }
         }
 
-        // Disallow '{' after header; enforce indentation style
+        // Single keyword: 'return' <expr>  (default body for empty arms)
+        if self.peek_ident() == Some("return") {
+            let _ = self.eat_ident();
+            self.skip_newlines();
+            let pe = self.parse_assign()?;
+            let sp = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
+            let expr = Self::lower_expr_preview(pe, sp.clone());
+            let ret  = ast::Stmt::Return(ast::ReturnStmt { values: vec![expr], span: sp.clone() });
+            default_body = Some(ast::JudgeArmBody::Stmts(vec![ret]));
+        }
+
         if self.peek_op("{") {
             self.suspend_colon_call -= 1;
-            return Err(s_help(
-                "P0812",
-                "Don't put '{' after 'judge'",
-                "Use indentation and close with 'end' or 'xx' (crossbones): judge x > 5: say \"big\" end",
-            ));
+            return Err(s_help("P0812","Don't put '{' after 'judge'","Use indentation and close with 'end' or 'xx'."));
         }
         self.forbid_next_line_brace(header_line, header_col, "judge")?;
 
-        // ----- Enter block: consume newlines + Indent(s); do NOT eat closers here -----
         self.skip_newlines();
-        while let Some(t) = self.peek() {
-            if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; }
-        }
+        while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
 
         let mut arms: Vec<ast::JudgeArmStmt> = Vec::new();
 
-        // ----- Parse arms -----
         loop {
-            // Only skip newlines here; do NOT consume aligned closers
             self.skip_newlines();
 
-            // Done if aligned 'end' or 'xx'
             if let Some(t) = self.peek() {
                 match &t.kind {
                     TokenKind::Ident if t.value.as_deref() == Some("end") && t.span.col_start == header_col => break,
@@ -6278,115 +6266,66 @@ impl<'t> Parser<'t> {
                 }
             } else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0212",
-                    "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
+                return Err(s_help("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
             }
 
-            // Consume any leading Indent tokens at arm start
-            while let Some(t) = self.peek() {
-                if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; }
-            }
-
-            // If we immediately see Dedent, we finished the block; outer will handle closer
-            if let Some(t) = self.peek() {
-                if matches!(t.kind, TokenKind::Dedent) { break; }
-            }
-
+            while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
+            if let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Dedent) { break; } }
             if self.is_eof() {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0212",
-                    "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
+                return Err(s_help("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
             }
 
-            // Column of this arm's header (to stop its block on dedent)
-            let arm_col: u32 = self
-                .toks
-                .get(self.i)
-                .map(|t| t.span.col_start)
-                .unwrap_or(header_col);
+            let arm_col: u32 = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(header_col);
 
-            // else?
             let is_else = if let Some(tok) = self.peek() {
                 matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("else")
             } else { false };
 
-            // ----- condition (None for else) — with subject/enum expansion matching expr-form -----
             let cond_opt = if is_else {
-                let _tok = self.eat_ident(); // 'else'
+                let _ = self.eat_ident();
                 None
             } else {
-                let raw = self.parse_judge_condition()?; // supports shorthand ops and idents
-                // Expand condition against header subject (if any), respecting `using_enum`
-                let expanded = if let Some(ref subj) = using_expr {
-                    // existing helper: expand_condition(&PExpr, &PExpr, &Option<String>) -> PExpr
-                    Self::expand_condition(subj, &raw, &using_enum)
-                } else {
-                    raw
-                };
+                let raw = self.parse_judge_condition()?;
+                let expanded = if let Some(ref subj) = using_expr { Self::expand_condition(subj, &raw, &using_enum) } else { raw };
                 let cond_span = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i.saturating_sub(1));
                 Some(Box::new(Self::lower_expr_preview(expanded, cond_span)))
             };
 
-            // Require ':'
             if !self.eat_op(":") {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0811",
-                    "You need ':' after the condition in 'judge'",
-                    "Write it like: judge x > 5: say \"big\"",
-                ));
+                return Err(s_help("P0811","You need ':' after the condition in 'judge'","Write it like: judge x > 5: say \"big\""));
             }
 
-            // ----- Body:
-            //  - newline+indent -> parse a block of statements
-            //  - same line      -> parse ONE statement (works for `return`, `say`, or an expression stmt)
             let body = if self.peek_newline_or_eof() {
                 self.skip_newlines();
                 match self.peek() {
-                    Some(t) if matches!(t.kind, TokenKind::Indent) => { self.i += 1; }
+                    Some(t) if matches!(t.kind, TokenKind::Indent) => {
+                        self.i += 1;
+                        let stmts = self.parse_stmt_block_until_dedent_or_next_case(arm_col)?;
+                        JudgeArmBody::Stmts(stmts)
+                    }
                     _ => {
-                        self.suspend_colon_call -= 1;
-                        return Err(s_help(
-                            "P0816",
-                            "Expected an indented block after ':' in judge arm",
-                            "Start the arm body on the next line and indent it.",
-                        ));
+                        if let Some(db) = default_body.clone() { db } else {
+                            return Err(s_help("P0816","Expected an indented block after ':' in judge arm","Start the arm body on the next line and indent it."));
+                        }
                     }
                 }
-                let stmts = self.parse_stmt_block_until_dedent_or_next_case(arm_col)?;
-                JudgeArmBody::Stmts(stmts)
             } else {
-                // Inline one-statement body
                 let stmt = self.parse_stmt()?;
-                // Consume trailing trivia/comments/newlines (supports ///, ////, <--- …)
                 self.eat_semi_separators();
                 JudgeArmBody::Stmts(vec![stmt])
             };
 
-            // Span for the arm: use the first token of the arm header if available
             let arm_span = self.toks.get(self.i.saturating_sub(1)).map(|t| t.span.clone())
                 .unwrap_or_else(|| self.toks[header_tok_i].span.clone());
 
-            arms.push(JudgeArmStmt {
-                condition: cond_opt,
-                body,
-                span: arm_span,
-            });
-
-            // Prepare for next arm or closer; do NOT consume closers here
+            arms.push(JudgeArmStmt { condition: cond_opt, body, span: arm_span });
             self.skip_newlines();
         }
 
-        // ----- Close (align exactly as your expr-form) -----
         self.suspend_colon_call -= 1;
 
-        // Consume pending Dedent/Newline before checking aligned closer
         while let Some(t) = self.peek() {
             use goblin_lexer::TokenKind::*;
             if matches!(t.kind, Dedent | Newline) { self.i += 1; } else { break; }
@@ -6396,22 +6335,11 @@ impl<'t> Parser<'t> {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col != header_col {
                 let closer = self.peek_ident().unwrap_or("}");
-                return Err(s_help(
-                    "P0222",
-                    &format!(
-                        "This '{}' closer is misaligned: expected column {}, found column {}",
-                        closer, header_col, col
-                    ),
-                    "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge header.",
-                ));
+                return Err(s_help("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
             }
             self.expect_block_close("judge")?;
         } else if !self.eat_layout_until_close(header_col) {
-            return Err(s_help(
-                "P0212",
-                "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                "Close the block with 'end' or 'xx' (crossbones).",
-            ));
+            return Err(s_help("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
         }
 
         let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
@@ -6422,76 +6350,64 @@ impl<'t> Parser<'t> {
         use goblin_lexer::TokenKind;
         use ast::{JudgeArmBody, JudgeArmStmt, JudgeAllStmt, Stmt};
 
-        // Header location for alignment checks
         let header_tok_i = self.i;
         let header_line  = self.toks[header_tok_i].span.line_start;
         let header_col   = self.toks[header_tok_i].span.col_start;
 
-        // 'judge_all'
         debug_assert_eq!(self.peek_ident().as_deref(), Some("judge_all"));
         let _ = self.eat_ident();
 
-        // Match expr-form behavior around ':' after the header
         self.suspend_colon_call += 1;
 
-        // ----- Optional header: [<subject>] [using <EnumOrExpr>] -----
-        let mut using_expr: Option<Box<PExpr>> = None;   // subject to expand against
-        let mut using_enum: Option<String> = None;       // enum name for variant sugar
+        // Header: [<subject>] [using <EnumOrExpr>] [return <expr>]
+        let mut using_expr: Option<Box<PExpr>> = None;
+        let mut using_enum: Option<String> = None;
+        let mut default_body: Option<ast::JudgeArmBody> = None;
 
-        // If next token is not 'using' and not newline/eof/'{', parse a subject expression
-        if self.peek_ident() != Some("using") && !self.peek_newline_or_eof() && !self.peek_op("{") {
+        if self.peek_ident() != Some("using")
+            && self.peek_ident() != Some("return")
+            && !self.peek_newline_or_eof()
+            && !self.peek_op("{")
+        {
             let subject = self.parse_compare()?;
             using_expr = Some(Box::new(subject));
         }
 
-        // Optional: 'using <Name>'
         if self.peek_ident() == Some("using") {
-            let _ = self.eat_ident(); // 'using'
+            let _ = self.eat_ident();
             self.skip_newlines();
-
             let Some(name) = self.eat_ident() else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0814",
-                    "Expected a name after 'using'",
-                    "Write: judge_all status using Status  or  judge_all using score",
-                ));
+                return Err(s_help("P0814","Expected a name after 'using'","Write: judge_all status using Status  or  judge_all using score"));
             };
-
-            // Uppercase => enum name; lowercase => treat as subject expr ident
             let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-            if is_cap {
-                using_enum = Some(name);
-            } else {
-                using_expr = Some(Box::new(PExpr::Ident(name)));
-            }
+            if is_cap { using_enum = Some(name); } else { using_expr = Some(Box::new(PExpr::Ident(name))); }
         }
 
-        // Disallow '{' after header; enforce indentation style
+        if self.peek_ident() == Some("return") {
+            let _ = self.eat_ident();
+            self.skip_newlines();
+            let pe = self.parse_assign()?;
+            let sp = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
+            let expr = Self::lower_expr_preview(pe, sp.clone());
+            let ret  = ast::Stmt::Return(ast::ReturnStmt { values: vec![expr], span: sp.clone() });
+            default_body = Some(ast::JudgeArmBody::Stmts(vec![ret]));
+        }
+
         if self.peek_op("{") {
             self.suspend_colon_call -= 1;
-            return Err(s_help(
-                "P0813",
-                "Don't put '{' after 'judge_all'",
-                "Use indentation and close with 'end' or 'xx' (crossbones): judge_all x > 5: say \"big\" end",
-            ));
+            return Err(s_help("P0813","Don't put '{' after 'judge_all'","Use indentation and close with 'end' or 'xx'."));
         }
         self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
 
-        // ----- Enter block: consume newlines + Indent(s); do NOT eat closers here -----
         self.skip_newlines();
-        while let Some(t) = self.peek() {
-            if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; }
-        }
+        while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
 
         let mut arms: Vec<ast::JudgeArmStmt> = Vec::new();
 
-        // ----- Parse arms -----
         loop {
-            // Only skip newlines here; do NOT consume aligned closers
             self.skip_newlines();
 
-            // Done if aligned 'end' or 'xx'
             if let Some(t) = self.peek() {
                 match &t.kind {
                     TokenKind::Ident if t.value.as_deref() == Some("end") && t.span.col_start == header_col => break,
@@ -6500,114 +6416,66 @@ impl<'t> Parser<'t> {
                 }
             } else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0212",
-                    "This judge_all block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
+                return Err(s_help("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
             }
 
-            // Consume any leading Indent tokens at arm start
-            while let Some(t) = self.peek() {
-                if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; }
-            }
-
-            // If we immediately see Dedent, we finished the block; outer will handle closer
-            if let Some(t) = self.peek() {
-                if matches!(t.kind, TokenKind::Dedent) { break; }
-            }
-
+            while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
+            if let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Dedent) { break; } }
             if self.is_eof() {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0212",
-                    "This judge_all block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
-                ));
+                return Err(s_help("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
             }
 
-            // Column of this arm's header (to stop its block on dedent)
-            let arm_col: u32 = self
-                .toks
-                .get(self.i)
-                .map(|t| t.span.col_start)
-                .unwrap_or(header_col);
+            let arm_col: u32 = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(header_col);
 
-            // else?
             let is_else = if let Some(tok) = self.peek() {
                 matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("else")
             } else { false };
 
-            // ----- condition (None for else) — with subject/enum expansion matching expr-form -----
             let cond_opt = if is_else {
-                let _tok = self.eat_ident(); // 'else'
+                let _ = self.eat_ident();
                 None
             } else {
                 let raw = self.parse_judge_condition()?;
-                // Expand condition against header subject (if any), respecting `using_enum`
-                let expanded = if let Some(ref subj) = using_expr {
-                    Self::expand_condition(subj, &raw, &using_enum)
-                } else {
-                    raw
-                };
+                let expanded = if let Some(ref subj) = using_expr { Self::expand_condition(subj, &raw, &using_enum) } else { raw };
                 let cond_span = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i.saturating_sub(1));
                 Some(Box::new(Self::lower_expr_preview(expanded, cond_span)))
             };
 
-            // Require ':'
             if !self.eat_op(":") {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
-                    "P0811",
-                    "You need ':' after the condition in 'judge_all'",
-                    "Write it like: judge_all x > 5: say \"big\"",
-                ));
+                return Err(s_help("P0811","You need ':' after the condition in 'judge_all'","Write it like: judge_all x > 5: say \"big\""));
             }
 
-            // ----- Body:
-            //  - newline+indent -> parse a block of statements
-            //  - same line      -> parse ONE statement (works for `return`, `say`, or an expression stmt)
             let body = if self.peek_newline_or_eof() {
                 self.skip_newlines();
                 match self.peek() {
-                    Some(t) if matches!(t.kind, TokenKind::Indent) => { self.i += 1; }
+                    Some(t) if matches!(t.kind, TokenKind::Indent) => {
+                        self.i += 1;
+                        let stmts = self.parse_stmt_block_until_dedent_or_next_case(arm_col)?;
+                        JudgeArmBody::Stmts(stmts)
+                    }
                     _ => {
-                        self.suspend_colon_call -= 1;
-                        return Err(s_help(
-                            "P0816",
-                            "Expected an indented block after ':' in judge_all arm",
-                            "Start the arm body on the next line and indent it.",
-                        ));
+                        if let Some(db) = default_body.clone() { db } else {
+                            return Err(s_help("P0816","Expected an indented block after ':' in judge_all arm","Start the arm body on the next line and indent it."));
+                        }
                     }
                 }
-                let stmts = self.parse_stmt_block_until_dedent_or_next_case(arm_col)?;
-                JudgeArmBody::Stmts(stmts)
             } else {
-                // Inline one-statement body
                 let stmt = self.parse_stmt()?;
-                // Consume trailing trivia/comments/newlines (supports ///, ////, <--- …)
                 self.eat_semi_separators();
                 JudgeArmBody::Stmts(vec![stmt])
             };
 
-            // Span for the arm: use the first token of the arm header if available
             let arm_span = self.toks.get(self.i.saturating_sub(1)).map(|t| t.span.clone())
                 .unwrap_or_else(|| self.toks[header_tok_i].span.clone());
 
-            arms.push(JudgeArmStmt {
-                condition: cond_opt,
-                body,
-                span: arm_span,
-            });
-
-            // Prepare for next arm or closer; do NOT consume closers here
+            arms.push(JudgeArmStmt { condition: cond_opt, body, span: arm_span });
             self.skip_newlines();
         }
 
-        // ----- Close (align exactly as your expr-form) -----
         self.suspend_colon_call -= 1;
 
-        // Consume pending Dedent/Newline before checking aligned closer
         while let Some(t) = self.peek() {
             use goblin_lexer::TokenKind::*;
             if matches!(t.kind, Dedent | Newline) { self.i += 1; } else { break; }
@@ -6617,22 +6485,11 @@ impl<'t> Parser<'t> {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col != header_col {
                 let closer = self.peek_ident().unwrap_or("}");
-                return Err(s_help(
-                    "P0222",
-                    &format!(
-                        "This '{}' closer is misaligned: expected column {}, found column {}",
-                        closer, header_col, col
-                    ),
-                    "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge_all header.",
-                ));
+                return Err(s_help("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
             }
             self.expect_block_close("judge_all")?;
         } else if !self.eat_layout_until_close(header_col) {
-            return Err(s_help(
-                "P0212",
-                "This judge_all block is missing its closing 'end' or 'xx' (crossbones).",
-                "Close the block with 'end' or 'xx' (crossbones).",
-            ));
+            return Err(s_help("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
         }
 
         let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
