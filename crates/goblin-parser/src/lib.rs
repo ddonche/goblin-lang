@@ -6756,12 +6756,12 @@ impl<'t> Parser<'t> {
         
         // PICK / REAP (expression form)
         // Syntax:
-        //   pick <count:int> [_ <digits:int>]   // also supports packed shorthand: pick 100_8
+        //   pick <count:int | {var} | var> [_ <digits:int>]   // also supports packed shorthand: pick 100_8
         //        [from <expr or range>]
         //        [with dups | without dups | wo dups]
         //        [unique]   // for digit shorthand (x_y): each number’s digits must be distinct
         //
-        //   reap <count:int> from <expr or range>
+        //   reap <count:int | {var} | var> from <expr or range>
         //   // Note: reap does NOT support digit shorthand or dups modifiers.
         if self.peek_ident() == Some("pick") || self.peek_ident() == Some("reap") {
             let verb = self.peek_ident().unwrap().to_string(); // "pick" or "reap"
@@ -6770,17 +6770,77 @@ impl<'t> Parser<'t> {
 
             // <count>: integer literal (lexer may give "1_6" as a single Int token)
             // OR default to 1 if 'from' immediately follows (sugar: `pick from xs`)
+            // OR dynamic count via `{var}` or bare identifier `var`
             let mut count_txt = String::new();
             let mut count: i128;
+            // <count>: int | {var} | var | defaults to 1 if 'from' follows
+            let mut count_expr: Option<PExpr> = None;
 
-            match self.peek() {
-                // Normal numeric form: pick 3 from items
-                Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
-                    count_txt = t.value.clone().unwrap_or_default();
-                    if let Some(v) = parse_int_literal_to_i128(&count_txt) {
-                        self.i += 1;
-                        count = v;
-                    } else {
+            // braced dynamic: pick {var} ...
+            if self.eat_op("{") {
+                self.skip_newlines();
+
+                // accept a bare identifier inside braces
+                if let Some(name_owned) = self.peek_ident().map(|s| s.to_string()) {
+                    if name_owned == "from" {
+                        return Err(s_help("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
+                    }
+                    let _ = self.eat_ident(); // consume the ident
+                    count_expr = Some(PExpr::Ident(name_owned));
+                } else {
+                    return Err(s_help("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
+                }
+
+                self.skip_newlines();
+                // require closing '}'
+                if !self.eat_op("}") {
+                    return Err(s_help(
+                        "P1402",
+                        "Unclosed '{' in variable reference",
+                        "Close the variable reference with '}'",
+                    ));
+                }
+
+                // harmless default for any static-only checks later
+                count = 1;
+                self.skip_newlines();
+
+            } else if let Some(name_owned) = self
+                .peek_ident()
+                .filter(|&n| n != "from")
+                .map(|s| s.to_string())
+            {
+                let _ = self.eat_ident(); // consume it
+                count_expr = Some(PExpr::Ident(name_owned));
+                count = 1;
+                self.skip_newlines();
+
+            } else {
+                // static numeric / sugar / error
+                match self.peek() {
+                    // Normal numeric form: pick 3 from items
+                    Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
+                        count_txt = t.value.clone().unwrap_or_default();
+                        if let Some(v) = parse_int_literal_to_i128(&count_txt) {
+                            self.i += 1;
+                            count = v;
+                        } else {
+                            return Err(s_help(
+                                "P1401",
+                                &format!("You need a number after '{}'", verb),
+                                &format!("Write it like: {} 5 from items", verb),
+                            ));
+                        }
+                        self.skip_newlines();
+                    }
+
+                    // sugar: pick from xs -> defaults to 1
+                    _ if self.peek_ident() == Some("from") => {
+                        count = 1;
+                    }
+
+                    // Otherwise, still error
+                    _ => {
                         return Err(s_help(
                             "P1401",
                             &format!("You need a number after '{}'", verb),
@@ -6788,24 +6848,10 @@ impl<'t> Parser<'t> {
                         ));
                     }
                 }
-
-                // NEW: allow sugar form: pick from items  → defaults to count = 1
-                _ if self.peek_ident() == Some("from") => {
-                    count = 1;
-                }
-
-                // Otherwise, still error
-                _ => {
-                    return Err(s_help(
-                        "P1401",
-                        &format!("You need a number after '{}'", verb),
-                        &format!("Write it like: {} 5 from items", verb),
-                    ));
-                }
             }
 
-            // No negatives allowed
-            if count < 0 {
+            // No negatives allowed (only meaningful for static counts)
+            if count_expr.is_none() && count < 0 {
                 return Err(s_help(
                     "P1402",
                     &format!("You can't {} a negative number of items", verb),
@@ -6816,8 +6862,9 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
 
             // Digit shorthand is ONLY for 'pick', never for 'reap'
+            // And ONLY when count is static (not dynamic)
             let mut digits_expr: Option<PExpr> = None;
-            if verb == "pick" {
+            if verb == "pick" && count_expr.is_none() {
                 // (a) packed detection — only when the raw count text contains exactly one underscore
                 if let Some(udx) = count_txt.find('_') {
                     let (lhs, rhs) = (&count_txt[..udx], &count_txt[udx + 1..]);
@@ -6917,8 +6964,8 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            // Compile-time sanity check (same as before) — keep it only for 'pick'
-            if verb == "pick" && allow_dups != Some(true) {
+            // Compile-time sanity check (same as before) — only for 'pick' with static count
+            if verb == "pick" && allow_dups != Some(true) && count_expr.is_none() {
                 if let Some(PExpr::Array(ref elems)) = src_expr {
                     use std::collections::HashSet;
                     let mut set: HashSet<String> = HashSet::new();
@@ -6949,7 +6996,13 @@ impl<'t> Parser<'t> {
 
             // ---- Lower to FreeCall(verb, [ {config} ]) ----
             let mut props: Vec<(String, PExpr)> = Vec::new();
-            props.push(("count".into(),  PExpr::Int(count.to_string())));
+
+            // choose dynamic or static count
+            if let Some(expr) = count_expr {
+                props.push(("count_expr".into(), expr));
+            } else {
+                props.push(("count".into(),  PExpr::Int(count.to_string())));
+            }
 
             if let Some(s) = src_expr {
                 match &s {

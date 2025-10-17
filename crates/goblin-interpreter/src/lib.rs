@@ -4197,7 +4197,7 @@ fn call_action_by_name(
                 }
             }
         };
-        
+
         sess.pop_frame();
         return Ok(ret);
     }
@@ -4700,18 +4700,94 @@ fn call_action_by_name(
             Value::Bool(ok)
         }
 
-        "digits" => {
+        "unpack" => {
             arity(1)?;
-            let s = match &args[0] {
-                Value::Str(s) => s,
-                _ => return Ok(Value::Nil),
-            };
-            let mut out = Vec::with_capacity(s.len());
-            for ch in s.chars() {
-                if ch < '0' || ch > '9' { return Ok(Value::Nil); }
-                out.push(Value::Int((ch as i64) - ('0' as i64)));
+            match &args[0] {
+                // unpack(1234) -> [1,2,3,4]
+                Value::Int(n) => {
+                    if *n < 0 {
+                        return Ok(Value::Nil); // keep your style for out-of-domain
+                    }
+                    if *n == 0 {
+                        Value::Array(vec![Value::Int(0)]) // <- bare Value
+                    } else {
+                        let mut v = *n as i128;
+                        let mut out: Vec<Value> = Vec::new();
+                        while v > 0 {
+                            let d = (v % 10) as i64;
+                            out.push(Value::Int(d));
+                            v /= 10;
+                        }
+                        out.reverse();
+                        Value::Array(out) // <- bare Value
+                    }
+                }
+
+                // unpack("ab") -> ["a","b"]
+                Value::Str(s) => {
+                    let mut out = Vec::with_capacity(s.len());
+                    for ch in s.chars() {
+                        out.push(Value::Str(ch.to_string()));
+                    }
+                    Value::Array(out) // <- bare Value
+                }
+
+                _ => {
+                    return Ok(Value::Nil); // early return as Result
+                }
             }
-            Value::Array(out)
+        }
+
+        "pack" => {
+            arity(1)?;
+            match &args[0] {
+                // [] -> choose Int(0) per your plan
+                Value::Array(xs) if xs.is_empty() => {
+                    Value::Int(0) // <- bare Value
+                }
+
+                // array case
+                Value::Array(xs) => {
+                    let all_digits = xs.iter().all(|e| matches!(e, Value::Int(n) if *n >= 0 && *n <= 9));
+                    if all_digits {
+                        // fold digits -> Int with checked math
+                        let mut acc: i128 = 0;
+                        for e in xs {
+                            let d = match e { Value::Int(n) => *n as i128, _ => unreachable!() };
+                            match acc.checked_mul(10).and_then(|a| a.checked_add(d)) {
+                                Some(v) => acc = v,
+                                None => return Ok(Value::Nil), // overflow → early return Result
+                            }
+                        }
+                        Value::Int(acc as i64) // <- bare Value (adjust width to your Value::Int)
+                    } else {
+                        // strings/chars -> String
+                        let all_text = xs.iter().all(|e| matches!(e, Value::Str(_) | Value::Char(_)));
+                        if all_text {
+                            let mut out = String::new();
+                            for e in xs {
+                                match e {
+                                    Value::Str(s)  => out.push_str(s),
+                                    Value::Char(c) => out.push(*c),
+                                    _ => unreachable!(),
+                                }
+                            }
+                            Value::Str(out) // <- bare Value
+                        } else {
+                            return Ok(Value::Nil); // mixed array → early return Result
+                        }
+                    }
+                }
+
+                // pass-through on scalars
+                Value::Int(_) | Value::Str(_) | Value::Char(_) => {
+                    args[0].clone() // <- bare Value
+                }
+
+                _ => {
+                    return Ok(Value::Nil);
+                }
+            }
         }
 
         "format" => {
@@ -5243,6 +5319,7 @@ fn call_action_by_name(
 
         // ----- Collections / Numbers -----
         // Builtin: pick({ count, digits?, unique?, allow_dups?, src? | range_start?, range_end?, range_inclusive? })
+        // In the runtime implementation of pick
         "pick" => {
             use std::collections::{BTreeMap, BTreeSet};
 
@@ -5291,8 +5368,13 @@ fn call_action_by_name(
             };
 
             // ---- base config ----
-            let count = get_num(&cfg, "count").unwrap_or(1.0);
-            if count < 1.0 || count.fract() != 0.0 {
+            // Prefer dynamic count: {expr}, else static count, else default = 1
+            let count_f = get_num(&cfg, "count_expr")
+                .or_else(|| get_num(&cfg, "count"))
+                .unwrap_or(1.0);
+
+            // Validate: positive integer (and finite)
+            if !count_f.is_finite() || count_f < 1.0 || count_f.fract() != 0.0 {
                 return Err(
                     Diagnostic::new_with_code(
                         Severity::Error,
@@ -5301,12 +5383,13 @@ fn call_action_by_name(
                         "pick 'count' must be a positive integer",
                         sp.clone(),
                     )
-                    .with_help("Provide an integer ≥ 1, e.g. { count: 3 }")
+                    .with_help("Provide an integer ≥ 1, e.g. `pick 3 from xs` or `pick {n} from xs`")
                     .with_link("https://goblinlang.org/docs/errors#T0202"),
                 );
             }
-            let n_out = count as usize;
 
+            let n_out = count_f as usize;
+            
             let digits_opt_i64: Option<i64> = get_num(&cfg, "digits").map(|d| d as i64);
             if let Some(d) = digits_opt_i64 {
                 if d < 1 {
@@ -5340,6 +5423,10 @@ fn call_action_by_name(
                 Some(CollectionSource::Seq(seq.to_vec()))
             } else if let Some(Value::Map(m)) = cfg.get("src") {
                 Some(CollectionSource::Map(m.clone()))
+            } else if let Some(Value::Str(s)) = cfg.get("src") {
+                // Convert string to character array
+                let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                Some(CollectionSource::Array(chars))
             } else {
                 None
             };
@@ -6427,13 +6514,14 @@ fn call_action_by_name(
         
         "count" => {
             match args.len() {
-                // count(x)  -> length of string/collection/map
+                // count(x) -> length
                 1 => {
                     match &args[0] {
-                        Value::Str(s)    => Value::Int(s.chars().count() as i64),
-                        Value::Array(xs) => Value::Int(xs.len() as i64),
-                        Value::Seq(xs)   => Value::Int(xs.len() as i64),
-                        Value::Map(m)    => Value::Int(m.len() as i64),
+                        Value::Nil        => Value::Int(0),  // <--- add this
+                        Value::Str(s)     => Value::Int(s.chars().count() as i64),
+                        Value::Array(xs)  => Value::Int(xs.len() as i64),
+                        Value::Seq(xs)    => Value::Int(xs.len() as i64),
+                        Value::Map(m)     => Value::Int(m.len() as i64),
                         _ => {
                             return Err(
                                 Diagnostic::new_with_code(
@@ -6454,7 +6542,7 @@ fn call_action_by_name(
                     let s   = want_str(&args[0], "count")?;
                     let sub = want_str(&args[1], "count")?;
                     if sub.is_empty() {
-                        Value::Float(0.0)
+                        Value::Int(0) // keep it Int for consistency
                     } else {
                         let mut n = 0usize;
                         let mut start = 0usize;
@@ -6462,7 +6550,7 @@ fn call_action_by_name(
                             n += 1;
                             start = start + pos + sub.len();
                         }
-                        Value::Float(n as f64)
+                        Value::Int(n as i64) // was Float; make it Int
                     }
                 }
                 _ => {
@@ -9730,88 +9818,43 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
             }
 
-        // ---- Member access on maps (syntax from parser; you're not using dot in code, but handle it) ----
+        // ---- Member access on maps / postfix builtins ----
         ast::Expr::Member(base, name, sp) => {
             let base_v = eval_expr(base, sess)?;
-            
-            // Check if this is a builtin method on a primitive type
-            // Detect builtin instance methods (postfix sugar)
+
+            // Detect builtin instance methods (postfix sugar, no-parens)
             let is_builtin_method =
                 matches!(name.as_str(),
-                    // Collection methods
+                    // Collection size
                     "count" | "len" | "length" |
                     // String transforms
                     "upper" | "lower" | "title" | "slug" | "mixed" |
+                    // Trims
                     "trim" | "trim_lead" | "trim_trail" |
                     // Collection ops
                     "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
                     "freq" | "mode" |
                     // String ops
-                    "split" | "join" | "lines" | "words" | "chars" | "digits" |
+                    "split" | "join" | "lines" | "words" | "chars" | "pack" | "unpack" |
                     "has" | "find" | "find_all" |
                     "before" | "after" | "before_last" | "after_last" | "between" |
                     "replace" |
                     // Numeric
                     "round" | "floor" | "ceil" | "abs" | "sqrt" |
-                    // Type ops
+                    // Type/Meta
                     "valtype" | "vt" | "backend" | "metrics" |
-                    // NEW: postfix casts
+                    // Postfix casts
                     "int" | "float" | "str" | "bool" | "big" | "pct"
-                )
-                // Any is_* predicate is also a builtin method (postfix sugar)
-                || name.starts_with("is_");
+                ) || name.starts_with("is_");
 
             if is_builtin_method {
-                // Validate support by receiver type, then forward to action
-                let valid = match name.as_str() {
-                    "count" | "len" | "length" =>
-                        matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_) | Value::Map(_)),
-
-                    "upper" | "lower" | "title" | "slug" | "mixed" |
-                    "trim" | "trim_lead" | "trim_trail" |
-                    "reverse_chars" | "lines" | "words" |
-                    "has" | "find" | "find_all" | "before" | "after" |
-                    "before_last" | "after_last" | "between" | "replace" =>
-                        matches!(base_v, Value::Str(_)),
-
-                    // Allow .chars on Str or Char (per helper behavior)
-                    "chars" =>
-                        matches!(base_v, Value::Str(_) | Value::Char(_)),
-
-                    // digits: Str or Char -> Array[Int] | Nil (per helper behavior)
-                    "digits" =>
-                        matches!(base_v, Value::Str(_) | Value::Char(_)),
-
-                    "reverse" | "shuffle" | "sort" | "unique" | "dups" | "freq" | "mode" =>
-                        matches!(base_v, Value::Str(_) | Value::Array(_) | Value::Seq(_)),
-
-                    "split" =>
-                        matches!(base_v, Value::Str(_)),
-
-                    "join"  =>
-                        matches!(base_v, Value::Array(_) | Value::Seq(_)),
-
-                    "round" | "floor" | "ceil" | "abs" | "sqrt" =>
-                        matches!(base_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_)),
-
-                    // Works on any type
-                    "valtype" | "vt" | "backend" | "metrics" => true,
-
-                    // Postfix casts work on any value (they’ll error inside the action if needed)
-                    "int" | "float" | "str" | "bool" | "big" | "pct" => true,
-
-                    // Any is_* predicate allowed on any value (e.g., is_digits, is_alpha, is_int, …)
-                    _ if name.starts_with("is_") => true,
-
-                    _ => false,
-                };
-
-                if valid {
-                    // NOTE: If you support method args (e.g., "split" delimiter), make sure you’re
-                    // passing them through here along with base_v. If you already do that above,
-                    // keep it; otherwise adapt this to collect/evaluate extra args.
-                    return call_action_by_name(sess, name, vec![base_v], sp.clone());
+                // Special case: nil.count / nil.len / nil.length => 0
+                if matches!(name.as_str(), "count" | "len" | "length") && matches!(base_v, Value::Nil) {
+                    return Ok(Value::Int(0));
                 }
+                // Always delegate builtin postfix methods to their actions.
+                // The action itself will type-check and emit the correct diagnostics.
+                return call_action_by_name(sess, name, vec![base_v], sp.clone());
             }
 
             match base_v {
@@ -9903,8 +9946,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         .with_link("https://goblinlang.org/docs/errors#R0403")
                     )
                 }
+
                 _ => {
-                    return Err(
+                    Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
                             crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
@@ -9914,27 +9958,57 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         )
                         .with_help("Use ‘obj.field’ only on a map/object/enum variant.")
                         .with_link("https://goblinlang.org/docs/errors#T0205")
-                    );
+                    )
                 }
             }
         }
 
+        // ---- Optional member access (‘?.’) with postfix builtins ----
         ast::Expr::OptMember(base, name, sp) => {
             let base_v = eval_expr(base, sess)?;
             match base_v {
-                Value::Nil => Ok(Value::Nil),
-                Value::Map(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
-                _ => Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                        "opt-member-type",
-                        "optional member access requires a map.",
-                        sp.clone(),
-                    )
-                    .with_help("Use ‘m?.key’ only when the receiver is a map (or Nil).")
-                    .with_link("https://goblinlang.org/docs/errors#T0205"),
-                ),
+                Value::Nil => Ok(Value::Nil), // nil?.x => nil
+
+                // Allow postfix builtins via ‘?.’ as well (no-parens)
+                _ => {
+                    let is_builtin_method =
+                        matches!(name.as_str(),
+                            "count" | "len" | "length" |
+                            "upper" | "lower" | "title" | "slug" | "mixed" |
+                            "trim" | "trim_lead" | "trim_trail" |
+                            "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
+                            "freq" | "mode" |
+                            "split" | "join" | "lines" | "words" | "chars" | "pack" | "unpack" |
+                            "has" | "find" | "find_all" |
+                            "before" | "after" | "before_last" | "after_last" | "between" |
+                            "replace" |
+                            "round" | "floor" | "ceil" | "abs" | "sqrt" |
+                            "valtype" | "vt" | "backend" | "metrics" |
+                            "int" | "float" | "str" | "bool" | "big" | "pct"
+                        ) || name.starts_with("is_");
+
+                    if is_builtin_method {
+                        // Delegate; the action will validate types and format errors.
+                        return call_action_by_name(sess, name, vec![base_v], sp.clone());
+                    }
+
+                    // For non-builtin names, only maps support optional member access.
+                    if let Value::Map(map) = base_v {
+                        Ok(map.get(name).cloned().unwrap_or(Value::Nil))
+                    } else {
+                        Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "opt-member-type",
+                                "optional member access requires a map.",
+                                sp.clone(),
+                            )
+                            .with_help("Use ‘m?.key’ only when the receiver is a map (or Nil).")
+                            .with_link("https://goblinlang.org/docs/errors#T0205"),
+                        )
+                    }
+                }
             }
         }
 
