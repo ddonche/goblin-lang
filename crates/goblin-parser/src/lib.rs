@@ -1083,10 +1083,25 @@ impl<'t> Parser<'t> {
             if self.peek_op("//") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("//"); expr = PExpr::Postfix(Box::new(expr), "//".into()); continue; }
 
             // other postfix ops
-            if self.peek_op("++") && !lookahead_starts_expr(self.i + 1) {
-                self.i += 1; // eat '++'
-                expr = PExpr::Postfix(Box::new(expr), "++".into());
-                continue;
+            if self.peek_op("++") {
+                // postfix iff ++ is glued to the previous token (no whitespace)
+                let is_postfix = if self.i > 0 {
+                    let prev = &self.toks[self.i - 1]; // token that ended `expr`
+                    let plus = &self.toks[self.i];     // the '++' token
+                    prev.span.end == plus.span.start   // no space → postfix
+                } else {
+                    false
+                };
+
+                if is_postfix {
+                    // consume as postfix increment and keep scanning for more postfix ops
+                    self.i += 1; // eat '++'
+                    expr = PExpr::Postfix(Box::new(expr), "++".into());
+                    continue;
+                } else {
+                    // not postfix → it's binary concat; stop postfix parsing here
+                    break; // let the infix level see and consume '++'
+                }
             }
             if self.eat_op("--") { expr = PExpr::Postfix(Box::new(expr), "--".into()); continue; }
             if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));               continue; }
@@ -5559,7 +5574,7 @@ impl<'t> Parser<'t> {
                 // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
                 // Allow: upper "x", lower "x", title "x", slug "x", mixed "x"
                 fn is_no_parens_freecall(name: &str) -> bool {
-                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed" | "reverse_chars" | "count"
+                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed" | "raw" | "reverse_chars" | "count"
                         | "trim" | "trim_lead" | "trim_trail" | "lines" | "words" | "chars" | "reverse" | "minimize" | "parse_bool"
                         | "json_parse" | "json_stringify" | "json_stringify_pretty" | "read_json" | "write_json")
                 }

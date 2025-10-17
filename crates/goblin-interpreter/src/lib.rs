@@ -17,7 +17,6 @@ pub mod modules;
 pub mod diagnostics;
 
 const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference 
- 
 
 // ===================== Public API =====================
 
@@ -249,6 +248,19 @@ fn fmt_char_visible(c: char) -> String {
             s.push('\''); s.push(c); s.push('\''); s
         }
     }
+}
+
+#[inline]
+fn escape_braces_for_raw(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '{' => { out.push('{'); out.push('{'); }
+            '}' => { out.push('}'); out.push('}'); }
+            _   => out.push(ch),
+        }
+    }
+    out
 }
 
 #[inline]
@@ -1865,6 +1877,7 @@ fn parse_dice_string(s: &str, sp: Span) -> Result<BTreeMap<String, Value>, Diag>
 // Render "Hello {name}" by looking identifiers up in the Session env.
 // Supports "{{" -> "{" and "}}" -> "}".
 fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Diag> {
+
     let b = s.as_bytes();
     let mut i = 0usize;
     let mut out = String::new();
@@ -3076,6 +3089,14 @@ fn eval_builtin(
             }
             Value::Str(out.trim_matches('-').to_string())
         }
+
+        "raw" => {
+            arity(1)?;
+            let v0 = args[0].clone();
+            let s = want_str(&v0, "raw")?;
+            Value::Str(escape_braces_for_raw(&s))
+        }
+
         "mixed" => {
             arity(1)?;
             let v0 = args[0].clone();
@@ -4792,9 +4813,9 @@ fn call_action_by_name(
 
         "format" => {
             // Usage:
-            //   n.format(dec)                     // decimals only
+            //   n.format(dec)                     // decimals only (int ≥ 0)
             //   n.format(dec, sep_th, sep_dec)    // full spec
-            // dec: integer >= 0
+            // dec: integer ≥ 0
             // sep_th: ',', '.', '_', '\'', 'none'
             // sep_dec: '.', ','
             if args.len() != 2 && args.len() != 4 {
@@ -4817,75 +4838,47 @@ fn call_action_by_name(
                 v => v.clone(),
             };
 
-            // arg1: decimals
+            // ---- arg1: decimals (STRICT: Int only, ≥ 0) ----
             let dec: u32 = match &args[1] {
-                Value::Float(x) => {
-                    if !x.is_finite() {
-                        0
-                    } else {
-                        let n = *x as i64;
-                        if (*x - n as f64).abs() > 0.0 || n < 0 {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    "format decimals must be an integer ≥ 0",
-                                    sp.clone(),
-                                )
-                                .with_help("Provide a non-negative whole number for the decimals argument.")
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                        n as u32
+                Value::Int(n) => {
+                    if *n < 0 {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "format decimals must be a non-negative integer",
+                                sp.clone(),
+                            )
+                            .with_help("Use an integer literal like 0, 2, 4 (not 2.0).")
+                            .with_link("https://goblinlang.org/docs/errors#T0205"),
+                        );
                     }
+                    *n as u32
                 }
-                Value::Str(s) => s.parse::<u32>().map_err(|_| {
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                        "type-mismatch",
-                        "format decimals must be an integer ≥ 0",
-                        sp.clone(),
-                    )
-                    .with_help("Example: 0, 2, 4 …")
-                    .with_link("https://goblinlang.org/docs/errors#T0205")
-                })?,
-                Value::Char(c) if c.is_ascii_digit() => c
-                    .to_string()
-                    .parse::<u32>()
-                    .map_err(|_| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                            "type-mismatch",
-                            "format decimals must be an integer ≥ 0",
-                            sp.clone(),
-                        )
-                        .with_help("Example: 0, 2, 4 …")
-                        .with_link("https://goblinlang.org/docs/errors#T0205")
-                    })?,
                 _ => {
                     return Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
                             crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
                             "type-mismatch",
-                            "format decimals must be an integer ≥ 0",
+                            "format decimals must be a non-negative integer",
                             sp.clone(),
                         )
-                        .with_help("Pass a non-negative whole number (e.g., 0, 2, 4).")
+                        .with_help("Use an integer literal like 0, 2, 4 (not 2.0).")
                         .with_link("https://goblinlang.org/docs/errors#T0205"),
                     )
                 }
             };
 
+            // Build spec in the current scope (so later assignments see it)
             let mut spec = FormatSpec {
                 decimals: dec,
                 sep_thousands: None,
                 sep_decimal: '.',
             };
 
+            // ---- optional: thousands sep + decimal marker ----
             if args.len() == 4 {
                 // thousands sep (arg2)
                 spec.sep_thousands = match &args[2] {
@@ -4995,6 +4988,7 @@ fn call_action_by_name(
                 };
             }
 
+            // Wrap numeric types with the spec
             match inner {
                 Value::Float(x) => Value::Formatted(Box::new(Value::Float(x)), spec),
                 Value::Int(i)   => Value::Formatted(Box::new(Value::Int(i)),   spec),
@@ -6438,6 +6432,24 @@ fn call_action_by_name(
             map_str_1(&args[0], "mixed", &to_mixed)?
         }
 
+        "raw" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("'raw' takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+            let s = want_str(&args[0], "raw")?;
+            Value::Str(escape_braces_for_raw(&s))
+        }
+
         // ----- String trim -----
         "trim"       => { arity(1)?; map_str_1(&args[0], "trim",       &|s| s.trim().to_string())? }
         "trim_lead"  => { arity(1)?; map_str_1(&args[0], "trim_lead",  &|s| s.trim_start().to_string())? }
@@ -6574,6 +6586,7 @@ fn call_action_by_name(
         "shuffle" => {
             arity(1)?;
             match &args[0] {
+                // string: shuffle chars
                 Value::Str(s) => {
                     let mut v: Vec<char> = s.chars().collect();
                     for i in 0..v.len() {
@@ -6582,6 +6595,44 @@ fn call_action_by_name(
                     }
                     Value::Str(v.into_iter().collect())
                 }
+
+                // NEW: integer -> shuffle digits, return integer again
+                Value::Int(n) => {
+                    let neg = *n < 0;
+                    let mut m = if neg { -*n } else { *n };
+
+                    // explode to digits
+                    let mut digs: Vec<i64> = if m == 0 {
+                        vec![0]
+                    } else {
+                        let mut tmp = Vec::new();
+                        while m > 0 {
+                            tmp.push((m % 10) as i64);
+                            m /= 10;
+                        }
+                        tmp.reverse();
+                        tmp
+                    };
+
+                    // Fisher–Yates on digits
+                    for i in 0..digs.len() {
+                        let j = i + rng_index(sess, digs.len() - i);
+                        digs.swap(i, j);
+                    }
+
+                    // re-pack to int with checked math
+                    let mut acc: i128 = 0;
+                    for d in digs {
+                        match acc.checked_mul(10).and_then(|a| a.checked_add(d as i128)) {
+                            Some(v) => acc = v,
+                            None => return Ok(Value::Nil), // or raise your overflow diagnostic
+                        }
+                    }
+                    if neg { acc = -acc; }
+                    Value::Int(acc as i64)
+                }
+
+                // array-like: your existing behavior
                 _ => {
                     let s = as_array_like(&args[0]).ok_or_else(|| {
                         Diagnostic::new_with_code(
@@ -6607,11 +6658,46 @@ fn call_action_by_name(
         "sort" => {
             arity(1)?;
             match &args[0] {
+                // string: sort chars (Unicode scalar order)
                 Value::Str(s) => {
                     let mut v: Vec<char> = s.chars().collect();
-                    v.sort_unstable(); // Unicode scalar order
+                    v.sort_unstable();
                     Value::Str(v.into_iter().collect())
                 }
+
+                // NEW: integer -> sort digits ascending, return integer
+                Value::Int(n) => {
+                    let neg = *n < 0;
+                    let mut m = if neg { -*n } else { *n };
+
+                    // explode to digits
+                    let mut digs: Vec<i64> = if m == 0 {
+                        vec![0]
+                    } else {
+                        let mut tmp = Vec::new();
+                        while m > 0 {
+                            tmp.push((m % 10) as i64);
+                            m /= 10;
+                        }
+                        tmp.reverse();
+                        tmp
+                    };
+
+                    digs.sort_unstable();
+
+                    // re-pack to int with checked math
+                    let mut acc: i128 = 0;
+                    for d in digs {
+                        match acc.checked_mul(10).and_then(|a| a.checked_add(d as i128)) {
+                            Some(v) => acc = v,
+                            None => return Ok(Value::Nil), // or raise your overflow diagnostic
+                        }
+                    }
+                    if neg { acc = -acc; }
+                    Value::Int(acc as i64)
+                }
+
+                // array-like: your existing behavior
                 _ => {
                     let s = as_array_like(&args[0]).ok_or_else(|| {
                         Diagnostic::new_with_code(
@@ -6625,6 +6711,7 @@ fn call_action_by_name(
                         .with_link("https://goblinlang.org/docs/errors#T0205")
                     })?;
                     let mut v = s.to_vec();
+                    // Compare by your raw formatter for stable cross-types
                     v.sort_by(|a, b| fmt_value_raw(a).cmp(&fmt_value_raw(b)));
                     Value::Array(v)
                 }
@@ -9828,7 +9915,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // Collection size
                     "count" | "len" | "length" |
                     // String transforms
-                    "upper" | "lower" | "title" | "slug" | "mixed" |
+                    "upper" | "lower" | "title" | "slug" | "mixed" | "raw" |
                     // Trims
                     "trim" | "trim_lead" | "trim_trail" |
                     // Collection ops
@@ -9974,7 +10061,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let is_builtin_method =
                         matches!(name.as_str(),
                             "count" | "len" | "length" |
-                            "upper" | "lower" | "title" | "slug" | "mixed" |
+                            "upper" | "lower" | "title" | "slug" | "mixed" | "raw" |
                             "trim" | "trim_lead" | "trim_trail" |
                             "reverse" | "reverse_chars" | "shuffle" | "sort" | "unique" | "dups" |
                             "freq" | "mode" |
