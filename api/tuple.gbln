@@ -1,0 +1,20 @@
+action divide_with_remainder(a, b)
+    q [= a // b
+    r [= a % b
+    return q, r
+xx
+
+q, r = divide_with_remainder(17, 5)
+say "q is:" ++ q
+say "r is:" ++ r 
+
+
+x, y = divide_with_remainder(17, 5)
+say x 
+say y 
+
+////
+res = divide_with_remainder(17, 5)
+say "res >> q is:" ++ res >> q
+say "res >> r is:" ++ res >> r
+////

@@ -5399,7 +5399,24 @@ impl<'t> Parser<'t> {
         // --- Parenthesized ---
         if self.peek_op("(") {
             let _ = self.eat_op("(");
+            self.skip_newlines();
+
             let expr = self.with_depth(|p| p.parse_coalesce())?;
+            self.skip_newlines();
+
+            // NEW: if there is a comma before the ')', this isn't a plain parenthesized expr.
+            // We are not adding tuple/target syntax here—just guiding the user clearly.
+            if self.peek_op(",") {
+                return Err(s_help(
+                    "P0715",
+                    "Comma inside parentheses isn’t allowed in a single parenthesized expression.",
+                    "Goblin doesn’t support tuple targets or tuple literals in parentheses yet. \
+        If you meant destructuring on the left side, write it without parentheses: x, y = one(). \
+        If you meant a function call, use foo(x, y). \
+        If you meant a list, use [x, y].",
+                ));
+            }
+
             if !self.eat_op(")") {
                 return Err(s_help(
                     "P0707",

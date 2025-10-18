@@ -9299,62 +9299,66 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         ast::Expr::TupleAssign(names, rhs, sp) => {
             let rhs_val = eval_expr(rhs, sess)?;
-            
+
             match &rhs_val {
                 Value::Map(map) => {
-                    // Assign each variable by trying positional key first, then named key
                     for (i, name) in names.iter().enumerate() {
                         let positional_key = format!("_{}", i + 1);
-                        
-                        // Try positional key first (_1, _2, etc.)
-                        let val = if let Some(v) = map.get(&positional_key) {
-                            v.clone()
-                        } else if let Some(v) = map.get(name) {
-                            // Fall back to named key matching variable name
-                            v.clone()
-                        } else {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::NO_RESULT, // R0902
-                                    "no-result",
-                                    &format!(
-                                        "action didn’t return a value for position {} (variable ‘{}’)",
-                                        i + 1,
-                                        name
-                                    ),
-                                    sp.clone(),
-                                )
-                                .with_help("Ensure the action sets a return value or yields one via ‘stop’/return semantics.")
-                                .with_link("https://goblinlang.org/docs/errors#R0902"),
-                            );
-                        };
-                        
+                        let val = map.get(&positional_key)
+                            .cloned()
+                            .or_else(|| map.get(name).cloned())
+                            .ok_or_else(|| Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::NO_RESULT, // R0902
+                                "no-result",
+                                &format!("action didn’t return a value for position {} (variable ‘{}’)", i + 1, name),
+                                sp.clone(),
+                            )
+                            .with_help("Ensure the action sets a return value or yields one via ‘stop’/return semantics.")
+                            .with_link("https://goblinlang.org/docs/errors#R0902"))?;
                         sess.set_var(name.clone(), val);
                     }
-                    
                     Ok(rhs_val)
                 }
+
+                // NEW: allow array RHS for tuple assignment (bind by index)
+                Value::Array(elems) => {
+                    if elems.len() != names.len() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::RETURN_ARITY_MISMATCH, // R0903
+                                "return-arity-mismatch",
+                                &format!("multi-target assignment expected {} value(s), but got {}.", names.len(), elems.len()),
+                                sp.clone(),
+                            )
+                            .with_help("Adjust the number of targets or the number of values in the array.")
+                            .with_link("https://goblinlang.org/docs/errors#R0903")
+                        );
+                    }
+                    for (i, name) in names.iter().enumerate() {
+                        sess.set_var(name.clone(), elems[i].clone());
+                    }
+                    Ok(rhs_val)
+                }
+
+                // existing fallback (single value vs multiple targets)
                 _ => {
                     if names.len() == 1 {
                         sess.set_var(names[0].clone(), rhs_val.clone());
                         Ok(rhs_val)
                     } else {
-                        return Err(
+                        Err(
                             Diagnostic::new_with_code(
                                 Severity::Error,
-                                crate::diagnostics::rtcode::RETURN_ARITY_MISMATCH, // R0903 (NEW)
+                                crate::diagnostics::rtcode::RETURN_ARITY_MISMATCH, // R0903
                                 "return-arity-mismatch",
-                                &format!(
-                                    "expected action to return {} values, but got a single value",
-                                    names.len()
-                                ),
+                                &format!("expected {} values, but got a single value", names.len()),
                                 sp.clone(),
                             )
-                            .with_help("Return a tuple or list with the required number of values.")
-                            .with_help("Example: `stop (a, b)` when two targets are on the left-hand side.")
-                            .with_link("https://goblinlang.org/docs/errors#R0903"),
-                        );
+                            .with_help("Use an array literal: x, y = [1, 2], or return named values that match your targets.")
+                            .with_link("https://goblinlang.org/docs/errors#R0903")
+                        )
                     }
                 }
             }
