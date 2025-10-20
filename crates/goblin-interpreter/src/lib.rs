@@ -3128,6 +3128,7 @@ enum Position {
     Last,
     At(Value),
     Where(String),
+    WhereLambda { param: String, body: ast::Expr },
     All,
     Random,
 }
@@ -4873,6 +4874,198 @@ fn call_action_by_name(
                 _ => false,
             };
 
+            Value::Bool(ok)
+        }
+
+        "is_even" => {
+            // True if integer / int-like float / Decimal Big is even.
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+
+            let b = match v {
+                Value::Int(n) => n % 2 == 0,
+
+                // Decimal (your Value::Big)
+                Value::Big(b) => {
+                    // Treat as integer iff remainder mod 1 is zero
+                    let one = rust_decimal::Decimal::from(1i32);
+                    if ((&*b) % one).is_zero() {
+                        let two = rust_decimal::Decimal::from(2i32);
+                        ((&*b) % two).is_zero()
+                    } else {
+                        false
+                    }
+                }
+
+                // Float accepted only if "int-like" (mirrors your is_int arm)
+                Value::Float(n) if n.is_finite() && n.fract() == 0.0 => {
+                    ((*n as i64) % 2) == 0
+                }
+
+                _ => false,
+            };
+            Value::Bool(b)
+        }
+
+        "is_odd" => {
+            // True if integer / int-like float / Decimal Big is odd.
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+
+            let b = match v {
+                Value::Int(n) => n % 2 != 0,
+
+                // Decimal (your Value::Big)
+                Value::Big(b) => {
+                    let one = rust_decimal::Decimal::from(1i32);
+                    if ((&*b) % one).is_zero() {
+                        let two = rust_decimal::Decimal::from(2i32);
+                        !(((&*b) % two).is_zero())
+                    } else {
+                        false
+                    }
+                }
+
+                Value::Float(n) if n.is_finite() && n.fract() == 0.0 => {
+                    ((*n as i64) % 2) != 0
+                }
+
+                _ => false,
+            };
+            Value::Bool(b)
+        }
+
+        "is_multiple_of" => {
+            // True iff x is an integer multiple of k.
+            // Total predicate: never errors; returns false for invalid cases (e.g., k==0 or non-integer k).
+            arity(2)?;
+            let a = match &args[0] { Value::Formatted(inner, _) => &**inner, other => other };
+            let b = match &args[1] { Value::Formatted(inner, _) => &**inner, other => other };
+
+            // Helpers mirroring your "int-like" conventions
+            let float_is_int_like = |n: f64| n.is_finite() && n.fract() == 0.0;
+
+            use rust_decimal::Decimal;
+            let zero = Decimal::ZERO;
+            let one  = Decimal::from(1i32);
+
+            let res = match (a, b) {
+                // Int / Int
+                (Value::Int(x), Value::Int(k)) => {
+                    if *k == 0 { false } else { x % k == 0 }
+                }
+
+                // Decimal / Decimal (both must be integer-like Decimals)
+                (Value::Big(xd), Value::Big(kd)) => {
+                    // k must be integer and non-zero
+                    if ((&*kd) % one) != zero || kd.is_zero() { false }
+                    // x must be integer
+                    else if ((&*xd) % one) != zero { false }
+                    else { ((&*xd) % (&*kd)).is_zero() }
+                }
+
+                // Decimal / Int
+                (Value::Big(xd), Value::Int(k)) => {
+                    if *k == 0 { false }
+                    else if ((&*xd) % one) != zero { false }
+                    else { ((&*xd) % Decimal::from(*k)).is_zero() }
+                }
+
+                // Int / Decimal
+                (Value::Int(x), Value::Big(kd)) => {
+                    if kd.is_zero() || ((&*kd) % one) != zero { false }
+                    else { (Decimal::from(*x) % (&*kd)).is_zero() }
+                }
+
+                // Float combos — only when both sides are int-like
+                (Value::Float(xf), Value::Float(kf)) if float_is_int_like(*xf) && float_is_int_like(*kf) => {
+                    let x = *xf as i64; let k = *kf as i64;
+                    if k == 0 { false } else { x % k == 0 }
+                }
+                (Value::Float(xf), Value::Int(k)) if float_is_int_like(*xf) => {
+                    let x = *xf as i64;
+                    if *k == 0 { false } else { x % *k == 0 }
+                }
+                (Value::Int(x), Value::Float(kf)) if float_is_int_like(*kf) => {
+                    let k = *kf as i64;
+                    if k == 0 { false } else { x % k == 0 }
+                }
+
+                // Everything else (non-numeric or non-integer-like) -> not a multiple
+                _ => false,
+            };
+
+            Value::Bool(res)
+        }
+
+        "is_positive" => {
+            // True for numeric values > 0 (Int, Float (finite), Big Decimal, Pct).
+            arity(1)?;
+            let v = match &args[0] { Value::Formatted(inner, _) => &**inner, other => other };
+
+            use rust_decimal::Decimal;
+            let zero = Decimal::ZERO;
+
+            let b = match v {
+                Value::Int(n)        => *n > 0,
+                Value::Float(n)      => n.is_finite() && *n > 0.0, // excludes NaN/±inf and -0.0
+                Value::Big(d)        => *d > zero,
+                Value::Pct(p)        => *p > zero,
+                _                    => false,
+            };
+            Value::Bool(b)
+        }
+
+        "is_negative" => {
+            // True for numeric values < 0 (Int, Float (finite), Big Decimal, Pct).
+            arity(1)?;
+            let v = match &args[0] { Value::Formatted(inner, _) => &**inner, other => other };
+
+            use rust_decimal::Decimal;
+            let zero = Decimal::ZERO;
+
+            let b = match v {
+                Value::Int(n)        => *n < 0,
+                Value::Float(n)      => n.is_finite() && *n < 0.0, // excludes NaN/±inf and +0.0
+                Value::Big(d)        => *d < zero,
+                Value::Pct(p)        => *p < zero,
+                _                    => false,
+            };
+            Value::Bool(b)
+        }
+
+        "is_alnum" => {
+            // True if Char is [0-9A-Za-z] or Str is non-empty and all chars are ASCII alnum.
+            arity(1)?;
+            let v = match &args[0] { Value::Formatted(inner, _) => &**inner, other => other };
+
+            let ok = match v {
+                Value::Char(c) => c.is_ascii_alphanumeric(),
+                Value::Str(s)  => !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()),
+                _              => false,
+            };
+            Value::Bool(ok)
+        }
+
+        "is_whitespace" => {
+            // True if Char is ASCII whitespace, or Str is non-empty and all ASCII whitespace.
+            // (ASCII whitespace = space, tab, CR, LF, VT, FF)
+            arity(1)?;
+            let v = match &args[0] { Value::Formatted(inner, _) => &**inner, other => other };
+
+            let is_ws = |c: char| c.is_ascii_whitespace();
+
+            let ok = match v {
+                Value::Char(c) => is_ws(*c),
+                Value::Str(s)  => !s.is_empty() && s.chars().all(is_ws),
+                _              => false,
+            };
             Value::Bool(ok)
         }
 

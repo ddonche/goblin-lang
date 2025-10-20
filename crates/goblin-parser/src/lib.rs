@@ -5591,9 +5591,23 @@ impl<'t> Parser<'t> {
                 // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
                 // Allow: upper "x", lower "x", title "x", slug "x", mixed "x"
                 fn is_no_parens_freecall(name: &str) -> bool {
-                    matches!(name, "upper" | "lower" | "title" | "slug" | "mixed" | "raw" | "reverse_chars" | "count"
-                        | "trim" | "trim_lead" | "trim_trail" | "lines" | "words" | "chars" | "reverse" | "minimize" | "parse_bool"
-                        | "json_parse" | "json_stringify" | "json_stringify_pretty" | "read_json" | "write_json")
+                    matches!(
+                        name,
+                        // string/text transforms (unary, pure)
+                        "upper" | "lower" | "title" | "slug" | "mixed" | "raw" |
+                        "trim" | "trim_lead" | "trim_trail" | "minimize" |
+                        "reverse" | "reverse_chars" | "lines" | "words" | "chars" |
+
+                        // size helpers (unary view)
+                        "count" | "len" |
+
+                        // parsing/formatting (unary, pure)
+                        "parse_bool" | "json_parse" | "json_stringify" | "json_stringify_pretty" |
+
+                        // unary predicates (total, pure)
+                        "is_even" | "is_odd" | "is_positive" | "is_negative" |
+                        "is_alpha" | "is_digit" | "is_alnum" | "is_whitespace"
+                    )
                 }
 
                 if is_no_parens_freecall(&name) {
