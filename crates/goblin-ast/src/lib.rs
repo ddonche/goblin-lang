@@ -215,7 +215,7 @@ pub enum Expr {
     Block {
         stmts: Vec<Stmt>,  
         span: Span,
-    }
+    },
 }
 
 impl Expr {

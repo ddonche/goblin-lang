@@ -1560,7 +1560,6 @@ impl<'t> Parser<'t> {
             PExpr::Str(s) => ast::Expr::Str(s, sp),
             PExpr::Char(c) => ast::Expr::Char(c, sp),
             PExpr::Nil => ast::Expr::Nil(sp),
-
             PExpr::IsBound(inner) => {
                 // The postfix '?' is only produced after an identifier in this grammar,
                 // but we’ll be tolerant here.

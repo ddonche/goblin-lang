@@ -3128,7 +3128,6 @@ enum Position {
     Last,
     At(Value),
     Where(String),
-    WhereLambda { param: String, body: ast::Expr },
     All,
     Random,
 }
@@ -3366,13 +3365,17 @@ fn collection_operation(
                     }
                 }
 
-                Position::Where(pred) => {
+                Position::Where(name) => {
+                    let mut matches_pred = |arg: Value| -> Result<bool, Diag> {
+                        let v = call_action_by_name(sess, &name, vec![arg], sp.clone())?;
+                        Ok(matches!(v, Value::Bool(true)))
+                    };
+
                     match &op {
                         Operation::Grab | Operation::Reap => {
                             let mut out_map = BTreeMap::new();
                             for (k, v) in map {
-                                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                                if matches!(ok_v, Value::Bool(true)) {
+                                if matches_pred(v.clone())? {
                                     out_map.insert(k.clone(), v.clone());
                                 }
                             }
@@ -3777,16 +3780,19 @@ fn collection_operation(
                     }
                 }
 
-                Position::Where(pred) => {
+                Position::Where(name) => {
+                    let mut matches_pred = |arg: Value| -> Result<bool, Diag> {
+                        let v = call_action_by_name(sess, &name, vec![arg], sp.clone())?;
+                        Ok(matches!(v, Value::Bool(true)))
+                    };
+
                     match &op {
+                        // Grab/Reap keep matches; Delete drops matches.
                         Operation::Grab | Operation::Reap | Operation::Delete => {
-                            // Grab/Reap keep matches; Delete drops matches.
                             let keep = !matches!(&op, Operation::Delete);
                             let mut out = String::new();
                             for c in s.chars() {
-                                let ok_v = call_action_by_name(sess, &pred, vec![Value::Char(c)], sp.clone())?;
-                                let matches = matches!(ok_v, Value::Bool(true));
-                                if matches == keep {
+                                if matches_pred(Value::Char(c))? == keep {
                                     out.push(c);
                                 }
                             }
@@ -3812,8 +3818,7 @@ fn collection_operation(
                             let mut out = String::new();
                             for i in 0..len {
                                 let ch = slice_char(s, i).unwrap();
-                                let ok_v = call_action_by_name(sess, &pred, vec![Value::Str(ch.clone())], sp.clone())?;
-                                if matches!(ok_v, Value::Bool(true)) {
+                                if matches_pred(Value::Str(ch.clone()))? {
                                     out.push_str(with);
                                 } else {
                                     out.push_str(&ch);
@@ -4151,16 +4156,19 @@ fn collection_operation(
                     }
                 }
 
-                Position::Where(pred) => {
+                Position::Where(name) => {
+                    let mut matches_pred = |arg: Value| -> Result<bool, Diag> {
+                        let v = call_action_by_name(sess, &name, vec![arg], sp.clone())?;
+                        Ok(matches!(v, Value::Bool(true)))
+                    };
+
                     match &op {
+                        // Grab/Reap keep matches; Delete drops matches.
                         Operation::Grab | Operation::Reap | Operation::Delete => {
-                            // Grab/Reap keep matches; Delete drops matches.
                             let keep = !matches!(&op, Operation::Delete);
                             let mut out = Vec::new();
                             for v in xs {
-                                let ok_v = call_action_by_name(sess, &pred, vec![v.clone()], sp.clone())?;
-                                let matches = matches!(ok_v, Value::Bool(true));
-                                if matches == keep {
+                                if matches_pred(v.clone())? == keep {
                                     out.push(v.clone());
                                 }
                             }
@@ -4169,8 +4177,7 @@ fn collection_operation(
                         Operation::Update(v) => {
                             let mut out = Vec::with_capacity(xs.len());
                             for item in xs {
-                                let ok_v = call_action_by_name(sess, &pred, vec![item.clone()], sp.clone())?;
-                                if matches!(ok_v, Value::Bool(true)) {
+                                if matches_pred(item.clone())? {
                                     out.push(v.clone());
                                 } else {
                                     out.push(item.clone());
@@ -5016,7 +5023,7 @@ fn call_action_by_name(
                 Value::Int(n)        => *n > 0,
                 Value::Float(n)      => n.is_finite() && *n > 0.0, // excludes NaN/±inf and -0.0
                 Value::Big(d)        => *d > zero,
-                Value::Pct(p)        => *p > zero,
+                Value::Pct(p)        => *p > 0.0,
                 _                    => false,
             };
             Value::Bool(b)
@@ -5034,7 +5041,7 @@ fn call_action_by_name(
                 Value::Int(n)        => *n < 0,
                 Value::Float(n)      => n.is_finite() && *n < 0.0, // excludes NaN/±inf and +0.0
                 Value::Big(d)        => *d < zero,
-                Value::Pct(p)        => *p < zero,
+                Value::Pct(p)        => *p < 0.0, 
                 _                    => false,
             };
             Value::Bool(b)
