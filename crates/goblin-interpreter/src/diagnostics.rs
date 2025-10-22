@@ -193,4 +193,7 @@ pub mod rtcode {
     pub const NON_NULLABLE_FIELD_REQUIRED: &str = "T0206";
     pub const NON_NULLABLE_FIELD_NIL: &str = "T0207";
     pub const OBJECT_OR_ARRAY_EXPECTED: &str = "T0208";
+
+    // YAML
+    pub const YAML_PARSE_FAILED: &str = "Y0001";
 }

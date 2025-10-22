@@ -12,6 +12,7 @@ use goblin_lexer::{lex, TokenKind};
 use goblin_parser::Parser;
 use goblin_interpreter;
 use std::collections::BTreeMap;
+use goblin_interpreter::Value;
 
 pub mod config;
 
@@ -255,7 +256,9 @@ fn main() {
             }
         };
 
-        std::process::exit(run_run(target.as_path()));
+        // Capture anything after the filename as extra args
+        let extra_args: Vec<String> = args.iter().skip(1).cloned().collect();
+        std::process::exit(run_run_with_args(target.as_path(), extra_args));
     }
 
     // Run script file if a single path argument is provided
@@ -1158,12 +1161,102 @@ fn run_run(path: &std::path::Path) -> i32 {
                     goblin_ast::Stmt::Expr(e) => {
                         match sess.eval_expr(e) {
                             Ok(val) => {
-                                let echo = format!("{}", val);
-                                if !echo.is_empty() { println!("{}", echo); }
+                                // Suppress top-level Unit/nil outputs
+                                if !matches!(val, Value::Unit) {
+                                    let echo = format!("{}", val);
+                                    if !echo.is_empty() && echo != "nil" {
+                                        println!("{}", echo);
+                                    }
+                                }
                             }
                             Err(d) => { eprintln!("{}", d); return 1; }
                         }
                     }
+                    _ => {
+                        if let Err(d) = sess.eval_stmt(stmt) {
+                            eprintln!("{}", d);
+                            return 1;
+                        }
+                    }
+                }
+            }
+            0
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
+    use goblin_interpreter::{Session, Value};
+
+    // 1) read the file
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("C0101: could not read script '{}': {}", path.display(), e);
+            return 1;
+        }
+    };
+
+    // 2) lex
+    let label = match path.file_name().and_then(|n| n.to_str()) {
+        Some(name) if name.starts_with("goblin_") && name.ends_with(".gbln") => "<snippet>".to_string(),
+        _ => path.display().to_string(),
+    };
+    let tokens = match goblin_lexer::lex(&src, &label) {
+        Ok(toks) => toks,
+        Err(diags) => {
+            eprintln!("LEX FAILED ({} diagnostic{})",
+                diags.len(), if diags.len() == 1 { "" } else { "s" });
+            for (i, d) in diags.iter().enumerate() {
+                eprintln!("  [{}] {}", i + 1, format_diagnostic(d));
+            }
+            return 1;
+        }
+    };
+
+    // 3) parse
+    let parser = goblin_parser::Parser::new(&tokens);
+    let module = match parser.parse_module() {
+        Ok(m) => m,
+        Err(diags) => {
+            eprintln!("PARSE FAILED ({} diagnostic{})",
+                diags.len(), if diags.len() == 1 { "" } else { "s" });
+            for (i, d) in diags.iter().enumerate() {
+                eprintln!("  [{}] {}", i + 1, format_diagnostic(d));
+            }
+            return 1;
+        }
+    };
+
+    // 4) interpret with args injected
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut sess = Session::new();
+
+            // Inject CLI args as global `args`
+            let arr: Vec<Value> = extra_args.into_iter().map(Value::Str).collect();
+            sess.set_global("args", Value::Array(arr));
+
+            for stmt in &module.items {
+                match stmt {
+                    goblin_ast::Stmt::Expr(e) => match sess.eval_expr(e) {
+                        Ok(val) => {
+                            // Suppress top-level Unit/nil outputs
+                            if !matches!(val, Value::Unit) {
+                                let echo = format!("{}", val);
+                                if !echo.is_empty() && echo != "nil" {
+                                    println!("{}", echo);
+                                }
+                            }
+                        }
+                        Err(d) => {
+                            eprintln!("{}", d);
+                            return 1;
+                        }
+                    },
                     _ => {
                         if let Err(d) = sess.eval_stmt(stmt) {
                             eprintln!("{}", d);
