@@ -3887,13 +3887,56 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // THEN block: stop at else/end
-        let then_stmts = self.parse_indented_block(if_col, &["else", "end"])?;
+        // THEN block: stop at elif/else/end
+        let then_stmts = self.parse_indented_block(if_col, &["elif", "else", "end"])?;
 
         // Consume the Dedent that ended the block
         while let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
                 self.i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Vector to store all elif conditions and blocks
+        let mut elif_clauses = Vec::new();
+        
+        // Handle ELIF blocks
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("elif") {
+                let _ = self.eat_ident(); // 'elif'
+                
+                // Parse elif condition
+                let elif_cond_pe = self.parse_assign()?;
+                let elif_cond = self.lower_expr(elif_cond_pe);
+                
+                // Skip newline and indent after elif condition
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                
+                // Parse elif block
+                let elif_stmts = self.parse_indented_block(if_col, &["elif", "else", "end"])?;
+                
+                // Skip dedents/newlines after elif block
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                
+                // Create elif block expression
+                let elif_block = ast::Expr::Block { stmts: elif_stmts, span: self.toks[self.i].span.clone() };
+                
+                // Add condition and block to elif_clauses
+                elif_clauses.push((elif_cond, elif_block));
             } else {
                 break;
             }
@@ -3947,44 +3990,120 @@ impl<'t> Parser<'t> {
             return Err(s_help("P0321", "Expected 'end' or 'xx' (crossbones) to close if block", "Add 'end' or 'xx' before end of file"));
         }
 
-        // Convert stmt blocks -> arrays of exprs for FreeCall("if", ...)
-        let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
-            stmts
-                .into_iter()
-                .map(|s| match s {
-                    ast::Stmt::Expr(e) => Ok(e),
-                    ast::Stmt::Bind(b) => {
-                        Ok(ast::Expr::Assign(
-                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                            Box::new(b.expr),
-                            b.span
-                        ))
-                    }
-                    ast::Stmt::Return(ret_stmt) => {
-                        let values: Vec<ast::Expr> = ret_stmt.values.clone();
-                        Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
-                    }
-                    _ => Err(s_help(
-                        "P0311",
-                        "Only expressions and variable assignments are allowed inside control flow blocks.",
-                        "Move class/action/enum declarations outside the if/while/unless block.",
-                    )),
-                })
-                .collect()
-        };
-
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
 
-        // Bodies are statement blocks now; no P0311 conversion.
+        // Bodies are statement blocks now
         let then_block = ast::Expr::Block { stmts: then_stmts, span: span.clone() };
 
-        let mut args = vec![cond, then_block];
-        if let Some(else_stmts) = else_stmts {
+        // Create nested if-then-else structure to handle elif clauses
+        let result = if let Some(else_stmts) = else_stmts {
             let else_block = ast::Expr::Block { stmts: else_stmts, span: span.clone() };
-            args.push(else_block);
-        }
+            
+            if elif_clauses.is_empty() {
+                // No elif clauses, just the main if-else
+                ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![cond, then_block, else_block],
+                    span.clone()
+                )
+            } else {
+                // Start with the main if-then and build the chain
+                let mut elif_iter = elif_clauses.into_iter().collect::<Vec<_>>();
+                
+                // Process the last elif clause (connects to else block)
+                let (last_elif_cond, last_elif_block) = elif_iter.pop().unwrap();
+                let mut current = ast::Expr::FreeCall(
+                    "if".to_string(), 
+                    vec![last_elif_cond, last_elif_block, else_block],
+                    span.clone()
+                );
+                
+                // Build the chain from back to front
+                while let Some((elif_cond, elif_block)) = elif_iter.pop() {
+                    let elif_expr = ast::Expr::FreeCall(
+                        "if".to_string(),
+                        vec![
+                            elif_cond,
+                            elif_block,
+                            ast::Expr::Block {
+                                stmts: vec![ast::Stmt::Expr(current)],
+                                span: span.clone(),
+                            },
+                        ],
+                        span.clone(),
+                    );
+                    current = elif_expr;
+                }
+                
+                // Add the main if-then at the beginning
+                ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![
+                        cond,
+                        then_block,
+                        ast::Expr::Block {
+                            stmts: vec![ast::Stmt::Expr(current)],
+                            span: span.clone(),
+                        },
+                    ],
+                    span.clone(),
+                )
+            }
+        } else {
+            // No else block
+            if elif_clauses.is_empty() {
+                // No elif clauses, just the main if
+                ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![cond, then_block],
+                    span.clone()
+                )
+            } else {
+                // Start with the main if-then and build the chain
+                let mut elif_iter = elif_clauses.into_iter().collect::<Vec<_>>();
+                
+                // Process the last elif clause (no else block)
+                let (last_elif_cond, last_elif_block) = elif_iter.pop().unwrap();
+                let mut current = ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![last_elif_cond, last_elif_block],
+                    span.clone()
+                );
+                
+                // Build the chain from back to front
+                while let Some((elif_cond, elif_block)) = elif_iter.pop() {
+                    let elif_expr = ast::Expr::FreeCall(
+                        "if".to_string(),
+                        vec![
+                            elif_cond,
+                            elif_block,
+                            ast::Expr::Block {
+                                stmts: vec![ast::Stmt::Expr(current)],
+                                span: span.clone(),
+                            },
+                        ],
+                        span.clone(),
+                    );
+                    current = elif_expr;
+                }
+                
+                // Add the main if-then at the beginning
+                ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![
+                        cond,
+                        then_block,
+                        ast::Expr::Block {
+                            stmts: vec![ast::Stmt::Expr(current)],
+                            span: span.clone(),
+                        },
+                    ],
+                    span,
+                )
+            }
+        };
 
-        Ok(ast::Stmt::Expr(ast::Expr::FreeCall("if".to_string(), args, span)))
+        Ok(ast::Stmt::Expr(result))
     }
 
     fn parse_unless_stmt(&mut self) -> Result<ast::Stmt, String> {

@@ -12,12 +12,35 @@ use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use std::str::FromStr;
 use crate::diagnostics::rtcode;
 use goblin_diagnostics::Span;
-pub type Diag = goblin_diagnostics::Diagnostic;
+use regex::Regex;
+use std::collections::HashMap;
 
+pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
 pub mod diagnostics;
 
 const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference 
+
+// ===================== REGEX CACHE ====================
+pub struct RegexCache {
+    patterns: HashMap<String, Regex>,
+}
+
+impl RegexCache {
+    pub fn new() -> Self {
+        RegexCache {
+            patterns: HashMap::new()
+        }
+    }
+
+    pub fn get_or_compile(&mut self, pattern: &str) -> Result<&Regex, regex::Error> {
+        if !self.patterns.contains_key(pattern) {
+            let compiled = Regex::new(pattern)?;
+            self.patterns.insert(pattern.to_string(), compiled);
+        }
+        Ok(self.patterns.get(pattern).unwrap())
+    }
+}
 
 // ===================== Public API =====================
 
@@ -408,6 +431,7 @@ pub struct Session {
     pub relationship_graph: BTreeMap<String, ClassRelations>,
     pub modules: crate::modules::ModuleCache,
     pub current_module: Option<String>, 
+    regex_cache: RegexCache,
 }
 
 impl Session {
@@ -426,6 +450,7 @@ impl Session {
             relationship_graph: BTreeMap::new(),
             modules: crate::modules::ModuleCache::new(),
             current_module: None,
+            regex_cache: RegexCache::new(),
         }
     }
 
@@ -3141,6 +3166,8 @@ enum Position {
     Where(String),
     All,
     Random,
+    Matching(String),
+    Between(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -3414,6 +3441,236 @@ fn collection_operation(
                             .with_help("Currently only 'grab/reap where' is supported for maps.")
                             .with_link("https://goblinlang.org/docs/errors#R0504")
                         ),
+                    }
+                }
+
+                Position::Matching(pattern) => {
+                    let regex_result = sess.regex_cache.get_or_compile(&pattern);
+                    let regex = match regex_result {
+                        Ok(re) => re,
+                        Err(_) => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::INVALID_REGEX,
+                                    "invalid-regex",
+                                    "invalid regular expression pattern",
+                                    sp.clone(),
+                                )
+                                .with_help("Check your regex syntax and try again.")
+                                .with_link("https://goblinlang.org/docs/errors#R0506")
+                            );
+                        }
+                    };
+                    
+                    match &op {
+                        Operation::Grab | Operation::Reap => {
+                            // Return a new map with only the entries whose keys match the pattern
+                            let mut result_map = BTreeMap::new();
+                            
+                            for (key, value) in map {
+                                if regex.is_match(key) {
+                                    result_map.insert(key.clone(), value.clone());
+                                }
+                            }
+                            
+                            if result_map.is_empty() {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::EMPTY_COLLECTION,
+                                        "empty-collection",
+                                        "no keys match the pattern",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Try a different pattern or check if the map has matching keys.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0701")
+                                );
+                            }
+                            
+                            Ok(Value::Map(result_map))
+                        },
+                        Operation::Delete => {
+                            // Create a new map excluding the entries whose keys match the pattern
+                            let mut result_map = map.clone();
+                            
+                            let keys_to_remove: Vec<String> = map.keys()
+                                .filter(|key| regex.is_match(key))
+                                .cloned()
+                                .collect();
+                            
+                            for key in keys_to_remove {
+                                result_map.remove(&key);
+                            }
+                            
+                            Ok(Value::Map(result_map))
+                        },
+                        Operation::Update(new_value) => {
+                            // Update all entries whose keys match the pattern
+                            let mut result_map = map.clone();
+                            
+                            for key in map.keys() {
+                                if regex.is_match(key) {
+                                    result_map.insert(key.clone(), new_value.clone());
+                                }
+                            }
+                            
+                            Ok(Value::Map(result_map))
+                        },
+                        Operation::Put(new_value) => {
+                            // For maps, "put" with matching could add a new entry with the pattern as the key
+                            // if it's a literal string and not a regex pattern. Otherwise, it's unclear what to do.
+                            if pattern.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ') {
+                                // Pattern looks like a literal string, use it as a key
+                                let mut result_map = map.clone();
+                                result_map.insert(pattern.clone(), new_value.clone());
+                                Ok(Value::Map(result_map))
+                            } else {
+                                // Not a simple literal pattern
+                                Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::OP_NOT_MEANINGFUL,
+                                        "op-not-meaningful",
+                                        "put_matching with complex regex pattern is not meaningful for maps",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Use a literal string as pattern or use update_matching instead.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0503")
+                                )
+                            }
+                        }
+                    }
+                },
+                
+                Position::Between(start_pattern, end_pattern) => {
+                    // Compile both regexes, but clone them into owned locals so the &mut borrow ends immediately.
+                    let (start_regex, end_regex) = {
+                        let start = match sess.regex_cache.get_or_compile(&start_pattern) {
+                            Ok(re) => re.clone(), // <-- own a Regex, drop the &mut borrow right away
+                            Err(_) => {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::INVALID_REGEX,
+                                        "invalid-regex",
+                                        "invalid start pattern regular expression",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Check your start pattern regex syntax.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0506")
+                                );
+                            }
+                        };
+                        let end = match sess.regex_cache.get_or_compile(&end_pattern) {
+                            Ok(re) => re.clone(),
+                            Err(_) => {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::INVALID_REGEX,
+                                        "invalid-regex",
+                                        "invalid end pattern regular expression",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Check your end pattern regex syntax.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0506")
+                                );
+                            }
+                        };
+                        (start, end)
+                    };
+
+                    // Find all keys that match the start pattern
+                    let start_keys: Vec<String> = map.keys()
+                        .filter(|key| start_regex.is_match(key))
+                        .cloned()
+                        .collect();
+
+                    // Find all keys that match the end pattern
+                    let end_keys: Vec<String> = map.keys()
+                        .filter(|key| end_regex.is_match(key))
+                        .cloned()
+                        .collect();
+
+                    if start_keys.is_empty() || end_keys.is_empty() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::EMPTY_COLLECTION,
+                                "empty-collection",
+                                "start or end pattern did not match any keys",
+                                sp.clone(),
+                            )
+                            .with_help("Check if the map has keys matching the patterns.")
+                            .with_link("https://goblinlang.org/docs/errors#R0701")
+                        );
+                    }
+
+                    // Find all keys lexicographically between any start and end (excluding matches)
+                    let mut between_keys = Vec::new();
+                    for start_key in &start_keys {
+                        for end_key in &end_keys {
+                            for key in map.keys() {
+                                if key > start_key && key < end_key &&
+                                    !start_regex.is_match(key) && !end_regex.is_match(key) {
+                                    between_keys.push(key.clone());
+                                }
+                            }
+                        }
+                    }
+                    between_keys.sort();
+                    between_keys.dedup();
+
+                    if between_keys.is_empty() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::EMPTY_COLLECTION,
+                                "empty-collection",
+                                "no keys found between the matched patterns",
+                                sp.clone(),
+                            )
+                            .with_help("Check if there are keys lexicographically between the matched patterns.")
+                            .with_link("https://goblinlang.org/docs/errors#R0701")
+                        );
+                    }
+
+                    match &op {
+                        Operation::Grab | Operation::Reap => {
+                            let mut result_map = BTreeMap::new();
+                            for key in &between_keys {
+                                result_map.insert(key.clone(), map.get(key).unwrap().clone());
+                            }
+                            Ok(Value::Map(result_map))
+                        }
+                        Operation::Delete => {
+                            let mut result_map = map.clone();
+                            for key in &between_keys {
+                                result_map.remove(key);
+                            }
+                            Ok(Value::Map(result_map))
+                        }
+                        Operation::Update(new_value) => {
+                            let mut result_map = map.clone();
+                            for key in &between_keys {
+                                result_map.insert(key.clone(), new_value.clone());
+                            }
+                            Ok(Value::Map(result_map))
+                        }
+                        Operation::Put(_new_value) => {
+                            Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::OP_NOT_MEANINGFUL,
+                                    "op-not-meaningful",
+                                    "put_between is not meaningful for maps with pattern ranges",
+                                    sp.clone(),
+                                )
+                                .with_help("Use a different operation like update_between or use a specific key.")
+                                .with_link("https://goblinlang.org/docs/errors#R0503")
+                            )
+                        }
                     }
                 }
 
@@ -3873,6 +4130,290 @@ fn collection_operation(
                     }
                 }
 
+                Position::Matching(pattern) => {
+                    let regex_result = sess.regex_cache.get_or_compile(&pattern);
+                    let regex = match regex_result {
+                        Ok(re) => re,
+                        Err(_) => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::INVALID_REGEX, 
+                                    "invalid-regex",
+                                    "invalid regular expression pattern",
+                                    sp.clone(),
+                                )
+                                .with_help("Check your regex syntax and try again.")
+                                .with_link("https://goblinlang.org/docs/errors#R0506")
+                            );
+                        }
+                    };
+                    
+                    match &op {
+                        Operation::Grab | Operation::Reap => {
+                            // Return all matched portions as an array
+                            let matches: Vec<Value> = regex.find_iter(s)
+                                .map(|m| Value::Str(m.as_str().to_string()))
+                                .collect();
+                            
+                            if matches.is_empty() {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::EMPTY_COLLECTION,
+                                        "empty-collection",
+                                        "pattern did not match any part of the string",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Try a different pattern or check if the string contains matching content.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0701")
+                                );
+                            }
+                            
+                            Ok(Value::Array(matches))
+                        },
+                        Operation::Delete => {
+                            // Remove all matches from the string
+                            let result = regex.replace_all(s, "").to_string();
+                            Ok(Value::Str(result))
+                        },
+                        Operation::Update(val) => {
+                            // Replace all matches with the provided value
+                            let replacement = match val {
+                                Value::Str(s) => s.clone(),
+                                _ => {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::OP_NOT_MEANINGFUL,
+                                            "op-not-meaningful",
+                                            "replacement must be a string",
+                                            sp.clone(),
+                                        )
+                                        .with_help("Provide a string value for the replacement.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0503")
+                                    );
+                                }
+                            };
+                            
+                            let result = regex.replace_all(s, replacement.as_str()).to_string();
+                            Ok(Value::Str(result))
+                        },
+                        Operation::Put(val) => {
+                            // Insert after each match
+                            let insert_val = match val {
+                                Value::Str(s) => s.clone(),
+                                _ => {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::OP_NOT_MEANINGFUL,
+                                            "op-not-meaningful",
+                                            "inserted value must be a string",
+                                            sp.clone(),
+                                        )
+                                        .with_help("Provide a string value to insert.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0503")
+                                    );
+                                }
+                            };
+                            
+                            let mut result = String::new();
+                            let mut last_end = 0;
+                            
+                            for mat in regex.find_iter(s) {
+                                result.push_str(&s[last_end..mat.end()]);
+                                result.push_str(&insert_val);
+                                last_end = mat.end();
+                            }
+                            
+                            result.push_str(&s[last_end..]);
+                            Ok(Value::Str(result))
+                        }
+                    }
+                },
+                
+                Position::Between(start_pattern, end_pattern) => {
+                    // Compile both and clone into owned Regex to end the &mut borrow immediately.
+                    let (start_regex, end_regex) = {
+                        let start = match sess.regex_cache.get_or_compile(&start_pattern) {
+                            Ok(re) => re.clone(),
+                            Err(_) => {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::INVALID_REGEX,
+                                        "invalid-regex",
+                                        "invalid start pattern regular expression",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Check your start pattern regex syntax.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0506")
+                                );
+                            }
+                        };
+                        let end = match sess.regex_cache.get_or_compile(&end_pattern) {
+                            Ok(re) => re.clone(),
+                            Err(_) => {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::INVALID_REGEX,
+                                        "invalid-regex",
+                                        "invalid end pattern regular expression",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Check your end pattern regex syntax.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0506")
+                                );
+                            }
+                        };
+                        (start, end)
+                    };
+
+                    // Now safe to use the regexes without holding a borrow on the cache.
+                    let start_matches: Vec<_> = start_regex.find_iter(s).collect();
+                    if start_matches.is_empty() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::EMPTY_COLLECTION,
+                                "empty-collection",
+                                "start pattern did not match any part of the string",
+                                sp.clone(),
+                            )
+                            .with_help("Check if the string contains content matching the start pattern.")
+                            .with_link("https://goblinlang.org/docs/errors#R0701")
+                        );
+                    }
+
+                    let end_matches: Vec<_> = end_regex.find_iter(s).collect();
+                    if end_matches.is_empty() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::EMPTY_COLLECTION,
+                                "empty-collection",
+                                "end pattern did not match any part of the string",
+                                sp.clone(),
+                            )
+                            .with_help("Check if the string contains content matching the end pattern.")
+                            .with_link("https://goblinlang.org/docs/errors#R0701")
+                        );
+                    }
+
+                    match &op {
+                        Operation::Grab | Operation::Reap => {
+                            let mut results = Vec::new();
+                            // (You had a start_index var that was never used—just remove it.)
+                            for start_match in &start_matches {
+                                if let Some(end_match) = end_matches.iter().find(|&e| e.start() > start_match.end())
+                                {
+                                    let between_text = s[start_match.end()..end_match.start()].to_string();
+                                    results.push(Value::Str(between_text));
+                                } else {
+                                    break;
+                                }
+                            }
+                            if results.is_empty() {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::EMPTY_COLLECTION,
+                                        "empty-collection",
+                                        "no content found between patterns",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Ensure there is content between the start and end patterns.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0701")
+                                );
+                            }
+                            Ok(Value::Array(results))
+                        }
+                        Operation::Delete => {
+                            let mut result = String::new();
+                            let mut last_pos = 0;
+                            for start_match in &start_matches {
+                                if let Some(end_match) = end_matches.iter().find(|&e| e.start() > start_match.end())
+                                {
+                                    result.push_str(&s[last_pos..start_match.start()]);
+                                    last_pos = end_match.end();
+                                } else {
+                                    break;
+                                }
+                            }
+                            result.push_str(&s[last_pos..]);
+                            Ok(Value::Str(result))
+                        }
+                        Operation::Update(val) => {
+                            let replacement = match val {
+                                Value::Str(sv) => sv.clone(),
+                                _ => {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::OP_NOT_MEANINGFUL,
+                                            "op-not-meaningful",
+                                            "replacement must be a string",
+                                            sp.clone(),
+                                        )
+                                        .with_help("Provide a string value for replacement.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0503")
+                                    );
+                                }
+                            };
+
+                            let mut result = String::new();
+                            let mut last_pos = 0;
+                            for start_match in &start_matches {
+                                if let Some(end_match) = end_matches.iter().find(|&e| e.start() > start_match.end())
+                                {
+                                    result.push_str(&s[last_pos..start_match.end()]);
+                                    result.push_str(&replacement);
+                                    last_pos = end_match.start();
+                                } else {
+                                    break;
+                                }
+                            }
+                            result.push_str(&s[last_pos..]);
+                            Ok(Value::Str(result))
+                        }
+                        Operation::Put(val) => {
+                            let insert_val = match val {
+                                Value::Str(sv) => sv.clone(),
+                                _ => {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::OP_NOT_MEANINGFUL,
+                                            "op-not-meaningful",
+                                            "inserted value must be a string",
+                                            sp.clone(),
+                                        )
+                                        .with_help("Provide a string value to insert.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0503")
+                                    );
+                                }
+                            };
+
+                            let mut result = String::new();
+                            let mut last_pos = 0;
+                            for start_match in &start_matches {
+                                if let Some(end_match) = end_matches.iter().find(|&e| e.start() > start_match.end())
+                                {
+                                    result.push_str(&s[last_pos..end_match.end()]);
+                                    result.push_str(&insert_val);
+                                    last_pos = end_match.end();
+                                } else {
+                                    break;
+                                }
+                            }
+                            result.push_str(&s[last_pos..]);
+                            Ok(Value::Str(result))
+                        }
+                    }
+                }
+
                 Position::All => {
                     match &op {
                         Operation::Grab | Operation::Reap => Ok(Value::Str(s.clone())),
@@ -4243,6 +4784,252 @@ fn collection_operation(
                     }
                 }
 
+                Position::Matching(pattern) => {
+                    // Compile and clone to owned Regex so the &mut borrow on the cache ends immediately.
+                    let regex = match sess.regex_cache.get_or_compile(&pattern) {
+                        Ok(re) => re.clone(),
+                        Err(_) => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::INVALID_REGEX,
+                                    "invalid-regex",
+                                    "invalid regular expression pattern",
+                                    sp.clone(),
+                                )
+                                .with_help("Check your regex syntax and try again.")
+                                .with_link("https://goblinlang.org/docs/errors#R0506")
+                            );
+                        }
+                    };
+
+                    // Helper function to check if an item matches the pattern
+                    let matches_pattern = |item: &Value| -> bool {
+                        match item {
+                            Value::Str(s) => regex.is_match(s),
+                            Value::Char(c) => regex.is_match(&c.to_string()),
+                            _ => false, // Non-string types don't match string patterns
+                        }
+                    };
+
+                    match &op {
+                        Operation::Grab | Operation::Reap => {
+                            // Return an array of all matching elements
+                            let matches: Vec<Value> = xs.iter()
+                                .filter(|item| matches_pattern(item))
+                                .cloned()
+                                .collect();
+
+                            if matches.is_empty() {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::EMPTY_COLLECTION,
+                                        "empty-collection",
+                                        "pattern did not match any elements",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Try a different pattern or check if the array has matching elements.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0701")
+                                );
+                            }
+
+                            Ok(Value::Array(matches))
+                        }
+                        Operation::Delete => {
+                            // Remove all matching elements
+                            let result: Vec<Value> = xs.iter()
+                                .filter(|item| !matches_pattern(item))
+                                .cloned()
+                                .collect();
+
+                            Ok(Value::Array(result))
+                        }
+                        Operation::Update(new_value) => {
+                            // Replace all matching elements with the new value
+                            let result: Vec<Value> = xs.iter()
+                                .map(|item| {
+                                    if matches_pattern(item) {
+                                        new_value.clone()
+                                    } else {
+                                        item.clone()
+                                    }
+                                })
+                                .collect();
+
+                            Ok(Value::Array(result))
+                        }
+                        Operation::Put(new_value) => {
+                            // Insert the new value after each matching element
+                            let mut result = Vec::with_capacity(xs.len().saturating_mul(2)); // rough estimate
+                            for item in xs {
+                                result.push(item.clone());
+                                if matches_pattern(item) {
+                                    result.push(new_value.clone());
+                                }
+                            }
+                            Ok(Value::Array(result))
+                        }
+                    }
+                },
+                
+                Position::Between(start_pattern, end_pattern) => {
+                    // Compile and clone to owned regexes so the &mut borrow ends before we build closures.
+                    let (start_regex, end_regex) = {
+                        let start = match sess.regex_cache.get_or_compile(&start_pattern) {
+                            Ok(re) => re.clone(),
+                            Err(_) => {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::INVALID_REGEX,
+                                        "invalid-regex",
+                                        "invalid start pattern regular expression",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Check your start pattern regex syntax.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0506")
+                                );
+                            }
+                        };
+                        let end = match sess.regex_cache.get_or_compile(&end_pattern) {
+                            Ok(re) => re.clone(),
+                            Err(_) => {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::INVALID_REGEX,
+                                        "invalid-regex",
+                                        "invalid end pattern regular expression",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Check your end pattern regex syntax.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0506")
+                                );
+                            }
+                        };
+                        (start, end)
+                    };
+
+                    let matches_start = |item: &Value| -> bool {
+                        match item {
+                            Value::Str(s) => start_regex.is_match(s),
+                            Value::Char(c) => start_regex.is_match(&c.to_string()),
+                            _ => false,
+                        }
+                    };
+                    let matches_end = |item: &Value| -> bool {
+                        match item {
+                            Value::Str(s) => end_regex.is_match(s),
+                            Value::Char(c) => end_regex.is_match(&c.to_string()),
+                            _ => false,
+                        }
+                    };
+
+                    let start_indices: Vec<usize> = xs.iter()
+                        .enumerate()
+                        .filter(|(_, item)| matches_start(item))
+                        .map(|(idx, _)| idx)
+                        .collect();
+
+                    let end_indices: Vec<usize> = xs.iter()
+                        .enumerate()
+                        .filter(|(_, item)| matches_end(item))
+                        .map(|(idx, _)| idx)
+                        .collect();
+
+                    if start_indices.is_empty() || end_indices.is_empty() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::EMPTY_COLLECTION,
+                                "empty-collection",
+                                "start or end pattern did not match any elements",
+                                sp.clone(),
+                            )
+                            .with_help("Check if the array has elements matching the patterns.")
+                            .with_link("https://goblinlang.org/docs/errors#R0701")
+                        );
+                    }
+
+                    let mut ranges = Vec::new();
+                    for &start_idx in &start_indices {
+                        if let Some(&end_idx) = end_indices.iter().find(|&&e| e > start_idx) {
+                            if end_idx > start_idx + 1 {
+                                ranges.push((start_idx + 1, end_idx));
+                            }
+                        }
+                    }
+
+                    if ranges.is_empty() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::EMPTY_COLLECTION,
+                                "empty-collection",
+                                "no elements found between matching patterns",
+                                sp.clone(),
+                            )
+                            .with_help("Check if there are elements between matches of start and end patterns.")
+                            .with_link("https://goblinlang.org/docs/errors#R0701")
+                        );
+                    }
+
+                    match &op {
+                        Operation::Grab | Operation::Reap => {
+                            let mut result = Vec::new();
+                            for (start, end) in ranges {
+                                for i in start..end {
+                                    result.push(xs[i].clone());
+                                }
+                            }
+                            Ok(Value::Array(result))
+                        }
+                        Operation::Delete => {
+                            let mut result = Vec::with_capacity(xs.len());
+                            let mut in_range = false;
+                            let mut next_range_idx = 0;
+                            for (idx, item) in xs.iter().enumerate() {
+                                if next_range_idx < ranges.len() && idx == ranges[next_range_idx].0 {
+                                    in_range = true;
+                                }
+                                if next_range_idx < ranges.len() && idx == ranges[next_range_idx].1 {
+                                    in_range = false;
+                                    next_range_idx += 1;
+                                }
+                                if !in_range {
+                                    result.push(item.clone());
+                                }
+                            }
+                            Ok(Value::Array(result))
+                        }
+                        Operation::Update(new_value) => {
+                            let mut result = xs.to_vec();
+                            for (start, end) in ranges {
+                                for i in start..end {
+                                    result[i] = new_value.clone();
+                                }
+                            }
+                            Ok(Value::Array(result))
+                        }
+                        Operation::Put(new_value) => {
+                            let mut result = Vec::with_capacity(xs.len() + ranges.len());
+                            let mut last_end = 0;
+                            for (_, end) in ranges {
+                                for i in last_end..=end {
+                                    result.push(xs[i].clone());
+                                }
+                                result.push(new_value.clone());
+                                last_end = end + 1;
+                            }
+                            for i in last_end..xs.len() {
+                                result.push(xs[i].clone());
+                            }
+                            Ok(Value::Array(result))
+                        }
+                    }
+                }
+
                 Position::All => {
                     match &op {
                         Operation::Grab | Operation::Reap => Ok(Value::Array(xs.to_vec())),
@@ -4432,7 +5219,7 @@ fn call_action_by_name(
 
     // Shared helpers
 
-    let _want_bool = |v: &Value, label: &str| -> Result<bool, Diag> {
+    let want_bool = |v: &Value, label: &str| -> Result<bool, Diag> {
         match v {
             Value::Bool(b) => Ok(*b),
             _ => {
@@ -6850,7 +7637,6 @@ fn call_action_by_name(
         }
 
         // ----- String trim -----
-        // ----- String trim -----
         "trim" => {
             arity(1)?;
             map_str_1(&args[0], "trim", &|s| {
@@ -7603,6 +8389,19 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::All, Operation::Grab, &sp, sess)?
         }
 
+        "grab_matching" => {
+            arity(2)?;
+            let pattern = want_str(&args[1], "pattern")?;
+            collection_operation(&args[0], Position::Matching(pattern), Operation::Grab, &sp, sess)?
+        }
+
+        "grab_between" => {
+            arity(3)?;
+            let start_pattern = want_str(&args[1], "start pattern")?;
+            let end_pattern = want_str(&args[2], "end pattern")?;
+            collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Grab, &sp, sess)?
+        }
+
         "put" => {
             arity(2)?;
             collection_operation(&args[0], Position::Random, Operation::Put(args[1].clone()), &sp, sess)?
@@ -7621,6 +8420,19 @@ fn call_action_by_name(
         "put_at" => {
             arity(3)?;
             collection_operation(&args[0], Position::At(args[1].clone()), Operation::Put(args[2].clone()), &sp, sess)?
+        }
+
+        "put_matching" => {
+            arity(3)?;
+            let pattern = want_str(&args[1], "pattern")?;
+            collection_operation(&args[0], Position::Matching(pattern), Operation::Put(args[2].clone()), &sp, sess)?
+        }
+
+        "put_between" => {
+            arity(4)?;
+            let start_pattern = want_str(&args[1], "start pattern")?;
+            let end_pattern = want_str(&args[2], "end pattern")?;
+            collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Put(args[3].clone()), &sp, sess)?
         }
 
         "update" => {
@@ -7654,6 +8466,19 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::All, Operation::Update(args[1].clone()), &sp, sess)?
         }
 
+        "update_matching" => {
+            arity(3)?;
+            let pattern = want_str(&args[1], "pattern")?;
+            collection_operation(&args[0], Position::Matching(pattern), Operation::Update(args[2].clone()), &sp, sess)?
+        }
+
+        "update_between" => {
+            arity(4)?;
+            let start_pattern = want_str(&args[1], "start pattern")?;
+            let end_pattern = want_str(&args[2], "end pattern")?;
+            collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Update(args[3].clone()), &sp, sess)?
+        }
+
         "delete" => {
             arity(1)?;
             collection_operation(&args[0], Position::Random, Operation::Delete, &sp, sess)?
@@ -7685,6 +8510,19 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::All, Operation::Delete, &sp, sess)?
         }
 
+        "delete_matching" => {
+            arity(2)?;
+            let pattern = want_str(&args[1], "pattern")?;
+            collection_operation(&args[0], Position::Matching(pattern), Operation::Delete, &sp, sess)?
+        }
+
+        "delete_between" => {
+            arity(3)?;
+            let start_pattern = want_str(&args[1], "start pattern")?;
+            let end_pattern = want_str(&args[2], "end pattern")?;
+            collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Delete, &sp, sess)?
+        }
+
         "reap_first" => {
             arity(1)?;
             collection_operation(&args[0], Position::First, Operation::Reap, &sp, sess)?
@@ -7704,6 +8542,19 @@ fn call_action_by_name(
             arity(2)?;
             let pred = want_str(&args[1], "reap_where predicate")?;
             collection_operation(&args[0], Position::Where(pred), Operation::Reap, &sp, sess)?
+        }
+
+        "reap_matching" => {
+            arity(2)?;
+            let pattern = want_str(&args[1], "pattern")?;
+            collection_operation(&args[0], Position::Matching(pattern), Operation::Reap, &sp, sess)?
+        }
+
+        "reap_between" => {
+            arity(3)?;
+            let start_pattern = want_str(&args[1], "start pattern")?;
+            let end_pattern = want_str(&args[2], "end pattern")?;
+            collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Reap, &sp, sess)?
         }
 
         // ===== File IO Stuff =====
@@ -8227,25 +9078,47 @@ fn call_action_by_name(
             Value::Array(s.chars().map(Value::Char).collect())
         }
 
-        "split" => { // split by separator (string)
+        "split" => {
             if args.len() != 2 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 2, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘split’ takes exactly 2 arguments: split(string, separator).")
-                    .with_link("https://goblinlang.org/docs/errors#R0301"),
-                );
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("'split' takes exactly 2 arguments: split(string, separator).")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
             }
-            let s   = want_str(&args[0], "split")?;
+            
+            let s = want_str(&args[0], "split")?;
             let sep = want_str(&args[1], "split")?;
-            if sep.is_empty() {
+            
+            // Check if separator is a regex pattern
+            if sep.starts_with("r/") && sep.len() > 2 {
+                let pattern = &sep[2..]; // Extract the actual pattern
+                // Use regex cache to split
+                match sess.regex_cache.get_or_compile(pattern) {
+                    Ok(re) => {
+                        Value::Array(re.split(&s).map(|t| Value::Str(t.to_string())).collect())
+                    }
+                    Err(_) => {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                            "invalid-regex",
+                            &format!("Invalid regex pattern: '{}'", pattern),
+                            sp.clone(),
+                        )
+                        .with_help("Check that your regex pattern follows the proper syntax.")
+                        .with_link("https://goblinlang.org/docs/errors#R0506"));
+                    }
+                }
+            } else if sep.is_empty() {
+                // Split by character (no regex needed)
                 Value::Array(s.chars().map(|c| Value::Str(c.to_string())).collect())
             } else {
+                // Regular string split (no regex needed)
                 Value::Array(s.split(&sep).map(|t| Value::Str(t.to_string())).collect())
             }
         }
@@ -8350,6 +9223,167 @@ fn call_action_by_name(
             joined.push(b);
             let normalized = joined.to_string_lossy().replace('\\', "/");
             Value::Str(normalized)
+        }
+
+        // ===== REGEX =====
+        // For direct regex matching
+        "is_matching" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY,
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("'is_matching' takes exactly 2 arguments: is_matching(text, pattern).")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            
+            let text = want_str(&args[0], "is_matching")?;
+            let pattern = want_str(&args[1], "is_matching")?;
+            
+            match sess.regex_cache.get_or_compile(&pattern) {
+                Ok(re) => {
+                    Value::Bool(re.is_match(&text))
+                }
+                Err(_) => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                        "invalid-regex",
+                        &format!("Invalid regex pattern: '{}'", pattern),
+                        sp.clone(),
+                    )
+                    .with_help("Check that your regex pattern follows the proper syntax.")
+                    .with_link("https://goblinlang.org/docs/errors#R0506"));
+                }
+            }
+        }
+
+        // For finding all matches
+        "grab_matching" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY,
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("'grab_matching' takes exactly 2 arguments: grab_matching(text, pattern).")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            
+            let text = want_str(&args[0], "grab_matching")?;
+            let pattern = want_str(&args[1], "grab_matching")?;
+            
+            match Regex::new(&pattern) {
+                Ok(re) => {
+                    let matches: Vec<Value> = re.captures_iter(&text)
+                        .filter_map(|cap| cap.get(0))
+                        .map(|m| Value::Str(m.as_str().to_string()))
+                        .collect();
+                    Value::Array(matches)
+                }
+                Err(_) => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                        "invalid-regex",
+                        &format!("Invalid regex pattern: '{}'", pattern),
+                        sp.clone(),
+                    )
+                    .with_help("Check that your regex pattern follows the proper syntax.")
+                    .with_link("https://goblinlang.org/docs/errors#R0506"));
+                }
+            }
+        }
+
+        // For counting matches
+        "count_matching" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY,
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("'count_matching' takes exactly 2 arguments: count_matching(text, pattern).")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            
+            let text = want_str(&args[0], "count_matching")?;
+            let pattern = want_str(&args[1], "count_matching")?;
+            
+            match Regex::new(&pattern) {
+                Ok(re) => {
+                    Value::Int(re.find_iter(&text).count() as i64)
+                }
+                Err(_) => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                        "invalid-regex",
+                        &format!("Invalid regex pattern: '{}'", pattern),
+                        sp.clone(),
+                    )
+                    .with_help("Check that your regex pattern follows the proper syntax.")
+                    .with_link("https://goblinlang.org/docs/errors#R0506"));
+                }
+            }
+        }
+
+        "tokenize" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY,
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 2-3, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("'tokenize' takes 2 or 3 arguments: tokenize(text, delimiters, [keep_delimiters])")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            
+            let text = want_str(&args[0], "tokenize")?;
+            let delims = want_str(&args[1], "tokenize")?;
+            let keep_delims = if args.len() > 2 {
+                want_bool(&args[2], "tokenize")?
+            } else {
+                false
+            };
+            
+            // Escape special regex characters in delimiters
+            let escaped_delims = regex::escape(&delims);
+            let pattern = if keep_delims {
+                format!("({})|([^{}]+)", escaped_delims, escaped_delims)
+            } else {
+                format!("[^{}]+", escaped_delims)
+            };
+            
+            match Regex::new(&pattern) {
+                Ok(re) => {
+                    let tokens: Vec<Value> = re.find_iter(&text)
+                        .map(|m| Value::Str(m.as_str().to_string()))
+                        .collect();
+                        
+                    Value::Array(tokens)
+                }
+                Err(_) => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                        "invalid-regex",
+                        "Failed to create regex pattern for tokenization",
+                        sp.clone(),
+                    )
+                    .with_help("There may be an issue with the delimiter pattern.")
+                    .with_link("https://goblinlang.org/docs/errors#R0506"));
+                }
+            }
         }
 
         // ===== Other transforms =====
@@ -12378,6 +13412,49 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Float(p * b))
                 }
 
+                // === strict equality (no numeric coercion)
+                "===" => {
+                    let lv = eval_expr(lhs, sess)?; 
+                    let rv = eval_expr(rhs, sess)?;
+                    let (la, _) = strip_format(&lv);
+                    let (rb, _) = strip_format(&rv);
+                    Ok(Value::Bool(la == rb))
+                },
+
+                // !=== strict inequality (no numeric coercion)
+                // If either side is an *identifier* that is undefined -> Nil (per canon)
+                "!===" => {
+                    let la_opt = if let ast::Expr::Ident(name, _) = &**lhs {
+                        match sess.get_var(name) {
+                            Some(v) => Some(v.clone()),
+                            None    => None, // undefined -> Nil
+                        }
+                    } else {
+                        Some(eval_expr(lhs, sess)?)
+                    };
+
+                    let rb_opt = if let ast::Expr::Ident(name, _) = &**rhs {
+                        match sess.get_var(name) {
+                            Some(v) => Some(v.clone()),
+                            None    => None,
+                        }
+                    } else {
+                        Some(eval_expr(rhs, sess)?)
+                    };
+
+                    if la_opt.is_none() || rb_opt.is_none() {
+                        return Ok(Value::Nil);
+                    }
+
+                    // avoid E0716: bind temps before borrowing
+                    let la_val = la_opt.unwrap();
+                    let rb_val = rb_opt.unwrap();
+                    let (la, _) = strip_format(&la_val);
+                    let (rb, _) = strip_format(&rb_val);
+
+                    Ok(Value::Bool(la != rb))
+                },
+
                 // comparisons (bool)
                 "==" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
@@ -12403,27 +13480,112 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Bool(eqv))
                 }
 
-                "!=" => {
-                    let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
-                    let (la, _) = strip_format(&lv);
-                    let (rb, _) = strip_format(&rv);
+                // If either side is an *identifier* that is undefined -> Nil (per canon)
+                "!==" => {
+                    let la_opt = if let ast::Expr::Ident(name, _) = &**lhs {
+                        match sess.get_var(name) {
+                            Some(v) => Some(v.clone()),
+                            None    => None,
+                        }
+                    } else {
+                        Some(eval_expr(lhs, sess)?)
+                    };
+
+                    let rb_opt = if let ast::Expr::Ident(name, _) = &**rhs {
+                        match sess.get_var(name) {
+                            Some(v) => Some(v.clone()),
+                            None    => None,
+                        }
+                    } else {
+                        Some(eval_expr(rhs, sess)?)
+                    };
+
+                    if la_opt.is_none() || rb_opt.is_none() {
+                        return Ok(Value::Nil);
+                    }
+
+                    // avoid E0716: bind temps before borrowing
+                    let la_val = la_opt.unwrap();
+                    let rb_val = rb_opt.unwrap();
+                    let (la, _) = strip_format(&la_val);
+                    let (rb, _) = strip_format(&rb_val);
 
                     let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let neqv = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
-                            let a = to_big_for_math(&la, sp.clone(), "!= left")?;
-                            let b = to_big_for_math(&rb, sp.clone(), "!= right")?;
+                            let a = to_big_for_math(&la, sp.clone(), "!== left")?;
+                            let b = to_big_for_math(&rb, sp.clone(), "!== right")?;
                             a != b
                         } else {
-                            let a = to_f64_for_math(&la, sp.clone(), "!= left")?;
-                            let b = to_f64_for_math(&rb, sp.clone(), "!= right")?;
+                            let a = to_f64_for_math(&la, sp.clone(), "!== left")?;
+                            let b = to_f64_for_math(&rb, sp.clone(), "!== right")?;
                             a != b
                         }
                     } else {
                         la != rb
                     };
                     Ok(Value::Bool(neqv))
-                }
+                },
+
+                // != "not assigned to": lhs must be lvalue variable; undefined -> NameError
+                "!=" => {
+                    let name = if let ast::Expr::Ident(n, _) = &**lhs {
+                        n.clone()
+                    } else {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
+                                "lvalue-expected",
+                                "lvalue expected on the left of '!=' (not-assigned-to)",
+                                sp.clone(),
+                            )
+                            .with_help("Use a variable on the left, e.g. ‘mode != \"demo\"’.")
+                            .with_help("For expression inequality, use ‘!==’.")
+                            .with_link("https://goblinlang.org/docs/errors#P0802")
+                        );
+                    };
+
+                    let left_val = match sess.get_var(&name) {
+                        Some(v) => v.clone(),
+                        None => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
+                                    "unknown-ident",
+                                    "unknown identifier",
+                                    sp.clone(),
+                                )
+                                .with_help(&format!("‘{}’ is not defined in this scope.", name))
+                                .with_help("‘!=’ checks variable state; declare and assign the variable first.")
+                                .with_link("https://goblinlang.org/docs/errors#R0101")
+                            );
+                        }
+                    };
+
+                    let rv = eval_expr(rhs, sess)?;
+                    let (la, _) = strip_format(&left_val);
+                    let (rb, _) = strip_format(&rv);
+
+                    // reuse your "==" semantics, then negate
+                    let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
+                    let eqv = if is_num(&la) && is_num(&rb) {
+                        if either_is_big(&la, &rb) {
+                            let a = to_big_for_math(&la, sp.clone(), "!= left")?;
+                            let b = to_big_for_math(&rb, sp.clone(), "!= right")?;
+                            a == b
+                        } else {
+                            let a = to_f64_for_math(&la, sp.clone(), "!= left")?;
+                            let b = to_f64_for_math(&rb, sp.clone(), "!= right")?;
+                            a == b
+                        }
+                    } else {
+                        la == rb
+                    };
+
+                    Ok(Value::Bool(!eqv))
+                },
 
                 "<" | "<=" | ">" | ">=" => {
                     let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;

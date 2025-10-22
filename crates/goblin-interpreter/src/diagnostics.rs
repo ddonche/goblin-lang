@@ -172,6 +172,8 @@ pub mod rtcode {
     pub const OP_NOT_MEANINGFUL: &str = "R0503";
     pub const OP_NOT_IMPLEMENTED: &str = "R0504";
     pub const OP_NOT_SUPPORTED: &str = "R0505";
+    pub const INVALID_REGEX: &str = "R0506";
+    pub const NO_MATCHES: &str = "R0507";
 
     pub const EMPTY_COLLECTION: &str = "R0701";
     pub const INVALID_RANGE_NO_VALUES: &str = "R0702";
