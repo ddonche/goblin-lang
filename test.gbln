@@ -1,0 +1,7 @@
+act main
+    x = [[[[[[[[[[[[[[[[[[[[20]]]]]]]]]]]]]]]]]]]]
+    say x
+    say "Success"
+end
+
+main()
