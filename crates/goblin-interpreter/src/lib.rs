@@ -1652,6 +1652,8 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
         Value::Char(c) => c.to_string(),
         Value::Float(n)  => fmt_num_trim(*n),
         Value::Int(i) => i.to_string(),
+        Value::Big(d) => d.to_string(),
+        Value::Pct(p) => fmt_num_trim(*p),
         Value::Bool(b) => if *b { "true".into() } else { "false".into() },
         Value::Nil     => "nil".into(),
 
@@ -9336,7 +9338,7 @@ fn call_action_by_name(
 
             let a = want_str(&args[0], "path_join")?;
             let b = want_str(&args[1], "path_join")?;
-            use std::path::{Path, PathBuf};
+            use std::path::PathBuf;
 
             let mut joined = PathBuf::from(a);
             joined.push(b);
@@ -9365,45 +9367,6 @@ fn call_action_by_name(
             match sess.regex_cache.get_or_compile(&pattern) {
                 Ok(re) => {
                     Value::Bool(re.is_match(&text))
-                }
-                Err(_) => {
-                    return Err(Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::INVALID_REGEX, // R0506
-                        "invalid-regex",
-                        &format!("Invalid regex pattern: '{}'", pattern),
-                        sp.clone(),
-                    )
-                    .with_help("Check that your regex pattern follows the proper syntax.")
-                    .with_link("https://goblinlang.org/docs/errors#R0506"));
-                }
-            }
-        }
-
-        // For finding all matches
-        "grab_matching" => {
-            if args.len() != 2 {
-                return Err(Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::WRONG_ARITY,
-                    "wrong-arity",
-                    &format!("Wrong number of arguments (expected 2, got {})", args.len()),
-                    sp.clone(),
-                )
-                .with_help("'grab_matching' takes exactly 2 arguments: grab_matching(text, pattern).")
-                .with_link("https://goblinlang.org/docs/errors#R0301"));
-            }
-            
-            let text = want_str(&args[0], "grab_matching")?;
-            let pattern = want_str(&args[1], "grab_matching")?;
-            
-            match Regex::new(&pattern) {
-                Ok(re) => {
-                    let matches: Vec<Value> = re.captures_iter(&text)
-                        .filter_map(|cap| cap.get(0))
-                        .map(|m| Value::Str(m.as_str().to_string()))
-                        .collect();
-                    Value::Array(matches)
                 }
                 Err(_) => {
                     return Err(Diagnostic::new_with_code(
@@ -11026,13 +10989,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             }
                             Some(m)
                         }
-                        other => {
+                        _other => {
                             return Err(
                                 Diagnostic::new_with_code(
                                     Severity::Error,
                                     crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
                                     "type-mismatch",
-                                    &format!("enum variant ‘{}::{}’ expects a map for named fields", ns, name),
+                                    &format!("enum variant '{}::{}' expects a map for named fields", ns, name),
                                     sp.clone(),
                                 )
                                 .with_help("Provide a map: Variant{ field1: value, field2: value }")
