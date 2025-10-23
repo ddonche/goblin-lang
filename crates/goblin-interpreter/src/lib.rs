@@ -8854,35 +8854,6 @@ fn call_action_by_name(
             }
         }
 
-        "replace" => {
-            if args.len() != 3 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 3, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘replace’ takes exactly 3 arguments.")
-                    .with_help("Usage: replace(string, from, to)")
-                    .with_link("https://goblinlang.org/docs/errors#R0301"),
-                );
-            }
-
-            // want_str(...) already emits T0205 with links if the type is wrong.
-            let s    = want_str(&args[0], "replace")?;
-            let from = want_str(&args[1], "replace")?;
-            let to   = want_str(&args[2], "replace")?;
-
-            if from.is_empty() {
-                Value::Str(s)
-            } else {
-                Value::Str(s.replace(&from, &to))
-            }
-        }
-
-
         // ===== Slice / extract =====
         "before" => {
             // Arity check
