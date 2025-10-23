@@ -205,7 +205,7 @@ pub struct ClassRelations {
     pub re_relations: Vec<String>,    // class names
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -297,6 +297,13 @@ fn synth_span() -> Span {
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Use depth-aware formatting to prevent stack overflow
+        write!(f, "{}", fmt_value_with_depth(self, 0))
+    }
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Use depth-aware formatting to prevent stack overflow in debug output
         write!(f, "{}", fmt_value_with_depth(self, 0))
     }
 }
