@@ -952,9 +952,9 @@ fn run_repl() -> i32 {
 
     println!("{}", repl_banner());
 
-    // Run REPL in a thread with 8MB stack (Windows default is only 1MB)
+    // Run REPL in a thread with 32MB stack (Windows default is only 1MB)
     std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(32 * 1024 * 1024)
         .spawn(|| {
             let mut sess = Session::new();
             let mut form_no: usize = 1;
@@ -1151,9 +1151,9 @@ fn run_run(path: &std::path::Path) -> i32 {
         }
     };
     
-    // 4) interpret with larger stack (8MB instead of default 1MB on Windows)
+    // 4) interpret with larger stack (32MB instead of default 1MB on Windows)
     std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(32 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
             for stmt in &module.items {
@@ -1230,9 +1230,9 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         }
     };
 
-    // 4) interpret with args injected
+    // 4) interpret with args injected (32MB stack)
     std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(32 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
 
