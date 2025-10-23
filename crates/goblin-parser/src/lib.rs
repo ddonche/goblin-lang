@@ -7553,7 +7553,7 @@ impl<'t> Parser<'t> {
             return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
         }
         // hand off
-        self.with_depth(|p| p.parse_postfix())?
+        Ok(self.with_depth(|p| p.parse_postfix())?)
     }
 
     fn parse_postfix(&mut self) -> Result<PExpr, String> {
