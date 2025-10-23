@@ -225,7 +225,7 @@ impl<'t> Parser<'t> {
         }
     } 
 
-    const MAX_RECURSION: usize = 64;
+    const MAX_RECURSION: usize = 256;
 
     #[inline]
     fn with_depth<T>(
@@ -596,9 +596,9 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_coalesce(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_or()?;
+        let mut lhs = self.with_depth(|p| p.parse_or())?;
         while self.eat_op("??") {
-            let rhs = self.parse_or()?;
+            let rhs = self.with_depth(|p| p.parse_or())?;
             lhs = PExpr::Binary(Box::new(lhs), "??".into(), Box::new(rhs));
         }
         Ok(lhs)
@@ -6100,11 +6100,11 @@ impl<'t> Parser<'t> {
     fn parse_coalesce_impl(&mut self) -> Result<PExpr, String> {
 
         // Nullish coalescing layer (above OR)
-        let mut lhs = self.parse_or()?;
+        let mut lhs = self.with_depth(|p| p.parse_or())?;
 
         while self.eat_op("??") {
             self.skip_newlines();
-            let rhs = self.parse_or()?;
+            let rhs = self.with_depth(|p| p.parse_or())?;
             lhs = PExpr::Binary(Box::new(lhs), "??".into(), Box::new(rhs));
         }
 
@@ -6112,17 +6112,17 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_or(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_and()?;
+        let mut lhs = self.with_depth(|p| p.parse_and())?;
         loop {
             if self.peek_ident() == Some("or") {
                 let _ = self.eat_ident();
                 self.skip_newlines();
-                let rhs = self.parse_and()?;
+                let rhs = self.with_depth(|p| p.parse_and())?;
                 lhs = PExpr::Binary(Box::new(lhs), "or".into(), Box::new(rhs));
                 continue;
             }
             if self.eat_op("<>") {
-                let rhs = self.parse_and()?;
+                let rhs = self.with_depth(|p| p.parse_and())?;
                 lhs = PExpr::Binary(Box::new(lhs), "<>".into(), Box::new(rhs));
                 continue;
             }
@@ -6132,19 +6132,19 @@ impl<'t> Parser<'t> {
     }
     
     fn parse_and(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_compare()?;
+        let mut lhs = self.with_depth(|p| p.parse_compare())?;
         loop {
             if self.peek_ident() == Some("and") {
                 let _ = self.eat_ident();
                 self.skip_newlines();
-                let rhs = self.parse_compare()?;
+                let rhs = self.with_depth(|p| p.parse_compare())?;
                 lhs = PExpr::Binary(Box::new(lhs), "and".into(), Box::new(rhs));
                 continue;
             }
             // support && alias if your lexer emits it as Op("&&")
             if self.eat_op("&&") {
                 self.skip_newlines();
-                let rhs = self.parse_compare()?;
+                let rhs = self.with_depth(|p| p.parse_compare())?;
                 lhs = PExpr::Binary(Box::new(lhs), "and".into(), Box::new(rhs));
                 continue;
             }
@@ -6154,7 +6154,7 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_compare(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_additive()?;
+        let mut lhs = self.with_depth(|p| p.parse_additive())?;
 
         loop {
             // textual: is / is not
@@ -6163,7 +6163,7 @@ impl<'t> Parser<'t> {
                 let neg = self.peek_ident() == Some("not");
                 if neg { let _ = self.eat_ident(); }
                 self.skip_newlines();
-                let rhs = self.parse_additive()?;
+                let rhs = self.with_depth(|p| p.parse_additive())?;
                 let op = if neg { "is not" } else { "is" };
                 lhs = PExpr::Binary(Box::new(lhs), op.into(), Box::new(rhs));
                 continue;
@@ -6186,7 +6186,7 @@ impl<'t> Parser<'t> {
 
                 self.skip_newlines();
                 // lower bound
-                let lo = self.parse_additive()?;
+                let lo = self.with_depth(|p| p.parse_additive())?;
 
                 self.skip_newlines();
                 // dots: "..." (inclusive upper) preferred over ".." (exclusive upper)
@@ -6204,7 +6204,7 @@ impl<'t> Parser<'t> {
 
                 self.skip_newlines();
                 // upper bound
-                let hi = self.parse_additive()?;
+                let hi = self.with_depth(|p| p.parse_additive())?;
 
                 // Desugar:
                 //   between: (lo <= lhs) and (lhs <|<= hi)
@@ -6223,14 +6223,14 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            if self.eat_op("===")  { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
-            if self.eat_op("!==")  { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
-            if self.eat_op("==")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
-            if self.eat_op("!=")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "!=".into(),  Box::new(rhs)); continue; }
-            if self.eat_op("<=")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<=".into(),  Box::new(rhs)); continue; }
-            if self.eat_op(">=")   { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
-            if self.eat_op("<")    { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), "<".into(),   Box::new(rhs)); continue; }
-            if self.eat_op(">")    { self.skip_newlines(); let rhs = self.parse_additive()?; lhs = PExpr::Binary(Box::new(lhs), ">".into(),   Box::new(rhs)); continue; }
+            if self.eat_op("===")  { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), "===".into(), Box::new(rhs)); continue; }
+            if self.eat_op("!==")  { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), "!==".into(), Box::new(rhs)); continue; }
+            if self.eat_op("==")   { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), "==".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("!=")   { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), "!=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("<=")   { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), "<=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op(">=")   { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), ">=".into(),  Box::new(rhs)); continue; }
+            if self.eat_op("<")    { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), "<".into(),   Box::new(rhs)); continue; }
+            if self.eat_op(">")    { self.skip_newlines(); let rhs = self.with_depth(|p| p.parse_additive())?; lhs = PExpr::Binary(Box::new(lhs), ">".into(),   Box::new(rhs)); continue; }
 
             break;
         }
@@ -6254,14 +6254,14 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_additive(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_multiplicative()?;
+        let mut lhs = self.with_depth(|p| p.parse_multiplicative())?;
 
         loop {
             // allow chaining inside say() expressions
 
             if self.eat_op("++") {
                 self.skip_newlines();
-                let mut rhs = self.parse_multiplicative()?;
+                let mut rhs = self.with_depth(|p| p.parse_multiplicative())?;
                 if let PExpr::Postfix(inner, op) = &rhs {
                     if op == "%s" {
                         let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
@@ -6272,7 +6272,7 @@ impl<'t> Parser<'t> {
                 continue;
             } else if self.eat_op("+") {
                 self.skip_newlines();
-                let mut rhs = self.parse_multiplicative()?;
+                let mut rhs = self.with_depth(|p| p.parse_multiplicative())?;
                 if let PExpr::Postfix(inner, op) = &rhs {
                     if op == "%s" {
                         let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
@@ -6283,7 +6283,7 @@ impl<'t> Parser<'t> {
                 continue;
             } else if self.eat_op("-") {
                 self.skip_newlines();
-                let mut rhs = self.parse_multiplicative()?;
+                let mut rhs = self.with_depth(|p| p.parse_multiplicative())?;
                 if let PExpr::Postfix(inner, op) = &rhs {
                     if op == "%s" {
                         let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
@@ -6300,7 +6300,7 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_multiplicative(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_power()?;
+        let mut lhs = self.with_depth(|p| p.parse_power())?;
 
         loop {
             let op = if self.eat_op("><") { "><" }       // divmod
@@ -6311,7 +6311,7 @@ impl<'t> Parser<'t> {
                      else { break };
 
             self.skip_newlines();
-            let mut rhs = self.parse_power()?;
+            let mut rhs = self.with_depth(|p| p.parse_power())?;
 
             // Desugar RHS `N%s` => `(N% of lhs)`
             if let PExpr::Postfix(inner, op_pct) = &rhs {
@@ -6328,16 +6328,16 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_power(&mut self) -> Result<PExpr, String> {
-        let lhs = self.parse_unary()?;
+        let lhs = self.with_depth(|p| p.parse_unary())?;
 
         if self.eat_op("**") {
             self.skip_newlines();
-            let rhs = self.parse_power()?;
+            let rhs = self.with_depth(|p| p.parse_power())?;
             return Ok(PExpr::Binary(Box::new(lhs), "**".into(), Box::new(rhs)));
         }
         if self.eat_op("^^") {
             self.skip_newlines();
-            let rhs = self.parse_power()?;
+            let rhs = self.with_depth(|p| p.parse_power())?;
             return Ok(PExpr::Binary(Box::new(lhs), "^^".into(), Box::new(rhs)));
         }
         Ok(lhs)
@@ -7531,7 +7531,7 @@ impl<'t> Parser<'t> {
 
         // logical-not
         if self.eat_op("!") {
-            let rhs = self.parse_unary()?;
+            let rhs = self.with_depth(|p| p.parse_unary())?;
             return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
         }
 
@@ -7539,25 +7539,25 @@ impl<'t> Parser<'t> {
         if self.peek_ident() == Some("not") {
             let _ = self.eat_ident(); // consumed "not"
             self.skip_newlines();
-            let rhs = self.parse_unary()?;
+            let rhs = self.with_depth(|p| p.parse_unary())?;
             return Ok(PExpr::Prefix("!".into(), Box::new(rhs))); // normalize to "!"
         }
 
         // unary +/-
         if self.eat_op("+") {
-            let rhs = self.parse_unary()?;
+            let rhs = self.with_depth(|p| p.parse_unary())?;
             return Ok(PExpr::Prefix("+".into(), Box::new(rhs)));
         }
         if self.eat_op("-") {
-            let rhs = self.parse_unary()?;
+            let rhs = self.with_depth(|p| p.parse_unary())?;
             return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
         }
         // hand off
-        self.parse_postfix()
+        self.with_depth(|p| p.parse_postfix())?
     }
 
     fn parse_postfix(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_member()?;
+        let mut lhs = self.with_depth(|p| p.parse_member())?;
 
         // helper: does the token *after* an operator look like an expression head?
         // used to disambiguate postfix "**" / "//" from binary power/int-div.
@@ -7706,7 +7706,7 @@ impl<'t> Parser<'t> {
             // `%o` — tight binary: (lhs %o rhs)
             if self.eat_op("%o") {
                 self.skip_newlines();
-                let rhs = self.parse_postfix()?; // tight binding
+                let rhs = self.with_depth(|p| p.parse_postfix())?; // tight binding
                 lhs = PExpr::Binary(Box::new(lhs), "%o".to_string(), Box::new(rhs));
                 continue;
             }
@@ -7727,7 +7727,7 @@ impl<'t> Parser<'t> {
                 if is_of {
                     let _ = self.eat_ident(); // consume 'of'
                     self.skip_newlines();
-                    let rhs = self.parse_postfix()?; // tight
+                    let rhs = self.with_depth(|p| p.parse_postfix())?; // tight
                     let pct = PExpr::Postfix(Box::new(lhs), "%".to_string());
                     lhs = PExpr::Binary(Box::new(pct), "of".to_string(), Box::new(rhs));
                     continue;
@@ -7776,7 +7776,7 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_member(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.parse_primary()?;
+        let mut lhs = self.with_depth(|p| p.parse_primary())?;
 
         loop {
             let start_i = self.i; // progress guard
