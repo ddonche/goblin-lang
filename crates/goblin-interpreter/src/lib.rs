@@ -19,7 +19,8 @@ pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
 pub mod diagnostics;
 
-const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference 
+const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference
+const MAX_EVAL_DEPTH: usize = 512; // maximum recursion depth for expression evaluation
 
 // ===================== REGEX CACHE ====================
 pub struct RegexCache {
@@ -426,11 +427,12 @@ pub struct Session {
     pub classes: BTreeMap<String, ast::ClassDecl>,
     pub enums: BTreeMap<String, ast::EnumDecl>,
     pub loop_depth: i32,
+    eval_depth: usize,                                 // recursion depth for eval_expr
     rng_state: u128,
-    pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding 
+    pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding
     pub relationship_graph: BTreeMap<String, ClassRelations>,
     pub modules: crate::modules::ModuleCache,
-    pub current_module: Option<String>, 
+    pub current_module: Option<String>,
     regex_cache: RegexCache,
 }
 
@@ -442,9 +444,10 @@ impl Session {
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
-            classes: BTreeMap::new(), 
+            classes: BTreeMap::new(),
             enums: BTreeMap::new(),
             loop_depth: 0,
+            eval_depth: 0,
             rng_state: seed,
             consts: vec![BTreeMap::new()],
             relationship_graph: BTreeMap::new(),
@@ -628,6 +631,33 @@ impl Session {
         let v = eval_expr(e, self)?;
         self.history.push(v.clone());
         Ok(v)
+    }
+
+    // Track recursion depth to prevent stack overflow
+    #[inline]
+    fn with_eval_depth<T, F>(&mut self, f: F) -> Result<T, Diag>
+    where
+        F: FnOnce(&mut Self) -> Result<T, Diag>
+    {
+        self.eval_depth += 1;
+        if self.eval_depth > MAX_EVAL_DEPTH {
+            self.eval_depth -= 1;
+            return Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    "R0999",
+                    "stack-overflow",
+                    "Expression is too deeply nested and would cause stack overflow",
+                    synth_span(),
+                )
+                .with_help("Split the expression into smaller sub-expressions or reduce nesting depth.")
+                .with_link("https://goblinlang.org/docs/errors#R0999")
+            );
+        }
+
+        let result = f(self);
+        self.eval_depth -= 1;
+        result
     }
 
     pub fn history_len(&self) -> usize { self.history.len() }
@@ -11470,14 +11500,17 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         // ---- Collections ----
         ast::Expr::Array(elems, _sp) => {
             let mut v = Vec::with_capacity(elems.len());
-            for e in elems { v.push(eval_expr(e, sess)?); }
+            for e in elems {
+                let val = sess.with_eval_depth(|s| eval_expr(e, s))?;
+                v.push(val);
+            }
             Ok(Value::Array(v))
         }
 
         ast::Expr::Object(kvs, _sp) => {
             let mut m = BTreeMap::new();
             for (k, vexpr) in kvs {
-                let v = eval_expr(vexpr, sess)?;
+                let v = sess.with_eval_depth(|s| eval_expr(vexpr, s))?;
                 m.insert(k.clone(), v);
             }
             Ok(Value::Map(m))
