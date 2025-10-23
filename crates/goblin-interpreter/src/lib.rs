@@ -1609,7 +1609,13 @@ fn render_with_spec(canon: &str, spec: &FormatSpec) -> String {
     }
 }
 
-fn fmt_value_raw(v: &Value) -> String {
+const MAX_PRINT_DEPTH: usize = 100; // maximum depth for printing nested structures
+
+fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
+    if depth > MAX_PRINT_DEPTH {
+        return "[too deep]".to_string();
+    }
+
     match v {
         Value::Formatted(inner, spec) => {
             match &**inner {
@@ -1635,11 +1641,10 @@ fn fmt_value_raw(v: &Value) -> String {
 
                 Value::Big(d) => {
                     let rounded = d.round_dp(spec.decimals);
-                    let canon   = rounded.to_string();       // canonical "1234567.89"
-                    render_with_spec(&canon, spec)           // <-- return it (no semicolon)
+                    let canon   = rounded.to_string();
+                    render_with_spec(&canon, spec)
                 }
-                // If you later wrap Big/Int/etc., stringify canonically then render.
-                other => fmt_value_raw(other),
+                other => fmt_value_with_depth(other, depth),
             }
         }
 
@@ -1649,8 +1654,92 @@ fn fmt_value_raw(v: &Value) -> String {
         Value::Int(i) => i.to_string(),
         Value::Bool(b) => if *b { "true".into() } else { "false".into() },
         Value::Nil     => "nil".into(),
-        _ => format!("{}", v), // Array/Map/Pair/Seq -> use Display
+
+        // Depth-aware printing for nested structures
+        Value::Array(xs) => {
+            let mut s = String::from("[");
+            for (i, v) in xs.iter().enumerate() {
+                if i > 0 { s.push_str(", "); }
+                s.push_str(&fmt_value_with_depth(v, depth + 1));
+            }
+            s.push(']');
+            s
+        }
+
+        Value::Map(m) => {
+            let mut s = String::from("{");
+            let mut first = true;
+            for (k, v) in m.iter() {
+                if !first { s.push_str(", "); }
+                first = false;
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value_with_depth(v, depth + 1));
+            }
+            s.push('}');
+            s
+        }
+
+        Value::Pair(a, b) => {
+            format!("({}, {})", fmt_value_with_depth(a, depth + 1), fmt_value_with_depth(b, depth + 1))
+        }
+
+        Value::Seq(xs) => {
+            let mut s = String::from("[");
+            if let Some(slice) = xs.as_slice() {
+                for (i, v) in slice.iter().enumerate() {
+                    if i > 0 { s.push_str(", "); }
+                    s.push_str(&fmt_value_with_depth(v, depth + 1));
+                }
+            } else {
+                let vecd = xs.to_vec();
+                for (i, v) in vecd.iter().enumerate() {
+                    if i > 0 { s.push_str(", "); }
+                    s.push_str(&fmt_value_with_depth(v, depth + 1));
+                }
+            }
+            s.push(']');
+            s
+        }
+
+        Value::Object { class_name, fields, .. } => {
+            let mut s = format!("{}{{", class_name);
+            let mut first = true;
+            for (k, v) in fields.iter() {
+                if !first { s.push_str(", "); }
+                first = false;
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value_with_depth(v, depth + 1));
+            }
+            s.push('}');
+            s
+        }
+
+        Value::Enum { enum_name, variant_name, fields } => {
+            let mut s = format!("{}::{}", enum_name, variant_name);
+            if let Some(field_map) = fields {
+                s.push_str(" {");
+                let mut first = true;
+                for (k, v) in field_map {
+                    if !first { s.push_str(", "); }
+                    s.push_str(" ");
+                    s.push_str(k);
+                    s.push_str(": ");
+                    s.push_str(&fmt_value_with_depth(v, depth + 1));
+                    first = false;
+                }
+                s.push_str(" }");
+            }
+            s
+        }
+
+        Value::Unit | Value::CtrlSkip | Value::CtrlStop => String::new(),
     }
+}
+
+fn fmt_value_raw(v: &Value) -> String {
+    fmt_value_with_depth(v, 0)
 }
 
 fn value_kind_str(v: &Value) -> &'static str {
