@@ -5555,7 +5555,7 @@ impl<'t> Parser<'t> {
             let mut elems = Vec::new();
             if !self.peek_op("]") {
                 loop {
-                    let elem = self.parse_coalesce()?;
+                    let elem = self.with_depth(|p| p.parse_coalesce())?;
                     elems.push(elem);
 
                     if self.eat_op(",") {
@@ -5815,7 +5815,7 @@ impl<'t> Parser<'t> {
                         if matches!(tok.kind, TokenKind::Newline) { self.i += 1; } else { break; }
                     }
 
-                    let value = self.parse_assign()?;
+                    let value = self.with_depth(|p| p.parse_assign())?;
                     props.push((key, value));
 
                     if self.eat_op(",") {
