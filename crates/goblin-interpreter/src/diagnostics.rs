@@ -175,6 +175,8 @@ pub mod rtcode {
     pub const INVALID_REGEX: &str = "R0506";
     pub const NO_MATCHES: &str = "R0507";
 
+    pub const MAX_CALL_DEPTH: &str = "R0601";
+
     pub const EMPTY_COLLECTION: &str = "R0701";
     pub const INVALID_RANGE_NO_VALUES: &str = "R0702";
     pub const INSUFFICIENT_DISTINCT: &str = "R0703";

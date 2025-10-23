@@ -1,0 +1,8 @@
+act main
+    /// Should work now - up to 512 levels deep!
+    x = [[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]  /// 20 levels
+    say x
+    say "Success!"
+end
+
+main()
