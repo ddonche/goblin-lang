@@ -11996,21 +11996,27 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                     };
 
-                    // iterable (Array or String)
+                    // iterable (Array, String, or Map)
                     let iterable_val = eval_expr(&args[1], sess)?;
                     let items = match iterable_val {
                         Value::Array(arr) => arr,
                         Value::Str(s) => s.chars().map(Value::Char).collect(),
+                        Value::Map(map) => {
+                            // Convert map to array of [key, value] pairs
+                            map.into_iter()
+                                .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
+                                .collect()
+                        }
                         _ => {
                             return Err(
                                 Diagnostic::new_with_code(
                                     Severity::Error,
                                     crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
                                     "type-mismatch",
-                                    "‘for’ can only iterate over arrays or strings.",
+                                    "'for' can only iterate over arrays, strings, or maps.",
                                     sp.clone(),
                                 )
-                                .with_help("Pass an Array (e.g., [1,2,3]) or a String (iterates characters).")
+                                .with_help("Pass an Array (e.g., [1,2,3]), a String (iterates characters), or a Map (iterates [key, value] pairs).")
                                 .with_link("https://goblinlang.org/docs/errors#T0205"),
                             )
                         }
