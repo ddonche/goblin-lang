@@ -19,6 +19,7 @@ serde_yaml = "0.9"
 rust_decimal = { version = "1", features = ["serde"] }  # base; maths is gated by feature below
 walkdir = "2"
 regex = "1.8.1"
+comrak = "0.21"
 
 [features]
 # Enabling "maths" here also enables rust_decimal's maths feature

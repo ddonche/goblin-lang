@@ -5502,6 +5502,13 @@ fn call_action_by_name(
             Value::Str(buffer.trim_end().to_string())
         }
 
+        // ----- MARKDOWN RENDERING -----
+        "md_to_html" => {
+            arity(1)?;
+            let s = want_str(&args[0], "md_to_html(input)")?;
+            Value::Str(crate::modules::markdown::md_to_html(&s))
+        }
+
         // ----- Introspection -----
         "valtype" | "vt" => {
             arity(1)?;

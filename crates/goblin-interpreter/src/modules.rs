@@ -2,6 +2,35 @@ use std::collections::BTreeMap;
 use goblin_ast as ast;
 use crate::Value;
 
+pub mod markdown {
+    use comrak::{
+        markdown_to_html, ComrakExtensionOptions, ComrakOptions, ComrakParseOptions, ComrakRenderOptions,
+    };
+
+    pub fn md_to_html(md: &str) -> String {
+        let mut options = ComrakOptions::default();
+
+        // Extensions
+        options.extension.table = true;
+        options.extension.autolink = true;
+        options.extension.tasklist = true;
+        options.extension.strikethrough = true;
+        options.extension.superscript = true;
+        options.extension.footnotes = true;
+        // options.extension.tagfilter = false; // leave default unless you want HTML filtering
+
+        // Parse
+        options.parse.smart = true;
+
+        // Render
+        options.render.unsafe_ = false;       // set true to allow raw HTML passthrough
+        options.render.hardbreaks = false;
+        options.render.github_pre_lang = true;
+
+        markdown_to_html(md, &options)
+    }
+}
+
 pub struct ModuleCache {
     loaded: BTreeMap<String, Module>,
 }

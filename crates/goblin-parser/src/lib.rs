@@ -6,7 +6,17 @@ use goblin_ast::{self as ast, RelationDef};
 use goblin_diagnostics::{Diagnostic, Span};
 use goblin_lexer::{Token, TokenKind};
 mod diagnostics_ext;
-pub use diagnostics_ext::{s, s_help, derr, derr_help, derr_expected_found};
+pub use diagnostics_ext::{s, derr, derr_help, derr_expected_found};
+
+/// Like `s_help_site!`, but appends the Rust source site: `path/file.rs:LINE`.
+macro_rules! s_help_site {
+    ($code:expr, $msg:expr, $help:expr $(,)?) => {{
+        // Call s_help with an absolute path so call sites don't need an import.
+        let base = crate::diagnostics_ext::s_help($code, $msg, $help);
+        // Append parser source file/line for pinpointing where the error came from.
+        format!("{base} [site {}:{}]", file!(), line!())
+    }};
+}
 
 #[derive(Debug, Clone)]
 enum PExpr {
@@ -236,7 +246,7 @@ impl<'t> Parser<'t> {
 
         // Detect "stuck" progress to avoid infinite loops.
         if start_i == self.last_progress_check {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0101",
                 &format!(
                     "The parser got stuck and can't continue near token {} (token: {:?}).",
@@ -250,7 +260,7 @@ impl<'t> Parser<'t> {
         self.rec_depth += 1;
         if self.rec_depth > Self::MAX_RECURSION {
             self.rec_depth -= 1;
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P1001",
                 "This expression is too deeply nested and can't be parsed clearly.",
                 "Split it into smaller sub-expressions on separate lines, then combine the results (use fewer layers of parentheses).",
@@ -274,7 +284,7 @@ impl<'t> Parser<'t> {
     fn forbid_brace_after_header(&self, header_line: u32) -> Result<(), String> {
         if let Some(t) = self.toks.get(self.i) {
             if t.span.line_start == header_line && t.value.as_deref() == Some("{") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0205",
                     "Blocks use layout, not braces.",
                     "Start the block on the next line and close with 'end' or 'xx' (crossbones).",
@@ -352,7 +362,7 @@ impl<'t> Parser<'t> {
                                     if t3.span.line_start == line && matches!(t3.kind, TokenKind::Op(ref op) if op == "=") {
                                         // Assignments only at statement level (match normal '=' behavior)
                                         if !self.in_stmt {
-                                            return Err(s_help(
+                                            return Err(s_help_site!(
                                                 "P0301",
                                                 "You can't use assignment (=) inside an expression.",
                                                 "Put the assignment on its own line, then use the variable: result = calculate() then total = result * 2.",
@@ -361,7 +371,7 @@ impl<'t> Parser<'t> {
 
                                         // Enforce capitalized Type
                                         if !type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                                            return Err(s_help(
+                                            return Err(s_help_site!(
                                                 "P0910",
                                                 "Types used in object construction must begin with a capital letter.",
                                                 &format!("Write: myVar | {} = name: \"...\"", Self::capitalize_like(&type_name)),
@@ -421,7 +431,7 @@ impl<'t> Parser<'t> {
                 // If we have multiple identifiers followed by '=', it's tuple assignment
                 if idents.len() > 1 && self.peek_op("=") {
                     if !self.in_stmt {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0301",
                             "You can't use assignment (=) inside an expression.",
                             "Put the assignment on its own line.",
@@ -483,7 +493,7 @@ impl<'t> Parser<'t> {
 
         // Assignments only at statement level (applies to the normal path)
         if !self.in_stmt {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0301",
                 "You can't use assignment (=) inside an expression.",
                 "Put the assignment on its own line, then use the variable: result = calculate() then total = result * 2.",
@@ -492,7 +502,7 @@ impl<'t> Parser<'t> {
 
         // Forbid assigning to meta .type
         if self.lhs_ends_with_dot_type_at(self.i) {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0302",
                 "You can't assign to `.type`; it's a special system property.",
                 "If you want a field named 'type', write: person >> type = \"admin\".",
@@ -571,13 +581,13 @@ impl<'t> Parser<'t> {
     fn parse_one_pair_or_skip_into(&mut self, pairs: &mut Vec<(String, PExpr)>) -> Result<(), String> {
         // ident expected: either a field name or 'nc' (case-insensitive)
         let Some(head) = self.eat_ident() else {
-            return Err(s_help("P0911", "Expected a field name or 'nc' here", "Write: name: value, or use 'nc' to skip"));
+            return Err(s_help_site!("P0911", "Expected a field name or 'nc' here", "Write: name: value, or use 'nc' to skip"));
         };
 
         if head.eq_ignore_ascii_case("nc") {
             // placeholder skip; must not be followed by ':'
             if self.peek_op(":") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0916",
                     "'nc' is a placeholder; don't write 'nc:'.",
                     "Use 'nc' by itself between separators, e.g., :: nc :: .",
@@ -587,7 +597,7 @@ impl<'t> Parser<'t> {
         }
 
         if !self.eat_op(":") {
-            return Err(s_help("P0911", "Expected ':' after field name", "Write: name: value"));
+            return Err(s_help_site!("P0911", "Expected ':' after field name", "Write: name: value"));
         }
 
         let val = self.parse_assign()?; // full expr allowed on RHS
@@ -606,7 +616,7 @@ impl<'t> Parser<'t> {
 
     fn ensure_progress(&mut self, start_i: usize, context: &str) -> Result<(), String> {
         if self.i <= start_i {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0101",
                 &format!(
                     "The parser got stuck and can't continue near token {} in {}.",
@@ -625,7 +635,7 @@ impl<'t> Parser<'t> {
             if t.span.line_start == header_line {
                 match &t.kind {
                     goblin_lexer::TokenKind::Op(op) if op == "{" => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0205",
                             "Blocks use layout, not braces.",
                             "Start the block on the next line and close with 'end' or 'xx' (crossbones).",
@@ -718,7 +728,7 @@ impl<'t> Parser<'t> {
         let mut expr = if let Some(name) = self.eat_ident() {
             PExpr::Ident(name)
         } else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0401",
                 "You need a variable, field access, or array index after '&'",
                 "Examples: &user, &user>>name, &items[0]",
@@ -740,7 +750,7 @@ impl<'t> Parser<'t> {
                     expr = PExpr::Member(Box::new(expr), key);
                     continue;
                 } else {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0402",
                         "You need a field name or a quoted string after '>>'",
                         "Example: user >> name or config >> \"api-key\"",
@@ -752,7 +762,7 @@ impl<'t> Parser<'t> {
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
 
                 let Some(name) = self.eat_ident() else {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0403",
                         "You need a field name after '?>>'",
                         "Example: user ?>> email",
@@ -766,7 +776,7 @@ impl<'t> Parser<'t> {
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
 
                 if self.peek_op("]") {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0701",
                         "Brackets need an index or slice expression",
                         "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]",
@@ -777,7 +787,7 @@ impl<'t> Parser<'t> {
 
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, K::Newline)) { self.i += 1; }
                 if !self.eat_op("]") {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0702",
                         "This index or slice is missing a closing ']'",
                         "Add ']' to close it: items[0] or data[1:5]",
@@ -939,7 +949,7 @@ impl<'t> Parser<'t> {
     fn parse_format_args_pexpr_after_lparen(&mut self) -> Result<Vec<PExpr>, String> {
         // 1) DEC: must be an integer literal token
         let Some(tok) = self.peek() else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P05F1",
                 "Expected a decimal count as the first argument to format(..)",
                 "Example: num.format(2 , .)"
@@ -951,7 +961,7 @@ impl<'t> Parser<'t> {
             self.i += 1; // consume int
             PExpr::Int(lit)
         } else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P05F2",
                 "format(..) requires an integer for the number of decimal places",
                 "Use something like: format(2 , .)"
@@ -994,14 +1004,14 @@ impl<'t> Parser<'t> {
                         "_"    => Ok(PExpr::Char('_')),
                         "'"    => Ok(PExpr::Char('\'')),
                         "none" => Ok(PExpr::Str("none".into())),
-                        _ => Err(s_help("P05F3",
+                        _ => Err(s_help_site!("P05F3",
                                         "format: unknown thousands separator",
                                         "Use ',', '.', '_', \"'\", or 'none'")),
                     };
                 }
             }
 
-            Err(s_help(
+            Err(s_help_site!(
                 "P05F4",
                 "Expected a thousands separator after the decimals in format(..)",
                 "Use ',', '.', '_', \"'\", or 'none': format(2 , .)"
@@ -1022,14 +1032,14 @@ impl<'t> Parser<'t> {
                     return match s.as_str() {
                         "." => Ok(PExpr::Char('.')),
                         "," => Ok(PExpr::Char(',')),
-                        _ => Err(s_help("P05F5",
+                        _ => Err(s_help_site!("P05F5",
                                         "format: decimal marker must be '.' or ','",
                                         "Example: format(2 , .)")),
                     };
                 }
             }
 
-            Err(s_help(
+            Err(s_help_site!(
                 "P05F6",
                 "Expected a decimal marker '.' or ',' after the thousands separator",
                 "Example: format(2 , .)"
@@ -1040,7 +1050,7 @@ impl<'t> Parser<'t> {
         let sep_dec = consume_decimal(self)?;
 
         if !self.eat_op(")") {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P05F7",
                 "Expected ')' to close format(..)",
                 "Close the call: num.format(2 , .)"
@@ -1149,7 +1159,7 @@ impl<'t> Parser<'t> {
         }
         fn parse_ident(bytes: &[u8], i: &mut usize) -> Result<String, String> {
             if *i >= bytes.len() || !is_alpha(bytes[*i]) {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0103",
                     "Expected a name (identifier) here",
                     "Use a simple name starting with a letter: username or count",
@@ -1178,7 +1188,7 @@ impl<'t> Parser<'t> {
                 // accept either quote
                 let quote = match peek(bytes, i, 0) {
                     Some(b'\'') | Some(b'"') => { let q = bytes[i]; i += 1; q }
-                    _ => return Err(s_help(
+                    _ => return Err(s_help_site!(
                         "P0601",
                         "After '??', start the default with a quote (' or \")",
                         "Example: name ?? \"Anonymous\"",
@@ -1188,7 +1198,7 @@ impl<'t> Parser<'t> {
                 let start = i;
                 while i < n && bytes[i] != quote { i += 1; }
                 if i >= n {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0602",
                         "The default string after '??' isn't closed",
                         "Add a matching quote to end it: name ?? \"guest\"",
@@ -1198,7 +1208,7 @@ impl<'t> Parser<'t> {
                 i += 1; // closing quote
                 skip_ws(bytes, &mut i);
                 if i != n {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0603",
                         "Only a single string is allowed after '??'",
                         "Remove any extra characters after the closing quote: name ?? \"guest\"",
@@ -1229,7 +1239,7 @@ impl<'t> Parser<'t> {
             // index: [number] or [ident]
             if eat(bytes, &mut i, b'[') {
                 skip_ws(bytes, &mut i);
-                if i >= n { return Err(s_help("P0703", "The '[' starts an index but it isn't closed", "Add a matching ']' to complete the index: items[0]")); }
+                if i >= n { return Err(s_help_site!("P0703", "The '[' starts an index but it isn't closed", "Add a matching ']' to complete the index: items[0]")); }
 
                 // number?
                 if i < n && bytes[i].is_ascii_digit() {
@@ -1238,7 +1248,7 @@ impl<'t> Parser<'t> {
                     while i < n && (bytes[i].is_ascii_digit() || bytes[i] == b'_') { i += 1; }
                     let num = std::str::from_utf8(&bytes[start..i]).unwrap().to_string();
                     skip_ws(bytes, &mut i);
-                    if !eat(bytes, &mut i, b']') { return Err(s_help("P0704", "This numeric index is missing a closing ']'", "Add ']' to close it: items[0]")); }
+                    if !eat(bytes, &mut i, b']') { return Err(s_help_site!("P0704", "This numeric index is missing a closing ']'", "Add ']' to close it: items[0]")); }
                     segments.push(LvSeg::IndexNumber(num));
                     continue;
                 }
@@ -1247,12 +1257,12 @@ impl<'t> Parser<'t> {
                 if i < n && is_alpha(bytes[i]) {
                     let name = parse_ident(bytes, &mut i)?;
                     skip_ws(bytes, &mut i);
-                    if !eat(bytes, &mut i, b']') { return Err(s_help("P0705", "This identifier index is missing a closing ']'", "Add ']' to close it: items[id]")); }
+                    if !eat(bytes, &mut i, b']') { return Err(s_help_site!("P0705", "This identifier index is missing a closing ']'", "Add ']' to close it: items[id]")); }
                     segments.push(LvSeg::IndexIdent(name));
                     continue;
                 }
 
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0706",
                     "You need a number or a name inside '[ ]'",
                     "Examples: items[0] or data[key]",
@@ -1287,7 +1297,7 @@ impl<'t> Parser<'t> {
         }
 
         if depth != 0 {
-            Err(s_help(
+            Err(s_help_site!(
                 "P0604",
                 "There's an unclosed '{' in this string",
                 "Add a matching '}' to close it: \"Hello {name}\"",
@@ -1326,13 +1336,13 @@ impl<'t> Parser<'t> {
             "BOF".into()
         };
         if ctx.is_empty() {
-            s_help(
+            s_help_site!(
                 "P1003",
                 &format!("Expected an expression, but found {} after {}", here, prev),
                 "Use a value, variable, or call: total = price * qty",
             )
         } else {
-            s_help(
+            s_help_site!(
                 "P1003",
                 &format!("Expected an expression {} but found {} after {}", ctx, here, prev),
                 "Use a value, variable, or call: total = price * qty",
@@ -1365,7 +1375,7 @@ impl<'t> Parser<'t> {
     fn split_duration_lexeme(s: &str) -> Result<(String, String), String> {
         // Accept units: mo, s, m, h, d, w, y  (longest-match for "mo")
         if s.len() < 2 {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0901",
                 "This duration format isn't valid",
                 "Use formats like 5s, 10m, 2h, or 3d",
@@ -1379,7 +1389,7 @@ impl<'t> Parser<'t> {
             (&s[..s.len()-1], u)
         };
         if base.is_empty() {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0901",
                 "This duration format isn't valid",
                 "Use formats like 5s, 10m, 2h, or 3d",
@@ -1388,7 +1398,7 @@ impl<'t> Parser<'t> {
         // Minimal unit validation
         match unit {
             "s" | "m" | "h" | "d" | "w" | "y" | "mo" => Ok((base.to_string(), unit.to_string())),
-            _ => Err(s_help(
+            _ => Err(s_help_site!(
                 "P0902",
                 &format!("'{}' isn't a valid time unit", unit),
                 "Use s, m, h, d, w, y, or mo: 5m or 2h",
@@ -1826,7 +1836,7 @@ impl<'t> Parser<'t> {
         let mut depth = 1;
         loop {
             if self.is_eof() {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0204",
                     "I reached the end of the file, but this action block is still open",
                     "Close the block with 'end' or 'xx' (crossbones).",
@@ -1873,7 +1883,7 @@ impl<'t> Parser<'t> {
                 self.i += 1; // consume 'return'
             }
             _ => {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0600",
                     "Internal parser error: parse_return_stmt called when next token is not 'return'",
                     "Parser bug.",
@@ -1902,7 +1912,7 @@ impl<'t> Parser<'t> {
             }
         }
         // `return` expr (',' expr)*
-        let first_pe = self.parse_assign().map_err(|_| s_help(
+        let first_pe = self.parse_assign().map_err(|_| s_help_site!(
             "P0603",
             "Invalid expression after 'return'",
             "Use `return expr` or `return a, b`.",
@@ -1911,7 +1921,7 @@ impl<'t> Parser<'t> {
         values.push(first);
         
         while self.eat_op(",") {
-            let expr_pe = self.parse_assign().map_err(|_| s_help(
+            let expr_pe = self.parse_assign().map_err(|_| s_help_site!(
                 "P0603",
                 "Invalid expression in return list",
                 "Separate expressions with commas, e.g., `return a+b, lower(name)`.",
@@ -1923,7 +1933,7 @@ impl<'t> Parser<'t> {
         // after values, only terminators allowed; don't consume them here
         if let Some(tok) = self.peek() {
             if !is_terminator(tok) {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0601",
                     "Invalid tokens after return values",
                     "End the line after `return expr` or `return a, b`.",
@@ -1942,7 +1952,7 @@ impl<'t> Parser<'t> {
             // 1) Field key (class-strict: forbid 'nc')
             let Some(key) = self.eat_object_key() else {
                 if out.is_empty() {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0903",
                         "Expected a field name in this class header",
                         "Add a field in the header: @Player = username: \"john\" :: health: 100",
@@ -1953,7 +1963,7 @@ impl<'t> Parser<'t> {
             };
 
             if key.eq_ignore_ascii_case("nc") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P1910",
                     "'nc' is not allowed in class headers.",
                     "Declare a real field: name: \"...\"",
@@ -1962,7 +1972,7 @@ impl<'t> Parser<'t> {
 
             // 2) Colon
             if !self.eat_op(":") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0904",
                     "You need a ':' after the field name",
                     "Write it like username: \"john\"",
@@ -1984,7 +1994,7 @@ impl<'t> Parser<'t> {
             let value_line = match self.toks.get(value_start) {
                 Some(t) => t.span.line_start,
                 None => {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0906",
                         "Expected a value after ':'",
                         "Write it like username: \"john\"",
@@ -2028,7 +2038,7 @@ impl<'t> Parser<'t> {
                             if next.span.line_start == value_line
                                 && matches!(next.kind, TokenKind::Op(ref c) if c == ":")
                             {
-                                return Err(s_help(
+                                return Err(s_help_site!(
                                     "P0905",
                                     "Missing field separator between fields",
                                     "Separate fields with '::' or ',' e.g. username: \"john\" :: health: 100",
@@ -2062,7 +2072,7 @@ impl<'t> Parser<'t> {
                     if tok2.span.line_start == value_line {
                         if let goblin_lexer::TokenKind::Op(op) = &tok2.kind {
                             if op == "::" || op == "," {
-                                return Err(s_help(
+                                return Err(s_help_site!(
                                     "P0907",
                                     "Unexpected extra separator",
                                     "Use a single '::' or ',' between fields: name: \"Rook\" :: health: 100",
@@ -2078,14 +2088,14 @@ impl<'t> Parser<'t> {
                 match next {
                     Some(t) if t.span.line_start == value_line => {
                         if !matches!(t.kind, goblin_lexer::TokenKind::Ident) {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P0914",
                                 "Expected a field name after the separator in this class header.",
                                 "Write: name: value, age: 0  (no empty '::' and no placeholders)",
                             ));
                         }
                         if t.value.as_deref().map(|s| s.eq_ignore_ascii_case("nc")).unwrap_or(false) {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1910",
                                 "'nc' is not allowed in class headers.",
                                 "Declare an explicit field: name: \"...\"",
@@ -2097,7 +2107,7 @@ impl<'t> Parser<'t> {
                             if tt.span.line_start == value_line
                             && matches!(tt.kind, goblin_lexer::TokenKind::Op(ref c) if c == ":")))
                         {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P0904",
                                 "You need a ':' after the field name",
                                 "Write it like username: \"john\"",
@@ -2106,7 +2116,7 @@ impl<'t> Parser<'t> {
                     }
                     _ => {
                         // newline/EOF after separator → trailing separator is illegal in class headers
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0915",
                             "Expected another field after the separator in this class header.",
                             "Write: name: value, age: 0  (no trailing '::' or ',')",
@@ -2168,7 +2178,7 @@ impl<'t> Parser<'t> {
             // 2) Try a named field: key ':' expr
             let save_i = self.i;
             let Some(key) = self.eat_object_key() else {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "O0901",
                     "Expected 'name: value', 'nc', or a separator in this object.",
                     "Use 'nc' or '::' to skip, or write a field like name: \"Fluffy\"",
@@ -2178,7 +2188,7 @@ impl<'t> Parser<'t> {
             if !self.eat_op(":") {
                 // Not actually a pair; rewind and error
                 self.i = save_i;
-                return Err(s_help(
+                return Err(s_help_site!(
                     "O0902",
                     "Expected ':' after the field name in this object.",
                     "Write: name: \"Fluffy\" or use 'nc' to skip",
@@ -2217,7 +2227,7 @@ impl<'t> Parser<'t> {
                         if depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && k > value_start
                            && op != "::" && op != "," =>
                     {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "O0904",
                             &format!("Unexpected token '{}' between fields in this object.", op),
                             "Remove it or separate fields with '::' or ',': name: \"n\" :: species: \"cat\"",
@@ -2232,7 +2242,7 @@ impl<'t> Parser<'t> {
                             if next.span.line_start == line
                                 && matches!(next.kind, TokenKind::Op(ref c) if c == ":")
                             {
-                                return Err(s_help(
+                                return Err(s_help_site!(
                                     "O0903",
                                     "Missing field separator between fields in this object.",
                                     "Separate fields with '::' or ',': name: \"n\" :: species: \"cat\"",
@@ -2274,7 +2284,7 @@ impl<'t> Parser<'t> {
 
         // name
         let Some(name) = self.eat_ident() else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0501",
                 &format!("You need to give your {} a name", kw),
                 &format!("Write it like: {} Save", kw),
@@ -2287,7 +2297,7 @@ impl<'t> Parser<'t> {
             if !self.peek_op(")") {
                 loop {
                     let Some(pname) = self.eat_ident() else {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0502",
                             "Expected a parameter name",
                             "Use a simple identifier like username or count",
@@ -2309,7 +2319,7 @@ impl<'t> Parser<'t> {
                 }
             }
             if !self.eat_op(")") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0503",
                     "Expected ')' to close the parameter list",
                     "Add the closing ')': action Save(username, level)",
@@ -2340,18 +2350,24 @@ impl<'t> Parser<'t> {
     fn parse_free_action(&mut self, kw: &str) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
-        // Header position (right after the keyword token/ident)
-        let hdr_tok_i   = self.i.saturating_sub(1);
-        let hdr_start   = self.toks[hdr_tok_i].clone();
-        let hdr_line    = hdr_start.span.line_start;
-        let hdr_col     = hdr_start.span.col_start;
+        // ----- header location -----
+        let hdr_tok_i = self.i.saturating_sub(1);
+        let hdr_start = self.toks[hdr_tok_i].clone();
+        let hdr_line  = hdr_start.span.line_start;
+        let mut base_col: u32 = hdr_start.span.col_start;
 
-        // Parse: name, (params), legacy "= expr" (handled by helper), otherwise no body yet
+        let mut k = hdr_tok_i;
+        while k > 0 && self.toks[k - 1].span.line_start == hdr_line {
+            k -= 1;
+            base_col = base_col.min(self.toks[k].span.col_start);
+        }
+
+        // ----- parse header tail -----
         let action_start = self.i;
         let pa = self.parse_action_after_keyword(kw)?;
         let action_span = Self::span_from_tokens(self.toks, action_start, self.i.saturating_sub(1));
 
-        // Lower params: Vec<(String, Option<PExpr>)> -> Vec<ast::Param>
+        // params
         let params: Vec<ast::Param> = pa.params.into_iter()
             .map(|(pname, def_pe)| ast::Param {
                 name: pname,
@@ -2361,8 +2377,7 @@ impl<'t> Parser<'t> {
             })
             .collect();
 
-        // ---------- NEW: SINGLE-LINE '=> expr' FORM ----------
-        // Skip separators between ')' and '=>'
+        // ----- single-line  => expr -----
         let mut j = self.i;
         while let Some(tok) = self.toks.get(j) {
             match &tok.kind {
@@ -2373,17 +2388,13 @@ impl<'t> Parser<'t> {
         }
         if let Some(tok) = self.toks.get(j) {
             if matches!(tok.kind, TokenKind::Op(ref s) if s == "=>") {
-                // consume skipped separators + '=>'
                 self.i = j + 1;
-
-                // parse with same entry point as legacy/param defaults
                 let pexpr = self.parse_coalesce()?;
                 let expr  = self.lower_expr(pexpr);
-
                 let act = ast::ActionDecl {
                     name: pa.name,
                     params,
-                    body: ast::ActionBody::Expr(expr), // implicit return
+                    body: ast::ActionBody::Expr(expr),
                     span: action_span,
                     ret: None,
                 };
@@ -2391,10 +2402,9 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // ---------- LEGACY SINGLE-LINE: `action name(...) = expr` ----------
+        // ----- legacy single-line  = expr -----
         if !pa.body.is_empty() {
             let body_stmts: Vec<ast::Stmt> = pa.body.into_iter().collect();
-
             let act = ast::ActionDecl {
                 name: pa.name,
                 params,
@@ -2405,7 +2415,7 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::Action(act));
         }
 
-        // ---------- BLOCK FORM (layout, no braces) ----------
+        // ----- block form (layout, no braces) -----
         if let Some(prev_tok) = self.toks.get(self.i.saturating_sub(1)) {
             let mut j = self.i;
             while let Some(tok) = self.toks.get(j) {
@@ -2419,7 +2429,7 @@ impl<'t> Parser<'t> {
                 if matches!(next.kind, TokenKind::Op(ref s) if s == "{")
                     && next.span.line_start > prev_tok.span.line_end
                 {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0205",
                         "A '{' on a new line starts an object, not an action block",
                         "Blocks use layout, not braces. Start the block on the next line and close with 'end' or 'xx' (crossbones).",
@@ -2430,21 +2440,47 @@ impl<'t> Parser<'t> {
 
         self.enforce_inline_brace_policy(hdr_line, kw)?;
 
-        let body_stmts = self.parse_indented_block(hdr_col, &["end"])?;
+        // NOTE: accept both closers
+        let body_stmts = self.parse_indented_block(base_col, &["end", "xx"])?;
 
         self.skip_stmt_separators();
+
         if self.block_closed_hard {
             self.block_closed_hard = false;
         } else if self.peek_block_close() {
-            let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
-            if col == hdr_col {
+            // Only consume if aligned to (or left of) base_col to be robust to off-by-1
+            let col: u32 = self
+                .toks
+                .get(self.i)
+                .map(|t| t.span.col_start)
+                .unwrap_or(u32::MAX);
+            if col <= base_col {
                 self.expect_block_close("action")?;
+            } else {
+                // fallthrough to dedent rule
             }
-        } else if !self.eat_layout_until_close(hdr_col) {
-            return Err(s_help(
+        } else if !self.eat_layout_until_close(base_col) {
+            // ---- ALWAYS-ON DEBUG IN ERROR TEXT (no helpers) ----
+            let next = self.toks.get(self.i);
+            let prev = self.toks.get(self.i.saturating_sub(1));
+            let fmt_tok = |t: Option<&goblin_lexer::Token>| -> String {
+                match t {
+                    Some(t) => format!(
+                        "{:?}@{}:{}..{}:{}",
+                        t.kind, t.span.line_start, t.span.col_start, t.span.line_end, t.span.col_end
+                    ),
+                    None => "<EOF>".to_string(),
+                }
+            };
+            let dbg = format!(
+                " [layout hdr_line={}, base_col={}, next={}, prev={}]",
+                hdr_line, base_col, fmt_tok(next), fmt_tok(prev)
+            );
+
+            return Err(s_help_site!(
                 "P0212",
                 "This action block is missing its closing 'end' or 'xx' (crossbones).",
-                "Close the block with 'end' or 'xx' (crossbones).",
+                "Close the block with 'end' or 'xx' (crossbones). [parse free action]"
             ));
         }
 
@@ -2494,7 +2530,7 @@ impl<'t> Parser<'t> {
         // 2) IDENT (capture span + text)
         let (name_text, name_span) = {
             let Some(t) = self.peek().cloned() else {
-                return Err(s_help("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
+                return Err(s_help_site!("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
             };
             match t.kind {
                 TokenKind::Ident => {
@@ -2503,7 +2539,7 @@ impl<'t> Parser<'t> {
                     (text, t.span)
                 }
                 _ => {
-                    return Err(s_help("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
+                    return Err(s_help_site!("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
                 }
             }
         };
@@ -2512,7 +2548,7 @@ impl<'t> Parser<'t> {
         let class_name = if self.peek_op("|") {
             self.i += 1; // consume |
             let Some(class_tok) = self.peek().cloned() else {
-                return Err(s_help("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
+                return Err(s_help_site!("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
             };
             match class_tok.kind {
                 TokenKind::Ident => {
@@ -2521,7 +2557,7 @@ impl<'t> Parser<'t> {
                     Some(cname)
                 }
                 _ => {
-                    return Err(s_help("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
+                    return Err(s_help_site!("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
                 }
             }
         } else {
@@ -2538,7 +2574,7 @@ impl<'t> Parser<'t> {
             self.i += 1; // consume the Shadow token
             (ast::BindMode::Shadow, sp)
         } else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0402",
                 &format!("Expected '=' or '[=' after '{}'", name_text),
                 "Use '=' for a normal assign, or '[=' (shadow) to declare+init in the current scope.",
@@ -2548,7 +2584,7 @@ impl<'t> Parser<'t> {
         let rhs = if class_name.is_some() {
             // Object instantiation: expect { field: value, ... } or { val1, val2, ... }
             if !self.eat_op("{") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0412",
                     "Expected '{' after class name in object construction",
                     "Write: user|User = { id: 1, name: \"Alice\" } or user|User = { 1, \"Alice\" }",
@@ -2589,7 +2625,7 @@ impl<'t> Parser<'t> {
                     
                     loop {
                         let Some(key) = self.eat_ident() else {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P0413",
                                 "Expected a field name",
                                 "Write: { id: 1, name: \"Alice\" }",
@@ -2597,7 +2633,7 @@ impl<'t> Parser<'t> {
                         };
                         
                         if !self.eat_op(":") {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P0414",
                                 "Expected ':' after field name",
                                 "Write: { id: 1, name: \"Alice\" }",
@@ -2619,7 +2655,7 @@ impl<'t> Parser<'t> {
                     
                     self.skip_newlines();
                     if !self.eat_op("}") {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0415",
                             "Expected '}' to close object construction",
                             "Write: { id: 1, name: \"Alice\" }",
@@ -2646,7 +2682,7 @@ impl<'t> Parser<'t> {
                     
                     self.skip_newlines();
                     if !self.eat_op("}") {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0416",
                             "Expected '}' to close object construction",
                             "Write: { 1, \"Alice\", \"email@example.com\" }",
@@ -2828,24 +2864,24 @@ impl<'t> Parser<'t> {
     fn expect_block_close(&mut self, block_type: &str) -> Result<(), String> {
         self.skip_newlines();
         if self.is_eof() {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0212",
-                &format!("This {} block is missing its closing 'end' or 'xx' (crossbones).", block_type),
-                "Close the block with 'end' or 'xx' (crossbones).",
+                "This action block is missing its closing 'end' or 'xx' (crossbones).",
+                "Close the block with 'end' or 'xx' (crossbones). [expect block close]"
             ));
         }
         let tok = self.toks.get(self.i).ok_or_else(|| {
-            s_help(
+            s_help_site!(
                 "P0212",
                 &format!("This {} block is missing its closing 'end' or 'xx' (crossbones).", block_type),
-                "Close the block with 'end' or 'xx' (crossbones).",
+                "Close the block with 'end' or 'xx' (crossbones). [expect block close]",
             )
         })?;
         if tok.value.as_deref() != Some("end") && tok.value.as_deref() != Some("xx") {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0212",
                 &format!("Expected 'end' or 'xx' to close this {} block.", block_type),
-                "Use 'end' or 'xx' to close the block.",
+                "Use 'end' or 'xx' to close the block. [expect block close]",
             ));
         }
         self.i += 1;
@@ -2860,10 +2896,10 @@ impl<'t> Parser<'t> {
     /// Parse one `name: expr` pair. Caller has NOT consumed `name` yet.
     fn parse_name_colon_expr_pair(&mut self) -> Result<(String, PExpr), String> {
         let Some(name) = self.eat_ident() else {
-            return Err(s_help("P0911", "Expected a field name before ':'", "Write: name: value"));
+            return Err(s_help_site!("P0911", "Expected a field name before ':'", "Write: name: value"));
         };
         if !self.eat_op(":") {
-            return Err(s_help("P0911", "Expected ':' after field name", "Write: name: value"));
+            return Err(s_help_site!("P0911", "Expected ':' after field name", "Write: name: value"));
         }
         let val = self.parse_assign()?; // full expr on the right
         Ok((name, val))
@@ -2930,7 +2966,7 @@ impl<'t> Parser<'t> {
 
         // Enforce capitalized Type name
         if !Self::is_capitalized(&type_name) {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0910",
                 "Types used in object construction must begin with a capital letter.",
                 &format!("Write '{}: name: \"...\"' with a capitalized type, like 'Pet: ...'.", Self::capitalize_like(&type_name)),
@@ -3051,7 +3087,7 @@ impl<'t> Parser<'t> {
         }
 
         if !saw_nl {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0210",
                 "Expected indentation after this header",
                 "Start the block on the next line, indent the body, and close with 'end' or 'xx' (crossbones).",
@@ -3069,7 +3105,7 @@ impl<'t> Parser<'t> {
                 Some(tok) if matches!(tok.kind, TokenKind::Dedent) => {
                     self.i += 1;
                     if depth == 0 {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0211",
                             "The indentation went back too far for this block",
                             "Indent the line to stay inside the block, or close it first with 'end' or 'xx' (crossbones).",
@@ -3083,20 +3119,20 @@ impl<'t> Parser<'t> {
                             let _ = self.eat_block_close();
                             break;
                         }
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0212",
                             "This block is missing its closing 'end' or 'xx' (crossbones)",
-                            "Close the block with 'end' or 'xx' (crossbones).",
+                            "Close the block with 'end' or 'xx' (crossbones). [parse stmt block]",
                         ));
                     }
                     continue;
                 }
                 Some(_) => { /* normal statement path */ }
                 None => {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0201",
                         "I reached the end of the file, but this block is still open",
-                        "Close the block with 'end' or 'xx' (crossbones).",
+                        "Close the block with 'end' or 'xx' (crossbones). [parse stmt block]",
                     ));
                 }
             }
@@ -3173,7 +3209,7 @@ impl<'t> Parser<'t> {
             // CHANGED: ".."  => exclusive upper bound
             true
         } else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P1004",
                 "Expected '..' or '...' after the lower bound in 'between'",
                 "Write it like: between 1..5 or between 10...20",
@@ -3198,7 +3234,7 @@ impl<'t> Parser<'t> {
             };
 
             if !self.eat_op(":") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0904",
                     "You need a ':' after the field name in the class header",
                     "Write it like: username: \"john\"",
@@ -3233,7 +3269,7 @@ impl<'t> Parser<'t> {
                 TokenKind::AtIdent => {
                     let nm = tok0.value.clone().unwrap_or_default();
                     if nm.is_empty() {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0906",
                             "Expected a class name after '@'",
                             "Start with a capitalized name: @Player = username: \"john\", health: 100",
@@ -3247,7 +3283,7 @@ impl<'t> Parser<'t> {
                     let at_line = tok0.span.line_start;
                     self.i += 1;
                     let Some(nm) = self.eat_ident() else {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0906",
                             "Expected a class name after '@'",
                             "Start with a capitalized name: @Player = username: \"john\", health: 100",
@@ -3256,7 +3292,7 @@ impl<'t> Parser<'t> {
                     (nm, at_col, at_line)
                 }
                 _ => {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0905",
                         "Expected '@' to start a class declaration",
                         "Start the class like: @Player = username: \"john\", health: 100",
@@ -3264,7 +3300,7 @@ impl<'t> Parser<'t> {
                 }
             }
         } else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0905",
                 "Expected '@' to start a class declaration",
                 "Start the class like: @Player = username: \"john\", health: 100",
@@ -3272,7 +3308,7 @@ impl<'t> Parser<'t> {
         };
 
         if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0907",
                 &format!("Class names must start with a capital letter (found '{}')", name),
                 "Rename it to start with uppercase: Player",
@@ -3285,7 +3321,7 @@ impl<'t> Parser<'t> {
 
         if self.eat_op("(") {
             if self.peek_op("(") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0710",
                     "Parentheses are not allowed after a class name.",
                     "Put fields after '=': @Player = username: \"john\", health: 100",
@@ -3294,7 +3330,7 @@ impl<'t> Parser<'t> {
         }
 
         if !self.eat_op("=") {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0908",
                 &format!("You need '=' after the class name '{}'", name),
                 "Write it like: @Player = username: \"john\", health: 100",
@@ -3341,18 +3377,18 @@ impl<'t> Parser<'t> {
                 let rel_keyword = self.eat_ident().unwrap();
                 
                 let Some(class_name) = self.eat_ident() else {
-                    return Err(s_help("P0920", 
+                    return Err(s_help_site!("P0920", 
                         &format!("Expected class name after '{}'", rel_keyword),
                         &format!("Write: {} ClassName", rel_keyword)));
                 };
                 
                 let (relation, field_name) = if rel_keyword == "of" {
                     if self.peek_ident() != Some("as") {
-                        return Err(s_help("P0921", "Expected 'as' after class name", "Write: of User as author"));
+                        return Err(s_help_site!("P0921", "Expected 'as' after class name", "Write: of User as author"));
                     }
                     self.i += 1; // eat 'as'
                     let Some(as_name) = self.eat_ident() else {
-                        return Err(s_help("P0922", "Expected relation name after 'as'", "Write: of User as author"));
+                        return Err(s_help_site!("P0922", "Expected relation name after 'as'", "Write: of User as author"));
                     };
                     (Some(RelationDef::Of { class_name: class_name.clone(), as_name: as_name.clone() }), as_name)
                 } else if rel_keyword == "with" {
@@ -3395,7 +3431,7 @@ impl<'t> Parser<'t> {
 
             // Normal field: expect ':' and value
             if !self.eat_op(":") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0904",
                     "You need a ':' after the field name (and any modifiers)",
                     "Write it like username: \"john\" or email?: \"\" or id!: 0",
@@ -3460,7 +3496,7 @@ impl<'t> Parser<'t> {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != hdr_col {
                     let closer = self.peek_ident().unwrap_or("xx");
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0222",
                         &format!(
                             "This '{}' closer is misaligned: expected column {}, found column {}",
@@ -3479,7 +3515,7 @@ impl<'t> Parser<'t> {
             }
 
             if self.is_eof() {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0909",
                     &format!(
                         "I reached the end of the file, but the class '{}' is still open (missing 'end' or 'xx')",
@@ -3499,7 +3535,7 @@ impl<'t> Parser<'t> {
                     && matches!(act_tok.value.as_deref(), Some("act") | Some("action")));
 
             if !is_action_kw {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0910",
                     "Inside a class, only 'act', 'action', or a closing 'end'/'xx' are allowed here",
                     "Add an action or close the class: act run(a) ... end, or end",
@@ -3547,7 +3583,7 @@ impl<'t> Parser<'t> {
             } else if self.peek_block_close() {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != act_col {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0222",
                         &format!(
                             "This closer is misaligned: expected column {}, found column {}",
@@ -3558,7 +3594,7 @@ impl<'t> Parser<'t> {
                 }
                 self.expect_block_close("action")?;
             } else if !self.eat_layout_until_close(act_col) {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0212",
                     "This action block is missing its closing 'end' or 'xx' (crossbones).",
                     "Close the block with 'end' or 'xx' (crossbones).",
@@ -3580,7 +3616,7 @@ impl<'t> Parser<'t> {
         
         // Get enum name
         let Some(name) = self.eat_ident() else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P1001",
                 "You need to give your enum a name",
                 "Write it like: enum Status",
@@ -3589,7 +3625,7 @@ impl<'t> Parser<'t> {
         
         // Enum names should be capitalized (optional check, matching your class style)
         if !name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P1002",
                 &format!("Enum names must start with a capital letter (found '{}')", name),
                 "Rename it to start with uppercase: Status",
@@ -3613,7 +3649,7 @@ impl<'t> Parser<'t> {
                 if self.peek_block_close() {
                     let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                     if col != hdr_col {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1003",
                             &format!("This closer is misaligned: expected column {}, found column {}", hdr_col, col),
                             "Align 'end' or 'xx' with the enum header",
@@ -3625,7 +3661,7 @@ impl<'t> Parser<'t> {
             }
             
             if self.is_eof() {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P1004",
                     &format!("The enum '{}' is missing its closing 'end' or 'xx'", name),
                     "Close the enum with 'end' or 'xx' (crossbones)",
@@ -3634,7 +3670,7 @@ impl<'t> Parser<'t> {
             
             // Parse variant name
             let Some(variant_name) = self.eat_ident() else {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P1005",
                     "Expected a variant name",
                     "Use a simple identifier like: idle or loading",
@@ -3652,7 +3688,7 @@ impl<'t> Parser<'t> {
                     }
                     
                     let Some(field_name) = self.eat_ident() else {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1006",
                             "Expected a field name",
                             "Write it like: x: int",
@@ -3660,7 +3696,7 @@ impl<'t> Parser<'t> {
                     };
                     
                     if !self.eat_op(":") {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1007",
                             "Expected ':' after field name",
                             "Write it like: x: int",
@@ -3676,7 +3712,7 @@ impl<'t> Parser<'t> {
                     self.skip_newlines();
                     if !self.eat_op(",") {
                         if !self.peek_op("}") {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1008",
                                 "Expected ',' or '}' after field",
                                 "Separate fields with commas: { x: int, y: int }",
@@ -3695,7 +3731,7 @@ impl<'t> Parser<'t> {
         }
         
         if variants.is_empty() {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P1009",
                 &format!("Enum '{}' has no variants", name),
                 "Add at least one variant: idle or loading",
@@ -3752,7 +3788,7 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_class_decl_keyword(&mut self) -> Result<PExpr, String> {
-        Err(s_help(
+        Err(s_help_site!(
             "P0912",
             "The 'class' keyword isn't used here",
             "Declare a class with '@' instead: @Player = username: \"john\" :: health: 100",
@@ -3851,7 +3887,7 @@ impl<'t> Parser<'t> {
                 let brace_line = self.toks[j].span.line_start;
                 if brace_line > header_line {
                     self.i = saved_i;
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0203",
                         &format!("Don't put '{{' after the {} header on a new line", who),
                         "Put '{{' on the same line as the header, or use indentation and close with 'end': if ok {{ run() }}",
@@ -3983,11 +4019,11 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_op("xx");
                 }
                 _ => {
-                    return Err(s_help("P0320", "Expected 'end' or 'xx' (crossbones) to close if block", "Add 'end' or 'xx' at the same indentation as 'if'"));
+                    return Err(s_help_site!("P0320", "Expected 'end' or 'xx' (crossbones) to close if block", "Add 'end' or 'xx' at the same indentation as 'if'"));
                 }
             }
         } else {
-            return Err(s_help("P0321", "Expected 'end' or 'xx' (crossbones) to close if block", "Add 'end' or 'xx' before end of file"));
+            return Err(s_help_site!("P0321", "Expected 'end' or 'xx' (crossbones) to close if block", "Add 'end' or 'xx' before end of file"));
         }
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
@@ -4174,11 +4210,11 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_op("xx");
                 }
                 _ => {
-                    return Err(s_help("P0320", "Expected 'end' or 'xx' (crossbones) to close unless block", "Add 'end' or 'xx' at the same indentation as 'unless'"));
+                    return Err(s_help_site!("P0320", "Expected 'end' or 'xx' (crossbones) to close unless block", "Add 'end' or 'xx' at the same indentation as 'unless'"));
                 }
             }
         } else {
-            return Err(s_help("P0321", "Expected 'end' or 'xx' (crossbones) to close unless block", "Add 'end' or 'xx' before end of file"));
+            return Err(s_help_site!("P0321", "Expected 'end' or 'xx' (crossbones) to close unless block", "Add 'end' or 'xx' before end of file"));
         }
 
         // Convert stmt blocks -> arrays of exprs (same contract as 'if')
@@ -4198,7 +4234,7 @@ impl<'t> Parser<'t> {
                         let values: Vec<ast::Expr> = ret_stmt.values.clone();
                         Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
                     }
-                    _ => Err(s_help(
+                    _ => Err(s_help_site!(
                         "P0311",
                         "Only expressions and variable assignments are allowed inside control flow blocks.",
                         "Move class/action/enum declarations outside the if/while/unless block.",
@@ -4232,12 +4268,12 @@ impl<'t> Parser<'t> {
         
         // Parse loop variable: for name in ...
         let Some(var_name) = self.eat_ident() else {
-            return Err(s_help("P0330", "Expected variable name after 'for'", "Write: for item in items"));
+            return Err(s_help_site!("P0330", "Expected variable name after 'for'", "Write: for item in items"));
         };
         
         // Expect 'in' keyword
         if self.peek_ident() != Some("in") {
-            return Err(s_help("P0331", "Expected 'in' after loop variable", "Write: for item in items"));
+            return Err(s_help_site!("P0331", "Expected 'in' after loop variable", "Write: for item in items"));
         }
         let _ = self.eat_ident();
         
@@ -4276,11 +4312,11 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_op("xx");
                 }
                 _ => {
-                    return Err(s_help("P0332", "Expected 'end' or 'xx' (crossbones) to close for loop", "Add 'end' or 'xx'"));
+                    return Err(s_help_site!("P0332", "Expected 'end' or 'xx' (crossbones) to close for loop", "Add 'end' or 'xx'"));
                 }
             }
         } else {
-            return Err(s_help("P0332", "Expected 'end' or 'xx' (crossbones) to close for loop", "Add 'end' or 'xx' before end of file"));
+            return Err(s_help_site!("P0332", "Expected 'end' or 'xx' (crossbones) to close for loop", "Add 'end' or 'xx' before end of file"));
         }
         
         // Convert body
@@ -4298,7 +4334,7 @@ impl<'t> Parser<'t> {
                     let values: Vec<ast::Expr> = ret_stmt.values.clone();
                     Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
                 }
-                _ => Err(s_help("P0333", "Only expressions allowed in for loop", "Move declarations outside")),
+                _ => Err(s_help_site!("P0333", "Only expressions allowed in for loop", "Move declarations outside")),
             }).collect()
         };
         
@@ -4361,11 +4397,11 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_op("xx"); 
                 }
                 _ => {
-                    return Err(s_help("P0340", "Expected 'end' or 'xx' (crossbones) to close while block", "Add 'end' or 'xx'"));
+                    return Err(s_help_site!("P0340", "Expected 'end' or 'xx' (crossbones) to close while block", "Add 'end' or 'xx'"));
                 }
             }
         } else {
-            return Err(s_help("P0340", "Expected 'end' or 'xx' (crossbones) to close while block", "Add 'end' or 'xx' before end of file"));
+            return Err(s_help_site!("P0340", "Expected 'end' or 'xx' (crossbones) to close while block", "Add 'end' or 'xx' before end of file"));
         }
 
         // Convert stmt list -> expr array
@@ -4385,7 +4421,7 @@ impl<'t> Parser<'t> {
                         let values: Vec<ast::Expr> = ret_stmt.values.clone();
                         Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
                     }
-                    _ => Err(s_help(
+                    _ => Err(s_help_site!(
                         "P0311",
                         "Only expressions and variable assignments are allowed inside control flow blocks.",
                         "Move class/action/enum declarations outside the if/while/unless block.",
@@ -4446,11 +4482,11 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_op("xx");
                 }
                 _ => {
-                    return Err(s_help("P0322", "Expected 'end' or 'xx' (crossbones) to close repeat block", "Add 'end' or 'xx'"));
+                    return Err(s_help_site!("P0322", "Expected 'end' or 'xx' (crossbones) to close repeat block", "Add 'end' or 'xx'"));
                 }
             }
         } else {
-            return Err(s_help("P0322", "Expected 'end' or 'xx' (crossbones) to close repeat block", "Add 'end' or 'xx' before end of file"));
+            return Err(s_help_site!("P0322", "Expected 'end' or 'xx' (crossbones) to close repeat block", "Add 'end' or 'xx' before end of file"));
         }
         
         // Convert body to expressions
@@ -4468,7 +4504,7 @@ impl<'t> Parser<'t> {
                     let values: Vec<ast::Expr> = ret_stmt.values.clone();
                     Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
                 }
-                _ => Err(s_help("P0323", "Only expressions allowed in repeat block", "Move declarations outside")),
+                _ => Err(s_help_site!("P0323", "Only expressions allowed in repeat block", "Move declarations outside")),
             }).collect()
         };
         
@@ -4615,7 +4651,7 @@ impl<'t> Parser<'t> {
                 TokenKind::Ident if t.value.as_deref() == Some("end") => { let _ = self.eat_ident(); }
                 TokenKind::Op(op) if op == "xx" => { let _ = self.eat_op("xx"); }
                 _ => {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0351",
                         "Expected 'end' or 'xx' to close attempt block",
                         "Add 'end' or 'xx' at the same indentation as 'attempt'",
@@ -4623,7 +4659,7 @@ impl<'t> Parser<'t> {
                 }
             }
         } else {
-            return Err(s_help(
+            return Err(s_help_site!(
                 "P0351",
                 "Expected 'end' or 'xx' to close attempt block",
                 "Add 'end' or 'xx' before end of file",
@@ -4645,7 +4681,7 @@ impl<'t> Parser<'t> {
                         let values: Vec<ast::Expr> = ret_stmt.values.clone();
                         Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
                     }
-                    _ => Err(s_help(
+                    _ => Err(s_help_site!(
                         "P0352",
                         "Only expressions allowed inside attempt/rescue/ensure blocks.",
                         "Move declarations outside the block.",
@@ -4832,7 +4868,7 @@ impl<'t> Parser<'t> {
                     items.push(stmt);
                 }
                 Err(msg) => {
-                    // Promote the String error EXACTLY as produced by s/s_help into a Diagnostic.
+                    // Promote the String error EXACTLY as produced by s/s_help_site! into a Diagnostic.
                     // Your CLI expects the code to appear in the first line of the message (if present),
                     // and finds the help line by "help:" on subsequent lines.
                     let sp = if let Some(tok) = self.peek() {
@@ -5115,7 +5151,7 @@ impl<'t> Parser<'t> {
                     span: sp,
                 }))
             }
-            _ => Err(s_help(
+            _ => Err(s_help_site!(
                 "P0905",
                 "Expected a class declaration after '@'",
                 "Start the class like: @Player = username: \"john\" :: health: 100",
@@ -5132,7 +5168,7 @@ impl<'t> Parser<'t> {
         
         // Consume 'import' keyword
         if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Import)) {
-            return Err(s_help("P1001", "Expected 'import'", "import game/hero"));
+            return Err(s_help_site!("P1001", "Expected 'import'", "import game/hero"));
         }
         self.i += 1;
         
@@ -5148,7 +5184,7 @@ impl<'t> Parser<'t> {
             // Parse comma-separated list of items
             loop {
                 let Some(name) = self.eat_ident() else {
-                    return Err(s_help("P1010", "Expected item name", "import { hero, Combat } from game"));
+                    return Err(s_help_site!("P1010", "Expected item name", "import { hero, Combat } from game"));
                 };
                 
                 // Optional 'as alias'
@@ -5176,14 +5212,14 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
             
             if !self.eat_op("}") {
-                return Err(s_help("P1011", "Expected '}' to close import list", "import { hero, Combat } from game"));
+                return Err(s_help_site!("P1011", "Expected '}' to close import list", "import { hero, Combat } from game"));
             }
             
             self.skip_newlines();
             
             // Expect 'from'
             if self.peek_ident() != Some("from") {
-                return Err(s_help("P1012", "Expected 'from' after import list", "import { hero, Combat } from game"));
+                return Err(s_help_site!("P1012", "Expected 'from' after import list", "import { hero, Combat } from game"));
             }
             self.i += 1; // eat 'from'
             
@@ -5191,7 +5227,7 @@ impl<'t> Parser<'t> {
             
             // Parse source (single identifier or path)
             let Some(source) = self.eat_ident() else {
-                return Err(s_help("P1013", "Expected source path after 'from'", "import { hero } from game"));
+                return Err(s_help_site!("P1013", "Expected source path after 'from'", "import { hero } from game"));
             };
             
             Ok(ast::Stmt::Import(ast::ImportStmt {
@@ -5204,7 +5240,7 @@ impl<'t> Parser<'t> {
             let mut path_parts = Vec::new();
             loop {
                 let Some(part) = self.eat_ident() else {
-                    return Err(s_help("P1002", "Expected module path after 'import'", "import game/hero"));
+                    return Err(s_help_site!("P1002", "Expected module path after 'import'", "import game/hero"));
                 };
                 path_parts.push(part);
                 
@@ -5314,7 +5350,7 @@ impl<'t> Parser<'t> {
 
                 let Some(name) = self.eat_ident() else {
                     self.suspend_colon_call -= 1;
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0814",
                         "Expected a name after 'using'",
                         "Write: judge using score or judge status using Status",
@@ -5331,7 +5367,7 @@ impl<'t> Parser<'t> {
 
             if self.peek_op("{") {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0812",
                     "Don't put '{' after 'judge'",
                     "Use indentation and close with 'end' or 'xx' (crossbones): judge x > 5: \"big\" end",
@@ -5359,7 +5395,7 @@ impl<'t> Parser<'t> {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != header_col {
                     let closer = self.peek_ident().unwrap_or("}");
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0222",
                         &format!(
                             "This '{}' closer is misaligned: expected column {}, found column {}",
@@ -5370,10 +5406,10 @@ impl<'t> Parser<'t> {
                 }
                 self.expect_block_close("judge")?;
             } else if !self.eat_layout_until_close(header_col) {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0212",
                     "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones). [parse class decl]",
                 ));
             }
 
@@ -5403,7 +5439,7 @@ impl<'t> Parser<'t> {
 
                 let Some(name) = self.eat_ident() else {
                     self.suspend_colon_call -= 1;
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0814",
                         "Expected a name after 'using'",
                         "Write: judge using score or judge status using Status",
@@ -5420,7 +5456,7 @@ impl<'t> Parser<'t> {
 
             if self.peek_op("{") {
                 self.suspend_colon_call -= 1;
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0813",
                     "Don't put '{' after 'judge_all'",
                     "Use indentation and close with 'end' or 'xx' (crossbones): judge_all x > 5: \"big\" end",
@@ -5448,7 +5484,7 @@ impl<'t> Parser<'t> {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != header_col {
                     let closer = self.peek_ident().unwrap_or("}");
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0222",
                         &format!(
                             "This '{}' closer is misaligned: expected column {}, found column {}",
@@ -5459,10 +5495,10 @@ impl<'t> Parser<'t> {
                 }
                 self.expect_block_close("judge_all")?;
             } else if !self.eat_layout_until_close(header_col) {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0212",
                     "This judge_all block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones). [parse primary impl]",
                 ));
             }
 
@@ -5482,7 +5518,7 @@ impl<'t> Parser<'t> {
                 let (k2, v2) = match self.peek() {
                     Some(t2) => (t2.kind.clone(), t2.value.clone()),
                     None => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1101",
                             "You need a string or an integer after 'blob'",
                             "Examples: blob \"text\" or blob 0xFF",
@@ -5502,7 +5538,7 @@ impl<'t> Parser<'t> {
                         PExpr::BlobNum(lit)
                     }
                     _ => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1101",
                             "You need a string or an integer after 'blob'.",
                             "Examples: blob \"text\" or blob 0xFF.",
@@ -5525,7 +5561,7 @@ impl<'t> Parser<'t> {
             // NEW: if there is a comma before the ')', this isn't a plain parenthesized expr.
             // We are not adding tuple/target syntax here—just guiding the user clearly.
             if self.peek_op(",") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0715",
                     "Comma inside parentheses isn’t allowed in a single parenthesized expression.",
                     "Goblin doesn’t support tuple targets or tuple literals in parentheses yet. \
@@ -5536,7 +5572,7 @@ impl<'t> Parser<'t> {
             }
 
             if !self.eat_op(")") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0707",
                     "Expected ')' to close this parenthesized expression",
                     "Add the closing ')': (a + b)",
@@ -5574,7 +5610,7 @@ impl<'t> Parser<'t> {
             }
 
             if !self.eat_op("]") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0708",
                     "Expected ']' to close this array",
                     "Add the closing ']': [1, 2, 3]",
@@ -5591,7 +5627,7 @@ impl<'t> Parser<'t> {
 
                 // DEPRECATE old `Type: ...`
                 if self.peek_op(":") && self.suspend_colon_call == 0 && !self.in_object_construction {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0998",
                         "Object construction has moved to 'name | Type = ...'.",
                         &format!("Write: myVar | {} = name: \"...\"", Self::capitalize_like(&name)),
@@ -5611,7 +5647,7 @@ impl<'t> Parser<'t> {
                             let expr = self.parse_coalesce()?;
                             self.skip_newlines();
                             if !self.eat_op(")") {
-                                return Err(s_help(
+                                return Err(s_help_site!(
                                     "P0707",
                                     "Expected ')' to close this call",
                                     "Add the closing ')': say(\"hi\")",
@@ -5672,7 +5708,7 @@ impl<'t> Parser<'t> {
                             self.i += 1; // consume 'from'
                         }
                         _ => {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1410",
                                 "Expected 'from' here",
                                 "Write it like: reap! 3 from xs",
@@ -5689,7 +5725,7 @@ impl<'t> Parser<'t> {
                             t.value.unwrap_or_default()
                         }
                         _ => {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1411",
                                 "reap! expects a variable name after 'from'",
                                 "Example: reap! 3 from xs",
@@ -5792,7 +5828,7 @@ impl<'t> Parser<'t> {
             if !self.peek_op("}") {
                 loop {
                     let Some(key) = self.eat_object_key() else {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1201",
                             "Expected an object key here",
                             "Add a property name before ':': name: \"John\"",
@@ -5804,7 +5840,7 @@ impl<'t> Parser<'t> {
                     }
 
                     if !self.eat_op(":") {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1202",
                             "You need a ':' after the object key",
                             "Write it like: name: \"John\"",
@@ -5834,7 +5870,7 @@ impl<'t> Parser<'t> {
             }
 
             if !self.eat_op("}") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P1203",
                     "Expected '}' to close this object",
                     "Add the closing '}': { name: \"John\" }",
@@ -5848,7 +5884,7 @@ impl<'t> Parser<'t> {
         let (kind, val_opt) = match self.peek() {
             Some(t) => (t.kind.clone(), t.value.clone()),
             None => {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P1003",
                     "Expected an expression here",
                     "Use a value, variable, or call: total = price * qty",
@@ -5864,7 +5900,7 @@ impl<'t> Parser<'t> {
                 let ch = if let (Some(c), None) = (it.next(), it.next()) {
                     c
                 } else {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0214",
                         "Invalid char literal payload from lexer",
                         "This should be exactly one Unicode character like 'a', '\\n', or '😀'.",
@@ -5938,7 +5974,7 @@ impl<'t> Parser<'t> {
                 let (k2, v2) = match self.peek() {
                     Some(t2) => (t2.kind.clone(), t2.value.clone()),
                     None => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1301",
                             "Expected a string after 'date'.",
                             "Write it like: date \"2023-12-25\".",
@@ -5946,7 +5982,7 @@ impl<'t> Parser<'t> {
                     }
                 };
                 if !matches!(k2, TokenKind::String) {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P1301",
                         "Expected a string after 'date'",
                         "Write it like: date \"2023-12-25\"",
@@ -5963,7 +5999,7 @@ impl<'t> Parser<'t> {
                 let (k2, v2) = match self.peek() {
                     Some(t2) => (t2.kind.clone(), t2.value.clone()),
                     None => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1302",
                             "Expected a string after 'time'",
                             "Write it like: time \"14:30:00\"",
@@ -5971,7 +6007,7 @@ impl<'t> Parser<'t> {
                     }
                 };
                 if !matches!(k2, TokenKind::String) {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P1302",
                         "Expected a string after 'time'",
                         "Write it like: time \"14:30:00\"",
@@ -5988,7 +6024,7 @@ impl<'t> Parser<'t> {
                 let (k2, v2) = match self.peek() {
                     Some(t2) => (t2.kind.clone(), t2.value.clone()),
                     None => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1303",
                             "Expected a string after 'datetime'.",
                             "Write it like: datetime \"2023-12-25T14:30:00\".",
@@ -5996,7 +6032,7 @@ impl<'t> Parser<'t> {
                     }
                 };
                 if !matches!(k2, TokenKind::String) {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P1303",
                         "Expected a string after 'datetime'",
                         "Write it like: datetime \"2023-12-25T14:30:00\"",
@@ -6012,7 +6048,7 @@ impl<'t> Parser<'t> {
                         self.i += 1;
                         self.skip_newlines();
                         if !self.eat_op(":") {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1304",
                                 "You need a ':' after tz",
                                 "Write it like: tz: \"UTC\"",
@@ -6022,7 +6058,7 @@ impl<'t> Parser<'t> {
                         let (k3, v3) = match self.peek() {
                             Some(t3) => (t3.kind.clone(), t3.value.clone()),
                             None => {
-                                return Err(s_help(
+                                return Err(s_help_site!(
                                     "P1305",
                                     "Expected a string after tz:",
                                     "Write it like: tz: \"UTC\"",
@@ -6030,7 +6066,7 @@ impl<'t> Parser<'t> {
                             }
                         };
                         if !matches!(k3, TokenKind::String) {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1305",
                                 "Expected a string after tz:",
                                 "Write it like: tz: \"UTC\"",
@@ -6047,7 +6083,7 @@ impl<'t> Parser<'t> {
             TokenKind::Op(ref s) => {
                 let sp = self.toks[self.i].span.clone();
                 self.i += 1;
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P1006",
                     &format!(
                         "Expected an expression, but found operator '{}' at line {}, col {}",
@@ -6195,7 +6231,7 @@ impl<'t> Parser<'t> {
                 } else if self.eat_op("..") {
                     false
                 } else {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P1004",
                         "Expected '..' or '...' after the lower bound in 'between'",
                         "Write it like:  x between 1..5   or   x between 10...20",
@@ -6418,7 +6454,7 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
             let Some(name) = self.eat_ident() else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0814","Expected a name after 'using'","Write: judge status using Status  or  judge using score"));
+                return Err(s_help_site!("P0814","Expected a name after 'using'","Write: judge status using Status  or  judge using score"));
             };
             let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
             if is_cap { using_enum = Some(name); } else { using_expr = Some(Box::new(PExpr::Ident(name))); }
@@ -6437,7 +6473,7 @@ impl<'t> Parser<'t> {
 
         if self.peek_op("{") {
             self.suspend_colon_call -= 1;
-            return Err(s_help("P0812","Don't put '{' after 'judge'","Use indentation and close with 'end' or 'xx'."));
+            return Err(s_help_site!("P0812","Don't put '{' after 'judge'","Use indentation and close with 'end' or 'xx'."));
         }
         self.forbid_next_line_brace(header_line, header_col, "judge")?;
 
@@ -6457,14 +6493,14 @@ impl<'t> Parser<'t> {
                 }
             } else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
+                return Err(s_help_site!("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse judge stmt]"));
             }
 
             while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
             if let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Dedent) { break; } }
             if self.is_eof() {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
+                return Err(s_help_site!("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse judge stmt]"));
             }
 
             let arm_col: u32 = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(header_col);
@@ -6485,7 +6521,7 @@ impl<'t> Parser<'t> {
 
             if !self.eat_op(":") {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0811","You need ':' after the condition in 'judge'","Write it like: judge x > 5: say \"big\""));
+                return Err(s_help_site!("P0811","You need ':' after the condition in 'judge'","Write it like: judge x > 5: say \"big\""));
             }
 
             let body = if self.peek_newline_or_eof() {
@@ -6498,7 +6534,7 @@ impl<'t> Parser<'t> {
                     }
                     _ => {
                         if let Some(db) = default_body.clone() { db } else {
-                            return Err(s_help("P0816","Expected an indented block after ':' in judge arm","Start the arm body on the next line and indent it."));
+                            return Err(s_help_site!("P0816","Expected an indented block after ':' in judge arm","Start the arm body on the next line and indent it."));
                         }
                     }
                 }
@@ -6526,11 +6562,11 @@ impl<'t> Parser<'t> {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col != header_col {
                 let closer = self.peek_ident().unwrap_or("}");
-                return Err(s_help("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
+                return Err(s_help_site!("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
             }
             self.expect_block_close("judge")?;
         } else if !self.eat_layout_until_close(header_col) {
-            return Err(s_help("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
+            return Err(s_help_site!("P0212","This judge block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse judge stmt]"));
         }
 
         let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
@@ -6569,7 +6605,7 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
             let Some(name) = self.eat_ident() else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0814","Expected a name after 'using'","Write: judge_all status using Status  or  judge_all using score"));
+                return Err(s_help_site!("P0814","Expected a name after 'using'","Write: judge_all status using Status  or  judge_all using score"));
             };
             let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
             if is_cap { using_enum = Some(name); } else { using_expr = Some(Box::new(PExpr::Ident(name))); }
@@ -6587,7 +6623,7 @@ impl<'t> Parser<'t> {
 
         if self.peek_op("{") {
             self.suspend_colon_call -= 1;
-            return Err(s_help("P0813","Don't put '{' after 'judge_all'","Use indentation and close with 'end' or 'xx'."));
+            return Err(s_help_site!("P0813","Don't put '{' after 'judge_all'","Use indentation and close with 'end' or 'xx'."));
         }
         self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
 
@@ -6607,14 +6643,14 @@ impl<'t> Parser<'t> {
                 }
             } else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
+                return Err(s_help_site!("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse judge all stmt]"));
             }
 
             while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
             if let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Dedent) { break; } }
             if self.is_eof() {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
+                return Err(s_help_site!("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse judge all stmt]"));
             }
 
             let arm_col: u32 = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(header_col);
@@ -6635,7 +6671,7 @@ impl<'t> Parser<'t> {
 
             if !self.eat_op(":") {
                 self.suspend_colon_call -= 1;
-                return Err(s_help("P0811","You need ':' after the condition in 'judge_all'","Write it like: judge_all x > 5: say \"big\""));
+                return Err(s_help_site!("P0811","You need ':' after the condition in 'judge_all'","Write it like: judge_all x > 5: say \"big\""));
             }
 
             let body = if self.peek_newline_or_eof() {
@@ -6648,7 +6684,7 @@ impl<'t> Parser<'t> {
                     }
                     _ => {
                         if let Some(db) = default_body.clone() { db } else {
-                            return Err(s_help("P0816","Expected an indented block after ':' in judge_all arm","Start the arm body on the next line and indent it."));
+                            return Err(s_help_site!("P0816","Expected an indented block after ':' in judge_all arm","Start the arm body on the next line and indent it."));
                         }
                     }
                 }
@@ -6676,11 +6712,11 @@ impl<'t> Parser<'t> {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col != header_col {
                 let closer = self.peek_ident().unwrap_or("}");
-                return Err(s_help("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
+                return Err(s_help_site!("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
             }
             self.expect_block_close("judge_all")?;
         } else if !self.eat_layout_until_close(header_col) {
-            return Err(s_help("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block."));
+            return Err(s_help_site!("P0212","This judge_all block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse judge all stmt]"));
         }
 
         let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
@@ -6703,10 +6739,10 @@ impl<'t> Parser<'t> {
                     _ => {}
                 }
             } else {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0212",
                     "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones). [parse kv bind list judge]",
                 ));
             }
 
@@ -6728,10 +6764,10 @@ impl<'t> Parser<'t> {
             }
 
             if self.is_eof() {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0212",
                     "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones).",
+                    "Close the block with 'end' or 'xx' (crossbones). [parse kv bind list judge]",
                 ));
             }
 
@@ -6759,7 +6795,7 @@ impl<'t> Parser<'t> {
             };
 
             if !self.eat_op(":") {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0811",
                     "You need ':' after the condition in 'judge'",
                     "Write it like: judge x > 5: \"big\"",
@@ -6774,7 +6810,7 @@ impl<'t> Parser<'t> {
                 match self.peek() {
                     Some(t) if matches!(t.kind, TokenKind::Indent) => { self.i += 1; }
                     _ => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P0816",
                             "Expected an indented block after ':' in judge arm",
                             "Start the arm body on the next line and indent it.",
@@ -6852,7 +6888,7 @@ impl<'t> Parser<'t> {
                     ast::Expr::FreeCall("return".to_string(), values, r.span)
                 }
                 _ => {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0815",
                         "Can't use class/action/enum declarations inside judge cases",
                         "Move declarations outside the judge block"
@@ -6909,7 +6945,7 @@ impl<'t> Parser<'t> {
                 Err(_) => {
                     // Don't loop forever if nothing consumed after '&'
                     if self.i == i0 { /* we already ate '&' */ }
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0401",
                         "You need a variable, field access, or array index after '&'",
                         "Examples: &user, &user>>name, &items[0]",
@@ -6947,18 +6983,18 @@ impl<'t> Parser<'t> {
                 // accept a bare identifier inside braces
                 if let Some(name_owned) = self.peek_ident().map(|s| s.to_string()) {
                     if name_owned == "from" {
-                        return Err(s_help("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
+                        return Err(s_help_site!("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
                     }
                     let _ = self.eat_ident(); // consume the ident
                     count_expr = Some(PExpr::Ident(name_owned));
                 } else {
-                    return Err(s_help("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
+                    return Err(s_help_site!("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
                 }
 
                 self.skip_newlines();
                 // require closing '}'
                 if !self.eat_op("}") {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P1402",
                         "Unclosed '{' in variable reference",
                         "Close the variable reference with '}'",
@@ -6989,7 +7025,7 @@ impl<'t> Parser<'t> {
                             self.i += 1;
                             count = v;
                         } else {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1401",
                                 &format!("You need a number after '{}'", verb),
                                 &format!("Write it like: {} 5 from items", verb),
@@ -7005,7 +7041,7 @@ impl<'t> Parser<'t> {
 
                     // Otherwise, still error
                     _ => {
-                        return Err(s_help(
+                        return Err(s_help_site!(
                             "P1401",
                             &format!("You need a number after '{}'", verb),
                             &format!("Write it like: {} 5 from items", verb),
@@ -7016,7 +7052,7 @@ impl<'t> Parser<'t> {
 
             // No negatives allowed (only meaningful for static counts)
             if count_expr.is_none() && count < 0 {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P1402",
                     &format!("You can't {} a negative number of items", verb),
                     &format!("Use a positive number: {} 3 from items", verb),
@@ -7053,7 +7089,7 @@ impl<'t> Parser<'t> {
                             self.i += 1;
                             digits_expr = Some(PExpr::Int(s2));
                         }
-                        _ => return Err(s_help("P1401","Expected digits after '_'","Example: pick 5_4")),
+                        _ => return Err(s_help_site!("P1401","Expected digits after '_'","Example: pick 5_4")),
                     }
                 }
                 self.skip_newlines();
@@ -7063,7 +7099,7 @@ impl<'t> Parser<'t> {
             let mut src_expr: Option<PExpr> = None;
             if digits_expr.is_none() {
                 if self.peek_ident() != Some("from") {
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P1403",
                         &format!("Expected 'from' after the {} count", verb),
                         &format!("Write it like: {} 3 from items", verb),
@@ -7100,7 +7136,7 @@ impl<'t> Parser<'t> {
                             allow_dups = Some(true);
                             continue;
                         } else {
-                            return Err(s_help("P1404","Expected 'dups' after 'with'","Use: with dups"));
+                            return Err(s_help_site!("P1404","Expected 'dups' after 'with'","Use: with dups"));
                         }
                     }
 
@@ -7113,7 +7149,7 @@ impl<'t> Parser<'t> {
                             allow_dups = Some(false);
                             continue;
                         } else {
-                            return Err(s_help("P1406","Expected 'dups' after 'without'/'wo'","Use: without dups"));
+                            return Err(s_help_site!("P1406","Expected 'dups' after 'without'/'wo'","Use: without dups"));
                         }
                     }
 
@@ -7148,7 +7184,7 @@ impl<'t> Parser<'t> {
                     if all_simple {
                         let distinct = set.len() as i128;
                         if count > distinct {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1405",
                                 &format!("You're trying to {} {} items, but there are only {} distinct items available", verb, count, distinct),
                                 "Add 'with dups' to allow repeats, or pick fewer items",
@@ -7235,7 +7271,7 @@ impl<'t> Parser<'t> {
                                 let start = i;
                                 while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
                                 if start == i {
-                                    return Err(s_help("P1505","Expected digits after suffix","Examples: k3, x1, r1"));
+                                    return Err(s_help_site!("P1505","Expected digits after suffix","Examples: k3, x1, r1"));
                                 }
                                 let num = &raw[start..i];
                                 match ch {
@@ -7246,7 +7282,7 @@ impl<'t> Parser<'t> {
                                 }
                             }
                             _ => {
-                                return Err(s_help("P1505","Bad dice suffix","Use kN / dN / rN / !"));
+                                return Err(s_help_site!("P1505","Bad dice suffix","Use kN / dN / rN / !"));
                             }
                         }
                     }
@@ -7257,7 +7293,7 @@ impl<'t> Parser<'t> {
                 let t0 = match self.peek().cloned() {
                     Some(t) => t,
                     None => {
-                        return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                        return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                     }
                 };
 
@@ -7269,10 +7305,10 @@ impl<'t> Parser<'t> {
                     last_span = Some(t0.span.clone());
 
                     let t1 = self.peek().cloned().ok_or_else(|| {
-                        s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
+                        s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
                     })?;
                     if !contiguous(last_span.as_ref().unwrap(), &t1.span) {
-                        return Err(s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
+                        return Err(s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
                     }
 
                     match (t1.kind, t1.value.clone()) {
@@ -7289,7 +7325,7 @@ impl<'t> Parser<'t> {
                                 }
                                 self.i += 1; // consume t1
                             } else {
-                                return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                                return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                             }
                         }
                         // Int + Op(unit,"dM...")  (same, but unit token)
@@ -7310,20 +7346,20 @@ impl<'t> Parser<'t> {
                                 let d_span = t1.span.clone();
                                 self.i += 1; // eat unit("d")
                                 let t2 = self.peek().cloned().ok_or_else(|| {
-                                    s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6.")
+                                    s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6.")
                                 })?;
                                 if !matches!(t2.kind, TokenKind::Int) || !contiguous(&d_span, &t2.span) {
-                                    return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                                    return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                                 }
                                 self.i += 1; // eat Int("M")
                                 sides_str = t2.value.unwrap_or_default();
                                 last_span = Some(t2.span.clone());
                             } else {
-                                return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                                return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                             }
                         }
                         _ => {
-                            return Err(s_help("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                            return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                         }
                     }
                 }
@@ -7331,20 +7367,20 @@ impl<'t> Parser<'t> {
                 else if matches!(t0.kind, TokenKind::Duration) {
                     let dur = t0.value.clone().unwrap_or_default(); // "Nd"
                     let (base, unit) = Self::split_duration_lexeme(&dur).map_err(|_| {
-                        s_help("P1501","Bad duration token where dice were expected","Example: roll 2d6")
+                        s_help_site!("P1501","Bad duration token where dice were expected","Example: roll 2d6")
                     })?;
                     if unit != "d" {
-                        return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                        return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                     }
                     self.i += 1; // eat Duration("Nd")
                     count_str = base;
                     last_span = Some(t0.span.clone());
 
                     let t1 = self.peek().cloned().ok_or_else(|| {
-                        s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
+                        s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
                     })?;
                     if !matches!(t1.kind, TokenKind::Int) || !contiguous(last_span.as_ref().unwrap(), &t1.span) {
-                        return Err(s_help("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
+                        return Err(s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
                     }
                     self.i += 1; // Int("M")
                     sides_str = t1.value.unwrap_or_default();
@@ -7372,10 +7408,10 @@ impl<'t> Parser<'t> {
                                         parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
                                     }
                                 } else {
-                                    return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                    return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                                 }
                             } else {
-                                return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                             }
                         }
                         (TokenKind::Op(op), Some(raw)) => {
@@ -7398,17 +7434,17 @@ impl<'t> Parser<'t> {
                                             parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
                                         }
                                     } else {
-                                        return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                        return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                                     }
                                 } else {
-                                    return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                    return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                                 }
                             } else {
-                                return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                             }
                         }
                         _ => {
-                            return Err(s_help("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                            return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                         }
                     }
                 }
@@ -7420,10 +7456,10 @@ impl<'t> Parser<'t> {
                             let sign = if s == "-" { -1i32 } else { 1i32 };
                             self.i += 1; // '+'|'-'
                             let n_tok = self.peek().cloned().ok_or_else(|| {
-                                s_help("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1")
+                                s_help_site!("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1")
                             })?;
                             if !matches!(n_tok.kind, TokenKind::Int) || !contiguous(&op_tok.span, &n_tok.span) {
-                                return Err(s_help("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1"));
+                                return Err(s_help_site!("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1"));
                             }
                             self.i += 1; // Int
                             let n_raw = n_tok.value.unwrap_or_default();
@@ -7441,7 +7477,7 @@ impl<'t> Parser<'t> {
                     match self.peek_ident() {
                         Some("adv") => { let _ = self.eat_ident(); adv = true; }
                         Some("dis") => { let _ = self.eat_ident(); dis = true; }
-                        _ => return Err(s_help("P1506","Expected 'adv' or 'dis' after '+'","Use: roll 1d20 +adv")),
+                        _ => return Err(s_help_site!("P1506","Expected 'adv' or 'dis' after '+'","Use: roll 1d20 +adv")),
                     }
                 }
 
@@ -7489,19 +7525,19 @@ impl<'t> Parser<'t> {
                             clamp_min = Some(*lhs);
                             clamp_max = Some(*rhs);
                         } else {
-                            return Err(s_help("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
+                            return Err(s_help_site!("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
                         }
                     } else {
-                        return Err(s_help("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
+                        return Err(s_help_site!("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
                     }
                 }
 
                 // ---- Build config object -> FreeCall
                 if adv && dis {
-                    return Err(s_help("P1508","You can't use both adv and dis","Use only one of +adv or +dis"));
+                    return Err(s_help_site!("P1508","You can't use both adv and dis","Use only one of +adv or +dis"));
                 }
                 if keep_high.is_some() && drop_low.is_some() {
-                    return Err(s_help("P1509","You can't combine kN and dN","Use only one of kN or dN"));
+                    return Err(s_help_site!("P1509","You can't combine kN and dN","Use only one of kN or dN"));
                 }
 
                 let mut props: Vec<(String, PExpr)> = vec![
@@ -7609,7 +7645,7 @@ impl<'t> Parser<'t> {
                     }
                 }
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if !self.eat_op(")") { return Err(s_help("P0505", "Expected ')' to close this action call", "Add the closing ')': calculate(price, tax)")); }
+                if !self.eat_op(")") { return Err(s_help_site!("P0505", "Expected ')' to close this action call", "Add the closing ')': calculate(price, tax)")); }
 
                 lhs = PExpr::Call(Box::new(lhs), "()".to_string(), args);
                 continue;
@@ -7618,7 +7654,7 @@ impl<'t> Parser<'t> {
             // --- indexing / slicing ---
             if self.eat_op("[") {
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if self.eat_op("]") { return Err(s_help("P0701", "Brackets need an index or slice expression", "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]")); }
+                if self.eat_op("]") { return Err(s_help_site!("P0701", "Brackets need an index or slice expression", "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]")); }
 
                 let mut start: Option<PExpr> = None;
                 if !self.peek_op(":") {
@@ -7644,7 +7680,7 @@ impl<'t> Parser<'t> {
                         }
                     }
 
-                    if !self.eat_op("]") { return Err(s_help("P0709", "Expected ']' to close this slice", "Add the closing ']': items[1:4]")); }
+                    if !self.eat_op("]") { return Err(s_help_site!("P0709", "Expected ']' to close this slice", "Add the closing ']': items[1:4]")); }
 
                     lhs = if step.is_some() {
                         PExpr::Slice3(Box::new(lhs), start.map(Box::new), end.map(Box::new), step.map(Box::new))
@@ -7655,7 +7691,7 @@ impl<'t> Parser<'t> {
                 }
 
                 while matches!(self.toks.get(self.i), Some(tok) if matches!(tok.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if !self.eat_op("]") { return Err(s_help("P0702", "Expected ']' to close this index", "Add the closing ']': items[0]")); }
+                if !self.eat_op("]") { return Err(s_help_site!("P0702", "Expected ']' to close this index", "Add the closing ']': items[0]")); }
                 let idx = start.expect("index expression parsed");
                 lhs = PExpr::Index(Box::new(lhs), Box::new(idx));
                 continue;
@@ -7792,7 +7828,7 @@ impl<'t> Parser<'t> {
                 // Disallow empty brackets: a[]
                 if self.peek_op("]") {
                     self.suspend_colon_call -= 1;
-                    return Err(s_help("P0701", "Brackets need an index or slice expression", "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]"));
+                    return Err(s_help_site!("P0701", "Brackets need an index or slice expression", "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]"));
                 }
 
                 // Parse start / end / step using ":" separators
@@ -7834,7 +7870,7 @@ impl<'t> Parser<'t> {
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                 if !self.eat_op("]") {
                     self.suspend_colon_call -= 1;
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0702",
                         "Expected ']' to close this index or slice",
                         "Add the closing ']': items[0] or data[1:4]",
@@ -7857,7 +7893,7 @@ impl<'t> Parser<'t> {
                     }
                 } else {
                     // Plain index: require an index expr (i.e., start must exist)
-                    let idx = start.ok_or_else(|| s_help(
+                    let idx = start.ok_or_else(|| s_help_site!(
                         "P0701",
                         "Brackets need an index or slice expression",
                         "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]",
@@ -7871,7 +7907,7 @@ impl<'t> Parser<'t> {
             if self.eat_op(">>") {
                 if let Some(name) = self.eat_ident()      { lhs = PExpr::Member(Box::new(lhs), name); continue; }
                 if let Some(key)  = self.eat_string_lit() { lhs = PExpr::Member(Box::new(lhs), key ); continue; }
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0402",
                     "You need a field name or a quoted string after '>>'",
                     "Example: user >> email or config >> \"api-key\"",
@@ -7895,7 +7931,7 @@ impl<'t> Parser<'t> {
                             break;
                         }
                     }
-                    if !self.eat_op(")") { return Err(s_help("P0506", "Expected ')' to close this optional call", "Add the closing ')': user?>>getName()")); }
+                    if !self.eat_op(")") { return Err(s_help_site!("P0506", "Expected ')' to close this optional call", "Add the closing ')': user?>>getName()")); }
                     lhs = match lhs {
                         PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
                         other                       => PExpr::OptCall(Box::new(other), String::new(), args),
@@ -7903,7 +7939,7 @@ impl<'t> Parser<'t> {
                     continue;
                 } else {
                     // ?>> name  — optional member
-                    let Some(name) = self.eat_ident() else { return Err(s_help(
+                    let Some(name) = self.eat_ident() else { return Err(s_help_site!(
                         "P0403",
                         "You need a field name after '?>>'",
                         "Example: user ?>> email",
@@ -7918,7 +7954,7 @@ impl<'t> Parser<'t> {
                 // require identifier after '.'
                 let name_tok = self
                     .eat_ident()
-                    .ok_or_else(|| s_help("P.DOTID", "Expected identifier after '.'", "Example: obj.method(...)"))?;
+                    .ok_or_else(|| s_help_site!("P.DOTID", "Expected identifier after '.'", "Example: obj.method(...)"))?;
                 let opname = name_tok.as_str().to_string();
 
                 if self.eat_op("(") {
@@ -7969,7 +8005,7 @@ impl<'t> Parser<'t> {
             if self.suspend_colon_call == 0 && self.eat_op(":") {
                 let mut args = Vec::new();
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
-                if self.peek_newline_or_eof() { return Err(s_help("P0507", "Expected an argument after ':'", "Add at least one argument after ':': calculate: price, tax")); }
+                if self.peek_newline_or_eof() { return Err(s_help_site!("P0507", "Expected an argument after ':'", "Add at least one argument after ':': calculate: price, tax")); }
 
                 loop {
                     args.push(self.parse_coalesce()?);
@@ -7985,7 +8021,7 @@ impl<'t> Parser<'t> {
                     PExpr::Member(obj, name)    => PExpr::Call(obj, name, args),
                     PExpr::OptMember(obj, name) => PExpr::OptCall(obj, name, args),
                     PExpr::Ident(name)          => PExpr::FreeCall(name, args),
-                    other                       => return Err(s_help(
+                    other                       => return Err(s_help_site!(
                         "P0508",
                         &format!("You can't use ':' to call this: {:?}", other),
                         "Use ':' with a free action or member action target: calculate: price, tax",
@@ -8009,7 +8045,7 @@ impl<'t> Parser<'t> {
                         break;
                     }
                 }
-                if !self.eat_op(")") { return Err(s_help("P0509", "Expected ')' after the argument list", "Add the closing ')': calculate(price, tax)")); }
+                if !self.eat_op(")") { return Err(s_help_site!("P0509", "Expected ')' after the argument list", "Add the closing ')': calculate(price, tax)")); }
 
                 lhs = match lhs {
                     PExpr::Member(obj, name)    => PExpr::Call(obj, name, args),
@@ -8025,7 +8061,7 @@ impl<'t> Parser<'t> {
                 let ns = if let PExpr::Ident(ref s) = lhs { s.clone() } else { unreachable!() };
                 let _ = self.eat_op("::");
                 let Some(name) = self.eat_ident() else { 
-                    return Err(s_help(
+                    return Err(s_help_site!(
                         "P0510",
                         "Expected a name after '::'",
                         "Write it like: Status::idle or Module::action()",
@@ -8051,7 +8087,7 @@ impl<'t> Parser<'t> {
                         }
                         
                         let Some(field_name) = self.eat_ident() else {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1010",
                                 "Expected a field name",
                                 "Write it like: { x: 10, y: 20 }",
@@ -8059,7 +8095,7 @@ impl<'t> Parser<'t> {
                         };
                         
                         if !self.eat_op(":") {
-                            return Err(s_help(
+                            return Err(s_help_site!(
                                 "P1011",
                                 "Expected ':' after field name",
                                 "Write it like: { x: 10, y: 20 }",
@@ -8072,7 +8108,7 @@ impl<'t> Parser<'t> {
                         self.skip_newlines();
                         if !self.eat_op(",") {
                             if !self.peek_op("}") {
-                                return Err(s_help(
+                                return Err(s_help_site!(
                                     "P1012",
                                     "Expected ',' or '}' after field value",
                                     "Separate fields with commas: { x: 10, y: 20 }",
@@ -8116,7 +8152,7 @@ impl<'t> Parser<'t> {
             } else if self.eat_op(")") {
                 break;
             } else {
-                return Err(s_help(
+                return Err(s_help_site!(
                     "P0511",
                     "Expected ',' or ')' in the argument list",
                     "Use ',' to separate and ')' to close: calculate(price, tax)",
