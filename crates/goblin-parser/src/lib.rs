@@ -212,7 +212,6 @@ pub struct Parser<'t> {
     in_stmt: bool,
     block_closed_hard: bool,
     rec_depth: usize,
-    last_progress_check: usize,
     suspend_colon_call: usize,
     in_object_construction: bool,
 }
@@ -229,7 +228,6 @@ impl<'t> Parser<'t> {
             in_stmt: false,
             block_closed_hard: false,
             rec_depth: 0,
-            last_progress_check: 0,
             suspend_colon_call: 0,
             in_object_construction: false,
         }
@@ -242,21 +240,6 @@ impl<'t> Parser<'t> {
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, String>
     ) -> Result<T, String> {
-        let start_i = self.i;
-
-        // Detect "stuck" progress to avoid infinite loops.
-        if start_i == self.last_progress_check {
-            return Err(s_help_site!(
-                "P0101",
-                &format!(
-                    "The parser got stuck and can't continue near token {} (token: {:?}).",
-                    start_i,
-                    self.toks.get(start_i).map(|t| &t.kind)
-                ),
-                "Check for a missing 'end' or 'xx' (crossbones) above, or an unfinished string nearby. Close the block with 'end' or 'xx', or finish the string.",
-            ));
-        }
-
         self.rec_depth += 1;
         if self.rec_depth > Self::MAX_RECURSION {
             self.rec_depth -= 1;
@@ -270,11 +253,6 @@ impl<'t> Parser<'t> {
         let out = f(self);
 
         self.rec_depth -= 1;
-
-        // Update progress tracking
-        if self.i > start_i {
-            self.last_progress_check = self.i;
-        }
 
         out
     }
