@@ -310,7 +310,9 @@ impl Host {
             .await
             .map_err(|e| HostError::Bind(e.to_string()))?;
 
+        let docroot = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         println!("GoblinHost listening on {}", addr);
+        println!("[serve] docroot = {}", docroot.display());
 
         loop {
             tokio::select! {
@@ -328,12 +330,12 @@ impl Host {
                     let idle_ms = 60_000; // or: self.cfg.limits.idle_timeout_ms
                     let proxies = self.cfg.proxies.clone(); 
 
+                    let docroot = docroot.clone();
                     tokio::spawn(async move {
                         use tokio::io::{AsyncReadExt, AsyncWriteExt};
                         use tokio::fs;
                         use tokio::time::{timeout, Duration};
                         use std::collections::HashMap;
-                        use std::path::PathBuf;
 
                         // placeholder logger so early exits (431/400) can log
                         let mut log = AccessLog::new("?", "?");
@@ -466,12 +468,9 @@ impl Host {
                             }
 
                             if path == "/_info" {
-                                // Detect dev "mode" based on presence of ./public
-                                let public = std::path::PathBuf::from("./public");
-                                let mode = if public.is_dir() { "static" } else { "basic" };
                                 let body = format!(
-                                    r#"{{"ok":true,"mode":"{}","contract":"{}"}}"#,
-                                    mode,
+                                    r#"{{"ok":true,"docroot":"{}","contract":"{}"}}"#,
+                                    docroot.display(),
                                     crate::CONTRACT_VERSION
                                 );
                                 let headers = format!(
@@ -686,172 +685,109 @@ impl Host {
                                 }
                             }
 
-                            // --- try to serve from ./public if it exists ---
-                            let public = PathBuf::from("./public");
-                            if public.is_dir() {
-                                // map "/" to index.html
-                                let mut candidate = if path == "/" {
-                                    public.join("index.html")
-                                } else {
-                                    match safe_join(&public, path) {
-                                        Some(p) => p,
-                                        None => {
-                                            let resp = b"HTTP/1.1 403 Forbidden\r\n\
-                                                         Connection: close\r\n\
-                                                         Content-Length: 0\r\n\r\n";
-                                            let _ = socket.write_all(resp).await;
-                                            log.done(403, 0);
-                                            break 'conn;
-                                        }
-                                    }
-                                };
+                            // --- serve from docroot (CWD) ---
+                            let root = docroot.clone();
 
-                                // if directory, append index.html
-                                if let Ok(meta) = fs::metadata(&candidate).await {
-                                    if meta.is_dir() {
-                                        candidate.push("index.html");
+                            // map "/" to index.html
+                            let mut candidate = if path == "/" {
+                                root.join("index.html")
+                            } else {
+                                match safe_join(&root, path) {
+                                    Some(p) => p,
+                                    None => {
+                                        let resp = b"HTTP/1.1 403 Forbidden\r\n\
+                                                     Connection: close\r\n\
+                                                     Content-Length: 0\r\n\r\n";
+                                        let _ = socket.write_all(resp).await;
+                                        log.done(403, 0);
+                                        break 'conn;
                                     }
                                 }
+                            };
 
-                                if let Ok(bytes) = fs::read(&candidate).await {
-                                    // gather meta for caching headers
-                                    let meta = fs::metadata(&candidate).await.ok();
-                                    let len_u64 = meta.as_ref().map(|m| m.len()).unwrap_or(bytes.len() as u64);
-                                    let mtime = meta.as_ref().and_then(|m| m.modified().ok());
-                                    let etag = weak_etag(len_u64, mtime);
-
-                                    // If-None-Match -> 304 (normalize and handle comma-separated lists)
-                                    if let Some(raw) = if_none_match {
-                                        let ours_norm = normalize_etag_token(&etag);
-                                        let client_has_match = raw
-                                            .split(',')
-                                            .map(|t| normalize_etag_token(t))
-                                            .any(|t| t == ours_norm);
-
-                                        if client_has_match {
-                                            let headers = format!(
-                                                "HTTP/1.1 304 Not Modified\r\n\
-                                                 ETag: {etag}\r\n\
-                                                 Connection: {connection_header}\r\n\
-                                                 x-goblin-web-contract: {}\r\n\
-                                                 \r\n",
-                                                crate::CONTRACT_VERSION
-                                            );
-                                            let _ = socket.write_all(headers.as_bytes()).await;
-                                            log.done(304, 0);
-                                            if want_close { break 'conn; } else { continue 'conn; }
-                                        }
-                                    }
-
-                                    let ext = candidate
-                                        .extension()
-                                        .and_then(|e| e.to_str())
-                                        .unwrap_or("")
-                                        .to_ascii_lowercase();
-                                    let mime = guess_mime(&ext);
-                                    let last_mod = mtime.map(http_date);
-                                    let last_mod_hdr = last_mod
-                                        .as_ref()
-                                        .map(|s| format!("Last-Modified: {s}\r\n"))
-                                        .unwrap_or_default();
-
-                                    let headers = format!(
-                                        "HTTP/1.1 200 OK\r\n\
-                                         Content-Type: {mime}\r\n\
-                                         Content-Length: {}\r\n\
-                                         ETag: {etag}\r\n\
-                                         {last_mod_hdr}\
-                                         Connection: {connection_header}\r\n\
-                                         x-goblin-web-contract: {}\r\n\
-                                         \r\n",
-                                        bytes.len(),
-                                        crate::CONTRACT_VERSION
-                                    );
-                                    if socket.write_all(headers.as_bytes()).await.is_ok() {
-                                        let _ = socket.write_all(&bytes).await;
-                                    }
-                                    log.done(200, bytes.len());
-                                    if want_close { break 'conn; } else { continue 'conn; }
-                                } else {
-                                    // --- SPA fallback: if path looks like a client route (no dot), serve /index.html
-                                    let looks_like_route = !path.split('/').last().unwrap_or("").contains('.');
-                                    let index_path = public.join("index.html");
-
-                                    if looks_like_route {
-                                        if let Ok(bytes) = fs::read(&index_path).await {
-                                            let meta = fs::metadata(&index_path).await.ok();
-                                            let len_u64 = meta.as_ref().map(|m| m.len()).unwrap_or(bytes.len() as u64);
-                                            let mtime = meta.as_ref().and_then(|m| m.modified().ok());
-                                            let etag = weak_etag(len_u64, mtime);
-
-                                            if let Some(raw) = if_none_match {
-                                                let ours_norm = normalize_etag_token(&etag);
-                                                let client_has_match = raw
-                                                    .split(',')
-                                                    .map(|t| normalize_etag_token(t))
-                                                    .any(|t| t == ours_norm);
-                                                if client_has_match {
-                                                    let headers = format!(
-                                                        "HTTP/1.1 304 Not Modified\r\n\
-                                                         ETag: {etag}\r\n\
-                                                         Connection: {connection_header}\r\n\
-                                                         x-goblin-web-contract: {}\r\n\
-                                                         \r\n",
-                                                        crate::CONTRACT_VERSION
-                                                    );
-                                                    let _ = socket.write_all(headers.as_bytes()).await;
-                                                    log.done(304, 0);
-                                                    if want_close { break 'conn; } else { continue 'conn; }
-                                                }
-                                            }
-
-                                            let headers = format!(
-                                                "HTTP/1.1 200 OK\r\n\
-                                                 Content-Type: text/html; charset=utf-8\r\n\
-                                                 Content-Length: {}\r\n\
-                                                 ETag: {etag}\r\n\
-                                                 Connection: {connection_header}\r\n\
-                                                 x-goblin-web-contract: {}\r\n\
-                                                 \r\n",
-                                                bytes.len(),
-                                                crate::CONTRACT_VERSION
-                                            );
-                                            if socket.write_all(headers.as_bytes()).await.is_ok() {
-                                                let _ = socket.write_all(&bytes).await;
-                                            }
-                                            log.done(200, bytes.len());
-                                            if want_close { break 'conn; } else { continue 'conn; }
-                                        }
-                                    }
-
-                                    // Real 404 (no SPA fallback or missing index.html)
-                                    let resp = b"HTTP/1.1 404 Not Found\r\n\
-                                                 Content-Type: text/plain; charset=utf-8\r\n\
-                                                 Connection: close\r\n\
-                                                 Content-Length: 13\r\n\r\n404 not found";
-                                    let _ = socket.write_all(resp).await;
-                                    log.done(404, 13);
-                                    break 'conn;
+                            // if directory, append index.html
+                            if let Ok(meta) = fs::metadata(&candidate).await {
+                                if meta.is_dir() {
+                                    candidate.push("index.html");
                                 }
                             }
 
-                            // --- fallback: simple text (no public dir present) ---
-                            let body = format!("GoblinHost is alive.\nPath: {path}\n");
-                            let headers = format!(
-                                "HTTP/1.1 200 OK\r\n\
-                                 Content-Type: text/plain; charset=utf-8\r\n\
-                                 Content-Length: {}\r\n\
-                                 Connection: {connection_header}\r\n\
-                                 x-goblin-web-contract: {}\r\n\
-                                 \r\n",
-                                body.len(),
-                                crate::CONTRACT_VERSION
-                            );
-                            if socket.write_all(headers.as_bytes()).await.is_ok() {
-                                let _ = socket.write_all(body.as_bytes()).await;
+                            if let Ok(bytes) = fs::read(&candidate).await {
+                                // gather meta for caching headers
+                                let meta = fs::metadata(&candidate).await.ok();
+                                let len_u64 = meta.as_ref().map(|m| m.len()).unwrap_or(bytes.len() as u64);
+                                let mtime = meta.as_ref().and_then(|m| m.modified().ok());
+                                let etag = weak_etag(len_u64, mtime);
+
+                                // If-None-Match -> 304
+                                if let Some(raw) = if_none_match {
+                                    let ours_norm = normalize_etag_token(&etag);
+                                    let client_has_match = raw
+                                        .split(',')
+                                        .map(|t| normalize_etag_token(t))
+                                        .any(|t| t == ours_norm);
+
+                                    if client_has_match {
+                                        let headers = format!(
+                                            "HTTP/1.1 304 Not Modified\r\n\
+                                             ETag: {etag}\r\n\
+                                             Connection: {connection_header}\r\n\
+                                             x-goblin-web-contract: {}\r\n\
+                                             \r\n",
+                                            crate::CONTRACT_VERSION
+                                        );
+                                        let _ = socket.write_all(headers.as_bytes()).await;
+                                        log.done(304, 0);
+                                        if want_close { break 'conn; } else { continue 'conn; }
+                                    }
+                                }
+
+                                let ext = candidate
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("")
+                                    .to_ascii_lowercase();
+                                let mime = guess_mime(&ext);
+                                let last_mod = mtime.map(http_date);
+                                let last_mod_hdr = last_mod
+                                    .as_ref()
+                                    .map(|s| format!("Last-Modified: {s}\r\n"))
+                                    .unwrap_or_default();
+
+                                let headers = format!(
+                                    "HTTP/1.1 200 OK\r\n\
+                                     Content-Type: {mime}\r\n\
+                                     Content-Length: {}\r\n\
+                                     ETag: {etag}\r\n\
+                                     {last_mod_hdr}\
+                                     Connection: {connection_header}\r\n\
+                                     x-goblin-web-contract: {}\r\n\
+                                     \r\n",
+                                    bytes.len(),
+                                    crate::CONTRACT_VERSION
+                                );
+                                if socket.write_all(headers.as_bytes()).await.is_ok() {
+                                    let _ = socket.write_all(&bytes).await;
+                                }
+                                log.done(200, bytes.len());
+                                if want_close { break 'conn; } else { continue 'conn; }
+                            } else {
+                                // Optional SPA fallback (disabled by default). If you want it, uncomment:
+                                // if !path.split('/').last().unwrap_or("").contains('.') {
+                                //     let index_path = root.join("index.html");
+                                //     if let Ok(bytes) = fs::read(&index_path).await { /* serve index */ }
+                                // }
+
+                                // Real 404
+                                let resp = b"HTTP/1.1 404 Not Found\r\n\
+                                             Content-Type: text/plain; charset=utf-8\r\n\
+                                             Connection: close\r\n\
+                                             Content-Length: 13\r\n\r\n404 not found";
+                                let _ = socket.write_all(resp).await;
+                                log.done(404, 13);
+                                break 'conn;
                             }
-                            log.done(200, body.len());
-                            if want_close { break 'conn; } else { continue 'conn; }
+
                         } // end 'conn loop
                     });
                 }

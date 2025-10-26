@@ -1,0 +1,5 @@
+map = { name: "Brian", age: 24 }
+
+for pair in map
+    say pair[0] + ":" ++ pair[1]
+end

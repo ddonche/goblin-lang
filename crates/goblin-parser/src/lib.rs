@@ -1255,22 +1255,57 @@ impl<'t> Parser<'t> {
     }
 
     fn validate_interpolation_braces(&self, s: &str) -> Result<(), String> {
-        // Error if there's any unmatched '{' after accounting for the literal sequence "{{/}}"
         let bytes = s.as_bytes();
-        let mut i = 0usize;
         let n = bytes.len();
+        let mut i: usize = 0;
         let mut depth: usize = 0;
 
         while i < n {
-            // Treat "{{/}}" as a literal '}' in TEXT context
+            // 1) Opaque module/glam token: {{{ ... }}}
+            if i + 2 < n && &bytes[i..i + 3] == b"{{{" {
+                // Scan forward for the first matching "}}}"
+                let mut j = i + 3;
+                let mut found = false;
+                while j + 2 < n {
+                    if &bytes[j..j + 3] == b"}}}" {
+                        found = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                if !found {
+                    return Err(s_help_site!(
+                        "P0605",
+                        "Unclosed module/glam token '{{{ ... }}}' in string",
+                        "Close the token with '}}}' like '{{{BRINDLE::OBSIDIAN}}}'",
+                    ));
+                }
+                // Skip the entire token including the closing "}}}"
+                i = j + 3;
+                continue;
+            }
+
+            // 2) Existing literal close-brace escape: treat '{{/}}' as a literal '}' in TEXT context
             if i + 4 < n && &bytes[i..i + 5] == b"{{/}}" {
                 i += 5;
                 continue;
             }
+
+            // 3) Normal single-brace accounting (for { ... } interpolation, maps, etc.)
             match bytes[i] {
-                b'{' => { depth += 1; i += 1; }
-                b'}' => { if depth > 0 { depth -= 1; } i += 1; }
-                _ => { i += 1; }
+                b'{' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b'}' => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
             }
         }
 
@@ -8204,4 +8239,45 @@ pub(crate) fn parse_program_preview(tokens: &[goblin_lexer::Token]) -> Result<Ve
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 1) Provide an empty static token slice to satisfy Parser::new(&[Token])
+    static EMPTY_TOKENS: [goblin_lexer::Token; 0] = [];
+
+    // 2) Return a Parser with a concrete lifetime
+    fn parser() -> Parser<'static> {
+        Parser::new(&EMPTY_TOKENS)
+    }
+
+    #[test]
+    fn ok_plain_interpolation() {
+        assert!(parser().validate_interpolation_braces("Hello {name}").is_ok());
+    }
+
+    #[test]
+    fn ok_triple_brace_token() {
+        assert!(parser().validate_interpolation_braces("X {{{BRINDLE::OBSIDIAN}}} Y").is_ok());
+    }
+
+    #[test]
+    fn err_unclosed_triple() {
+        let err = parser()
+            .validate_interpolation_braces("X {{{BRINDLE::OBSIDIAN")
+            .unwrap_err();
+        assert!(err.contains("Unclosed"));
+    }
+
+    #[test]
+    fn ok_literal_close_brace_escape() {
+        assert!(parser().validate_interpolation_braces("This prints a brace: {{/}}").is_ok());
+    }
+
+    #[test]
+    fn err_unclosed_single_brace() {
+        assert!(parser().validate_interpolation_braces("{ not closed").is_err());
+    }
 }
