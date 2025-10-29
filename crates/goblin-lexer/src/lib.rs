@@ -36,6 +36,8 @@ pub enum TokenKind {
     Import,
     Export,
     Vault,
+    TripleBraceOpen,   // "{{{"
+    TripleBraceClose,  // "}}}"
 }
 
 impl TokenKind {
@@ -808,7 +810,10 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
     state.advance(); // consume '\'
 
     if state.i >= state.bytes.len() {
-        let sp = Span::new(state.file, esc_start, esc_start + 1, state.line, esc_col, state.line, esc_col + 1);
+        let sp = Span::new(
+            state.file, esc_start, esc_start + 1,
+            state.line, esc_col, state.line, esc_col + 1
+        );
         return Err(Diagnostic::error(
             "L0205",
             "This escape sequence never finishes\n\nhelp: Complete the escape: \\n, \\t, \\\" or \\u{1F600}, or remove the trailing '\\\\'",
@@ -818,13 +823,13 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
 
     let b = state.current().unwrap();
     let simple = match b {
-        b'n' => Some('\n'),
-        b'r' => Some('\r'),
-        b't' => Some('\t'),
+        b'n'  => Some('\n'),
+        b'r'  => Some('\r'),
+        b't'  => Some('\t'),
         b'\\' => Some('\\'),
-        b'"' => Some('"'),
+        b'"'  => Some('"'),
         b'\'' => Some('\''),
-        b'0' => Some('\0'),
+        b'0'  => Some('\0'),
         _ => None,
     };
     if let Some(ch) = simple {
@@ -834,20 +839,30 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
 
     // \xNN (exactly two hex digits)
     if b == b'x' {
-        let _h = |c: u8| -> Option<u8> {
-            Some(match c {
-                b'0'..=b'9' => c - b'0',
-                b'a'..=b'f' => c - b'a' + 10,
-                b'A'..=b'F' => c - b'A' + 10,
-                _ => return None,
-            })
-        };
-        let x_pos = state.i;
-        state.advance(); // consume 'x'
-        let _h1 = match state.current() {
+        let x_pos = state.i; // points at 'x'
+        state.advance();     // consume 'x'
+
+        let h1 = match state.current() {
             Some(c) => c,
             None => {
-                let sp = Span::new(state.file, x_pos, x_pos + 2, state.line, state.col, state.line, state.col + 2);
+                let sp = Span::new(
+                    state.file, x_pos, (x_pos + 2).min(state.bytes.len()),
+                    state.line, state.col, state.line, state.col + 2
+                );
+                return Err(Diagnostic::error(
+                    "L0211",
+                    "Unexpected end of input in hex escape (need two hex digits)",
+                    sp,
+                ));
+            }
+        };
+        let h2 = match state.peek(1) {
+            Some(c) => c,
+            None => {
+                let sp = Span::new(
+                    state.file, x_pos, (x_pos + 3).min(state.bytes.len()),
+                    state.line, state.col, state.line, state.col + 3
+                );
                 return Err(Diagnostic::error(
                     "L0211",
                     "Unexpected end of input in hex escape (need two hex digits)",
@@ -856,17 +871,36 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
             }
         };
 
-        let _h2 = match state.current() {
-            Some(c) => c,
-            None => {
-                let sp = Span::new(state.file, x_pos, x_pos + 3, state.line, state.col, state.line, state.col + 3);
-                return Err(Diagnostic::error(
-                    "L0211",
-                    "Unexpected end of input in hex escape (need two hex digits)",
-                    sp,
-                ));
+        #[inline]
+        fn hex(c: u8) -> Option<u8> {
+            match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
             }
-        };
+        }
+
+        let d1 = hex(h1).ok_or_else(|| {
+            let sp = Span::new(
+                state.file, x_pos, (x_pos + 2).min(state.bytes.len()),
+                state.line, state.col, state.line, state.col + 2
+            );
+            Diagnostic::error("L0211", "Invalid first hex digit in \\xNN", sp)
+        })?;
+        let d2 = hex(h2).ok_or_else(|| {
+            let sp = Span::new(
+                state.file, x_pos, (x_pos + 3).min(state.bytes.len()),
+                state.line, state.col, state.line, state.col + 3
+            );
+            Diagnostic::error("L0211", "Invalid second hex digit in \\xNN", sp)
+        })?;
+
+        // consume both hex digits
+        state.advance_by(2);
+
+        let byte = (d1 << 4) | d2;
+        return Ok(byte as char);
     }
 
     // \u{HEX...}
@@ -890,14 +924,20 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
                 b'a'..=b'f' => (c - b'a' + 10) as u32,
                 b'A'..=b'F' => (c - b'A' + 10) as u32,
                 _ => {
-                    let sp = Span::new(state.file, u_pos, state.i + 1, state.line, state.col, state.line, state.col + 1);
+                    let sp = Span::new(
+                        state.file, u_pos, state.i + 1,
+                        state.line, state.col, state.line, state.col + 1
+                    );
                     return Err(Diagnostic::error("L0202", "Invalid hex in \\u{...}", sp));
                 }
             };
             val = (val << 4) | d;
             digits += 1;
             if digits > 6 {
-                let sp = Span::new(state.file, u_pos, state.i + 1, state.line, state.col, state.line, state.col + 1);
+                let sp = Span::new(
+                    state.file, u_pos, state.i + 1,
+                    state.line, state.col, state.line, state.col + 1
+                );
                 return Err(Diagnostic::error("L0202", "Too many hex digits in \\u{...}", sp));
             }
             state.advance();
@@ -911,10 +951,15 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
         }
     }
 
-    let sp = Span::new(state.file, esc_start, state.i + 1, state.line, esc_col, state.line, state.col + 1);
+    let sp = Span::new(
+        state.file, esc_start, state.i + 1,
+        state.line, esc_col, state.line, state.col + 1
+    );
     Err(Diagnostic::error(
         "L0202",
-        "Invalid escape sequence\n\nhelp: Use one of: \\n, \\r, \\t, \\\\, \\\", \\\', \\xNN, or \\u{...}",
+        r#"Invalid escape sequence
+
+    help: Use one of: \n, \r, \t, \\, \", \', \xNN, or \u{...}"#,
         sp,
     ))
 }
@@ -937,8 +982,10 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
 
     loop {
         if state.i >= state.bytes.len() {
-            let sp = Span::new(state.file, start_i, (start_i + 1).min(state.bytes.len()),
-                             start_line, start_col, start_line, start_col + 1);
+            let sp = Span::new(
+                state.file, start_i, (start_i + 1).min(state.bytes.len()),
+                start_line, start_col, start_line, start_col + 1
+            );
             return Err(vec![Diagnostic::error(
                 "L0201",
                 "This string never closes\n\nhelp: Add the closing '\"'",
@@ -962,8 +1009,10 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
         // Handle newlines
         if b == b'\r' || b == b'\n' {
             if !is_triple {
-                let sp = Span::new(state.file, start_i, (start_i + 1).min(state.bytes.len()),
-                                 start_line, start_col, start_line, start_col + 1);
+                let sp = Span::new(
+                    state.file, start_i, (start_i + 1).min(state.bytes.len()),
+                    start_line, start_col, start_line, start_col + 1
+                );
                 return Err(vec![Diagnostic::error(
                     "L0204",
                     "Strings can't contain an unescaped newline\n\nhelp: Close the quote before the newline or escape it",
@@ -984,6 +1033,18 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
 
         // Handle escapes (only if not raw)
         if !is_raw && b == b'\\' {
+            // Lookahead for brace-literals: \{ or \}
+            if let Some(nxt) = state.peek(1) {
+                if nxt == b'{' || nxt == b'}' {
+                    // Keep BOTH characters literally so the renderer can see \{ / \}
+                    out.push('\\');
+                    out.push(nxt as char);
+                    state.advance_by(2);
+                    continue;
+                }
+            }
+
+            // Otherwise, use normal escape handling
             match lex_escape_sequence(state) {
                 Ok(ch) => out.push(ch),
                 Err(e) => return Err(vec![e]),
@@ -1773,6 +1834,25 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 // Otherwise:
                 // state.tokens.push(Token { kind: TokenKind::Shadow, span, value: None });
             }
+
+            // "{{{" → TripleBraceOpen  (must be before single '{')
+            b'{' if state.peek(1) == Some(b'{') && state.peek(2) == Some(b'{') => {
+                let start_i = state.i;
+                let start_col = state.col;
+                state.advance_by(3); // do NOT touch state.nest
+                let span = state.span(start_i, start_col);
+                state.tokens.push(Token { kind: TokenKind::TripleBraceOpen, span, value: None });
+            }
+
+            // "}}}" → TripleBraceClose (must be before single '}')
+            b'}' if state.peek(1) == Some(b'}') && state.peek(2) == Some(b'}') => {
+                let start_i = state.i;
+                let start_col = state.col;
+                state.advance_by(3); // do NOT touch state.nest
+                let span = state.span(start_i, start_col);
+                state.tokens.push(Token { kind: TokenKind::TripleBraceClose, span, value: None });
+            }
+
             b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' => {
                 let start_i = state.i;
                 let start_col = state.col;

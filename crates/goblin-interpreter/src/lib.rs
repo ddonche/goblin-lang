@@ -19,6 +19,8 @@ pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
 pub mod diagnostics;
 
+type TokenResolver = fn(&str) -> Value;
+
 const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference
 const MAX_EVAL_DEPTH: usize = 512; // maximum recursion depth for expression evaluation
 
@@ -322,6 +324,7 @@ pub struct Session {
     pub modules: crate::modules::ModuleCache,
     pub current_module: Option<String>,
     regex_cache: RegexCache,
+    token_store: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
 impl Session {
@@ -342,7 +345,27 @@ impl Session {
             modules: crate::modules::ModuleCache::new(),
             current_module: None,
             regex_cache: RegexCache::new(),
+            token_store: BTreeMap::new(),
         }
+    }
+
+    #[inline]
+    fn normalize_module_name(&self, module: &str) -> String {
+        module.to_ascii_uppercase()
+    }
+
+    pub fn register_token_value(&mut self, module: &str, ident: &str, value: Value) {
+        let m = self.normalize_module_name(module);
+        let entry = self.token_store.entry(m).or_insert_with(BTreeMap::new);
+        entry.insert(ident.to_string(), value);
+    }
+
+    pub fn resolve_token_value(&self, module: &str, ident: &str) -> Option<Value> {
+        let m = self.normalize_module_name(module);
+        self.token_store
+            .get(&m)
+            .and_then(|inner| inner.get(ident))
+            .cloned()
     }
 
     pub fn set_global(&mut self, name: &str, val: Value) {
@@ -379,6 +402,22 @@ impl Session {
     }
 
     // --- scope helpers ---
+    #[inline]
+    fn with_block<T, F>(sess: &mut Session, mut f: F) -> Result<T, Diagnostic>
+    where
+        F: FnMut(&mut Session) -> Result<T, Diagnostic>,
+    {
+        sess.push_frame();
+        let r = f(sess);
+        sess.pop_frame();
+        r
+    }
+
+    /// Block scope ≙ a regular frame layered on top of the current one.
+    pub fn push_block(&mut self) { self.push_frame(); }
+
+    pub fn pop_block(&mut self) { self.pop_frame(); }
+
     fn push_frame(&mut self) {
         self.env.push(BTreeMap::new());
         self.consts.push(BTreeMap::new()); // mirror
@@ -553,6 +592,40 @@ impl Session {
 }
 
 // ===================== Helpers =====================
+fn sanitize_yaml_text(input: &str) -> String {
+    let mut s = input.to_string();
+    
+    // Normalize line endings
+    s = s.replace("\r\n", "\n");
+    s = s.replace("\r", "\n");
+    s = s.replace("\t", "  ");
+    
+    // Remove BOM and NUL
+    s = s.replace('\u{FEFF}', ""); // BOM
+    s = s.replace('\u{0000}', ""); // NUL
+    
+    // Normalize Unicode newlines
+    s = s.replace('\u{0085}', "\n"); // NEL
+    s = s.replace('\u{2028}', "\n"); // Line Separator
+    s = s.replace('\u{2029}', "\n"); // Paragraph Separator
+    
+    // Remove C0 control characters (except LF which is \n)
+    for ch in 0x01u8..=0x1F {
+        if ch != 0x0A { // Keep LF (\n)
+            s = s.replace(char::from(ch), "");
+        }
+    }
+    
+    // Remove DEL
+    s = s.replace('\u{007F}', "");
+    
+    // Remove C1 control characters
+    for ch in 0x80u8..=0x9F {
+        s = s.replace(char::from(ch), "");
+    }
+    
+    s
+}
 
 fn strip_format(v: &Value) -> (&Value, Option<&FormatSpec>) {
     match v {
@@ -1403,7 +1476,7 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Index(_, _, sp)
         | ast::Expr::Slice(_, _, _, sp)
         | ast::Expr::Slice3(_, _, _, _, sp)
-        | ast::Expr::TupleAssign(_,_, sp)
+        | ast::Expr::TupleAssign(_, _, sp)
         | ast::Expr::Call(_, _, _, sp)
         | ast::Expr::OptCall(_, _, _, sp)
         | ast::Expr::FreeCall(_, _, sp)
@@ -1413,8 +1486,9 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Binary(_, _, _, sp)
         | ast::Expr::Assign(_, _, sp)
         | ast::Expr::EnumVariant { span: sp, .. }
-        | ast::Expr::Judge { span: sp, .. } 
-        | ast::Expr::Block { span: sp, .. } => sp.clone(),
+        | ast::Expr::Judge { span: sp, .. }
+        | ast::Expr::Block { span: sp, .. }
+        | ast::Expr::LiteralToken { span: sp, .. } => sp.clone(),
     }
 }
 
@@ -1920,23 +1994,116 @@ fn parse_dice_string(s: &str, sp: Span) -> Result<BTreeMap<String, Value>, Diag>
 }
 
 // Render "Hello {name}" by looking identifiers up in the Session env.
-// Supports "{{" -> "{" and "}}" -> "}".
-fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Diag> {
-
+// NEW: Supports "\{" -> "{" and "\}" -> "}", and resolves triple-brace tokens.
+// Legacy "{{" / "}}" escapes have been removed.
+fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String, Diag> {
     let b = s.as_bytes();
     let mut i = 0usize;
     let mut out = String::new();
 
     while i < b.len() {
+        // 0) Runtime backslash escapes so \{ / \} survive the lexer and don't trigger interpolation
+        if b[i] == b'\\' {
+            if i + 1 < b.len() {
+                match b[i + 1] {
+                    b'{' => { out.push('{'); i += 2; continue; }
+                    b'}' => { out.push('}'); i += 2; continue; }
+                    b'\\' => { out.push('\\'); i += 2; continue; }
+                    _ => {
+                        // Unknown escape: pass through literally (don't swallow)
+                        out.push('\\');
+                        out.push(b[i + 1] as char);
+                        i += 2;
+                        continue;
+                    }
+                }
+            } else {
+                // trailing backslash
+                out.push('\\');
+                i += 1;
+                continue;
+            }
+        }
+
         match b[i] {
             b'{' => {
-                // "{{" -> "{"
-                if i + 1 < b.len() && b[i + 1] == b'{' {
-                    out.push('{');
-                    i += 2;
+                // 1) TRIPLE-BRACE TOKENS FIRST: {{{MODULE::IDENT}}}
+                if i + 2 < b.len() && b[i + 1] == b'{' && b[i + 2] == b'{' {
+                    // find closing "}}}"
+                    let mut j = i + 3;
+                    let mut found = None;
+                    while j + 2 < b.len() {
+                        if b[j] == b'}' && b[j + 1] == b'}' && b[j + 2] == b'}' {
+                            found = Some(j);
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if found.is_none() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::UNCLOSED_INTERP_BRACE, // R0500
+                                "interpolation",
+                                "unclosed '{{{' in interpolated string",
+                                sp.clone(),
+                            )
+                            .with_help("Close triple-brace tokens with '}}}'.")
+                            .with_link("https://goblinlang.org/docs/errors#R0500"),
+                        );
+                    }
+                    let j = found.unwrap();
+                    let inner_raw = &s[i + 3..j];
+                    let inner_trim = inner_raw.trim();
+
+                    // Expect MODULE::IDENT
+                    if let Some(pos) = inner_trim.find("::") {
+                        let module = inner_trim[..pos].trim();
+                        let ident  = inner_trim[pos + 2..].trim();
+
+                        if !module.is_empty() && !ident.is_empty() {
+                            if let Some(v) = sess.resolve_token_value(module, ident) {
+                                out.push_str(&fmt_value_raw(&v));
+                                i = j + 3;
+                                continue;
+                            } else {
+                                // Fallback: try calling MODULE::resolve_token(ident)
+                                let action_name = format!("{}::resolve_token", module);
+                                match call_action_by_name(
+                                    sess,
+                                    &action_name,
+                                    vec![Value::Str(ident.to_string())],
+                                    sp.clone(),
+                                ) {
+                                    Ok(v) => {
+                                        out.push_str(&fmt_value_raw(&v));
+                                        i = j + 3;
+                                        continue;
+                                    }
+                                    Err(_) => {
+                                        // Truly not found (use non-brace marker to avoid reparse)
+                                        out.push_str("[ERR: TOKEN NOT FOUND -> ");
+                                        out.push_str(module);
+                                        out.push_str("::");
+                                        out.push_str(ident);
+                                        out.push(']');
+                                        i = j + 3;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Malformed triple token → explicit MALFORMED marker (non-brace)
+                    out.push_str("[ERR: MALFORMED TOKEN -> ");
+                    out.push_str(inner_trim);
+                    out.push(']');
+                    i = j + 3;
                     continue;
                 }
-                // find closing '}'
+
+                // 2) SINGLE-BRACE {ident} interpolation
                 let start = i + 1;
                 let mut j = start;
                 while j < b.len() && b[j] != b'}' { j += 1; }
@@ -1949,13 +2116,12 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
                             "unclosed '{' in interpolated string",
                             sp.clone(),
                         )
-                        .with_help("Use '{{' to render a literal '{', or close the interpolation with '}'.")
-                        .with_help("Example: \"{name}\" or \"{{\" for a literal left brace.")
-                        .with_link("https://goblinlang.org/docs/errors#R0500")
+                        .with_help(r#"Use "\{" to render a literal '{', or close the interpolation with '}'."#)
+                        .with_help(r#"Example: "Hello \{name\}" for a literal brace."#)
+                        .with_link("https://goblinlang.org/docs/errors#R0500"),
                     );
                 }
 
-                // raw contents between braces (keep whitespace for literal echo)
                 let inner_raw = &s[start..j];
                 let inner_trim = inner_raw.trim();
 
@@ -1970,54 +2136,36 @@ fn render_interpolated(s: &str, sess: &Session, sp: &Span) -> Result<String, Dia
 
                 // Interpolate {ident}
                 match sess.get_var(inner_trim) {
-                    Some(v) => out.push_str(&fmt_value_raw(v)),
+                    Some(v) => {
+                        out.push_str(&fmt_value_raw(v));
+                        i = j + 1;
+                        continue;
+                    }
                     None => {
-                        // Fallback: if there's a `self` map in scope, allow `{field}` to read `self[field]`
+                        // Optional: allow {field} to read self[field]
                         if let Some(Value::Map(m)) = sess.get_var("self") {
                             if let Some(v) = m.get(inner_trim) {
                                 out.push_str(&fmt_value_raw(v));
-                            } else {
-                                return Err(
-                                    Diagnostic::new_with_code(
-                                        Severity::Error,
-                                        rtcode::UNKNOWN_IDENT, // R0101
-                                        "unknown-ident",
-                                        &format!("unknown name '{inner_trim}'"),
-                                        sp.clone(),
-                                    )
-                                    .with_help("Declare it, or qualify it (e.g., module::name).")
-                                    .with_help("Inside objects, ensure the field exists on 'self'.")
-                                    .with_link("https://goblinlang.org/docs/errors#R0101")
-                                );
+                                i = j + 1;
+                                continue;
                             }
-                        } else {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::UNKNOWN_IDENT, // R0101
-                                    "unknown-ident",
-                                    &format!("unknown name '{inner_trim}'"),
-                                    sp.clone(),
-                                )
-                                .with_help("Declare it, or qualify it (e.g., module::name).")
-                                .with_link("https://goblinlang.org/docs/errors#R0101")
-                            );
                         }
+                        // Soft-fail: keep it literal (don’t error)
+                        out.push('{');
+                        out.push_str(inner_raw); // keep original spacing/case
+                        out.push('}');
+                        i = j + 1;
+                        continue;
                     }
                 }
-                i = j + 1;
             }
+
             b'}' => {
-                // "}}" -> "}"
-                if i + 1 < b.len() && b[i + 1] == b'}' {
-                    out.push('}');
-                    i += 2;
-                } else {
-                    // Bare '}' — treat as literal to be permissive
-                    out.push('}');
-                    i += 1;
-                }
+                // Bare '}' prints as is (no legacy "}}" collapse)
+                out.push('}');
+                i += 1;
             }
+
             _ => {
                 out.push(b[i] as char);
                 i += 1;
@@ -2403,71 +2551,81 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 Severity::Error,
                                 rtcode::DUPLICATE_LOCAL, // R0111
                                 "duplicate-local",
-                                format!("'{}' is already declared in this scope; use '=' to reassign", name),
+                                format!("'{}' is already declared in this block", name),
                                 name_span,
                             )
-                            .with_help("Use '=' to modify an existing variable instead of redeclaring it.")
-                            .with_help("If you intend to create a new local, choose a unique name or shadow using '[=' syntax.")
+                            .with_help("Choose a different local name, or assign to the existing variable with '='.")
+                            .with_link("https://goblinlang.org/docs/errors#R0111"),
                         );
                     }
 
-                    // record constness
+                    // respect constness flag
+                    sess.define_local(name.clone(), rhs, b.is_const);
+                    Ok(None)
+                }
+
+                BindMode::Local => {
+                    // Create a new binding in the *current* frame only.
+                    // Error if this frame already has the same name.
+                    let cur = sess.env.len() - 1;
+                    if sess.env[cur].contains_key(name) {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::DUPLICATE_LOCAL, // R0111
+                                "duplicate-local",
+                                format!("'{}' is already declared in this block", name),
+                                name_span,
+                            )
+                            .with_help("Choose a different local name, or assign to the existing variable with '='.")
+                            .with_link("https://goblinlang.org/docs/errors#R0111"),
+                        );
+                    }
+
                     sess.define_local(name.clone(), rhs, b.is_const);
                     Ok(None)
                 }
 
                 BindMode::Normal => {
-                    match sess.find_name_frame(name) {
-                        // Name exists *in current frame* → mutate (unless immutable)
-                        Some(ix) if ix == sess.env.len() - 1 => {
-                            if sess.is_const_in_frame(ix, name) {
-                                return Err(
-                                    Diagnostic::new_with_code(
-                                        Severity::Error,
-                                        rtcode::IMMUTABLE_ASSIGN, // R0113
-                                        "immutable-assign",
-                                        format!("cannot reassign immutable '{}'", name),
-                                        name_span,
-                                    )
-                                    .with_help("Values declared with 'imm' cannot be reassigned.")
-                                    .with_help("Remove 'imm' or create a new variable if reassignment is intended.")
-                                );
-                            }
-                            if let Some(slot) = sess.env[ix].get_mut(name) {
-                                *slot = rhs;
-                                Ok(None)
-                            } else {
-                                Err(
-                                    Diagnostic::new_with_code(
-                                        Severity::Error,
-                                        rtcode::INTERNAL_ASSIGN_SLOT, // R0009
-                                        "internal-assign-slot",
-                                        "internal: slot missing during assign",
-                                        name_span,
-                                    )
-                                    .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                    // Back-compat: operate only on the CURRENT frame.
+                    let cur = sess.env.len() - 1;
+
+                    if sess.env[cur].contains_key(name) {
+                        // Mutate existing in current frame (respect immutability)
+                        if sess.is_const_in_frame(cur, name) {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::IMMUTABLE_ASSIGN, // R0113
+                                    "immutable-assign",
+                                    format!("cannot reassign immutable '{}'", name),
+                                    name_span,
                                 )
-                            }
+                                .with_help("Values declared with 'imm' cannot be reassigned.")
+                                .with_help("Remove 'imm' or create a new variable if reassignment is intended.")
+                                .with_link("https://goblinlang.org/docs/errors#R0113"),
+                            );
                         }
-
-                        // Name exists only in an *outer* frame → ERROR (no accidental shadowing)
-                        Some(_outer_ix) => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                rtcode::OUTER_SCOPE_SHADOW, // R0114
-                                "outer-scope-shadow",
-                                format!("'{}' exists in an outer scope; use '[=' to shadow", name),
-                                name_span,
-                            )
-                            .with_help("Use '[=' if you intend to shadow a variable from an outer scope.")
-                            .with_help("Otherwise, reassign it directly with '=' instead of redeclaring.")
-                        ),
-
-                        // Name not found anywhere → smart-declare local (respect imm)
-                        None => {
-                            sess.define_local(name.clone(), rhs, b.is_const);
+                        if let Some(slot) = sess.env[cur].get_mut(name) {
+                            *slot = rhs;
                             Ok(None)
+                        } else {
+                            Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::INTERNAL_ASSIGN_SLOT, // R0009
+                                    "internal-assign-slot",
+                                    "internal: slot missing during assign",
+                                    name_span,
+                                )
+                                .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                                .with_link("https://goblinlang.org/docs/errors#R0009"),
+                            )
                         }
+                    } else {
+                        // Not present in current frame → declare local here (respect constness).
+                        sess.define_local(name.clone(), rhs, b.is_const);
+                        Ok(None)
                     }
                 }
             }
@@ -2507,6 +2665,7 @@ fn expect_array<'a>(e: &'a ast::Expr, label: &str, sp: Span) -> Result<&'a [ast:
             )
             .with_help("Use square brackets [] to define arrays, e.g., [1, 2, 3].")
             .with_help("If you meant to pass multiple arguments, use commas within an array expression.")
+            .with_link("https://goblinlang.org/docs/errors#P0314")
         )
     }
 }
@@ -2554,6 +2713,94 @@ fn eval_builtin(
     };
 
     let out = match name {
+
+        // --------- TOKENS --------------
+        "register_token" => {
+            arity(3)?;
+            let module = want_str(&args[0], "register_token.module")?;
+            let ident  = want_str(&args[1], "register_token.identifier")?;
+            let value  = args[2].clone(); // already a Value
+            sess.register_token_value(&module, &ident, value);
+            Value::Unit
+        },
+
+        "resolve_token" => {
+            arity(2)?;
+            let module = want_str(&args[0], "resolve_token.module")?;
+            let ident  = want_str(&args[1], "resolve_token.identifier")?;
+
+            // 1) Static store
+            if let Some(v) = sess.resolve_token_value(&module, &ident) {
+                v
+            } else {
+                // 2) Module-export fallback: MOD::resolve_token(ident)
+                let action_name = format!("{}::resolve_token", module);
+                match call_action_by_name(
+                    sess,                          // &mut Session
+                    &action_name,                  // &str
+                    vec![Value::Str(ident.clone())], // Vec<Value>
+                    sp.clone(),                    // Span
+                ) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // 3) Miss → explicit marker (not triple-braced to avoid re-parsing)
+                        Value::Str(format!("[ERR: TOKEN NOT FOUND -> {}::{}]", module, ident))
+                    }
+                }
+            }
+        },
+
+        // --------- TOKENS DISCOVERABILITY --------------
+        // list_tokens() -> { MODULE: { IDENT: Value, ... }, ... }
+        // list_tokens(module: Str) -> { IDENT: Value, ... }
+        "list_tokens" => {
+            // Arity: 0 or 1
+            if !(args.len() == 0 || args.len() == 1) {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        format!("wrong number of arguments (expected 0 or 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Use: list_tokens() or list_tokens(module_name)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            use std::collections::BTreeMap;
+
+            if args.len() == 1 {
+                // Single module view
+                let module = want_str(&args[0], "list_tokens.module")?; // uses your local want_str closure
+                let m = sess.normalize_module_name(&module);
+                if let Some(inner) = sess.token_store.get(&m) {
+                    let mut out = BTreeMap::new();
+                    for (k, v) in inner {
+                        out.insert(k.clone(), v.clone());
+                    }
+                    Value::Map(out)
+                } else {
+                    // Unknown module -> empty map (read-only introspection, non-fatal)
+                    Value::Map(BTreeMap::new())
+                }
+            } else {
+                // All modules
+                let mut top = BTreeMap::new();
+                for (m, inner) in &sess.token_store {
+                    let mut mm = BTreeMap::new();
+                    for (k, v) in inner {
+                        mm.insert(k.clone(), v.clone());
+                    }
+                    top.insert(m.clone(), Value::Map(mm));
+                }
+                Value::Map(top)
+            }
+        },
+
+        // ------------- Numbers ---------------------
+
         "int" => {
             arity(1)?;
             return Ok(Some(cast_to_int_like(args[0].clone())?));
@@ -9572,6 +9819,13 @@ fn call_action_by_name(
             from_json(&vj)
         }
 
+        "yaml_sanitize" => {
+            arity(1)?;
+            let text = want_str(&args[0], "yaml_sanitize")?;
+            let sanitized = sanitize_yaml_text(&text);
+            Value::Str(sanitized)
+        }
+
         // ----- JSON -----
         "json_parse" => {
             // arity(1)?;  --> expand for uniform diagnostics
@@ -10674,6 +10928,37 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 Ok(Value::Str(s.clone()))
             }
         }
+        // crates/goblin-interpreter/src/lib.rs
+        // inside: fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag>
+
+        ast::Expr::LiteralToken { module, ident, span } => {
+            // 1) Static registry path
+            if let Some(v) = sess.resolve_token_value(module.as_str(), ident.as_str()) {
+                return Ok(v);
+            }
+
+            // 2) Fallback: call MODULE::resolve_token(ident)
+            let action_name = format!("{}::resolve_token", module);
+            match call_action_by_name(
+                sess,
+                &action_name,
+                vec![Value::Str(ident.clone())],
+                span.clone(),
+            ) {
+                Ok(v) => Ok(v),
+                Err(_) => Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
+                        "unknown-token",
+                        &format!("unknown token ‘{}::{}’", module, ident),
+                        span.clone(),
+                    )
+                    .with_help("Register the token, provide a module resolver, or implement ‘MODULE::resolve_token(name)’ to return a value.")
+                    .with_link("https://goblinlang.org/docs/errors#R0101"),
+                ),
+            }
+        }
         ast::Expr::Char(c, _sp) => Ok(Value::Char(*c)),
         ast::Expr::Ident(name, sp) => {
             match sess.get_var(name) {
@@ -10697,14 +10982,20 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
         
         ast::Expr::Block { stmts, .. } => {
-            let mut last_value = Value::Nil; // or Value::Unit if that’s your “no value”
-            for stmt in stmts {
-                // eval_stmt: Result<Option<Value>, Diag>
-                if let Some(v) = eval_stmt(stmt, sess)? {
-                    last_value = v;
+           Session::with_block(sess, |sess| {
+                let mut last: Option<Value> = None;
+                for st in stmts {
+                    match st {
+                        ast::Stmt::Expr(e) => {
+                            last = Some(eval_expr(e, sess)?);
+                        }
+                        _ => {
+                            let _ = sess.eval_stmt(st)?;
+                        }
+                    }
                 }
-            }
-            Ok(last_value)
+                Ok(last.unwrap_or(Value::Unit))
+            })
         }
 
         ast::Expr::NsCall(ns, name, args, sp) => {
@@ -11919,10 +12210,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                     let cond_v = eval_expr(&args[0], sess)?;
                     if as_bool(cond_v, sp.clone(), "if condition")? {
-                        // args[1] is now an Expr::Block; eval_expr will execute it
-                        Ok(eval_expr(&args[1], sess)?)
+                        Session::with_block(sess, |sess| eval_expr(&args[1], sess))
                     } else if args.len() == 3 {
-                        Ok(eval_expr(&args[2], sess)?)
+                        Session::with_block(sess, |sess| eval_expr(&args[2], sess))
                     } else {
                         Ok(Value::Unit)
                     }
@@ -11949,8 +12239,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         let c = eval_expr(&args[0], sess)?;
                         if !as_bool(c, sp.clone(), "while condition")? { break; }
 
-                        // Body is now an Expr::Block; eval_expr will execute its statements.
-                        let v = eval_expr(&args[1], sess)?;
+                        let v = Session::with_block(sess, |sess| eval_expr(&args[1], sess))?;
                         match v {
                             Value::CtrlSkip => continue 'outer,
                             Value::CtrlStop => break 'outer,
@@ -12025,8 +12314,14 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // Body is now an Expr::Block; eval_expr will execute its statements each iteration.
                     sess.loop_depth += 1;
                     'outer: for item in items {
-                        sess.set_var(var_name.clone(), item);
-                        let v = eval_expr(&args[2], sess)?;
+                        // New block scope per iteration
+                        let v = Session::with_block(sess, |sess| {
+                            // Bind loop variable for this iteration into the fresh frame
+                            sess.define_local(var_name.clone(), item.clone(), false);
+                            // Execute the loop body block
+                            eval_expr(&args[2], sess)
+                        })?;
+
                         match v {
                             Value::CtrlSkip => continue 'outer,
                             Value::CtrlStop => break 'outer,
@@ -12034,7 +12329,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                     }
                     sess.loop_depth -= 1;
-
                     Ok(Value::Unit)
                 }
 
@@ -12090,8 +12384,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // execute
                     sess.loop_depth += 1;
                     'outer: for _ in 0..count {
-                        // Body is now an Expr::Block; eval_expr will execute its statements.
-                        let v = eval_expr(&args[1], sess)?;
+                        let v = Session::with_block(sess, |sess| eval_expr(&args[1], sess))?;
                         match v {
                             Value::CtrlSkip => continue 'outer,
                             Value::CtrlStop => break 'outer,
@@ -12158,11 +12451,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
-
-                    // Evaluate the expression to a Value, then extract a string with span
                     let vpath = eval_expr(&args[0], sess)?;
                     let path  = want_str(&vpath, "read_text path", sp.clone())?;
-
                     let s = std::fs::read_to_string(&path).map_err(|e| {
                         Diagnostic::new_with_code(
                             Severity::Error,
@@ -12174,8 +12464,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         .with_help("Check file exists and permissions.")
                         .with_link("https://goblinlang.org/docs/errors#FS0001")
                     })?;
-
-                    Ok(Value::Str(s))
+                    
+                    // Auto-resolve tokens in loaded text
+                    let interpolated = render_interpolated(&s, sess, &sp)?;
+                    Ok(Value::Str(interpolated))
                 }
 
                 "copy_file" => {
@@ -12218,26 +12510,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // Run attempt block
                     let mut result = Value::Unit;
                     let mut had_error = false;
-                    match eval_expr(&args[0], sess) {
+                    match Session::with_block(sess, |sess| eval_expr(&args[0], sess)) {
                         Ok(v) => result = v,
-                        Err(_err) => {
-                            had_error = true;
-                        }
+                        Err(_err) => { had_error = true; }
                     }
 
-                    // If error occurred, execute the first rescue block (if any)
+                    // first rescue (if any), in its own block
                     if had_error && !rescue_blocks_es.is_empty() {
-                        // Each rescue block is [var_name_or_nil, body_block]
                         let rescue_info_es = expect_array(&rescue_blocks_es[0], "rescue_info", sp.clone())?;
                         if rescue_info_es.len() >= 2 {
-                            // Index 1 is the rescue body (now a block expression); run it
-                            result = eval_expr(&rescue_info_es[1], sess)?;
+                            result = Session::with_block(sess, |sess| eval_expr(&rescue_info_es[1], sess))?;
                         }
                     }
 
-                    // Ensure block always runs if present (now a block expression)
+                    // ensure (if present), in its own block
                     if args.len() > 2 {
-                        let _ = eval_expr(&args[2], sess)?;
+                        let _ = Session::with_block(sess, |sess| eval_expr(&args[2], sess))?;
                     }
 
                     Ok(result)

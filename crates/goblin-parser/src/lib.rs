@@ -83,6 +83,11 @@ enum PExpr {
         expr: Box<PExpr>,
         show_ids: bool,   // keep the flag; we’ll always false for now
     },
+    LiteralToken {
+        module: String,
+        ident: String,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,6 +260,236 @@ impl<'t> Parser<'t> {
         self.rec_depth -= 1;
 
         out
+    }
+
+    fn parse_literal_token(&mut self) -> Result<PExpr, String> {
+        #[inline]
+        fn is_op(tk: &Token, s: &str) -> bool {
+            matches!(&tk.kind, TokenKind::Op(op) if op.as_str() == s)
+        }
+
+        // '{{{'
+        if !(self.i < self.toks.len() && self.toks[self.i].kind == TokenKind::TripleBraceOpen) {
+            return Err(s(
+                "P0710",
+                "bad-token-shape: expected '{{{' at start of token\nhelp: Write tokens like: {{{BRINDLE::OBSIDIAN}}}",
+            ));
+        }
+        self.i += 1;
+
+        // MODULE
+        if self.i >= self.toks.len() || self.toks[self.i].kind != TokenKind::Ident {
+            return Err(s(
+                "P0710",
+                "bad-token-shape: expected MODULE identifier\nhelp: Write tokens like: {{{BRINDLE::OBSIDIAN}}}",
+            ));
+        }
+        let module = self.toks[self.i].value.clone().unwrap_or_default();
+        if module.is_empty() {
+            return Err(s("P0710", "bad-token-shape: empty MODULE name"));
+        }
+        self.i += 1;
+
+        // '::' — accept either Op("::") or two Op(":")
+        if self.i < self.toks.len() && is_op(&self.toks[self.i], "::") {
+            self.i += 1;
+        } else {
+            for _ in 0..2 {
+                if !(self.i < self.toks.len() && is_op(&self.toks[self.i], ":")) {
+                    return Err(s(
+                        "P0710",
+                        "bad-token-shape: expected '::' after MODULE\nhelp: Write tokens like: {{{BRINDLE::OBSIDIAN}}}",
+                    ));
+                }
+                self.i += 1;
+            }
+        }
+
+        // IDENT
+        if self.i >= self.toks.len() || self.toks[self.i].kind != TokenKind::Ident {
+            return Err(s(
+                "P0710",
+                "bad-token-shape: expected IDENT after '::'\nhelp: Write tokens like: {{{BRINDLE::OBSIDIAN}}}",
+            ));
+        }
+        let ident = self.toks[self.i].value.clone().unwrap_or_default();
+        if ident.is_empty() {
+            return Err(s("P0710", "bad-token-shape: empty IDENT in token"));
+        }
+        self.i += 1;
+
+        // '}}}'
+        if self.i >= self.toks.len() || self.toks[self.i].kind != TokenKind::TripleBraceClose {
+            return Err(s(
+                "P0711",
+                "unclosed-triple-brace: missing '}}}'\nhelp: Close tokens like: {{{MODULE::IDENT}}}",
+            ));
+        }
+        let span = self.toks[self.i].span.clone(); // clone to avoid moving out
+        self.i += 1;
+
+        Ok(PExpr::LiteralToken { module, ident, span })
+    }
+
+    fn validate_interpolation_braces(&self, s: &str) -> Result<(), String> {
+        let bytes = s.as_bytes();
+        let n = bytes.len();
+        let mut i: usize = 0;
+        let mut depth: usize = 0;
+
+        while i < n {
+            // 1) Opaque module/glam token: {{{ ... }}}
+            if i + 2 < n && &bytes[i..i + 3] == b"{{{" {
+                // Scan forward for the first matching "}}}"
+                let mut j = i + 3;
+                let mut found = false;
+                while j + 2 < n {
+                    if &bytes[j..j + 3] == b"}}}" {
+                        found = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                if !found {
+                    return Err(s_help_site!(
+                        "P0605",
+                        "Unclosed module/glam token '{{{ ... }}}' in string",
+                        "Close the token with '}}}' like '{{{BRINDLE::OBSIDIAN}}}'",
+                    ));
+                }
+                // Skip the entire token including the closing "}}}"
+                i = j + 3;
+                continue;
+            }
+
+            // 2) Backslash escapes (new: \{ and \} don't affect depth)
+            if bytes[i] == b'\\' {
+                // If there is a next byte, skip it so we don't count escaped braces
+                if i + 1 < n {
+                    // specifically handle \u{...} and \xNN just to skip cleanly
+                    match bytes[i + 1] {
+                        b'u' => {
+                            // skip \u{ ... }
+                            let mut k = i + 2;
+                            if k < n && bytes[k] == b'{' {
+                                k += 1;
+                                while k < n && bytes[k] != b'}' {
+                                    k += 1;
+                                }
+                                if k < n && bytes[k] == b'}' {
+                                    i = k + 1;
+                                    continue;
+                                }
+                            }
+                            // fall through to generic 2-char skip if malformed
+                            i += 2;
+                            continue;
+                        }
+                        b'x' => {
+                            // skip \xNN if present, else just skip two chars
+                            if i + 3 < n {
+                                i += 4;
+                            } else {
+                                i += 2;
+                            }
+                            continue;
+                        }
+                        _ => {
+                            // \{, \}, \\, \n, \t, \r, \", \', or unknown: skip both
+                            i += 2;
+                            continue;
+                        }
+                    }
+                } else {
+                    // trailing backslash at end
+                    i += 1;
+                    continue;
+                }
+            }
+
+            // 3) Normal single-brace accounting (for { ... } interpolation text)
+            match bytes[i] {
+                b'{' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b'}' => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        if depth != 0 {
+            Err(s_help_site!(
+                "P0604",
+                "There's an unclosed '{' in this string",
+                "Add a matching '}' to close it: \"Hello {name}\"",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn parse_local_bind(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+
+        // Record span start before consuming tokens
+        let start_i = self.i;
+
+        // 1) consume 'local' (we already peeked it)
+        let local_text = self.eat_ident().ok_or_else(|| s_help_site!(
+            "P0300",
+            "Expected the keyword 'local'",
+            "Write: local name = value"
+        ))?;
+        debug_assert_eq!(local_text.as_str(), "local");
+
+        // 2) expect variable name (identifier)
+        let name_span = match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::Ident) => t.span.clone(),
+            _ => {
+                return Err(s_help_site!(
+                    "P0301",
+                    "Expected an identifier after 'local'",
+                    "Write: local name = value"
+                ));
+            }
+        };
+        let name_text = self.eat_ident().unwrap(); // safe after the match
+        let name_ident: ast::Ident = (name_text, name_span);
+
+        // 3) expect '='
+        match self.peek() {
+            Some(t) if matches!(t.kind, TokenKind::Op(ref s) if s == "=") => { self.i += 1; }
+            _ => {
+                return Err(s_help_site!(
+                    "P0302",
+                    "Expected '=' after the local name",
+                    "Write: local name = value"
+                ));
+            }
+        }
+
+        // 4) parse initializer expression
+        let init_pexpr = self.parse_assign()?;
+        let init_expr = self.lower_expr(init_pexpr);
+
+        // 5) statement span and node
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Bind(ast::BindStmt {
+            name: name_ident,
+            expr: init_expr,
+            is_const: false,             // 'local' is mutable in v1
+            mode: ast::BindMode::Local,  // ← important
+            span,
+            class_name: None,
+        }))
     }
 
     // Forbid `{` immediately after a header on the SAME line.
@@ -788,32 +1023,34 @@ impl<'t> Parser<'t> {
         match e {
             // Disallow anything that could invoke user code or assign
             Call(..) | FreeCall(..) | NsCall(..) | OptCall(..) | Assign(..) | TupleAssign(..) => false,
-            
+
             // Simple literals
             Money(_) | Ident(_) | Int(_) | Float(_) | IntWithUnit(_,_) | FloatWithUnit(_,_)
-            | Bool(_) | Nil | Str(_) | Char(_) | BlobStr(_) | BlobNum(_) | Date(_) | Time(_) 
-            | DateTime { .. } | EnumVariant { .. } => true,
-            
+            | Bool(_) | Nil | Str(_) | Char(_) | BlobStr(_) | BlobNum(_) | Date(_) | Time(_)
+            | DateTime { .. } | EnumVariant { .. } 
+            | LiteralToken { .. }                                  // ← add this line
+                => true,
+
             // Binary operations - recurse both sides
             Binary(l, _, r) => {
-                Self::key_expr_is_side_effect_free(l.as_ref()) 
+                Self::key_expr_is_side_effect_free(l.as_ref())
                     && Self::key_expr_is_side_effect_free(r.as_ref())
             }
-            
+
             // Unary operations - recurse
             Prefix(_, x) | Postfix(x, _) | IsBound(x) => {
                 Self::key_expr_is_side_effect_free(x.as_ref())
             }
-            
+
             Dump { expr, .. } => Self::key_expr_is_side_effect_free(expr.as_ref()),
-            
+
             // Index and member access - recurse
             Index(x, y) => {
-                Self::key_expr_is_side_effect_free(x.as_ref()) 
+                Self::key_expr_is_side_effect_free(x.as_ref())
                     && Self::key_expr_is_side_effect_free(y.as_ref())
             }
             Member(x, _) | OptMember(x, _) => Self::key_expr_is_side_effect_free(x.as_ref()),
-            
+
             // Slice operations - check all parts
             Slice(x, a, b) => {
                 Self::key_expr_is_side_effect_free(x.as_ref())
@@ -826,14 +1063,14 @@ impl<'t> Parser<'t> {
                     && b.as_ref().map_or(true, |bx| Self::key_expr_is_side_effect_free(bx.as_ref()))
                     && c.as_ref().map_or(true, |bx| Self::key_expr_is_side_effect_free(bx.as_ref()))
             }
-            
+
             // Collections - check all elements
             Array(xs) => xs.iter().all(Self::key_expr_is_side_effect_free),
             Object(kvs) => kvs.iter().all(|(_, v)| Self::key_expr_is_side_effect_free(v)),
-            
+
             // String interpolation - only safe if no expressions
             StrInterp(ps) => ps.iter().all(|p| matches!(p, StrPart::Text(_) | StrPart::LValue{..})),
-            
+
             // Conservative defaults for complex constructs
             ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) => false,
         }
@@ -1254,72 +1491,6 @@ impl<'t> Parser<'t> {
         Ok(StrPart::LValue { root, segments, default_str })
     }
 
-    fn validate_interpolation_braces(&self, s: &str) -> Result<(), String> {
-        let bytes = s.as_bytes();
-        let n = bytes.len();
-        let mut i: usize = 0;
-        let mut depth: usize = 0;
-
-        while i < n {
-            // 1) Opaque module/glam token: {{{ ... }}}
-            if i + 2 < n && &bytes[i..i + 3] == b"{{{" {
-                // Scan forward for the first matching "}}}"
-                let mut j = i + 3;
-                let mut found = false;
-                while j + 2 < n {
-                    if &bytes[j..j + 3] == b"}}}" {
-                        found = true;
-                        break;
-                    }
-                    j += 1;
-                }
-                if !found {
-                    return Err(s_help_site!(
-                        "P0605",
-                        "Unclosed module/glam token '{{{ ... }}}' in string",
-                        "Close the token with '}}}' like '{{{BRINDLE::OBSIDIAN}}}'",
-                    ));
-                }
-                // Skip the entire token including the closing "}}}"
-                i = j + 3;
-                continue;
-            }
-
-            // 2) Existing literal close-brace escape: treat '{{/}}' as a literal '}' in TEXT context
-            if i + 4 < n && &bytes[i..i + 5] == b"{{/}}" {
-                i += 5;
-                continue;
-            }
-
-            // 3) Normal single-brace accounting (for { ... } interpolation, maps, etc.)
-            match bytes[i] {
-                b'{' => {
-                    depth += 1;
-                    i += 1;
-                }
-                b'}' => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
-                    i += 1;
-                }
-                _ => {
-                    i += 1;
-                }
-            }
-        }
-
-        if depth != 0 {
-            Err(s_help_site!(
-                "P0604",
-                "There's an unclosed '{' in this string",
-                "Add a matching '}' to close it: \"Hello {name}\"",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     fn fmt_tok(tok: &goblin_lexer::Token) -> String {
         use goblin_lexer::TokenKind as K;
         match &tok.kind {
@@ -1606,7 +1777,9 @@ impl<'t> Parser<'t> {
                     }
                 }
             }
-
+            PExpr::LiteralToken { module, ident, span } => {
+                ast::Expr::LiteralToken { module, ident, span }
+            }
             // Collections
             PExpr::Array(items) => {
                 let elems = items
@@ -4912,6 +5085,11 @@ impl<'t> Parser<'t> {
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
+        // --- block-local bind: local <name> = <expr>
+        if self.peek_ident() == Some("local") {
+            return self.parse_local_bind();
+        }
+
         if self.peek_ident() == Some("return") {
             return self.parse_return_stmt();
         }
@@ -5327,6 +5505,10 @@ impl<'t> Parser<'t> {
 
     fn parse_primary_impl(&mut self) -> Result<PExpr, String> {
         use goblin_lexer::TokenKind;
+
+        if self.i < self.toks.len() && self.toks[self.i].kind == TokenKind::TripleBraceOpen {
+            return self.parse_literal_token();
+        }
 
         // Skip layout tokens before parsing primary expression
         while let Some(t) = self.peek() {

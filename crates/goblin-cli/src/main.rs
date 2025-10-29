@@ -768,6 +768,8 @@ fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
         TokenKind::Date     => ExpectTok::Kind("date".into()),
         TokenKind::Time     => ExpectTok::Kind("time".into()),
         TokenKind::DateTime => ExpectTok::Kind("datetime".into()),
+        TokenKind::TripleBraceOpen  => ExpectTok::Kind("{{{".into()),
+        TokenKind::TripleBraceClose => ExpectTok::Kind("}}}".into()),
     }
 }
 
@@ -952,9 +954,9 @@ fn run_repl() -> i32 {
 
     println!("{}", repl_banner());
 
-    // Run REPL in a thread with 32MB stack (Windows default is only 1MB)
+    // Run REPL in a thread with 8MB stack (Windows default is only 1MB)
     std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
+        .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             let mut sess = Session::new();
             let mut form_no: usize = 1;
@@ -1003,34 +1005,50 @@ fn run_repl() -> i32 {
 
                 // ----- Update block depth from THIS line only -----
                 {
-                    let s = trimmed.trim_start();
+                    let src_line = trimmed.trim_start();
+
                     let starts_block_kw = |kw: &str| -> bool {
-                        s == kw || (s.starts_with(kw) && s[kw.len()..].starts_with(char::is_whitespace))
+                        src_line == kw || (src_line.starts_with(kw) && src_line[kw.len()..].starts_with(char::is_whitespace))
                     };
 
-                    // 1) control-flow headers open a block
-                    if starts_block_kw("if") || starts_block_kw("while") || starts_block_kw("unless") {
+                    // 1) control-flow / block headers open a block
+                    // include all your statement headers that require a matching 'end'/'xx'
+                    if starts_block_kw("if")
+                        || starts_block_kw("unless")
+                        || starts_block_kw("while")
+                        || starts_block_kw("for")
+                        || starts_block_kw("repeat")
+                        || starts_block_kw("attempt")
+                        || starts_block_kw("judge")
+                        || starts_block_kw("judge_all")
+                    {
                         depth += 1;
                     }
 
                     // 2) action header opens a block unless single-line "act ... = expr"
-                    if s.starts_with("act ") || s.starts_with("act(") || s.starts_with("action ") || s.starts_with("action(") {
-                        let mut paren = 0i32;
-                        let mut has_eq_outside = false;
-                        for ch in s.chars() {
+                    if src_line.starts_with("act ")
+                        || src_line.starts_with("act(")
+                        || src_line.starts_with("action ")
+                        || src_line.starts_with("action(")
+                    {
+                        let mut paren_depth = 0i32;
+                        let mut has_eq_outside_parens = false;
+                        for ch in src_line.chars() {
                             match ch {
-                                '(' => paren += 1,
-                                ')' => if paren > 0 { paren -= 1; },
-                                '=' if paren == 0 => { has_eq_outside = true; break; }
+                                '(' => paren_depth += 1,
+                                ')' => if paren_depth > 0 { paren_depth -= 1; },
+                                '=' if paren_depth == 0 => { has_eq_outside_parens = true; break; }
                                 _ => {}
                             }
                         }
-                        if !has_eq_outside { depth += 1; }
+                        if !has_eq_outside_parens {
+                            depth += 1;
+                        }
                     }
 
                     // 3) closers
-                    if s == "end" { depth -= 1; }
-                    if s == "xx"  { depth -= 1; }
+                    if src_line == "end" { depth -= 1; }
+                    if src_line == "xx"  { depth -= 1; }
                     if depth < 0 { depth = 0; }
                 }
 
@@ -1151,9 +1169,9 @@ fn run_run(path: &std::path::Path) -> i32 {
         }
     };
     
-    // 4) interpret with larger stack (32MB instead of default 1MB on Windows)
+    // 4) interpret with larger stack (8MB instead of default 1MB on Windows)
     std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
+        .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
             for stmt in &module.items {
@@ -1230,9 +1248,9 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         }
     };
 
-    // 4) interpret with args injected (32MB stack)
+    // 4) interpret with args injected
     std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
+        .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
 

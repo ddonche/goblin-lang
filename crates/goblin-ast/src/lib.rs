@@ -12,6 +12,7 @@ pub struct Module {
 pub enum BindMode {
     Normal, // '='  (smart declare/mutate; shadowing with '=' is forbidden)
     Shadow, // '[=' (shadow operator: always birth a new local in this scope)
+    Local,
 }
 
 #[derive(Debug, Clone)]
@@ -216,6 +217,7 @@ pub enum Expr {
         stmts: Vec<Stmt>,  
         span: Span,
     },
+    LiteralToken { module: String, ident: String, span: Span },
 }
 
 impl Expr {
@@ -246,6 +248,7 @@ impl Expr {
             Expr::EnumVariant { span, .. } => span,
             Expr::Judge { span, .. } => span,
             Expr::Block { span, .. } => span,  
+            Expr::LiteralToken { span, .. } => span,
         }
     }
 }
