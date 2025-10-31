@@ -649,6 +649,39 @@ fn reapply_format(result: Value, left_spec: Option<FormatSpec>, right_spec: Opti
         result
     }
 }
+
+fn sanitize_bom_text(s: &str) -> String {
+    if s.as_bytes().starts_with(&[0xEF, 0xBB, 0xBF]) {
+        s[3..].to_string()
+    } else if s.chars().next() == Some('\u{FEFF}') {
+        s.chars().skip(1).collect()
+    } else {
+        s.to_string()
+    }
+}
+
+fn normalize_newlines_text(s: &str) -> String {
+    // First collapse CRLF → LF, then lone CR → LF
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                out.push('\n');
+                i += 2;
+            } else {
+                out.push('\n');
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[allow(dead_code)]
 fn want_str(v: &Value, label: &str, sp: Span) -> Result<String, Diag> {
     match v {
@@ -1389,6 +1422,7 @@ fn rt(code: &'static str, message: impl Into<String>, sp: Span) -> Diag {
         sp,
     )
 }
+
 #[allow(dead_code)]
 fn not_impl(stage: &str, what: &str, sp: Span) -> Diagnostic {
     Diagnostic::new_with_code(
@@ -1415,7 +1449,6 @@ fn need_number(what: &str, span: Span) -> Diagnostic {
     .with_help("Example: x = 42 or x = 3.14")
     .with_link("https://goblinlang.org/docs/errors#R0201")
 }
-
 
 fn parse_number_value(text: &str, sp: Span) -> Result<Value, Diag> {
     use rust_decimal::Decimal;
@@ -7946,8 +7979,111 @@ fn call_action_by_name(
             })?
         }
 
+        // ===== MAPS =====
+        "keys" => {
+            if args.len() != 1 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("Use: keys(map).")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    let mut out = Vec::with_capacity(m.len());
+                    for k in m.keys() {
+                        out.push(Value::Str(k.clone()));
+                    }
+                    Value::Array(out)
+                }
+                _ => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                        "type-mismatch",
+                        "‘keys’ expects a Map.",
+                        sp.clone(),
+                    )
+                    .with_help("Example: keys({a:1, b:2}) → [\"a\",\"b\"].")
+                    .with_link("https://goblinlang.org/docs/errors#T0205"));
+                }
+            }
+        },
+
+        "values" => {
+            if args.len() != 1 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("Use: values(map).")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    let mut out = Vec::with_capacity(m.len());
+                    for v in m.values() {
+                        out.push(v.clone());
+                    }
+                    Value::Array(out)
+                }
+                _ => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                        "type-mismatch",
+                        "‘values’ expects a Map.",
+                        sp.clone(),
+                    )
+                    .with_help("Example: values({a:1, b:2}) → [1,2].")
+                    .with_link("https://goblinlang.org/docs/errors#T0205"));
+                }
+            }
+        },
+
+        "items" => {
+            if args.len() != 1 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("Use: items(map).")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    let mut out = Vec::with_capacity(m.len());
+                    for (k, v) in m.iter() {
+                        out.push(Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())));
+                    }
+                    Value::Array(out)
+                }
+                _ => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                        "type-mismatch",
+                        "‘items’ expects a Map.",
+                        sp.clone(),
+                    )
+                    .with_help("Example: items({a:1}) → [(\"a\",1)].")
+                    .with_link("https://goblinlang.org/docs/errors#T0205"));
+                }
+            }
+        },
+
         // ===== Search & test =====
-        "has" => { // s contains sub? -> Bool
+        "has" => { // polymorphic membership: Str | Array | Map
             if args.len() != 2 {
                 return Err(
                     Diagnostic::new_with_code(
@@ -7961,10 +8097,77 @@ fn call_action_by_name(
                     .with_link("https://goblinlang.org/docs/errors#R0301"),
                 );
             }
-            let s   = want_str(&args[0], "has")?;
-            let sub = want_str(&args[1], "has")?;
-            Value::Bool(s.contains(&sub))
-        }
+
+            match &args[0] {
+                // String membership: substring or char
+                Value::Str(s) => {
+                    match &args[1] {
+                        Value::Str(sub) => Value::Bool(s.contains(sub)),
+                        Value::Char(ch) => Value::Bool(s.contains(*ch)),
+                        _ => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                    "type-mismatch",
+                                    "For strings, ‘has’ expects Str or Char as the second argument.",
+                                    sp.clone(),
+                                )
+                                .with_help("Use: has(\"abcdef\",\"cd\") or has(\"abc\", 'b').")
+                                .with_link("https://goblinlang.org/docs/errors#T0205"),
+                            );
+                        }
+                    }
+                }
+
+                // Array membership: element equality
+                Value::Array(vec) => {
+                    let needle = &args[1];
+                    Value::Bool(vec.iter().any(|v| v == needle))
+                }
+
+                // Map membership: key present (string or char key)
+                Value::Map(map) => {
+                    match &args[1] {
+                        Value::Str(k) => Value::Bool(map.contains_key(k)),
+                        Value::Char(ch) => {
+                            let mut k = String::new();
+                            k.push(*ch);
+                            Value::Bool(map.contains_key(&k))
+                        }
+                        _ => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                    "type-mismatch",
+                                    "For maps, ‘has’ expects a string (or char) key.",
+                                    sp.clone(),
+                                )
+                                .with_help("Use: has({a:1}, \"a\").")
+                                .with_link("https://goblinlang.org/docs/errors#T0205"),
+                            );
+                        }
+                    }
+                }
+
+                // Not supported types → clear error
+                Value::Nil | Value::Unit => Value::Bool(false),
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            "‘has’ is defined for strings, arrays, and maps.",
+                            sp.clone(),
+                        )
+                        .with_help("Examples: has([1,2,3], 2), has(\"abc\",\"b\"), has({a:1}, \"a\").")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    );
+                }
+            }
+        },
 
         "find" => { // first index of sub (0-based), or nil
             if args.len() != 2 {
@@ -9767,6 +9970,680 @@ fn call_action_by_name(
                         .with_link("https://goblinlang.org/docs/errors#T0205")
                     );
                 }
+            }
+        }
+
+        // ----- TEXT HYGIENE -----
+        "sanitize_bom" => {
+            arity(1)?;
+            let s = want_str(&args[0], "sanitize_bom")?; // T0205 on type mismatch
+
+            // Remove exactly one leading U+FEFF if present (handles UTF-8 BOM too).
+            // We keep this inline (no helper) per your instruction.
+            let out = if s.starts_with('\u{FEFF}') {
+                s.trim_start_matches('\u{FEFF}').to_string()
+            } else {
+                let bytes = s.as_bytes();
+                if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+                    s[3..].to_string()
+                } else {
+                    s
+                }
+            };
+
+            Value::Str(out)
+        }
+
+        "normalize_newlines" => {
+            arity(1)?;
+            let s = want_str(&args[0], "normalize_newlines")?; // T0205 on type mismatch
+
+            // Normalize CRLF and lone CR to LF. Inline, no helper.
+            // Two passes are fine here and keep the logic obvious.
+            let out = s.replace("\r\n", "\n").replace("\r", "\n");
+
+            Value::Str(out)
+        }
+
+        // ======================= IGNORE / KEEP (CORE SET) =======================
+
+        // -- literal remove: ignore_where(text, needle) --------------------------
+        "ignore_where" => {
+            arity(2)?;
+            let text   = want_str(&args[0], "ignore_where text")?;
+            let needle = want_str(&args[1], "ignore_where needle")?;
+            if needle.is_empty() { Value::Str(text) } else { Value::Str(text.replace(&needle, "")) }
+        }
+
+        // -- literal line remove: ignore_lines_where(text, prefix) ---------------
+        "ignore_lines_where" => {
+            arity(2)?;
+            let text   = want_str(&args[0], "ignore_lines_where text")?;
+            let prefix = want_str(&args[1], "ignore_lines_where prefix")?;
+            if prefix.is_empty() {
+                Value::Str(text)
+            } else {
+                let mut out = String::with_capacity(text.len());
+                for line in text.split_inclusive('\n') {
+                    let no_nl = line.strip_suffix('\n').unwrap_or(line);
+                    if !no_nl.starts_with(&prefix) { out.push_str(line); }
+                }
+                Value::Str(out)
+            }
+        }
+
+        // -- regex remove: ignore_matching(text, pattern, flags: Map|Nil) --------
+        "ignore_matching" => {
+            let argc = args.len();
+            if argc != 2 && argc != 3 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2–3, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: ignore_matching(text, pattern, flags: Map|Nil)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let text    = want_str(&args[0], "ignore_matching text")?;
+            let pattern = want_str(&args[1], "ignore_matching pattern")?;
+
+            // parse optional flags map
+            let mut f_i = false; let mut f_m = false; let mut f_s = false;
+            if argc == 3 {
+                match &args[2] {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("i") { f_i = *b; }
+                        if let Some(Value::Bool(b)) = m.get("m") { f_m = *b; }
+                        if let Some(Value::Bool(b)) = m.get("s") { f_s = *b; }
+                    }
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "flags must be a Map or Nil",
+                                sp.clone(),
+                            )
+                            .with_help("Pass flags like: { i: true, m: true, s: true } or Nil.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205")
+                        );
+                    }
+                }
+            }
+            let mut f = String::new(); if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
+            let pat = if f.is_empty() { pattern.clone() } else { format!("(?{}){}", f, pattern) };
+
+            let re = match sess.regex_cache.get_or_compile(&pat) {
+                Ok(r) => r,
+                Err(_) => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                            "invalid-regex",
+                            "invalid regular expression pattern",
+                            sp.clone(),
+                        )
+                        .with_help("Check your regex and flags (i,m,s).")
+                        .with_link("https://goblinlang.org/docs/errors#R0506")
+                    );
+                }
+            };
+
+            Value::Str(re.replace_all(&text, "").to_string())
+        }
+
+        // -- regex line remove: ignore_lines_matching(text, pattern, flags) ------
+        "ignore_lines_matching" => {
+            let argc = args.len();
+            if argc != 2 && argc != 3 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2–3, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: ignore_lines_matching(text, pattern, flags: Map|Nil)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let text    = want_str(&args[0], "ignore_lines_matching text")?;
+            let pattern = want_str(&args[1], "ignore_lines_matching pattern")?;
+
+            let mut f_i = false; let mut f_m = false; let mut f_s = false;
+            if argc == 3 {
+                match &args[2] {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("i") { f_i = *b; }
+                        if let Some(Value::Bool(b)) = m.get("m") { f_m = *b; }
+                        if let Some(Value::Bool(b)) = m.get("s") { f_s = *b; }
+                    }
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "flags must be a Map or Nil",
+                                sp.clone(),
+                            )
+                            .with_help("Pass flags like: { i: true, m: true, s: true } or Nil.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205")
+                        );
+                    }
+                }
+            }
+            let mut f = String::new(); if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
+            let pat = if f.is_empty() { pattern.clone() } else { format!("(?{}){}", f, pattern) };
+
+            let re = match sess.regex_cache.get_or_compile(&pat) {
+                Ok(r) => r,
+                Err(_) => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                            "invalid-regex",
+                            "invalid regular expression pattern",
+                            sp.clone(),
+                        )
+                        .with_help("Check your regex and flags (i,m,s).")
+                        .with_link("https://goblinlang.org/docs/errors#R0506")
+                    );
+                }
+            };
+
+            let mut out = String::with_capacity(text.len());
+            for line in text.split_inclusive('\n') {
+                let no_nl = line.strip_suffix('\n').unwrap_or(line);
+                if !re.is_match(no_nl) { out.push_str(line); }
+            }
+            Value::Str(out)
+        }
+
+        // -- span remove: ignore_between(text, open, close, opts) ---------------------
+        "ignore_between" => {
+            let argc = args.len();
+            if argc < 3 || argc > 4 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 3–4, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: ignore_between(text, open, close, opts: Map|Nil)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let text  = want_str(&args[0], "ignore_between text")?;
+            let open  = want_str(&args[1], "ignore_between open")?;
+            let close = want_str(&args[2], "ignore_between close")?;
+
+            let mut include_delims  = true;
+            let mut allow_nested    = false;
+            let mut allow_eof_close = true;
+
+            if argc == 4 {
+                match &args[3] {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("include_delims")  { include_delims  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_nested")    { allow_nested    = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_eof_close") { allow_eof_close = *b; }
+                    }
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "opts must be a Map or Nil",
+                                sp.clone(),
+                            )
+                            .with_help("Pass opts like: { include_delims: true, allow_nested: false } or Nil.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205")
+                        );
+                    }
+                }
+            }
+
+            if open.is_empty() || close.is_empty() {
+                return Ok(Value::Str(text));
+            }
+
+            let mut out = String::with_capacity(text.len());
+            let mut i: usize = 0;
+
+            while i < text.len() {
+                if let Some(start_rel) = text[i..].find(&open) {
+                    let start = i + start_rel;
+
+                    // find matching close (with optional nesting)
+                    let mut k = start + open.len();
+                    let mut depth = 1usize;
+                    let mut close_pos: Option<usize> = None;
+
+                    while k <= text.len() {
+                        let next_open  = text[k..].find(&open).map(|r| k + r);
+                        let next_close = text[k..].find(&close).map(|r| k + r);
+
+                        match (next_open, next_close) {
+                            (_, None) => { if allow_eof_close { close_pos = Some(text.len()); } break; }
+                            (None, Some(c)) => { close_pos = Some(c); break; }
+                            (Some(o), Some(c)) => {
+                                if allow_nested && o < c {
+                                    depth += 1;
+                                    k = o + open.len();
+                                } else {
+                                    close_pos = Some(c);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(_) = close_pos {
+                            if allow_nested && depth > 1 {
+                                depth -= 1;
+                                k = close_pos.unwrap() + close.len();
+                                close_pos = None;
+                                continue;
+                            }
+                        }
+                    }
+
+                    out.push_str(&text[i..start]);
+                    if let Some(cpos) = close_pos {
+                        if include_delims {
+                            i = cpos + close.len(); // drop whole span including delims
+                        } else {
+                            // keep delims, drop middle
+                            out.push_str(&text[start .. start + open.len()]);
+                            out.push_str(&text[cpos .. cpos + close.len()]);
+                            i = cpos + close.len();
+                        }
+                    } else {
+                        // unmatched open → copy tail and stop
+                        out.push_str(&text[start..]);
+                        break;
+                    }
+                } else {
+                    out.push_str(&text[i..]);
+                    break;
+                }
+            }
+
+            Value::Str(out)
+        },
+
+        // -- line-fenced span remove: ignore_blocks(text, open, close, opts) ----------
+        "ignore_blocks" => {
+            let argc = args.len();
+            if argc < 3 || argc > 4 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 3–4, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: ignore_blocks(text, open, close, opts: Map|Nil)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let text  = want_str(&args[0], "ignore_blocks text")?;
+            let open  = want_str(&args[1], "ignore_blocks open")?;
+            let close = want_str(&args[2], "ignore_blocks close")?;
+
+            let mut include_delims   = true;  // removes fences by default
+            let mut require_bol      = true;  // fences at BOL by default
+            let mut leading_blanks   = true;  // allow spaces/tabs before fence
+            let mut allow_eof_close  = true;  // allow EOF as close if no terminator
+
+            if argc == 4 {
+                match &args[3] {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("include_delims")    { include_delims  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("require_bol")       { require_bol     = *b; }
+                        if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { leading_blanks  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { allow_eof_close = *b; }
+                    }
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "opts must be a Map or Nil",
+                                sp.clone(),
+                            )
+                            .with_help("Pass opts like: { require_bol: true, leading_blanks_ok: true } or Nil.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205")
+                        );
+                    }
+                }
+            }
+
+            if open.is_empty() || close.is_empty() {
+                return Ok(Value::Str(text));
+            }
+
+            let bytes = text.as_bytes();
+            let mut out = String::with_capacity(text.len());
+            let mut i: usize = 0;
+
+            while i < text.len() {
+                if let Some(rel) = text[i..].find(&open) {
+                    let abs = i + rel;
+
+                    // BOL condition (with optional leading blanks)
+                    let at_bol = if abs == 0 { true } else {
+                        let mut k = abs;
+                        if leading_blanks {
+                            while k > 0 && bytes[k - 1] != b'\n' && (bytes[k - 1] == b' ' || bytes[k - 1] == b'\t') {
+                                k -= 1;
+                            }
+                        }
+                        k == 0 || bytes[k - 1] == b'\n'
+                    };
+
+                    if !require_bol || at_bol {
+                        // search for closing fence at BOL after open
+                        let mut j = abs + open.len();
+                        let mut close_pos: Option<usize> = None;
+
+                        while j <= text.len() {
+                            if let Some(relc) = text[j..].find(&close) {
+                                let cabs = j + relc;
+
+                                let c_at_bol = if cabs == 0 { true } else {
+                                    let mut k = cabs;
+                                    if leading_blanks {
+                                        while k > 0 && bytes[k - 1] != b'\n' && (bytes[k - 1] == b' ' || bytes[k - 1] == b'\t') {
+                                            k -= 1;
+                                        }
+                                    }
+                                    k == 0 || bytes[k - 1] == b'\n'
+                                };
+
+                                if !require_bol || c_at_bol {
+                                    close_pos = Some(cabs);
+                                    break;
+                                } else {
+                                    j = cabs + 1;
+                                }
+                            } else {
+                                if allow_eof_close { close_pos = Some(text.len()); }
+                                break;
+                            }
+                        }
+
+                        out.push_str(&text[i..abs]); // copy up to the opening fence
+                        if let Some(cpos) = close_pos {
+                            if include_delims {
+                                i = cpos + close.len(); // drop from open..close entirely
+                            } else {
+                                // keep fences, drop middle
+                                out.push_str(&text[abs .. abs + open.len()]);
+                                out.push_str(&text[cpos .. cpos + close.len()]);
+                                i = cpos + close.len();
+                            }
+                        } else {
+                            // unmatched open → copy remainder and stop
+                            out.push_str(&text[abs..]);
+                            break;
+                        }
+                        continue;
+                    } else {
+                        // found 'open' not at allowed BOL — copy through this char and keep scanning
+                        out.push_str(&text[i..abs]);
+                        i = abs + 1;
+                        continue;
+                    }
+                } else {
+                    out.push_str(&text[i..]);
+                    break;
+                }
+            }
+
+            Value::Str(out)
+        },
+
+        // -- regex keep: keep_matching(text, pattern, flags: Map|Nil) ------------
+        "keep_matching" => {
+            let argc = args.len();
+            if argc != 2 && argc != 3 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2–3, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: keep_matching(text, pattern, flags: Map|Nil)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let text    = want_str(&args[0], "keep_matching text")?;
+            let pattern = want_str(&args[1], "keep_matching pattern")?;
+
+            let mut f_i = false; let mut f_m = false; let mut f_s = false;
+            if argc == 3 {
+                match &args[2] {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("i") { f_i = *b; }
+                        if let Some(Value::Bool(b)) = m.get("m") { f_m = *b; }
+                        if let Some(Value::Bool(b)) = m.get("s") { f_s = *b; }
+                    }
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "flags must be a Map or Nil",
+                                sp.clone(),
+                            )
+                            .with_help("Pass flags like: { i: true, m: true, s: true } or Nil.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205")
+                        );
+                    }
+                }
+            }
+            let mut f = String::new(); if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
+            let pat = if f.is_empty() { pattern.clone() } else { format!("(?{}){}", f, pattern) };
+
+            let re = match sess.regex_cache.get_or_compile(&pat) {
+                Ok(r) => r,
+                Err(_) => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::INVALID_REGEX, // R0506
+                            "invalid-regex",
+                            "invalid regular expression pattern",
+                            sp.clone(),
+                        )
+                        .with_help("Check your regex and flags (i,m,s).")
+                        .with_link("https://goblinlang.org/docs/errors#R0506")
+                    );
+                }
+            };
+
+            let mut out = String::new();
+            for m in re.find_iter(&text) { out.push_str(m.as_str()); }
+            Value::Str(out)
+        }
+
+        // -- inline span keep: keep_between(text, open, close, opts) -------------------
+        "keep_between" => {
+            let argc = args.len();
+            if argc < 3 || argc > 4 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 3–4, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: keep_between(text, open, close, opts: Map|Nil)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let text  = want_str(&args[0], "keep_between text")?;
+            let open  = want_str(&args[1], "keep_between open")?;
+            let close = want_str(&args[2], "keep_between close")?;
+
+            let mut include_delims   = false;
+            let mut require_bol      = false;
+            let mut leading_blanks   = false;
+            let mut allow_eof_close  = true;
+
+            if argc == 4 {
+                match &args[3] {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("include_delims")    { include_delims  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("require_bol")       { require_bol     = *b; }
+                        if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { leading_blanks  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { allow_eof_close = *b; }
+                    }
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "opts must be a Map or Nil",
+                                sp.clone(),
+                            )
+                            .with_help("Pass opts like: { include_delims: false, require_bol: true } or Nil.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205")
+                        );
+                    }
+                }
+            }
+
+            if open.is_empty() || close.is_empty() {
+                return Ok(Value::Str(String::new()));
+            }
+
+            // Safe scan without slicing out-of-bounds
+            let bytes = text.as_bytes();
+            let mut i: usize = 0;
+
+            // Optionally enforce BOL for the opening fence
+            let mut start: Option<usize> = None;
+            while i < text.len() {
+                if let Some(rel) = text[i..].find(&open) {
+                    let abs = i + rel;
+
+                    let at_bol = if abs == 0 { true } else {
+                        let mut k = abs;
+                        if leading_blanks {
+                            while k > 0 && bytes[k - 1] != b'\n' && (bytes[k - 1] == b' ' || bytes[k - 1] == b'\t') {
+                                k -= 1;
+                            }
+                        }
+                        k == 0 || bytes[k - 1] == b'\n'
+                    };
+
+                    if !require_bol || at_bol {
+                        start = Some(abs);
+                        break;
+                    } else {
+                        i = abs + 1;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            let Some(open_abs) = start else {
+                return Ok(Value::Str(String::new()));
+            };
+
+            // Find closing fence after open
+            let mut j = open_abs + open.len();
+            let mut close_pos: Option<usize> = None;
+
+            while j <= text.len() {
+                if let Some(relc) = text[j..].find(&close) {
+                    let cabs = j + relc;
+
+                    let c_at_bol = if cabs == 0 { true } else {
+                        let mut k = cabs;
+                        if leading_blanks {
+                            while k > 0 && bytes[k - 1] != b'\n' && (bytes[k - 1] == b' ' || bytes[k - 1] == b'\t') {
+                                k -= 1;
+                            }
+                        }
+                        k == 0 || bytes[k - 1] == b'\n'
+                    };
+
+                    if !require_bol || c_at_bol {
+                        close_pos = Some(cabs);
+                        break;
+                    } else {
+                        j = cabs + 1;
+                    }
+                } else {
+                    if allow_eof_close { close_pos = Some(text.len()); }
+                    break;
+                }
+            }
+
+            if let Some(cpos) = close_pos {
+                let out = if include_delims {
+                    text.get(open_abs .. cpos + close.len()).unwrap_or("").to_string()
+                } else {
+                    text.get(open_abs + open.len() .. cpos).unwrap_or("").to_string()
+                };
+                return Ok(Value::Str(out));
+            }
+
+            Value::Str(String::new())
+        }
+
+        "starts_with" => {
+            arity(2)?;
+            let text   = want_str(&args[0], "starts_with text")?;
+            let prefix = want_str(&args[1], "starts_with prefix")?;
+            Value::Bool(text.starts_with(&prefix))
+        }
+
+        "ends_with" => {
+            arity(2)?;
+            let text   = want_str(&args[0], "ends_with text")?;
+            let suffix = want_str(&args[1], "ends_with suffix")?;
+            Value::Bool(text.ends_with(&suffix))
+        }
+
+        "after" => {
+            arity(2)?;
+            let text   = want_str(&args[0], "after text")?;
+            let prefix = want_str(&args[1], "after prefix")?;
+            if text.starts_with(&prefix) {
+                Value::Str(text[prefix.len()..].to_string())
+            } else {
+                Value::Str(text)
             }
         }
 
@@ -12453,6 +13330,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                     let vpath = eval_expr(&args[0], sess)?;
                     let path  = want_str(&vpath, "read_text path", sp.clone())?;
+
+                    // Read text exactly as UTF-8; do NOT interpolate tokens here.
                     let s = std::fs::read_to_string(&path).map_err(|e| {
                         Diagnostic::new_with_code(
                             Severity::Error,
@@ -12464,10 +13343,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         .with_help("Check file exists and permissions.")
                         .with_link("https://goblinlang.org/docs/errors#FS0001")
                     })?;
-                    
-                    // Auto-resolve tokens in loaded text
-                    let interpolated = render_interpolated(&s, sess, &sp)?;
-                    Ok(Value::Str(interpolated))
+
+                    Ok(Value::Str(s))
                 }
 
                 "copy_file" => {
@@ -12704,7 +13581,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                 }
             }
-            
             
             // Special-case: <expr>.valtype or <expr>.vt
             if (name == "valtype" || name == "vt") && args.is_empty() {
