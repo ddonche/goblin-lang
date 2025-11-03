@@ -2214,17 +2214,11 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         ast::Stmt::Expr(e) => Ok(Some(eval_expr(e, sess)?)),
 
         ast::Stmt::Action(decl) => {
-            let name = decl.name.clone();
-
-            if let Some(ns) = &sess.current_module {
-                // Module scope → register ONLY the qualified symbol
-                let qname = format!("{ns}::{name}");
-                sess.actions.insert(qname, decl.clone());
-            } else {
-                // Top level → bare symbol
-                sess.actions.insert(name, decl.clone());
+            if sess.current_module.is_none() {
+                // Only add to global actions if we're NOT in a module
+                sess.actions.insert(decl.name.clone(), decl.clone());
             }
-
+            // If we're in a module, do nothing - load_module already handled it
             Ok(None)
         }
 
@@ -5359,85 +5353,12 @@ fn call_action_by_name(
     sp: Span,
 ) -> Result<Value, Diag> {
 
-    // ---------- QUALIFIED LOOKUP (exact; modules only when explicitly qualified) ----------
-    if let Some((module, ident)) = name.split_once("::") {
-        // Try a directly-registered qualified action first (fast path)
-        if let Some(decl) = sess.actions.get(name).cloned() {
-            // run_decl inline (uses your existing arity+frame code pattern)
-            let params = &decl.params;
-            if args.len() > params.len() {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        "wrong number of arguments",
-                        sp.clone(),
-                    )
-                    .with_help(&format!("expected {}, got {}", params.len(), args.len()))
-                    .with_help(&format!("‘{}’ takes {} argument(s)", name, params.len()))
-                    .with_link("https://goblinlang.org/docs/errors#R0301"),
-                );
-            }
-
-            let mut bound: Vec<(String, Value)> = Vec::with_capacity(params.len());
-            for (i, p) in params.iter().enumerate() {
-                if i < args.len() {
-                    bound.push((p.name.clone(), args[i].clone()));
-                } else if let Some(def_e) = &p.default {
-                    let v = eval_expr(def_e, sess)?;
-                    bound.push((p.name.clone(), v));
-                } else {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::MISSING_ARGUMENT, // R0302
-                            "missing-argument",
-                            "missing required argument",
-                            sp.clone(),
-                        )
-                        .with_help(&format!("argument ‘{}’ is required", p.name))
-                        .with_link("https://goblinlang.org/docs/errors#R0302"),
-                    );
-                }
-            }
-
-            sess.push_frame();
-            for (k, v) in bound { sess.set_var(k, v); }
-
-            let ret = {
-                match &decl.body {
-                    ast::ActionBody::Block(stmts) => {
-                        let mut last = Value::Unit;
-                        for st in stmts {
-                            if let Some(v) = eval_stmt(st, sess)? {
-                                match v {
-                                    Value::CtrlSkip => {}
-                                    Value::CtrlStop => {
-                                        let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
-                                        sess.pop_frame();
-                                        return Ok(rv);
-                                    }
-                                    other => last = other,
-                                }
-                            }
-                        }
-                        last
-                    }
-                    ast::ActionBody::Expr(expr) => eval_expr(expr, sess)?,
-                }
-            };
-
-            sess.pop_frame();
-            return Ok(ret);
-        }
-
-        // Otherwise, consult module exports table strictly by the qualified pieces
-        if let Some(crate::modules::ExportedItem::Action(action_decl)) =
-            sess.modules.get_export(module, ident)
-        {
+    // FIRST: Check current module's exports
+    if let Some(ref module_name) = sess.current_module.clone() {
+        if let Some(crate::modules::ExportedItem::Action(action_decl)) = sess.modules.get_export(&module_name, name) {
             let action_decl = action_decl.clone();
-
+            
+            // Execute the action (same code as below)
             let params = &action_decl.params;
             if args.len() > params.len() {
                 return Err(
@@ -5466,11 +5387,15 @@ fn call_action_by_name(
                             Severity::Error,
                             crate::diagnostics::rtcode::WRONG_ARITY, // R0301
                             "wrong-arity",
-                            &format!("Wrong number of arguments (expected {}, got {})", params.len(), args.len()),
+                            &format!(
+                                "Wrong number of arguments (expected {}, got {})",
+                                params.len(),
+                                args.len()
+                            ),
                             sp.clone(),
                         )
                         .with_help(&format!("Missing required argument ‘{}’.", p.name))
-                        .with_help("Provide all required arguments or define defaults."),
+                        .with_help("Provide all required arguments or define defaults.")
                     );
                 }
             }
@@ -5485,7 +5410,7 @@ fn call_action_by_name(
                         for st in stmts {
                             if let Some(v) = eval_stmt(st, sess)? {
                                 match v {
-                                    Value::CtrlSkip => {}
+                                    Value::CtrlSkip => { /* keep going */ }
                                     Value::CtrlStop => {
                                         let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
                                         sess.pop_frame();
@@ -5497,25 +5422,17 @@ fn call_action_by_name(
                         }
                         last
                     }
-                    ast::ActionBody::Expr(expr) => eval_expr(expr, sess)?,
+                    ast::ActionBody::Expr(expr) => {
+                        // single-line action (`=> expr`) — implicit return of the expr value
+                        // no frame pops here; keep semantics identical to normal fallthrough
+                        eval_expr(expr, sess)?
+                    }
                 }
             };
 
             sess.pop_frame();
             return Ok(ret);
         }
-
-        // Qualified name but nothing found → A0401 unknown-action
-        return Err(
-            Diagnostic::new_with_code(
-                Severity::Error,
-                crate::diagnostics::rtcode::UNKNOWN_ACTION, // A0401
-                "unknown-action",
-                format!("unknown action ‘{}’", name),
-                sp.clone(),
-            )
-            .with_link("https://goblinlang.org/docs/errors#A0401"),
-        );
     }
 
     // Prefer user-defined actions (shadowable)
