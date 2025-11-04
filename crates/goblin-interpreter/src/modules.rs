@@ -3,9 +3,7 @@ use goblin_ast as ast;
 use crate::Value;
 
 pub mod markdown {
-    use comrak::{
-        markdown_to_html, ComrakExtensionOptions, ComrakOptions, ComrakParseOptions, ComrakRenderOptions,
-    };
+    use comrak::{markdown_to_html, ComrakOptions};
 
     pub fn md_to_html(md: &str) -> String {
         let mut options = ComrakOptions::default();

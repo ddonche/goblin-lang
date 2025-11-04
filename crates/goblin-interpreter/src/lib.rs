@@ -14,6 +14,7 @@ use crate::diagnostics::rtcode;
 use goblin_diagnostics::Span;
 use regex::Regex;
 use std::collections::HashMap;
+use indexmap::IndexMap;
 
 pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
@@ -219,6 +220,7 @@ pub enum Value {
     Formatted(Box<Value>, FormatSpec),
     Array(Vec<Value>),
     Map(BTreeMap<String, Value>),
+    MapOrd(IndexMap<String, Value>),
     Pair(Box<Value>, Box<Value>), // for >< (divmod)
     Seq(Seq),
     Nil,
@@ -627,6 +629,53 @@ fn sanitize_yaml_text(input: &str) -> String {
     s
 }
 
+// tiny helper for yaml→Value (ordered)
+fn yaml_to_value(v: sy::Value) -> Value {
+    match v {
+        sy::Value::Mapping(m) => {
+            let mut out: IndexMap<String, Value> = IndexMap::new();
+            // with `preserve_order`, iteration is insertion order
+            for (k, v2) in m {
+                let key = match k {
+                    sy::Value::String(s) => s,
+                    _ => {
+                        let s = serde_yaml::to_string(&k).unwrap_or_else(|_| format!("{k:?}"));
+                        s.trim().trim_matches('\n').to_owned()
+                    }
+                };
+                out.insert(key, yaml_to_value(v2));
+            }
+            Value::MapOrd(out)
+        }
+        sy::Value::Sequence(seq) => Value::Array(seq.into_iter().map(yaml_to_value).collect()),
+        sy::Value::String(s) => Value::Str(s.into()),
+        sy::Value::Bool(b) => Value::Bool(b),
+        sy::Value::Number(n) => {
+            if let Some(i) = n.as_i64() { Value::Int(i) }
+            else if let Some(f) = n.as_f64() { Value::Float(f) }
+            else { Value::Str(n.to_string().into()) }
+        }
+        sy::Value::Null => Value::Nil,
+        other => {
+            let s = serde_yaml::to_string(&other).unwrap_or_else(|_| format!("{other:?}"));
+            Value::Str(s.trim().trim_matches('\n').into())
+        }
+    }
+}
+
+// reuse your diagnostics style
+fn diag_yaml(sp: Span, e: impl std::fmt::Display) -> Diagnostic {
+    Diagnostic::new_with_code(
+        Severity::Error,
+        crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001
+        "yaml-parse-failed",
+        &format!("YAML parse failed: {e}"),
+        sp,
+    )
+    .with_help("Ensure the input is valid YAML text.")
+    .with_link("https://goblinlang.org/docs/errors#Y0001")
+}
+
 fn strip_format(v: &Value) -> (&Value, Option<&FormatSpec>) {
     match v {
         Value::Formatted(inner, spec) => (&*inner, Some(spec)),
@@ -735,9 +784,14 @@ fn to_json(v: &Value) -> sj::Value {
         Value::Char(c)     => sj::Value::String(c.to_string()),
         Value::Bool(b)     => sj::Value::Bool(*b),
         Value::Array(xs)   => sj::Value::Array(xs.iter().map(to_json).collect()),
-        Value::Map(m)      => {
+        Value::Map(m) => {
             let mut obj = serde_json::Map::new();
             for (k, v) in m { obj.insert(k.clone(), to_json(v)); }
+            sj::Value::Object(obj)
+        }
+        Value::MapOrd(m) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in m.iter() { obj.insert(k.clone(), to_json(v)); }
             sj::Value::Object(obj)
         }
         Value::Pair(a, b)  => sj::Value::Array(vec![to_json(a), to_json(b)]),
@@ -1676,6 +1730,19 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
             s.push('}');
             s
         }
+        Value::MapOrd(m) => {
+            let mut s = String::from("{");
+            let mut first = true;
+            for (k, v) in m.iter() {
+                if !first { s.push_str(", "); }
+                first = false;
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value_with_depth(v, depth + 1));
+            }
+            s.push('}');
+            s
+        }
 
         Value::Pair(a, b) => {
             format!("({}, {})", fmt_value_with_depth(a, depth + 1), fmt_value_with_depth(b, depth + 1))
@@ -1751,6 +1818,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::Char(_)             => "char",
         Value::Array(_)            => "array",
         Value::Map(_)              => "map",
+        Value::MapOrd(_)           => "map",
         Value::Pair(_, _)          => "pair",
         Value::Seq(_)              => "seq",
         Value::Unit                => "unit",
@@ -5811,7 +5879,7 @@ fn call_action_by_name(
                 Value::Str(_) => "str",
                 Value::Char(_) => "char",
                 Value::Array(_) => "array",
-                Value::Map(_) => "map",
+                Value::Map(_) | Value::MapOrd(_) => "map",
                 Value::Pair(_, _) => "pair",
                 Value::Seq(_) => "seq",
                 Value::Unit => "unit",
@@ -8004,6 +8072,11 @@ fn call_action_by_name(
                     }
                     Value::Array(out)
                 }
+                Value::MapOrd(m) => {
+                    let mut out = Vec::with_capacity(m.len());
+                    for k in m.keys() { out.push(Value::Str(k.clone())); } // preserves insertion order
+                    Value::Array(out)
+                }
                 _ => {
                     return Err(Diagnostic::new_with_code(
                         Severity::Error,
@@ -8038,6 +8111,11 @@ fn call_action_by_name(
                     }
                     Value::Array(out)
                 }
+                Value::MapOrd(m) => {
+                    let mut out = Vec::with_capacity(m.len());
+                    for v in m.values() { out.push(v.clone()); }
+                    Value::Array(out)
+                }
                 _ => {
                     return Err(Diagnostic::new_with_code(
                         Severity::Error,
@@ -8066,6 +8144,13 @@ fn call_action_by_name(
             }
             match &args[0] {
                 Value::Map(m) => {
+                    let mut out = Vec::with_capacity(m.len());
+                    for (k, v) in m.iter() {
+                        out.push(Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())));
+                    }
+                    Value::Array(out)
+                }
+                Value::MapOrd(m) => {
                     let mut out = Vec::with_capacity(m.len());
                     for (k, v) in m.iter() {
                         out.push(Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())));
@@ -8140,17 +8225,37 @@ fn call_action_by_name(
                             Value::Bool(map.contains_key(&k))
                         }
                         _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    "For maps, ‘has’ expects a string (or char) key.",
-                                    sp.clone(),
-                                )
-                                .with_help("Use: has({a:1}, \"a\").")
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
+                            return Err(Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH,
+                                "type-mismatch",
+                                "For maps, ‘has’ expects a string (or char) key.",
+                                sp.clone(),
+                            )
+                            .with_help("Use: has({a:1}, \"a\").")
+                            .with_link("https://goblinlang.org/docs/errors#T0205"));
+                        }
+                    }
+                }
+
+                Value::MapOrd(map) => {           // <— add this arm; identical body
+                    match &args[1] {
+                        Value::Str(k) => Value::Bool(map.contains_key(k)),
+                        Value::Char(ch) => {
+                            let mut k = String::new();
+                            k.push(*ch);
+                            Value::Bool(map.contains_key(&k))
+                        }
+                        _ => {
+                            return Err(Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH,
+                                "type-mismatch",
+                                "For maps, ‘has’ expects a string (or char) key.",
+                                sp.clone(),
+                            )
+                            .with_help("Use: has({a:1}, \"a\").")
+                            .with_link("https://goblinlang.org/docs/errors#T0205"));
                         }
                     }
                 }
@@ -8232,6 +8337,7 @@ fn call_action_by_name(
                         Value::Array(xs)  => Value::Int(xs.len() as i64),
                         Value::Seq(xs)    => Value::Int(xs.len() as i64),
                         Value::Map(m)     => Value::Int(m.len() as i64),
+                        Value::MapOrd(m) => Value::Int(m.len() as i64),
                         _ => {
                             return Err(
                                 Diagnostic::new_with_code(
@@ -9046,34 +9152,306 @@ fn call_action_by_name(
             Value::Bool(std::path::Path::new(&path).exists())
         }
 
-        "uuid_v4" => {
-            if args.len() != 0 {
-                return Err(Diagnostic::new_with_code(
+        "create_dir" => {
+            return Err(
+                Diagnostic::new_with_code(
                     Severity::Error,
-                    crate::diagnostics::rtcode::WRONG_ARITY,
-                    "wrong-arity",
-                    &format!("Wrong number of arguments (expected 0, got {})", args.len()),
+                    crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
+                    "mutation-operator-required",
+                    "‘create_dir’ requires the bang form: use create_dir!(…)",
                     sp.clone(),
                 )
-                .with_help("‘uuid_v4’ takes no arguments.")
-                .with_link("https://goblinlang.org/docs/errors#R0301"));
+                .with_help("Append ‘!’ to create directories, e.g., create_dir!(path).")
+                .with_link("https://goblinlang.org/docs/errors#M0001"),
+            );
+        }
+
+        "write_text" => {
+            return Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
+                    "mutation-operator-required",
+                    "‘write_text’ requires the bang form: use write_text!(…)",
+                    sp.clone(),
+                )
+                .with_help("Append ‘!’ to write files, e.g., write_text!(path, text).")
+                .with_link("https://goblinlang.org/docs/errors#M0001"),
+            );
+        }
+
+        "read_text" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: read_text(path)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
             }
-            Value::Str(Uuid::new_v4().to_string())
+
+            let path = want_str(&args[0], "read_text path")?;
+
+            // Read text exactly as UTF-8; do NOT interpolate tokens here.
+            let s = std::fs::read_to_string(&path).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                    "filesystem-io",
+                    &format!("failed to read file: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Check file exists and permissions.")
+                .with_link("https://goblinlang.org/docs/errors#FS0001")
+            })?;
+
+            Value::Str(s)
         },
 
-        "uuid_v7" => {
-            if args.len() != 0 {
-                return Err(Diagnostic::new_with_code(
+        "copy_file" => {
+            return Err(
+                Diagnostic::new_with_code(
                     Severity::Error,
-                    crate::diagnostics::rtcode::WRONG_ARITY,
-                    "wrong-arity",
-                    &format!("Wrong number of arguments (expected 0, got {})", args.len()),
+                    crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
+                    "mutation-operator-required",
+                    "‘copy_file’ requires the bang form: use copy_file!(…)",
                     sp.clone(),
                 )
-                .with_help("‘uuid_v7’ takes no arguments.")
-                .with_link("https://goblinlang.org/docs/errors#R0301"));
+                .with_help("Append ‘!’ to copy files, e.g., copy_file!(src, dst).")
+                .with_link("https://goblinlang.org/docs/errors#M0001"),
+            );
+        }
+
+        "stem" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("'stem(path)' takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
             }
-            Value::Str(Uuid::now_v7().to_string())
+            let path = want_str(&args[0], "stem")?;
+            use std::path::Path;
+            let p = Path::new(&path);
+            let stem = p.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            Value::Str(stem.to_string())
+        }
+
+        "ext" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("'ext(path)' takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let path = want_str(&args[0], "ext")?;
+            use std::path::Path;
+            let p = Path::new(&path);
+            let extension = p.extension()
+                .and_then(|s| s.to_str())
+                .map(|s| format!(".{}", s))
+                .unwrap_or_else(|| "".to_string());
+            Value::Str(extension)
+        }
+
+        "dirname" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("'dirname(path)' takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let path = want_str(&args[0], "dirname")?;
+            use std::path::Path;
+            let p = Path::new(&path);
+            let dir = p.parent()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            Value::Str(dir.replace('\\', "/"))
+        }
+
+        "path_join" => {
+            if args.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘path_join(a,b)’ joins two paths safely.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let a = want_str(&args[0], "path_join")?;
+            let b = want_str(&args[1], "path_join")?;
+            use std::path::PathBuf;
+
+            let mut joined = PathBuf::from(a);
+            joined.push(b);
+            let normalized = joined.to_string_lossy().replace('\\', "/");
+            Value::Str(normalized)
+        }
+
+        "basename" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘basename(path)’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let path = want_str(&args[0], "basename")?;
+            use std::path::Path;
+            let p = Path::new(&path);
+            let base = p.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            Value::Str(base.to_string())
+        },
+
+        "path_normalize" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘path_normalize(path)’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let path = want_str(&args[0], "path_normalize")?;
+            use std::path::Path;
+            let simplified = dunce::simplified(Path::new(&path));
+            let normalized = simplified.to_string_lossy().replace('\\', "/");
+            Value::Str(normalized)
+        },
+
+        "is_file" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘is_file(path)’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let path = want_str(&args[0], "is_file")?;
+            Value::Bool(std::path::Path::new(&path).is_file())
+        },
+
+        "is_dir" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘is_dir(path)’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let path = want_str(&args[0], "is_dir")?;
+            Value::Bool(std::path::Path::new(&path).is_dir())
+        },
+
+        "path_split" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘path_split(path)’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let path = want_str(&args[0], "path_split")?;
+            use std::path::Path;
+            let comps: Vec<Value> = Path::new(&path)
+                .components()
+                .map(|c| Value::Str(c.as_os_str().to_string_lossy().into_owned()))
+                .collect();
+            Value::Array(comps)
+        },
+
+        "path_relative_to" => {
+            if args.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘path_relative_to(path, base)’ takes exactly 2 arguments.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let path = want_str(&args[0], "path_relative_to")?;
+            let base = want_str(&args[1], "path_relative_to")?;
+            use std::path::Path;
+            let rel = Path::new(&path)
+                .strip_prefix(Path::new(&base))
+                .unwrap_or(Path::new(&path));
+            Value::Str(rel.to_string_lossy().replace('\\', "/"))
         },
 
         "walk" => {
@@ -9119,6 +9497,213 @@ fn call_action_by_name(
                 }
             }
             Value::Array(results)
+        }
+
+        "uuid_v4" => {
+            if args.len() != 0 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY,
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 0, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("‘uuid_v4’ takes no arguments.")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            Value::Str(Uuid::new_v4().to_string())
+        },
+
+        "uuid_v7" => {
+            if args.len() != 0 {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::WRONG_ARITY,
+                    "wrong-arity",
+                    &format!("Wrong number of arguments (expected 0, got {})", args.len()),
+                    sp.clone(),
+                )
+                .with_help("‘uuid_v7’ takes no arguments.")
+                .with_link("https://goblinlang.org/docs/errors#R0301"));
+            }
+            Value::Str(Uuid::now_v7().to_string())
+        },
+
+        // ----- YAML -----
+        "yaml_parse" => {
+            if args.len() != 1 { /* your existing wrong-arity error */ }
+
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "yaml_parse")?; // your existing type check
+
+            // Parse YAML text with order preserved
+            let vy: sy::Value = sy::from_str(&s).map_err(|e| diag_yaml(sp.clone(), e))?;
+
+            // Directly convert to Value with MapOrd (insertion order)
+            yaml_to_value(vy)
+        }
+
+        "yaml_sanitize" => {
+            arity(1)?;
+            let text = want_str(&args[0], "yaml_sanitize")?;
+            let sanitized = sanitize_yaml_text(&text);
+            Value::Str(sanitized)
+        }
+
+        // ----- JSON -----
+        "json_parse" => {
+            // arity(1)?;  --> expand for uniform diagnostics
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘json_parse’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let v0 = args[0].clone();
+            let s  = want_str(&v0, "json_parse")?; // emits T0205 with link
+
+            let vj: sj::Value = sj::from_str(&s).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
+                    "json-parse-failed",
+                    &format!("JSON parse failed: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Ensure the input is valid JSON text.")
+                .with_link("https://goblinlang.org/docs/errors#J0001")
+            })?;
+
+            from_json(&vj)
+        }
+
+        "json_stringify" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘json_stringify’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let v0 = args[0].clone();
+            let s = sj::to_string(&to_json(&v0)).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
+                    "json-stringify-failed",
+                    &format!("JSON stringify failed: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Remove non-serializable values or convert them to JSON-friendly forms.")
+                .with_link("https://goblinlang.org/docs/errors#J0002")
+            })?;
+
+            Value::Str(s)
+        }
+
+        "json_stringify_pretty" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘json_stringify_pretty’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let v0 = args[0].clone();
+            let s = sj::to_string_pretty(&to_json(&v0)).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
+                    "json-stringify-failed",
+                    &format!("JSON stringify failed: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Remove non-serializable values or convert them to JSON-friendly forms.")
+                .with_link("https://goblinlang.org/docs/errors#J0002")
+            })?;
+
+            Value::Str(s)
+        }
+
+        "write_json" => {
+            return Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
+                    "mutation-operator-required",
+                    "‘write_json’ requires the bang form: use write_json!(…)",
+                    sp.clone(),
+                )
+                .with_help("Append ‘!’ to perform filesystem writes, e.g., write_json!(path, value[, pretty]).")
+                .with_link("https://goblinlang.org/docs/errors#M0001"),
+            );
+        }
+
+        "read_json" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘read_json’ takes exactly 1 argument: a file path.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let vpath = args[0].clone();
+            let path  = want_str(&vpath, "read_json path")?; // emits T0205 with link
+
+            let txt = std::fs::read_to_string(&path).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::JSON_IO, // J0003 (NEW)
+                    "json-io",
+                    &format!("read_json: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Verify the file exists and is readable.")
+                .with_link("https://goblinlang.org/docs/errors#J0003")
+            })?;
+
+            let vj: sj::Value = sj::from_str(&txt).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
+                    "json-parse-failed",
+                    &format!("JSON parse failed: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Ensure the file contains valid JSON.")
+                .with_link("https://goblinlang.org/docs/errors#J0001")
+            })?;
+
+            from_json(&vj)
         }
 
         // ===== Replace & remove =====
@@ -9639,31 +10224,6 @@ fn call_action_by_name(
                     }
                 }
             }
-        }
-
-        "path_join" => {
-            if args.len() != 2 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY,
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 2, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘path_join(a,b)’ joins two paths safely.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301")
-                );
-            }
-
-            let a = want_str(&args[0], "path_join")?;
-            let b = want_str(&args[1], "path_join")?;
-            use std::path::PathBuf;
-
-            let mut joined = PathBuf::from(a);
-            joined.push(b);
-            let normalized = joined.to_string_lossy().replace('\\', "/");
-            Value::Str(normalized)
         }
 
         // ===== REGEX =====
@@ -10651,203 +11211,7 @@ fn call_action_by_name(
             }
         }
 
-        // ----- YAML -----
-        "yaml_parse" => {
-            // arity(1)?;  --> expand for uniform diagnostics
-            if args.len() != 1 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘yaml_parse’ takes exactly 1 argument.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301")
-                );
-            }
-
-            let v0 = args[0].clone();
-            let s  = want_str(&v0, "yaml_parse")?; // emits T0205 with link
-
-            // Parse YAML text
-            let vy: sy::Value = sy::from_str(&s).map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001 (NEW)
-                    "yaml-parse-failed",
-                    &format!("YAML parse failed: {e}"),
-                    sp.clone(),
-                )
-                .with_help("Ensure the input is valid YAML text.")
-                .with_link("https://goblinlang.org/docs/errors#Y0001")
-            })?;
-
-            // Convert serde_yaml::Value -> serde_json::Value to reuse from_json()
-            let vj: sj::Value = sj::to_value(vy).map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001
-                    "yaml-parse-failed",
-                    &format!("YAML conversion failed: {e}"),
-                    sp.clone(),
-                )
-                .with_help("YAML value could not be converted into a JSON-compatible shape.")
-                .with_link("https://goblinlang.org/docs/errors#Y0001")
-            })?;
-
-            from_json(&vj)
-        }
-
-        "yaml_sanitize" => {
-            arity(1)?;
-            let text = want_str(&args[0], "yaml_sanitize")?;
-            let sanitized = sanitize_yaml_text(&text);
-            Value::Str(sanitized)
-        }
-
-        // ----- JSON -----
-        "json_parse" => {
-            // arity(1)?;  --> expand for uniform diagnostics
-            if args.len() != 1 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘json_parse’ takes exactly 1 argument.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301")
-                );
-            }
-
-            let v0 = args[0].clone();
-            let s  = want_str(&v0, "json_parse")?; // emits T0205 with link
-
-            let vj: sj::Value = sj::from_str(&s).map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
-                    "json-parse-failed",
-                    &format!("JSON parse failed: {e}"),
-                    sp.clone(),
-                )
-                .with_help("Ensure the input is valid JSON text.")
-                .with_link("https://goblinlang.org/docs/errors#J0001")
-            })?;
-
-            from_json(&vj)
-        }
-
-        "json_stringify" => {
-            if args.len() != 1 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘json_stringify’ takes exactly 1 argument.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301")
-                );
-            }
-
-            let v0 = args[0].clone();
-            let s = sj::to_string(&to_json(&v0)).map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
-                    "json-stringify-failed",
-                    &format!("JSON stringify failed: {e}"),
-                    sp.clone(),
-                )
-                .with_help("Remove non-serializable values or convert them to JSON-friendly forms.")
-                .with_link("https://goblinlang.org/docs/errors#J0002")
-            })?;
-
-            Value::Str(s)
-        }
-
-        "json_stringify_pretty" => {
-            if args.len() != 1 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘json_stringify_pretty’ takes exactly 1 argument.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301")
-                );
-            }
-
-            let v0 = args[0].clone();
-            let s = sj::to_string_pretty(&to_json(&v0)).map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
-                    "json-stringify-failed",
-                    &format!("JSON stringify failed: {e}"),
-                    sp.clone(),
-                )
-                .with_help("Remove non-serializable values or convert them to JSON-friendly forms.")
-                .with_link("https://goblinlang.org/docs/errors#J0002")
-            })?;
-
-            Value::Str(s)
-        }
-
-        "read_json" => {
-            if args.len() != 1 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("‘read_json’ takes exactly 1 argument: a file path.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301")
-                );
-            }
-
-            let vpath = args[0].clone();
-            let path  = want_str(&vpath, "read_json path")?; // emits T0205 with link
-
-            let txt = std::fs::read_to_string(&path).map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::JSON_IO, // J0003 (NEW)
-                    "json-io",
-                    &format!("read_json: {e}"),
-                    sp.clone(),
-                )
-                .with_help("Verify the file exists and is readable.")
-                .with_link("https://goblinlang.org/docs/errors#J0003")
-            })?;
-
-            let vj: sj::Value = sj::from_str(&txt).map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
-                    "json-parse-failed",
-                    &format!("JSON parse failed: {e}"),
-                    sp.clone(),
-                )
-                .with_help("Ensure the file contains valid JSON.")
-                .with_link("https://goblinlang.org/docs/errors#J0001")
-            })?;
-
-            from_json(&vj)
-        }
+        
 
         other => {
             if let Some(v) = eval_builtin(other, &args, sess, &sp)? {
@@ -12346,7 +12710,27 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                     );
                                 }
                             }
-                        }
+                        },
+
+                        // NEW: ordered map (YAML)
+                        Value::MapOrd(map) => {
+                            match map.get(name) {
+                                Some(v) => Ok(v.clone()),
+                                None => {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                                            "missing-key",
+                                            &format!("missing key ‘{}’", name),
+                                            sp.clone(),
+                                        )
+                                        .with_help("Ensure the map contains this key, or guard before accessing.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0403"),
+                                    );
+                                }
+                            }
+                        },
 
                         // enum field on a variant-with-fields
                         Value::Enum { fields: Some(field_map), variant_name, .. } => {
@@ -12613,17 +12997,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             match (b, i) {
                 (Value::Array(items), Value::Int(n)) => {
                     if n < 0 {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::INTEGER_EXPECTED, // T0204
-                                "integer-expected",
-                                "index must be a non-negative integer",
-                                sp.clone(),
-                            )
-                            .with_help("Use an integer ≥ 0, e.g., arr[0].")
-                            .with_link("https://goblinlang.org/docs/errors#T0204"),
-                        );
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::INTEGER_EXPECTED, // T0204
+                            "integer-expected",
+                            "index must be a non-negative integer",
+                            sp.clone(),
+                        )
+                        .with_help("Use an integer ≥ 0, e.g., arr[0].")
+                        .with_link("https://goblinlang.org/docs/errors#T0204"));
                     }
                     let k = n as usize;
                     items.get(k).cloned().ok_or_else(|| {
@@ -12639,6 +13021,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     })
                 }
 
+                // Map (BTreeMap) by string key
                 (Value::Map(map), Value::Str(key)) => {
                     map.get(&key).cloned().ok_or_else(|| {
                         Diagnostic::new_with_code(
@@ -12652,8 +13035,32 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         .with_link("https://goblinlang.org/docs/errors#R0403")
                     })
                 }
+                // NEW: Ordered map (IndexMap) by string key
+                (Value::MapOrd(map), Value::Str(key)) => {
+                    map.get(&key).cloned().ok_or_else(|| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                            "no-such-field",
+                            &format!("missing key ‘{}’", key),
+                            sp.clone(),
+                        )
+                        .with_help("Check the key exists in the map.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    })
+                }
 
-                (Value::Map(_), other_idx) => Err(
+                // Optional: allow single-char keys for both map kinds
+                (Value::Map(map), Value::Char(ch)) => {
+                    let k = ch.to_string();
+                    Ok(map.get(&k).cloned().unwrap_or(Value::Nil))
+                }
+                (Value::MapOrd(map), Value::Char(ch)) => {
+                    let k = ch.to_string();
+                    Ok(map.get(&k).cloned().unwrap_or(Value::Nil))
+                }
+
+                (Value::Map(_), other_idx) | (Value::MapOrd(_), other_idx) => Err(
                     Diagnostic::new_with_code(
                         Severity::Error,
                         crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
@@ -13274,95 +13681,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                     sess.loop_depth -= 1;
                     Ok(Value::Unit)
-                }
-
-                "write_json" => {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
-                            "mutation-operator-required",
-                            "‘write_json’ requires the bang form: use write_json!(…)",
-                            sp.clone(),
-                        )
-                        .with_help("Append ‘!’ to perform filesystem writes, e.g., write_json!(path, value[, pretty]).")
-                        .with_link("https://goblinlang.org/docs/errors#M0001"),
-                    );
-                }
-
-                "create_dir" => {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
-                            "mutation-operator-required",
-                            "‘create_dir’ requires the bang form: use create_dir!(…)",
-                            sp.clone(),
-                        )
-                        .with_help("Append ‘!’ to create directories, e.g., create_dir!(path).")
-                        .with_link("https://goblinlang.org/docs/errors#M0001"),
-                    );
-                }
-
-                "write_text" => {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
-                            "mutation-operator-required",
-                            "‘write_text’ requires the bang form: use write_text!(…)",
-                            sp.clone(),
-                        )
-                        .with_help("Append ‘!’ to write files, e.g., write_text!(path, text).")
-                        .with_link("https://goblinlang.org/docs/errors#M0001"),
-                    );
-                }
-
-                "read_text" => {
-                    if args.len() != 1 {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                                "wrong-arity",
-                                &format!("Wrong number of arguments (expected 1, got {})", args.len()),
-                                sp.clone(),
-                            )
-                            .with_help("Usage: read_text(path)")
-                            .with_link("https://goblinlang.org/docs/errors#R0301"),
-                        );
-                    }
-                    let vpath = eval_expr(&args[0], sess)?;
-                    let path  = want_str(&vpath, "read_text path", sp.clone())?;
-
-                    // Read text exactly as UTF-8; do NOT interpolate tokens here.
-                    let s = std::fs::read_to_string(&path).map_err(|e| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
-                            "filesystem-io",
-                            &format!("failed to read file: {e}"),
-                            sp.clone(),
-                        )
-                        .with_help("Check file exists and permissions.")
-                        .with_link("https://goblinlang.org/docs/errors#FS0001")
-                    })?;
-
-                    Ok(Value::Str(s))
-                }
-
-                "copy_file" => {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
-                            "mutation-operator-required",
-                            "‘copy_file’ requires the bang form: use copy_file!(…)",
-                            sp.clone(),
-                        )
-                        .with_help("Append ‘!’ to copy files, e.g., copy_file!(src, dst).")
-                        .with_link("https://goblinlang.org/docs/errors#M0001"),
-                    );
                 }
 
                 "attempt" => {
