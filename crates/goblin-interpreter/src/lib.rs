@@ -9499,6 +9499,40 @@ fn call_action_by_name(
             Value::Array(results)
         }
 
+        // Safely escape HTML special characters.
+        // Usage: escape_html(text) -> string
+        "escape_html" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘escape_html(text)’ takes exactly 1 argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let input = want_str(&args[0], "escape_html")?;
+            let mut out = String::with_capacity(input.len());
+
+            for ch in input.chars() {
+                match ch {
+                    '&'  => out.push_str("&amp;"),
+                    '<'  => out.push_str("&lt;"),
+                    '>'  => out.push_str("&gt;"),
+                    '"'  => out.push_str("&quot;"),
+                    '\'' => out.push_str("&#39;"),
+                    _    => out.push(ch),
+                }
+            }
+
+            Value::Str(out)
+        },
+
         "uuid_v4" => {
             if args.len() != 0 {
                 return Err(Diagnostic::new_with_code(

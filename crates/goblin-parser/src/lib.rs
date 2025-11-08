@@ -1529,7 +1529,7 @@ impl<'t> Parser<'t> {
             s_help_site!(
                 "P1003",
                 &format!("Expected an expression {} but found {} after {}", ctx, here, prev),
-                "Use a value, variable, or call: total = price * qty",
+                "Check for an end keyword inline somewhere like in an if statement",
             )
         }
     }

@@ -15,6 +15,7 @@ pub mod markdown {
         options.extension.strikethrough = true;
         options.extension.superscript = true;
         options.extension.footnotes = true;
+        options.extension.header_ids = Some(String::new());
         // options.extension.tagfilter = false; // leave default unless you want HTML filtering
 
         // Parse
