@@ -18,6 +18,7 @@ use indexmap::IndexMap;
 
 pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
+pub mod actions;
 pub mod diagnostics;
 
 type TokenResolver = fn(&str) -> Value;
@@ -3441,51 +3442,18 @@ fn eval_builtin(
         }
 
         // ---------- String case & transforms ----------
-        "upper" => {
-            arity(1)?;
-            let v0 = args[0].clone();
-            let s  = want_str(&v0, "upper")?;
-            Value::Str(s.to_uppercase())
-        }
-        "lower" => {
-            arity(1)?;
-            let v0 = args[0].clone();
-            let s  = want_str(&v0, "lower")?;
-            Value::Str(s.to_lowercase())
-        }
-        "title" => {
-            arity(1)?;
-            let v0 = args[0].clone();
-            let s  = want_str(&v0, "title")?;
-            let mut out = String::with_capacity(s.len());
-            for (i, w) in s.split_whitespace().enumerate() {
-                if i > 0 { out.push(' '); }
-                let mut chs = w.chars();
-                if let Some(first) = chs.next() {
-                    out.extend(first.to_uppercase());
-                    let rest: String = chs.collect();
-                    out.push_str(&rest.to_lowercase());
-                }
-            }
-            Value::Str(out)
-        }
-        "slug" => {
-            arity(1)?;
-            let v0 = args[0].clone();
-            let s  = want_str(&v0, "slug")?;
-            let mut out = String::with_capacity(s.len());
-            let mut last_dash = false;
-            for ch in s.chars() {
-                if ch.is_ascii_alphanumeric() {
-                    out.push(ch.to_ascii_lowercase());
-                    last_dash = false;
-                } else if !last_dash {
-                    out.push('-');
-                    last_dash = true;
-                }
-            }
-            Value::Str(out.trim_matches('-').to_string())
-        }
+        "upper"      => crate::actions::strings::upper(sess, args, sp)?,
+        "lower"      => crate::actions::strings::lower(sess, args, sp)?,
+        "title"      => crate::actions::strings::title(sess, args, sp)?,
+        "slug"       => crate::actions::strings::slug(sess, args, sp)?,
+        "raw"        => crate::actions::strings::raw(sess, args, sp)?,
+        "mixed"      => crate::actions::strings::mixed(sess, args, sp)?,
+
+        // ---------- Trims ----------
+        "trim"       => crate::actions::strings::trim(sess, args, sp)?,
+        "trim_lead"  => crate::actions::strings::trim_lead(sess, args, sp)?,
+        "trim_trail" => crate::actions::strings::trim_trail(sess, args, sp)?,
+
 
         "raw" => {
             arity(1)?;
@@ -5688,6 +5656,7 @@ fn call_action_by_name(
     };
 
     let out: Value = match name {
+
         "is_bound_name" => {
             // is_bound_name(name: string) -> bool
             if args.len() != 1 {
@@ -7924,132 +7893,16 @@ fn call_action_by_name(
         }
 
         // ----- String case & transforms -----
-        "upper" => { arity(1)?; map_str_1(&args[0], "upper", &|s| s.to_uppercase())? }
-        "lower" => { arity(1)?; map_str_1(&args[0], "lower", &|s| s.to_lowercase())? }
-        "title" => {
-            arity(1)?;
-            let to_title = |s: &str| -> String {
-                let mut out = String::with_capacity(s.len());
-                for (i, w) in s.split_whitespace().enumerate() {
-                    if i > 0 { out.push(' '); }
-                    let mut chs = w.chars();
-                    if let Some(first) = chs.next() {
-                        out.extend(first.to_uppercase());
-                        let rest: String = chs.collect();
-                        out.push_str(&rest.to_lowercase());
-                    }
-                }
-                out
-            };
-            map_str_1(&args[0], "title", &to_title)?
-        }
-        "slug" => {
-            arity(1)?;
-            let to_slug = |s: &str| -> String {
-                let mut out = String::with_capacity(s.len());
-                let mut last_dash = false;
-                for ch in s.chars() {
-                    if ch.is_ascii_alphanumeric() {
-                        out.push(ch.to_ascii_lowercase());
-                        last_dash = false;
-                    } else if !last_dash {
-                        out.push('-');
-                        last_dash = true;
-                    }
-                }
-                out.trim_matches('-').to_string()
-            };
-            map_str_1(&args[0], "slug", &to_slug)?
-        }
-        "mixed" => {
-            arity(1)?;
-            // draw one seed from the session RNG, then do pure mixing per char
-            let seed = sess.next_u128();
-            let to_mixed = move |s: &str| -> String {
-                let mut out = String::with_capacity(s.len());
-                for (i, ch) in s.chars().enumerate() {
-                    // SplitMix-style stateless mixing from (seed ^ i)
-                    let mut x = seed ^ ((i as u128).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-                    x ^= x >> 30; x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                    x ^= x >> 27; x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
-                    x ^= x >> 31;
-                    let upper = (x & 1) == 1;
-                    if ch.is_alphabetic() {
-                        if upper { out.extend(ch.to_uppercase()); }
-                        else     { out.extend(ch.to_lowercase()); }
-                    } else {
-                        out.push(ch);
-                    }
-                }
-                out
-            };
-            map_str_1(&args[0], "mixed", &to_mixed)?
-        }
+        "upper"         => crate::actions::strings::upper(sess, &args, &sp)?,
+        "lower"         => crate::actions::strings::lower(sess, &args, &sp)?,
+        "title"         => crate::actions::strings::title(sess, &args, &sp)?,
+        "slug"          => crate::actions::strings::slug(sess, &args, &sp)?,
+        "raw"           => crate::actions::strings::raw(sess, &args, &sp)?,
+        "mixed"         => crate::actions::strings::mixed(sess, &args, &sp)?,
+        "trim"          => crate::actions::strings::trim(sess, &args, &sp)?,
+        "trim_lead"     => crate::actions::strings::trim_lead(sess, &args, &sp)?,
+        "trim_trail"    => crate::actions::strings::trim_trail(sess, &args, &sp)?,
 
-        "raw" => {
-            if args.len() != 1 {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
-                        sp.clone(),
-                    )
-                    .with_help("'raw' takes exactly 1 argument.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301"),
-                );
-            }
-            let s = want_str(&args[0], "raw")?;
-            Value::Str(escape_braces_for_raw(&s))
-        }
-
-        // ----- String trim -----
-        "trim" => {
-            arity(1)?;
-            map_str_1(&args[0], "trim", &|s| {
-                s.trim_matches(|c: char|
-                    c.is_whitespace()
-                    || c == '\u{00A0}' // NBSP
-                    || c == '\u{FEFF}' // BOM / ZWNBSP
-                    || c == '\u{200B}' // ZERO WIDTH SPACE
-                    || c == '\u{200C}' // ZWNJ
-                    || c == '\u{200D}' // ZWJ
-                    || c == '\u{2060}' // WORD JOINER
-                    || c == '\u{180E}' // MVS (legacy)
-                ).to_string()
-            })?
-        }
-        "trim_lead" => {
-            arity(1)?;
-            map_str_1(&args[0], "trim_lead", &|s| {
-                s.trim_start_matches(|c: char|
-                    c.is_whitespace()
-                    || c == '\u{00A0}'
-                    || c == '\u{FEFF}'
-                    || c == '\u{200B}'
-                    || c == '\u{200C}'
-                    || c == '\u{200D}'
-                    || c == '\u{2060}'
-                    || c == '\u{180E}'
-                ).to_string()
-            })?
-        }
-        "trim_trail" => {
-            arity(1)?;
-            map_str_1(&args[0], "trim_trail", &|s| {
-                s.trim_end_matches(|c: char|
-                    c.is_whitespace()
-                    || c == '\u{00A0}'
-                    || c == '\u{FEFF}'
-                    || c == '\u{200B}'
-                    || c == '\u{200C}'
-                    || c == '\u{200D}'
-                    || c == '\u{2060}'
-                    || c == '\u{180E}'
-                ).to_string()
-            })?
-        }
 
         // ===== MAPS =====
         "keys" => {
@@ -13918,6 +13771,11 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 other_name => {
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for a in args { arg_vals.push(eval_expr(a, sess)?); }
+
+                    if let Some(v) = eval_builtin(&other_name, &arg_vals, sess, &sp)? {
+                        return Ok(v); // builtin handled here
+                    }
+                    // else: regular action
                     call_action_by_name(sess, other_name, arg_vals, sp.clone())
                 }
             }

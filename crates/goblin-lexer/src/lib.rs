@@ -1212,14 +1212,6 @@ fn lex_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
     }
 
     let name = String::from_utf8_lossy(&state.bytes[start_i..state.i]).into_owned();
-
-    // Check for string prefixes
-    if name == "raw" || name == "trim_lead" {
-        if looks_ahead_to_string(state) {
-            if name == "raw"       { state.pending_raw = true;       return Ok(()); }
-            if name == "trim_lead" { state.pending_trim_lead = true; return Ok(()); }
-        }
-    }
     
     // Check for country-code money literal (e.g., US$30)
     if state.i - start_i == 2
@@ -1290,20 +1282,6 @@ fn looks_ahead_to_string(state: &LexerState) -> bool {
            k + 1 < state.bytes.len() &&
            (state.bytes[k + 1] == b'"' || state.bytes[k + 1] == b'\'') {
             return true;
-        }
-
-        // Check for another prefix
-        let mut end = k;
-        if is_ident_start(state.bytes[k]) {
-            end += 1;
-            while end < state.bytes.len() && is_ident_continue(state.bytes[end]) {
-                end += 1;
-            }
-            let txt = String::from_utf8_lossy(&state.bytes[k..end]);
-            if txt == "raw" || txt == "trim_lead" {
-                k = end;
-                continue;
-            }
         }
 
         return false;
