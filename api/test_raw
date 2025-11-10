@@ -1,0 +1,14 @@
+act test_raw_str 
+	name = "Dilbert"
+	say "Hello, {name}"
+
+	multi = raw """
+		This is a multiline string.
+		{ll;kajdfad//
+		It should be all raw.
+		%/abc////
+		"""
+	say multi
+end
+
+test_raw_str()

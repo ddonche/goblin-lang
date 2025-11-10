@@ -335,15 +335,53 @@ impl<'t> Parser<'t> {
         let bytes = s.as_bytes();
         let n = bytes.len();
         let mut i: usize = 0;
-        let mut depth: usize = 0;
 
         while i < n {
-            // 1) Opaque module/glam token: {{{ ... }}}
+            // Treat backslash escapes as opaque (skip next char)
+            if bytes[i] == b'\\' {
+                if i + 1 < n {
+                    // handle \u{...} / \xNN superficially so we don't misread braces inside
+                    match bytes[i + 1] {
+                        b'u' => {
+                            // skip \u{ ... } if present
+                            let mut k = i + 2;
+                            if k < n && bytes[k] == b'{' {
+                                k += 1;
+                                while k < n && bytes[k] != b'}' { k += 1; }
+                                if k < n && bytes[k] == b'}' {
+                                    i = k + 1;
+                                    continue;
+                                }
+                            }
+                            i += 2;
+                            continue;
+                        }
+                        b'x' => {
+                            i = (i + 4).min(n);
+                            continue;
+                        }
+                        _ => {
+                            i += 2;
+                            continue;
+                        }
+                    }
+                } else {
+                    i += 1;
+                    continue;
+                }
+            }
+
+            // ONLY validate triple-brace tokens {{{ ... }}}
             if i + 2 < n && &bytes[i..i + 3] == b"{{{" {
-                // Scan forward for the first matching "}}}"
+                // find next }}} (not escaped)
                 let mut j = i + 3;
                 let mut found = false;
                 while j + 2 < n {
+                    // skip escapes inside token body
+                    if bytes[j] == b'\\' {
+                        j = (j + 2).min(n);
+                        continue;
+                    }
                     if &bytes[j..j + 3] == b"}}}" {
                         found = true;
                         break;
@@ -357,83 +395,15 @@ impl<'t> Parser<'t> {
                         "Close the token with '}}}' like '{{{BRINDLE::OBSIDIAN}}}'",
                     ));
                 }
-                // Skip the entire token including the closing "}}}"
                 i = j + 3;
                 continue;
             }
 
-            // 2) Backslash escapes (new: \{ and \} don't affect depth)
-            if bytes[i] == b'\\' {
-                // If there is a next byte, skip it so we don't count escaped braces
-                if i + 1 < n {
-                    // specifically handle \u{...} and \xNN just to skip cleanly
-                    match bytes[i + 1] {
-                        b'u' => {
-                            // skip \u{ ... }
-                            let mut k = i + 2;
-                            if k < n && bytes[k] == b'{' {
-                                k += 1;
-                                while k < n && bytes[k] != b'}' {
-                                    k += 1;
-                                }
-                                if k < n && bytes[k] == b'}' {
-                                    i = k + 1;
-                                    continue;
-                                }
-                            }
-                            // fall through to generic 2-char skip if malformed
-                            i += 2;
-                            continue;
-                        }
-                        b'x' => {
-                            // skip \xNN if present, else just skip two chars
-                            if i + 3 < n {
-                                i += 4;
-                            } else {
-                                i += 2;
-                            }
-                            continue;
-                        }
-                        _ => {
-                            // \{, \}, \\, \n, \t, \r, \", \', or unknown: skip both
-                            i += 2;
-                            continue;
-                        }
-                    }
-                } else {
-                    // trailing backslash at end
-                    i += 1;
-                    continue;
-                }
-            }
-
-            // 3) Normal single-brace accounting (for { ... } interpolation text)
-            match bytes[i] {
-                b'{' => {
-                    depth += 1;
-                    i += 1;
-                }
-                b'}' => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
-                    i += 1;
-                }
-                _ => {
-                    i += 1;
-                }
-            }
+            // Everything else (including single braces) is parser-OK; runtime decides.
+            i += 1;
         }
 
-        if depth != 0 {
-            Err(s_help_site!(
-                "P0604",
-                "There's an unclosed '{' in this string",
-                "Add a matching '}' to close it: \"Hello {name}\"",
-            ))
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn parse_local_bind(&mut self) -> Result<ast::Stmt, String> {
@@ -7129,488 +7099,463 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_unary(&mut self) -> Result<PExpr, String> {
-        // use goblin_lexer::TokenKind;
-        // unary definedness: &LValue (right-assoc, same tier as other prefix ops)
-        if self.eat_op("&") {
-            // allow newline(s) after '&'
-            self.skip_newlines();
-            let i0 = self.i;
-            match self.parse_definedness_lvalue() {
-                Ok(lv) => return Ok(PExpr::IsBound(Box::new(lv))),
-                Err(_) => {
-                    // Don't loop forever if nothing consumed after '&'
-                    if self.i == i0 { /* we already ate '&' */ }
-                    return Err(s_help_site!(
-                        "P0401",
-                        "You need a variable, field access, or array index after '&'",
-                        "Examples: &user, &user>>name, &items[0]",
-                    ));
+            // use goblin_lexer::TokenKind;
+
+            // unary definedness: &LValue (right-assoc, same tier as other prefix ops)
+            if self.eat_op("&") {
+                // allow newline(s) after '&'
+                self.skip_newlines();
+                let i0 = self.i;
+                match self.parse_definedness_lvalue() {
+                    Ok(lv) => return Ok(PExpr::IsBound(Box::new(lv))),
+                    Err(_) => {
+                        // Don't loop forever if nothing consumed after '&'
+                        if self.i == i0 { /* we already ate '&' */ }
+                        return Err(s_help_site!(
+                            "P0401",
+                            "You need a variable, field access, or array index after '&'",
+                            "Examples: &user, &user>>name, &items[0]"
+                        ));
+                    }
                 }
             }
-        }
-        
-        // PICK / REAP (expression form)
-        // Syntax:
-        //   pick <count:int | {var} | var> [_ <digits:int>]   // also supports packed shorthand: pick 100_8
-        //        [from <expr or range>]
-        //        [with dups | without dups | wo dups]
-        //        [unique]   // for digit shorthand (x_y): each number’s digits must be distinct
-        //
-        //   reap <count:int | {var} | var> from <expr or range>
-        //   // Note: reap does NOT support digit shorthand or dups modifiers.
-        if self.peek_ident() == Some("pick") || self.peek_ident() == Some("reap") {
-            let verb = self.peek_ident().unwrap().to_string(); // "pick" or "reap"
-            let _ = self.eat_ident(); // consume verb
-            self.skip_newlines();
 
-            // <count>: integer literal (lexer may give "1_6" as a single Int token)
-            // OR default to 1 if 'from' immediately follows (sugar: `pick from xs`)
-            // OR dynamic count via `{var}` or bare identifier `var`
-            let mut count_txt = String::new();
-            let mut count: i128;
-            // <count>: int | {var} | var | defaults to 1 if 'from' follows
-            let mut count_expr: Option<PExpr> = None;
-
-            // braced dynamic: pick {var} ...
-            if self.eat_op("{") {
+            // PICK / REAP (expression form)
+            // Syntax:
+            //   pick <count:int | {var} | var> [_ <digits:int>]   // also supports packed shorthand: pick 100_8
+            //        [from <expr or range>]
+            //        [with dups | without dups | wo dups]
+            //        [unique]   // for digit shorthand (x_y): each number’s digits must be distinct
+            //
+            //   reap <count:int | {var} | var> from <expr or range>
+            //   // Note: reap does NOT support digit shorthand or dups modifiers.
+            if self.peek_ident() == Some("pick") || self.peek_ident() == Some("reap") {
+                let verb = self.peek_ident().unwrap().to_string(); // "pick" or "reap"
+                let _ = self.eat_ident(); // consume verb
                 self.skip_newlines();
 
-                // accept a bare identifier inside braces
-                if let Some(name_owned) = self.peek_ident().map(|s| s.to_string()) {
-                    if name_owned == "from" {
+                // <count>: integer literal (lexer may give "1_6" as a single Int token)
+                // OR default to 1 if 'from' immediately follows (sugar: `pick from xs`)
+                // OR dynamic count via `{var}` or bare identifier `var`
+                let mut count_txt = String::new();
+                let mut count: i128;
+                // <count>: int | {var} | var | defaults to 1 if 'from' follows
+                let mut count_expr: Option<PExpr> = None;
+
+                // braced dynamic: pick {var} ...
+                if self.eat_op("{") {
+                    self.skip_newlines();
+
+                    // accept a bare identifier inside braces
+                    if let Some(name_owned) = self.peek_ident().map(|s| s.to_string()) {
+                        if name_owned == "from" {
+                            return Err(s_help_site!("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
+                        }
+                        let _ = self.eat_ident(); // consume the ident
+                        count_expr = Some(PExpr::Ident(name_owned));
+                    } else {
                         return Err(s_help_site!("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
                     }
-                    let _ = self.eat_ident(); // consume the ident
+
+                    self.skip_newlines();
+                    // require closing '}'
+                    if !self.eat_op("}") {
+                        return Err(s_help_site!(
+                            "P1402",
+                            "Unclosed '{' in variable reference",
+                            "Close the variable reference with '}'"
+                        ));
+                    }
+
+                    // harmless default for any static-only checks later
+                    count = 1;
+                    self.skip_newlines();
+
+                } else if let Some(name_owned) = self
+                    .peek_ident()
+                    .filter(|&n| n != "from")
+                    .map(|s| s.to_string())
+                {
+                    let _ = self.eat_ident(); // consume it
                     count_expr = Some(PExpr::Ident(name_owned));
+                    count = 1;
+                    self.skip_newlines();
+
                 } else {
-                    return Err(s_help_site!("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
-                }
+                    // static numeric / sugar / error
+                    match self.peek() {
+                        // Normal numeric form: pick 3 from items
+                        Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
+                            count_txt = t.value.clone().unwrap_or_default();
+                            if let Some(v) = parse_int_literal_to_i128(&count_txt) {
+                                self.i += 1;
+                                count = v;
+                            } else {
+                                return Err(s_help_site!(
+                                    "P1401",
+                                    &format!("You need a number after '{}'", verb),
+                                    &format!("Write it like: {} 5 from items", verb),
+                                ));
+                            }
+                            self.skip_newlines();
+                        }
 
-                self.skip_newlines();
-                // require closing '}'
-                if !self.eat_op("}") {
-                    return Err(s_help_site!(
-                        "P1402",
-                        "Unclosed '{' in variable reference",
-                        "Close the variable reference with '}'",
-                    ));
-                }
+                        // sugar: pick from xs -> defaults to 1
+                        _ if self.peek_ident() == Some("from") => {
+                            count = 1;
+                        }
 
-                // harmless default for any static-only checks later
-                count = 1;
-                self.skip_newlines();
-
-            } else if let Some(name_owned) = self
-                .peek_ident()
-                .filter(|&n| n != "from")
-                .map(|s| s.to_string())
-            {
-                let _ = self.eat_ident(); // consume it
-                count_expr = Some(PExpr::Ident(name_owned));
-                count = 1;
-                self.skip_newlines();
-
-            } else {
-                // static numeric / sugar / error
-                match self.peek() {
-                    // Normal numeric form: pick 3 from items
-                    Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Int) => {
-                        count_txt = t.value.clone().unwrap_or_default();
-                        if let Some(v) = parse_int_literal_to_i128(&count_txt) {
-                            self.i += 1;
-                            count = v;
-                        } else {
+                        // Otherwise, still error
+                        _ => {
                             return Err(s_help_site!(
                                 "P1401",
                                 &format!("You need a number after '{}'", verb),
                                 &format!("Write it like: {} 5 from items", verb),
                             ));
                         }
-                        self.skip_newlines();
-                    }
-
-                    // sugar: pick from xs -> defaults to 1
-                    _ if self.peek_ident() == Some("from") => {
-                        count = 1;
-                    }
-
-                    // Otherwise, still error
-                    _ => {
-                        return Err(s_help_site!(
-                            "P1401",
-                            &format!("You need a number after '{}'", verb),
-                            &format!("Write it like: {} 5 from items", verb),
-                        ));
-                    }
-                }
-            }
-
-            // No negatives allowed (only meaningful for static counts)
-            if count_expr.is_none() && count < 0 {
-                return Err(s_help_site!(
-                    "P1402",
-                    &format!("You can't {} a negative number of items", verb),
-                    &format!("Use a positive number: {} 3 from items", verb),
-                ));
-            }
-
-            self.skip_newlines();
-
-            // Digit shorthand is ONLY for 'pick', never for 'reap'
-            // And ONLY when count is static (not dynamic)
-            let mut digits_expr: Option<PExpr> = None;
-            if verb == "pick" && count_expr.is_none() {
-                // (a) packed detection — only when the raw count text contains exactly one underscore
-                if let Some(udx) = count_txt.find('_') {
-                    let (lhs, rhs) = (&count_txt[..udx], &count_txt[udx + 1..]);
-                    let is_digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
-                    if is_digits(lhs) && is_digits(rhs) {
-                        if let Ok(rhs_val) = rhs.parse::<i32>() {
-                            if (1..=18).contains(&rhs_val) {
-                                if let Ok(lhs_val) = lhs.parse::<i128>() {
-                                    count = lhs_val;
-                                    digits_expr = Some(PExpr::Int(rhs.to_string()));
-                                }
-                            }
-                        }
                     }
                 }
 
-                // (b) separate form: pick N _ D
-                if digits_expr.is_none() && self.eat_op("_") {
-                    match self.peek() {
-                        Some(t2) if matches!(t2.kind, goblin_lexer::TokenKind::Int) => {
-                            let s2 = t2.value.clone().unwrap_or_default();
-                            self.i += 1;
-                            digits_expr = Some(PExpr::Int(s2));
-                        }
-                        _ => return Err(s_help_site!("P1401","Expected digits after '_'","Example: pick 5_4")),
-                    }
-                }
-                self.skip_newlines();
-            }
-
-            // Source: required for both verbs (if digits were parsed, 'pick' makes it optional)
-            let mut src_expr: Option<PExpr> = None;
-            if digits_expr.is_none() {
-                if self.peek_ident() != Some("from") {
+                // No negatives allowed (only meaningful for static counts)
+                if count_expr.is_none() && count < 0 {
                     return Err(s_help_site!(
-                        "P1403",
-                        &format!("Expected 'from' after the {} count", verb),
-                        &format!("Write it like: {} 3 from items", verb),
+                        "P1402",
+                        &format!("You can't {} a negative number of items", verb),
+                        &format!("Use a positive number: {} 3 from items", verb),
                     ));
                 }
-                let _ = self.eat_ident(); // 'from'
+
                 self.skip_newlines();
-                let parsed_src = self.parse_range()?; // handles ".." and "..."
-                src_expr = Some(parsed_src);
-                self.skip_newlines();
-            } else if self.peek_ident() == Some("from") {
-                // optional range filter for digits (pick only)
-                let _ = self.eat_ident();
-                self.skip_newlines();
-                let parsed_src = self.parse_range()?;
-                src_expr = Some(parsed_src);
-                self.skip_newlines();
+
+                // Digit shorthand is ONLY for 'pick', never for 'reap'
+                // And ONLY when count is static (not dynamic)
+                let mut digits_expr: Option<PExpr> = None;
+                if verb == "pick" && count_expr.is_none() {
+                    // (a) packed detection — only when the raw count text contains exactly one underscore
+                    if let Some(udx) = count_txt.find('_') {
+                        let (lhs, rhs) = (&count_txt[..udx], &count_txt[udx + 1..]);
+                        let is_digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+                        if is_digits(lhs) && is_digits(rhs) {
+                            if let Ok(rhs_val) = rhs.parse::<i32>() {
+                                if (1..=18).contains(&rhs_val) {
+                                    if let Ok(lhs_val) = lhs.parse::<i128>() {
+                                        count = lhs_val;
+                                        digits_expr = Some(PExpr::Int(rhs.to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // (b) separate form: pick N _ D
+                    if digits_expr.is_none() && self.eat_op("_") {
+                        match self.peek() {
+                            Some(t2) if matches!(t2.kind, goblin_lexer::TokenKind::Int) => {
+                                let s2 = t2.value.clone().unwrap_or_default();
+                                self.i += 1;
+                                digits_expr = Some(PExpr::Int(s2));
+                            }
+                            _ => return Err(s_help_site!("P1401","Expected digits after '_'","Example: pick 5_4")),
+                        }
+                    }
+                    self.skip_newlines();
+                }
+
+                // Source: required for both verbs (if digits were parsed, 'pick' makes it optional)
+                let mut src_expr: Option<PExpr> = None;
+                if digits_expr.is_none() {
+                    if self.peek_ident() != Some("from") {
+                        return Err(s_help_site!(
+                            "P1403",
+                            &format!("Expected 'from' after the {} count", verb),
+                            &format!("Write it like: {} 3 from items", verb),
+                        ));
+                    }
+                    let _ = self.eat_ident(); // 'from'
+                    self.skip_newlines();
+                    let parsed_src = self.parse_range()?; // handles ".." and "..."
+                    src_expr = Some(parsed_src);
+                    self.skip_newlines();
+                } else if self.peek_ident() == Some("from") {
+                    // optional range filter for digits (pick only)
+                    let _ = self.eat_ident();
+                    self.skip_newlines();
+                    let parsed_src = self.parse_range()?;
+                    src_expr = Some(parsed_src);
+                    self.skip_newlines();
+                }
+
+                // Modifiers: ONLY allowed for 'pick'
+                let mut allow_dups: Option<bool> = None;
+                let mut unique_digits = false;
+
+                if verb == "pick" {
+                    loop {
+                        self.skip_newlines();
+
+                        // with dups
+                        if self.peek_ident() == Some("with") {
+                            let _ = self.eat_ident();
+                            self.skip_newlines();
+                            if self.peek_ident() == Some("dups") {
+                                let _ = self.eat_ident();
+                                allow_dups = Some(true);
+                                continue;
+                            } else {
+                                return Err(s_help_site!("P1404","Expected 'dups' after 'with'","Use: with dups"));
+                            }
+                        }
+
+                        // without dups / wo dups
+                        if self.peek_ident() == Some("without") || self.peek_ident() == Some("wo") {
+                            let _ = self.eat_ident();
+                            self.skip_newlines();
+                            if self.peek_ident() == Some("dups") {
+                                let _ = self.eat_ident();
+                                allow_dups = Some(false);
+                                continue;
+                            } else {
+                                return Err(s_help_site!("P1406","Expected 'dups' after 'without'/'wo'","Use: without dups"));
+                            }
+                        }
+
+                        // unique (digit-uniqueness for x_y)
+                        if self.peek_ident() == Some("unique") {
+                            let _ = self.eat_ident();
+                            unique_digits = true;
+                            continue;
+                        }
+
+                        break;
+                    }
+                }
+
+                // Compile-time sanity check (same as before) — only for 'pick' with static count
+                if verb == "pick" && allow_dups != Some(true) && count_expr.is_none() {
+                    if let Some(PExpr::Array(ref elems)) = src_expr {
+                        use std::collections::HashSet;
+                        let mut set: HashSet<String> = HashSet::new();
+                        let mut all_simple = true;
+                        for e in elems {
+                            match e {
+                                PExpr::Int(s) | PExpr::Float(s) | PExpr::Str(s) => {
+                                    let mut norm = String::with_capacity(s.len());
+                                    for ch in s.chars() { if ch != '_' { norm.push(ch); } }
+                                    set.insert(norm);
+                                }
+                                PExpr::Bool(b) => { set.insert(format!("b{}", b)); }
+                                _ => { all_simple = false; break; }
+                            }
+                        }
+                        if all_simple {
+                            let distinct = set.len() as i128;
+                            if count > distinct {
+                                return Err(s_help_site!(
+                                    "P1405",
+                                    &format!("You're trying to {} {} items, but there are only {} distinct items available", verb, count, distinct),
+                                    "Add 'with dups' to allow repeats, or pick fewer items",
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                // ---- Lower to FreeCall(verb, [ {config} ]) ----
+                let mut props: Vec<(String, PExpr)> = Vec::new();
+
+                // choose dynamic or static count
+                if let Some(expr) = count_expr {
+                    props.push(("count_expr".into(), expr));
+                } else {
+                    props.push(("count".into(),  PExpr::Int(count.to_string())));
+                }
+
+                if let Some(s) = src_expr {
+                    match &s {
+                        PExpr::Binary(lhs, op, rhs) if op == ".." || op == "..." => {
+                            props.push(("range_start".into(), (*lhs.clone())));
+                            props.push(("range_end".into(),   (*rhs.clone())));
+                            props.push(("range_inclusive".into(), PExpr::Bool(op == "...")));
+                        }
+                        _ => { props.push(("src".into(), s)); }
+                    }
+                }
+                if verb == "pick" {
+                    if let Some(b) = allow_dups { props.push(("allow_dups".into(), PExpr::Bool(b))); }
+                    if unique_digits { props.push(("unique".into(), PExpr::Bool(true))); }
+                    if let Some(d) = digits_expr { props.push(("digits".into(), d)); }
+                }
+
+                let cfg = PExpr::Object(props);
+                return Ok(self.apply_postfix_ops(PExpr::FreeCall(verb, vec![cfg])));
             }
 
-            // Modifiers: ONLY allowed for 'pick'
-            let mut allow_dups: Option<bool> = None;
-            let mut unique_digits = false;
+            // ---- roll / roll_detail (syntax-only; contiguous dice + extras) ----
+            if let Some(id0) = self.peek_ident() {
+                if id0 == "roll" || id0 == "roll_detail" {
+                    use goblin_lexer::TokenKind;
 
-            if verb == "pick" {
-                loop {
+                    let is_detail = id0 == "roll_detail";
+                    let _ = self.eat_ident(); // 'roll' | 'roll_detail'
                     self.skip_newlines();
 
-                    // with dups
-                    if self.peek_ident() == Some("with") {
-                        let _ = self.eat_ident();
-                        self.skip_newlines();
-                        if self.peek_ident() == Some("dups") {
-                            let _ = self.eat_ident();
-                            allow_dups = Some(true);
-                            continue;
-                        } else {
-                            return Err(s_help_site!("P1404","Expected 'dups' after 'with'","Use: with dups"));
-                        }
+                    #[inline]
+                    fn contiguous(a: &Span, b: &Span) -> bool {
+                        b.line_start == a.line_end && b.col_start == a.col_end
                     }
 
-                    // without dups / wo dups
-                    if self.peek_ident() == Some("without") || self.peek_ident() == Some("wo") {
-                        let _ = self.eat_ident();
-                        self.skip_newlines();
-                        if self.peek_ident() == Some("dups") {
-                            let _ = self.eat_ident();
-                            allow_dups = Some(false);
-                            continue;
-                        } else {
-                            return Err(s_help_site!("P1406","Expected 'dups' after 'without'/'wo'","Use: without dups"));
-                        }
-                    }
+                    // collected pieces
+                    let mut count_str = String::new();
+                    let mut sides_str = String::new();
+                    let mut mod_str   = String::from("0");
+                    let mut last_span: Option<Span> = None;
 
-                    // unique (digit-uniqueness for x_y)
-                    if self.peek_ident() == Some("unique") {
-                        let _ = self.eat_ident();
-                        unique_digits = true;
-                        continue;
-                    }
+                    // extras
+                    let mut keep_high: Option<String> = None; // kN
+                    let mut drop_low:  Option<String> = None; // dN
+                    let mut reroll_eq: Option<String> = None; // rN
+                    let mut explode:   bool = false;          // !
+                    let mut adv:       bool = false;          // +adv
+                    let mut dis:       bool = false;          // +dis
+                    let mut clamp_min: Option<PExpr> = None;  // clamp A..B / A...B
+                    let mut clamp_max: Option<PExpr> = None;
 
-                    break;
-                }
-            }
-
-            // Compile-time sanity check (same as before) — only for 'pick' with static count
-            if verb == "pick" && allow_dups != Some(true) && count_expr.is_none() {
-                if let Some(PExpr::Array(ref elems)) = src_expr {
-                    use std::collections::HashSet;
-                    let mut set: HashSet<String> = HashSet::new();
-                    let mut all_simple = true;
-                    for e in elems {
-                        match e {
-                            PExpr::Int(s) | PExpr::Float(s) | PExpr::Str(s) => {
-                                let mut norm = String::with_capacity(s.len());
-                                for ch in s.chars() { if ch != '_' { norm.push(ch); } }
-                                set.insert(norm);
-                            }
-                            PExpr::Bool(b) => { set.insert(format!("b{}", b)); }
-                            _ => { all_simple = false; break; }
-                        }
-                    }
-                    if all_simple {
-                        let distinct = set.len() as i128;
-                        if count > distinct {
-                            return Err(s_help_site!(
-                                "P1405",
-                                &format!("You're trying to {} {} items, but there are only {} distinct items available", verb, count, distinct),
-                                "Add 'with dups' to allow repeats, or pick fewer items",
-                            ));
-                        }
-                    }
-                }
-            }
-
-            // ---- Lower to FreeCall(verb, [ {config} ]) ----
-            let mut props: Vec<(String, PExpr)> = Vec::new();
-
-            // choose dynamic or static count
-            if let Some(expr) = count_expr {
-                props.push(("count_expr".into(), expr));
-            } else {
-                props.push(("count".into(),  PExpr::Int(count.to_string())));
-            }
-
-            if let Some(s) = src_expr {
-                match &s {
-                    PExpr::Binary(lhs, op, rhs) if op == ".." || op == "..." => {
-                        props.push(("range_start".into(), (*lhs.clone())));
-                        props.push(("range_end".into(),   (*rhs.clone())));
-                        props.push(("range_inclusive".into(), PExpr::Bool(op == "...")));
-                    }
-                    _ => { props.push(("src".into(), s)); }
-                }
-            }
-            if verb == "pick" {
-                if let Some(b) = allow_dups { props.push(("allow_dups".into(), PExpr::Bool(b))); }
-                if unique_digits { props.push(("unique".into(), PExpr::Bool(true))); }
-                if let Some(d) = digits_expr { props.push(("digits".into(), d)); }
-            }
-
-            let cfg = PExpr::Object(props);
-            return Ok(self.apply_postfix_ops(PExpr::FreeCall(verb, vec![cfg])));
-        }
-
-        // ---- roll / roll_detail (syntax-only; contiguous dice + extras) ----
-        if let Some(id0) = self.peek_ident() {
-            if id0 == "roll" || id0 == "roll_detail" {
-                use goblin_lexer::TokenKind;
-
-                let is_detail = id0 == "roll_detail";
-                let _ = self.eat_ident(); // 'roll' | 'roll_detail'
-                self.skip_newlines();
-
-                #[inline]
-                fn contiguous(a: &Span, b: &Span) -> bool {
-                    b.line_start == a.line_end && b.col_start == a.col_end
-                }
-
-                // collected pieces
-                let mut count_str = String::new();
-                let mut sides_str = String::new();
-                let mut mod_str   = String::from("0");
-                let mut last_span: Option<Span> = None;
-
-                // extras
-                let mut keep_high: Option<String> = None; // kN
-                let mut drop_low:  Option<String> = None; // dN
-                let mut reroll_eq: Option<String> = None; // rN
-                let mut explode:   bool = false;          // !
-                let mut adv:       bool = false;          // +adv
-                let mut dis:       bool = false;          // +dis
-                let mut clamp_min: Option<PExpr> = None;  // clamp A..B / A...B
-                let mut clamp_max: Option<PExpr> = None;
-
-                // helper to parse compact suffix trail inside a single token, e.g. "k3r1!d2"
-                let parse_trail = |raw: &str,
-                                       keep_high: &mut Option<String>,
-                                       drop_low:  &mut Option<String>,
-                                       reroll_eq: &mut Option<String>,
-                                       explode:   &mut bool| -> Result<(), String> {
-                    let bytes = raw.as_bytes();
-                    let mut i = 0usize;
-                    while i < bytes.len() {
-                        let ch = bytes[i] as char;
-                        match ch {
-                            '!' => { *explode = true; i += 1; }
-                            'k' | 'x' | 'r' => {
-                                i += 1;
-                                let start = i;
-                                while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
-                                if start == i {
-                                    return Err(s_help_site!("P1505","Expected digits after suffix","Examples: k3, x1, r1"));
+                    // helper to parse compact suffix trail inside a single token, e.g. "k3r1!d2"
+                    let parse_trail = |raw: &str,
+                                           keep_high: &mut Option<String>,
+                                           drop_low:  &mut Option<String>,
+                                           reroll_eq: &mut Option<String>,
+                                           explode:   &mut bool| -> Result<(), String> {
+                        let bytes = raw.as_bytes();
+                        let mut i = 0usize;
+                        while i < bytes.len() {
+                            let ch = bytes[i] as char;
+                            match ch {
+                                '!' => { *explode = true; i += 1; }
+                                'k' | 'x' | 'r' => {
+                                    i += 1;
+                                    let start = i;
+                                    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+                                    if start == i {
+                                        return Err(s_help_site!("P1505","Expected digits after suffix","Examples: k3, x1, r1"));
+                                    }
+                                    let num = &raw[start..i];
+                                    match ch {
+                                        'k' => *keep_high = Some(num.to_string()),
+                                        'x' => *drop_low  = Some(num.to_string()),
+                                        'r' => *reroll_eq = Some(num.to_string()),
+                                        _ => {}
+                                    }
                                 }
-                                let num = &raw[start..i];
-                                match ch {
-                                    'k' => *keep_high = Some(num.to_string()),
-                                    'x' => *drop_low  = Some(num.to_string()),
-                                    'r' => *reroll_eq = Some(num.to_string()),
-                                    _ => {}
+                                _ => {
+                                    return Err(s_help_site!("P1505","Bad dice suffix","Use kN / dN / rN / !"));
                                 }
                             }
-                            _ => {
-                                return Err(s_help_site!("P1505","Bad dice suffix","Use kN / dN / rN / !"));
-                            }
                         }
-                    }
-                    Ok(())
-                };
+                        Ok(())
+                    };
 
-                // ---- first token after 'roll'
-                let t0 = match self.peek().cloned() {
-                    Some(t) => t,
-                    None => {
-                        return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
-                    }
-                };
-
-                // ---------- Case A: Int("N") then contiguous die part ----------
-                if matches!(t0.kind, TokenKind::Int) {
-                    let nstr = t0.value.clone().unwrap_or_default();
-                    self.i += 1; // eat Int("N")
-                    count_str = nstr;
-                    last_span = Some(t0.span.clone());
-
-                    let t1 = self.peek().cloned().ok_or_else(|| {
-                        s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
-                    })?;
-                    if !contiguous(last_span.as_ref().unwrap(), &t1.span) {
-                        return Err(s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
-                    }
-
-                    match (t1.kind, t1.value.clone()) {
-                        // Int + Ident("dM...")  (e.g. d6, d6k3, d6r1!, etc)
-                        (TokenKind::Ident, Some(s)) => {
-                            if s.len() > 1 && s.starts_with('d') {
-                                let mut j = 1;
-                                while j < s.len() && s.as_bytes()[j].is_ascii_digit() { j += 1; }
-                                sides_str = s[1..j].to_string();
-                                last_span = Some(t1.span.clone());
-                                let trail = &s[j..];
-                                if !trail.is_empty() {
-                                    parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
-                                }
-                                self.i += 1; // consume t1
-                            } else {
-                                return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
-                            }
+                    // ---- first token after 'roll'
+                    let t0 = match self.peek().cloned() {
+                        Some(t) => t,
+                        None => {
+                            return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                         }
-                        // Int + Op(unit,"dM...")  (same, but unit token)
-                        (TokenKind::Op(op), Some(val)) => {
-                            let op_s = op.as_str();
-                            if op_s == "unit" && val.len() > 1 && val.starts_with('d') {
-                                let mut j = 1;
-                                while j < val.len() && val.as_bytes()[j].is_ascii_digit() { j += 1; }
-                                sides_str = val[1..j].to_string();
-                                last_span = Some(t1.span.clone());
-                                let trail = &val[j..];
-                                if !trail.is_empty() {
-                                    parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
-                                }
-                                self.i += 1; // consume t1
-                            } else if op_s == "unit" && val == "d" {
-                                // Int + Op(unit,"d") + contiguous Int("M")
-                                let d_span = t1.span.clone();
-                                self.i += 1; // eat unit("d")
-                                let t2 = self.peek().cloned().ok_or_else(|| {
-                                    s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6.")
-                                })?;
-                                if !matches!(t2.kind, TokenKind::Int) || !contiguous(&d_span, &t2.span) {
-                                    return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
-                                }
-                                self.i += 1; // eat Int("M")
-                                sides_str = t2.value.unwrap_or_default();
-                                last_span = Some(t2.span.clone());
-                            } else {
-                                return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
-                            }
-                        }
-                        _ => {
-                            return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
-                        }
-                    }
-                }
-                // ---------- Case B: Duration("Nd") + contiguous Int("M") ----------
-                else if matches!(t0.kind, TokenKind::Duration) {
-                    let dur = t0.value.clone().unwrap_or_default(); // "Nd"
-                    let (base, unit) = Self::split_duration_lexeme(&dur).map_err(|_| {
-                        s_help_site!("P1501","Bad duration token where dice were expected","Example: roll 2d6")
-                    })?;
-                    if unit != "d" {
-                        return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
-                    }
-                    self.i += 1; // eat Duration("Nd")
-                    count_str = base;
-                    last_span = Some(t0.span.clone());
+                    };
 
-                    let t1 = self.peek().cloned().ok_or_else(|| {
-                        s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
-                    })?;
-                    if !matches!(t1.kind, TokenKind::Int) || !contiguous(last_span.as_ref().unwrap(), &t1.span) {
-                        return Err(s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
-                    }
-                    self.i += 1; // Int("M")
-                    sides_str = t1.value.unwrap_or_default();
-                    last_span = Some(t1.span.clone());
-                }
-                // ---------- Case C: fused Ident/Op(unit) "NdM..." ----------
-                else {
-                    match (t0.kind, t0.value.clone()) {
-                        (TokenKind::Ident, Some(raw)) => {
-                            if let Some(dpos) = raw.find('d') {
-                                let (lhs, rhs) = raw.split_at(dpos);
-                                if !lhs.is_empty()
-                                    && lhs.chars().all(|c| c.is_ascii_digit())
-                                    && rhs.len() > 1
-                                    && rhs[1..].chars().all(|c| c.is_ascii_digit() || c=='k' || c=='x' || c=='r' || c=='!')
-                                {
-                                    self.i += 1;
-                                    count_str = lhs.to_string();
+                    // ---------- Case A: Int("N") then contiguous die part ----------
+                    if matches!(t0.kind, TokenKind::Int) {
+                        let nstr = t0.value.clone().unwrap_or_default();
+                        self.i += 1; // eat Int("N")
+                        count_str = nstr;
+                        last_span = Some(t0.span.clone());
+
+                        let t1 = self.peek().cloned().ok_or_else(|| {
+                            s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
+                        })?;
+                        if !contiguous(last_span.as_ref().unwrap(), &t1.span) {
+                            return Err(s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
+                        }
+
+                        match (t1.kind, t1.value.clone()) {
+                            // Int + Ident("dM...")  (e.g. d6, d6k3, d6r1!, etc)
+                            (TokenKind::Ident, Some(s)) => {
+                                if s.len() > 1 && s.starts_with('d') {
                                     let mut j = 1;
-                                    while j < rhs.len() && rhs.as_bytes()[j].is_ascii_digit() { j += 1; }
-                                    sides_str = rhs[1..j].to_string();
-                                    let trail = &rhs[j..];
-                                    last_span = Some(t0.span.clone());
+                                    while j < s.len() && s.as_bytes()[j].is_ascii_digit() { j += 1; }
+                                    sides_str = s[1..j].to_string();
+                                    last_span = Some(t1.span.clone());
+                                    let trail = &s[j..];
                                     if !trail.is_empty() {
                                         parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
                                     }
+                                    self.i += 1; // consume t1
                                 } else {
-                                    return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                    return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                                 }
-                            } else {
-                                return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                            }
+                            // Int + Op(unit,"dM...")  (same, but unit token)
+                            (TokenKind::Op(op), Some(val)) => {
+                                let op_s = op.as_str();
+                                if op_s == "unit" && val.len() > 1 && val.starts_with('d') {
+                                    let mut j = 1;
+                                    while j < val.len() && val.as_bytes()[j].is_ascii_digit() { j += 1; }
+                                    sides_str = val[1..j].to_string();
+                                    last_span = Some(t1.span.clone());
+                                    let trail = &val[j..];
+                                    if !trail.is_empty() {
+                                        parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                    }
+                                    self.i += 1; // consume t1
+                                } else if op_s == "unit" && val == "d" {
+                                    // Int + Op(unit,"d") + contiguous Int("M")
+                                    let d_span = t1.span.clone();
+                                    self.i += 1; // eat unit("d")
+                                    let t2 = self.peek().cloned().ok_or_else(|| {
+                                        s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6.")
+                                    })?;
+                                    if !matches!(t2.kind, TokenKind::Int) || !contiguous(&d_span, &t2.span) {
+                                        return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                                    }
+                                    self.i += 1; // eat Int("M")
+                                    sides_str = t2.value.unwrap_or_default();
+                                    last_span = Some(t2.span.clone());
+                                } else {
+                                    return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
+                                }
+                            }
+                            _ => {
+                                return Err(s_help_site!("P1502","Dice notation must be contiguous.","Write it like 2d6, not 2 d 6."));
                             }
                         }
-                        (TokenKind::Op(op), Some(raw)) => {
-                            if op.as_str() == "unit" {
+                    }
+                    // ---------- Case B: Duration("Nd") + contiguous Int("M") ----------
+                    else if matches!(t0.kind, TokenKind::Duration) {
+                        let dur = t0.value.clone().unwrap_or_default(); // "Nd"
+                        let (base, unit) = Self::split_duration_lexeme(&dur).map_err(|_| {
+                            s_help_site!("P1501","Bad duration token where dice were expected","Example: roll 2d6")
+                        })?;
+                        if unit != "d" {
+                            return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                        }
+                        self.i += 1; // eat Duration("Nd")
+                        count_str = base;
+                        last_span = Some(t0.span.clone());
+
+                        let t1 = self.peek().cloned().ok_or_else(|| {
+                            s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6")
+                        })?;
+                        if !matches!(t1.kind, TokenKind::Int) || !contiguous(last_span.as_ref().unwrap(), &t1.span) {
+                            return Err(s_help_site!("P1502","Dice notation must be contiguous","Write it like 2d6, not 2 d 6"));
+                        }
+                        self.i += 1; // Int("M")
+                        sides_str = t1.value.unwrap_or_default();
+                        last_span = Some(t1.span.clone());
+                    }
+                    // ---------- Case C: fused Ident/Op(unit) "NdM..." ----------
+                    else {
+                        match (t0.kind, t0.value.clone()) {
+                            (TokenKind::Ident, Some(raw)) => {
                                 if let Some(dpos) = raw.find('d') {
                                     let (lhs, rhs) = raw.split_at(dpos);
                                     if !lhs.is_empty()
@@ -7634,157 +7579,184 @@ impl<'t> Parser<'t> {
                                 } else {
                                     return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                                 }
-                            } else {
+                            }
+                            (TokenKind::Op(op), Some(raw)) => {
+                                if op.as_str() == "unit" {
+                                    if let Some(dpos) = raw.find('d') {
+                                        let (lhs, rhs) = raw.split_at(dpos);
+                                        if !lhs.is_empty()
+                                            && lhs.chars().all(|c| c.is_ascii_digit())
+                                            && rhs.len() > 1
+                                            && rhs[1..].chars().all(|c| c.is_ascii_digit() || c=='k' || c=='x' || c=='r' || c=='!')
+                                        {
+                                            self.i += 1;
+                                            count_str = lhs.to_string();
+                                            let mut j = 1;
+                                            while j < rhs.len() && rhs.as_bytes()[j].is_ascii_digit() { j += 1; }
+                                            sides_str = rhs[1..j].to_string();
+                                            let trail = &rhs[j..];
+                                            last_span = Some(t0.span.clone());
+                                            if !trail.is_empty() {
+                                                parse_trail(trail, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                            }
+                                        } else {
+                                            return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                        }
+                                    } else {
+                                        return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                    }
+                                } else {
+                                    return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
+                                }
+                            }
+                            _ => {
                                 return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
                             }
                         }
-                        _ => {
-                            return Err(s_help_site!("P1501","You need a number before 'd' in a roll","Example: roll 2d6"));
-                        }
                     }
-                }
 
-                // ---- Optional contiguous numeric +Z / -Z
-                if let Some(op_tok) = self.peek().cloned() {
-                    if let TokenKind::Op(s) = op_tok.kind {
-                        if (s == "+" || s == "-") && contiguous(last_span.as_ref().unwrap(), &op_tok.span) {
-                            let sign = if s == "-" { -1i32 } else { 1i32 };
-                            self.i += 1; // '+'|'-'
-                            let n_tok = self.peek().cloned().ok_or_else(|| {
-                                s_help_site!("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1")
-                            })?;
-                            if !matches!(n_tok.kind, TokenKind::Int) || !contiguous(&op_tok.span, &n_tok.span) {
-                                return Err(s_help_site!("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1"));
+                    // ---- Optional contiguous numeric +Z / -Z
+                    if let Some(op_tok) = self.peek().cloned() {
+                        if let TokenKind::Op(s) = op_tok.kind {
+                            if (s == "+" || s == "-") && contiguous(last_span.as_ref().unwrap(), &op_tok.span) {
+                                let sign = if s == "-" { -1i32 } else { 1i32 };
+                                self.i += 1; // '+'|'-'
+                                let n_tok = self.peek().cloned().ok_or_else(|| {
+                                    s_help_site!("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1")
+                                })?;
+                                if !matches!(n_tok.kind, TokenKind::Int) || !contiguous(&op_tok.span, &n_tok.span) {
+                                    return Err(s_help_site!("P1504","You need a number after '+' or '-' in a dice notation roll","Examples: 2d6+3 or 1d20-1"));
+                                }
+                                self.i += 1; // Int
+                                let n_raw = n_tok.value.unwrap_or_default();
+                                mod_str = if sign < 0 { format!("-{}", n_raw) } else { n_raw };
+                                last_span = Some(n_tok.span.clone());
                             }
-                            self.i += 1; // Int
-                            let n_raw = n_tok.value.unwrap_or_default();
-                            mod_str = if sign < 0 { format!("-{}", n_raw) } else { n_raw };
-                            last_span = Some(n_tok.span.clone());
                         }
                     }
-                }
 
-                // ---- Optional +adv / +dis (NOT required to be contiguous)
-                self.skip_newlines();
-                if self.peek_op("+") {
-                    let _ = self.eat_op("+");
+                    // ---- Optional +adv / +dis (NOT required to be contiguous)
                     self.skip_newlines();
-                    match self.peek_ident() {
-                        Some("adv") => { let _ = self.eat_ident(); adv = true; }
-                        Some("dis") => { let _ = self.eat_ident(); dis = true; }
-                        _ => return Err(s_help_site!("P1506","Expected 'adv' or 'dis' after '+'","Use: roll 1d20 +adv")),
+                    if self.peek_op("+") {
+                        let _ = self.eat_op("+");
+                        self.skip_newlines();
+                        match self.peek_ident() {
+                            Some("adv") => { let _ = self.eat_ident(); adv = true; }
+                            Some("dis") => { let _ = self.eat_ident(); dis = true; }
+                            _ => return Err(s_help_site!("P1506","Expected 'adv' or 'dis' after '+'","Use: roll 1d20 +adv")),
+                        }
                     }
-                }
 
-                // ---- Optional: consume further contiguous suffix tokens ('!' or compact "k3r1")
-                loop {
-                    let t = match self.peek().cloned() { Some(t) => t, None => break };
-                    if !contiguous(last_span.as_ref().unwrap(), &t.span) { break; }
-                    match (t.kind, t.value.clone()) {
-                        // match only the bang op here
-                        (TokenKind::Op(s), _) if s == "!" => {
-                            self.i += 1;
-                            explode = true;
-                            last_span = Some(t.span.clone());
-                            continue;
-                        },
-                        // keep your existing 'unit' trailer arm as-is
-                        (TokenKind::Op(op), Some(raw)) => {
-                            if op.as_str() == "unit" {
+                    // ---- Optional: consume further contiguous suffix tokens ('!' or compact "k3r1")
+                    loop {
+                        let t = match self.peek().cloned() { Some(t) => t, None => break };
+                        if !contiguous(last_span.as_ref().unwrap(), &t.span) { break; }
+                        match (t.kind, t.value.clone()) {
+                            // match only the bang op here
+                            (TokenKind::Op(s), _) if s == "!" => {
+                                self.i += 1;
+                                explode = true;
+                                last_span = Some(t.span.clone());
+                                continue;
+                            },
+                            // keep your existing 'unit' trailer arm as-is
+                            (TokenKind::Op(op), Some(raw)) => {
+                                if op.as_str() == "unit" {
+                                    parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
+                                    self.i += 1;
+                                    last_span = Some(t.span.clone());
+                                    continue;
+                                } else {
+                                    break;
+                                }
+                            },
+                            (TokenKind::Ident, Some(raw)) => {
                                 parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
                                 self.i += 1;
                                 last_span = Some(t.span.clone());
                                 continue;
-                            } else {
-                                break;
                             }
-                        },
-                        (TokenKind::Ident, Some(raw)) => {
-                            parse_trail(&raw, &mut keep_high, &mut drop_low, &mut reroll_eq, &mut explode)?;
-                            self.i += 1;
-                            last_span = Some(t.span.clone());
-                            continue;
+                            _ => break,
                         }
-                        _ => break,
                     }
-                }
 
-                // ---- Optional: clamp A..B / A...B (not required to be contiguous)
-                self.skip_newlines();
-                if self.peek_ident() == Some("clamp") {
-                    let _ = self.eat_ident(); // 'clamp'
+                    // ---- Optional: clamp A..B / A...B (not required to be contiguous)
                     self.skip_newlines();
-                    let rng = self.parse_range()?;
-                    if let PExpr::Binary(lhs, op, rhs) = rng {
-                        if op == ".." || op == "..." {
-                            clamp_min = Some(*lhs);
-                            clamp_max = Some(*rhs);
+                    if self.peek_ident() == Some("clamp") {
+                        let _ = self.eat_ident(); // 'clamp'
+                        self.skip_newlines();
+                        let rng = self.parse_range()?;
+                        if let PExpr::Binary(lhs, op, rhs) = rng {
+                            if op == ".." || op == "..." {
+                                clamp_min = Some(*lhs);
+                                clamp_max = Some(*rhs);
+                            } else {
+                                return Err(s_help_site!("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
+                            }
                         } else {
                             return Err(s_help_site!("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
                         }
-                    } else {
-                        return Err(s_help_site!("P1507","Expected a range after 'clamp'","Use: clamp 3..18"));
                     }
-                }
 
-                // ---- Build config object -> FreeCall
-                if adv && dis {
-                    return Err(s_help_site!("P1508","You can't use both adv and dis","Use only one of +adv or +dis"));
-                }
-                if keep_high.is_some() && drop_low.is_some() {
-                    return Err(s_help_site!("P1509","You can't combine kN and dN","Use only one of kN or dN"));
-                }
+                    // ---- Build config object -> FreeCall
+                    if adv && dis {
+                        return Err(s_help_site!("P1508","You can't use both adv and dis","Use only one of +adv or +dis"));
+                    }
+                    if keep_high.is_some() && drop_low.is_some() {
+                        return Err(s_help_site!("P1509","You can't combine kN and dN","Use only one of kN or dN"));
+                    }
 
-                let mut props: Vec<(String, PExpr)> = vec![
-                    ("count".into(),    PExpr::Int(count_str)),
-                    ("sides".into(),    PExpr::Int(sides_str)),
-                    ("modifier".into(), PExpr::Int(mod_str)),
-                ];
-                if let Some(k) = keep_high { props.push(("keep_high".into(), PExpr::Int(k))); }
-                if let Some(d) = drop_low  { props.push(("drop_low".into(),  PExpr::Int(d))); }
-                if let Some(r) = reroll_eq { props.push(("reroll_eq".into(), PExpr::Int(r))); }
-                if explode { props.push(("explode".into(), PExpr::Bool(true))); }
-                if adv { props.push(("adv".into(), PExpr::Bool(true))); }
-                if dis { props.push(("dis".into(), PExpr::Bool(true))); }
-                if let (Some(lo), Some(hi)) = (clamp_min, clamp_max) {
-                    props.push(("clamp_min".into(), lo));
-                    props.push(("clamp_max".into(), hi));
-                }
+                    let mut props: Vec<(String, PExpr)> = vec![
+                        ("count".into(),    PExpr::Int(count_str)),
+                        ("sides".into(),    PExpr::Int(sides_str)),
+                        ("modifier".into(), PExpr::Int(mod_str)),
+                    ];
+                    if let Some(k) = keep_high { props.push(("keep_high".into(), PExpr::Int(k))); }
+                    if let Some(d) = drop_low  { props.push(("drop_low".into(),  PExpr::Int(d))); }
+                    if let Some(r) = reroll_eq { props.push(("reroll_eq".into(), PExpr::Int(r))); }
+                    if explode { props.push(("explode".into(), PExpr::Bool(true))); }
+                    if adv { props.push(("adv".into(), PExpr::Bool(true))); }
+                    if dis { props.push(("dis".into(), PExpr::Bool(true))); }
+                    if let (Some(lo), Some(hi)) = (clamp_min, clamp_max) {
+                        props.push(("clamp_min".into(), lo));
+                        props.push(("clamp_max".into(), hi));
+                    }
 
-                let cfg = PExpr::Object(props);
-                let call = PExpr::FreeCall(
-                    if is_detail { "roll_detail".to_string() } else { "roll".to_string() },
-                    vec![cfg],
-                );
-                return Ok(self.apply_postfix_ops(call));
+                    let cfg = PExpr::Object(props);
+                    let call = PExpr::FreeCall(
+                        if is_detail { "roll_detail".to_string() } else { "roll".to_string() },
+                        vec![cfg],
+                    );
+                    return Ok(self.apply_postfix_ops(call));
+                }
             }
-        }
 
-        // logical-not
-        if self.eat_op("!") {
-            let rhs = self.with_depth(|p| p.parse_unary())?;
-            return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
-        }
+            // logical-not
+            if self.eat_op("!") {
+                let rhs = self.with_depth(|p| p.parse_unary())?;
+                return Ok(PExpr::Prefix("!".into(), Box::new(rhs)));
+            }
 
-        // alias: "not" keyword for logical-not
-        if self.peek_ident() == Some("not") {
-            let _ = self.eat_ident(); // consumed "not"
-            self.skip_newlines();
-            let rhs = self.with_depth(|p| p.parse_unary())?;
-            return Ok(PExpr::Prefix("!".into(), Box::new(rhs))); // normalize to "!"
-        }
+            // alias: "not" keyword for logical-not
+            if self.peek_ident() == Some("not") {
+                let _ = self.eat_ident(); // consumed "not"
+                self.skip_newlines();
+                let rhs = self.with_depth(|p| p.parse_unary())?;
+                return Ok(PExpr::Prefix("!".into(), Box::new(rhs))); // normalize to "!"
+            }
 
-        // unary +/-
-        if self.eat_op("+") {
-            let rhs = self.with_depth(|p| p.parse_unary())?;
-            return Ok(PExpr::Prefix("+".into(), Box::new(rhs)));
-        }
-        if self.eat_op("-") {
-            let rhs = self.with_depth(|p| p.parse_unary())?;
-            return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
-        }
-        // hand off
-        Ok(self.with_depth(|p| p.parse_postfix())?)
+            // unary +/-
+            if self.eat_op("+") {
+                let rhs = self.with_depth(|p| p.parse_unary())?;
+                return Ok(PExpr::Prefix("+".into(), Box::new(rhs)));
+            }
+            if self.eat_op("-") {
+                let rhs = self.with_depth(|p| p.parse_unary())?;
+                return Ok(PExpr::Prefix("-".into(), Box::new(rhs)));
+            }
+
+            // hand off
+            Ok(self.with_depth(|p| p.parse_postfix())?)
     }
 
     fn parse_postfix(&mut self) -> Result<PExpr, String> {

@@ -972,12 +972,92 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
 
     let is_triple = state.peek(1) == Some(quote) && state.peek(2) == Some(quote);
 
+    // Consume opener
     if is_triple {
         state.advance_by(3);
     } else {
         state.advance();
     }
 
+    // =========================
+    // TRIPLE-QUOTED: VERBATIM
+    // =========================
+    if is_triple {
+        let payload_start = state.i;
+
+        // Scan forward byte-for-byte until the closer. No transforms, no escape handling.
+        loop {
+            if state.i >= state.bytes.len() {
+                let sp = Span::new(
+                    state.file, start_i, (start_i + 1).min(state.bytes.len()),
+                    start_line, start_col, start_line, start_col + 1
+                );
+                return Err(vec![Diagnostic::error(
+                    "L0201",
+                    "This string never closes\n\nhelp: Add the closing '\"'",
+                    sp,
+                )]);
+            }
+
+            // Found closing """ / '''
+            if state.current() == Some(quote) &&
+               state.peek(1) == Some(quote) &&
+               state.peek(2) == Some(quote)
+            {
+                let payload_end = state.i; // exclude closer
+                state.advance_by(3);       // consume closer
+
+                // Take bytes exactly as written
+                let mut out = std::str::from_utf8(&state.bytes[payload_start..payload_end])
+                    .map(|s| s.to_string())
+                    .map_err(|_| vec![Diagnostic::error(
+                        "L0201", "Invalid UTF-8 in string", state.span(start_i, start_col)
+                    )])?;
+
+                // Optional left-trim of common indent for triple strings (as you had)
+                if is_trim {
+                    let lines_vec: Vec<&str> = out.split('\n').collect();
+                    let mut min_indent: Option<usize> = None;
+                    for &ln in &lines_vec {
+                        if ln.trim().is_empty() { continue; }
+                        let n = ln.chars().take_while(|&c| c == ' ').count();
+                        min_indent = Some(match min_indent { Some(m) => m.min(n), None => n });
+                    }
+                    if let Some(n) = min_indent {
+                        let mut rebuilt = String::new();
+                        for (idx, &ln) in lines_vec.iter().enumerate() {
+                            if ln.trim().is_empty() {
+                                rebuilt.push_str(ln);
+                            } else {
+                                let mut dropped = 0usize;
+                                for ch in ln.chars() {
+                                    if dropped < n && ch == ' ' { dropped += 1; continue; }
+                                    rebuilt.push(ch);
+                                }
+                            }
+                            if idx + 1 < lines_vec.len() { rebuilt.push('\n'); }
+                        }
+                        out = rebuilt;
+                    }
+                }
+
+                let span = Span::new(state.file, start_i, state.i, start_line, start_col, state.line, state.col);
+                state.tokens.push(Token::new(TokenKind::String, span, Some(out)));
+                return Ok(());
+            }
+
+            // Advance one byte; only bookkeeping for line/col
+            match state.current() {
+                Some(b'\n') => { state.i += 1; state.line += 1; state.col = 1; }
+                Some(_)     => { state.i += 1; state.col += 1; }
+                None        => {}
+            }
+        }
+    }
+
+    // ==========================================
+    // SINGLE-LINE: keep your existing behavior
+    // ==========================================
     let mut out = String::new();
 
     loop {
@@ -993,50 +1073,32 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
             )]);
         }
 
-        // Check for closing quote(s)
-        if is_triple {
-            if state.current() == Some(quote) && state.peek(1) == Some(quote) && state.peek(2) == Some(quote) {
-                state.advance_by(3);
-                break;
-            }
-        } else if state.current() == Some(quote) {
+        // Closing quote
+        if state.current() == Some(quote) {
             state.advance();
             break;
         }
 
         let b = state.current().unwrap();
 
-        // Handle newlines
+        // Newline not allowed in single-line strings
         if b == b'\r' || b == b'\n' {
-            if !is_triple {
-                let sp = Span::new(
-                    state.file, start_i, (start_i + 1).min(state.bytes.len()),
-                    start_line, start_col, start_line, start_col + 1
-                );
-                return Err(vec![Diagnostic::error(
-                    "L0204",
-                    "Strings can't contain an unescaped newline\n\nhelp: Close the quote before the newline or escape it",
-                    sp,
-                )]);
-            }
-            if b == b'\r' && state.peek(1) == Some(b'\n') {
-                out.push('\n');
-                state.i += 2;
-            } else {
-                out.push('\n');
-                state.i += 1;
-            }
-            state.line += 1;
-            state.col = 1;
-            continue;
+            let sp = Span::new(
+                state.file, start_i, (start_i + 1).min(state.bytes.len()),
+                start_line, start_col, start_line, start_col + 1
+            );
+            return Err(vec![Diagnostic::error(
+                "L0204",
+                "Strings can't contain an unescaped newline\n\nhelp: Close the quote before the newline or escape it",
+                sp,
+            )]);
         }
 
-        // Handle escapes (only if not raw)
+        // Escapes: ONLY for single-line, non-raw (this keeps \" \' \\ working)
         if !is_raw && b == b'\\' {
-            // Lookahead for brace-literals: \{ or \}
+            // Keep your brace-literal passthrough
             if let Some(nxt) = state.peek(1) {
                 if nxt == b'{' || nxt == b'}' {
-                    // Keep BOTH characters literally so the renderer can see \{ / \}
                     out.push('\\');
                     out.push(nxt as char);
                     state.advance_by(2);
@@ -1044,7 +1106,6 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
                 }
             }
 
-            // Otherwise, use normal escape handling
             match lex_escape_sequence(state) {
                 Ok(ch) => out.push(ch),
                 Err(e) => return Err(vec![e]),
@@ -1056,43 +1117,6 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
             vec![Diagnostic::error("L0201", "Invalid UTF-8 in string", state.span(start_i, start_col))]
         })?;
         out.push(ch);
-    }
-
-    // Apply trim_lead for triple strings
-    if is_triple && is_trim {
-        let lines_vec: Vec<&str> = out.split('\n').collect();
-        let mut min_indent: Option<usize> = None;
-        for &ln in &lines_vec {
-            if ln.trim().is_empty() {
-                continue;
-            }
-            let n = ln.chars().take_while(|&c| c == ' ').count();
-            min_indent = Some(match min_indent {
-                Some(m) => m.min(n),
-                None => n,
-            });
-        }
-        if let Some(n) = min_indent {
-            let mut rebuilt = String::new();
-            for (idx, &ln) in lines_vec.iter().enumerate() {
-                if ln.trim().is_empty() {
-                    rebuilt.push_str(ln);
-                } else {
-                    let mut dropped = 0usize;
-                    for ch in ln.chars() {
-                        if dropped < n && ch == ' ' {
-                            dropped += 1;
-                            continue;
-                        }
-                        rebuilt.push(ch);
-                    }
-                }
-                if idx + 1 < lines_vec.len() {
-                    rebuilt.push('\n');
-                }
-            }
-            out = rebuilt;
-        }
     }
 
     let span = Span::new(state.file, start_i, state.i, start_line, start_col, state.line, state.col);

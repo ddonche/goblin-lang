@@ -1,6 +1,8 @@
 use crate::{Session, Value, Diag, Span};
 use goblin_diagnostics::{Diagnostic, Severity};
 
+const RAW_SENTINEL: &str = "\u{001E}RAW:";
+
 #[inline]
 fn as_array_like<'a>(v: &'a Value) -> Option<&'a [Value]> {
     match v {
@@ -122,17 +124,13 @@ pub fn slug(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag
     }, sp)
 }
 
-pub fn raw(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+pub fn raw(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     arity(1, args.len(), "raw", sp)?;
     map_str_1(&args[0], "raw", &|s| {
-        let mut out = String::with_capacity(s.len());
-        for ch in s.chars() {
-            match ch {
-                '{' => { out.push('{'); out.push('{'); }
-                '}' => { out.push('}'); out.push('}'); }
-                _   => out.push(ch),
-            }
-        }
+        // Tag: sinks that know about the sentinel will bypass interpolation
+        let mut out = String::with_capacity(RAW_SENTINEL.len() + s.len());
+        out.push_str(RAW_SENTINEL);
+        out.push_str(s);
         out
     }, sp)
 }

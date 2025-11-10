@@ -25,6 +25,7 @@ type TokenResolver = fn(&str) -> Value;
 
 const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference
 const MAX_EVAL_DEPTH: usize = 512; // maximum recursion depth for expression evaluation
+const RAW_SENTINEL: &str = "\u{001E}RAW:";
 
 // ===================== REGEX CACHE ====================
 pub struct RegexCache {
@@ -1804,7 +1805,15 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
 }
 
 fn fmt_value_raw(v: &Value) -> String {
-    fmt_value_with_depth(v, 0)
+    match v {
+        Value::Str(s) if s.starts_with(RAW_SENTINEL) => {
+            // strip the tag, then format as a normal string
+            let untagged = &s[RAW_SENTINEL.len()..];
+            // we can call the same formatter on a temporary string Value
+            fmt_value_with_depth(&Value::Str(untagged.to_string()), 0)
+        }
+        _ => fmt_value_with_depth(v, 0),
+    }
 }
 
 fn value_kind_str(v: &Value) -> &'static str {
@@ -2099,6 +2108,11 @@ fn parse_dice_string(s: &str, sp: Span) -> Result<BTreeMap<String, Value>, Diag>
 // NEW: Supports "\{" -> "{" and "\}" -> "}", and resolves triple-brace tokens.
 // Legacy "{{" / "}}" escapes have been removed.
 fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String, Diag> {
+    // ---- RAW BYPASS: if string came from raw(), return it literally (no changes)
+    if let Some(rest) = s.strip_prefix(RAW_SENTINEL) {
+        return Ok(rest.to_string());
+    }
+
     let b = s.as_bytes();
     let mut i = 0usize;
     let mut out = String::new();
@@ -2110,7 +2124,36 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                 match b[i + 1] {
                     b'{' => { out.push('{'); i += 2; continue; }
                     b'}' => { out.push('}'); i += 2; continue; }
-                    b'\\' => { out.push('\\'); i += 2; continue; }
+                    b'\\' => {
+                        // Handle \\{  and  \\}  → literal \{ or \}
+                        if i + 2 < b.len() && (b[i + 2] == b'{' || b[i + 2] == b'}') {
+                            out.push('\\');
+                            out.push(b[i + 2] as char);
+                            i += 3;
+                            continue;
+                        }
+                        // Plain \\ → single backslash
+                        out.push('\\');
+                        i += 2;
+                        continue;
+                    }
+                    b'u' => {
+                        // skip \u{...} sequence wholly
+                        let mut k = i + 2;
+                        if k < b.len() && b[k] == b'{' {
+                            k += 1;
+                            while k < b.len() && b[k] != b'}' { k += 1; }
+                            if k < b.len() && b[k] == b'}' { i = k + 1; continue; }
+                        }
+                        // malformed: just skip two chars
+                        i += 2;
+                        continue;
+                    }
+                    b'x' => {
+                        // \xNN if present
+                        if i + 3 < b.len() { i += 4; } else { i += 2; }
+                        continue;
+                    }
                     _ => {
                         // Unknown escape: pass through literally (don't swallow)
                         out.push('\\');
@@ -2183,7 +2226,6 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                                         continue;
                                     }
                                     Err(_) => {
-                                        // Truly not found (use non-brace marker to avoid reparse)
                                         out.push_str("[ERR: TOKEN NOT FOUND -> ");
                                         out.push_str(module);
                                         out.push_str("::");
@@ -2197,7 +2239,6 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         }
                     }
 
-                    // Malformed triple token → explicit MALFORMED marker (non-brace)
                     out.push_str("[ERR: MALFORMED TOKEN -> ");
                     out.push_str(inner_trim);
                     out.push(']');
@@ -2244,7 +2285,6 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         continue;
                     }
                     None => {
-                        // Optional: allow {field} to read self[field]
                         if let Some(Value::Map(m)) = sess.get_var("self") {
                             if let Some(v) = m.get(inner_trim) {
                                 out.push_str(&fmt_value_raw(v));
@@ -2252,9 +2292,9 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                                 continue;
                             }
                         }
-                        // Soft-fail: keep it literal (don’t error)
+                        // Soft-fail: keep it literal
                         out.push('{');
-                        out.push_str(inner_raw); // keep original spacing/case
+                        out.push_str(inner_raw); // preserve spacing/case
                         out.push('}');
                         i = j + 1;
                         continue;
@@ -2263,7 +2303,7 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
             }
 
             b'}' => {
-                // Bare '}' prints as is (no legacy "}}" collapse)
+                // Bare '}' prints as-is
                 out.push('}');
                 i += 1;
             }
@@ -12052,14 +12092,21 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         },
         ast::Expr::Str(s, sp) => {
+            // If a string is tagged RAW (from raw(...)/".raw"), strip the tag and
+            // return verbatim (no interpolation).
+            if s.starts_with(RAW_SENTINEL) {
+                return Ok(Value::Str(s[RAW_SENTINEL.len()..].to_string()));
+            }
+
+            // Otherwise, interpolate if it has any '{'
             if s.as_bytes().contains(&b'{') {
-                // only simple identifiers are allowed inside { … } at this stage
                 let rendered = render_interpolated(s, sess, sp)?;
                 Ok(Value::Str(rendered))
             } else {
                 Ok(Value::Str(s.clone()))
             }
         }
+
         // crates/goblin-interpreter/src/lib.rs
         // inside: fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag>
 
@@ -13756,15 +13803,48 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                 // say: prints value; for strings, render interpolation at print time
                 "say" => {
-                    let printed = if args.is_empty() { Value::Unit } else { eval_expr(&args[0], sess)? };
-                    match printed {
-                        Value::Str(s) => {
-                            let rendered = render_interpolated(&s, sess, &sp.clone())?;
-                            println!("{}", rendered);
-                        }
-                        other => println!("{}", fmt_value_raw(&other)),
-                    }
+                    let printed = if args.is_empty() {
+                        Value::Unit
+                    } else {
+                        eval_expr(&args[0], sess)?
+                    };
+                    println!("{}", fmt_value_raw(&printed));
                     Ok(Value::Unit)
+                }
+
+                "raw" => {
+                    // Build args without triggering interpolation for string literals.
+                    let mut arg_vals: Vec<Value> = Vec::with_capacity(args.len());
+
+                    for a in args {
+                        match a {
+                            // Single string literal → lift directly (no eval_expr ⇒ no interpolation)
+                            ast::Expr::Str(s, _) => {
+                                arg_vals.push(Value::Str(s.clone()));
+                            }
+
+                            // Array literal → lift string items directly; eval others normally
+                            ast::Expr::Array(items, _) => {
+                                let mut out = Vec::with_capacity(items.len());
+                                for it in items {
+                                    match it {
+                                        ast::Expr::Str(s, _) => out.push(Value::Str(s.clone())),
+                                        _ => out.push(eval_expr(it, sess)?),
+                                    }
+                                }
+                                arg_vals.push(Value::Array(out));
+                            }
+
+                            // Everything else: evaluate as usual
+                            _ => {
+                                arg_vals.push(eval_expr(a, sess)?);
+                            }
+                        }
+                    }
+
+                    // Call the builtin raw with the Values we constructed
+                    let v = crate::actions::strings::raw(sess, &arg_vals, &sp)?;
+                    return Ok(v);
                 }
 
                 // everything else → regular (pure) call
