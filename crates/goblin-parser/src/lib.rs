@@ -5917,6 +5917,9 @@ impl<'t> Parser<'t> {
                         "trim" | "trim_lead" | "trim_trail" | "minimize" |
                         "reverse" | "reverse_chars" | "lines" | "words" | "chars" |
 
+                        // maps
+                        "keys" | "values" | "items" |
+
                         // size helpers (unary view)
                         "count" | "len" |
 

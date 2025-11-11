@@ -1,75 +1,92 @@
 use crate::{Session, Value, Diag, Span};
 use goblin_diagnostics::{Diagnostic, Severity};
+use crate::diagnostics::rtcode;
+
+use crate::actions::utils::{
+    arity,
+    as_array_like,
+    want_str,
+    want_num,
+    want_bool,
+    char_len,
+    rng_index,
+    rng_u01,
+};
 
 const RAW_SENTINEL: &str = "\u{001E}RAW:";
 
+// HELPERS
 #[inline]
-fn as_array_like<'a>(v: &'a Value) -> Option<&'a [Value]> {
-    match v {
-        Value::Array(xs) => Some(xs.as_slice()),
-        Value::Seq(xs)   => xs.as_slice(),   // uses your Seq::as_slice()
-        _ => None,
-    }
-}
 
-fn map_str_1(v: &Value, label: &str, f: &dyn Fn(&str) -> String, sp: &Span)
-    -> Result<Value, Diag>
-{
-    match v {
-        Value::Str(s) => Ok(Value::Str(f(s))),
-        _ => {
-            if let Some(xs) = as_array_like(v) { // handles Array or Seq
-                let mut out = Vec::with_capacity(xs.len());
-                for it in xs {
-                    match it {
-                        Value::Str(s) => out.push(Value::Str(f(s))),
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    &format!("{label} expects a string (or array/seq of strings)"),
-                                    sp.clone(),
-                                )
-                                .with_help("Pass a string or an array/seq of strings.")
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                    }
-                }
-                Ok(Value::Array(out))
-            } else {
-                Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                        "type-mismatch",
-                        &format!("{label} expects a string (or array/seq of strings)"),
-                        sp.clone(),
-                    )
-                    .with_help("Pass a string or an array/seq of strings.")
-                    .with_link("https://goblinlang.org/docs/errors#T0205"),
-                )
-            }
+// Replace your existing map_str_1 with this version.
+
+fn map_str_1(
+    v: &Value,
+    label: &str,
+    f: &dyn Fn(&str) -> String,
+    sp: &Span
+) -> Result<Value, Diag> {
+    // String input → String output
+    if let Value::Str(s) = v {
+        return Ok(Value::Str(f(s)));
+    }
+
+    // Char input → Char if result is 1 scalar, else String
+    if let Value::Char(ch) = v {
+        let out = f(&ch.to_string());
+        let mut iter = out.chars();
+        if let (Some(c0), None) = (iter.next(), iter.next()) {
+            return Ok(Value::Char(c0));
+        } else {
+            return Ok(Value::Str(out));
         }
     }
-}
 
-fn arity(expected: usize, args_len: usize, label: &str, sp: &Span) -> Result<(), Diag> {
-    if args_len != expected {
-        return Err(
-            Diagnostic::new_with_code(
-                Severity::Error,
-                crate::diagnostics::rtcode::WRONG_ARITY, // whatever code you use
-                "wrong-arity",
-                &format!("{label} expects {expected} argument(s), got {args_len}"),
-                sp.clone(),
-            )
-            .with_link("https://goblinlang.org/docs/errors#R0301"),
-        );
+    // Array/Seq input → map over elements (must be Str or Char)
+    if let Some(xs) = as_array_like(v) {
+        let mut out = Vec::with_capacity(xs.len());
+        for it in xs {
+            match it {
+                Value::Str(s) => out.push(Value::Str(f(s))),
+                Value::Char(ch) => {
+                    let out_s = f(&ch.to_string());
+                    let mut iter = out_s.chars();
+                    if let (Some(c0), None) = (iter.next(), iter.next()) {
+                        out.push(Value::Char(c0));
+                    } else {
+                        out.push(Value::Str(out_s));
+                    }
+                }
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            &format!("{label} expects a string/char (or array/seq of strings/chars)"),
+                            sp.clone(),
+                        )
+                        .with_help("Pass a string/char or an array/seq of strings/chars.")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    );
+                }
+            }
+        }
+        return Ok(Value::Array(out));
     }
-    Ok(())
+
+    // Not a string/char/collection
+    Err(
+        Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+            "type-mismatch",
+            &format!("{label} expects a string/char (or array/seq of strings/chars)"),
+            sp.clone(),
+        )
+        .with_help("Pass a string/char or an array/seq of strings/chars.")
+        .with_link("https://goblinlang.org/docs/errors#T0205"),
+    )
 }
 
 pub fn lower(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
@@ -124,17 +141,6 @@ pub fn slug(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag
     }, sp)
 }
 
-pub fn raw(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
-    arity(1, args.len(), "raw", sp)?;
-    map_str_1(&args[0], "raw", &|s| {
-        // Tag: sinks that know about the sentinel will bypass interpolation
-        let mut out = String::with_capacity(RAW_SENTINEL.len() + s.len());
-        out.push_str(RAW_SENTINEL);
-        out.push_str(s);
-        out
-    }, sp)
-}
-
 pub fn mixed(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     arity(1, args.len(), "mixed", sp)?;
     let v = &args[0];
@@ -168,6 +174,17 @@ pub fn mixed(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Dia
     };
 
     map_str_1(v, "mixed", &to_mixed, sp)
+}
+
+pub fn raw(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    arity(1, args.len(), "raw", sp)?;
+    map_str_1(&args[0], "raw", &|s| {
+        // Tag: sinks that know about the sentinel will bypass interpolation
+        let mut out = String::with_capacity(RAW_SENTINEL.len() + s.len());
+        out.push_str(RAW_SENTINEL);
+        out.push_str(s);
+        out
+    }, sp)
 }
 
 pub fn trim(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
@@ -217,4 +234,59 @@ pub fn trim_trail(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value
             || c == '\u{180E}'
         ).to_string()
     }, sp)
+}
+
+// find(s, sub) -> first index (Int, 0-based) or Nil
+pub fn find(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    if args.len() != 2 {
+        return Err(
+            Diagnostic::new_with_code(
+                Severity::Error,
+                crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                "wrong-arity",
+                &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                sp.clone(),
+            )
+            .with_help("‘find’ takes exactly 2 arguments.")
+            .with_link("https://goblinlang.org/docs/errors#R0301"),
+        );
+    }
+    let s   = want_str(&args[0], "find", sp)?;
+    let sub = want_str(&args[1], "find", sp)?;
+    Ok(match s.find(sub) {
+        Some(i) => Value::Int(i as i64),
+        None => Value::Nil,
+    })
+}
+
+// find_all(s, sub) -> Array[Int] (non-overlapping)
+pub fn find_all(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    if args.len() != 2 {
+        return Err(
+            Diagnostic::new_with_code(
+                Severity::Error,
+                crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                "wrong-arity",
+                &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                sp.clone(),
+            )
+            .with_help("‘find_all’ takes exactly 2 arguments.")
+            .with_link("https://goblinlang.org/docs/errors#R0301"),
+        );
+    }
+    let s   = want_str(&args[0], "find_all", sp)?;
+    let sub = want_str(&args[1], "find_all", sp)?;
+
+    if sub.is_empty() {
+        return Ok(Value::Array(vec![]));
+    }
+
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while let Some(pos) = s[start..].find(sub) {
+        let idx = start + pos;
+        out.push(Value::Int(idx as i64));
+        start = idx + sub.len(); // non-overlapping
+    }
+    Ok(Value::Array(out))
 }
