@@ -1,6 +1,5 @@
 use crate::{Session, Value, Diag, Span};
 use goblin_diagnostics::{Diagnostic, Severity};
-use crate::diagnostics::rtcode;
 
 use crate::actions::utils::{
     arity,

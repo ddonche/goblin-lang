@@ -1,0 +1,10 @@
+
+Heading: Example BELIEVE
+Intro
+
+START
+alpha ROW! 1
+alpha ROW! 2
+END
+
+TAIL-SECTION A

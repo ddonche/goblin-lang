@@ -35,6 +35,7 @@ pub enum Stmt {
     Import(ImportStmt),
     Judge(JudgeStmt),
     JudgeAll(JudgeAllStmt),
+    Sweep(SweepStmt),
     Return(ReturnStmt),
 }
 
@@ -142,6 +143,31 @@ pub struct JudgeStmt {
 #[derive(Debug, Clone)]
 pub struct JudgeAllStmt {
     pub arms: Vec<JudgeArmStmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum SweepMode { Match, All }
+
+#[derive(Debug, Clone)]
+pub enum SweepArmKind {
+    Pattern(String),                          // "needle" :
+    Range { start: String, end: String },     // "a" ... "b" :
+    AllBody,
+}
+
+#[derive(Debug, Clone)]
+pub struct SweepArm {
+    pub kind: SweepArmKind,
+    pub body: Vec<Stmt>,                      // ordinary statements
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct SweepStmt {
+    pub mode: SweepMode,
+    pub targets: Vec<String>,                 // file/dir literals, kept as strings
+    pub arms: Vec<SweepArm>,
     pub span: Span,
 }
 

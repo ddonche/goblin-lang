@@ -1,0 +1,89 @@
+/// tests/sweep_test.gbln — minimal working tests for sweep + sweep_all
+
+act show(path)
+    say "-- " + path
+    say read_text(path)
+end
+
+act main()
+    /// Ensure directories exist
+    if file_exists("tmp") == false
+        create_dir!("tmp")
+    end
+    if file_exists("tmp/sweep") == false
+        create_dir!("tmp/sweep")
+    end
+    if file_exists("tmp/sweep/sub") == false
+        create_dir!("tmp/sweep/sub")
+    end
+
+    /// Sample file A
+    a_text = """
+Title: Example beleive
+Intro
+
+START
+alpha line 1
+alpha line 2
+END
+
+Tail A
+"""
+    write_text!("tmp/sweep/a.txt", a_text)
+
+    /// Sample file B
+    b_text = """
+Title: Second beleive
+Preamble
+
+START
+bravo line X
+bravo line Y
+END
+
+Tail B
+"""
+    write_text!("tmp/sweep/sub/b.txt", b_text)
+
+    say "== BEFORE =="
+    show("tmp/sweep/a.txt")
+    show("tmp/sweep/sub/b.txt")
+
+    /// Whole-file replacement across both files
+    sweep_all "tmp/sweep/a.txt", "tmp/sweep/sub/b.txt"
+        /// ‘self’ = entire file contents (provided by sweep runtime)
+        update_where!(self, "beleive", "believe")
+    end
+
+    /// Range + pattern arms (basic test)
+    sweep "tmp/sweep/a.txt", "tmp/sweep/sub/b.txt"
+        "START" ... "END" :
+            /// ‘self’ = the matched range between START/END
+            update_where!(self, "line", "ROW")
+
+        "Title:" :
+            /// ‘self’ = just the matched segment containing "Title:"
+            update_where!(self, "Title:", "Heading:")
+    end
+
+    /// Extra test: multiple arms in one sweep, reusing the edited files
+    /// - First arm: tweak the Heading line
+    /// - Second arm: hit the START..END block again
+    /// - Third arm: touch the Tail lines
+    sweep "tmp/sweep/a.txt", "tmp/sweep/sub/b.txt"
+        "Heading:" :
+            update_where!(self, "believe", "BELIEVE")
+
+        "START" ... "END" :
+            update_where!(self, "ROW", "ROW!")
+
+        "Tail" :
+            update_where!(self, "Tail", "TAIL-SECTION")
+    end
+
+    say "== AFTER =="
+    show("tmp/sweep/a.txt")
+    show("tmp/sweep/sub/b.txt")
+end
+
+main()
