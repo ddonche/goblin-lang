@@ -2574,24 +2574,47 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             return Ok(Some(Value::CtrlStop));
         }
 
-        // =======================
-        // eval_stmt arms (drop-in)
-        // =======================
         ast::Stmt::Sweep(sw) => {
-            // Collect target files (dirs expanded). Soft-ignore missing paths (v1 policy).
-            let files = sweep_collect_target_files(&sw.targets, &sw.span)?;
+            use std::path::Path;
 
-            // ====== SPECIAL CASE: sweep_all — run one all-body over the entire file ======
+            // 1) Evaluate target expressions into strings
+            let raw_targets = sweep_resolve_targets_exprs(sess, &sw.targets, &sw.span)?;
+
+            // 2) Split into filesystem paths vs in-memory content
+            let mut path_candidates: Vec<String> = Vec::new();
+            let mut mem_targets: Vec<String>    = Vec::new();
+
+            for t in raw_targets {
+                let p = Path::new(&t);
+                if p.is_file() || p.is_dir() {
+                    path_candidates.push(t);
+                } else {
+                    // not an existing file/dir → treat as *content*
+                    mem_targets.push(t);
+                }
+            }
+
+            // Expand directories into actual file list (existing behavior)
+            let file_targets = sweep_collect_target_files(&path_candidates, &sw.span)?;
+
+            // ================================
+            // sweep_all — whole-file replacement
+            // ================================
             if let ast::SweepMode::All = sw.mode {
-                // Expect exactly one AllBody arm (parser should have enforced this)
-                if let Some(arm) = sw.arms.iter().find(|a| matches!(a.kind, ast::SweepArmKind::AllBody)) {
-                    for path in files {
-                        let mut file_text = std::fs::read_to_string(&path).map_err(|e| {
+                // parser guarantees exactly one AllBody arm
+                if let Some(arm) = sw
+                    .arms
+                    .iter()
+                    .find(|a| matches!(a.kind, ast::SweepArmKind::AllBody))
+                {
+                    // --- File-backed sweep_all: read + write like before ---
+                    for path in file_targets.iter() {
+                        let mut file_text = std::fs::read_to_string(path).map_err(|e| {
                             goblin_diagnostics::Diagnostic::new_with_code(
                                 goblin_diagnostics::Severity::Error,
                                 crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
                                 "filesystem-io",
-                                format!("failed to read file ‘{}’: {}", &path, e),
+                                format!("failed to read file ‘{}’: {}", path, e),
                                 sw.span.clone(),
                             )
                             .with_help("Check that the file exists and is readable.")
@@ -2600,73 +2623,84 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
                         let before = file_text.clone();
 
-                        // Scope = whole file for sweep_all
                         file_text = sweep_run_arm_on_scope(
                             sess,
-                            &path,
+                            path,
                             file_text,
-                            /* scope */ Some((0, before.len())),
+                            Some((0, before.len())),
                             &arm.body,
                         )?;
 
-                        // Only write if content actually changed
                         if file_text != before {
-                            std::fs::write(&path, &file_text).map_err(|e| {
+                            std::fs::write(path, &file_text).map_err(|e| {
                                 goblin_diagnostics::Diagnostic::new_with_code(
                                     goblin_diagnostics::Severity::Error,
-                                    crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                                    crate::diagnostics::rtcode::FILESYSTEM_IO,
                                     "filesystem-io",
-                                    format!("failed to write file ‘{}’: {}", &path, e),
+                                    format!("failed to write file ‘{}’: {}", path, e),
                                     sw.span.clone(),
                                 )
-                                .with_help("Ensure the file is writable or run with proper permissions.")
+                                .with_help("Ensure the file is writable.")
                                 .with_link("https://goblinlang.org/docs/errors#FS0001")
                             })?;
                         }
                     }
-                    return Ok(None);
+
+                    // --- In-memory sweep_all: run over raw content only ---
+                    for content in mem_targets.iter() {
+                        let _ = sweep_run_arm_on_scope(
+                            sess,
+                            "<memory>",
+                            content.clone(),
+                            Some((0, content.len())),
+                            &arm.body,
+                        )?;
+                        // No write-back; only side-effects inside the arm (e.g. put_last! into collected)
+                    }
                 }
-                // If we somehow got here without an AllBody arm, just no-op.
+
                 return Ok(None);
             }
 
-            // ====== Normal sweep (Pattern / Range arms) ======
-            for path in files {
-                let mut file_text = std::fs::read_to_string(&path).map_err(|e| {
-                    goblin_diagnostics::Diagnostic::new_with_code(
-                        goblin_diagnostics::Severity::Error,
-                        crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
-                        "filesystem-io",
-                        format!("failed to read file ‘{}’: {}", &path, e),
-                        sw.span.clone(),
-                    )
-                    .with_help("Check that the file exists and is readable.")
-                    .with_link("https://goblinlang.org/docs/errors#FS0001")
-                })?;
+            // ================================
+            // Normal sweep (Pattern / Range)
+            // ================================
 
+            // helper closure: run arms over a mutable buffer; returns whether it changed
+            let mut run_arms_on_buffer = |sess: &mut Session,
+                                          buffer: &mut String,
+                                          file_label: &str|
+             -> Result<bool, Diag> {
                 let mut changed = false;
 
                 for arm in &sw.arms {
                     match &arm.kind {
+                        // -----------------------------------------
+                        // Pattern: "needle"
+                        // -----------------------------------------
                         ast::SweepArmKind::Pattern(needle) => {
-                            // scan left→right, non-overlap, and run the arm body with the WHOLE FILE scoped
-                            let mut cursor = 0usize;
                             let nb = needle.as_bytes();
-                            if nb.is_empty() { continue; }
+                            if nb.is_empty() {
+                                continue;
+                            }
+
+                            let mut cursor = 0usize;
 
                             loop {
-                                // find next non-overlapping match starting at cursor
+                                let hb = buffer.as_bytes();
+                                if cursor > hb.len().saturating_sub(nb.len()) {
+                                    break;
+                                }
+
                                 let mut found: Option<(usize, usize)> = None;
-                                if cursor <= file_text.len().saturating_sub(nb.len()) {
-                                    let hb = file_text.as_bytes();
-                                    let mut i = cursor;
-                                    while i + nb.len() <= hb.len() {
-                                        if &hb[i..i + nb.len()] == nb {
-                                            found = Some((i, i + nb.len()));
-                                            break;
-                                        }
-                                        i += 1;
+                                let mut i = cursor;
+
+                                while i + nb.len() <= hb.len() {
+                                    if &hb[i..i + nb.len()] == nb {
+                                        found = Some((i, i + nb.len()));
+                                        break;
                                     }
+                                    i += 1;
                                 }
 
                                 let (_m_start, m_end) = match found {
@@ -2674,41 +2708,46 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                     None => break,
                                 };
 
-                                let before_len  = file_text.len();
-                                let before_text = file_text.clone();
+                                let before_len  = buffer.len();
+                                let before_text = buffer.clone();
 
-                                // arm runs "on the file" (scope is whole-file for a Pattern arm)
-                                file_text = sweep_run_arm_on_scope(
+                                *buffer = sweep_run_arm_on_scope(
                                     sess,
-                                    &path,
-                                    file_text,
-                                    /* scope */ None,
+                                    file_label,
+                                    std::mem::take(buffer),
+                                    None, // whole file
                                     &arm.body,
                                 )?;
 
-                                let after_len = file_text.len();
-                                changed |= file_text != before_text;
+                                changed |= *buffer != before_text;
 
-                                // advance to avoid infinite loops even if user changes length
+                                let after_len = buffer.len();
                                 let delta = after_len as isize - before_len as isize;
                                 let next_start = (m_end as isize + delta).max(0) as usize;
-                                cursor = next_start.min(file_text.len());
+                                cursor = next_start.min(buffer.len());
                             }
                         }
 
+                        // -----------------------------------------
+                        // Range: "start" ... "end"
+                        // -----------------------------------------
                         ast::SweepArmKind::Range { start, end } => {
-                            if start.is_empty() || end.is_empty() { continue; }
-
                             let sb = start.as_bytes();
                             let eb = end.as_bytes();
+                            if sb.is_empty() || eb.is_empty() {
+                                continue;
+                            }
+
                             let mut cursor = 0usize;
 
                             loop {
-                                // find next start
-                                let hb = file_text.as_bytes();
-                                if cursor > hb.len().saturating_sub(sb.len()) { break; }
+                                let hb = buffer.as_bytes();
+                                if cursor > hb.len().saturating_sub(sb.len()) {
+                                    break;
+                                }
 
-                                let mut s_ix_opt: Option<usize> = None;
+                                // find start
+                                let mut s_ix_opt = None;
                                 let mut i = cursor;
                                 while i + sb.len() <= hb.len() {
                                     if &hb[i..i + sb.len()] == sb {
@@ -2717,10 +2756,13 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                     }
                                     i += 1;
                                 }
-                                let s_ix = match s_ix_opt { Some(v) => v, None => break };
+                                let s_ix = match s_ix_opt {
+                                    Some(v) => v,
+                                    None => break,
+                                };
 
-                                // find next end after start (non-greedy)
-                                let mut e_ix_opt: Option<usize> = None;
+                                // find end
+                                let mut e_ix_opt = None;
                                 let mut j = s_ix + sb.len();
                                 while j + eb.len() <= hb.len() {
                                     if &hb[j..j + eb.len()] == eb {
@@ -2731,43 +2773,70 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 }
                                 let e_ix = match e_ix_opt {
                                     Some(v) => v,
-                                    None => break, // unmatched start: stop (v1)
+                                    None => break,
                                 };
 
-                                // Run body on [s_ix, e_ix)
-                                let before_text = file_text.clone();
-                                file_text = sweep_run_arm_on_scope(
+                                let before_text = buffer.clone();
+
+                                *buffer = sweep_run_arm_on_scope(
                                     sess,
-                                    &path,
-                                    file_text,
-                                    /* scope */ Some((s_ix, e_ix)),
+                                    file_label,
+                                    std::mem::take(buffer),
+                                    Some((s_ix, e_ix)),  
                                     &arm.body,
                                 )?;
-                                changed |= file_text != before_text;
 
-                                // resume after processed slice
-                                cursor = e_ix.min(file_text.len());
+                                changed |= *buffer != before_text;
+
+                                cursor = e_ix.min(buffer.len());
                             }
                         }
 
-                        // ignore AllBody here; handled by the sweep_all branch above
-                        ast::SweepArmKind::AllBody => {}
+                        ast::SweepArmKind::AllBody => {
+                            // shouldn't appear here in Match mode
+                        }
                     }
                 }
 
+                Ok(changed)
+            };
+
+            // --- File-backed sweeps: read + write like before ---
+            for path in file_targets.iter() {
+                let mut file_text = std::fs::read_to_string(path).map_err(|e| {
+                    goblin_diagnostics::Diagnostic::new_with_code(
+                        goblin_diagnostics::Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO,
+                        "filesystem-io",
+                        format!("failed to read file ‘{}’: {}", path, e),
+                        sw.span.clone(),
+                    )
+                    .with_help("Check that the file exists and is readable.")
+                    .with_link("https://goblinlang.org/docs/errors#FS0001")
+                })?;
+
+                let changed = run_arms_on_buffer(sess, &mut file_text, path)?;
+
                 if changed {
-                    std::fs::write(&path, &file_text).map_err(|e| {
+                    std::fs::write(path, &file_text).map_err(|e| {
                         goblin_diagnostics::Diagnostic::new_with_code(
                             goblin_diagnostics::Severity::Error,
-                            crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                            crate::diagnostics::rtcode::FILESYSTEM_IO,
                             "filesystem-io",
-                            format!("failed to write file ‘{}’: {}", &path, e),
+                            format!("failed to write file ‘{}’: {}", path, e),
                             sw.span.clone(),
                         )
-                        .with_help("Ensure the file is writable or run with proper permissions.")
+                        .with_help("Ensure the file is writable.")
                         .with_link("https://goblinlang.org/docs/errors#FS0001")
                     })?;
                 }
+            }
+
+            // --- In-memory sweeps: NO filesystem I/O at all ---
+            for content in mem_targets.iter() {
+                let mut buf = content.clone();
+                let _ = run_arms_on_buffer(sess, &mut buf, "<memory>")?;
+                // Ignore modified buf; we only care that the arms ran with `self` populated.
             }
 
             Ok(None)
@@ -9893,6 +9962,69 @@ fn call_action_by_name(
             Value::Str(out)
         }
 
+        "keep_before" => {
+            let argc = args.len();
+            if argc != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: keep_before(text, delimiter)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let text = want_str(&args[0], "keep_before text")?;
+            let delimiter = want_str(&args[1], "keep_before delimiter")?;
+            
+            if delimiter.is_empty() {
+                return Ok(Value::Str(text));
+            }
+            
+            if let Some(pos) = text.find(&delimiter) {
+                Value::Str(text[..pos].to_string())
+            } else {
+                Value::Str(text)
+            }
+        }
+
+        "keep_after" => {
+            let argc = args.len();
+            if argc != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: keep_after(text, delimiter)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            let text = want_str(&args[0], "keep_after text")?;
+            let delimiter = want_str(&args[1], "keep_after delimiter")?;
+            
+            if delimiter.is_empty() {
+                return Ok(Value::Str(String::new()));
+            }
+            
+            if let Some(pos) = text.find(&delimiter) {
+                let start = pos + delimiter.len();
+                if start <= text.len() {
+                    Value::Str(text[start..].to_string())
+                } else {
+                    Value::Str(String::new())
+                }
+            } else {
+                Value::Str(String::new())
+            }
+        }
+
         // -- inline span keep: keep_between(text, open, close, opts) -------------------
         "keep_between" => {
             let argc = args.len();
@@ -14858,4 +14990,78 @@ fn sweep_run_arm_on_scope(
     }
 
     Ok(file_text)
+}
+
+/// Returns Vec<(synthetic_path_or_real_path, Option<memory_string>)>
+/// If memory_string = Some(s), treat s as the file content.
+fn sweep_resolve_targets_exprs(
+    sess: &mut Session,
+    exprs: &[ast::Expr],
+    sweep_span: &Span,
+) -> Result<Vec<String>, goblin_diagnostics::Diagnostic> {
+    let mut out = Vec::new();
+
+    for expr in exprs {
+        let val = eval_expr(expr, sess)?; // Result<Value, Diag>
+
+        match val {
+            // plain string → path
+            Value::Str(s) => out.push(s),
+
+            // array of strings → many paths
+            Value::Array(arr) => {
+                for v in arr {
+                    match v {
+                        Value::Str(s) => out.push(s),
+                        other => {
+                            // R05X2: bad element inside array
+                            return Err(
+                                goblin_diagnostics::Diagnostic::new_with_code(
+                                    goblin_diagnostics::Severity::Error,
+                                    "R05X2",                 // code
+                                    "sweep-target-type",     // short id
+                                    format!(
+                                        "Sweep target array contains non-string value: {:?}",
+                                        other
+                                    ),
+                                    sweep_span.clone(),
+                                )
+                                .with_help("Sweep target arrays may only contain strings.")
+                                .with_link("https://goblinlang.org/docs/errors#R05X2"),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // scalars we stringify into paths
+            Value::Int(n)   => out.push(n.to_string()),
+            Value::Float(n) => out.push(n.to_string()),
+            Value::Big(n)   => out.push(n.to_string()),
+            Value::Pct(n)   => out.push(n.to_string()),
+            Value::Char(c)  => out.push(c.to_string()),
+            Value::Bool(b)  => out.push(b.to_string()),
+
+            // everything else is invalid as a target
+            other => {
+                // R05X1: invalid target type
+                return Err(
+                    goblin_diagnostics::Diagnostic::new_with_code(
+                        goblin_diagnostics::Severity::Error,
+                        "R05X1",                 // code
+                        "sweep-target-type",     // short id
+                        format!(
+                            "Sweep targets must be strings, arrays of strings, or convertible scalars. Got: {:?}",
+                            other
+                        ),
+                        sweep_span.clone(),
+                    )
+                    .with_help("Valid sweep targets: path strings, string variables, or arrays of strings.")
+                    .with_link("https://goblinlang.org/docs/errors#R05X1"),
+                );
+            }
+        }
+    }
+
+    Ok(out)
 }

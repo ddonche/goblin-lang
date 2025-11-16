@@ -166,7 +166,7 @@ pub struct SweepArm {
 #[derive(Debug, Clone)]
 pub struct SweepStmt {
     pub mode: SweepMode,
-    pub targets: Vec<String>,                 // file/dir literals, kept as strings
+    pub targets: Vec<Expr>,
     pub arms: Vec<SweepArm>,
     pub span: Span,
 }

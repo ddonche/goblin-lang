@@ -7119,43 +7119,54 @@ impl<'t> Parser<'t> {
 
         // eat 'sweep' or 'sweep_all'
         match mode {
-            ast::SweepMode::Match => { debug_assert_eq!(self.peek_ident().as_deref(), Some("sweep")); let _ = self.eat_ident(); }
-            ast::SweepMode::All   => { debug_assert_eq!(self.peek_ident().as_deref(), Some("sweep_all")); let _ = self.eat_ident(); }
+            ast::SweepMode::Match => { let _ = self.eat_ident(); }
+            ast::SweepMode::All   => { let _ = self.eat_ident(); }
         }
 
-        // prevent colon-call confusion while parsing headers/arms
         self.suspend_colon_call += 1;
 
-        // ---- Targets
-        let targets = self.parse_sweep_targets()?;
+        // ==== NEW: accept ANY expr list as sweep targets ====
+        let targets = self.parse_sweep_target_exprs()?; 
+        // =====================================================
 
         // no '{' after header
         if self.peek_op("{") {
             self.suspend_colon_call -= 1;
-            let kw = match mode { ast::SweepMode::Match => "sweep", ast::SweepMode::All => "sweep_all" };
-            return Err(s_help_site!("P09S1", &format!("Don't put '{{' after '{}'", kw), "Use indentation and close with 'end' or 'xx'."));
+            let kw = match mode { ast::SweepMode::Match => "sweep", _ => "sweep_all" };
+            return Err(s_help_site!("P09S1",
+                &format!("Don't put '{{' after '{}'", kw),
+                "Use indentation and close with 'end' or 'xx'." ));
         }
-        self.forbid_next_line_brace(header_line, header_col, match mode { ast::SweepMode::Match => "sweep", _ => "sweep_all" })?;
+        self.forbid_next_line_brace(
+            header_line,
+            header_col,
+            match mode { ast::SweepMode::Match => "sweep", _ => "sweep_all" }
+        )?;
 
-        // ===== SPECIAL CASE: sweep_all — parse a single statement block, no arms =====
+        // ===== sweep_all special case =====
         if let ast::SweepMode::All = mode {
-            // expect newline + one indent
             self.skip_newlines();
-            while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Indent) { self.i += 1; }
+                else { break; }
+            }
 
-            // Parse an indented block until dedent / aligned closer
             let body_stmts = self.parse_stmt_block_until_dedent_or_close(header_col)?;
 
-            // aligned closer check
             if self.peek_block_close() {
                 let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
                 if col != header_col {
                     let closer = self.peek_ident().unwrap_or("}");
-                    return Err(s_help_site!("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
+                    return Err(s_help_site!("P0222",
+                        &format!("This '{}' closer is misaligned: expected column {}, found {}",
+                        closer, header_col, col),
+                        "Align the closer with its header." ));
                 }
                 self.expect_block_close("sweep_all")?;
             } else if !self.eat_layout_until_close(header_col) {
-                return Err(s_help_site!("P0212","This sweep block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse sweep_all]"));
+                return Err(s_help_site!("P0212",
+                    "This sweep block is missing its closing 'end' or 'xx'.",
+                    "Close the block. [parse sweep_all]" ));
             }
 
             self.suspend_colon_call -= 1;
@@ -7165,62 +7176,81 @@ impl<'t> Parser<'t> {
             return Ok(Stmt::Sweep(SweepStmt { mode, targets, arms: vec![arm], span }));
         }
 
-        // ===== Normal sweep (with arms) =====
-        // expect newline + indent to begin arms
+        // ===== Normal sweep with arms =====
         self.skip_newlines();
-        while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Indent) { self.i += 1; }
+            else { break; }
+        }
 
         let mut arms: Vec<SweepArm> = Vec::new();
 
         loop {
             self.skip_newlines();
 
-            // aligned closer?
+            // end / xx closes block
             if let Some(t) = self.peek() {
                 match &t.kind {
-                    TokenKind::Ident if t.value.as_deref() == Some("end") && t.span.col_start == header_col => break,
-                    TokenKind::Op(op) if op == "xx" && t.span.col_start == header_col => break,
+                    TokenKind::Ident if t.value.as_deref() == Some("end")
+                        && t.span.col_start == header_col => break,
+                    TokenKind::Op(op) if op == "xx"
+                        && t.span.col_start == header_col => break,
                     _ => {}
                 }
             } else {
                 self.suspend_colon_call -= 1;
-                return Err(s_help_site!("P0212","This sweep block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse sweep stmt]"));
+                return Err(s_help_site!("P0212",
+                    "This sweep block is missing its closing 'end' or 'xx'.",
+                    "Close the block. [parse sweep stmt]" ));
             }
 
-            // consume nested Indent; stop if Dedent (empty block)
-            while let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Indent) { self.i += 1; } else { break; } }
-            if let Some(t) = self.peek() { if matches!(t.kind, TokenKind::Dedent) { break; } }
+            // Indent handling
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Indent) { self.i += 1; }
+                else { break; }
+            }
+            if let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Dedent) { break; }
+            }
             if self.is_eof() {
                 self.suspend_colon_call -= 1;
-                return Err(s_help_site!("P0212","This sweep block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse sweep stmt]"));
+                return Err(s_help_site!("P0212",
+                    "This sweep block is missing its closing 'end' or 'xx'.",
+                    "Close the block. [parse sweep stmt]" ));
             }
 
-            let arm_col: u32 = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(header_col);
+            let arm_col =
+                self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(header_col);
 
-            // "<str>" ":"  |  "<str>" "..." "<str>" ":"
             let kind = self.parse_sweep_arm_header()?;
             if !self.eat_op(":") {
                 self.suspend_colon_call -= 1;
-                return Err(s_help_site!("P09S2","You need ':' after a sweep arm header","Examples: \"<h1>\" ... \"</h1>\" :   or   \"needle\" :"));
+                return Err(s_help_site!("P09S2",
+                    "You need ':' after a sweep arm header",
+                    "Examples: \"<h1>\" ... \"</h1>\" :  or  \"needle\" :" ));
             }
 
-            // arm body
-            let body_stmts: Vec<ast::Stmt> = if self.peek_newline_or_eof() {
-                self.skip_newlines();
-                match self.peek() {
-                    Some(t) if matches!(t.kind, TokenKind::Indent) => {
-                        self.i += 1;
-                        self.parse_stmt_block_until_dedent_or_next_arm(arm_col)?
+            let body_stmts =
+                if self.peek_newline_or_eof() {
+                    self.skip_newlines();
+                    match self.peek() {
+                        Some(t) if matches!(t.kind, TokenKind::Indent) => {
+                            self.i += 1;
+                            self.parse_stmt_block_until_dedent_or_next_arm(arm_col)?
+                        }
+                        _ => return Err(s_help_site!("P09S3",
+                            "Expected an indented block after ':' in sweep arm",
+                            "Indent the arm body on the next line." )),
                     }
-                    _ => return Err(s_help_site!("P09S3","Expected an indented block after ':' in sweep arm","Start the arm body on the next line and indent it.")),
-                }
-            } else {
-                let stmt = self.parse_stmt()?;
-                self.eat_semi_separators();
-                vec![stmt]
-            };
+                } else {
+                    let stmt = self.parse_stmt()?;
+                    self.eat_semi_separators();
+                    vec![stmt]
+                };
 
-            let arm_span = self.toks.get(self.i.saturating_sub(1)).map(|t| t.span.clone())
+            let arm_span =
+                self.toks.get(self.i.saturating_sub(1))
+                .map(|t| t.span.clone())
                 .unwrap_or_else(|| self.toks[header_tok_i].span.clone());
 
             arms.push(SweepArm { kind, body: body_stmts, span: arm_span });
@@ -7230,35 +7260,52 @@ impl<'t> Parser<'t> {
 
         self.suspend_colon_call -= 1;
 
-        // eat trailing layout
         while let Some(t) = self.peek() {
             use goblin_lexer::TokenKind::*;
-            if matches!(t.kind, Dedent | Newline) { self.i += 1; } else { break; }
+            if matches!(t.kind, Dedent | Newline) { self.i += 1; }
+            else { break; }
         }
 
-        // aligned closer check
         if self.peek_block_close() {
             let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
             if col != header_col {
                 let closer = self.peek_ident().unwrap_or("}");
-                return Err(s_help_site!("P0222",&format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),"Align the closer with its header."));
+                return Err(s_help_site!("P0222",
+                    &format!("This '{}' closer is misaligned: expected column {}, found {}",
+                    closer, header_col, col),
+                    "Align the closer with its header." ));
             }
             self.expect_block_close("sweep")?;
         } else if !self.eat_layout_until_close(header_col) {
-            return Err(s_help_site!("P0212","This sweep block is missing its closing 'end' or 'xx' (crossbones).","Close the block. [parse sweep stmt]"));
+            return Err(s_help_site!("P0212",
+                "This sweep block is missing its closing 'end' or 'xx'.",
+                "Close the block. [parse sweep stmt]" ));
         }
 
         let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
         Ok(Stmt::Sweep(SweepStmt { mode, targets, arms, span }))
     }
 
-    // Comma-separated string literal list (newlines allowed)
-    fn parse_sweep_targets(&mut self) -> Result<Vec<String>, String> {
+    /// NEW: allow arbitrary expressions as sweep targets
+    fn parse_sweep_target_exprs(&mut self) -> Result<Vec<ast::Expr>, String> {
         let mut out = Vec::new();
+
         loop {
-            let s = self.eat_string_lit()
-                .ok_or_else(|| s_help_site!("P09T1","Expected a file or directory string after 'sweep'","Example: sweep \"docs/\", \"index.html\""))?;
-            out.push(s);
+            // -------- FIX: NO `?` HERE --------
+            let expr = match self.parse_expr() {
+                Ok(e) => e,
+                Err(diags) => {
+                    // Collapse diagnostics into a single parser error String
+                    let msg = diags.iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    return Err(msg);
+                }
+            };
+            // ----------------------------------
+
+            out.push(expr);
 
             self.skip_newlines();
             if self.eat_op(",") {
@@ -7267,6 +7314,7 @@ impl<'t> Parser<'t> {
             }
             break;
         }
+
         Ok(out)
     }
 
