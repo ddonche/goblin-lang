@@ -156,9 +156,17 @@ pub enum SweepArmKind {
     AllBody,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepArmRepeat {
+    All,    // default: operate on every match
+    First,  // only the first match in this file
+    Last,   // only the last match in this file
+}
+
 #[derive(Debug, Clone)]
 pub struct SweepArm {
     pub kind: SweepArmKind,
+    pub repeat: SweepArmRepeat,
     pub body: Vec<Stmt>,                      // ordinary statements
     pub span: Span,
 }

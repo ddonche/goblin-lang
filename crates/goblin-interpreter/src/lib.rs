@@ -2213,6 +2213,32 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         let ident  = inner_trim[pos + 2..].trim();
 
                         if !module.is_empty() && !ident.is_empty() {
+                            // ---------------------------
+                            // SPECIAL CASE: OVERRIDE::NAME
+                            // ---------------------------
+                            if module.eq_ignore_ascii_case("OVERRIDE") {
+                                // Goblin code is responsible for:
+                                //   override_key = "whatever"
+                                let key = match sess.get_var("override_key") {
+                                    Some(Value::Str(s)) => s.clone(),
+                                    Some(v)             => fmt_value_raw(v),
+                                    None                => String::from("default"),
+                                };
+
+                                if let Some(Value::Map(map)) = sess.resolve_token_value(module, ident) {
+                                    if let Some(val) = map.get(&key).or_else(|| map.get("default")) {
+                                        out.push_str(&fmt_value_raw(val));
+                                        i = j + 3;
+                                        continue;
+                                    }
+                                    // If no key/default → fall through to normal token handling below.
+                                }
+                                // If not found / not a map → also fall through.
+                            }
+
+                            // ---------------------------
+                            // NORMAL TOKEN FAMILY (unchanged)
+                            // ---------------------------
                             if let Some(v) = sess.resolve_token_value(module, ident) {
                                 out.push_str(&fmt_value_raw(&v));
                                 i = j + 3;
@@ -2266,7 +2292,7 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                             sp.clone(),
                         )
                         .with_help(r#"Use "\{" to render a literal '{', or close the interpolation with '}'."#)
-                        .with_help(r#"Example: "Hello \{name\}" for a literal brace."#)
+                        .with_help(r#"Example: "Hello \{name\)" for a literal brace."#)
                         .with_link("https://goblinlang.org/docs/errors#R0500"),
                     );
                 }
@@ -2666,89 +2692,112 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             // Normal sweep (Pattern / Range)
             // ================================
 
-            // helper closure: run arms over a mutable buffer; returns whether it changed
+            // helper closure: run all sweep arms over a mutable buffer in *document order*.
+            // - Pattern arms: triggered by presence of needle; run at most once per file;
+            //                 `self` = whole file.
+            // - Range arms (All/First): handled in a forward, text-ordered pass.
+            // - Range arms (Last): handled in a final, backwards-looking pass.
             let mut run_arms_on_buffer = |sess: &mut Session,
                                           buffer: &mut String,
                                           file_label: &str|
-             -> Result<bool, Diag> {
+                 -> Result<bool, Diag> {
+                use crate::ast::{SweepArmKind, SweepArmRepeat};
+
                 let mut changed = false;
+                let arm_count   = sw.arms.len();
 
-                for arm in &sw.arms {
-                    match &arm.kind {
-                        // -----------------------------------------
-                        // Pattern: "needle"
-                        // -----------------------------------------
-                        ast::SweepArmKind::Pattern(needle) => {
-                            let nb = needle.as_bytes();
-                            if nb.is_empty() {
-                                continue;
-                            }
+                // Track which pattern arms have already fired, and which First-range arms
+                // have already consumed their single match.
+                let mut pattern_used: Vec<bool> = vec![false; arm_count];
+                let mut first_used:   Vec<bool> = vec![false; arm_count];
 
-                            let mut cursor = 0usize;
+                // ================
+                // Forward pass: Pattern + Range(All/First), in *document order*
+                // ================
+                //
+                // We repeatedly:
+                //  - For each arm, find the next candidate match at or after `cursor`.
+                //  - Pick the earliest match across all arms.
+                //  - Execute that arm on the appropriate scope.
+                //  - Advance cursor past the matched region.
+                //
+                // Range(Last) arms are skipped here and handled in a second pass.
+                let mut cursor: usize = 0;
 
-                            loop {
-                                let hb = buffer.as_bytes();
-                                if cursor > hb.len().saturating_sub(nb.len()) {
-                                    break;
+                'outer: loop {
+                    let hb = buffer.as_bytes();
+
+                    if cursor >= hb.len() {
+                        break 'outer;
+                    }
+
+                    // best candidate so far: (start, end, arm_index, is_pattern)
+                    let mut best: Option<(usize, usize, usize, bool)> = None;
+
+                    for (arm_idx, arm) in sw.arms.iter().enumerate() {
+                        match &arm.kind {
+                            // --------------------------
+                            // Pattern: "needle"
+                            // --------------------------
+                            SweepArmKind::Pattern(needle) => {
+                                // Patterns run at most once per file.
+                                if pattern_used[arm_idx] {
+                                    continue;
                                 }
 
-                                let mut found: Option<(usize, usize)> = None;
-                                let mut i = cursor;
+                                let nb = needle.as_bytes();
+                                if nb.is_empty() {
+                                    continue;
+                                }
 
+                                // Find first occurrence at or after cursor
+                                let mut i = cursor;
+                                let mut s_ix_opt = None;
                                 while i + nb.len() <= hb.len() {
                                     if &hb[i..i + nb.len()] == nb {
-                                        found = Some((i, i + nb.len()));
+                                        s_ix_opt = Some(i);
                                         break;
                                     }
                                     i += 1;
                                 }
-
-                                let (_m_start, m_end) = match found {
-                                    Some(p) => p,
-                                    None => break,
+                                let s_ix = match s_ix_opt {
+                                    Some(v) => v,
+                                    None => continue,
                                 };
+                                let e_ix = s_ix + nb.len();
 
-                                let before_len  = buffer.len();
-                                let before_text = buffer.clone();
-
-                                *buffer = sweep_run_arm_on_scope(
-                                    sess,
-                                    file_label,
-                                    std::mem::take(buffer),
-                                    None, // whole file
-                                    &arm.body,
-                                )?;
-
-                                changed |= *buffer != before_text;
-
-                                let after_len = buffer.len();
-                                let delta = after_len as isize - before_len as isize;
-                                let next_start = (m_end as isize + delta).max(0) as usize;
-                                cursor = next_start.min(buffer.len());
-                            }
-                        }
-
-                        // -----------------------------------------
-                        // Range: "start" ... "end"
-                        // -----------------------------------------
-                        ast::SweepArmKind::Range { start, end } => {
-                            let sb = start.as_bytes();
-                            let eb = end.as_bytes();
-                            if sb.is_empty() || eb.is_empty() {
-                                continue;
+                                match best {
+                                    None => best = Some((s_ix, e_ix, arm_idx, true)),
+                                    Some((best_start, _, _, _)) if s_ix < best_start => {
+                                        best = Some((s_ix, e_ix, arm_idx, true))
+                                    }
+                                    _ => {}
+                                }
                             }
 
-                            let mut cursor = 0usize;
-
-                            loop {
-                                let hb = buffer.as_bytes();
-                                if cursor > hb.len().saturating_sub(sb.len()) {
-                                    break;
+                            // --------------------------
+                            // Range: "start" ... "end"
+                            // --------------------------
+                            SweepArmKind::Range { start, end } => {
+                                // Range(Last) arms are handled in a separate pass.
+                                if matches!(arm.repeat, SweepArmRepeat::Last) {
+                                    continue;
                                 }
 
-                                // find start
-                                let mut s_ix_opt = None;
+                                // Range(First): skip if we've already used this arm once.
+                                if matches!(arm.repeat, SweepArmRepeat::First) && first_used[arm_idx] {
+                                    continue;
+                                }
+
+                                let sb = start.as_bytes();
+                                let eb = end.as_bytes();
+                                if sb.is_empty() || eb.is_empty() {
+                                    continue;
+                                }
+
+                                // Find the *next* "start"..."end" span at or after cursor.
                                 let mut i = cursor;
+                                let mut s_ix_opt = None;
                                 while i + sb.len() <= hb.len() {
                                     if &hb[i..i + sb.len()] == sb {
                                         s_ix_opt = Some(i);
@@ -2758,12 +2807,12 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 }
                                 let s_ix = match s_ix_opt {
                                     Some(v) => v,
-                                    None => break,
+                                    None => continue,
                                 };
 
-                                // find end
-                                let mut e_ix_opt = None;
+                                // Find matching end marker
                                 let mut j = s_ix + sb.len();
+                                let mut e_ix_opt = None;
                                 while j + eb.len() <= hb.len() {
                                     if &hb[j..j + eb.len()] == eb {
                                         e_ix_opt = Some(j + eb.len());
@@ -2773,28 +2822,153 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 }
                                 let e_ix = match e_ix_opt {
                                     Some(v) => v,
-                                    None => break,
+                                    None => continue,
                                 };
 
-                                let before_text = buffer.clone();
+                                match best {
+                                    None => best = Some((s_ix, e_ix, arm_idx, false)),
+                                    Some((best_start, _, _, _)) if s_ix < best_start => {
+                                        best = Some((s_ix, e_ix, arm_idx, false))
+                                    }
+                                    _ => {}
+                                }
+                            }
 
-                                *buffer = sweep_run_arm_on_scope(
-                                    sess,
-                                    file_label,
-                                    std::mem::take(buffer),
-                                    Some((s_ix, e_ix)),  
-                                    &arm.body,
-                                )?;
-
-                                changed |= *buffer != before_text;
-
-                                cursor = e_ix.min(buffer.len());
+                            SweepArmKind::AllBody => {
+                                // not used in normal sweep mode
                             }
                         }
+                    }
 
-                        ast::SweepArmKind::AllBody => {
-                            // shouldn't appear here in Match mode
+                    // No more matches for any arm at or after cursor
+                    let (s_ix, e_ix, arm_idx, is_pattern) = match best {
+                        Some(info) => info,
+                        None => break 'outer,
+                    };
+
+                    let arm = &sw.arms[arm_idx];
+                    let before_text = buffer.clone();
+
+                    if is_pattern {
+                        // Pattern arm: `self` sees the whole file.
+                        *buffer = sweep_run_arm_on_scope(
+                            sess,
+                            file_label,
+                            std::mem::take(buffer),
+                            None, // whole file
+                            &arm.body,
+                        )?;
+                        pattern_used[arm_idx] = true;
+                    } else {
+                        // Range arm (All/First): `self` is the [s_ix, e_ix) slice.
+                        *buffer = sweep_run_arm_on_scope(
+                            sess,
+                            file_label,
+                            std::mem::take(buffer),
+                            Some((s_ix, e_ix)),
+                            &arm.body,
+                        )?;
+                        if matches!(arm.repeat, SweepArmRepeat::First) {
+                            first_used[arm_idx] = true;
                         }
+                    }
+
+                    changed |= *buffer != before_text;
+
+                    // Move cursor to just past the original end of the match.
+                    // Clamp to current buffer length in case the edit shrank the text.
+                    let new_len = buffer.len();
+                    if new_len == 0 {
+                        break 'outer;
+                    }
+                    let next_cursor = e_ix.min(new_len);
+                    cursor = next_cursor;
+                }
+
+                // ================
+                // Second pass: Range(Last) arms
+                // ================
+                //
+                // For each Range arm marked Last:
+                //  - Scan the *final* buffer for all spans.
+                //  - Remember the last span for that arm.
+                //  - Run the arm body once on that last span.
+                //
+                // These run after all Pattern / All / First operations.
+                for (arm_idx, arm) in sw.arms.iter().enumerate() {
+                    if !matches!(arm.kind, SweepArmKind::Range { .. }) {
+                        continue;
+                    }
+                    if !matches!(arm.repeat, SweepArmRepeat::Last) {
+                        continue;
+                    }
+
+                    let (start, end) = match &arm.kind {
+                        SweepArmKind::Range { start, end } => (start, end),
+                        _ => continue,
+                    };
+
+                    let sb = start.as_bytes();
+                    let eb = end.as_bytes();
+                    if sb.is_empty() || eb.is_empty() {
+                        continue;
+                    }
+
+                    let mut hb = buffer.as_bytes();
+                    let mut cursor = 0usize;
+                    let mut last_span: Option<(usize, usize)> = None;
+
+                    // Find all spans; keep only the last one.
+                    loop {
+                        if cursor > hb.len().saturating_sub(sb.len()) {
+                            break;
+                        }
+
+                        // find start
+                        let mut s_ix_opt = None;
+                        let mut i = cursor;
+                        while i + sb.len() <= hb.len() {
+                            if &hb[i..i + sb.len()] == sb {
+                                s_ix_opt = Some(i);
+                                break;
+                            }
+                            i += 1;
+                        }
+                        let s_ix = match s_ix_opt {
+                            Some(v) => v,
+                            None => break,
+                        };
+
+                        // find end
+                        let mut e_ix_opt = None;
+                        let mut j = s_ix + sb.len();
+                        while j + eb.len() <= hb.len() {
+                            if &hb[j..j + eb.len()] == eb {
+                                e_ix_opt = Some(j + eb.len());
+                                break;
+                            }
+                            j += 1;
+                        }
+                        let e_ix = match e_ix_opt {
+                            Some(v) => v,
+                            None => break,
+                        };
+
+                        last_span = Some((s_ix, e_ix));
+                        cursor    = e_ix;
+                        hb        = buffer.as_bytes(); // in case buffer changes size later
+                    }
+
+                    if let Some((s_ix, e_ix)) = last_span {
+                        let before_text = buffer.clone();
+                        *buffer = sweep_run_arm_on_scope(
+                            sess,
+                            file_label,
+                            std::mem::take(buffer),
+                            Some((s_ix, e_ix)),
+                            &arm.body,
+                        )?;
+                        changed |= *buffer != before_text;
                     }
                 }
 

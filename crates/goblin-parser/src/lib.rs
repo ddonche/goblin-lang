@@ -7,6 +7,7 @@ use goblin_diagnostics::{Diagnostic, Span};
 use goblin_lexer::{Token, TokenKind};
 mod diagnostics_ext;
 pub use diagnostics_ext::{s, derr, derr_help, derr_expected_found};
+use goblin_ast::{SweepArm, SweepArmKind, SweepArmRepeat /*, ...*/};
 
 /// Like `s_help_site!`, but appends the Rust source site: `path/file.rs:LINE`.
 macro_rules! s_help_site {
@@ -7172,7 +7173,12 @@ impl<'t> Parser<'t> {
             self.suspend_colon_call -= 1;
 
             let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
-            let arm  = SweepArm { kind: SweepArmKind::AllBody, body: body_stmts, span: span.clone() };
+            let arm = SweepArm {
+                kind:   SweepArmKind::AllBody,
+                repeat: SweepArmRepeat::All,   // default behavior
+                body:   body_stmts,
+                span:   span.clone(),
+            };
             return Ok(Stmt::Sweep(SweepStmt { mode, targets, arms: vec![arm], span }));
         }
 
@@ -7222,7 +7228,7 @@ impl<'t> Parser<'t> {
             let arm_col =
                 self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(header_col);
 
-            let kind = self.parse_sweep_arm_header()?;
+            let (kind, repeat) = self.parse_sweep_arm_header()?;
             if !self.eat_op(":") {
                 self.suspend_colon_call -= 1;
                 return Err(s_help_site!("P09S2",
@@ -7253,7 +7259,12 @@ impl<'t> Parser<'t> {
                 .map(|t| t.span.clone())
                 .unwrap_or_else(|| self.toks[header_tok_i].span.clone());
 
-            arms.push(SweepArm { kind, body: body_stmts, span: arm_span });
+            arms.push(SweepArm {
+                kind,
+                repeat,
+                body:   body_stmts,
+                span:   arm_span,
+            });
 
             self.skip_newlines();
         }
@@ -7319,17 +7330,55 @@ impl<'t> Parser<'t> {
     }
 
     // "<str>" ":"   |   "<str>" "..." "<str>" ":"
-    fn parse_sweep_arm_header(&mut self) -> Result<ast::SweepArmKind, String> {
+    // [first|last] "<str>" ":"   |   [first|last] "<str>" "..." "<str>" ":"
+    fn parse_sweep_arm_header(&mut self) -> Result<(ast::SweepArmKind, ast::SweepArmRepeat), String> {
+        use goblin_lexer::TokenKind;
+        use ast::{SweepArmKind, SweepArmRepeat};
+
+        // Optional leading repeat modifier: first / last
+        let mut repeat = SweepArmRepeat::All;
+
+        if let Some(t) = self.peek() {
+            if let TokenKind::Ident = t.kind {
+                if let Some(name) = t.value.as_deref() {
+                    if name == "first" {
+                        repeat = SweepArmRepeat::First;
+                        self.i += 1;        // consume 'first'
+                        self.skip_newlines();
+                    } else if name == "last" {
+                        repeat = SweepArmRepeat::Last;
+                        self.i += 1;        // consume 'last'
+                        self.skip_newlines();
+                    }
+                }
+            }
+        }
+
+        // Now we require a string literal
         let start = self.eat_string_lit()
-            .ok_or_else(|| s_help_site!("P09A1","Expected a string literal at the start of a sweep arm","Examples: \"<h1>\" ... \"</h1>\" :  or  \"needle\" :"))?;
+            .ok_or_else(|| s_help_site!(
+                "P09A1",
+                "Expected a string literal at the start of a sweep arm",
+                "Examples: \"<h1>\" ... \"</h1>\" :  or  \"needle\" :"
+            ))?;
 
         if self.peek_op("...") {
             let _ = self.eat_op("...");
             let end = self.eat_string_lit()
-                .ok_or_else(|| s_help_site!("P09A2","Expected a string literal after '...' in sweep arm","Write: \"<a>\" ... \"</a>\" :"))?;
-            Ok(ast::SweepArmKind::Range { start, end })
+                .ok_or_else(|| s_help_site!(
+                    "P09A2",
+                    "Expected a string literal after '...' in sweep arm",
+                    "Write: \"<a>\" ... \"</a>\" :"
+                ))?;
+            Ok((
+                SweepArmKind::Range { start, end },
+                repeat,
+            ))
         } else {
-            Ok(ast::SweepArmKind::Pattern(start))
+            Ok((
+                SweepArmKind::Pattern(start),
+                repeat,
+            ))
         }
     }
 
