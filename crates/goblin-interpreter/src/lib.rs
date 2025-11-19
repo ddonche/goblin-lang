@@ -2,18 +2,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
-use goblin_ast as ast;
 use serde_json as sj;
 use serde_yaml  as sy;
-use goblin_ast::BindMode;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use std::str::FromStr;
 use crate::diagnostics::rtcode;
-use goblin_diagnostics::Span;
 use regex::Regex;
 use std::collections::HashMap;
 use indexmap::IndexMap;
+use goblin_ast as ast;
+use goblin_ast::BindMode;
+use goblin_diagnostics::Span;
+use goblin_yall as yall;
 
 pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
@@ -637,6 +638,54 @@ fn sanitize_yaml_text(input: &str) -> String {
     s
 }
 
+// Y'all-specific YAML → Goblin Value, always uses Value::Map for mappings
+fn yall_yaml_to_value(v: sy::Value) -> Value {
+    eprintln!("yall_yaml_to_value input: {:?}", v);
+    let result = match v {
+        sy::Value::Mapping(m) => {
+            let mut out: BTreeMap<String, Value> = BTreeMap::new();
+            for (k, v2) in m {
+                let key = match k {
+                    sy::Value::String(s) => s,
+                    other => {
+                        let s = serde_yaml::to_string(&other)
+                            .unwrap_or_else(|_| format!("{other:?}"));
+                        s.trim().trim_matches('\n').to_owned()
+                    }
+                };
+                out.insert(key, yall_yaml_to_value(v2));
+            }
+            Value::Map(out)
+        }
+        sy::Value::Sequence(seq) => {
+            Value::Array(seq.into_iter().map(yall_yaml_to_value).collect())
+        }
+        sy::Value::String(s) => Value::Str(s),
+        sy::Value::Bool(b) => Value::Bool(b),
+        sy::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Str(n.to_string())
+            }
+        }
+        sy::Value::Null => Value::Nil,
+        other => {
+            let s = serde_yaml::to_string(&other)
+                .unwrap_or_else(|_| format!("{other:?}"));
+            Value::Str(s.trim().trim_matches('\n').to_owned())
+        }
+    };
+    eprintln!("yall_yaml_to_value output: {}", match &result {
+        Value::Map(_) => "Map",
+        Value::Str(_) => "Str", 
+        _ => "Other"
+    });
+    result
+}
+
 // tiny helper for yaml→Value (ordered)
 fn yaml_to_value(v: sy::Value) -> Value {
     match v {
@@ -1167,6 +1216,45 @@ fn cast_to_str(v: Value) -> Result<Value, Diag> {
         other                         => format!("{other}"),
     };
     Ok(Value::Str(s))
+}
+
+fn cast_to_map(val: Value) -> Result<Value, Diag> {
+    let text = cast_to_str(val)?;
+    
+    let s = match text {
+        Value::Str(s) => s,
+        _ => {
+            return Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    "R0330",
+                    "invalid-map-cast",
+                    "map(): cast_to_str did not return a string",
+                    synth_span(),
+                )
+                .with_help("This is an internal error. Please report this.")
+                .with_link("https://goblinlang.org/docs/errors#R0330")
+            )
+        }
+    };
+    
+    let mut map = BTreeMap::new();
+    
+    for line in s.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.contains(':') {
+            continue;
+        }
+        
+        let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            let key = parts[0].trim().to_string();
+            let val = parts[1].trim().to_string();
+            map.insert(key, Value::Str(val));
+        }
+    }
+    
+    Ok(Value::Map(map))
 }
 
 fn cast_to_pct(v: Value) -> Result<Value, Diag> {
@@ -2213,31 +2301,45 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         let ident  = inner_trim[pos + 2..].trim();
 
                         if !module.is_empty() && !ident.is_empty() {
-                            // ---------------------------
-                            // SPECIAL CASE: OVERRIDE::NAME
-                            // ---------------------------
+                            // --------------------------------------
+                            // SPECIAL CASE: OVERRIDE::NAME as a map
+                            // --------------------------------------
                             if module.eq_ignore_ascii_case("OVERRIDE") {
-                                // Goblin code is responsible for:
-                                //   override_key = "whatever"
-                                let key = match sess.get_var("override_key") {
-                                    Some(Value::Str(s)) => s.clone(),
-                                    Some(v)             => fmt_value_raw(v),
-                                    None                => String::from("default"),
-                                };
+                                if let Some(v) = sess.resolve_token_value(module, ident) {
+                                    if let Value::Map(map) = v {
+                                        // Use normalized_out (your page path) as the key
+                                        let current_key = match sess.get_var("normalized_out") {
+                                            Some(Value::Str(s)) => s.clone(),
+                                            Some(other)         => fmt_value_raw(other),
+                                            None                => String::new(),
+                                        };
 
-                                if let Some(Value::Map(map)) = sess.resolve_token_value(module, ident) {
-                                    if let Some(val) = map.get(&key).or_else(|| map.get("default")) {
-                                        out.push_str(&fmt_value_raw(val));
+                                        // Try exact match first, then "default"
+                                        if let Some(val) = map.get(&current_key)
+                                            .or_else(|| map.get("default"))
+                                        {
+                                            out.push_str(&fmt_value_raw(val));
+                                            i = j + 3;
+                                            continue;
+                                        } else {
+                                            out.push_str("[ERR: OVERRIDE missing default for ");
+                                            out.push_str(ident);
+                                            out.push(']');
+                                            i = j + 3;
+                                            continue;
+                                        }
+                                    } else {
+                                        // Not a map – just print whatever it is
+                                        out.push_str(&fmt_value_raw(&v));
                                         i = j + 3;
                                         continue;
                                     }
-                                    // If no key/default → fall through to normal token handling below.
                                 }
-                                // If not found / not a map → also fall through.
+                                // If not found at all, fall through to the normal token error branch
                             }
 
                             // ---------------------------
-                            // NORMAL TOKEN FAMILY (unchanged)
+                            // NORMAL TOKEN FAMILY
                             // ---------------------------
                             if let Some(v) = sess.resolve_token_value(module, ident) {
                                 out.push_str(&fmt_value_raw(&v));
@@ -2404,9 +2506,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         ast::Stmt::Import(import_stmt) => {
             use std::path::Path;
             use goblin_diagnostics::{Diagnostic, Severity};
-            use crate::diagnostics::rtcode;
-            type Diag = goblin_diagnostics::Diagnostic;
+            use crate::diagnostics::{rtcode, import_failed_focus_inner};
 
+            // Determine base_dir (current working directory)
             let base_dir = std::env::current_dir().map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
@@ -2415,112 +2517,253 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     format!("cannot get current directory: {}", e),
                     import_stmt.span.clone(),
                 )
-                .with_help("Ensure the working directory exists and is accessible (permissions, sandbox constraints).")
+                .with_help(
+                    "Ensure the working directory exists and is accessible (permissions, sandbox constraints).",
+                )
                 .with_help("If running in a container or sandbox, verify the process has a valid CWD.")
                 .with_link("https://goblinlang.org/docs/errors#R0501")
             })?;
 
-            // Execute a loaded module, wrapping inner errors back to the import site.
-            fn execute_module_wrapped(
-                sess: &mut Session,
-                namespace: String,
-                module_ast: ast::Module,
-                import_span: &goblin_diagnostics::Span,
-                import_name: &str,
-                base_dir: &Path,
-            ) -> Result<(), Diag> {
-                let old_module = sess.current_module.clone();
-                sess.current_module = Some(namespace);
-
-                // First pass: imports
-                for stmt in &module_ast.items {
-                    if matches!(stmt, ast::Stmt::Import(_)) {
-                        if let Err(inner) = eval_stmt(stmt, sess) {
-                            let wrapped = crate::diagnostics::import_failed_focus_inner(
-                                import_name,
-                                import_span.clone(),
-                                &inner,
-                                &base_dir,
-                            );
-                            sess.current_module = old_module;
-                            return Err(wrapped);
-                        }
-                    }
-                }
-                // Second pass: everything else
-                for stmt in &module_ast.items {
-                    if !matches!(stmt, ast::Stmt::Import(_)) {
-                        if let Err(inner) = eval_stmt(stmt, sess) {
-                            let wrapped = crate::diagnostics::import_failed_focus_inner(
-                                import_name,
-                                import_span.clone(),
-                                &inner,
-                                &base_dir,
-                            );
-                            sess.current_module = old_module;
-                            return Err(wrapped);
-                        }
-                    }
-                }
-
-                sess.current_module = old_module;
-                Ok(())
-            }
-
             match &import_stmt.items {
-                // import game/state as state
+                // --------------------------------------------------------------------
+                // Single path import:
+                //   import game/state as state
+                //   import modules/markdown_core/markdown as markdown_core
+                //   NEW: import "../site/portals/default/manifest.imports"
+                // --------------------------------------------------------------------
                 ast::ImportItems::Path(path) => {
-                    let (namespace, maybe_ast) = sess.modules
-                        .load_module(path, import_stmt.alias.as_deref(), &base_dir)
-                        .map_err(|msg| {
-                            // Turn the String into a proper Diagnostic so import_failed_* can wrap it.
+                    // Special-case: manifest import bundle (*.imports)
+                    if Path::new(path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        == Some("imports")
+                    {
+                        // For now, don't allow aliases with .imports – it doesn't make sense
+                        if import_stmt.alias.is_some() {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::IMPORT_IO, // reuse an existing code; you can add a dedicated one later
+                                    "import-manifest-alias",
+                                    "alias is not allowed when importing a .imports manifest file",
+                                    import_stmt.span.clone(),
+                                )
+                                .with_help("Use: import \"../site/portals/default/manifest.imports\" without an alias.")
+                                .with_link("https://goblinlang.org/docs/errors#R0501"),
+                            );
+                        }
+
+                        let manifest_path = base_dir.join(Path::new(path));
+
+                        // Read the manifest file
+                        let manifest_src = std::fs::read_to_string(&manifest_path).map_err(|e| {
                             let inner = Diagnostic::new_with_code(
                                 Severity::Error,
-                                rtcode::IMPORT_IO,          // R0501
+                                rtcode::IMPORT_IO, // R0501
                                 "import-io",
-                                format!("read error: {}", msg),
+                                format!("read error: {}", e),
                                 import_stmt.span.clone(),
                             )
                             .with_link("https://goblinlang.org/docs/errors#R0501");
-                            crate::diagnostics::import_failed_focus_inner(
-                                path,
+
+                            import_failed_focus_inner(
+                                &manifest_path.to_string_lossy(),
                                 import_stmt.span.clone(),
                                 &inner,
                                 &base_dir,
                             )
                         })?;
 
+                        // Each non-empty, non-comment line must be:  import <path> [as alias]
+                        for (idx, line) in manifest_src.lines().enumerate() {
+                            let trimmed = line.trim();
+
+                            // Skip blanks & simple comment styles
+                            if trimmed.is_empty()
+                                || trimmed.starts_with("///")
+                                || trimmed.starts_with("//")
+                                || trimmed.starts_with('#')
+                            {
+                                continue;
+                            }
+
+                            if !trimmed.starts_with("import ") {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::IMPORT_IO, // reuse
+                                        "import-manifest-syntax",
+                                        format!(
+                                            "only import statements are allowed in .imports files (offending line {}: '{}')",
+                                            idx + 1,
+                                            trimmed
+                                        ),
+                                        import_stmt.span.clone(),
+                                    )
+                                    .with_help("Use lines like: import modules/markdown_core/markdown as markdown_core")
+                                    .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                );
+                            }
+
+                            let rest = trimmed["import ".len()..].trim();
+                            if rest.is_empty() {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::IMPORT_IO,
+                                        "import-manifest-empty",
+                                        format!(
+                                            "missing module path in .imports file (line {})",
+                                            idx + 1
+                                        ),
+                                        import_stmt.span.clone(),
+                                    )
+                                    .with_help("Example: import modules/markdown_core/markdown as markdown_core")
+                                    .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                );
+                            }
+
+                            // Parse: <module_path> [as alias]
+                            let mut parts = rest.split_whitespace();
+                            let module_path = parts.next().unwrap(); // safe: rest not empty
+
+                            let mut alias: Option<String> = None;
+
+                            if let Some(next) = parts.next() {
+                                if next == "as" {
+                                    if let Some(alias_tok) = parts.next() {
+                                        alias = Some(alias_tok.to_string());
+                                    } else {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                rtcode::IMPORT_IO,
+                                                "import-manifest-alias-missing",
+                                                format!(
+                                                    "expected alias after 'as' in .imports file (line {})",
+                                                    idx + 1
+                                                ),
+                                                import_stmt.span.clone(),
+                                            )
+                                            .with_help("Example: import modules/markdown_core/markdown as markdown_core")
+                                            .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                        );
+                                    }
+                                } else {
+                                    // Unexpected token – keep it strict so manifests don't go weird
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMPORT_IO,
+                                            "import-manifest-unexpected-token",
+                                            format!(
+                                                "unexpected token '{}' in .imports file (line {})",
+                                                next,
+                                                idx + 1
+                                            ),
+                                            import_stmt.span.clone(),
+                                        )
+                                        .with_help("Use: import <path> [as alias]")
+                                        .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                    );
+                                }
+                            }
+
+                            // Reuse the normal module loader + executor
+                            let (namespace, maybe_ast) = sess
+                                .modules
+                                .load_module(module_path, alias.as_deref(), &base_dir)
+                                .map_err(|msg| {
+                                    let inner = Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::IMPORT_IO, // R0501
+                                        "import-io",
+                                        format!("read error: {}", msg),
+                                        import_stmt.span.clone(),
+                                    )
+                                    .with_link("https://goblinlang.org/docs/errors#R0501");
+
+                                    import_failed_focus_inner(
+                                        module_path,
+                                        import_stmt.span.clone(),
+                                        &inner,
+                                        &base_dir,
+                                    )
+                                })?;
+
+                            if let Some(module_ast) = maybe_ast {
+                                execute_module_wrapped(
+                                    sess,
+                                    namespace,
+                                    module_ast,
+                                    &import_stmt.span,
+                                    module_path,
+                                    &base_dir.as_path(),
+                                )?;
+                            }
+                        }
+
+                        // All manifest imports processed; nothing else to do for this stmt
+                        return Ok(None);
+                    }
+
+                    // Normal path import (existing behavior)
+                    let (namespace, maybe_ast) = sess
+                        .modules
+                        .load_module(path, import_stmt.alias.as_deref(), &base_dir)
+                        .map_err(|msg| {
+                            // Turn the String into a proper Diagnostic so import_failed_* can wrap it.
+                            let inner = Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO, // R0501
+                                "import-io",
+                                format!("read error: {}", msg),
+                                import_stmt.span.clone(),
+                            )
+                            .with_link("https://goblinlang.org/docs/errors#R0501");
+
+                            import_failed_focus_inner(path, import_stmt.span.clone(), &inner, &base_dir)
+                        })?;
+
                     if let Some(module_ast) = maybe_ast {
-                        // ModuleCache is already populated by load_module; now execute it.
                         execute_module_wrapped(
                             sess,
                             namespace,
                             module_ast,
                             &import_stmt.span,
                             path,
-                            &base_dir,
+                            &base_dir.as_path(),
                         )?;
                     }
                 }
 
-                // import { hero, world as w } from game
+                // --------------------------------------------------------------------
+                // Named imports:
+                //   import { hero, world as w } from game
+                //
+                // This expands to separate module loads:
+                //   game/hero   as hero
+                //   game/world  as w
+                // --------------------------------------------------------------------
                 ast::ImportItems::Named { items, source } => {
                     for item in items {
                         let full_path = format!("{}/{}", source, item.name);
-                        let ns_alias  = item.alias.as_deref().unwrap_or(&item.name);
+                        let ns_alias = item.alias.as_deref().unwrap_or(&item.name);
 
-                        let (namespace, maybe_ast) = sess.modules
+                        let (namespace, maybe_ast) = sess
+                            .modules
                             .load_module(&full_path, Some(ns_alias), &base_dir)
                             .map_err(|msg| {
                                 let inner = Diagnostic::new_with_code(
                                     Severity::Error,
-                                    rtcode::IMPORT_IO,      // R0501
+                                    rtcode::IMPORT_IO, // R0501
                                     "import-io",
                                     format!("read error: {}", msg),
                                     import_stmt.span.clone(),
                                 )
                                 .with_link("https://goblinlang.org/docs/errors#R0501");
-                                crate::diagnostics::import_failed_focus_inner(
+
+                                import_failed_focus_inner(
                                     &full_path,
                                     import_stmt.span.clone(),
                                     &inner,
@@ -2535,7 +2778,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 module_ast,
                                 &import_stmt.span,
                                 &full_path,
-                                &base_dir,
+                                &base_dir.as_path(),
                             )?;
                         }
                     }
@@ -3130,6 +3373,19 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
             // evaluate RHS once
             let rhs = eval_expr(&b.expr, sess)?;
+
+            // SPECIAL: override::name sugar → built-in OVERRIDE token
+            if let Some(pos) = name.find("::") {
+                let prefix = &name[..pos];
+                let ident  = &name[pos + 2..];
+
+                if prefix.eq_ignore_ascii_case("override") && !ident.is_empty() {
+                    // Uppercase ident so {{{OVERRIDE::BODY}}} matches override::body
+                    let ident_upper = ident.to_ascii_uppercase();
+                    sess.register_token_value("OVERRIDE", &ident_upper, rhs.clone());
+                }
+            }
+
             match b.mode {
                 BindMode::Shadow => {
                     // Always create a new local in the *current* frame.
@@ -3258,6 +3514,57 @@ fn expect_array<'a>(e: &'a ast::Expr, label: &str, sp: Span) -> Result<&'a [ast:
             .with_link("https://goblinlang.org/docs/errors#P0314")
         )
     }
+}
+
+// Execute a loaded module, wrapping inner errors back to the import site.
+fn execute_module_wrapped(
+    sess: &mut Session,
+    namespace: String,
+    module_ast: ast::Module,
+    import_span: &goblin_diagnostics::Span,
+    import_name: &str,
+    base_dir: &std::path::Path,
+) -> Result<(), goblin_diagnostics::Diagnostic> {
+    use goblin_diagnostics::{Diagnostic, Severity};
+    use crate::diagnostics::{import_failed_focus_inner, rtcode};
+
+    let old_module = sess.current_module.clone();
+    sess.current_module = Some(namespace);
+
+    // First pass: imports
+    for stmt in &module_ast.items {
+        if matches!(stmt, ast::Stmt::Import(_)) {
+            if let Err(inner) = eval_stmt(stmt, sess) {
+                let wrapped = import_failed_focus_inner(
+                    import_name,
+                    import_span.clone(),
+                    &inner,
+                    base_dir,
+                );
+                sess.current_module = old_module;
+                return Err(wrapped);
+            }
+        }
+    }
+
+    // Second pass: everything else
+    for stmt in &module_ast.items {
+        if !matches!(stmt, ast::Stmt::Import(_)) {
+            if let Err(inner) = eval_stmt(stmt, sess) {
+                let wrapped = import_failed_focus_inner(
+                    import_name,
+                    import_span.clone(),
+                    &inner,
+                    base_dir,
+                );
+                sess.current_module = old_module;
+                return Err(wrapped);
+            }
+        }
+    }
+
+    sess.current_module = old_module;
+    Ok(())
 }
 
 // Try a shadowable builtin. Returns Ok(Some(Value)) if handled, Ok(None) if unknown.
@@ -6294,6 +6601,69 @@ fn call_action_by_name(
             Value::Str(crate::modules::markdown::md_to_html(&s))
         }
 
+        "invoke" => {
+            // ---- ARITY CHECK ----
+            if args.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,   // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {}).", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: invoke(\"module::action\", ctx)")
+                    .with_help("The first argument must be a string naming the action.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            // ---- ARG[0] MUST BE STRING ----
+            let raw = match &args[0] {
+                Value::Str(s) => s.clone(),
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH,   // T0205
+                            "type-mismatch",
+                            "The first argument to invoke() must be a string.",
+                            sp.clone(),
+                        )
+                        .with_help("Example: invoke(\"trailboss::rewrite_wiki_links\", ctx)")
+                        .with_link("https://goblinlang.org/docs/errors#T0205")
+                    );
+                }
+            };
+
+            // ---- VALIDATE "module::action" ----
+            if !raw.contains("::") {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::IMPORT_FAILED,  // R0502
+                        "invalid-action-name",
+                        &format!("‘{}’ is not a valid fully-qualified action name.", raw),
+                        sp.clone(),
+                    )
+                    .with_help("Expected format: \"module::action\"")
+                    .with_link("https://goblinlang.org/docs/errors#R0502")
+                );
+            }
+
+            // ---- args are ALREADY evaluated ----
+            let arg1_val = args[1].clone();
+
+            // ---- DISPATCH ----
+            let out = call_action_by_name(sess, raw.as_str(), vec![arg1_val], sp.clone())
+                .map_err(|mut d| {
+                    d.code = crate::diagnostics::rtcode::IMPORT_FAILED; // R0502
+                    d
+                })?;
+
+            out
+        }
+
         // ----- Introspection -----
         "valtype" | "vt" => {
             arity(1)?;
@@ -7072,6 +7442,10 @@ fn call_action_by_name(
         "pct" | "percent" => {
             arity(1)?;
             cast_to_pct(args[0].clone())?
+        }
+        "to_map" | "m" => {
+            arity(1)?;
+            cast_to_map(args[0].clone())?
         }
         "round" => {
             arity(1)?;
@@ -8610,25 +8984,82 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Reap, &sp, sess)?
         }
 
-        // ----- YAML -----
-        "yaml_parse" => {
-            if args.len() != 1 { /* your existing wrong-arity error */ }
+        // ----- YALL -----
+        "yall_parse" => {
+            if args.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘yall_parse’ takes exactly 2 arguments.")
+                    .with_help("Usage: yall_parse(text, label)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
 
-            let v0 = args[0].clone();
-            let s  = want_str(&v0, "yaml_parse")?; // your existing type check
+            let text  = want_str(&args[0], "yall_parse")?;
+            let label = want_str(&args[1], "yall_parse")?;
 
-            // Parse YAML text with order preserved
-            let vy: sy::Value = sy::from_str(&s).map_err(|e| diag_yaml(sp.clone(), e))?;
+            let yaml_val: sy::Value = match goblin_yall::yall_parse(&text, &label) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001
+                            "yaml-parse-failed",
+                            &format!("{}", e),
+                            sp.clone(),
+                        )
+                        .with_help("Ensure the input is valid Y’all config (2-space indents, no tabs, ‘key: value’).")
+                        .with_link("https://goblinlang.org/docs/errors#Y0001"),
+                    );
+                }
+            };
 
-            // Directly convert to Value with MapOrd (insertion order)
-            yaml_to_value(vy)
+            yall_yaml_to_value(yaml_val)
         }
 
-        "yaml_sanitize" => {
-            arity(1)?;
-            let text = want_str(&args[0], "yaml_sanitize")?;
-            let sanitized = sanitize_yaml_text(&text);
-            Value::Str(sanitized)
+        "yall_parse_file" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("‘yall_parse_file’ takes exactly 1 argument.")
+                    .with_help("Usage: yall_parse_file(path)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let path = want_str(&args[0], "yall_parse_file")?;
+
+            let yaml_val: sy::Value = match goblin_yall::yall_parse_file(&path) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001
+                            "yaml-parse-failed",
+                            &format!("{}", e),
+                            sp.clone(),
+                        )
+                        .with_help("Ensure the file exists and contains valid Y’all config.")
+                        .with_link("https://goblinlang.org/docs/errors#Y0001"),
+                    );
+                }
+            };
+
+            yall_yaml_to_value(yaml_val)
         }
 
         // ----- JSON -----
@@ -12145,6 +12576,35 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Index(base, idx, sp) => {
             let b = eval_expr(base, sess)?;
             let i = eval_expr(idx, sess)?;
+
+            eprintln!("DEBUG INDEX: b full debug = {:?}", b);
+            eprintln!("DEBUG INDEX: b variant = {}", match &b {
+                Value::Map(_) => "Map",
+                Value::MapOrd(_) => "MapOrd",
+                Value::Object { .. } => "Object",
+                Value::Enum { .. } => "Enum",
+                Value::Formatted(_, _) => "Formatted",
+                Value::Int(_) => "Int",
+                Value::Float(_) => "Float",
+                Value::Big(_) => "Big",
+                Value::Str(_) => "Str",
+                Value::Char(_) => "Char",
+                Value::Bool(_) => "Bool",
+                Value::Pct(_) => "Pct",
+                Value::Array(_) => "Array",
+                Value::Pair(_, _) => "Pair",
+                Value::Seq(_) => "Seq",
+                Value::Nil => "Nil",
+                Value::Unit => "Unit",
+                Value::CtrlSkip => "CtrlSkip",
+                Value::CtrlStop => "CtrlStop",
+            });
+            eprintln!("DEBUG INDEX: i variant = {}", match &i {
+                Value::Str(_) => "Str",
+                Value::Char(_) => "Char",
+                _ => "Other"  
+            });
+
             match (b, i) {
                 (Value::Array(items), Value::Int(n)) => {
                     if n < 0 {
@@ -12409,7 +12869,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // Type/Meta
                     "valtype" | "vt" | "backend" | "metrics" |
                     // Postfix casts
-                    "int" | "float" | "str" | "bool" | "big" | "pct"
+                    "int" | "float" | "str" | "bool" | "big" | "pct" | "to_map"
                 ) || name.starts_with("is_");
 
             if is_builtin_method {
@@ -12549,7 +13009,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             "replace" |
                             "round" | "floor" | "ceil" | "abs" | "sqrt" |
                             "valtype" | "vt" | "backend" | "metrics" |
-                            "int" | "float" | "str" | "bool" | "big" | "pct"
+                            "int" | "float" | "str" | "bool" | "big" | "pct" | "to_map"
                         ) || name.starts_with("is_");
 
                     if is_builtin_method {

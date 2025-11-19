@@ -1,0 +1,14 @@
+site:
+  title: "Y'all Test Site"
+  debug: true
+  retries: 3
+
+tags:
+  - docs
+  - dev
+  - "we love y'all"
+
+nested:
+  level1:
+    level2:
+      value: 42

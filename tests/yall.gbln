@@ -1,0 +1,32 @@
+/// Test Y'all using a file
+act demo_yall_file()
+    cfg = yall_parse_file("test.yall")
+    say "DEBUG: " + valtype(cfg)
+    say "DEBUG: cfg is = " + cfg
+    site_val = cfg["site"]  /// Try to extract it into a variable first
+    say "Got site_val"
+end
+
+/// Test Y'all using an inline string
+act demo_yall_inline()
+    text = """
+site:
+  title: \"Inline Y'all\"
+  debug: false
+  retries: 5
+
+tags:
+  - inline
+  - test
+"""
+
+    cfg = yall_parse(text, "inline-demo")
+
+    say "== Y'all inline parse =="
+    say "site.title  = " + cfg["site"]["title"]
+    say "site.debug  = " + cfg["site"]["debug"]
+    say "site.retries= " + cfg["site"]["retries"]
+end
+
+demo_yall_inline()
+demo_yall_file()

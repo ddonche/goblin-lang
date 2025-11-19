@@ -5346,7 +5346,9 @@ impl<'t> Parser<'t> {
         
         // Check for '{' (grouped imports)
         if self.eat_op("{") {
-            // Parse: import { item1, item2 as alias2 } from source
+            // -----------------------------
+            // GROUPED IMPORTS (unchanged)
+            // -----------------------------
             self.skip_newlines();
             
             let mut items = Vec::new();
@@ -5354,7 +5356,11 @@ impl<'t> Parser<'t> {
             // Parse comma-separated list of items
             loop {
                 let Some(name) = self.eat_ident() else {
-                    return Err(s_help_site!("P1010", "Expected item name", "import { hero, Combat } from game"));
+                    return Err(s_help_site!(
+                        "P1010",
+                        "Expected item name",
+                        "import { hero, Combat } from game"
+                    ));
                 };
                 
                 // Optional 'as alias'
@@ -5382,14 +5388,22 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
             
             if !self.eat_op("}") {
-                return Err(s_help_site!("P1011", "Expected '}' to close import list", "import { hero, Combat } from game"));
+                return Err(s_help_site!(
+                    "P1011",
+                    "Expected '}' to close import list",
+                    "import { hero, Combat } from game"
+                ));
             }
             
             self.skip_newlines();
             
             // Expect 'from'
             if self.peek_ident() != Some("from") {
-                return Err(s_help_site!("P1012", "Expected 'from' after import list", "import { hero, Combat } from game"));
+                return Err(s_help_site!(
+                    "P1012",
+                    "Expected 'from' after import list",
+                    "import { hero, Combat } from game"
+                ));
             }
             self.i += 1; // eat 'from'
             
@@ -5397,7 +5411,11 @@ impl<'t> Parser<'t> {
             
             // Parse source (single identifier or path)
             let Some(source) = self.eat_ident() else {
-                return Err(s_help_site!("P1013", "Expected source path after 'from'", "import { hero } from game"));
+                return Err(s_help_site!(
+                    "P1013",
+                    "Expected source path after 'from'",
+                    "import { hero } from game"
+                ));
             };
             
             Ok(ast::Stmt::Import(ast::ImportStmt {
@@ -5406,11 +5424,42 @@ impl<'t> Parser<'t> {
                 span: start_span,
             }))
         } else {
-            // Parse: import game/hero or import game/hero as h
+            // -------------------------------------------------
+            // SINGLE IMPORT:
+            //   - import game/hero as h              (old)
+            //   - import "../site/.../file.gbln"     (new)
+            //   - import "../site/.../manifest.imports"
+            // -------------------------------------------------
+
+            // 1) FIRST: try a string literal path
+            if let Some(path) = self.eat_string_lit() {
+                self.skip_newlines();
+
+                // Optional 'as alias' even with string imports:
+                //   import "../foo/bar.gbln" as bar
+                let alias = if self.peek_ident() == Some("as") {
+                    self.i += 1; // eat 'as'
+                    self.eat_ident()
+                } else {
+                    None
+                };
+
+                return Ok(ast::Stmt::Import(ast::ImportStmt {
+                    items: ast::ImportItems::Path(path),
+                    alias,
+                    span: start_span,
+                }));
+            }
+
+            // 2) FALLBACK: old IDENT / path-parts behavior
             let mut path_parts = Vec::new();
             loop {
                 let Some(part) = self.eat_ident() else {
-                    return Err(s_help_site!("P1002", "Expected module path after 'import'", "import game/hero"));
+                    return Err(s_help_site!(
+                        "P1002",
+                        "Expected module path after 'import'",
+                        "import game/hero"
+                    ));
                 };
                 path_parts.push(part);
                 
