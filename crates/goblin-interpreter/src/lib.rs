@@ -4541,6 +4541,7 @@ fn collection_operation(
                     };
 
                     match &op {
+                        // grab_where / reap_where on a map → filter entries by *value* predicate
                         Operation::Grab | Operation::Reap => {
                             let mut out_map = BTreeMap::new();
                             for (k, v) in map {
@@ -4550,17 +4551,52 @@ fn collection_operation(
                             }
                             Ok(Value::Map(out_map))
                         }
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                rtcode::OP_NOT_IMPLEMENTED, // R0504
-                                "op-not-implemented",
-                                "operation not yet implemented for maps with where",
-                                sp.clone(),
+
+                        // update_where!(map, pred, new_value)
+                        // For every entry whose VALUE satisfies the predicate, replace the value.
+                        Operation::Update(new_val) => {
+                            let mut out_map = map.clone();
+                            for (k, v) in map {
+                                if matches_pred(v.clone())? {
+                                    out_map.insert(k.clone(), new_val.clone());
+                                }
+                            }
+                            Ok(Value::Map(out_map))
+                        }
+
+                        // delete_where!(map, pred)
+                        // Drop any entries whose VALUE satisfies the predicate.
+                        Operation::Delete => {
+                            let mut out_map = map.clone();
+                            let mut to_remove: Vec<String> = Vec::new();
+
+                            for (k, v) in map {
+                                if matches_pred(v.clone())? {
+                                    to_remove.push(k.clone());
+                                }
+                            }
+
+                            for k in to_remove {
+                                out_map.remove(&k);
+                            }
+
+                            Ok(Value::Map(out_map))
+                        }
+
+                        // put_where! on a map doesn’t really make sense: which key?
+                        Operation::Put(_) => {
+                            Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::OP_NOT_MEANINGFUL, // R0503
+                                    "op-not-meaningful",
+                                    "put_where is not meaningful for maps",
+                                    sp.clone(),
+                                )
+                                .with_help("Use put_at/update_at with a specific key instead.")
+                                .with_link("https://goblinlang.org/docs/errors#R0503")
                             )
-                            .with_help("Currently only 'grab/reap where' is supported for maps.")
-                            .with_link("https://goblinlang.org/docs/errors#R0504")
-                        ),
+                        }
                     }
                 }
 
@@ -6160,6 +6196,137 @@ fn call_action_by_name(
     sp: Span,
 ) -> Result<Value, Diag> {
 
+    // ===== NEW: fully-qualified "module::action" support =====
+    if let Some((ns, action_name)) = name.split_once("::") {
+        use goblin_diagnostics::{Diagnostic, Severity};
+
+        // Look up exported item from that module
+        if let Some(exported) = sess.modules.get_export(ns, action_name).cloned() {
+            match exported {
+                crate::modules::ExportedItem::Action(action_decl) => {
+                    let params = &action_decl.params;
+
+                    // Arity check (same style as your existing module branch)
+                    if args.len() > params.len() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                                "wrong-arity",
+                                &format!(
+                                    "Wrong number of arguments (expected {}, got {})",
+                                    params.len(),
+                                    args.len()
+                                ),
+                                sp.clone(),
+                            )
+                            .with_help(&format!("‘{}’ takes {} argument(s).", name, params.len()))
+                            .with_help("Provide all required arguments or remove extras.")
+                        );
+                    }
+
+                    // Bind params (using defaults where needed)
+                    let mut bound: Vec<(String, Value)> = Vec::with_capacity(params.len());
+                    for (i, p) in params.iter().enumerate() {
+                        if i < args.len() {
+                            bound.push((p.name.clone(), args[i].clone()));
+                        } else if let Some(def_e) = &p.default {
+                            let v = eval_expr(def_e, sess)?;
+                            bound.push((p.name.clone(), v));
+                        } else {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                                    "wrong-arity",
+                                    &format!(
+                                        "Wrong number of arguments (expected {}, got {})",
+                                        params.len(),
+                                        args.len()
+                                    ),
+                                    sp.clone(),
+                                )
+                                .with_help(&format!("Missing required argument ‘{}’.", p.name))
+                                .with_help("Provide all required arguments or define defaults.")
+                            );
+                        }
+                    }
+
+                    // New frame + correct module context
+                    let old_module = sess.current_module.clone();
+                    sess.current_module = Some(ns.to_string());
+                    sess.push_frame();
+                    for (k, v) in bound {
+                        sess.set_var(k, v);
+                    }
+
+                    // Execute body (same semantics as your other action paths)
+                    let ret = {
+                        match &action_decl.body {
+                            ast::ActionBody::Block(stmts) => {
+                                let mut last = Value::Unit;
+                                for st in stmts {
+                                    if let Some(v) = eval_stmt(st, sess)? {
+                                        match v {
+                                            Value::CtrlSkip => { /* keep going */ }
+                                            Value::CtrlStop => {
+                                                let rv = sess
+                                                    .get_var("__return__")
+                                                    .cloned()
+                                                    .unwrap_or(Value::Nil);
+                                                sess.pop_frame();
+                                                sess.current_module = old_module;
+                                                return Ok(rv);
+                                            }
+                                            other => last = other,
+                                        }
+                                    }
+                                }
+                                last
+                            }
+                            ast::ActionBody::Expr(expr) => {
+                                // single-line action: implicit return
+                                eval_expr(expr, sess)?
+                            }
+                        }
+                    };
+
+                    sess.pop_frame();
+                    sess.current_module = old_module;
+                    return Ok(ret);
+                }
+
+                // Namespace exists but item isn’t an action
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::NOT_CALLABLE, // M0002
+                            "not-callable",
+                            &format!("‘{}’ is not callable", name),
+                            sp.clone(),
+                        )
+                        .with_help("invoke() can only call exported actions.")
+                        .with_link("https://goblinlang.org/docs/errors#M0002"),
+                    );
+                }
+            }
+        } else {
+            // No such export in that module
+            return Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::IMPORT_FAILED, // R0502
+                    "unknown-action",
+                    &format!("unknown action ‘{}’", name),
+                    sp.clone(),
+                )
+                .with_help("Check the action name or import the module that provides it.")
+                .with_link("https://goblinlang.org/docs/errors#R0502"),
+            );
+        }
+    }
+
     // FIRST: Check current module's exports
     if let Some(ref module_name) = sess.current_module.clone() {
         if let Some(crate::modules::ExportedItem::Action(action_decl)) = sess.modules.get_export(&module_name, name) {
@@ -6601,18 +6768,22 @@ fn call_action_by_name(
             Value::Str(crate::modules::markdown::md_to_html(&s))
         }
 
+        // ----- DYNAMIC DISPATCH: invoke("name", ...) or invoke("ns::name", ...) -----
         "invoke" => {
-            // ---- ARITY CHECK ----
-            if args.len() != 2 {
+            use goblin_diagnostics::{Diagnostic, Severity};
+            use crate::diagnostics::rtcode;
+
+            // Need at least the name + one arg
+            if args.len() < 2 {
                 return Err(
                     Diagnostic::new_with_code(
                         Severity::Error,
-                        crate::diagnostics::rtcode::WRONG_ARITY,   // R0301
+                        rtcode::WRONG_ARITY,   // R0301
                         "wrong-arity",
-                        &format!("Wrong number of arguments (expected 2, got {}).", args.len()),
+                        &format!("Wrong number of arguments (expected at least 2, got {}).", args.len()),
                         sp.clone(),
                     )
-                    .with_help("Usage: invoke(\"module::action\", ctx)")
+                    .with_help("Usage: invoke(\"name\", [arg1, arg2, ...]) or invoke(\"name\", arg1, arg2, ...)")
                     .with_help("The first argument must be a string naming the action.")
                     .with_link("https://goblinlang.org/docs/errors#R0301")
                 );
@@ -6625,7 +6796,7 @@ fn call_action_by_name(
                     return Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            crate::diagnostics::rtcode::TYPE_MISMATCH,   // T0205
+                            rtcode::TYPE_MISMATCH,   // T0205
                             "type-mismatch",
                             "The first argument to invoke() must be a string.",
                             sp.clone(),
@@ -6636,28 +6807,142 @@ fn call_action_by_name(
                 }
             };
 
-            // ---- VALIDATE "module::action" ----
-            if !raw.contains("::") {
+            if raw.is_empty() {
                 return Err(
                     Diagnostic::new_with_code(
                         Severity::Error,
-                        crate::diagnostics::rtcode::IMPORT_FAILED,  // R0502
+                        rtcode::IMPORT_FAILED, // R0502
                         "invalid-action-name",
-                        &format!("‘{}’ is not a valid fully-qualified action name.", raw),
+                        "Empty action name passed to invoke()",
                         sp.clone(),
                     )
-                    .with_help("Expected format: \"module::action\"")
+                    .with_help("Pass a non-empty string like \"foo\" or \"mod::foo\".")
                     .with_link("https://goblinlang.org/docs/errors#R0502")
                 );
             }
 
-            // ---- args are ALREADY evaluated ----
-            let arg1_val = args[1].clone();
+            // ---- FIGURE OUT WHAT TO FORWARD ----
+            // Form 1: invoke("name", [a, b, c])
+            // Form 2: invoke("name", a, b, c)
+            let forwarded_args: Vec<Value> = if args.len() == 2 {
+                match &args[1] {
+                    Value::Array(vs) => vs.clone(),      // your [html, ctx] case
+                    other => vec![other.clone()],        // single non-array arg
+                }
+            } else {
+                args[1..].to_vec()                      // invoke("name", a, b, c)
+            };
 
-            // ---- DISPATCH ----
-            let out = call_action_by_name(sess, raw.as_str(), vec![arg1_val], sp.clone())
+            // ---- CASE 1: namespaced form "ns::action" -> module export ----
+            if let Some((ns, action_name)) = raw.split_once("::") {
+                if let Some(crate::modules::ExportedItem::Action(action_decl)) =
+                    sess.modules.get_export(ns, action_name).cloned()
+                {
+                    let params = &action_decl.params;
+
+                    if forwarded_args.len() > params.len() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::WRONG_ARITY, // R0301
+                                "wrong-arity",
+                                &format!(
+                                    "Wrong number of arguments (expected {}, got {})",
+                                    params.len(),
+                                    forwarded_args.len()
+                                ),
+                                sp.clone(),
+                            )
+                            .with_help(&format!("‘{}::{}’ takes {} argument(s).", ns, action_name, params.len()))
+                            .with_help("Provide all required arguments or remove extras.")
+                            .with_link("https://goblinlang.org/docs/errors#R0301")
+                        );
+                    }
+
+                    // Bind parameters (with defaults), basically mirroring NsCall logic
+                    let mut bound: Vec<(String, Value)> = Vec::with_capacity(params.len());
+                    for (i, p) in params.iter().enumerate() {
+                        if i < forwarded_args.len() {
+                            bound.push((p.name.clone(), forwarded_args[i].clone()));
+                        } else if let Some(def_e) = &p.default {
+                            let v = eval_expr(def_e, sess)?;
+                            bound.push((p.name.clone(), v));
+                        } else {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::MISSING_ARGUMENT, // R0302
+                                    "missing-argument",
+                                    &format!("missing argument for parameter ‘{}’", p.name),
+                                    sp.clone(),
+                                )
+                                .with_help("Provide a value for this parameter or define a default.")
+                                .with_link("https://goblinlang.org/docs/errors#R0302")
+                            );
+                        }
+                    }
+
+                    // New scope for parameters
+                    sess.env.push(std::collections::BTreeMap::new());
+                    sess.consts.push(std::collections::BTreeMap::new());
+                    let old_module = sess.current_module.clone();
+                    sess.current_module = Some(ns.to_string());
+
+                    // Execute body
+                    let result = {
+                        match &action_decl.body {
+                            ast::ActionBody::Block(stmts) => {
+                                let mut last_val = Value::Unit;
+                                for stmt in stmts {
+                                    if let Some(v) = eval_stmt(stmt, sess)? {
+                                        match v {
+                                            Value::CtrlSkip => { /* continue */ }
+                                            Value::CtrlStop => {
+                                                let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
+                                                sess.env.pop();
+                                                sess.consts.pop();
+                                                sess.current_module = old_module;
+                                                return Ok(rv);
+                                            }
+                                            other => last_val = other,
+                                        }
+                                    }
+                                }
+                                last_val
+                            }
+                            ast::ActionBody::Expr(expr) => {
+                                eval_expr(expr, sess)?
+                            }
+                        }
+                    };
+
+                    // restore
+                    sess.current_module = old_module;
+                    sess.env.pop();
+                    sess.consts.pop();
+
+                    return Ok(result);
+                } else {
+                    // Namespaced but not found as module export
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            rtcode::IMPORT_FAILED, // R0502
+                            "unknown-action",
+                            &format!("unknown action ‘{}’", raw),
+                            sp.clone(),
+                        )
+                        .with_help("Check the module path and action name, and ensure the module is imported.")
+                        .with_link("https://goblinlang.org/docs/errors#R0502")
+                    );
+                }
+            }
+
+            // ---- CASE 2: bare name "foo" -> user actions / builtins via call_action_by_name ----
+            let out = call_action_by_name(sess, raw.as_str(), forwarded_args, sp.clone())
                 .map_err(|mut d| {
-                    d.code = crate::diagnostics::rtcode::IMPORT_FAILED; // R0502
+                    // normalize as IMPORT_FAILED when used via invoke()
+                    d.code = rtcode::IMPORT_FAILED; // R0502
                     d
                 })?;
 

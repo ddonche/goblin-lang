@@ -1,0 +1,5 @@
+text = "# Hello\n\nThis is *markdown*."
+html = md_to_html(text)
+
+say "=== RAW HTML FROM md_to_html ==="
+say html

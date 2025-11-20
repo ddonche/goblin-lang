@@ -159,16 +159,53 @@ pub fn yall_validate(text: &str, label: &str) -> Result<(), YallError> {
             continue;
         }
 
+        // Lines that are pure comments / ignorable already handled by is_ignorable_line.
         if looks_like_url(trimmed) {
             continue;
         }
 
-        // skip fully quoted lines
+        // If the *entire* trimmed line is a quoted string, treat it as raw.
         if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
             continue;
         }
 
-        if let Some(pos) = trimmed.find(':') {
+        // ---- COLON RULES --------------------------------------------
+        // We ONLY care about a "mapping colon": a ':' that is:
+        //  - not inside a double-quoted string
+        //  - not part of "://"
+        //  - anywhere on the line (we don't care about exact key syntax here)
+        let mut in_string = false;
+        let bytes = trimmed.as_bytes();
+        let len = bytes.len();
+        let mut mapping_colon_pos: Option<usize> = None;
+
+        let mut i = 0;
+        while i < len {
+            let c = bytes[i] as char;
+
+            if c == '"' {
+                // Toggle string mode; we treat everything inside as raw.
+                in_string = !in_string;
+                i += 1;
+                continue;
+            }
+
+            if c == ':' && !in_string {
+                // Skip URL-like "://"
+                if i + 2 < len && &trimmed[i..i + 3] == "://" {
+                    i += 1;
+                    continue;
+                }
+
+                // This is our mapping colon.
+                mapping_colon_pos = Some(i);
+                break;
+            }
+
+            i += 1;
+        }
+
+        if let Some(pos) = mapping_colon_pos {
             // Everything after the colon
             let rest = &trimmed[pos + 1..];
 
@@ -178,15 +215,18 @@ pub fn yall_validate(text: &str, label: &str) -> Result<(), YallError> {
             }
 
             // Otherwise, require "key: value" (space after colon)
-            let after = rest.chars().next().unwrap();
-            if after != ' ' {
-                return Err(YallError::new(
-                    label,
-                    line_no,
-                    "need space after colon (use 'key: value')",
-                ));
+            let mut chars = rest.chars();
+            if let Some(after) = chars.next() {
+                if after != ' ' {
+                    return Err(YallError::new(
+                        label,
+                        line_no,
+                        "need space after colon (use 'key: value')",
+                    ));
+                }
             }
         }
+        // ---- END COLON RULES ----------------------------------------
     }
 
     Ok(())
