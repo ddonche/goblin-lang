@@ -4834,17 +4834,22 @@ fn collection_operation(
                     match &op {
                         Operation::Grab | Operation::Reap => Ok(Value::Map(map.clone())),
                         Operation::Delete => Ok(Value::Map(BTreeMap::new())),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                rtcode::OP_NOT_MEANINGFUL, // R0503
-                                "op-not-meaningful",
-                                "operation not meaningful for maps in 'all' position",
-                                sp.clone(),
-                            )
-                            .with_help("Use Position::At with a key, or 'grab/reap where' for filtering.")
-                            .with_link("https://goblinlang.org/docs/errors#R0503")
-                        ),
+                        Operation::Update(v) | Operation::Put(v) => {
+                            match v {
+                                Value::Map(m2) => Ok(Value::Map(m2.clone())),
+                                _ => Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::TYPE_MISMATCH, // T0205
+                                        "type-mismatch",
+                                        "update/put on a map expects a map value",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Pass a map value when replacing a map.")
+                                    .with_link("https://goblinlang.org/docs/errors#T0205")
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -5554,24 +5559,21 @@ fn collection_operation(
                     match &op {
                         Operation::Grab | Operation::Reap => Ok(Value::Str(s.clone())),
                         Operation::Delete => Ok(Value::Str(String::new())),
-                        Operation::Update(v) => {
-                            let sub = match v {
-                                Value::Str(t) => t,
-                                _ => {
-                                    return Err(
-                                        Diagnostic::new_with_code(
-                                            Severity::Error,
-                                            rtcode::TYPE_MISMATCH, // T0205
-                                            "type-mismatch",
-                                            "string update expects string",
-                                            sp.clone(),
-                                        )
-                                        .with_help("Use a string value for this string operation.")
-                                        .with_link("https://goblinlang.org/docs/errors#T0205")
-                                    );
-                                }
-                            };
-                            Ok(Value::Str(sub.repeat(len)))
+                        Operation::Update(v) | Operation::Put(v) => {
+                            match v {
+                                Value::Str(t) => Ok(Value::Str(t.clone())),
+                                _ => Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::TYPE_MISMATCH,
+                                        "type-mismatch",
+                                        "string update/put expects string",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Use a string value when replacing a string.")
+                                    .with_link("https://goblinlang.org/docs/errors#T0205")
+                                )
+                            }
                         }
                         _ => Err(
                             Diagnostic::new_with_code(
@@ -5581,7 +5583,7 @@ fn collection_operation(
                                 "operation not supported",
                                 sp.clone(),
                             )
-                            .with_help("Use grab/reap/delete/update/put with Position::First/Last/At/Where/All.")
+                            .with_help("Use grab/reap/delete/update/put with valid positions.")
                             .with_link("https://goblinlang.org/docs/errors#R0505")
                         ),
                     }
@@ -6170,18 +6172,23 @@ fn collection_operation(
                     match &op {
                         Operation::Grab | Operation::Reap => Ok(Value::Array(xs.to_vec())),
                         Operation::Delete => Ok(Value::Array(vec![])),
-                        Operation::Update(v) => Ok(Value::Array(vec![v.clone(); xs.len()])),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                rtcode::OP_NOT_SUPPORTED, // R0505
-                                "op-not-supported",
-                                "operation not supported",
-                                sp.clone(),
-                            )
-                            .with_help("Use grab/reap/delete/update/put with Position::First/Last/At/Where/All.")
-                            .with_link("https://goblinlang.org/docs/errors#R0505")
-                        ),
+                        Operation::Update(v) | Operation::Put(v) => {
+                            match v {
+                                Value::Array(arr) => Ok(Value::Array(arr.clone())),
+                                // optionally treat seq-like as array too, if you have that
+                                _ => Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::TYPE_MISMATCH,
+                                        "type-mismatch",
+                                        "update/put on an array expects an array value",
+                                        sp.clone(),
+                                    )
+                                    .with_help("Pass an array when replacing an array.")
+                                    .with_link("https://goblinlang.org/docs/errors#T0205")
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -6947,6 +6954,78 @@ fn call_action_by_name(
                 })?;
 
             out
+        }
+
+        // ===== PROVOKE: thread a value through a list of events using invoke =====
+        "provoke" => {
+            use goblin_diagnostics::{Diagnostic, Severity};
+            use crate::diagnostics::rtcode;
+
+            // provoke(value, events)
+            if args.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!(
+                            "Wrong number of arguments to provoke (expected 2, got {}).",
+                            args.len()
+                        ),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: provoke(value, events)")
+                    .with_help("The second argument must be a list/array/seq of action names (strings).")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let mut acc = args[0].clone();
+            let events_val = &args[1];
+
+            // Accept Array/Seq/etc the same way other helpers do
+            let events = if let Some(xs) = as_array_like(events_val) {
+                xs
+            } else {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::TYPE_MISMATCH, // T0205
+                        "type-mismatch",
+                        "provoke expects the second argument to be a list/array/seq of strings (event names).",
+                        sp.clone(),
+                    )
+                    .with_help("Example: provoke(ctx, [\"frontier::strip_frontmatter\", \"markdown_core::render\"])")
+                    .with_link("https://goblinlang.org/docs/errors#T0205"),
+                );
+            };
+
+            for ev in events {
+                // Each entry must be a string action name
+                let name = match ev {
+                    Value::Str(s) => s.clone(),
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "Each event in the list passed to provoke() must be a string action name.",
+                                sp.clone(),
+                            )
+                            .with_help("Example: [\"mod::action\", \"other::thing\"]")
+                            .with_link("https://goblinlang.org/docs/errors#T0205"),
+                        );
+                    }
+                };
+
+                // This is the important part:
+                // use *existing* invoke semantics via call_action_by_name("invoke", ...)
+                let invoke_args = vec![Value::Str(name), acc.clone()];
+                acc = call_action_by_name(sess, "invoke", invoke_args, sp.clone())?;
+            }
+
+            acc
         }
 
         // ----- Introspection -----
@@ -9072,7 +9151,7 @@ fn call_action_by_name(
         // Inside the match name { ... } block in call_action_by_name, replace all these functions:
         "grab" => {
             arity(1)?;
-            collection_operation(&args[0], Position::Random, Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::All, Operation::Grab, &sp, sess)?
         }
 
         "grab_first" => {
@@ -9114,9 +9193,14 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Grab, &sp, sess)?
         }
 
+        "grab_random" => {
+            arity(1)?;
+            collection_operation(&args[0], Position::Random, Operation::Grab, &sp, sess)?
+        }
+
         "put" => {
             arity(2)?;
-            collection_operation(&args[0], Position::Random, Operation::Put(args[1].clone()), &sp, sess)?
+            collection_operation(&args[0], Position::All, Operation::Put(args[1].clone()), &sp, sess)?
         }
 
         "put_first" => {
@@ -9147,9 +9231,14 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Put(args[3].clone()), &sp, sess)?
         }
 
+        "put_random" => {
+            arity(2)?;
+            collection_operation(&args[0], Position::Random, Operation::Put(args[1].clone()), &sp, sess)?
+        }
+
         "update" => {
             arity(2)?;
-            collection_operation(&args[0], Position::Random, Operation::Update(args[1].clone()), &sp, sess)?
+            collection_operation(&args[0], Position::All, Operation::Update(args[1].clone()), &sp, sess)?
         }
 
         "update_first" => {
@@ -9191,9 +9280,14 @@ fn call_action_by_name(
             collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Update(args[3].clone()), &sp, sess)?
         }
 
+        "update_random" => {
+            arity(2)?;
+            collection_operation(&args[0], Position::Random, Operation::Update(args[1].clone()), &sp, sess)?
+        }
+
         "delete" => {
             arity(1)?;
-            collection_operation(&args[0], Position::Random, Operation::Delete, &sp, sess)?
+            collection_operation(&args[0], Position::All, Operation::Delete, &sp, sess)?
         }
 
         "delete_first" => {
@@ -9233,6 +9327,11 @@ fn call_action_by_name(
             let start_pattern = want_str(&args[1], "start pattern")?;
             let end_pattern = want_str(&args[2], "end pattern")?;
             collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Delete, &sp, sess)?
+        }
+
+        "delete_random" => {
+            arity(1)?;
+            collection_operation(&args[0], Position::Random, Operation::Delete, &sp, sess)?
         }
 
         "reap_first" => {
@@ -11278,55 +11377,71 @@ fn get_lvalue_mut<'a>(
         LValuePath::Index { base, index } => {
             let base_val = get_lvalue_mut(base, sess, sp)?;
             
-            let idx = match index {
-                Value::Int(n) if *n >= 0 => *n as usize,
-                _ => {
-                    return Err(
+            match (base_val, index) {
+                // String key for maps
+                (Value::Map(map), Value::Str(key)) => {
+                    map.get_mut(key).ok_or_else(|| {
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            crate::diagnostics::rtcode::INTEGER_EXPECTED, // T0204
-                            "integer-expected",
-                            "index must be a non-negative integer",
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                            "no-such-field",
+                            &format!("missing key '{}'", key),
                             sp.clone(),
                         )
-                        .with_help("Use an integer ≥ 0 (e.g., 0, 1, 2, ...).")
-                        .with_link("https://goblinlang.org/docs/errors#T0204"),
-                    )
+                        .with_help("Check the key exists in the map.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    })
                 }
-            };
-            
-            match base_val {
-                Value::Array(arr) => {
+                
+                (Value::MapOrd(map), Value::Str(key)) => {
+                    map.get_mut(key).ok_or_else(|| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                            "no-such-field",
+                            &format!("missing key '{}'", key),
+                            sp.clone(),
+                        )
+                        .with_help("Check the key exists in the map.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    })
+                }
+                
+                // Integer index for arrays
+                (Value::Array(arr), Value::Int(n)) if *n >= 0 => {
+                    let idx = *n as usize;
                     if idx >= arr.len() {
                         return Err(
                             Diagnostic::new_with_code(
                                 Severity::Error,
                                 crate::diagnostics::rtcode::INVALID_INDEX, // R0401
                                 "index-out-of-bounds",
-                                &format!("index {} is out of bounds (len = {})", idx, arr.len()),
+                                "index out of bounds",
                                 sp.clone(),
                             )
                             .with_help(&format!(
-                                "Use an index in the range 0..{}.",
+                                "Valid index range for this array is 0..{}.",
                                 arr.len().saturating_sub(1)
                             ))
-                            .with_link("https://goblinlang.org/docs/errors#R0401"),
+                            .with_link("https://goblinlang.org/docs/errors#R0401")
                         );
                     }
                     Ok(&mut arr[idx])
                 }
-
-                _ => Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                        "type-mismatch",
-                        "index access requires an array or seq",
-                        sp.clone(),
+                
+                _ => {
+                    Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::INTEGER_EXPECTED, // T0204
+                            "integer-expected",
+                            "index must be a non-negative integer for arrays, or a string key for maps",
+                            sp.clone(),
+                        )
+                        .with_help("Use an integer ≥ 0 for arrays, or a string key for maps.")
+                        .with_link("https://goblinlang.org/docs/errors#T0204")
                     )
-                    .with_help("Provide an array/seq as the receiver, e.g., xs[0].")
-                    .with_link("https://goblinlang.org/docs/errors#T0205"),
-                ),
+                }
             }
         }
     }
@@ -11420,29 +11535,41 @@ fn eval_lvalue(path: &LValuePath, sess: &mut Session, sp: &Span) -> Result<Value
         
         LValuePath::Index { base, index } => {
             let base_val = eval_lvalue(base, sess, sp)?;
-
-            // ---- index must be non-negative integer ----
-            let idx = match index {
-                Value::Int(n) if *n >= 0 => *n as usize,
-                _ => {
-                    return Err(
+            
+            match (&base_val, index) {
+                // String key for maps
+                (Value::Map(map), Value::Str(key)) => {
+                    map.get(key).cloned().ok_or_else(|| {
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            crate::diagnostics::rtcode::INTEGER_EXPECTED, // T0204
-                            "integer-expected",
-                            "index must be a non-negative integer",
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                            "no-such-field",
+                            &format!("missing key '{}'", key),
                             sp.clone(),
                         )
-                        .with_help("Use an integer ≥ 0 (e.g., 0 for the first element).")
-                        .with_link("https://goblinlang.org/docs/errors#T0204"),
-                    )
+                        .with_help("Check the key exists in the map.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    })
                 }
-            };
-
-            match base_val {
-                Value::Array(arr) => {
-                    let len = arr.len();
-                    if idx >= len {
+                
+                (Value::MapOrd(map), Value::Str(key)) => {
+                    map.get(key).cloned().ok_or_else(|| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                            "no-such-field",
+                            &format!("missing key '{}'", key),
+                            sp.clone(),
+                        )
+                        .with_help("Check the key exists in the map.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    })
+                }
+                
+                // Integer index for arrays
+                (Value::Array(arr), Value::Int(n)) if *n >= 0 => {
+                    let idx = *n as usize;
+                    if idx >= arr.len() {
                         return Err(
                             Diagnostic::new_with_code(
                                 Severity::Error,
@@ -11453,18 +11580,19 @@ fn eval_lvalue(path: &LValuePath, sess: &mut Session, sp: &Span) -> Result<Value
                             )
                             .with_help(&format!(
                                 "Valid index range for this array is 0..{}.",
-                                len.saturating_sub(1)
+                                arr.len().saturating_sub(1)
                             ))
-                            .with_link("https://goblinlang.org/docs/errors#R0401"),
+                            .with_link("https://goblinlang.org/docs/errors#R0401")
                         );
                     }
                     Ok(arr[idx].clone())
                 }
-
-                Value::Str(s) => {
+                
+                // Integer index for strings
+                (Value::Str(s), Value::Int(n)) if *n >= 0 => {
+                    let idx = *n as usize;
                     let chars: Vec<char> = s.chars().collect();
-                    let len = chars.len();
-                    if idx >= len {
+                    if idx >= chars.len() {
                         return Err(
                             Diagnostic::new_with_code(
                                 Severity::Error,
@@ -11474,26 +11602,28 @@ fn eval_lvalue(path: &LValuePath, sess: &mut Session, sp: &Span) -> Result<Value
                                 sp.clone(),
                             )
                             .with_help(&format!(
-                                "Valid index range for this string is 0..{} (by Unicode scalar).",
-                                len.saturating_sub(1)
+                                "Valid index range for this string is 0..{}.",
+                                chars.len().saturating_sub(1)
                             ))
-                            .with_link("https://goblinlang.org/docs/errors#R0401"),
+                            .with_link("https://goblinlang.org/docs/errors#R0401")
                         );
                     }
                     Ok(Value::Char(chars[idx]))
                 }
-
-                _ => Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                        "type-mismatch",
-                        "index access requires an array, seq, or string",
-                        sp.clone(),
+                
+                _ => {
+                    Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::INTEGER_EXPECTED, // T0204
+                            "integer-expected",
+                            "index must be a non-negative integer for arrays/strings, or a string key for maps",
+                            sp.clone(),
+                        )
+                        .with_help("Use an integer ≥ 0 for arrays/strings, or a string key for maps.")
+                        .with_link("https://goblinlang.org/docs/errors#T0204")
                     )
-                    .with_help("Use indexing only on array/seq/string values.")
-                    .with_link("https://goblinlang.org/docs/errors#T0205"),
-                ),
+                }
             }
         }
     }
@@ -11539,6 +11669,39 @@ fn mutate_via_call_name(
 
     // Special cases that don't follow the lvalue pattern
     match base {
+        "update" => {
+            // update!(target, new_value) - whole collection replacement
+            if arg_exprs.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", arg_exprs.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: update!(target, new_value)")
+                    .with_help("'update!' takes exactly 2 arguments.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+            
+            let target_path = if let Some(base_ident) = recv_ident {
+                LValuePath::Var(base_ident.to_string())
+            } else {
+                parse_lvalue(&arg_exprs[0], sess)?
+            };
+            
+            let new_val = eval_expr(
+                if recv_ident.is_some() { &arg_exprs[0] } else { &arg_exprs[1] },
+                sess
+            )?;
+            
+            let slot = get_lvalue_mut(&target_path, sess, &sp)?;
+            *slot = new_val;
+            return Ok(Value::Unit);
+        }
+
         "write_json" => {
             // write_json!(path, value, pretty=false)
             if arg_exprs.len() < 2 || arg_exprs.len() > 3 {
@@ -11711,81 +11874,103 @@ fn mutate_via_call_name(
         _ => {}
     }
 
-    // Determine the target lvalue path and build argv for the pure version
-    let (target_path, argv_vals): (LValuePath, Vec<Value>) = if let Some(base_ident) = recv_ident {
-        // Receiver style: xs.put_at!(...)
-        let mut vals = Vec::with_capacity(arg_exprs.len() + 1);
+    let (target_path_opt, argv_vals): (Option<LValuePath>, Vec<Value>) =
+        if let Some(base_ident) = recv_ident {
+            // Receiver style: xs.put_at!(...)
+            let mut vals = Vec::with_capacity(arg_exprs.len() + 1);
 
-        // Get receiver value
-        let recv_val = sess
-            .get_var(base_ident)
-            .cloned()
-            .ok_or_else(|| {
-                if base_ident == "from" {
+            // Get receiver value
+            let recv_val = sess
+                .get_var(base_ident)
+                .cloned()
+                .ok_or_else(|| {
+                    if base_ident == "from" {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
+                            "unknown-ident",
+                            "unknown identifier ‘from’",
+                            sp.clone(),
+                        )
+                        .with_help("`from` was parsed as an identifier here.")
+                        .with_help("After `pick`, either provide a count (e.g., `pick 1 from items`) or enable the sugar so `pick from items` defaults to 1.")
+                        .with_help("Declare the variable before use, or reference an in-scope name.")
+                        .with_link("https://goblinlang.org/docs/errors#R0101")
+                    } else {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
+                            "unknown-ident",
+                            &format!("unknown identifier ‘{}’", base_ident),
+                            sp.clone(),
+                        )
+                        .with_help("Declare the variable before use, or reference an in-scope name.")
+                        .with_link("https://goblinlang.org/docs/errors#R0101")
+                    }
+                })?;
+            vals.push(recv_val);
+
+            // Evaluate remaining arguments
+            for a in arg_exprs {
+                vals.push(eval_expr(a, sess)?);
+            }
+
+            (Some(LValuePath::Var(base_ident.to_string())), vals)
+        } else {
+            // Free-call style: put_at!(xs, ...) or put_at!(obj >> field, ...)
+            if arg_exprs.is_empty() {
+                return Err(
                     Diagnostic::new_with_code(
                         Severity::Error,
-                        crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
-                        "unknown-ident",
-                        "unknown identifier ‘from’",
+                        crate::diagnostics::rtcode::MISSING_ARGUMENT, // R0302
+                        "missing-argument",
+                        &format!("‘{}’ requires a target as the first argument.", name),
                         sp.clone(),
                     )
-                    .with_help("`from` was parsed as an identifier here.")
-                    .with_help("After `pick`, either provide a count (e.g., `pick 1 from items`) or enable the sugar so `pick from items` defaults to 1.")
-                    .with_help("Declare the variable before use, or reference an in-scope name.")
-                    .with_link("https://goblinlang.org/docs/errors#R0101")
-                } else {
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
-                        "unknown-ident",
-                        &format!("unknown identifier ‘{}’", base_ident),
-                        sp.clone(),
-                    )
-                    .with_help("Declare the variable before use, or reference an in-scope name.")
-                    .with_link("https://goblinlang.org/docs/errors#R0101")
+                    .with_help("Provide a variable or expression as the first argument.")
+                    .with_link("https://goblinlang.org/docs/errors#R0302"),
+                );
+            }
+
+            // Try to parse the first argument as an lvalue path.
+            match parse_lvalue(&arg_exprs[0], sess) {
+                Ok(target_path) => {
+                    // We *can* mutate: first argv is the current value at that path.
+                    let mut vals = Vec::with_capacity(arg_exprs.len());
+                    vals.push(eval_lvalue(&target_path, sess, &sp)?);
+
+                    // Evaluate remaining arguments
+                    for a in &arg_exprs[1..] {
+                        vals.push(eval_expr(a, sess)?);
+                    }
+
+                    (Some(target_path), vals)
                 }
-            })?;
-        vals.push(recv_val);
 
-        // Evaluate remaining arguments
-        for a in arg_exprs { vals.push(eval_expr(a, sess)?); }
-
-        (LValuePath::Var(base_ident.to_string()), vals)
-    } else {
-        // Free-call style: put_at!(xs, ...) or put_at!(obj >> field, ...)
-        if arg_exprs.is_empty() {
-            return Err(
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::MISSING_ARGUMENT, // R0302
-                    "missing-argument",
-                    &format!("‘{}’ requires a target variable as the first argument.", name),
-                    sp.clone(),
-                )
-                .with_help("Provide a variable name as the first argument.")
-                .with_link("https://goblinlang.org/docs/errors#R0302"),
-            );
-        }
-
-        // Parse the first argument as an lvalue path
-        let target_path = parse_lvalue(&arg_exprs[0], sess)?;
-
-        // Build argv: first element is the current value at the lvalue
-        let mut vals = Vec::with_capacity(arg_exprs.len());
-        vals.push(eval_lvalue(&target_path, sess, &sp)?);
-
-        // Evaluate remaining arguments
-        for a in &arg_exprs[1..] { vals.push(eval_expr(a, sess)?); }
-
-        (target_path, vals)
-    };
+                Err(_diag) => {
+                    // Not an lvalue → degrade gracefully: behave like pure call.
+                    let mut vals = Vec::with_capacity(arg_exprs.len());
+                    for a in arg_exprs {
+                        vals.push(eval_expr(a, sess)?);
+                    }
+                    (None, vals)
+                }
+            }
+        };
 
     // =========================
     // Reap family (bang forms)
     // =========================
     if is_reap_family(base) {
+        // For reap!, we *must* have an lvalue target; this should always be true
+        // for calls like `reap!(xs, ...)` or `xs.reap!()`.
+        let target_path = target_path_opt
+            .as_ref()
+            .expect("reap family bang-forms must have an lvalue target")
+            .clone();
+
         if base == "reap" {
-            // ---------- Your existing optimized RANDOM reap! (with optional count) ----------
+            // ---------- Optimized RANDOM reap! (with optional count) ----------
             // Parse count (default 1)
             let count: usize = if argv_vals.len() > 1 {
                 let n = as_num(argv_vals[1].clone(), sp.clone(), "reap!(..., count)")?;
@@ -11973,13 +12158,17 @@ fn mutate_via_call_name(
     }
 
     // =========================
-    // Default: mutate by writing pure result back
+    // Default: mutate by writing pure result back (if we have a target)
     // =========================
     let updated = call_action_by_name(sess, base, argv_vals, sp.clone())?;
-    let slot = get_lvalue_mut(&target_path, sess, &sp)?;
-    *slot = updated;
 
-    Ok(Value::Unit)
+    if let Some(path) = target_path_opt {
+        let slot = get_lvalue_mut(&path, sess, &sp)?;
+        *slot = updated;
+        Ok(Value::Unit)
+    } else {
+        Ok(updated)
+    }
 }
 
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
