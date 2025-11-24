@@ -11,7 +11,10 @@ use walkdir::WalkDir;
 use uuid::Uuid;
 use dunce;
 
-/// file_exists(path) -> Bool
+// ==========================================================
+// file_exists(path)
+// ==========================================================
+
 pub fn file_exists(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -30,12 +33,15 @@ pub fn file_exists(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Val
     Ok(Value::Bool(Path::new(path).exists()))
 }
 
-/// create_dir(...) non-bang form → M0001
-pub fn create_dir(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+// ==========================================================
+// create_dir / write_text (non-bang forms error)
+// ==========================================================
+
+pub fn create_dir(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value, Diag> {
     Err(
         Diagnostic::new_with_code(
             Severity::Error,
-            rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
+            rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
             "‘create_dir’ requires the bang form: use create_dir!(…)",
             sp.clone(),
@@ -45,12 +51,11 @@ pub fn create_dir(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Valu
     )
 }
 
-/// write_text(...) non-bang form → M0001
-pub fn write_text(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+pub fn write_text(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value, Diag> {
     Err(
         Diagnostic::new_with_code(
             Severity::Error,
-            rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
+            rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
             "‘write_text’ requires the bang form: use write_text!(…)",
             sp.clone(),
@@ -60,7 +65,10 @@ pub fn write_text(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Valu
     )
 }
 
-/// read_text(path) -> Str (UTF-8)
+// ==========================================================
+// read_text(path)
+// ==========================================================
+
 pub fn read_text(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -80,7 +88,7 @@ pub fn read_text(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value
     let s = std::fs::read_to_string(path).map_err(|e| {
         Diagnostic::new_with_code(
             Severity::Error,
-            rtcode::FILESYSTEM_IO, // FS0001
+            rtcode::FILESYSTEM_IO,
             "filesystem-io",
             &format!("failed to read file: {e}"),
             sp.clone(),
@@ -92,12 +100,15 @@ pub fn read_text(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value
     Ok(Value::Str(s))
 }
 
-/// copy_file(...) non-bang form → M0001
+// ==========================================================
+// copy_file (non-bang errors)
+// ==========================================================
+
 pub fn copy_file(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value, Diag> {
     Err(
         Diagnostic::new_with_code(
             Severity::Error,
-            rtcode::MUTATION_OPERATOR_REQUIRED, // M0001
+            rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
             "‘copy_file’ requires the bang form: use copy_file!(…)",
             sp.clone(),
@@ -107,7 +118,10 @@ pub fn copy_file(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Valu
     )
 }
 
-/// stem(path) -> Str (file_stem)
+// ==========================================================
+// stem(path)
+// ==========================================================
+
 pub fn stem(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -128,7 +142,10 @@ pub fn stem(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Dia
     Ok(Value::Str(stem.to_string()))
 }
 
-/// ext(path) -> Str (with leading dot or "")
+// ==========================================================
+// ext(path)
+// ==========================================================
+
 pub fn ext(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -153,7 +170,10 @@ pub fn ext(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag
     Ok(Value::Str(extension))
 }
 
-/// dirname(path) -> Str (normalized with forward slashes)
+// ==========================================================
+// dirname(path)
+// ==========================================================
+
 pub fn dirname(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -174,7 +194,10 @@ pub fn dirname(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
     Ok(Value::Str(dir.replace('\\', "/")))
 }
 
-/// path_join(a, b) -> Str (normalized with forward slashes)
+// ==========================================================
+// path_join(a, b)
+// ==========================================================
+
 pub fn path_join(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 2 {
         return Err(
@@ -198,7 +221,10 @@ pub fn path_join(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value
     Ok(Value::Str(normalized))
 }
 
-/// basename(path) -> Str (file_name)
+// ==========================================================
+// basename(path)
+// ==========================================================
+
 pub fn basename(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -220,7 +246,10 @@ pub fn basename(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value,
     Ok(Value::Str(base.to_string()))
 }
 
-/// path_normalize(path) -> Str (dunce::simplified, forward slashes)
+// ==========================================================
+// path_normalize(path)
+// ==========================================================
+
 pub fn path_normalize(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -242,7 +271,10 @@ pub fn path_normalize(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<
     Ok(Value::Str(normalized))
 }
 
-/// is_file(path) -> Bool
+// ==========================================================
+// is_file / is_dir
+// ==========================================================
+
 pub fn is_file(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -262,7 +294,6 @@ pub fn is_file(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
     Ok(Value::Bool(Path::new(path).is_file()))
 }
 
-/// is_dir(path) -> Bool
 pub fn is_dir(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -282,7 +313,10 @@ pub fn is_dir(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, D
     Ok(Value::Bool(Path::new(path).is_dir()))
 }
 
-/// path_split(path) -> Array<Str> (components, forward slashes preserved when joined)
+// ==========================================================
+// path_split(path)
+// ==========================================================
+
 pub fn path_split(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
@@ -306,7 +340,10 @@ pub fn path_split(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Valu
     Ok(Value::Array(comps))
 }
 
-/// path_relative_to(path, base) -> Str (forward slashes)
+// ==========================================================
+// path_relative_to(path, base)
+// ==========================================================
+
 pub fn path_relative_to(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 2 {
         return Err(
@@ -331,14 +368,16 @@ pub fn path_relative_to(_sess: &mut Session, args: &[Value], sp: &Span) -> Resul
     Ok(Value::Str(rel.to_string_lossy().replace('\\', "/")))
 }
 
-/// walk(dir, pattern?) -> Array<Str>
-/// crude pattern handling: "**/*.md", "**/*.gbln", otherwise accept all files
+// ==========================================================
+// walk(dir, pattern)
+// ==========================================================
+
 pub fn walk(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() < 1 || args.len() > 2 {
         return Err(
             Diagnostic::new_with_code(
                 Severity::Error,
-                rtcode::WRONG_ARITY, // R0301
+                rtcode::WRONG_ARITY,
                 "wrong-arity",
                 &format!("Wrong number of arguments (expected 1–2, got {})", args.len()),
                 sp.clone(),
@@ -380,13 +419,16 @@ pub fn walk(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Dia
     Ok(Value::Array(results))
 }
 
-/// escape_html(text) -> Str
+// ==========================================================
+// escape_html(text)
+// ==========================================================
+
 pub fn escape_html(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
         return Err(
             Diagnostic::new_with_code(
                 Severity::Error,
-                rtcode::WRONG_ARITY, // R0301
+                rtcode::WRONG_ARITY,
                 "wrong-arity",
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
@@ -411,7 +453,10 @@ pub fn escape_html(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Val
     Ok(Value::Str(out))
 }
 
-/// uuid_v4() -> Str
+// ==========================================================
+// uuid_v4 / uuid_v7
+// ==========================================================
+
 pub fn uuid_v4(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 0 {
         return Err(
@@ -429,7 +474,6 @@ pub fn uuid_v4(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
     Ok(Value::Str(Uuid::new_v4().to_string()))
 }
 
-/// uuid_v7() -> Str
 pub fn uuid_v7(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 0 {
         return Err(
@@ -445,4 +489,134 @@ pub fn uuid_v7(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
         );
     }
     Ok(Value::Str(Uuid::now_v7().to_string()))
+}
+
+// ==========================================================
+// pathfind(from, to, mode?)  — NEW BUILTIN
+// ==========================================================
+
+/// pathfind(from, to, mode?) -> Str
+/// Compute a relative or href path between two paths (pure lexical, no FS IO)
+pub fn pathfind(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    // ---- ARITY CHECK ----
+    if args.len() < 2 || args.len() > 3 {
+        return Err(
+            Diagnostic::new_with_code(
+                Severity::Error,
+                rtcode::WRONG_ARITY, // R0301
+                "wrong-arity",
+                &format!("Wrong number of arguments (expected 2–3, got {})", args.len()),
+                sp.clone(),
+            )
+            .with_help("Usage: pathfind(from, to) or pathfind(from, to, \"href\").")
+            .with_link("https://goblinlang.org/docs/errors#R0301"),
+        );
+    }
+
+    // ---- ARGUMENT TYPES ----
+    let from = want_str(&args[0], "pathfind from", sp)?;
+    let to   = want_str(&args[1], "pathfind to", sp)?;
+    let mode = if args.len() == 3 {
+        want_str(&args[2], "pathfind mode", sp)?
+    } else {
+        "relative"
+    };
+
+    // ---- NORMALIZE ----
+    fn norm(path: &str) -> String {
+        let p = path.replace('\\', "/");
+        let mut out = Vec::new();
+        for seg in p.split('/') {
+            match seg {
+                "" | "." => continue,
+                ".." => {
+                    if let Some(last) = out.last() {
+                        if last != ".." {
+                            out.pop();
+                            continue;
+                        }
+                    }
+                    out.push("..".to_string());
+                }
+                _ => out.push(seg.to_string()),
+            }
+        }
+        out.join("/")
+    }
+
+    let from_norm = norm(from);
+    let to_norm   = norm(to);
+
+    // dirname logic
+    fn dirname(orig: &str, n: &str) -> String {
+        if orig.ends_with('/') {
+            return n.trim_end_matches('/').to_string();
+        }
+        if let Some(idx) = n.rfind('/') {
+            n[..idx].to_string()
+        } else {
+            "".to_string()
+        }
+    }
+
+    fn segs(path: &str) -> Vec<&str> {
+        if path.is_empty() { Vec::new() }
+        else { path.split('/').filter(|s| !s.is_empty()).collect() }
+    }
+
+    fn common(a: &[&str], b: &[&str]) -> usize {
+        let mut n = 0;
+        while n < a.len() && n < b.len() && a[n] == b[n] { n += 1; }
+        n
+    }
+
+    fn relpath(from_dir: &[&str], to: &[&str]) -> String {
+        let c = common(from_dir, to);
+        let mut out = Vec::new();
+        for _ in c..from_dir.len() { out.push("..".to_string()); }
+        for seg in &to[c..] { out.push(seg.to_string()); }
+        if out.is_empty() {
+            // same directory: return filename only
+            to.last().unwrap_or(&"").to_string()
+        } else {
+            out.join("/")
+        }
+    }
+
+    // ---- MODE ----
+    let result = match mode {
+        "relative" => {
+            let base = dirname(from, &from_norm);
+            let fsegs = segs(&base);
+            let tsegs = segs(&to_norm);
+            relpath(&fsegs, &tsegs)
+        }
+
+        "href" => {
+            let mut url = format!("/{}", to_norm);
+            while url.contains("//") {
+                url = url.replace("//", "/");
+            }
+            if !url.starts_with('/') {
+                url.insert(0, '/');
+            }
+            url
+        }
+
+        other => {
+            return Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    rtcode::INVALID_PATH_MODE, // R0330
+                    "invalid-path-mode",
+                    &format!("invalid pathfind mode: {}", other),
+                    sp.clone(),
+                )
+                .with_help("Mode must be \"relative\" or \"href\".")
+                .with_link("https://goblinlang.org/docs/errors#R0330"),
+            );
+        }
+    };
+
+    Ok(Value::Str(result))
 }

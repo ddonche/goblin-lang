@@ -9141,6 +9141,10 @@ fn call_action_by_name(
         "is_dir"            => crate::actions::files::is_dir(sess, &args, &sp)?,
         "path_split"        => crate::actions::files::path_split(sess, &args, &sp)?,
         "path_relative_to"  => crate::actions::files::path_relative_to(sess, &args, &sp)?,
+
+        // NEW BUILTIN
+        "pathfind"          => crate::actions::files::pathfind(sess, &args, &sp)?,
+
         "walk"              => crate::actions::files::walk(sess, &args, &sp)?,
 
         "escape_html"       => crate::actions::files::escape_html(sess, &args, &sp)?,
@@ -13050,34 +13054,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::Index(base, idx, sp) => {
             let b = eval_expr(base, sess)?;
             let i = eval_expr(idx, sess)?;
-
-            eprintln!("DEBUG INDEX: b full debug = {:?}", b);
-            eprintln!("DEBUG INDEX: b variant = {}", match &b {
-                Value::Map(_) => "Map",
-                Value::MapOrd(_) => "MapOrd",
-                Value::Object { .. } => "Object",
-                Value::Enum { .. } => "Enum",
-                Value::Formatted(_, _) => "Formatted",
-                Value::Int(_) => "Int",
-                Value::Float(_) => "Float",
-                Value::Big(_) => "Big",
-                Value::Str(_) => "Str",
-                Value::Char(_) => "Char",
-                Value::Bool(_) => "Bool",
-                Value::Pct(_) => "Pct",
-                Value::Array(_) => "Array",
-                Value::Pair(_, _) => "Pair",
-                Value::Seq(_) => "Seq",
-                Value::Nil => "Nil",
-                Value::Unit => "Unit",
-                Value::CtrlSkip => "CtrlSkip",
-                Value::CtrlStop => "CtrlStop",
-            });
-            eprintln!("DEBUG INDEX: i variant = {}", match &i {
-                Value::Str(_) => "Str",
-                Value::Char(_) => "Char",
-                _ => "Other"  
-            });
 
             match (b, i) {
                 (Value::Array(items), Value::Int(n)) => {

@@ -157,6 +157,7 @@ pub mod rtcode {
     pub const INVALID_PCT_CAST: &str = "R0322";
     pub const NON_FINITE_FLOAT: &str = "R0325";
     pub const BIG_OVERFLOW: &str = "R0326";
+    pub const INVALID_PATH_MODE: &str = "R0330";
 
     pub const INVALID_INDEX: &str = "R0401";
     pub const ARRAY_EXPECTED: &str = "R0402";
