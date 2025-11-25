@@ -6968,12 +6968,11 @@ fn call_action_by_name(
             out
         }
 
-        // ===== PROVOKE: thread a value through a list of events using invoke =====
-        "provoke" => {
+        // ===== SUMMON: thread a value through a list of events using invoke =====
+        "summon" => {
             use goblin_diagnostics::{Diagnostic, Severity};
             use crate::diagnostics::rtcode;
-
-            // provoke(value, events)
+            // summon(value, events)
             if args.len() != 2 {
                 return Err(
                     Diagnostic::new_with_code(
@@ -6981,20 +6980,18 @@ fn call_action_by_name(
                         rtcode::WRONG_ARITY, // R0301
                         "wrong-arity",
                         &format!(
-                            "Wrong number of arguments to provoke (expected 2, got {}).",
+                            "Wrong number of arguments to summon (expected 2, got {}).",
                             args.len()
                         ),
                         sp.clone(),
                     )
-                    .with_help("Usage: provoke(value, events)")
+                    .with_help("Usage: summon(value, events)")
                     .with_help("The second argument must be a list/array/seq of action names (strings).")
                     .with_link("https://goblinlang.org/docs/errors#R0301"),
                 );
             }
-
             let mut acc = args[0].clone();
             let events_val = &args[1];
-
             // Accept Array/Seq/etc the same way other helpers do
             let events = if let Some(xs) = as_array_like(events_val) {
                 xs
@@ -7004,14 +7001,13 @@ fn call_action_by_name(
                         Severity::Error,
                         rtcode::TYPE_MISMATCH, // T0205
                         "type-mismatch",
-                        "provoke expects the second argument to be a list/array/seq of strings (event names).",
+                        "summon expects the second argument to be a list/array/seq of strings (event names).",
                         sp.clone(),
                     )
-                    .with_help("Example: provoke(ctx, [\"frontier::strip_frontmatter\", \"markdown_core::render\"])")
+                    .with_help("Example: summon(ctx, [\"frontier::strip_frontmatter\", \"markdown_core::render\"])")
                     .with_link("https://goblinlang.org/docs/errors#T0205"),
                 );
             };
-
             for ev in events {
                 // Each entry must be a string action name
                 let name = match ev {
@@ -7022,7 +7018,7 @@ fn call_action_by_name(
                                 Severity::Error,
                                 rtcode::TYPE_MISMATCH, // T0205
                                 "type-mismatch",
-                                "Each event in the list passed to provoke() must be a string action name.",
+                                "Each event in the list passed to summon() must be a string action name.",
                                 sp.clone(),
                             )
                             .with_help("Example: [\"mod::action\", \"other::thing\"]")
@@ -7030,14 +7026,63 @@ fn call_action_by_name(
                         );
                     }
                 };
-
                 // This is the important part:
                 // use *existing* invoke semantics via call_action_by_name("invoke", ...)
                 let invoke_args = vec![Value::Str(name), acc.clone()];
                 acc = call_action_by_name(sess, "invoke", invoke_args, sp.clone())?;
             }
-
             acc
+        }
+
+        // ===== PROVOKE: validate conditions or error =====
+        "provoke" => {
+            use goblin_diagnostics::{Diagnostic, Severity};
+            use crate::diagnostics::rtcode;
+            
+            // provoke(condition) or provoke(condition, message)
+            if args.is_empty() || args.len() > 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!(
+                            "Wrong number of arguments to provoke (expected 1-2, got {}).",
+                            args.len()
+                        ),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: provoke(condition) or provoke(condition, message)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+            
+            // args[0] is already a Value, just check if it's truthy
+            let condition = as_bool(args[0].clone(), sp.clone(), "provoke condition")?;
+            
+            if !condition {
+                // Get custom message or generate one
+                let msg = if args.len() == 2 {
+                    fmt_value_raw(&args[1])
+                } else {
+                    "Provoked constraint violated".to_string()
+                };
+                
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::TYPE_MISMATCH, // R0205 (reusing existing code)
+                        "constraint-violated",
+                        &msg,
+                        sp.clone(),
+                    )
+                    .with_help("This condition must be true to proceed.")
+                    .with_link("https://goblinlang.org/docs/errors#R0205"),
+                );
+            }
+            
+            // Condition passed - return true (no Ok() wrapper needed here)
+            Value::Bool(true)
         }
 
         // ----- Introspection -----

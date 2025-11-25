@@ -1,0 +1,10 @@
+x | 50
+
+provoke
+    x > 0
+    x < 100
+    x !== 25
+xx
+
+say "All checks passed!"
+say x

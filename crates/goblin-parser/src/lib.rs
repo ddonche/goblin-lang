@@ -5171,6 +5171,10 @@ impl<'t> Parser<'t> {
             return self.parse_attempt_stmt();
         }
 
+        if self.peek_ident() == Some("provoke") {
+            return self.parse_provoke_stmt();
+        }
+
         if self.peek_ident() == Some("judge") {
             return self.parse_judge_stmt();
         }
@@ -6712,6 +6716,157 @@ impl<'t> Parser<'t> {
         }
 
         Ok(out)
+    }
+
+    fn parse_provoke_stmt(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        
+        let header_tok_i = self.i;
+        let header_line  = self.toks[header_tok_i].span.line_start;
+        let header_col   = self.toks[header_tok_i].span.col_start;
+        
+        debug_assert_eq!(self.peek_ident().as_deref(), Some("provoke"));
+        let _ = self.eat_ident();
+        
+        // Check for inline form: provoke => condition
+        self.skip_newlines();
+        if self.peek_op("=>") {
+            let _ = self.eat_op("=>");
+            self.skip_newlines();
+            
+            // Parse the condition expression
+            let cond_expr = self.parse_assign()?;
+            let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
+            let condition = Self::lower_expr_preview(cond_expr, span.clone());
+            
+            // Generate: :provoke(condition)
+            let provoke_call = ast::Expr::FreeCall(
+                "provoke".to_string(),
+                vec![condition],
+                span.clone()
+            );
+            
+            return Ok(ast::Stmt::Expr(provoke_call));
+        }
+        
+        // Block form: provoke \n conditions... \n xx
+        if self.peek_op("{") {
+            return Err(s_help_site!(
+                "P0812",
+                "Don't put '{' after 'provoke'",
+                "Use indentation and close with 'end' or 'xx'."
+            ));
+        }
+        
+        self.forbid_next_line_brace(header_line, header_col, "provoke")?;
+        self.skip_newlines();
+        
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Indent) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Parse conditions (one per line)
+        let mut conditions: Vec<ast::Expr> = Vec::new();
+        
+        loop {
+            self.skip_newlines();
+            
+            // Check for block closer
+            if let Some(t) = self.peek() {
+                match &t.kind {
+                    TokenKind::Ident if t.value.as_deref() == Some("end") && t.span.col_start == header_col => break,
+                    TokenKind::Op(op) if op == "xx" && t.span.col_start == header_col => break,
+                    _ => {}
+                }
+            } else {
+                return Err(s_help_site!(
+                    "P0212",
+                    "This provoke block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block."
+                ));
+            }
+            
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Indent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+            
+            if let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Dedent) {
+                    break;
+                }
+            }
+            
+            if self.is_eof() {
+                return Err(s_help_site!(
+                    "P0212",
+                    "This provoke block is missing its closing 'end' or 'xx' (crossbones).",
+                    "Close the block."
+                ));
+            }
+            
+            // Parse one condition
+            let cond_expr = self.parse_assign()?;
+            let cond_span = Self::span_from_tokens(self.toks, self.i.saturating_sub(1), self.i.saturating_sub(1));
+            conditions.push(Self::lower_expr_preview(cond_expr, cond_span));
+            
+            self.skip_newlines();
+        }
+        
+        while let Some(t) = self.peek() {
+            if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        
+        if self.peek_block_close() {
+            let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            if col != header_col {
+                let closer = self.peek_ident().unwrap_or("}");
+                return Err(s_help_site!(
+                    "P0222",
+                    &format!("This '{}' closer is misaligned: expected column {}, found {}", closer, header_col, col),
+                    "Align the closer with its header."
+                ));
+            }
+            self.expect_block_close("provoke")?;
+        } else if !self.eat_layout_until_close(header_col) {
+            return Err(s_help_site!(
+                "P0212",
+                "This provoke block is missing its closing 'end' or 'xx' (crossbones).",
+                "Close the block."
+            ));
+        }
+        
+        let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
+        
+        // Generate multiple :provoke() calls wrapped in a block
+        let mut stmts = Vec::new();
+        for condition in conditions {
+            let provoke_call = ast::Expr::FreeCall(
+                "provoke".to_string(),
+                vec![condition],
+                span.clone()
+            );
+            stmts.push(ast::Stmt::Expr(provoke_call));
+        }
+        
+        // Wrap in a Block expression
+        let block_expr = ast::Expr::Block {
+            stmts,
+            span: span.clone()
+        };
+        
+        Ok(ast::Stmt::Expr(block_expr))
     }
 
     fn parse_judge_stmt(&mut self) -> Result<ast::Stmt, String> {
