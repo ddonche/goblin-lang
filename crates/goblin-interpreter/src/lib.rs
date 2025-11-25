@@ -638,52 +638,61 @@ fn sanitize_yaml_text(input: &str) -> String {
     s
 }
 
-// Y'all-specific YAML → Goblin Value, always uses Value::Map for mappings
-fn yall_yaml_to_value(v: sy::Value) -> Value {
-    eprintln!("yall_yaml_to_value input: {:?}", v);
-    let result = match v {
-        sy::Value::Mapping(m) => {
-            let mut out: BTreeMap<String, Value> = BTreeMap::new();
-            for (k, v2) in m {
-                let key = match k {
-                    sy::Value::String(s) => s,
-                    other => {
-                        let s = serde_yaml::to_string(&other)
-                            .unwrap_or_else(|_| format!("{other:?}"));
-                        s.trim().trim_matches('\n').to_owned()
-                    }
-                };
-                out.insert(key, yall_yaml_to_value(v2));
+/// Convert native YallValue → Goblin runtime Value
+fn yall_to_goblin_value(v: &goblin_yall::YallValue) -> Value {
+    match v {
+        goblin_yall::YallValue::Null => Value::Nil,
+        goblin_yall::YallValue::Bool(b) => Value::Bool(*b),
+        goblin_yall::YallValue::Int(i) => Value::Int(*i),
+        goblin_yall::YallValue::Float(f) => Value::Float(*f),
+        goblin_yall::YallValue::Str(s) => Value::Str(s.clone()),
+
+        goblin_yall::YallValue::Array(items) => {
+            let arr = items.iter()
+                .map(|item| yall_to_goblin_value(item))
+                .collect();
+            Value::Array(arr)
+        }
+
+        goblin_yall::YallValue::Map(map) => {
+            let mut out = BTreeMap::new();
+            for (k, v2) in map {
+                out.insert(k.clone(), yall_to_goblin_value(v2));
             }
             Value::Map(out)
         }
-        sy::Value::Sequence(seq) => {
-            Value::Array(seq.into_iter().map(yall_yaml_to_value).collect())
-        }
-        sy::Value::String(s) => Value::Str(s),
-        sy::Value::Bool(b) => Value::Bool(b),
-        sy::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                Value::Float(f)
-            } else {
-                Value::Str(n.to_string())
+    }
+}
+
+fn goblin_value_to_yall(v: &Value) -> goblin_yall::YallValue {
+    match v {
+        Value::Nil => goblin_yall::YallValue::Null,
+        Value::Bool(b) => goblin_yall::YallValue::Bool(*b),
+        Value::Int(i) => goblin_yall::YallValue::Int(*i),
+        Value::Float(f) => goblin_yall::YallValue::Float(*f),
+        Value::Str(s) => goblin_yall::YallValue::Str(s.clone()),
+
+        Value::Array(arr) => {
+            let mut out = Vec::new();
+            for item in arr {
+                out.push(goblin_value_to_yall(item));
             }
+            goblin_yall::YallValue::Array(out)
         }
-        sy::Value::Null => Value::Nil,
-        other => {
-            let s = serde_yaml::to_string(&other)
-                .unwrap_or_else(|_| format!("{other:?}"));
-            Value::Str(s.trim().trim_matches('\n').to_owned())
+
+        Value::Map(map) => {
+            let mut out = BTreeMap::new();
+            for (k, v2) in map {
+                out.insert(k.clone(), goblin_value_to_yall(v2));
+            }
+            goblin_yall::YallValue::Map(out)
         }
-    };
-    eprintln!("yall_yaml_to_value output: {}", match &result {
-        Value::Map(_) => "Map",
-        Value::Str(_) => "Str", 
-        _ => "Other"
-    });
-    result
+
+        _ => {
+            // fallback string
+            goblin_yall::YallValue::Str(v.to_string())
+        }
+    }
 }
 
 // tiny helper for yaml→Value (ordered)
@@ -9392,24 +9401,24 @@ fn call_action_by_name(
             let text  = want_str(&args[0], "yall_parse")?;
             let label = want_str(&args[1], "yall_parse")?;
 
-            let yaml_val: sy::Value = match goblin_yall::yall_parse(&text, &label) {
+            let parsed = match goblin_yall::yall_parse(&text, &label) {
                 Ok(v) => v,
                 Err(e) => {
                     return Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001
-                            "yaml-parse-failed",
+                            crate::diagnostics::rtcode::YALL_PARSE_FAILED, // YA0001
+                            "yall-parse-failed",
                             &format!("{}", e),
                             sp.clone(),
                         )
-                        .with_help("Ensure the input is valid Y’all config (2-space indents, no tabs, ‘key: value’).")
-                        .with_link("https://goblinlang.org/docs/errors#Y0001"),
+                        .with_help("Ensure the input is valid Y’all config (2-space indents, no tabs).")
+                        .with_link("https://goblinlang.org/docs/errors#YA0001"),
                     );
                 }
             };
 
-            yall_yaml_to_value(yaml_val)
+            yall_to_goblin_value(&parsed)
         }
 
         "yall_parse_file" => {
@@ -9430,24 +9439,119 @@ fn call_action_by_name(
 
             let path = want_str(&args[0], "yall_parse_file")?;
 
-            let yaml_val: sy::Value = match goblin_yall::yall_parse_file(&path) {
+            let parsed = match goblin_yall::yall_parse_file(&path) {
                 Ok(v) => v,
                 Err(e) => {
                     return Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001
-                            "yaml-parse-failed",
+                            crate::diagnostics::rtcode::YALL_IO_FAILED, // YA0004
+                            "yall-io-failed",
                             &format!("{}", e),
                             sp.clone(),
                         )
                         .with_help("Ensure the file exists and contains valid Y’all config.")
-                        .with_link("https://goblinlang.org/docs/errors#Y0001"),
+                        .with_link("https://goblinlang.org/docs/errors#YA0004"),
                     );
                 }
             };
 
-            yall_yaml_to_value(yaml_val)
+            yall_to_goblin_value(&parsed)
+        }
+
+        "yall_write" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: yall_write(value)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let val = &args[0];
+            let yv  = goblin_value_to_yall(val);
+            Value::Str(goblin_yall::yall_write(&yv))
+        }
+
+        "yall_write_file" => {
+            if args.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: yall_write_file(path, value)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let path = want_str(&args[0], "yall_write_file")?;
+            let val  = &args[1];
+            let yv   = goblin_value_to_yall(val);
+
+            match goblin_yall::yall_write_file(&path, &yv) {
+                Ok(_) => Value::Nil,
+                Err(e) => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::YALL_WRITE_FAILED, // YA0003
+                            "yall-write-failed",
+                            &format!("{}", e),
+                            sp.clone(),
+                        )
+                        .with_help("Failed to write Y’all file.")
+                        .with_link("https://goblinlang.org/docs/errors#YA0003"),
+                    );
+                }
+            }
+        }
+
+        "yall_pretty" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: yall_pretty(value)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let yv = goblin_value_to_yall(&args[0]);
+            Value::Str(goblin_yall::yall_stringify(&yv))
+        }
+
+        "yall_minify" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: yall_minify(value)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let yv = goblin_value_to_yall(&args[0]);
+            Value::Str(goblin_yall::yall_minify(&yv))
         }
 
         // ----- JSON -----

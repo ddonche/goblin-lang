@@ -199,6 +199,10 @@ pub mod rtcode {
     pub const NON_NULLABLE_FIELD_NIL: &str = "T0207";
     pub const OBJECT_OR_ARRAY_EXPECTED: &str = "T0208";
 
-    // YAML
-    pub const YAML_PARSE_FAILED: &str = "Y0001";
+    // YALL
+    pub const YALL_PARSE_FAILED:  &str = "YA0001"; // strict parse failure (syntax)
+    pub const YALL_ENFORCE_FAILED:&str = "YA0002"; // enforcement-level fail (rules/comments)
+    pub const YALL_WRITE_FAILED:  &str = "YA0003"; // cannot serialize a YallValue
+    pub const YALL_IO_FAILED:     &str = "YA0004"; // cannot read/write file
+    pub const YAML_PARSE_FAILED:  &str = "YA0005"; // cannot read/write file
 }

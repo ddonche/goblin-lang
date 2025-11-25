@@ -1,0 +1,58 @@
+/// modules/frontier_fm/frontier.gbln
+/// Frontier: shared frontmatter handling for Sheriff.
+
+/// --- String-based extractor (back-compat) ---------------------------------
+/// Takes raw Markdown text, returns frontmatter map or nothing.
+act frontier_extract_frontmatter(md_text)
+    if md_text == nothing or md_text == "" => return nothing
+
+    fm_map | {}
+
+    sweep md_text
+        first "^^^^" ... "^^^^":
+            fm_text | keep_between(self, "^^^^", "^^^^")
+            if fm_text !== nothing and fm_text.trim !== "" => fm_map |= fm_text.to_map
+    xx
+
+    if fm_map.len == 0 => return nothing
+
+    return fm_map
+xx
+
+
+/// --- ctx-based helper (optional utility) ----------------------------------
+/// Reads ctx["body"], fills ctx["frontmatter"], returns ctx.
+act frontier_extract_into_ctx(ctx)
+    body | ctx["body"]
+
+    if body == nothing or body == ""
+        update!(ctx["frontmatter"], nothing)
+        return ctx
+    xx
+
+    fm_map | frontier_extract_frontmatter(body)
+    update!(ctx["frontmatter"], fm_map)
+    return ctx
+xx
+
+
+/// --- Strip ^^^^ frontmatter block from ctx["body"] ------------------------
+/// Also populates ctx["frontmatter"]. Used in the pipeline as
+///   frontier::strip_frontmatter
+act strip_frontmatter(ctx)
+    body | ctx["body"]
+
+    if body == nothing or body == "" => return ctx
+
+    /// 1) Extract frontmatter map from the current body
+    fm_map | frontier_extract_frontmatter(body)
+    update!(ctx["frontmatter"], fm_map)
+
+    /// 2) Remove the ^^^^ ... ^^^^ block (fences + contents)
+    clean | ignore_blocks(body, "^^^^", "^^^^")
+
+    /// 3) Write cleaned body back into ctx
+    update!(ctx["body"], clean)
+
+    return ctx
+xx
