@@ -459,24 +459,60 @@ impl<'a> Parser<'a> {
     // SCALARS
     // ---------------------------
     fn parse_scalar(&self, text: &str, line_no: usize) -> Result<YallValue, YallError> {
-        match text {
+        let trimmed = text.trim();
+
+        // ---------- DOUBLE-QUOTED STRING ----------
+        // Handles things like: "trailboss::build_routes_once"
+        if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+            let inner = &trimmed[1..trimmed.len() - 1];
+            let mut out = String::new();
+            let mut chars = inner.chars();
+
+            while let Some(c) = chars.next() {
+                if c == '\\' {
+                    // escape sequence
+                    let next = match chars.next() {
+                        Some(n) => n,
+                        None => {
+                            return self.error(line_no, "unterminated escape in string");
+                        }
+                    };
+
+                    match next {
+                        '"' => out.push('"'),
+                        '\\' => out.push('\\'),
+                        'n' => out.push('\n'),
+                        'r' => out.push('\r'),
+                        't' => out.push('\t'),
+                        other => out.push(other),
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+
+            return Ok(YallValue::Str(out));
+        }
+
+        // ---------- KEYWORDS ----------
+        match trimmed {
             "null" => return Ok(YallValue::Null),
             "true" => return Ok(YallValue::Bool(true)),
             "false" => return Ok(YallValue::Bool(false)),
             _ => {}
         }
 
-        // integer?
-        if let Ok(i) = text.parse::<i64>() {
+        // ---------- INTEGER ----------
+        if let Ok(i) = trimmed.parse::<i64>() {
             return Ok(YallValue::Int(i));
         }
 
-        // float?
-        if let Ok(f) = text.parse::<f64>() {
+        // ---------- FLOAT ----------
+        if let Ok(f) = trimmed.parse::<f64>() {
             return Ok(YallValue::Float(f));
         }
 
-        // else string
-        Ok(YallValue::Str(text.to_string()))
+        // ---------- FALLBACK: BARE STRING ----------
+        Ok(YallValue::Str(trimmed.to_string()))
     }
 }
