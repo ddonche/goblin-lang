@@ -1892,19 +1892,24 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 state.tokens.push(Token::simple_op("=>".to_string(), state.span(start_i, start_col)));
             }
             b'=' => {
-                let start_i = state.i;
-                let start_col = state.col;
-                state.advance();
-                state.tokens.push(Token::simple_op("=".to_string(), state.span(start_i, start_col)));
+                // NEW: Helpful error instead of allowing bare =
+                let span = Span::new(
+                    state.file, 
+                    state.i, 
+                    state.i + 1, 
+                    state.line, 
+                    state.col, 
+                    state.line, 
+                    state.col + 1
+                );
+                return Err(vec![Diagnostic::error(
+                    "L0113",
+                    "Bare `=` is not valid in Goblin\n\nhelp: Use `|` to declare: `x | 10`\n      Use `|=` to reassign: `x |= 20`\n      Use `==` to compare: `if x == 10`",
+                    span,
+                )]);
             }
 
             // Not family
-            b'!' if state.peek(1) == Some(b'=') && state.peek(2) == Some(b'=') && state.peek(3) == Some(b'=') => {
-                let start_i = state.i;
-                let start_col = state.col;
-                state.advance_by(4);
-                state.tokens.push(Token::simple_op("!===".to_string(), state.span(start_i, start_col)));
-            }
             b'!' if state.peek(1) == Some(b'=') && state.peek(2) == Some(b'=') => {
                 let start_i = state.i;
                 let start_col = state.col;
@@ -2145,11 +2150,27 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             }
 
             // Pipe family
-            b'|' if state.peek(1) == Some(b'|') => {
+            b'|' if state.peek(1) == Some(b'=') => {
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance_by(2);
-                state.tokens.push(Token::simple_op("||".to_string(), state.span(start_i, start_col)));
+                state.tokens.push(Token::simple_op("|=".to_string(), state.span(start_i, start_col)));
+            }
+            b'|' if state.peek(1) == Some(b'|') => {
+                let span = Span::new(
+                    state.file,
+                    state.i,
+                    state.i + 2,
+                    state.line,
+                    state.col,
+                    state.line,
+                    state.col + 2
+                );
+                return Err(vec![Diagnostic::error(
+                    "L0114",
+                    "There is no `||` operator in Goblin\n\nhelp: Use `or` or `<>` for logical OR: `if x or y` or `if x <> y`",
+                    span,
+                )]);
             }
             b'|' => {
                 let start_i = state.i;

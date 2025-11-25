@@ -1013,6 +1013,8 @@ fn run_repl() -> i32 {
 
                     // 1) control-flow / block headers open a block
                     // include all your statement headers that require a matching 'end'/'xx'
+                    // 1) control-flow / block headers open a block
+                    // BUT: if there's => on the same line, it's a single-line form
                     if starts_block_kw("if")
                         || starts_block_kw("unless")
                         || starts_block_kw("while")
@@ -1022,7 +1024,10 @@ fn run_repl() -> i32 {
                         || starts_block_kw("judge")
                         || starts_block_kw("judge_all")
                     {
-                        depth += 1;
+                        // Check if this is an inline form (has => on the line)
+                        if !src_line.contains("=>") {
+                            depth += 1;
+                        }
                     }
 
                     // 2) action header opens a block unless single-line "act ... = expr"

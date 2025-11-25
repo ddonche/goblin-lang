@@ -733,13 +733,13 @@ fn yaml_to_value(v: sy::Value) -> Value {
 fn diag_yaml(sp: Span, e: impl std::fmt::Display) -> Diagnostic {
     Diagnostic::new_with_code(
         Severity::Error,
-        crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0001
+        crate::diagnostics::rtcode::YAML_PARSE_FAILED, // Y0005
         "yaml-parse-failed",
         &format!("YAML parse failed: {e}"),
         sp,
     )
     .with_help("Ensure the input is valid YAML text.")
-    .with_link("https://goblinlang.org/docs/errors#Y0001")
+    .with_link("https://goblinlang.org/docs/errors#Y0005")
 }
 
 fn strip_format(v: &Value) -> (&Value, Option<&FormatSpec>) {
@@ -3409,7 +3409,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 format!("'{}' is already declared in this block", name),
                                 name_span,
                             )
-                            .with_help("Choose a different local name, or assign to the existing variable with '='.")
+                            .with_help("Choose a different local name, or assign to the existing variable with '|='.")
                             .with_link("https://goblinlang.org/docs/errors#R0111"),
                         );
                     }
@@ -3432,7 +3432,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 format!("'{}' is already declared in this block", name),
                                 name_span,
                             )
-                            .with_help("Choose a different local name, or assign to the existing variable with '='.")
+                            .with_help("Choose a different local name, or assign to the existing variable with '|='.")
                             .with_link("https://goblinlang.org/docs/errors#R0111"),
                         );
                     }

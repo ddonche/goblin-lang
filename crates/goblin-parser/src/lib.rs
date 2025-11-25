@@ -435,14 +435,14 @@ impl<'t> Parser<'t> {
         let name_text = self.eat_ident().unwrap(); // safe after the match
         let name_ident: ast::Ident = (name_text, name_span);
 
-        // 3) expect '='
+        // 3) expect '|'
         match self.peek() {
-            Some(t) if matches!(t.kind, TokenKind::Op(ref s) if s == "=") => { self.i += 1; }
+            Some(t) if matches!(t.kind, TokenKind::Op(ref s) if s == "|") => { self.i += 1; }
             _ => {
                 return Err(s_help_site!(
                     "P0302",
-                    "Expected '=' after the local name",
-                    "Write: local name = value"
+                    "Expected '|' after the local name",
+                    "Write: local name | value"
                 ));
             }
         }
@@ -612,17 +612,17 @@ impl<'t> Parser<'t> {
                     }
                 }
                 
-                // If we have multiple identifiers followed by '=', it's tuple assignment
-                if idents.len() > 1 && self.peek_op("=") {
+                // If we have multiple identifiers followed by '|=', it's tuple assignment
+                if idents.len() > 1 && self.peek_op("|=") {
                     if !self.in_stmt {
                         return Err(s_help_site!(
                             "P0301",
-                            "You can't use assignment (=) inside an expression.",
+                            "You can't use assignment (|=) inside an expression.",
                             "Put the assignment on its own line.",
                         ));
                     }
                     
-                    let _ = self.eat_op("=");
+                    let _ = self.eat_op("|=");
                     
                     // Allow newlines before RHS
                     while let Some(t) = self.peek() {
@@ -668,7 +668,7 @@ impl<'t> Parser<'t> {
             else if self.peek_op("/=")  { Some("/=")  }
             else if self.peek_op("%=")  { Some("%=")  }
             else if self.peek_op("**=") { Some("**=") }
-            else if self.peek_op("=")   { Some("=")   }
+            else if self.peek_op("|=")  { Some("|=")  }
             else { None };
 
         if op.is_none() {
@@ -679,8 +679,8 @@ impl<'t> Parser<'t> {
         if !self.in_stmt {
             return Err(s_help_site!(
                 "P0301",
-                "You can't use assignment (=) inside an expression.",
-                "Put the assignment on its own line, then use the variable: result = calculate() then total = result * 2.",
+                "You can't use assignment (|=) inside an expression.",
+                "Put the assignment on its own line, then use the variable: result | calculate() then total | result * 2.",
             ));
         }
 
@@ -711,7 +711,7 @@ impl<'t> Parser<'t> {
         let rhs = self.parse_coalesce()?;
         self.in_stmt = prev_in_stmt;
 
-        if op == "=" {
+        if op == "|=" {
             Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
         } else {
             Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
@@ -2461,7 +2461,7 @@ impl<'t> Parser<'t> {
                         ));
                     };
                     // optional default: = <expr>
-                    let default = if self.eat_op("=") {
+                    let default = if self.eat_op("|") {
                         Some(self.parse_coalesce()?)
                     } else {
                         None
@@ -2701,30 +2701,50 @@ impl<'t> Parser<'t> {
             }
         };
         
-        // NEW: Check for |ClassName pattern (object instantiation)
         let class_name = if self.peek_op("|") {
-            self.i += 1; // consume |
-            let Some(class_tok) = self.peek().cloned() else {
-                return Err(s_help_site!("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
-            };
-            match class_tok.kind {
-                TokenKind::Ident => {
-                    let cname = class_tok.value.clone().unwrap_or_default();
-                    self.i += 1; // consume class name
-                    Some(cname)
+            // Lookahead: check pattern after first |
+            if let Some(tok) = self.toks.get(self.i + 1) {
+                if let TokenKind::Ident = tok.kind {
+                    if let Some(name_str) = &tok.value {
+                        let is_class = name_str.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                        let has_second_pipe = self.toks.get(self.i + 2)
+                            .map(|t| matches!(t.kind, TokenKind::Op(ref s) if s == "|"))
+                            .unwrap_or(false);
+                        
+                        if is_class && has_second_pipe {
+                            // Valid: identifier | ClassName | value
+                            self.i += 1; // consume first |
+                            let cname = name_str.clone();
+                            self.i += 1; // consume ClassName
+                            Some(cname)
+                        } else if has_second_pipe {
+                            // Error: identifier | lowercase | value
+                            return Err(s_help_site!(
+                                "P0403", 
+                                &format!("Class names must start with uppercase (found '{}')", name_str),
+                                "Write: user | Person | {{ name: \"Alice\" }}"
+                            ));
+                        } else {
+                            // Normal: identifier | value
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 }
-                _ => {
-                    return Err(s_help_site!("P0403", "Expected a class name after |", "Write: alice|Person = \"Alice\", 30"));
-                }
+            } else {
+                None
             }
         } else {
             None
         };
         
-        // 3) Operator: '=' (Normal) or '[=' (Shadow)
-        let (mode, op_span) = if self.peek_op("=") {
+        // 3) Operator: '|' (Normal) or '[=' (Shadow)
+        let (mode, op_span) = if self.peek_op("|") {
             let sp = self.peek().unwrap().span.clone();
-            let _ = self.eat_op("=");
+            let _ = self.eat_op("|");
             (ast::BindMode::Normal, sp)
         } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow)) {
             let sp = self.peek().unwrap().span.clone();
@@ -2733,8 +2753,8 @@ impl<'t> Parser<'t> {
         } else {
             return Err(s_help_site!(
                 "P0402",
-                &format!("Expected '=' or '[=' after '{}'", name_text),
-                "Use '=' for a normal assign, or '[=' (shadow) to declare+init in the current scope.",
+                &format!("Expected '|' or '[=' after '{}'", name_text),
+                "Use '|' for a normal declaration, or '[=' (shadow) to declare+init in the current scope.",
             ));
         };
         // 4) RHS expression
@@ -3472,7 +3492,7 @@ impl<'t> Parser<'t> {
             ));
         }
 
-        if self.peek_op("!") {
+        if !self.eat_op("|") {
             self.i += 1;
         }
 
@@ -3481,16 +3501,16 @@ impl<'t> Parser<'t> {
                 return Err(s_help_site!(
                     "P0710",
                     "Parentheses are not allowed after a class name.",
-                    "Put fields after '=': @Player = username: \"john\", health: 100",
+                    "Put fields after '=': @Player | username: \"john\", health: 100",
                 ));
             }
         }
 
-        if !self.eat_op("=") {
+        if !self.eat_op("|") {
             return Err(s_help_site!(
                 "P0908",
-                &format!("You need '=' after the class name '{}'", name),
-                "Write it like: @Player = username: \"john\", health: 100",
+                &format!("You need '|' after the class name '{}'", name),
+                "Write it like: @Player | username: \"john\", health: 100",
             ));
         }
 
@@ -4070,6 +4090,52 @@ impl<'t> Parser<'t> {
         // condition
         let cond_pe = self.parse_assign()?;
         let cond = self.lower_expr(cond_pe);
+
+        // ========== INLINE IF CHECK - NEW CODE STARTS HERE ==========
+        // Check for inline if syntax: if condition => statement
+        // First skip any newlines/semicolons to find =>
+        let mut j = self.i;
+        while let Some(tok) = self.toks.get(j) {
+            match &tok.kind {
+                TokenKind::Newline => { j += 1; continue; }
+                TokenKind::Op(s) if s == ";" => { j += 1; continue; }
+                _ => break,
+            }
+        }
+        if let Some(tok) = self.toks.get(j) {
+            if matches!(tok.kind, TokenKind::Op(ref s) if s == "=>") {
+                self.i = j + 1; // skip to after =>
+                
+                // Skip optional whitespace/newlines after =>
+                while let Some(t) = self.peek() {
+                    if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                        self.i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                
+                // Parse single statement
+                let stmt = self.parse_stmt()?;
+                
+                // Calculate span for the entire inline if
+                let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+                
+                // Create single-statement block
+                let then_block = ast::Expr::Block { 
+                    stmts: vec![stmt], 
+                    span: span.clone() 
+                };
+                
+                // Return inline if (no elif, no else)
+                return Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![cond, then_block],
+                    span
+                )));
+            }
+        }
+        // ========== INLINE IF CHECK - NEW CODE ENDS HERE ==========
 
         // Skip the newline and indent after the condition
         while let Some(t) = self.peek() {
@@ -4930,7 +4996,7 @@ impl<'t> Parser<'t> {
                 let mut saw_eq = false;
                 while let Some(t) = self.toks.get(k) {
                     match &t.kind {
-                        TokenKind::Op(s) if s == "=" => { saw_eq = true; break; }
+                        TokenKind::Op(s) if s == "|" => { saw_eq = true; break; }
                         TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof => break,
                         _ => { k += 1; }
                     }
@@ -4939,8 +5005,8 @@ impl<'t> Parser<'t> {
                 if !saw_eq {
                     return Err(derr_help(
                         "P0411",
-                        "This looks like a class declaration but it’s missing '='",
-                        "Write `@Card! = field: …` to declare a class, or remove the leading `@` if you meant a value",
+                        "This looks like a class declaration but it’s missing '|'",
+                        "Write `@Card! | field: …` to declare a class, or remove the leading `@` if you meant a value",
                         tok0.span.clone(),
                     ));
                 }
@@ -5071,22 +5137,10 @@ impl<'t> Parser<'t> {
             if matches!(t0.kind, TokenKind::Ident) {
                 if let Some(t1) = self.toks.get(self.i + 1) {
                     // Check for IDENT = or IDENT [=
-                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "=")
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|")
                         || matches!(t1.kind, TokenKind::Shadow)
                     {
                         return self.parse_bind_stmt();
-                    }
-                    // NEW: Check for IDENT | IDENT = (object instantiation)
-                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|") {
-                        if let Some(t2) = self.toks.get(self.i + 2) {
-                            if matches!(t2.kind, TokenKind::Ident) {
-                                if let Some(t3) = self.toks.get(self.i + 3) {
-                                    if matches!(t3.kind, TokenKind::Op(ref s) if s == "=") {
-                                        return self.parse_bind_stmt();
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -5201,7 +5255,7 @@ impl<'t> Parser<'t> {
             if let (Some(t1), Some(t2)) = (self.toks.get(self.i + 1), self.toks.get(self.i + 2)) {
                 let is_ident = matches!(t1.kind, TokenKind::Ident);
                 let is_eq_or_shadow =
-                    matches!(t2.kind, TokenKind::Op(ref s) if s == "=")
+                    matches!(t2.kind, TokenKind::Op(ref s) if s == "|")
                     || matches!(t2.kind, TokenKind::Shadow);
                 if is_ident && is_eq_or_shadow {
                     return self.parse_bind_stmt();
@@ -5211,7 +5265,7 @@ impl<'t> Parser<'t> {
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
                 if let Some(t1) = self.toks.get(self.i + 1) {
-                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "=")
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|")
                         || matches!(t1.kind, TokenKind::Shadow)
                     {
                         return self.parse_bind_stmt();
@@ -5324,7 +5378,7 @@ impl<'t> Parser<'t> {
             _ => Err(s_help_site!(
                 "P0905",
                 "Expected a class declaration after '@'",
-                "Start the class like: @Player = username: \"john\" :: health: 100",
+                "Start the class like: @Player | username: \"john\" :: health: 100",
             )),
         }
     }
