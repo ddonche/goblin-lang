@@ -4953,7 +4953,7 @@ impl<'t> Parser<'t> {
             }
             if let Some(first) = self.toks.get(j) {
                 if let TokenKind::Op(ref op) = first.kind {
-                    if op == "=" || op == ":" {
+                    if op == "=" {
                         return Err(derr_help(
                             "P0104",
                             &format!("A statement can't start with '{}'", op),
@@ -5598,6 +5598,18 @@ impl<'t> Parser<'t> {
                 self.i += 1;
             } else {
                 break;
+            }
+        }
+
+        // Check for :builtin pattern
+        if self.peek_op(":") {
+            if let Some(next_tok) = self.toks.get(self.i + 1) {
+                if matches!(next_tok.kind, TokenKind::Ident) {
+                    self.i += 1; // consume ':'
+                    let name = self.eat_ident().unwrap();
+                    let builtin_name = format!(":{}", name);
+                    return Ok(PExpr::Ident(builtin_name));
+                }
             }
         }
 

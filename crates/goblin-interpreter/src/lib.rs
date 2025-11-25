@@ -6212,6 +6212,9 @@ fn call_action_by_name(
     sp: Span,
 ) -> Result<Value, Diag> {
 
+    // Strip : prefix if present (builtin marker)
+    let name = name.strip_prefix(':').unwrap_or(name);
+
     // ===== NEW: fully-qualified "module::action" support =====
     if let Some((ns, action_name)) = name.split_once("::") {
         use goblin_diagnostics::{Diagnostic, Severity};
@@ -13593,6 +13596,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Free calls ----
         ast::Expr::FreeCall(name, args, sp) => {
+            // Strip : prefix if present
+            let name = name.strip_prefix(':').unwrap_or(name);
 
             // ============ BOUND METHOD DISPATCH ============
             // Check local frames for bound methods (but not module env to avoid recursion)
@@ -13628,7 +13633,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             // ============ END BOUND METHOD DISPATCH ============
 
             // ---- Mutating casts for function form when arg is a plain identifier ----
-            if matches!(name.as_str(), "float" | "int" | "big" | "str" | "pct" | "f" | "i" | "b" | "string" | "percent")
+            if matches!(name, "float" | "int" | "big" | "str" | "pct" | "f" | "i" | "b" | "string" | "percent")
                && args.len() == 1
             {
                 if let ast::Expr::Ident(var_name, _) = &args[0] {
@@ -13645,7 +13650,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 return mutate_via_call_name(sess, name, None, args, sp.clone());
             }
 
-            match name.as_str() {
+            match name {
                 // control flow lowered by parser
                 "if" => {
                     if args.len() < 2 || args.len() > 3 {
@@ -15078,43 +15083,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Bool(la == rb))
                 },
 
-                // !=== strict inequality (no numeric coercion)
-                // If either side is an *identifier* that is undefined -> Nil (per canon)
-                "!===" => {
-                    let la_opt = if let ast::Expr::Ident(name, _) = &**lhs {
-                        match sess.get_var(name) {
-                            Some(v) => Some(v.clone()),
-                            None    => None, // undefined -> Nil
-                        }
-                    } else {
-                        Some(eval_expr(lhs, sess)?)
-                    };
-
-                    let rb_opt = if let ast::Expr::Ident(name, _) = &**rhs {
-                        match sess.get_var(name) {
-                            Some(v) => Some(v.clone()),
-                            None    => None,
-                        }
-                    } else {
-                        Some(eval_expr(rhs, sess)?)
-                    };
-
-                    if la_opt.is_none() || rb_opt.is_none() {
-                        return Ok(Value::Nil);
-                    }
-
-                    // avoid E0716: bind temps before borrowing
-                    let la_val = la_opt.unwrap();
-                    let rb_val = rb_opt.unwrap();
-                    let (la, _) = strip_format(&la_val);
-                    let (rb, _) = strip_format(&rb_val);
-
-                    Ok(Value::Bool(la != rb))
-                },
-
-                // comparisons (bool)
+                // == equality (with numeric coercion)
                 "==" => {
-                    let lv = eval_expr(lhs, sess)?; let rv = eval_expr(rhs, sess)?;
+                    let lv = eval_expr(lhs, sess)?; 
+                    let rv = eval_expr(rhs, sess)?;
                     let (la, _) = strip_format(&lv);
                     let (rb, _) = strip_format(&rv);
 
@@ -15137,111 +15109,37 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Bool(eqv))
                 }
 
-                // If either side is an *identifier* that is undefined -> Nil (per canon)
+                // !== strict inequality (no numeric coercion)
                 "!==" => {
-                    let la_opt = if let ast::Expr::Ident(name, _) = &**lhs {
-                        match sess.get_var(name) {
-                            Some(v) => Some(v.clone()),
-                            None    => None,
-                        }
-                    } else {
-                        Some(eval_expr(lhs, sess)?)
-                    };
+                    let lv = eval_expr(lhs, sess)?;
+                    let rv = eval_expr(rhs, sess)?;
+                    let (la, _) = strip_format(&lv);
+                    let (rb, _) = strip_format(&rv);
+                    Ok(Value::Bool(la != rb))
+                },
 
-                    let rb_opt = if let ast::Expr::Ident(name, _) = &**rhs {
-                        match sess.get_var(name) {
-                            Some(v) => Some(v.clone()),
-                            None    => None,
-                        }
-                    } else {
-                        Some(eval_expr(rhs, sess)?)
-                    };
-
-                    if la_opt.is_none() || rb_opt.is_none() {
-                        return Ok(Value::Nil);
-                    }
-
-                    // avoid E0716: bind temps before borrowing
-                    let la_val = la_opt.unwrap();
-                    let rb_val = rb_opt.unwrap();
-                    let (la, _) = strip_format(&la_val);
-                    let (rb, _) = strip_format(&rb_val);
+                // != inequality (with numeric coercion)
+                "!=" => {
+                    let lv = eval_expr(lhs, sess)?;
+                    let rv = eval_expr(rhs, sess)?;
+                    let (la, _) = strip_format(&lv);
+                    let (rb, _) = strip_format(&rv);
 
                     let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
                     let neqv = if is_num(&la) && is_num(&rb) {
                         if either_is_big(&la, &rb) {
-                            let a = to_big_for_math(&la, sp.clone(), "!== left")?;
-                            let b = to_big_for_math(&rb, sp.clone(), "!== right")?;
+                            let a = to_big_for_math(&la, sp.clone(), "!= left")?;
+                            let b = to_big_for_math(&rb, sp.clone(), "!= right")?;
                             a != b
                         } else {
-                            let a = to_f64_for_math(&la, sp.clone(), "!== left")?;
-                            let b = to_f64_for_math(&rb, sp.clone(), "!== right")?;
+                            let a = to_f64_for_math(&la, sp.clone(), "!= left")?;
+                            let b = to_f64_for_math(&rb, sp.clone(), "!= right")?;
                             a != b
                         }
                     } else {
                         la != rb
                     };
                     Ok(Value::Bool(neqv))
-                },
-
-                // != "not assigned to": lhs must be lvalue variable; undefined -> NameError
-                "!=" => {
-                    let name = if let ast::Expr::Ident(n, _) = &**lhs {
-                        n.clone()
-                    } else {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
-                                "lvalue-expected",
-                                "lvalue expected on the left of '!=' (not-assigned-to)",
-                                sp.clone(),
-                            )
-                            .with_help("Use a variable on the left, e.g. ‘mode != \"demo\"’.")
-                            .with_help("For expression inequality, use ‘!==’.")
-                            .with_link("https://goblinlang.org/docs/errors#P0802")
-                        );
-                    };
-
-                    let left_val = match sess.get_var(&name) {
-                        Some(v) => v.clone(),
-                        None => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
-                                    "unknown-ident",
-                                    "unknown identifier",
-                                    sp.clone(),
-                                )
-                                .with_help(&format!("‘{}’ is not defined in this scope.", name))
-                                .with_help("‘!=’ checks variable state; declare and assign the variable first.")
-                                .with_link("https://goblinlang.org/docs/errors#R0101")
-                            );
-                        }
-                    };
-
-                    let rv = eval_expr(rhs, sess)?;
-                    let (la, _) = strip_format(&left_val);
-                    let (rb, _) = strip_format(&rv);
-
-                    // reuse your "==" semantics, then negate
-                    let is_num = |v: &Value| matches!(v, Value::Float(_) | Value::Pct(_) | Value::Big(_) | Value::Int(_));
-                    let eqv = if is_num(&la) && is_num(&rb) {
-                        if either_is_big(&la, &rb) {
-                            let a = to_big_for_math(&la, sp.clone(), "!= left")?;
-                            let b = to_big_for_math(&rb, sp.clone(), "!= right")?;
-                            a == b
-                        } else {
-                            let a = to_f64_for_math(&la, sp.clone(), "!= left")?;
-                            let b = to_f64_for_math(&rb, sp.clone(), "!= right")?;
-                            a == b
-                        }
-                    } else {
-                        la == rb
-                    };
-
-                    Ok(Value::Bool(!eqv))
                 },
 
                 "<" | "<=" | ">" | ">=" => {
