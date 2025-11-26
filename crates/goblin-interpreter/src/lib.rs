@@ -7499,6 +7499,40 @@ fn call_action_by_name(
             Value::Bool(ok)
         }
 
+        "nix" => {
+            // True if value is "nothing": nil, empty/whitespace string, empty array, empty map.
+            arity(1)?;
+            let v = match &args[0] {
+                Value::Formatted(inner, _) => &**inner,
+                other => other,
+            };
+
+            let is_nix = match v {
+                Value::Nil => true,
+
+                // "" or all-whitespace string
+                Value::Str(s) => {
+                    if s.is_empty() {
+                        true
+                    } else {
+                        // reuse your ASCII whitespace semantics
+                        s.chars().all(|c| c.is_ascii_whitespace())
+                    }
+                }
+
+                // empty array
+                Value::Array(arr) => arr.is_empty(),
+
+                // empty map
+                Value::Map(map) => map.is_empty(),
+
+                // everything else is "not nix"
+                _ => false,
+            };
+
+            Value::Bool(is_nix)
+        }
+
         "unpack" => {
             arity(1)?;
             match &args[0] {
@@ -13469,7 +13503,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // Numeric
                     "round" | "floor" | "ceil" | "abs" | "sqrt" |
                     // Type/Meta
-                    "valtype" | "vt" | "backend" | "metrics" |
+                    "valtype" | "vt" | "backend" | "metrics" | "nix" |
                     // Postfix casts
                     "int" | "float" | "str" | "bool" | "big" | "pct" | "to_map"
                 ) || name.starts_with("is_");
