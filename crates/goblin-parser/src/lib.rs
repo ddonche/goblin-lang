@@ -67,12 +67,14 @@ enum PExpr {
     Judge {
         using: Option<Box<PExpr>>,
         using_enum: Option<String>,
-        pairs: Vec<(PExpr, PExpr)>,
+        header: Option<Box<PExpr>>,         
+        pairs: Vec<(PExpr, Option<PExpr>)>,
     },
     JudgeAll {
         using: Option<Box<PExpr>>,
         using_enum: Option<String>,
-        pairs: Vec<(PExpr, PExpr)>,
+        header: Option<Box<PExpr>>,         // NEW
+        pairs: Vec<(PExpr, Option<PExpr>)>, // NEW
     },
     Block(Vec<ast::Expr>),
     TemplateApply {
@@ -1300,7 +1302,21 @@ impl<'t> Parser<'t> {
                 }
             }
             if self.eat_op("--") { expr = PExpr::Postfix(Box::new(expr), "--".into()); continue; }
-            if self.eat_op("?")  { expr = PExpr::IsBound(Box::new(expr));               continue; }
+            if self.eat_op("?") {
+                match expr {
+                    PExpr::Member(obj, prop) => {
+                        let new_prop = format!("is_{}", prop);
+                        expr = PExpr::Member(obj, new_prop);
+                    }
+                    _ => {
+                        panic!(
+                            "P0XXX: The '?' postfix only works on member access like .string?\n\
+                             help: Use '&variable' to check if a variable is defined, or '.property?' to check type"
+                        );
+                    }
+                }
+                continue;
+            }
             if self.eat_op("!")  { expr = PExpr::Postfix(Box::new(expr), "!".into());   continue; }
             if self.eat_op("^")  { expr = PExpr::Postfix(Box::new(expr), "^".into());   continue; }
             if self.eat_op("_")  { expr = PExpr::Postfix(Box::new(expr), "_".into());   continue; }
@@ -1779,59 +1795,81 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            PExpr::Judge { using, using_enum, pairs } => {
-                let arms = pairs.into_iter().map(|(cond_expr, val_expr)| {
-                    let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
-                        None
-                    } else {
-                        let expanded = if let Some(ref subj) = using {
-                            Self::expand_condition(subj, &cond_expr, &using_enum)
+            PExpr::Judge { using, using_enum, header, pairs } => {
+                let header_expr = header
+                    .map(|h| Box::new(Self::lower_expr_preview(*h, sp.clone())));
+
+                let arms = pairs
+                    .into_iter()
+                    .map(|(cond_expr, val_expr_opt)| {
+                        let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
+                            None
                         } else {
-                            cond_expr
+                            let expanded = if let Some(ref subj) = using {
+                                Self::expand_condition(subj, &cond_expr, &using_enum)
+                            } else {
+                                cond_expr
+                            };
+                            Some(Box::new(Self::lower_expr_preview(expanded, sp.clone())))
                         };
-                        Some(Box::new(Self::lower_expr_preview(expanded, sp.clone())))
-                    };
-                    
-                    ast::JudgeArm {
-                        condition,
-                        value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
-                        span: sp.clone(),
-                    }
-                }).collect();
-                
-                ast::Expr::Judge { 
+
+                        let value = val_expr_opt.map(|v| {
+                            Box::new(Self::lower_expr_preview(v, sp.clone()))
+                        });
+
+                        ast::JudgeArm {
+                            condition,
+                            value,
+                            span: sp.clone(),
+                        }
+                    })
+                    .collect();
+
+                ast::Expr::Judge {
                     using: using.map(|u| Box::new(Self::lower_expr_preview(*u, sp.clone()))),
-                    arms, 
+                    header: header_expr,
+                    arms,
                     all: false,
-                    span: sp 
+                    span: sp,
                 }
             }
 
-            PExpr::JudgeAll { using, using_enum, pairs } => {
-                let arms = pairs.into_iter().map(|(cond_expr, val_expr)| {
-                    let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
-                        None
-                    } else {
-                        let expanded = if let Some(ref subj) = using {
-                            Self::expand_condition(subj, &cond_expr, &using_enum)
+            PExpr::JudgeAll { using, using_enum, header, pairs } => {
+                let header_expr = header
+                    .map(|h| Box::new(Self::lower_expr_preview(*h, sp.clone())));
+
+                let arms = pairs
+                    .into_iter()
+                    .map(|(cond_expr, val_expr_opt)| {
+                        let condition = if matches!(&cond_expr, PExpr::Ident(s) if s == "else") {
+                            None
                         } else {
-                            cond_expr
+                            let expanded = if let Some(ref subj) = using {
+                                Self::expand_condition(subj, &cond_expr, &using_enum)
+                            } else {
+                                cond_expr
+                            };
+                            Some(Box::new(Self::lower_expr_preview(expanded, sp.clone())))
                         };
-                        Some(Box::new(Self::lower_expr_preview(expanded, sp.clone())))
-                    };
-                    
-                    ast::JudgeArm {
-                        condition,
-                        value: Box::new(Self::lower_expr_preview(val_expr, sp.clone())),
-                        span: sp.clone(),
-                    }
-                }).collect();
-                
-                ast::Expr::Judge { 
+
+                        let value = val_expr_opt.map(|v| {
+                            Box::new(Self::lower_expr_preview(v, sp.clone()))
+                        });
+
+                        ast::JudgeArm {
+                            condition,
+                            value,
+                            span: sp.clone(),
+                        }
+                    })
+                    .collect();
+
+                ast::Expr::Judge {
                     using: using.map(|u| Box::new(Self::lower_expr_preview(*u, sp.clone()))),
-                    arms, 
+                    header: header_expr,
+                    arms,
                     all: true,
-                    span: sp 
+                    span: sp,
                 }
             }
 
@@ -5626,21 +5664,25 @@ impl<'t> Parser<'t> {
 
             self.suspend_colon_call += 1;
 
-            // Parse subject FIRST, then optional 'using EnumName'
+            // Header: [<subject>] [using <EnumOrExpr>] [return <expr>]
             let mut using_expr: Option<Box<PExpr>> = None;
             let mut using_enum: Option<String> = None;
+            let mut header_expr: Option<Box<PExpr>> = None;
 
-            // If next token is not 'using' and not newline/eof/'{', parse subject
-            if self.peek_ident() != Some("using") && !self.peek_newline_or_eof() && !self.peek_op("{") {
+            // Optional subject (but not if next is 'using' or 'return')
+            if self.peek_ident() != Some("using")
+                && self.peek_ident() != Some("return")
+                && !self.peek_newline_or_eof()
+                && !self.peek_op("{")
+            {
                 let subject = self.parse_compare()?;
                 using_expr = Some(Box::new(subject));
             }
 
             // Optional 'using <Name>'
             if self.peek_ident() == Some("using") {
-                let _ = self.eat_ident(); // 'using'
+                let _ = self.eat_ident();
                 self.skip_newlines();
-
                 let Some(name) = self.eat_ident() else {
                     self.suspend_colon_call -= 1;
                     return Err(s_help_site!(
@@ -5649,13 +5691,16 @@ impl<'t> Parser<'t> {
                         "Write: judge using score or judge status using Status",
                     ));
                 };
-
                 let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-                if is_cap {
-                    using_enum = Some(name);
-                } else {
-                    using_expr = Some(Box::new(PExpr::Ident(name)));
-                }
+                if is_cap { using_enum = Some(name); } else { using_expr = Some(Box::new(PExpr::Ident(name))); }
+            }
+
+            // NEW: optional header 'return <expr>'
+            if self.peek_ident() == Some("return") {
+                let _ = self.eat_ident();
+                self.skip_newlines();
+                let pe = self.parse_assign()?;
+                header_expr = Some(Box::new(pe));
             }
 
             if self.peek_op("{") {
@@ -5668,17 +5713,17 @@ impl<'t> Parser<'t> {
             }
             self.forbid_next_line_brace(header_line, header_col, "judge")?;
 
-            // Enter the block: consume Indent(s) only; do NOT eat to close here.
+            // Enter the block
             self.skip_newlines();
             while let Some(t) = self.peek() {
                 if matches!(t.kind, goblin_lexer::TokenKind::Indent) { self.i += 1; } else { break; }
             }
 
-            // Parse arms with known header column.
-            let pairs = self.parse_kv_bind_list_judge(header_col)?;
+            // NOTE: pass allow_empty = header_expr.is_some()
+            let pairs = self.parse_kv_bind_list_judge(header_col, header_expr.is_some())?;
             self.suspend_colon_call -= 1;
 
-            // IMPORTANT: consume pending Dedent/Newline before checking the aligned closer
+            // Consume pending Dedent/Newline before closer
             while let Some(t) = self.peek() {
                 use goblin_lexer::TokenKind::*;
                 if matches!(t.kind, Dedent | Newline) { self.i += 1; } else { break; }
@@ -5702,13 +5747,14 @@ impl<'t> Parser<'t> {
                 return Err(s_help_site!(
                     "P0212",
                     "This judge block is missing its closing 'end' or 'xx' (crossbones).",
-                    "Close the block with 'end' or 'xx' (crossbones). [parse class decl]",
+                    "Close the block with 'end' or 'xx' (crossbones). [parse primary impl]",
                 ));
             }
 
             return Ok(PExpr::Judge {
                 using: using_expr,
                 using_enum,
+                header: header_expr,
                 pairs,
             });
         }
@@ -5722,29 +5768,41 @@ impl<'t> Parser<'t> {
 
             self.suspend_colon_call += 1;
 
-            // NEW ORDER: only 'using <Name>' form here
             let mut using_expr: Option<Box<PExpr>> = None;
             let mut using_enum: Option<String> = None;
+            let mut header_expr: Option<Box<PExpr>> = None;
+
+            // Optional subject (same rule: not 'using'/'return')
+            if self.peek_ident() != Some("using")
+                && self.peek_ident() != Some("return")
+                && !self.peek_newline_or_eof()
+                && !self.peek_op("{")
+            {
+                let subject = self.parse_compare()?;
+                using_expr = Some(Box::new(subject));
+            }
 
             if self.peek_ident() == Some("using") {
-                let _ = self.eat_ident(); // 'using'
+                let _ = self.eat_ident();
                 self.skip_newlines();
-
                 let Some(name) = self.eat_ident() else {
                     self.suspend_colon_call -= 1;
                     return Err(s_help_site!(
                         "P0814",
                         "Expected a name after 'using'",
-                        "Write: judge using score or judge status using Status",
+                        "Write: judge_all using score or judge_all status using Status",
                     ));
                 };
-
                 let is_cap = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-                if is_cap {
-                    using_enum = Some(name);
-                } else {
-                    using_expr = Some(Box::new(PExpr::Ident(name)));
-                }
+                if is_cap { using_enum = Some(name); } else { using_expr = Some(Box::new(PExpr::Ident(name))); }
+            }
+
+            // Optional header 'return <expr>'
+            if self.peek_ident() == Some("return") {
+                let _ = self.eat_ident();
+                self.skip_newlines();
+                let pe = self.parse_assign()?;
+                header_expr = Some(Box::new(pe));
             }
 
             if self.peek_op("{") {
@@ -5757,17 +5815,14 @@ impl<'t> Parser<'t> {
             }
             self.forbid_next_line_brace(header_line, header_col, "judge_all")?;
 
-            // Enter the block: consume Indent(s) only; do NOT eat to close here.
             self.skip_newlines();
             while let Some(t) = self.peek() {
                 if matches!(t.kind, goblin_lexer::TokenKind::Indent) { self.i += 1; } else { break; }
             }
 
-            // Parse arms with known header column.
-            let pairs = self.parse_kv_bind_list_judge(header_col)?;
+            let pairs = self.parse_kv_bind_list_judge(header_col, header_expr.is_some())?;
             self.suspend_colon_call -= 1;
 
-            // IMPORTANT: consume pending Dedent/Newline before checking the aligned closer
             while let Some(t) = self.peek() {
                 use goblin_lexer::TokenKind::*;
                 if matches!(t.kind, Dedent | Newline) { self.i += 1; } else { break; }
@@ -5783,7 +5838,7 @@ impl<'t> Parser<'t> {
                             "This '{}' closer is misaligned: expected column {}, found column {}",
                             closer, header_col, col
                         ),
-                        "Align the closer with its header (same column): place 'end' or 'xx' (crossbones) directly under the start of the judge_all header.",
+                        "Align the closer with its header...",
                     ));
                 }
                 self.expect_block_close("judge_all")?;
@@ -5798,6 +5853,7 @@ impl<'t> Parser<'t> {
             return Ok(PExpr::JudgeAll {
                 using: using_expr,
                 using_enum,
+                header: header_expr,
                 pairs,
             });
         }
@@ -7170,9 +7226,13 @@ impl<'t> Parser<'t> {
         Ok(Stmt::JudgeAll(JudgeAllStmt { arms, span }))
     }
 
-    fn parse_kv_bind_list_judge(&mut self, hdr_col: u32) -> Result<Vec<(PExpr, PExpr)>, String> {
+    fn parse_kv_bind_list_judge(
+        &mut self,
+        hdr_col: u32,
+        allow_empty: bool,
+    ) -> Result<Vec<(PExpr, Option<PExpr>)>, String> {
         use goblin_lexer::TokenKind;
-        let mut out: Vec<(PExpr, PExpr)> = Vec::new();
+        let mut out: Vec<(PExpr, Option<PExpr>)> = Vec::new();
 
         loop {
             // Only skip newlines here; do NOT eat layout-to-close.
@@ -7181,7 +7241,8 @@ impl<'t> Parser<'t> {
             // If we are at an aligned closer for the whole judge block, leave it to the caller.
             if let Some(t) = self.peek() {
                 match &t.kind {
-                    TokenKind::Ident if t.value.as_deref() == Some("end") && t.span.col_start == hdr_col => break,
+                    TokenKind::Ident
+                        if t.value.as_deref() == Some("end") && t.span.col_start == hdr_col => break,
                     TokenKind::Op(op) if op == "xx" && t.span.col_start == hdr_col => break,
                     _ => {}
                 }
@@ -7218,7 +7279,7 @@ impl<'t> Parser<'t> {
                 ));
             }
 
-            // Remember the column of THIS arm ('=='/else/cond) so we can stop its body on dedent.
+            // Remember the column of THIS arm so we can stop its body on dedent.
             let arm_col: u32 = self
                 .toks
                 .get(self.i)
@@ -7236,7 +7297,6 @@ impl<'t> Parser<'t> {
                 let _ = self.eat_ident();
                 None
             } else {
-                // Allow shorthand operators '==', '!=', '>', '>=', '<', '<=' at arm start
                 let cond = self.parse_judge_condition()?;
                 Some(cond)
             };
@@ -7250,30 +7310,36 @@ impl<'t> Parser<'t> {
             }
 
             // Multiline arm body? (newline + indent) → parse statements until dedent back to arm_col.
-            let val = if self.peek_newline_or_eof() {
+            let val_opt: Option<PExpr> = if self.peek_newline_or_eof() {
                 self.skip_newlines();
 
-                // Require an Indent to start the arm body
                 match self.peek() {
-                    Some(t) if matches!(t.kind, TokenKind::Indent) => { self.i += 1; }
+                    Some(t) if matches!(t.kind, TokenKind::Indent) => {
+                        self.i += 1;
+                        let val = self.parse_stmt_sequence_until_dedent_or_next_case(arm_col)?;
+                        Some(val)
+                    }
                     _ => {
-                        return Err(s_help_site!(
-                            "P0816",
-                            "Expected an indented block after ':' in judge arm",
-                            "Start the arm body on the next line and indent it.",
-                        ));
+                        if allow_empty {
+                            // Header 'judge return ...' is present; bare ':' means "empty arm"
+                            None
+                        } else {
+                            return Err(s_help_site!(
+                                "P0816",
+                                "Expected an indented block after ':' in judge arm",
+                                "Start the arm body on the next line and indent it.",
+                            ));
+                        }
                     }
                 }
-
-                // Parse statements until we dedent back to THIS arm's column or hit next arm/closer.
-                self.parse_stmt_sequence_until_dedent_or_next_case(arm_col)?
             } else {
                 // Single-line arm value (expression until newline)
-                self.parse_assign()?
+                let val = self.parse_assign()?;
+                Some(val)
             };
 
             let cond_expr = condition.unwrap_or_else(|| PExpr::Ident("else".to_string()));
-            out.push((cond_expr, val));
+            out.push((cond_expr, val_opt));
 
             // Prepare for next arm or the closing token; do NOT consume closers here.
             self.skip_newlines();
@@ -8487,10 +8553,26 @@ impl<'t> Parser<'t> {
                 continue;
             }
             if self.eat_op("--") { lhs = PExpr::Postfix(Box::new(lhs), "--".to_string()); continue; }
-            if self.eat_op("?")  { lhs = PExpr::IsBound(Box::new(lhs));                     continue; }
-            if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());   continue; }
-            if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());   continue; }
-            if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());   continue; }
+            if self.eat_op("?") {
+                // ? is ONLY for member access sugar: .property? -> .is_property
+                match lhs {
+                    PExpr::Member(obj, prop) => {
+                        let new_prop = format!("is_{}", prop);
+                        lhs = PExpr::Member(obj, new_prop);
+                    }
+                    _ => {
+                        return Err(s_help_site!(
+                            "P0XXX",
+                            "The '?' postfix only works on member access like .string?",
+                            "Use '&variable' to check if a variable is defined, or '.property?' to check type"
+                        ));
+                    }
+                }
+                continue;
+            }
+            if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());  continue; }
+            if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());  continue; }
+            if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());  continue; }
 
             // NEW: dump postfix `*>>` (no disambiguation needed; it's never binary)
             if self.eat_op("*>>") {
@@ -8773,6 +8855,28 @@ impl<'t> Parser<'t> {
                             PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, vec![]),
                             other                  => PExpr::Call(Box::new(other),  opname, vec![]),
                         };
+                    }
+                }
+
+                // Check for ? AFTER the if/else
+                if self.peek_op("?") {
+                    self.eat_op("?");
+                    match lhs {
+                        PExpr::Member(obj, prop) => {
+                            let new_prop = format!("is_{}", prop);
+                            lhs = PExpr::Member(obj, new_prop);
+                        }
+                        PExpr::Call(obj, prop, args) if args.is_empty() => {
+                            // Transform .method?() into .is_method as a Member
+                            let new_prop = format!("is_{}", prop);
+                            lhs = PExpr::Member(obj, new_prop);
+                        }
+                        _ => {
+                            panic!(
+                                "P0XXX: The '?' postfix only works on member access like .string?\n\
+                                 help: Current lhs: {:?}", lhs
+                            );
+                        }
                     }
                 }
 

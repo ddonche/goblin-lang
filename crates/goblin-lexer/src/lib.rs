@@ -1227,12 +1227,9 @@ fn lex_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
         state.advance();
     }
 
-    // Optional trailing ! or ?
-    if state.current() == Some(b'!') || state.current() == Some(b'?') {
-        if !(state.current() == Some(b'?') && 
-             (state.peek(1) == Some(b'.') || state.peek(1) == Some(b'?'))) {
-            state.advance();
-        }
+    // Optional trailing !
+    if state.current() == Some(b'!') {
+        state.advance();
     }
 
     let name = String::from_utf8_lossy(&state.bytes[start_i..state.i]).into_owned();

@@ -1,0 +1,30 @@
+act main()
+    say "=== Test 1: header used ==="
+    href1 |
+        judge return "fallback"
+            is_nix(""):
+            else: "ok"
+        xx
+    say href1   /// EXPECT: "fallback"
+
+    say "=== Test 2: else used ==="
+    href2 |
+        judge return "fallback"
+            is_nix("hi"):
+            else: "ok"
+        xx
+    say href2   /// EXPECT: "ok"
+
+    say "=== Test 3: multiple arms, first match wins ==="
+    val | 10
+    res |
+        judge return "none"
+            val > 20:
+            val > 5:
+                "big"
+            else: "small"
+        xx
+    say res     /// EXPECT: "big"
+xx
+
+main()

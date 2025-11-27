@@ -196,7 +196,7 @@ pub struct EnumVariant {
 #[derive(Debug, Clone)]
 pub struct JudgeArm {
     pub condition: Option<Box<Expr>>,  // None for else
-    pub value: Box<Expr>,
+    pub value: Option<Box<Expr>>,
     pub span: Span,
 }
 
@@ -243,6 +243,7 @@ pub enum Expr {
     },
     Judge {
         using: Option<Box<Expr>>,
+        header: Option<Box<Expr>>,
         arms: Vec<JudgeArm>,
         all: bool,
         span: Span,

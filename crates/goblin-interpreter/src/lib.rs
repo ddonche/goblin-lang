@@ -7499,7 +7499,7 @@ fn call_action_by_name(
             Value::Bool(ok)
         }
 
-        "nix" => {
+        "is_nix" => {
             // True if value is "nothing": nil, empty/whitespace string, empty array, empty map.
             arity(1)?;
             let v = match &args[0] {
@@ -12768,28 +12768,47 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         // eval_expr arm (drop-in)
         // ========================
 
-        ast::Expr::Judge { using: _, arms, all, .. } => {
+        ast::Expr::Judge { using: _, header, arms, all, .. } => {
             if *all {
                 // Expression-form judge_all: collect values for all matches.
-                // Include `else` only if no other arm matched.
+                // Include `else` only if no non-else arm matched.
                 let mut out: Vec<Value> = Vec::new();
                 let mut else_arm: Option<&ast::JudgeArm> = None;
 
                 for arm in arms {
                     match &arm.condition {
-                        None => { else_arm = Some(arm); }
+                        None => {
+                            // else arm
+                            else_arm = Some(arm);
+                        }
                         Some(cond) => {
                             let v = eval_expr(cond.as_ref(), sess)?;
                             if as_bool(v, arm.span.clone(), "judge_all condition")? {
-                                out.push(eval_expr(arm.value.as_ref(), sess)?);
+                                // Use explicit value if present, otherwise header, otherwise nil
+                                let val = if let Some(expr) = &arm.value {
+                                    eval_expr(expr.as_ref(), sess)?
+                                } else if let Some(h) = header {
+                                    eval_expr(h.as_ref(), sess)?
+                                } else {
+                                    Value::Nil
+                                };
+                                out.push(val);
                             }
                         }
                     }
                 }
 
+                // No non-else matches → run else (if present)
                 if out.is_empty() {
                     if let Some(arm) = else_arm {
-                        out.push(eval_expr(arm.value.as_ref(), sess)?);
+                        let val = if let Some(expr) = &arm.value {
+                            eval_expr(expr.as_ref(), sess)?
+                        } else if let Some(h) = header {
+                            eval_expr(h.as_ref(), sess)?
+                        } else {
+                            Value::Nil
+                        };
+                        out.push(val);
                     }
                 }
 
@@ -12800,18 +12819,36 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                 for arm in arms {
                     match &arm.condition {
-                        None => { else_arm = Some(arm); }
+                        None => {
+                            // else arm
+                            else_arm = Some(arm);
+                        }
                         Some(cond) => {
                             let v = eval_expr(cond.as_ref(), sess)?;
                             if as_bool(v, arm.span.clone(), "judge condition")? {
-                                return eval_expr(arm.value.as_ref(), sess);
+                                let val = if let Some(expr) = &arm.value {
+                                    eval_expr(expr.as_ref(), sess)?
+                                } else if let Some(h) = header {
+                                    eval_expr(h.as_ref(), sess)?
+                                } else {
+                                    Value::Nil
+                                };
+                                return Ok(val);
                             }
                         }
                     }
                 }
 
+                // No non-else match → run else (if present)
                 if let Some(arm) = else_arm {
-                    return eval_expr(arm.value.as_ref(), sess);
+                    let val = if let Some(expr) = &arm.value {
+                        eval_expr(expr.as_ref(), sess)?
+                    } else if let Some(h) = header {
+                        eval_expr(h.as_ref(), sess)?
+                    } else {
+                        Value::Nil
+                    };
+                    return Ok(val);
                 }
 
                 Ok(Value::Nil)
@@ -13503,9 +13540,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // Numeric
                     "round" | "floor" | "ceil" | "abs" | "sqrt" |
                     // Type/Meta
-                    "valtype" | "vt" | "backend" | "metrics" | "nix" |
+                    "valtype" | "vt" | "backend" | "metrics" | 
                     // Postfix casts
-                    "int" | "float" | "str" | "bool" | "big" | "pct" | "to_map"
+                    "int" | "float" | "str" | "string" | "bool" | "big" | "pct" | "to_map"
                 ) || name.starts_with("is_");
 
             if is_builtin_method {
