@@ -5,6 +5,22 @@ use crate::Value;
 pub mod markdown {
     use comrak::{markdown_to_html, ComrakOptions};
 
+    // now it's private *inside* this module
+    fn normalize_ascii_punctuation(input: &str) -> String {
+        input
+            .chars()
+            .map(|ch| match ch {
+                // single quotes / apostrophes
+                '\u{2018}' | '\u{2019}' | '\u{201B}' => '\'',
+                // double quotes
+                '\u{201C}' | '\u{201D}' | '\u{201F}' => '"',
+                // dashes / minus
+                '\u{2013}' | '\u{2014}' | '\u{2212}' => '-',
+                _ => ch,
+            })
+            .collect()
+    }
+
     pub fn md_to_html(md: &str) -> String {
         let mut options = ComrakOptions::default();
 
@@ -16,17 +32,17 @@ pub mod markdown {
         options.extension.superscript = true;
         options.extension.footnotes = true;
         options.extension.header_ids = Some(String::new());
-        // options.extension.tagfilter = false; // leave default unless you want HTML filtering
 
         // Parse
-        options.parse.smart = true;
+        options.parse.smart = false;
 
         // Render
-        options.render.unsafe_ = false;       // set true to allow raw HTML passthrough
+        options.render.unsafe_ = false;
         options.render.hardbreaks = false;
         options.render.github_pre_lang = true;
 
-        markdown_to_html(md, &options)
+        let html = markdown_to_html(md, &options);
+        normalize_ascii_punctuation(&html)
     }
 }
 

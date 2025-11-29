@@ -178,11 +178,8 @@ pub fn mixed(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Dia
 pub fn raw(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     arity(1, args.len(), "raw", sp)?;
     map_str_1(&args[0], "raw", &|s| {
-        // Tag: sinks that know about the sentinel will bypass interpolation
-        let mut out = String::with_capacity(RAW_SENTINEL.len() + s.len());
-        out.push_str(RAW_SENTINEL);
-        out.push_str(s);
-        out
+        // Just return the string as-is, no sentinel needed
+        s.to_string()
     }, sp)
 }
 
@@ -288,4 +285,45 @@ pub fn find_all(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value,
         start = idx + sub.len(); // non-overlapping
     }
     Ok(Value::Array(out))
+}
+
+pub fn ord(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    // Same arity style as `lower`, `upper`, etc.
+    arity(1, args.len(), "ord", sp)?;
+
+    let v = &args[0];
+
+    // Extract exactly one char, or fail.
+    let ch_opt: Option<char> = match v {
+        Value::Char(c) => Some(*c),
+
+        Value::Str(s) => {
+            let mut it = s.chars();
+            match (it.next(), it.next()) {
+                // exactly one Unicode scalar
+                (Some(c0), None) => Some(c0),
+                // empty or multi-char string → not allowed for ord
+                _ => None,
+            }
+        }
+
+        _ => None,
+    };
+
+    if let Some(ch) = ch_opt {
+        // Rust char is a Unicode scalar; cast to u32, then i64 for Value::Int
+        Ok(Value::Int(ch as u32 as i64))
+    } else {
+        Err(
+            Diagnostic::new_with_code(
+                Severity::Error,
+                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                "type-mismatch",
+                "‘ord’ expects a char or single-character string.",
+                sp.clone(),
+            )
+            .with_help("Pass a Char or a Str of length 1, e.g. ord('A') or ord(\"A\").")
+            .with_link("https://goblinlang.org/docs/errors#T0205"),
+        )
+    }
 }

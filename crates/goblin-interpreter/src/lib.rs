@@ -2369,11 +2369,12 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                                         continue;
                                     }
                                     Err(_) => {
-                                        out.push_str("[ERR: TOKEN NOT FOUND -> ");
+                                        // Token not found - leave marker as-is
+                                        out.push_str("{{{");
                                         out.push_str(module);
                                         out.push_str("::");
                                         out.push_str(ident);
-                                        out.push(']');
+                                        out.push_str("}}}");
                                         i = j + 3;
                                         continue;
                                     }
@@ -3631,29 +3632,71 @@ fn eval_builtin(
         },
 
         "resolve_token" => {
-            arity(2)?;
-            let module = want_str(&args[0], "resolve_token.module")?;
-            let ident  = want_str(&args[1], "resolve_token.identifier")?;
-
-            // 1) Static store
-            if let Some(v) = sess.resolve_token_value(&module, &ident) {
-                v
-            } else {
-                // 2) Module-export fallback: MOD::resolve_token(ident)
-                let action_name = format!("{}::resolve_token", module);
-                match call_action_by_name(
-                    sess,                          // &mut Session
-                    &action_name,                  // &str
-                    vec![Value::Str(ident.clone())], // Vec<Value>
-                    sp.clone(),                    // Span
-                ) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        // 3) Miss → explicit marker (not triple-braced to avoid re-parsing)
-                        Value::Str(format!("[ERR: TOKEN NOT FOUND -> {}::{}]", module, ident))
+            match args.len() {
+                // NEW: resolve_token(text) – expand ALL {{{MOD::TOKEN}}} in this string
+                1 => {
+                    let text = want_str(&args[0], "resolve_token.text")?;
+                    let rendered = render_interpolated(&text, sess, &sp)?;
+                    Value::Str(rendered)
+                }
+                // EXISTING: resolve_token(namespace, token)
+                2 => {
+                    let module = want_str(&args[0], "resolve_token.module")?;
+                    let ident  = want_str(&args[1], "resolve_token.identifier")?;
+                    
+                    if let Some(v) = sess.resolve_token_value(&module, &ident) {
+                        v
+                    } else {
+                        let action_name = format!("{}::resolve_token", module);
+                        match call_action_by_name(
+                            sess,
+                            &action_name,
+                            vec![Value::Str(ident.clone())],
+                            sp.clone(),
+                        ) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::WRONG_ARITY, // Replace with proper token error code
+                                        "token-not-found",
+                                        format!("token not found: {}::{}", module, ident),
+                                        sp.clone(),
+                                    )
+                                    .with_help("Ensure the token is registered before resolving it")
+                                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                                );
+                            }
+                        }
                     }
                 }
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            rtcode::WRONG_ARITY,
+                            "wrong-arity",
+                            format!("wrong number of arguments (expected 1 or 2, got {})", args.len()),
+                            sp.clone(),
+                        )
+                        .with_help("Use: resolve_token(text) or resolve_token(namespace, token)")
+                        .with_link("https://goblinlang.org/docs/errors#R0301"),
+                    );
+                }
             }
+        },
+
+        "clear_token" => {
+            arity(2)?;
+            let module = want_str(&args[0], "clear_token.module")?;
+            let ident  = want_str(&args[1], "clear_token.identifier")?;
+            
+            let m = sess.normalize_module_name(&module);
+            if let Some(inner) = sess.token_store.get_mut(&m) {
+                inner.remove(&ident.to_string());
+            }
+            Value::Unit
         },
 
         // --------- TOKENS DISCOVERABILITY --------------
@@ -9197,6 +9240,7 @@ fn call_action_by_name(
         "trim_trail"    => crate::actions::strings::trim_trail(sess, &args, &sp)?,
         "find"      => crate::actions::strings::find(sess, &args, &sp)?,
         "find_all"  => crate::actions::strings::find_all(sess, &args, &sp)?,
+        "ord"           => crate::actions::strings::ord(sess, &args, &sp)?,
 
         // ===== MAPS =====
         "keys"   => crate::actions::maps::keys(sess, &args, &sp)?,
