@@ -1,0 +1,10 @@
+/// Test UTF-8 handling
+text | "├── goblin.yaml"
+:say("Original: " + text)
+
+html | :md_to_html("```\n├── goblin.yaml\n```")
+:say("After markdown:")
+:say(html)
+
+:write_text!("test-output.html", html)
+:say("Written to file")

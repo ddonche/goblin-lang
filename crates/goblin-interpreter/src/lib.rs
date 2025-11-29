@@ -2216,22 +2216,22 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
         return Ok(rest.to_string());
     }
 
-    let b = s.as_bytes();
-    let mut i = 0usize;
     let mut out = String::new();
+    let mut chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
 
-    while i < b.len() {
+    while i < chars.len() {
         // 0) Runtime backslash escapes so \{ / \} survive the lexer and don't trigger interpolation
-        if b[i] == b'\\' {
-            if i + 1 < b.len() {
-                match b[i + 1] {
-                    b'{' => { out.push('{'); i += 2; continue; }
-                    b'}' => { out.push('}'); i += 2; continue; }
-                    b'\\' => {
+        if chars[i] == '\\' {
+            if i + 1 < chars.len() {
+                match chars[i + 1] {
+                    '{' => { out.push('{'); i += 2; continue; }
+                    '}' => { out.push('}'); i += 2; continue; }
+                    '\\' => {
                         // Handle \\{  and  \\}  → literal \{ or \}
-                        if i + 2 < b.len() && (b[i + 2] == b'{' || b[i + 2] == b'}') {
+                        if i + 2 < chars.len() && (chars[i + 2] == '{' || chars[i + 2] == '}') {
                             out.push('\\');
-                            out.push(b[i + 2] as char);
+                            out.push(chars[i + 2]);
                             i += 3;
                             continue;
                         }
@@ -2240,27 +2240,27 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         i += 2;
                         continue;
                     }
-                    b'u' => {
+                    'u' => {
                         // skip \u{...} sequence wholly
                         let mut k = i + 2;
-                        if k < b.len() && b[k] == b'{' {
+                        if k < chars.len() && chars[k] == '{' {
                             k += 1;
-                            while k < b.len() && b[k] != b'}' { k += 1; }
-                            if k < b.len() && b[k] == b'}' { i = k + 1; continue; }
+                            while k < chars.len() && chars[k] != '}' { k += 1; }
+                            if k < chars.len() && chars[k] == '}' { i = k + 1; continue; }
                         }
                         // malformed: just skip two chars
                         i += 2;
                         continue;
                     }
-                    b'x' => {
+                    'x' => {
                         // \xNN if present
-                        if i + 3 < b.len() { i += 4; } else { i += 2; }
+                        if i + 3 < chars.len() { i += 4; } else { i += 2; }
                         continue;
                     }
                     _ => {
                         // Unknown escape: pass through literally (don't swallow)
                         out.push('\\');
-                        out.push(b[i + 1] as char);
+                        out.push(chars[i + 1]);
                         i += 2;
                         continue;
                     }
@@ -2273,15 +2273,15 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
             }
         }
 
-        match b[i] {
-            b'{' => {
+        match chars[i] {
+            '{' => {
                 // 1) TRIPLE-BRACE TOKENS FIRST: {{{MODULE::IDENT}}}
-                if i + 2 < b.len() && b[i + 1] == b'{' && b[i + 2] == b'{' {
+                if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
                     // find closing "}}}"
                     let mut j = i + 3;
                     let mut found = None;
-                    while j + 2 < b.len() {
-                        if b[j] == b'}' && b[j + 1] == b'}' && b[j + 2] == b'}' {
+                    while j + 2 < chars.len() {
+                        if chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}' {
                             found = Some(j);
                             break;
                         }
@@ -2301,7 +2301,7 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         );
                     }
                     let j = found.unwrap();
-                    let inner_raw = &s[i + 3..j];
+                    let inner_raw: String = chars[i + 3..j].iter().collect();
                     let inner_trim = inner_raw.trim();
 
                     // Expect MODULE::IDENT
@@ -2393,8 +2393,8 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                 // 2) SINGLE-BRACE {ident} interpolation
                 let start = i + 1;
                 let mut j = start;
-                while j < b.len() && b[j] != b'}' { j += 1; }
-                if j >= b.len() {
+                while j < chars.len() && chars[j] != '}' { j += 1; }
+                if j >= chars.len() {
                     return Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
@@ -2404,18 +2404,18 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                             sp.clone(),
                         )
                         .with_help(r#"Use "\{" to render a literal '{', or close the interpolation with '}'."#)
-                        .with_help(r#"Example: "Hello \{name\)" for a literal brace."#)
+                        .with_help(r#"Example: "Hello \{name\}" for a literal brace."#)
                         .with_link("https://goblinlang.org/docs/errors#R0500"),
                     );
                 }
 
-                let inner_raw = &s[start..j];
+                let inner_raw: String = chars[start..j].iter().collect();
                 let inner_trim = inner_raw.trim();
 
                 // Only interpolate {ident}. Anything else is emitted literally.
                 if !is_ident(inner_trim) {
                     out.push('{');
-                    out.push_str(inner_raw);
+                    out.push_str(&inner_raw);
                     out.push('}');
                     i = j + 1;
                     continue;
@@ -2438,7 +2438,7 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         }
                         // Soft-fail: keep it literal
                         out.push('{');
-                        out.push_str(inner_raw); // preserve spacing/case
+                        out.push_str(&inner_raw); // preserve spacing/case
                         out.push('}');
                         i = j + 1;
                         continue;
@@ -2446,14 +2446,15 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                 }
             }
 
-            b'}' => {
+            '}' => {
                 // Bare '}' prints as-is
                 out.push('}');
                 i += 1;
             }
 
             _ => {
-                out.push(b[i] as char);
+                // CRITICAL FIX: Push the actual character, not a byte cast to char
+                out.push(chars[i]);
                 i += 1;
             }
         }
