@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use indexmap::IndexMap;
 
 use crate::value::YallValue;
 
@@ -85,7 +85,7 @@ fn is_bare_ok(s: &str) -> bool {
 
 fn write_block_map(
     out: &mut String,
-    map: &BTreeMap<String, YallValue>,
+    map: &IndexMap<String, YallValue>,
     indent: usize,
 ) {
     for (key, val) in map {
@@ -186,7 +186,7 @@ fn write_block_list(out: &mut String, arr: &[YallValue], indent: usize) {
 /// Else → block format
 fn write_inline_or_block_map(
     out: &mut String,
-    map: &BTreeMap<String, YallValue>,
+    map: &IndexMap<String, YallValue>,
     indent: usize,
 ) {
     if try_inline_map(map) {
@@ -196,7 +196,7 @@ fn write_inline_or_block_map(
     }
 }
 
-fn try_inline_map(map: &BTreeMap<String, YallValue>) -> bool {
+fn try_inline_map(map: &IndexMap<String, YallValue>) -> bool {
     if map.is_empty() {
         return true;
     }
@@ -217,7 +217,7 @@ fn try_inline_map(map: &BTreeMap<String, YallValue>) -> bool {
     true
 }
 
-fn write_inline_map(out: &mut String, map: &BTreeMap<String, YallValue>) {
+fn write_inline_map(out: &mut String, map: &IndexMap<String, YallValue>) {
     out.push('{');
     let mut first = true;
     for (k, v) in map {
@@ -330,4 +330,3 @@ pub fn minify(val: &YallValue) -> String {
         YallValue::Null => "null".into(),
     }
 }
-

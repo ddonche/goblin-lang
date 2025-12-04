@@ -1,0 +1,43 @@
+/// Action 1: Insert a NEW key into ctx
+act step_one(ctx)
+    put_at!(ctx, "step1", "ran-step-one")
+    return ctx
+xx
+
+/// Action 2: Insert another NEW key
+act step_two(ctx)
+    put_at!(ctx, "step2", 222)
+    return ctx
+xx
+
+/// Action 3: Update an EXISTING key
+act step_three(ctx)
+    update_at!(ctx, "step2", 999)    /// change 222 → 999
+    return ctx
+xx
+
+/// Action 4: Insert a final key
+act step_four(ctx)
+    put_at!(ctx, "final", true)
+    return ctx
+xx
+
+/// ENTRYPOINT
+act main()
+    ctx | {
+        "initial": "hello"
+    }
+
+    pipeline | [
+        "step_one",
+        "step_two",
+        "step_three",
+        "step_four"
+    ]
+
+    out | :summon(ctx, pipeline)
+
+    :say("RESULT:")
+    :say(out)
+xx
+main()

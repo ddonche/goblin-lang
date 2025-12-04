@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use indexmap::IndexMap;
 
 use crate::error::YallError;
 use crate::lexer::{Lexer, Token, TokenKind};
@@ -89,31 +89,37 @@ impl<'a> Parser<'a> {
         Ok(YallValue::Map(root))
     }
 
-    // ---------------------------
-    // Block MAP
-    // ---------------------------
     fn parse_map(
         &self,
         expected_indent: usize,
         idx: &mut usize,
-    ) -> Result<BTreeMap<String, YallValue>, YallError> {
-        let mut map = BTreeMap::new();
+    ) -> Result<IndexMap<String, YallValue>, YallError> {
+        let mut map = IndexMap::new();
 
         while *idx < self.lines.len() {
             let line = &self.lines[*idx];
 
+            // If indentation decreases → parent map ends
             if line.indent < expected_indent {
-                break; // parent will handle
+                break;
             }
 
+            // If indentation increases → malformed
             if line.indent > expected_indent {
                 return self.error(line.line_no, "unexpected indentation");
             }
 
-            // LIST ITEM?
+            // If we hit a list item here, that means this map key's value
+            // is actually a LIST. Delegate to parse_value_block.
             if line.key == "-" {
-                // Convert list to map error
-                return self.error(line.line_no, "list item found where map key expected");
+                // A block like:
+                //   key:
+                //     - item
+                //
+                // is handled by parse_value_block at the parent's level.
+                //
+                // So we break here and let parse_value_block handle it.
+                break;
             }
 
             let key = line.key.to_string();
@@ -182,7 +188,7 @@ impl<'a> Parser<'a> {
             let val_text = trimmed[pos + 1..].trim();
 
             let key = key_raw.trim().to_string();
-            let mut map = BTreeMap::new();
+            let mut map = IndexMap::new();
 
             let first_val = if val_text.is_empty() {
                 // "key:" with no inline value – treat as null for now
@@ -278,14 +284,14 @@ impl<'a> Parser<'a> {
         idx: &mut usize,
     ) -> Result<YallValue, YallError> {
         if *idx >= self.lines.len() {
-            return Ok(YallValue::Map(BTreeMap::new()));
+            return Ok(YallValue::Map(IndexMap::new()));
         }
 
         let line = &self.lines[*idx];
 
         if line.indent < expected_indent {
             // empty block
-            return Ok(YallValue::Map(BTreeMap::new()));
+            return Ok(YallValue::Map(IndexMap::new()));
         }
 
         if line.key == "-" {
@@ -355,7 +361,7 @@ impl<'a> Parser<'a> {
         idx: &mut usize,
         line_no: usize,
     ) -> Result<YallValue, YallError> {
-        let mut map = BTreeMap::new();
+        let mut map = IndexMap::new();
         *idx += 1; // consume {
 
         loop {
@@ -502,14 +508,27 @@ impl<'a> Parser<'a> {
             _ => {}
         }
 
-        // ---------- INTEGER ----------
-        if let Ok(i) = trimmed.parse::<i64>() {
-            return Ok(YallValue::Int(i));
+        // INT?
+        if trimmed.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '+') {
+            if let Ok(i) = trimmed.parse::<i64>() {
+                return Ok(YallValue::Int(i));
+            }
         }
 
-        // ---------- FLOAT ----------
-        if let Ok(f) = trimmed.parse::<f64>() {
-            return Ok(YallValue::Float(f));
+        // FLOAT?
+        let mut has_decimal = false;
+        let mut has_digit = false;
+        for c in trimmed.chars() {
+            if c.is_ascii_digit() { has_digit = true; continue; }
+            if c == '.' && !has_decimal { has_decimal = true; continue; }
+            // anything else breaks float
+            has_digit = false;
+            break;
+        }
+        if has_digit {
+            if let Ok(f) = trimmed.parse::<f64>() {
+                return Ok(YallValue::Float(f));
+            }
         }
 
         // ---------- FALLBACK: BARE STRING ----------

@@ -1,0 +1,9 @@
+act test(x)
+    if x == 1
+        :say("inside if")
+        return "one"
+    xx
+    :say("after if")
+    return "default"
+xx
+:say(test(1))

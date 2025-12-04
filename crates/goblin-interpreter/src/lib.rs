@@ -229,6 +229,7 @@ pub enum Value {
     Unit,
     CtrlSkip,  
     CtrlStop,
+    CtrlReturn(Box<Value>),
     Object {
         class_name: String,
         fields: BTreeMap<String, Value>,
@@ -655,11 +656,11 @@ fn yall_to_goblin_value(v: &goblin_yall::YallValue) -> Value {
         }
 
         goblin_yall::YallValue::Map(map) => {
-            let mut out = BTreeMap::new();
-            for (k, v2) in map {
+            let mut out = IndexMap::new();
+            for (k, v2) in map.iter() {
                 out.insert(k.clone(), yall_to_goblin_value(v2));
             }
-            Value::Map(out)
+            Value::MapOrd(out)
         }
     }
 }
@@ -681,7 +682,7 @@ fn goblin_value_to_yall(v: &Value) -> goblin_yall::YallValue {
         }
 
         Value::Map(map) => {
-            let mut out = BTreeMap::new();
+            let mut out = IndexMap::new();
             for (k, v2) in map {
                 out.insert(k.clone(), goblin_value_to_yall(v2));
             }
@@ -863,7 +864,7 @@ fn to_json(v: &Value) -> sj::Value {
         Value::Pair(a, b)  => sj::Value::Array(vec![to_json(a), to_json(b)]),
         Value::Seq(_s)     => sj::Value::String("<seq>".to_string()),
         Value::Nil | Value::Unit => sj::Value::Null,
-        Value::CtrlSkip | Value::CtrlStop => sj::Value::String("control".to_string()),
+        Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_)  => sj::Value::String("control".to_string()),
         Value::Formatted(_, _) => unreachable!("peeled above"),
         Value::Object { class_name, fields, .. } => {
             let mut obj = serde_json::Map::new();
@@ -1677,6 +1678,7 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Postfix(_, _, sp)
         | ast::Expr::Binary(_, _, _, sp)
         | ast::Expr::Assign(_, _, sp)
+        | ast::Expr::MutateAssign(_, _, sp)
         | ast::Expr::EnumVariant { span: sp, .. }
         | ast::Expr::Judge { span: sp, .. }
         | ast::Expr::Block { span: sp, .. }
@@ -1903,7 +1905,7 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
             s
         }
 
-        Value::Unit | Value::CtrlSkip | Value::CtrlStop => String::new(),
+        Value::Unit | Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => String::new(),
     }
 }
 
@@ -1935,7 +1937,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::Pair(_, _)          => "pair",
         Value::Seq(_)              => "seq",
         Value::Unit                => "unit",
-        Value::CtrlSkip | Value::CtrlStop => "control",
+        Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => "control",
         Value::Formatted(_, _)     => "formatted",
         Value::Object { .. } => "object",
         Value::Enum { .. } => "enum",
@@ -2801,11 +2803,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
         ast::Stmt::Return(rs) => {
             use std::collections::BTreeMap;
-
             // Evaluate each returned expression and (when possible) capture an identifier label
             let mut vals: Vec<Value> = Vec::new();
             let mut labels: Vec<Option<String>> = Vec::new();
-
             for e in &rs.values {
                 match e {
                     ast::Expr::Ident(name, _) => {
@@ -2818,7 +2818,6 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
                 }
             }
-
             let ret = match vals.len() {
                 0 => Value::Nil,
                 1 => vals.into_iter().next().unwrap(),
@@ -2849,9 +2848,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
                 }
             };
-
-            sess.set_var("__return__".to_string(), ret);
-            return Ok(Some(Value::CtrlStop));
+            sess.set_var("__return__".to_string(), ret.clone());
+            return Ok(Some(Value::CtrlReturn(Box::new(ret))));  // FIX: wrap ret, not Unit
         }
 
         ast::Stmt::Sweep(sw) => {
@@ -3288,8 +3286,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 }
                                 ast::JudgeArmBody::Stmts(stmts) => {
                                     for s in stmts {
-                                        if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
-                                            return Ok(Some(Value::CtrlStop)); // propagate return
+                                        if let Some(Value::CtrlReturn(val)) = eval_stmt(s, sess)? {
+                                            return Ok(Some(Value::CtrlReturn(val))); // keep the boxed value
                                         }
                                     }
                                 }
@@ -3308,8 +3306,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
                     ast::JudgeArmBody::Stmts(stmts) => {
                         for s in stmts {
-                            if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
-                                return Ok(Some(Value::CtrlStop));
+                            if let Some(Value::CtrlReturn(val)) = eval_stmt(s, sess)? {
+                                return Ok(Some(Value::CtrlReturn(val))); // keep the boxed value
                             }
                         }
                     }
@@ -3345,8 +3343,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         }
                         ast::JudgeArmBody::Stmts(stmts) => {
                             for s in stmts {
-                                if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
-                                    return Ok(Some(Value::CtrlStop)); // stop all on return
+                                if let Some(Value::CtrlReturn(val)) = eval_stmt(s, sess)? {
+                                    return Ok(Some(Value::CtrlReturn(val)));
                                 }
                             }
                         }
@@ -3363,8 +3361,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
                     ast::JudgeArmBody::Stmts(stmts) => {
                         for s in stmts {
-                            if let Some(Value::CtrlStop) = eval_stmt(s, sess)? {
-                                return Ok(Some(Value::CtrlStop));
+                            if let Some(Value::CtrlReturn(val)) = eval_stmt(s, sess)? {
+                                return Ok(Some(Value::CtrlReturn(val)));
                             }
                         }
                     }
@@ -6332,14 +6330,10 @@ fn call_action_by_name(
                                     if let Some(v) = eval_stmt(st, sess)? {
                                         match v {
                                             Value::CtrlSkip => { /* keep going */ }
-                                            Value::CtrlStop => {
-                                                let rv = sess
-                                                    .get_var("__return__")
-                                                    .cloned()
-                                                    .unwrap_or(Value::Nil);
+                                            Value::CtrlReturn(inner) => {
                                                 sess.pop_frame();
                                                 sess.current_module = old_module;
-                                                return Ok(rv);
+                                                return Ok(*inner);   // unwrap the Box<Value>
                                             }
                                             other => last = other,
                                         }
@@ -6393,6 +6387,7 @@ fn call_action_by_name(
     // FIRST: Check current module's exports
     if let Some(ref module_name) = sess.current_module.clone() {
         if let Some(crate::modules::ExportedItem::Action(action_decl)) = sess.modules.get_export(&module_name, name) {
+            let old_module = sess.current_module.clone();
             let action_decl = action_decl.clone();
             
             // Execute the action (same code as below)
@@ -6448,10 +6443,10 @@ fn call_action_by_name(
                             if let Some(v) = eval_stmt(st, sess)? {
                                 match v {
                                     Value::CtrlSkip => { /* keep going */ }
-                                    Value::CtrlStop => {
-                                        let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
+                                    Value::CtrlReturn(inner) => {
                                         sess.pop_frame();
-                                        return Ok(rv);
+                                        sess.current_module = old_module;
+                                        return Ok(*inner);   // unwrap the Box<Value>
                                     }
                                     other => last = other,
                                 }
@@ -6460,8 +6455,6 @@ fn call_action_by_name(
                         last
                     }
                     ast::ActionBody::Expr(expr) => {
-                        // single-line action (`=> expr`) — implicit return of the expr value
-                        // no frame pops here; keep semantics identical to normal fallthrough
                         eval_expr(expr, sess)?
                     }
                 }
@@ -6524,10 +6517,9 @@ fn call_action_by_name(
                         if let Some(v) = eval_stmt(st, sess)? {
                             match v {
                                 Value::CtrlSkip => { /* keep going */ }
-                                Value::CtrlStop => {
-                                    let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
-                                    sess.pop_frame();  // <-- keep this
-                                    return Ok(rv);
+                                Value::CtrlReturn(inner) => {
+                                    sess.pop_frame();
+                                    return Ok(*inner);
                                 }
                                 other => last = other,
                             }
@@ -6831,7 +6823,6 @@ fn call_action_by_name(
             Value::Str(crate::modules::markdown::md_to_html(&s))
         }
 
-        // ----- DYNAMIC DISPATCH: invoke("name", ...) or invoke("ns::name", ...) -----
         "invoke" => {
             use goblin_diagnostics::{Diagnostic, Severity};
             use crate::diagnostics::rtcode;
@@ -6907,7 +6898,7 @@ fn call_action_by_name(
                         return Err(
                             Diagnostic::new_with_code(
                                 Severity::Error,
-                                rtcode::WRONG_ARITY, // R0301
+                                rtcode::WRONG_ARITY,
                                 "wrong-arity",
                                 &format!(
                                     "Wrong number of arguments (expected {}, got {})",
@@ -6916,13 +6907,13 @@ fn call_action_by_name(
                                 ),
                                 sp.clone(),
                             )
-                            .with_help(&format!("‘{}::{}’ takes {} argument(s).", ns, action_name, params.len()))
+                            .with_help(&format!("'{}::{}' takes {} argument(s).", ns, action_name, params.len()))
                             .with_help("Provide all required arguments or remove extras.")
                             .with_link("https://goblinlang.org/docs/errors#R0301")
                         );
                     }
 
-                    // Bind parameters (with defaults), basically mirroring NsCall logic
+                    // Bind parameters
                     let mut bound: Vec<(String, Value)> = Vec::with_capacity(params.len());
                     for (i, p) in params.iter().enumerate() {
                         if i < forwarded_args.len() {
@@ -6934,9 +6925,9 @@ fn call_action_by_name(
                             return Err(
                                 Diagnostic::new_with_code(
                                     Severity::Error,
-                                    rtcode::MISSING_ARGUMENT, // R0302
+                                    rtcode::MISSING_ARGUMENT,
                                     "missing-argument",
-                                    &format!("missing argument for parameter ‘{}’", p.name),
+                                    &format!("missing argument for parameter '{}'", p.name),
                                     sp.clone(),
                                 )
                                 .with_help("Provide a value for this parameter or define a default.")
@@ -6945,11 +6936,16 @@ fn call_action_by_name(
                         }
                     }
 
-                    // New scope for parameters
+                    // New scope
                     sess.env.push(std::collections::BTreeMap::new());
                     sess.consts.push(std::collections::BTreeMap::new());
                     let old_module = sess.current_module.clone();
                     sess.current_module = Some(ns.to_string());
+
+                    // Bind params
+                    for (name, value) in bound {
+                        sess.set_var(name, value);
+                    }
 
                     // Execute body
                     let result = {
@@ -6960,8 +6956,9 @@ fn call_action_by_name(
                                     if let Some(v) = eval_stmt(stmt, sess)? {
                                         match v {
                                             Value::CtrlSkip => { /* continue */ }
-                                            Value::CtrlStop => {
-                                                let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
+                                            Value::CtrlReturn(inner) => {
+                                                let rv = (*inner).clone();
+                                                // restore env/module BEFORE returning
                                                 sess.env.pop();
                                                 sess.consts.pop();
                                                 sess.current_module = old_module;
@@ -6984,15 +6981,22 @@ fn call_action_by_name(
                     sess.env.pop();
                     sess.consts.pop();
 
-                    return Ok(result);
+                    // ❗ CRITICAL CHANGE HERE:
+                    // Do NOT "helpfully" replace Unit/Nil/Ctrl* with forwarded_args.
+                    // Just return whatever the action actually produced.
+                    let final_result = match result {
+                        Value::CtrlReturn(inner) => *inner,
+                        other => other,
+                    };
+
+                    return Ok(final_result);
                 } else {
-                    // Namespaced but not found as module export
                     return Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            rtcode::IMPORT_FAILED, // R0502
+                            rtcode::IMPORT_FAILED,
                             "unknown-action",
-                            &format!("unknown action ‘{}’", raw),
+                            &format!("unknown action '{}'", raw),
                             sp.clone(),
                         )
                         .with_help("Check the module path and action name, and ensure the module is imported.")
@@ -7002,14 +7006,46 @@ fn call_action_by_name(
             }
 
             // ---- CASE 2: bare name "foo" -> user actions / builtins via call_action_by_name ----
-            let out = call_action_by_name(sess, raw.as_str(), forwarded_args, sp.clone())
+            let out = call_action_by_name(sess, raw.as_str(), forwarded_args.clone(), sp.clone())
                 .map_err(|mut d| {
-                    // normalize as IMPORT_FAILED when used via invoke()
-                    d.code = rtcode::IMPORT_FAILED; // R0502
+                    d.code = rtcode::IMPORT_FAILED;
                     d
                 })?;
 
-            out
+            // MATCH RETURNS A VALUE
+            let value = match out {
+                // explicit `return x`
+                Value::CtrlReturn(inner) => (*inner).clone(),
+
+                // normal concrete values (good)
+                v @ Value::Int(_)
+                | v @ Value::Float(_)
+                | v @ Value::Big(_)
+                | v @ Value::Str(_)
+                | v @ Value::Char(_)
+                | v @ Value::Bool(_)
+                | v @ Value::Pct(_)
+                | v @ Value::Formatted(_, _)
+                | v @ Value::Array(_)
+                | v @ Value::Map(_)
+                | v @ Value::MapOrd(_)
+                | v @ Value::Pair(_, _)
+                | v @ Value::Seq(_)
+                | v @ Value::Object { .. }
+                | v @ Value::Enum { .. } => v,
+
+                // implicit-return: Unit means "no value", do NOT fallback to forwarded args
+                Value::Unit => Value::Unit,
+
+                // Nil behaves same as Unit → do NOT fallback
+                Value::Nil => Value::Nil,
+
+                // Control flow: propagate as-is (never fallback)
+                Value::CtrlSkip => Value::CtrlSkip,
+                Value::CtrlStop => Value::CtrlStop,
+            };
+
+            return Ok(value);
         }
 
         // ===== SUMMON: thread a value through a list of events using invoke =====
@@ -7151,7 +7187,7 @@ fn call_action_by_name(
                 Value::Pair(_, _) => "pair",
                 Value::Seq(_) => "seq",
                 Value::Unit => "unit",
-                Value::CtrlSkip | Value::CtrlStop => "control",
+                Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => "control",
                 _ => "unknown",
             };
             Value::Str(kind.to_string())
@@ -7303,7 +7339,11 @@ fn call_action_by_name(
                 Value::Formatted(inner, _) => &**inner,
                 other => other,
             };
-            Value::Bool(matches!(v, Value::CtrlSkip | Value::CtrlStop))
+            Value::Bool(matches!(v,
+                Value::CtrlSkip |
+                Value::CtrlStop |
+                Value::CtrlReturn(_)
+            ))
         }
 
         "is_digit" => {
@@ -9263,10 +9303,10 @@ fn call_action_by_name(
         // ----- Files / paths / uuids / html -----
         "file_exists"       => crate::actions::files::file_exists(sess, &args, &sp)?,
         "create_dir"        => crate::actions::files::create_dir(sess, &args, &sp)?,
+        "append_file"       => crate::actions::files::append_file(sess, &args, &sp)?,
         "write_text"        => crate::actions::files::write_text(sess, &args, &sp)?,
         "read_text"         => crate::actions::files::read_text(sess, &args, &sp)?,
         "copy_file"         => crate::actions::files::copy_file(sess, &args, &sp)?,
-
         "stem"              => crate::actions::files::stem(sess, &args, &sp)?,
         "ext"               => crate::actions::files::ext(sess, &args, &sp)?,
         "dirname"           => crate::actions::files::dirname(sess, &args, &sp)?,
@@ -9277,12 +9317,8 @@ fn call_action_by_name(
         "is_dir"            => crate::actions::files::is_dir(sess, &args, &sp)?,
         "path_split"        => crate::actions::files::path_split(sess, &args, &sp)?,
         "path_relative_to"  => crate::actions::files::path_relative_to(sess, &args, &sp)?,
-
-        // NEW BUILTIN
         "pathfind"          => crate::actions::files::pathfind(sess, &args, &sp)?,
-
         "walk"              => crate::actions::files::walk(sess, &args, &sp)?,
-
         "escape_html"       => crate::actions::files::escape_html(sess, &args, &sp)?,
         "uuid_v4"           => crate::actions::files::uuid_v4(sess, &args, &sp)?,
         "uuid_v7"           => crate::actions::files::uuid_v7(sess, &args, &sp)?,
@@ -12063,6 +12099,59 @@ fn mutate_via_call_name(
             return Ok(Value::Unit)
         }
 
+        "append_file" => {
+            if arg_exprs.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", arg_exprs.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: append_file!(path, text)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+            let vpath = eval_expr(&arg_exprs[0], sess)?;
+            let vtxt  = eval_expr(&arg_exprs[1], sess)?;
+            let path  = want_str(&vpath, "append_file! path", sp.clone())?;
+            let text  = want_str(&vtxt,  "append_file! text", sp.clone())?;
+            
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO,
+                        "filesystem-io",
+                        &format!("failed to open file for append: {e}"),
+                        sp.clone(),
+                    )
+                    .with_help("Check directory exists and permissions.")
+                    .with_link("https://goblinlang.org/docs/errors#FS0001")
+                })?;
+            
+            file.write_all(text.as_bytes()).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::FILESYSTEM_IO,
+                    "filesystem-io",
+                    &format!("failed to append to file: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Check file permissions and disk space.")
+                .with_link("https://goblinlang.org/docs/errors#FS0001")
+            })?;
+            
+            return Ok(Value::Unit);
+        }
+
         // copy_file!(src, dst)
         "copy_file" => {
             if arg_exprs.len() != 2 {
@@ -12518,18 +12607,49 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
         
         ast::Expr::Block { stmts, .. } => {
-           Session::with_block(sess, |sess| {
+            Session::with_block(sess, |sess| {
                 let mut last: Option<Value> = None;
+
                 for st in stmts {
                     match st {
+                        // Bare expression statement inside the block
                         ast::Stmt::Expr(e) => {
-                            last = Some(eval_expr(e, sess)?);
+                            let val = eval_expr(e, sess)?;
+
+                            match val {
+                                // function return – bubble out with payload
+                                Value::CtrlReturn(v) => return Ok(Value::CtrlReturn(v)),
+
+                                // loop control – bubble out to whoever is executing this block
+                                Value::CtrlSkip | Value::CtrlStop => return Ok(val),
+
+                                // normal value – remember as last
+                                other => {
+                                    last = Some(other);
+                                }
+                            }
                         }
+
+                        // Any other statement
                         _ => {
-                            let _ = sess.eval_stmt(st)?;
+                            if let Some(val) = eval_stmt(st, sess)? {
+                                match val {
+                                    // function return – bubble out with payload
+                                    Value::CtrlReturn(v) => return Ok(Value::CtrlReturn(v)),
+
+                                    // loop control – bubble out
+                                    Value::CtrlSkip | Value::CtrlStop => return Ok(val),
+
+                                    // normal value – remember as last
+                                    other => {
+                                        last = Some(other);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+
                 Ok(last.unwrap_or(Value::Unit))
             })
         }
@@ -12570,7 +12690,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                         Severity::Error,
                                         crate::diagnostics::rtcode::MISSING_ARGUMENT, // R0302
                                         "missing-argument",
-                                        &format!("missing argument for parameter ‘{}’", param.name),
+                                        &format!("missing argument for parameter '{}'", param.name),
                                         sp.clone(),
                                     )
                                     .with_help("Provide a value for this parameter or define a default.")
@@ -12587,14 +12707,23 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 for stmt in stmts {
                                     if let Some(v) = eval_stmt(stmt, sess)? {
                                         match v {
-                                            Value::CtrlSkip => { /* continue */ }
-                                            Value::CtrlStop => {
-                                                let rv = sess.get_var("__return__").cloned().unwrap_or(Value::Nil);
+                                            // loop controls bubble outward — NOT function returns
+                                            Value::CtrlSkip | Value::CtrlStop => {
+                                                sess.current_module = old_module;
                                                 sess.env.pop();
                                                 sess.consts.pop();
-                                                sess.current_module = old_module;
-                                                return Ok(rv);
+                                                return Ok(v);   // bubble loop control outward
                                             }
+
+                                            // function return – unwrap and return the actual value
+                                            Value::CtrlReturn(rv) => {
+                                                sess.current_module = old_module;
+                                                sess.env.pop();
+                                                sess.consts.pop();
+                                                return Ok(*rv);  // FIX - unwrap the box
+                                            }
+
+                                            // normal value
                                             other => last_val = other,
                                         }
                                     }
@@ -12604,7 +12733,17 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                             // NEW: single-line action `=> expr` — implicit return of the expression value
                             ast::ActionBody::Expr(expr) => {
-                                eval_expr(expr, sess)?
+                                let v = eval_expr(expr, sess)?;
+                                match v {
+                                    // unwrap return value
+                                    Value::CtrlReturn(rv) => *rv,  // FIX - unwrap the box
+
+                                    // bubble loop controls outward
+                                    Value::CtrlSkip | Value::CtrlStop => v,
+
+                                    // normal expression result
+                                    other => other,
+                                }
                             }
                         };
 
@@ -12621,7 +12760,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 Severity::Error,
                                 crate::diagnostics::rtcode::NOT_CALLABLE, // M0002
                                 "not-callable",
-                                &format!("‘{}’ is not callable", name),
+                                &format!("'{}' is not callable", name),
                                 sp.clone(),
                             )
                             .with_help("Call an action name, or ensure the value is an action.")
@@ -12641,7 +12780,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             Severity::Error,
                             crate::diagnostics::rtcode::UNKNOWN_ENUM_VARIANT, // R0118
                             "unknown-variant",
-                            &format!("unknown variant ‘{}’ for enum ‘{}’", name, ns),
+                            &format!("unknown variant '{}' for enum '{}'", name, ns),
                             sp.clone(),
                         )
                         .with_help("Check the variant name or add it to the enum definition.")
@@ -12670,7 +12809,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                                 Severity::Error,
                                                 crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403 (used for missing field)
                                                 "missing-variant-field",
-                                                &format!("missing field ‘{}’ for variant ‘{}’", field_decl.name, name),
+                                                &format!("missing field '{}' for variant '{}'", field_decl.name, name),
                                                 sp.clone(),
                                             )
                                             .with_help("Provide all required fields for this enum variant.")
@@ -12702,7 +12841,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             Severity::Error,
                             crate::diagnostics::rtcode::WRONG_ARITY, // R0301
                             "wrong-arity",
-                            &format!("Wrong number of arguments to enum variant ‘{}::{}’ (expected 0 or 1 map, got {})", ns, name, args.len()),
+                            &format!("Wrong number of arguments to enum variant '{}::{}' (expected 0 or 1 map, got {})", ns, name, args.len()),
                             sp.clone(),
                         )
                         .with_help("Use unit form: Enum::Variant  or  named-fields form: Enum::Variant{ field: value }")
@@ -12723,10 +12862,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Severity::Error,
                     crate::diagnostics::rtcode::NAMESPACE_NOT_FOUND, // R0115
                     "namespace-not-found",
-                    &format!("Namespace ‘{}’ not found (not a module or enum).", ns),
+                    &format!("Namespace '{}' not found (not a module or enum).", ns),
                     sp.clone(),
                 )
-                .with_help("Use a declared module or enum before ‘::’.")
+                .with_help("Use a declared module or enum before '::'.")
                 .with_link("https://goblinlang.org/docs/errors#R0115"),
             );
         }
@@ -12963,6 +13102,206 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             .with_link("https://goblinlang.org/docs/errors#R0903")
                         )
                     }
+                }
+            }
+        }
+
+        ast::Expr::MutateAssign(lhs, rhs, sp) => {
+            use goblin_ast::Expr as A;
+
+            // For now we support:  ident[index] |! value
+            // where `ident` is a variable name and `index` is:
+            //   - Int for arrays
+            //   - Str for maps / ordered maps
+            let (var_name, idx_expr) = match &**lhs {
+                A::Index(inner, idx, _) => {
+                    if let A::Ident(name, _) = inner.as_ref() {
+                        (name.clone(), idx.as_ref())
+                    } else {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
+                                "lvalue-expected",
+                                "mutate-assign (|!) requires an indexed collection variable on the left-hand side",
+                                sp.clone(),
+                            )
+                            .with_help("Write: stuff[0] |! \"d\" or cfg[\"key\"] |! value.")
+                            .with_link("https://goblinlang.org/docs/errors#P0802"),
+                        );
+                    }
+                }
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
+                            "lvalue-expected",
+                            "mutate-assign (|!) requires an indexed collection variable on the left-hand side",
+                            sp.clone(),
+                        )
+                        .with_help("Write: stuff[0] |! \"d\" or cfg[\"key\"] |! value.")
+                        .with_link("https://goblinlang.org/docs/errors#P0802"),
+                    );
+                }
+            };
+
+            // Evaluate index and new value
+            let idx_val = eval_expr(idx_expr, sess)?;
+            let new_val = eval_expr(rhs.as_ref(), sess)?;
+
+            // Grab the collection variable slot mutably
+            let slot = sess.get_var_mut(&var_name).ok_or_else(|| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
+                    "unknown-ident",
+                    &format!("unknown variable ‘{}’", var_name),
+                    sp.clone(),
+                )
+                .with_help("Declare the variable before use or check the spelling.")
+                .with_link("https://goblinlang.org/docs/errors#R0101")
+            })?;
+
+            match slot {
+                // -------- arrays: stuff[0] |! "d" ----------
+                Value::Array(items) => {
+                    // index must be a non-negative integer
+                    let idx = match idx_val {
+                        Value::Int(n) if n >= 0 => n as usize,
+                        v => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                    "type-mismatch",
+                                    &format!(
+                                        "array index for |! must be a non-negative integer, got {:?}",
+                                        v
+                                    ),
+                                    sp.clone(),
+                                )
+                                .with_help("Use an integer index like 0, 1, 2…")
+                                .with_link("https://goblinlang.org/docs/errors#T0205"),
+                            );
+                        }
+                    };
+
+                    if idx >= items.len() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // generic
+                                "index-out-of-range",
+                                &format!(
+                                    "index {} is out of range for array of length {}",
+                                    idx,
+                                    items.len()
+                                ),
+                                sp.clone(),
+                            )
+                            .with_help("Ensure the index is within the array’s bounds.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205"),
+                        );
+                    }
+
+                    items[idx] = new_val.clone();
+                    Ok(new_val)
+                }
+
+                // -------- maps: cfg["theme"] |! "light" ----------
+                Value::Map(map) => {
+                    let key = match idx_val {
+                        Value::Str(s) => s,
+                        v => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                    "type-mismatch",
+                                    &format!(
+                                        "map key for |! must be a string, got {:?}",
+                                        v
+                                    ),
+                                    sp.clone(),
+                                )
+                                .with_help("Use a string key like \"theme\".")
+                                .with_link("https://goblinlang.org/docs/errors#T0205"),
+                            );
+                        }
+                    };
+
+                    if !map.contains_key(&key) {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                                "missing-key",
+                                &format!("map has no key ‘{}’", key),
+                                sp.clone(),
+                            )
+                            .with_help("Ensure the key exists before mutating, or insert it first.")
+                            .with_link("https://goblinlang.org/docs/errors#R0403"),
+                        );
+                    }
+
+                    map.insert(key, new_val.clone());
+                    Ok(new_val)
+                }
+
+                // -------- ordered maps: same semantics ----------
+                Value::MapOrd(map) => {
+                    let key = match idx_val {
+                        Value::Str(s) => s,
+                        v => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                    "type-mismatch",
+                                    &format!(
+                                        "ordered-map key for |! must be a string, got {:?}",
+                                        v
+                                    ),
+                                    sp.clone(),
+                                )
+                                .with_help("Use a string key like \"theme\".")
+                                .with_link("https://goblinlang.org/docs/errors#T0205"),
+                            );
+                        }
+                    };
+
+                    if !map.contains_key(&key) {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
+                                "missing-key",
+                                &format!("map has no key ‘{}’", key),
+                                sp.clone(),
+                            )
+                            .with_help("Ensure the key exists before mutating, or insert it first.")
+                            .with_link("https://goblinlang.org/docs/errors#R0403"),
+                        );
+                    }
+
+                    map.insert(key, new_val.clone());
+                    Ok(new_val)
+                }
+
+                // -------- everything else: error ----------
+                _ => {
+                    Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            "mutate-assign (|!) requires an array, map, or ordered map variable on the left-hand side",
+                            sp.clone(),
+                        )
+                        .with_help("Use ‘name[index] |! value’ where ‘name’ is a collection variable.")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    )
                 }
             }
         }
@@ -13824,19 +14163,26 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 sp.clone(),
                             )
                             .with_help("Usage: if(cond, then_block[, else_block])")
-                            .with_help("‘then_block’/‘else_block’ must be block expressions.")
+                            .with_help("'then_block'/'else_block' must be block expressions.")
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
 
                     let cond_v = eval_expr(&args[0], sess)?;
-                    if as_bool(cond_v, sp.clone(), "if condition")? {
-                        Session::with_block(sess, |sess| eval_expr(&args[1], sess))
+                    let result = if as_bool(cond_v, sp.clone(), "if condition")? {
+                        Session::with_block(sess, |sess| eval_expr(&args[1], sess))?
                     } else if args.len() == 3 {
-                        Session::with_block(sess, |sess| eval_expr(&args[2], sess))
+                        Session::with_block(sess, |sess| eval_expr(&args[2], sess))?
                     } else {
-                        Ok(Value::Unit)
+                        Value::Unit
+                    };
+
+                    // Propagate FUNCTION RETURNS upward
+                    if let Value::CtrlReturn(inner) = result {
+                        return Ok(Value::CtrlReturn(inner));  // FIX - keep the box
                     }
+
+                    Ok(result)
                 }
 
                 "while" => {
@@ -13862,8 +14208,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                         let v = Session::with_block(sess, |sess| eval_expr(&args[1], sess))?;
                         match v {
-                            Value::CtrlSkip => continue 'outer,
-                            Value::CtrlStop => break 'outer,
+                            Value::CtrlSkip   => continue 'outer,
+                            Value::CtrlStop   => break 'outer,
+                            Value::CtrlReturn(inner) => {
+                                sess.loop_depth -= 1;
+                                return Ok(Value::CtrlReturn(inner));  // FIX - keep the box
+                            }
                             _ => {}
                         }
                     }
@@ -13912,8 +14262,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         Value::Array(arr) => arr,
                         Value::Str(s) => s.chars().map(Value::Char).collect(),
                         Value::Map(map) => {
-                            // Convert map to array of [key, value] pairs
                             map.into_iter()
+                                .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
+                                .collect()
+                        }
+                        Value::MapOrd(mo) => {
+                            mo.into_iter()
                                 .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
                                 .collect()
                         }
@@ -13932,20 +14286,20 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                     };
 
-                    // Body is now an Expr::Block; eval_expr will execute its statements each iteration.
                     sess.loop_depth += 1;
                     'outer: for item in items {
-                        // New block scope per iteration
                         let v = Session::with_block(sess, |sess| {
-                            // Bind loop variable for this iteration into the fresh frame
                             sess.define_local(var_name.clone(), item.clone(), false);
-                            // Execute the loop body block
                             eval_expr(&args[2], sess)
                         })?;
 
                         match v {
-                            Value::CtrlSkip => continue 'outer,
-                            Value::CtrlStop => break 'outer,
+                            Value::CtrlSkip   => continue 'outer,
+                            Value::CtrlStop   => break 'outer,
+                            Value::CtrlReturn(inner) => {
+                                sess.loop_depth -= 1;
+                                return Ok(Value::CtrlReturn(inner));  // FIX - keep the box
+                            }
                             _ => {}
                         }
                     }
@@ -13954,7 +14308,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "repeat" => {
-                    // arity
                     if args.len() != 2 {
                         return Err(
                             Diagnostic::new_with_code(
@@ -14002,13 +14355,16 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                     };
 
-                    // execute
                     sess.loop_depth += 1;
                     'outer: for _ in 0..count {
                         let v = Session::with_block(sess, |sess| eval_expr(&args[1], sess))?;
                         match v {
-                            Value::CtrlSkip => continue 'outer,
-                            Value::CtrlStop => break 'outer,
+                            Value::CtrlSkip   => continue 'outer,
+                            Value::CtrlStop   => break 'outer,
+                            Value::CtrlReturn(inner) => {
+                                sess.loop_depth -= 1;
+                                return Ok(Value::CtrlReturn(inner));  // FIX - keep the box
+                            }
                             _ => {}
                         }
                     }
@@ -14017,7 +14373,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "attempt" => {
-                    // args: [attempt_block, rescue_blocks_array?, ensure_block?]
                     if args.is_empty() {
                         return Err(
                             Diagnostic::new_with_code(
@@ -14032,22 +14387,20 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         );
                     }
 
-                    // Optional rescue blocks array (still an array, but each entry is [var_or_nil, block])
                     let rescue_blocks_es = if args.len() > 1 {
                         expect_array(&args[1], "rescue_blocks", sp.clone())?
                     } else {
                         &[]
                     };
 
-                    // Run attempt block
                     let mut result = Value::Unit;
                     let mut had_error = false;
+
                     match Session::with_block(sess, |sess| eval_expr(&args[0], sess)) {
                         Ok(v) => result = v,
                         Err(_err) => { had_error = true; }
                     }
 
-                    // first rescue (if any), in its own block
                     if had_error && !rescue_blocks_es.is_empty() {
                         let rescue_info_es = expect_array(&rescue_blocks_es[0], "rescue_info", sp.clone())?;
                         if rescue_info_es.len() >= 2 {
@@ -14055,13 +14408,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                     }
 
-                    // ensure (if present), in its own block
                     if args.len() > 2 {
                         let _ = Session::with_block(sess, |sess| eval_expr(&args[2], sess))?;
                     }
 
                     Ok(result)
                 }
+
 
                 "skip" => {
                     if sess.loop_depth <= 0 {
@@ -14098,7 +14451,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "return" => {
-                    // return was called as FreeCall from inside an if block
                     let mut vals: Vec<Value> = Vec::with_capacity(args.len());
                     let mut labels: Vec<Option<String>> = Vec::with_capacity(args.len());
 
@@ -14142,11 +14494,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                     };
 
-                    sess.set_var("__return__".to_string(), ret);
-                    Ok(Value::CtrlStop)
+                    Ok(Value::CtrlReturn(Box::new(ret)))
                 }
 
-                // v(n): history lookup (1-based)
                 "v" => {
                     if args.len() != 1 {
                         return Err(
@@ -14164,7 +14514,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
 
                     let n_val = eval_expr(&args[0], sess)?;
-                    let n = as_num(n_val, sp.clone(), "v(n)")?; // emits R0200 if not numeric
+                    let n = as_num(n_val, sp.clone(), "v(n)")?;
 
                     if n < 1.0 || n.fract() != 0.0 {
                         return Err(
@@ -14200,7 +14550,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                 }
 
-                // say: prints value; for strings, render interpolation at print time
                 "say" => {
                     let printed = if args.is_empty() {
                         Value::Unit
@@ -14212,17 +14561,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "raw" => {
-                    // Build args without triggering interpolation for string literals.
                     let mut arg_vals: Vec<Value> = Vec::with_capacity(args.len());
 
                     for a in args {
                         match a {
-                            // Single string literal → lift directly (no eval_expr ⇒ no interpolation)
                             ast::Expr::Str(s, _) => {
                                 arg_vals.push(Value::Str(s.clone()));
                             }
-
-                            // Array literal → lift string items directly; eval others normally
                             ast::Expr::Array(items, _) => {
                                 let mut out = Vec::with_capacity(items.len());
                                 for it in items {
@@ -14233,28 +14578,24 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 }
                                 arg_vals.push(Value::Array(out));
                             }
-
-                            // Everything else: evaluate as usual
                             _ => {
                                 arg_vals.push(eval_expr(a, sess)?);
                             }
                         }
                     }
 
-                    // Call the builtin raw with the Values we constructed
                     let v = crate::actions::strings::raw(sess, &arg_vals, &sp)?;
                     return Ok(v);
                 }
 
-                // everything else → regular (pure) call
                 other_name => {
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for a in args { arg_vals.push(eval_expr(a, sess)?); }
 
                     if let Some(v) = eval_builtin(&other_name, &arg_vals, sess, &sp)? {
-                        return Ok(v); // builtin handled here
+                        return Ok(v);
                     }
-                    // else: regular action
+
                     call_action_by_name(sess, other_name, arg_vals, sp.clone())
                 }
             }
@@ -14310,7 +14651,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     };
                     sess.set_var(var_name.clone(), updated_obj);
                     
-                    return Ok(result);
+                    // Unwrap CtrlReturn if present
+                    let final_result = match result {
+                        Value::CtrlReturn(inner) => *inner,
+                        other => other,
+                    };
+                    
+                    return Ok(final_result);
                 }
             }
             
@@ -15663,14 +16010,28 @@ fn call_object_method_with_values(
         match &action.body {
             ast::ActionBody::Block(stmts) => {
                 let mut last = Value::Unit;
+
                 for stmt in stmts {
                     if let Some(v) = eval_stmt(stmt, sess)? {
                         match v {
-                            Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
+                            // loop controls must bubble to whoever called this method
+                            Value::CtrlSkip | Value::CtrlStop => {
+                                sess.pop_frame();
+                                return Ok(v);
+                            }
+
+                            // return from inside a method
+                            Value::CtrlReturn(rv) => {
+                                sess.pop_frame();
+                                return Ok(Value::CtrlReturn(rv));
+                            }
+
+                            // normal value — just track it
                             other => last = other,
                         }
                     }
                 }
+
                 last
             }
             ast::ActionBody::Expr(expr) => {
@@ -15776,7 +16137,19 @@ fn call_object_method(
                 for stmt in stmts {
                     if let Some(v) = eval_stmt(stmt, sess)? {
                         match v {
-                            Value::CtrlSkip | Value::CtrlStop => { /* ignore */ }
+                            // loop controls must bubble outward
+                            Value::CtrlSkip | Value::CtrlStop => {
+                                sess.pop_frame();
+                                return Ok(v);
+                            }
+
+                            // function return — bubble upward with payload
+                            Value::CtrlReturn(rv) => {
+                                sess.pop_frame();
+                                return Ok(Value::CtrlReturn(rv));
+                            }
+
+                            // normal value
                             other => last = other,
                         }
                     }
@@ -16195,8 +16568,14 @@ fn sweep_run_arm_on_scope(
 
     // Execute body
     for stmt in body {
-        if let Some(Value::CtrlStop) = self::eval_stmt(stmt, sess)? {
-            break;
+        if let Some(ctrl) = eval_stmt(stmt, sess)? {
+            match ctrl {
+                Value::CtrlSkip => continue,
+                Value::CtrlStop | Value::CtrlReturn(_) => break,
+                _ => {
+                    // normal values ignored; sweeps don't propagate stmt value
+                }
+            }
         }
     }
 

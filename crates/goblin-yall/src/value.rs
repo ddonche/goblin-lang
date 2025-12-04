@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use indexmap::IndexMap;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -9,7 +9,7 @@ pub enum YallValue {
     Float(f64),
     Str(String),
     Array(Vec<YallValue>),
-    Map(BTreeMap<String, YallValue>),
+    Map(IndexMap<String, YallValue>),
 }
 
 impl YallValue {
@@ -19,13 +19,13 @@ impl YallValue {
     pub fn float(f: f64) -> Self { YallValue::Float(f) }
     pub fn str<S: Into<String>>(s: S) -> Self { YallValue::Str(s.into()) }
     pub fn array(v: Vec<YallValue>) -> Self { YallValue::Array(v) }
-    pub fn map(m: BTreeMap<String, YallValue>) -> Self { YallValue::Map(m) }
+    pub fn map(m: IndexMap<String, YallValue>) -> Self { YallValue::Map(m) }
 
     pub fn is_null(&self) -> bool { matches!(self, YallValue::Null) }
-    pub fn is_map(&self)  -> bool { matches!(self, YallValue::Map(_)) }
-    pub fn is_array(&self)-> bool { matches!(self, YallValue::Array(_)) }
+    pub fn is_map(&self) -> bool { matches!(self, YallValue::Map(_)) }
+    pub fn is_array(&self) -> bool { matches!(self, YallValue::Array(_)) }
 
-    pub fn as_map(&self) -> Option<&BTreeMap<String, YallValue>> {
+    pub fn as_map(&self) -> Option<&IndexMap<String, YallValue>> {
         if let YallValue::Map(ref m) = self { Some(m) } else { None }
     }
 
@@ -45,7 +45,7 @@ impl fmt::Display for YallValue {
             YallValue::Bool(b) => write!(f, "{}", b),
             YallValue::Int(i) => write!(f, "{}", i),
             YallValue::Float(fl) => write!(f, "{}", fl),
-            YallValue::Str(s) => write!(f, "{:?}", s), // quoted debug style
+            YallValue::Str(s) => write!(f, "{:?}", s),
             YallValue::Array(arr) => {
                 write!(f, "[")?;
                 let mut first = true;

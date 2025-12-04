@@ -65,6 +65,20 @@ pub fn write_text(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Val
     )
 }
 
+pub fn append_file(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    Err(
+        Diagnostic::new_with_code(
+            Severity::Error,
+            rtcode::MUTATION_OPERATOR_REQUIRED,
+            "mutation-operator-required",
+            "'append_file' requires the bang form: use append_file!(…)",
+            sp.clone(),
+        )
+        .with_help("Append '!' to append to files, e.g., append_file!(path, text).")
+        .with_link("https://goblinlang.org/docs/errors#M0001"),
+    )
+}
+
 // ==========================================================
 // read_text(path)
 // ==========================================================

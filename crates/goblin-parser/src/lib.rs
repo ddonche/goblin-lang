@@ -41,6 +41,7 @@ enum PExpr {
     IsBound(Box<PExpr>),
     Member(Box<PExpr>, String),
     Money(String),
+    MutateAssign(Box<PExpr>, Box<PExpr>),
     Nil,
     NsCall(String, String, Vec<PExpr>),
     Object(Vec<(String, PExpr)>),
@@ -670,6 +671,7 @@ impl<'t> Parser<'t> {
             else if self.peek_op("/=")  { Some("/=")  }
             else if self.peek_op("%=")  { Some("%=")  }
             else if self.peek_op("**=") { Some("**=") }
+            else if self.peek_op("|!")  { Some("|!")  }
             else if self.peek_op("|=")  { Some("|=")  }
             else { None };
 
@@ -715,6 +717,8 @@ impl<'t> Parser<'t> {
 
         if op == "|=" {
             Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
+        } else if op == "|!" {
+            Ok(PExpr::MutateAssign(Box::new(lhs), Box::new(rhs))) 
         } else {
             Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
         }
@@ -995,7 +999,7 @@ impl<'t> Parser<'t> {
         use PExpr::*;
         match e {
             // Disallow anything that could invoke user code or assign
-            Call(..) | FreeCall(..) | NsCall(..) | OptCall(..) | Assign(..) | TupleAssign(..) => false,
+            Call(..) | FreeCall(..) | NsCall(..) | OptCall(..) | Assign(..) | MutateAssign(..) | TupleAssign(..) => false,
 
             // Simple literals
             Money(_) | Ident(_) | Int(_) | Float(_) | IntWithUnit(_,_) | FloatWithUnit(_,_)
@@ -1956,6 +1960,11 @@ impl<'t> Parser<'t> {
                 let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
                 ast::Expr::Assign(lhs, rhs, sp)
             }
+            PExpr::MutateAssign(lhs, rhs) => {
+                let lhs = Box::new(Self::lower_expr_preview(*lhs, sp.clone()));
+                let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
+                ast::Expr::MutateAssign(lhs, rhs, sp)
+            }
             PExpr::TupleAssign(names, rhs, tuple_sp) => {
                 let rhs = Box::new(Self::lower_expr_preview(*rhs, tuple_sp.clone()));
                 ast::Expr::TupleAssign(names, rhs, tuple_sp)
@@ -2584,6 +2593,31 @@ impl<'t> Parser<'t> {
         if let Some(tok) = self.toks.get(j) {
             if matches!(tok.kind, TokenKind::Op(ref s) if s == "=>") {
                 self.i = j + 1;
+                
+                // Check if this is a return statement
+                if let Some(ret_tok) = self.toks.get(self.i) {
+                    if matches!(ret_tok.kind, TokenKind::Ident) && ret_tok.value.as_deref() == Some("return") {
+                        self.i += 1; // consume 'return'
+                        let pexpr = self.parse_coalesce()?;
+                        let expr = self.lower_expr(pexpr);
+                        
+                        // Create ReturnStmt properly
+                        let ret_stmt = ast::Stmt::Return(ast::ReturnStmt {
+                            values: vec![expr],
+                            span: action_span.clone(),
+                        });
+                        let act = ast::ActionDecl {
+                            name: pa.name,
+                            params,
+                            body: ast::ActionBody::Block(vec![ret_stmt]),
+                            span: action_span,
+                            ret: None,
+                        };
+                        return Ok(ast::Stmt::Action(act));
+                    }
+                }
+                
+                // Normal expression case
                 let pexpr = self.parse_coalesce()?;
                 let expr  = self.lower_expr(pexpr);
                 let act = ast::ActionDecl {

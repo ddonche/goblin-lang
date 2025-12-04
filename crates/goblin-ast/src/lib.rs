@@ -233,6 +233,7 @@ pub enum Expr {
     Postfix(Box<Expr>, String, Span),
     Binary(Box<Expr>, String, Box<Expr>, Span),
     Assign(Box<Expr>, Box<Expr>, Span),
+    MutateAssign(Box<Expr>, Box<Expr>, Span),
 
     // Other
     EnumVariant {
@@ -280,6 +281,7 @@ impl Expr {
             Expr::Postfix(_, _, sp) => sp,  
             Expr::Binary(_, _, _, sp) => sp,
             Expr::Assign(_, _, sp) => sp,
+            Expr::MutateAssign(_, _, sp) => sp,
             Expr::EnumVariant { span, .. } => span,
             Expr::Judge { span, .. } => span,
             Expr::Block { span, .. } => span,  
