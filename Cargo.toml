@@ -8,6 +8,7 @@ members = [
   "crates/goblin-ast",
   "crates/goblin-parser",
   "crates/goblin-interpreter",
+  "crates/goblin-vm",
   "crates/goblin-cli",
   "crates/goblin-gql",
   "crates/goblin-host",

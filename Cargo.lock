@@ -660,14 +660,14 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "goblin-ast"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "goblin-diagnostics",
 ]
 
 [[package]]
 name = "goblin-cli"
-version = "0.1.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-interpreter"
-version = "0.1.0"
+version = "0.18.1"
 dependencies = [
  "comrak",
  "dunce",
@@ -726,6 +726,7 @@ dependencies = [
  "goblin-diagnostics",
  "goblin-lexer",
  "goblin-parser",
+ "goblin-yall",
  "indexmap",
  "regex",
  "rust_decimal",
@@ -738,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-lexer"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "chumsky",
  "goblin-diagnostics",
@@ -746,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-parser"
-version = "0.1.0"
+version = "0.4.4"
 dependencies = [
  "goblin-ast",
  "goblin-diagnostics",
@@ -756,6 +757,20 @@ dependencies = [
 [[package]]
 name = "goblin-source"
 version = "0.1.0"
+
+[[package]]
+name = "goblin-vm"
+version = "0.1.0"
+dependencies = [
+ "slab",
+]
+
+[[package]]
+name = "goblin-yall"
+version = "1.1.0"
+dependencies = [
+ "indexmap",
+]
 
 [[package]]
 name = "h2"
