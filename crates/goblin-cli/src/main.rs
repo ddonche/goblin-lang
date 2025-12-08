@@ -1132,7 +1132,8 @@ fn run_repl() -> i32 {
 }
 
 fn run_run(path: &std::path::Path) -> i32 {
-    use goblin_interpreter::Session;
+    use goblin_interpreter::{Session, Value};
+    use std::time::Instant;
     
     // 1) read the file
     let src = match std::fs::read_to_string(path) {
@@ -1151,8 +1152,11 @@ fn run_run(path: &std::path::Path) -> i32 {
     let tokens = match goblin_lexer::lex(&src, &label) {
         Ok(toks) => toks,
         Err(diags) => {
-            eprintln!("LEX FAILED ({} diagnostic{})",
-                diags.len(), if diags.len() == 1 { "" } else { "s" });
+            eprintln!(
+                "LEX FAILED ({} diagnostic{})",
+                diags.len(),
+                if diags.len() == 1 { "" } else { "s" }
+            );
             for (i, d) in diags.iter().enumerate() {
                 eprintln!("  [{}] {}", i + 1, format_diagnostic(d));
             }
@@ -1165,17 +1169,23 @@ fn run_run(path: &std::path::Path) -> i32 {
     let module = match parser.parse_module() {
         Ok(m) => m,
         Err(diags) => {
-            eprintln!("PARSE FAILED ({} diagnostic{})",
-                diags.len(), if diags.len() == 1 { "" } else { "s" });
+            eprintln!(
+                "PARSE FAILED ({} diagnostic{})",
+                diags.len(),
+                if diags.len() == 1 { "" } else { "s" }
+            );
             for (i, d) in diags.iter().enumerate() {
                 eprintln!("  [{}] {}", i + 1, format_diagnostic(d));
             }
             return 1;
         }
     };
-    
+
+    // ---- timing starts here (after successful lex + parse) ----
+    let start = Instant::now();
+
     // 4) interpret with larger stack (8MB instead of default 1MB on Windows)
-    std::thread::Builder::new()
+    let code = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
@@ -1192,7 +1202,10 @@ fn run_run(path: &std::path::Path) -> i32 {
                                     }
                                 }
                             }
-                            Err(d) => { eprintln!("{}", d); return 1; }
+                            Err(d) => {
+                                eprintln!("{}", d);
+                                return 1;
+                            }
                         }
                     }
                     _ => {
@@ -1207,11 +1220,24 @@ fn run_run(path: &std::path::Path) -> i32 {
         })
         .unwrap()
         .join()
-        .unwrap()
+        .unwrap();
+
+    let elapsed = start.elapsed();
+    eprintln!(
+        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
+        path.display(),
+        code,
+        elapsed.as_millis(),
+        elapsed.as_secs(),
+        elapsed.subsec_millis(),
+    );
+
+    code
 }
 
 fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     use goblin_interpreter::{Session, Value};
+    use std::time::Instant;
 
     // 1) read the file
     let src = match std::fs::read_to_string(path) {
@@ -1230,8 +1256,11 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     let tokens = match goblin_lexer::lex(&src, &label) {
         Ok(toks) => toks,
         Err(diags) => {
-            eprintln!("LEX FAILED ({} diagnostic{})",
-                diags.len(), if diags.len() == 1 { "" } else { "s" });
+            eprintln!(
+                "LEX FAILED ({} diagnostic{})",
+                diags.len(),
+                if diags.len() == 1 { "" } else { "s" }
+            );
             for (i, d) in diags.iter().enumerate() {
                 eprintln!("  [{}] {}", i + 1, format_diagnostic(d));
             }
@@ -1244,8 +1273,11 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     let module = match parser.parse_module() {
         Ok(m) => m,
         Err(diags) => {
-            eprintln!("PARSE FAILED ({} diagnostic{})",
-                diags.len(), if diags.len() == 1 { "" } else { "s" });
+            eprintln!(
+                "PARSE FAILED ({} diagnostic{})",
+                diags.len(),
+                if diags.len() == 1 { "" } else { "s" }
+            );
             for (i, d) in diags.iter().enumerate() {
                 eprintln!("  [{}] {}", i + 1, format_diagnostic(d));
             }
@@ -1253,8 +1285,11 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         }
     };
 
+    // ---- timing starts here (after successful lex + parse) ----
+    let start = Instant::now();
+
     // 4) interpret with args injected
-    std::thread::Builder::new()
+    let code = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
@@ -1292,7 +1327,19 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         })
         .unwrap()
         .join()
-        .unwrap()
+        .unwrap();
+
+    let elapsed = start.elapsed();
+    eprintln!(
+        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
+        path.display(),
+        code,
+        elapsed.as_millis(),
+        elapsed.as_secs(),
+        elapsed.subsec_millis(),
+    );
+
+    code
 }
 
 fn is_probable_file(s: &str) -> bool {

@@ -1,0 +1,25 @@
+act generate_pages
+    outdir | "./generated"
+    if :file_exists(outdir) == false
+        :create_dir!(outdir)
+    xx
+    
+    local n | 1
+    for dummy in [1,2,3,4,5,6,7,8,9,10]
+        wc   | pick 1 from 40..120
+        text | :ipsum(wc)
+        front |
+            "^^^^\n" ++
+            "title: Test Page {n}\n" ++
+            "author: Goblin Bot\n" ++
+            "layout: docs\n" ++
+            "summary: Auto-generated test page {n}\n" ++
+            "^^^^\n\n"
+        body | front ++ text
+        path | "{outdir}/page_{n}.md"
+        :write_text!(path, body)
+        n |= n + 1
+    xx
+xx
+
+generate_pages()
