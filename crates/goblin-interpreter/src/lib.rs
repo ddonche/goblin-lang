@@ -15,6 +15,9 @@ use goblin_ast as ast;
 use goblin_ast::BindMode;
 use goblin_diagnostics::Span;
 use goblin_yall as yall;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static SEED_BUMP: AtomicU64 = AtomicU64::new(0);
 
 pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
@@ -338,9 +341,23 @@ pub struct Session {
 
 impl Session {
     pub fn new() -> Self {
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-        let seed = t.as_nanos() ^ 0xA24B_AED4_963E_E407u128;
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let bump = SEED_BUMP.fetch_add(0x9E3779B97F4A7C15, Ordering::Relaxed);
+
+        let s0 = t ^ bump ^ 0xA24B_AED4_963E_E407u64;
+        let s1 = t.rotate_left(32) ^ bump ^ 0x9E37_79B9_7F4A_7C15u64;
+
+        let seed128 = ((s1 as u128) << 64) | (s0 as u128);
+
         Self {
+            // ...
+            rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
+            // ...
+            // rest unchanged
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
@@ -348,7 +365,6 @@ impl Session {
             enums: BTreeMap::new(),
             loop_depth: 0,
             eval_depth: 0,
-            rng_state: seed,
             consts: vec![BTreeMap::new()],
             relationship_graph: BTreeMap::new(),
             modules: crate::modules::ModuleCache::new(),
@@ -1536,8 +1552,22 @@ fn str_delete_at(s: &str, i: usize) -> Option<String> {
 
 #[inline]
 fn rng_u64(sess: &mut Session) -> u64 {
-    // use the high 64 bits; LCG low bits are the problem
-    (sess.next_u128() >> 64) as u64
+    // split u128 -> (s0, s1)
+    let s0 = sess.rng_state as u64;
+    let mut s1 = (sess.rng_state >> 64) as u64;
+
+    // xorshift128+ (updates state every call)
+    s1 ^= s1 << 23;
+    s1 ^= s1 >> 17;
+    s1 ^= s0;
+    s1 ^= s0 >> 26;
+
+    let out = s1.wrapping_add(s0);
+
+    // write back new state
+    sess.rng_state = ((s1 as u128) << 64) | (s0 as u128);
+
+    out
 }
 
 // Lemire's unbiased bounded integer (uniform in [0, bound))
