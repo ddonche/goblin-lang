@@ -939,9 +939,17 @@ mod pathdiff {
 
 fn repl_banner() -> &'static str {
     if cfg!(windows) {
-        "Goblin v0.1.0 — type 'exit'/'quit' or press Ctrl+Z (Windows) to exit"
+        concat!(
+            "Goblin v",
+            env!("CARGO_PKG_VERSION"),
+            " — type 'exit'/'quit' or press Ctrl+Z (Windows) to exit"
+        )
     } else {
-        "Goblin v0.1.0 — type 'exit'/'quit' or press Ctrl+D (Unix) to exit"
+        concat!(
+            "Goblin v",
+            env!("CARGO_PKG_VERSION"),
+            " — type 'exit'/'quit' or press Ctrl+D (Unix) to exit"
+        )
     }
 }
 

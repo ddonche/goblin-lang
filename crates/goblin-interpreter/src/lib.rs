@@ -15024,6 +15024,11 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         (other, Value::Str(b)) => {
                             return Ok(Value::Str(format!("{}{b}", fmt_value_raw(other))));
                         }
+                        (Value::Array(a), Value::Array(b)) => {
+                            let mut result = a.clone();
+                            result.extend(b.clone());
+                            return Ok(Value::Array(result));
+                        }
                         _ => { /* fall through to numeric ladder below using lu/ru */ }
                     }
                     

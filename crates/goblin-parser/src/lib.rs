@@ -3046,6 +3046,16 @@ impl<'t> Parser<'t> {
         }
     }
 
+    fn skip_layout(&mut self) {
+        use goblin_lexer::TokenKind;
+        while let Some(t) = self.peek() {
+            match t.kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => self.i += 1,
+                _ => break,
+            }
+        }
+    }
+
     // Do we see a block closer at the current position?  (allowed: 'end' or 'xx')
     fn peek_block_close(&mut self) -> bool {
         let save_i = self.i;
@@ -6475,7 +6485,7 @@ impl<'t> Parser<'t> {
                         "Expected an expression, but found operator '{}' at line {}, col {}",
                         s, sp.line_start, sp.col_start
                     ),
-                    "Add a value or name before the operator: total = price * qty (not * qty)",
+                    "Add a value or name before the operator: total | price * qty (not * qty)",
                 ));
             }
 
@@ -7843,7 +7853,7 @@ impl<'t> Parser<'t> {
             if self.peek_ident() == Some("pick") || self.peek_ident() == Some("reap") {
                 let verb = self.peek_ident().unwrap().to_string(); // "pick" or "reap"
                 let _ = self.eat_ident(); // consume verb
-                self.skip_newlines();
+                self.skip_layout();
 
                 // <count>: integer literal (lexer may give "1_6" as a single Int token)
                 // OR default to 1 if 'from' immediately follows (sugar: `pick from xs`)
@@ -7855,7 +7865,7 @@ impl<'t> Parser<'t> {
 
                 // braced dynamic: pick {var} ...
                 if self.eat_op("{") {
-                    self.skip_newlines();
+                    self.skip_layout();
 
                     // accept a bare identifier inside braces
                     if let Some(name_owned) = self.peek_ident().map(|s| s.to_string()) {
@@ -7868,7 +7878,7 @@ impl<'t> Parser<'t> {
                         return Err(s_help_site!("P1407","Expected a variable name inside '{}'","Use: pick {count} from items"));
                     }
 
-                    self.skip_newlines();
+                    self.skip_layout();
                     // require closing '}'
                     if !self.eat_op("}") {
                         return Err(s_help_site!(
@@ -7880,7 +7890,7 @@ impl<'t> Parser<'t> {
 
                     // harmless default for any static-only checks later
                     count = 1;
-                    self.skip_newlines();
+                    self.skip_layout();
 
                 } else if let Some(name_owned) = self
                     .peek_ident()
@@ -7890,7 +7900,7 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_ident(); // consume it
                     count_expr = Some(PExpr::Ident(name_owned));
                     count = 1;
-                    self.skip_newlines();
+                    self.skip_layout();
 
                 } else {
                     // static numeric / sugar / error
@@ -7908,7 +7918,7 @@ impl<'t> Parser<'t> {
                                     &format!("Write it like: {} 5 from items", verb),
                                 ));
                             }
-                            self.skip_newlines();
+                            self.skip_layout();
                         }
 
                         // sugar: pick from xs -> defaults to 1
@@ -7936,7 +7946,7 @@ impl<'t> Parser<'t> {
                     ));
                 }
 
-                self.skip_newlines();
+                self.skip_layout();
 
                 // Digit shorthand is ONLY for 'pick', never for 'reap'
                 // And ONLY when count is static (not dynamic)
@@ -7969,7 +7979,7 @@ impl<'t> Parser<'t> {
                             _ => return Err(s_help_site!("P1401","Expected digits after '_'","Example: pick 5_4")),
                         }
                     }
-                    self.skip_newlines();
+                    self.skip_layout();
                 }
 
                 // Source: required for both verbs (if digits were parsed, 'pick' makes it optional)
@@ -7983,17 +7993,17 @@ impl<'t> Parser<'t> {
                         ));
                     }
                     let _ = self.eat_ident(); // 'from'
-                    self.skip_newlines();
+                    self.skip_layout();                    // <-- CHANGED (was skip_newlines)
                     let parsed_src = self.parse_range()?; // handles ".." and "..."
                     src_expr = Some(parsed_src);
-                    self.skip_newlines();
+                    self.skip_layout();                    // <-- CHANGED (was skip_newlines)
                 } else if self.peek_ident() == Some("from") {
                     // optional range filter for digits (pick only)
                     let _ = self.eat_ident();
-                    self.skip_newlines();
+                    self.skip_layout();                    // <-- CHANGED (was skip_newlines)
                     let parsed_src = self.parse_range()?;
                     src_expr = Some(parsed_src);
-                    self.skip_newlines();
+                    self.skip_layout();                    // <-- CHANGED (was skip_newlines)
                 }
 
                 // Modifiers: ONLY allowed for 'pick'
@@ -8002,12 +8012,12 @@ impl<'t> Parser<'t> {
 
                 if verb == "pick" {
                     loop {
-                        self.skip_newlines();
+                        self.skip_layout();                // <-- CHANGED (was skip_newlines)
 
                         // with dups
                         if self.peek_ident() == Some("with") {
                             let _ = self.eat_ident();
-                            self.skip_newlines();
+                            self.skip_layout();            // <-- CHANGED (was skip_newlines)
                             if self.peek_ident() == Some("dups") {
                                 let _ = self.eat_ident();
                                 allow_dups = Some(true);
@@ -8020,7 +8030,7 @@ impl<'t> Parser<'t> {
                         // without dups / wo dups
                         if self.peek_ident() == Some("without") || self.peek_ident() == Some("wo") {
                             let _ = self.eat_ident();
-                            self.skip_newlines();
+                            self.skip_layout();            // <-- CHANGED (was skip_newlines)
                             if self.peek_ident() == Some("dups") {
                                 let _ = self.eat_ident();
                                 allow_dups = Some(false);

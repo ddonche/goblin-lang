@@ -305,12 +305,21 @@ impl Host {
     pub async fn run(&mut self) -> Result<(), HostError> {
         use tokio::net::TcpListener;
 
-        let addr = format!("{}:{}", self.cfg.host, self.cfg.port);
+        // Railway (and most hosts) provide PORT via env
+        let port = std::env::var("PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(self.cfg.port);
+
+        let addr = format!("{}:{}", self.cfg.host, port);
         let listener = TcpListener::bind(&addr)
             .await
             .map_err(|e| HostError::Bind(e.to_string()))?;
 
-        let docroot = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let docroot = std::env::var("GOBLIN_DOCROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
         println!("GoblinHost listening on {}", addr);
         println!("[serve] docroot = {}", docroot.display());
 
@@ -778,13 +787,30 @@ impl Host {
                                 //     if let Ok(bytes) = fs::read(&index_path).await { /* serve index */ }
                                 // }
 
-                                // Real 404
-                                let resp = b"HTTP/1.1 404 Not Found\r\n\
-                                             Content-Type: text/plain; charset=utf-8\r\n\
-                                             Connection: close\r\n\
-                                             Content-Length: 13\r\n\r\n404 not found";
-                                let _ = socket.write_all(resp).await;
-                                log.done(404, 13);
+                                // Real 404 -> serve 404.html if present
+                                let docroot = docroot.clone(); // or however you have it in scope
+                                let not_found_path = docroot.join("404.html");
+
+                                let (body, content_type) = match tokio::fs::read(&not_found_path).await {
+                                    Ok(bytes) => (bytes, "text/html; charset=utf-8"),
+                                    Err(_) => (b"404 not found".to_vec(), "text/plain; charset=utf-8"),
+                                };
+
+                                let headers = format!(
+                                    "HTTP/1.1 404 Not Found\r\n\
+                                     Content-Type: {content_type}\r\n\
+                                     Content-Length: {}\r\n\
+                                     Connection: close\r\n\
+                                     x-goblin-web-contract: {}\r\n\
+                                     \r\n",
+                                    body.len(),
+                                    crate::CONTRACT_VERSION
+                                );
+
+                                let _ = socket.write_all(headers.as_bytes()).await;
+                                let _ = socket.write_all(&body).await;
+
+                                log.done(404, body.len());
                                 break 'conn;
                             }
 
