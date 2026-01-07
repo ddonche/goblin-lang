@@ -4045,6 +4045,30 @@ fn eval_builtin(
             Value::Unit
         },
 
+        "clear_tokens" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        format!(
+                            "wrong number of arguments (expected 1, got {})",
+                            args.len()
+                        ),
+                        sp.clone(),
+                    )
+                    .with_help("Use: clear_tokens(module_name)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let module = want_str(&args[0], "clear_tokens.module")?;
+            let m = sess.normalize_module_name(&module);
+            sess.token_store.remove(&m);
+            Value::Unit
+        },
+
         "clear_all_tokens" => {
             arity(0)?;
             sess.token_store.clear();
