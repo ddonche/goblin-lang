@@ -76,6 +76,8 @@ pub struct ImportStmt {
 pub enum ImportItems {
     /// Single path: import game/hero
     Path(String),
+    /// Dynamic path: import "../site/portals/{portal}/manifest.imports"
+    Expr(Expr),
     /// Multiple items from source: import { hero, Combat } from game
     Named {
         items: Vec<ImportItem>,

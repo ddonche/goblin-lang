@@ -418,7 +418,13 @@ impl Host {
                             };
                             let mut parts = req_line.split_whitespace();
                             let method = parts.next().unwrap_or("");
-                            let path   = parts.next().unwrap_or("/");
+                            let full_path = parts.next().unwrap_or("/");
+                            // Split path and query string
+                            let (path, query_string) = if let Some(idx) = full_path.find('?') {
+                                (&full_path[..idx], &full_path[idx + 1..])
+                            } else {
+                                (full_path, "")
+                            };
                             let ver    = parts.next().unwrap_or("HTTP/1.1");
 
                             // now that we know method/path, re-init the logger
@@ -507,7 +513,7 @@ impl Host {
                                 let script_path = std::path::PathBuf::from("./api").join(format!("{api_rel}.gbln"));
 
                                 if script_path.exists() {
-                                    match exec_goblin_script_via_cli_timeout(&script_path, 5000).await {
+                                    match exec_goblin_script_via_cli_timeout(&script_path, 5000, query_string).await {
                                         Ok(body) => {
                                             let headers = format!(
                                                 "HTTP/1.1 200 OK\r\n\
@@ -857,6 +863,7 @@ enum ExecErr {
 async fn exec_goblin_script_via_cli_timeout(
     script_path: &std::path::Path,
     timeout_ms: u64,
+    query_string: &str,
 ) -> Result<String, ExecErr> {
     use tokio::process::Command;
     use tokio::time::{timeout, Duration};
@@ -866,6 +873,7 @@ async fn exec_goblin_script_via_cli_timeout(
     cmd.kill_on_drop(true); // child will be terminated if dropped
     cmd.arg(script_path.as_os_str())
        .env("GOBLIN_NONINTERACTIVE", "1")
+       .env("GOBLIN_QUERY_STRING", query_string)
        .stdin(Stdio::null())
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());

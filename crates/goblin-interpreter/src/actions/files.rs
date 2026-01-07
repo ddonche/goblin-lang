@@ -434,6 +434,63 @@ pub fn walk(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Dia
 }
 
 // ==========================================================
+// list_dirs(path)  -> Array(Str)
+// ==========================================================
+
+pub fn list_dirs(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    if args.len() != 1 {
+        return Err(
+            Diagnostic::new_with_code(
+                Severity::Error,
+                rtcode::WRONG_ARITY,
+                "wrong-arity",
+                &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                sp.clone(),
+            )
+            .with_help("Usage: list_dirs(path)")
+            .with_link("https://goblinlang.org/docs/errors#R0301"),
+        );
+    }
+
+    let root = want_str(&args[0], "list_dirs", sp)?;
+    let root_path = Path::new(root);
+
+    // Match your style: empty array if not a dir (no error)
+    if !root_path.exists() || !root_path.is_dir() {
+        return Ok(Value::Array(vec![]));
+    }
+
+    let mut out: Vec<Value> = Vec::new();
+
+    let rd = std::fs::read_dir(root_path).map_err(|e| {
+        Diagnostic::new_with_code(
+            Severity::Error,
+            rtcode::FILESYSTEM_IO,
+            "filesystem-io",
+            &format!("failed to read dir: {e}"),
+            sp.clone(),
+        )
+        .with_help("Check directory exists and permissions.")
+        .with_link("https://goblinlang.org/docs/errors#FS0001")
+    })?;
+
+    for entry in rd {
+        if let Ok(entry) = entry {
+            let p = entry.path();
+            if p.is_dir() {
+                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                    if !name.is_empty() {
+                        out.push(Value::Str(name.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Value::Array(out))
+}
+
+// ==========================================================
 // escape_html(text)
 // ==========================================================
 

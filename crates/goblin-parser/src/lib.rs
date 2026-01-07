@@ -5470,30 +5470,28 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_import(&mut self) -> Result<ast::Stmt, String> {
-        let start_span = if let Some(tok) = self.peek() {
-            tok.span.clone()
-        } else {
-            goblin_diagnostics::Span::new("<unknown>", 0, 0, 0, 0, 0, 0)
-        };
-        
-        // Consume 'import' keyword
+        let start_span = self
+            .peek()
+            .map(|t| t.span.clone())
+            .unwrap_or_else(|| goblin_diagnostics::Span::new("<unknown>", 0, 0, 0, 0, 0, 0));
+
+        // ---------------------------------------------------------------------
+        // import
+        // ---------------------------------------------------------------------
         if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Import)) {
             return Err(s_help_site!("P1001", "Expected 'import'", "import game/hero"));
         }
         self.i += 1;
-        
         self.skip_newlines();
-        
-        // Check for '{' (grouped imports)
+
+        // ---------------------------------------------------------------------
+        // GROUPED IMPORTS: import { a, b as c } from game
+        // ---------------------------------------------------------------------
         if self.eat_op("{") {
-            // -----------------------------
-            // GROUPED IMPORTS (unchanged)
-            // -----------------------------
             self.skip_newlines();
-            
+
             let mut items = Vec::new();
-            
-            // Parse comma-separated list of items
+
             loop {
                 let Some(name) = self.eat_ident() else {
                     return Err(s_help_site!(
@@ -5502,31 +5500,29 @@ impl<'t> Parser<'t> {
                         "import { hero, Combat } from game"
                     ));
                 };
-                
-                // Optional 'as alias'
+
                 let alias = if self.peek_ident() == Some("as") {
-                    self.i += 1; // eat 'as'
+                    self.i += 1;
                     self.eat_ident()
                 } else {
                     None
                 };
-                
+
                 items.push(ast::ImportItem { name, alias });
-                
                 self.skip_newlines();
-                
+
                 if self.eat_op(",") {
                     self.skip_newlines();
                     if self.peek_op("}") {
-                        break; // trailing comma
+                        break;
                     }
                     continue;
                 }
                 break;
             }
-            
+
             self.skip_newlines();
-            
+
             if !self.eat_op("}") {
                 return Err(s_help_site!(
                     "P1011",
@@ -5534,10 +5530,9 @@ impl<'t> Parser<'t> {
                     "import { hero, Combat } from game"
                 ));
             }
-            
+
             self.skip_newlines();
-            
-            // Expect 'from'
+
             if self.peek_ident() != Some("from") {
                 return Err(s_help_site!(
                     "P1012",
@@ -5545,11 +5540,9 @@ impl<'t> Parser<'t> {
                     "import { hero, Combat } from game"
                 ));
             }
-            self.i += 1; // eat 'from'
-            
+            self.i += 1;
             self.skip_newlines();
-            
-            // Parse source (single identifier or path)
+
             let Some(source) = self.eat_ident() else {
                 return Err(s_help_site!(
                     "P1013",
@@ -5557,73 +5550,80 @@ impl<'t> Parser<'t> {
                     "import { hero } from game"
                 ));
             };
-            
-            Ok(ast::Stmt::Import(ast::ImportStmt {
+
+            return Ok(ast::Stmt::Import(ast::ImportStmt {
                 items: ast::ImportItems::Named { items, source },
                 alias: None,
                 span: start_span,
-            }))
-        } else {
-            // -------------------------------------------------
-            // SINGLE IMPORT:
-            //   - import game/hero as h              (old)
-            //   - import "../site/.../file.gbln"     (new)
-            //   - import "../site/.../manifest.imports"
-            // -------------------------------------------------
+            }));
+        }
 
-            // 1) FIRST: try a string literal path
-            if let Some(path) = self.eat_string_lit() {
-                self.skip_newlines();
+        // ---------------------------------------------------------------------
+        // SINGLE IMPORT
+        // ---------------------------------------------------------------------
 
-                // Optional 'as alias' even with string imports:
-                //   import "../foo/bar.gbln" as bar
-                let alias = if self.peek_ident() == Some("as") {
-                    self.i += 1; // eat 'as'
-                    self.eat_ident()
-                } else {
-                    None
-                };
+        // 1) String literal import
+        if let Some(raw) = self.eat_string_lit() {
+            self.skip_newlines();
 
+            let alias = if self.peek_ident() == Some("as") {
+                self.i += 1;
+                self.eat_ident()
+            } else {
+                None
+            };
+
+            // 🔑 CLASSIFICATION RULE:
+            // If the string contains '{', it is dynamic → Expr
+            if raw.contains('{') {
                 return Ok(ast::Stmt::Import(ast::ImportStmt {
-                    items: ast::ImportItems::Path(path),
+                    items: ast::ImportItems::Expr(
+                        ast::Expr::Str(raw, start_span.clone())
+                    ),
                     alias,
                     span: start_span,
                 }));
             }
 
-            // 2) FALLBACK: old IDENT / path-parts behavior
-            let mut path_parts = Vec::new();
-            loop {
-                let Some(part) = self.eat_ident() else {
-                    return Err(s_help_site!(
-                        "P1002",
-                        "Expected module path after 'import'",
-                        "import game/hero"
-                    ));
-                };
-                path_parts.push(part);
-                
-                if !self.eat_op("/") {
-                    break;
-                }
-            }
-            
-            let path = path_parts.join("/");
-            
-            // Optional 'as alias'
-            let alias = if self.peek_ident() == Some("as") {
-                self.i += 1; // eat 'as'
-                self.eat_ident()
-            } else {
-                None
-            };
-            
-            Ok(ast::Stmt::Import(ast::ImportStmt {
-                items: ast::ImportItems::Path(path),
+            // Otherwise: static path
+            return Ok(ast::Stmt::Import(ast::ImportStmt {
+                items: ast::ImportItems::Path(raw),
                 alias,
                 span: start_span,
-            }))
+            }));
         }
+
+        // 2) IDENT / path-style import (game/hero)
+        let mut path_parts = Vec::new();
+        loop {
+            let Some(part) = self.eat_ident() else {
+                return Err(s_help_site!(
+                    "P1002",
+                    "Expected module path after 'import'",
+                    "import game/hero"
+                ));
+            };
+            path_parts.push(part);
+
+            if !self.eat_op("/") {
+                break;
+            }
+        }
+
+        let path = path_parts.join("/");
+
+        let alias = if self.peek_ident() == Some("as") {
+            self.i += 1;
+            self.eat_ident()
+        } else {
+            None
+        };
+
+        Ok(ast::Stmt::Import(ast::ImportStmt {
+            items: ast::ImportItems::Path(path),
+            alias,
+            span: start_span,
+        }))
     }
 
     fn parse_expr(&mut self) -> ParseResult<ast::Expr> {

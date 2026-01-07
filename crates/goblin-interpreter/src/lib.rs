@@ -16,6 +16,7 @@ use goblin_ast::BindMode;
 use goblin_diagnostics::Span;
 use goblin_yall as yall;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 
 static SEED_BUMP: AtomicU64 = AtomicU64::new(0);
 
@@ -318,6 +319,24 @@ impl fmt::Debug for Value {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ImportBaseMode {
+    ProjectRoot,
+    ImporterDir,
+}
+
+pub struct FileGuard {
+    stack: *mut Vec<PathBuf>,
+}
+
+impl Drop for FileGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = (*self.stack).pop();
+        }
+    }
+}
+
 pub struct Session {
     history: Vec<Value>,                               // v(n)
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
@@ -327,16 +346,22 @@ pub struct Session {
     pub loop_depth: i32,
     eval_depth: usize,                                 // recursion depth for eval_expr
     rng_state: u128,
-    pub consts: Vec<BTreeMap<String, bool>>, // true = immutable binding
+    pub consts: Vec<BTreeMap<String, bool>>,           // true = immutable binding
     pub relationship_graph: BTreeMap<String, ClassRelations>,
     pub modules: crate::modules::ModuleCache,
     pub current_module: Option<String>,
     regex_cache: RegexCache,
     token_store: BTreeMap<String, BTreeMap<String, Value>>,
-    // ==== sweep runtime state (None when not inside a sweep arm) ====
-    pub sweep_file_path: Option<String>,      // normalized path of current file
-    pub sweep_buf: Option<String>,            // current working buffer (whole file or the active slice)
-    pub sweep_scope: Option<(usize, usize)>,  // [start,end) byte range within the file buffer for a range arm
+
+    // ==== IMPORT CONTEXT (NEW) ====
+    pub import_base_mode: ImportBaseMode,
+    pub project_root: PathBuf,
+    file_stack: Vec<PathBuf>,
+
+    // ==== sweep runtime state ====
+    pub sweep_file_path: Option<String>,
+    pub sweep_buf: Option<String>,
+    pub sweep_scope: Option<(usize, usize)>,
 }
 
 impl Session {
@@ -353,11 +378,9 @@ impl Session {
 
         let seed128 = ((s1 as u128) << 64) | (s0 as u128);
 
+        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
         Self {
-            // ...
-            rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
-            // ...
-            // rest unchanged
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
@@ -371,10 +394,38 @@ impl Session {
             current_module: None,
             regex_cache: RegexCache::new(),
             token_store: BTreeMap::new(),
+
+            // IMPORT CONTEXT
+            import_base_mode: ImportBaseMode::ProjectRoot,
+            project_root,
+            file_stack: Vec::new(),
+
+            // sweep
             sweep_file_path: None,
             sweep_buf: None,
             sweep_scope: None,
+
+            rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
         }
+    }
+
+    #[inline]
+    pub fn import_base_dir(&self) -> &Path {
+        match self.import_base_mode {
+            ImportBaseMode::ProjectRoot => &self.project_root,
+            ImportBaseMode::ImporterDir => {
+                self.file_stack
+                    .last()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(&self.project_root)
+            }
+        }
+    }
+
+    #[inline]
+    pub fn enter_file(&mut self, path: PathBuf) -> FileGuard {
+        self.file_stack.push(path);
+        FileGuard { stack: &mut self.file_stack as *mut Vec<PathBuf> }
     }
 
     #[inline]
@@ -2547,25 +2598,13 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         }
 
         ast::Stmt::Import(import_stmt) => {
-            use std::path::Path;
+            use std::path::{Path, PathBuf};
             use goblin_diagnostics::{Diagnostic, Severity};
             use crate::diagnostics::{rtcode, import_failed_focus_inner};
 
-            // Determine base_dir (current working directory)
-            let base_dir = std::env::current_dir().map_err(|e| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    rtcode::IMPORT_IO,          // R0501
-                    "import-io",
-                    format!("cannot get current directory: {}", e),
-                    import_stmt.span.clone(),
-                )
-                .with_help(
-                    "Ensure the working directory exists and is accessible (permissions, sandbox constraints).",
-                )
-                .with_help("If running in a container or sandbox, verify the process has a valid CWD.")
-                .with_link("https://goblinlang.org/docs/errors#R0501")
-            })?;
+            // CHANGED: base_dir comes from Session (ProjectRoot or ImporterDir),
+            // but keep everything else EXACTLY the same.
+            let base_dir: PathBuf = sess.import_base_dir().to_path_buf();
 
             match &import_stmt.items {
                 // --------------------------------------------------------------------
@@ -2576,11 +2615,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 // --------------------------------------------------------------------
                 ast::ImportItems::Path(path) => {
                     // Special-case: manifest import bundle (*.imports)
-                    if Path::new(path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        == Some("imports")
-                    {
+                    if Path::new(path).extension().and_then(|e| e.to_str()) == Some("imports") {
                         // For now, don't allow aliases with .imports – it doesn't make sense
                         if import_stmt.alias.is_some() {
                             return Err(
@@ -2596,7 +2631,11 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                             );
                         }
 
-                        let manifest_path = base_dir.join(Path::new(path));
+                        // CHANGED: respect absolute paths; otherwise resolve against sess.import_base_dir()
+                        let manifest_path = {
+                            let p = Path::new(path);
+                            if p.is_absolute() { p.to_path_buf() } else { base_dir.join(p) }
+                        };
 
                         // Read the manifest file
                         let manifest_src = std::fs::read_to_string(&manifest_path).map_err(|e| {
@@ -2607,6 +2646,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 format!("read error: {}", e),
                                 import_stmt.span.clone(),
                             )
+                            .with_help("Verify the file exists and the process has permission to read it.")
+                            .with_help("If running in a container/sandbox, confirm the file is inside the mounted volume.")
                             .with_link("https://goblinlang.org/docs/errors#R0501");
 
                             import_failed_focus_inner(
@@ -2644,6 +2685,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         import_stmt.span.clone(),
                                     )
                                     .with_help("Use lines like: import modules/markdown_core/markdown as markdown_core")
+                                    .with_help("Comments are allowed with //, ///, or #. Blank lines are ignored.")
                                     .with_link("https://goblinlang.org/docs/errors#R0501"),
                                 );
                             }
@@ -2655,10 +2697,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         Severity::Error,
                                         rtcode::IMPORT_IO,
                                         "import-manifest-empty",
-                                        format!(
-                                            "missing module path in .imports file (line {})",
-                                            idx + 1
-                                        ),
+                                        format!("missing module path in .imports file (line {})", idx + 1),
                                         import_stmt.span.clone(),
                                     )
                                     .with_help("Example: import modules/markdown_core/markdown as markdown_core")
@@ -2710,9 +2749,27 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         .with_link("https://goblinlang.org/docs/errors#R0501"),
                                     );
                                 }
+
+                                // Disallow extra tokens after alias
+                                if parts.next().is_some() {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMPORT_IO,
+                                            "import-manifest-unexpected-token",
+                                            format!(
+                                                "unexpected extra tokens in .imports file (line {})",
+                                                idx + 1
+                                            ),
+                                            import_stmt.span.clone(),
+                                        )
+                                        .with_help("Use: import <path> [as alias] (no extra tokens)")
+                                        .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                    );
+                                }
                             }
 
-                            // Reuse the normal module loader + executor
+                            // Reuse the normal module loader + executor (UNCHANGED signature)
                             let (namespace, maybe_ast) = sess
                                 .modules
                                 .load_module(module_path, alias.as_deref(), &base_dir)
@@ -2724,6 +2781,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         format!("read error: {}", msg),
                                         import_stmt.span.clone(),
                                     )
+                                    .with_help("Verify the imported path exists relative to the import base directory.")
+                                    .with_help("If this is a module, confirm its file name and extension rules match the loader.")
                                     .with_link("https://goblinlang.org/docs/errors#R0501");
 
                                     import_failed_focus_inner(
@@ -2763,6 +2822,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 format!("read error: {}", msg),
                                 import_stmt.span.clone(),
                             )
+                            .with_help("Verify the imported path exists relative to the import base directory.")
+                            .with_help("If this is a module, confirm its file name and extension rules match the loader.")
                             .with_link("https://goblinlang.org/docs/errors#R0501");
 
                             import_failed_focus_inner(path, import_stmt.span.clone(), &inner, &base_dir)
@@ -2783,10 +2844,6 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 // --------------------------------------------------------------------
                 // Named imports:
                 //   import { hero, world as w } from game
-                //
-                // This expands to separate module loads:
-                //   game/hero   as hero
-                //   game/world  as w
                 // --------------------------------------------------------------------
                 ast::ImportItems::Named { items, source } => {
                     for item in items {
@@ -2804,6 +2861,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                     format!("read error: {}", msg),
                                     import_stmt.span.clone(),
                                 )
+                                .with_help("Verify the imported path exists relative to the import base directory.")
+                                .with_help("Named imports expand to: <source>/<name> with the alias applied to the namespace.")
                                 .with_link("https://goblinlang.org/docs/errors#R0501");
 
                                 import_failed_focus_inner(
@@ -2824,6 +2883,258 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 &base_dir.as_path(),
                             )?;
                         }
+                    }
+                }
+
+                // --------------------------------------------------------------------
+                // Dynamic import:
+                //   import some_expr
+                // --------------------------------------------------------------------
+                ast::ImportItems::Expr(expr) => {
+                    let value = eval_expr(expr, sess)?;
+
+                    let path_str = match value {
+                        Value::Str(s) => s,
+                        _ => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::IMPORT_IO,
+                                    "import-not-string",
+                                    "import expression must evaluate to a string",
+                                    import_stmt.span.clone(),
+                                )
+                                .with_help("Example: import \"modules/markdown_core/markdown\"")
+                                .with_help("If using interpolation, ensure it produces a final string path.")
+                                .with_link("https://goblinlang.org/docs/errors#R0501"),
+                            );
+                        }
+                    };
+
+                    // Special-case: manifest import bundle (*.imports)
+                    if Path::new(&path_str).extension().and_then(|e| e.to_str()) == Some("imports") {
+                        // For now, don't allow aliases with .imports – it doesn't make sense
+                        if import_stmt.alias.is_some() {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::IMPORT_IO, // reuse an existing code; you can add a dedicated one later
+                                    "import-manifest-alias",
+                                    "alias is not allowed when importing a .imports manifest file",
+                                    import_stmt.span.clone(),
+                                )
+                                .with_help("Use: import \"../site/portals/default/manifest.imports\" without an alias.")
+                                .with_link("https://goblinlang.org/docs/errors#R0501"),
+                            );
+                        }
+
+                        // CHANGED: respect absolute paths; otherwise resolve against sess.import_base_dir()
+                        let manifest_path = {
+                            let p = Path::new(&path_str);
+                            if p.is_absolute() { p.to_path_buf() } else { base_dir.join(p) }
+                        };
+
+                        // Read the manifest file
+                        let manifest_src = std::fs::read_to_string(&manifest_path).map_err(|e| {
+                            let inner = Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO, // R0501
+                                "import-io",
+                                format!("read error: {}", e),
+                                import_stmt.span.clone(),
+                            )
+                            .with_help("Verify the file exists and the process has permission to read it.")
+                            .with_help("If running in a container/sandbox, confirm the file is inside the mounted volume.")
+                            .with_link("https://goblinlang.org/docs/errors#R0501");
+
+                            import_failed_focus_inner(
+                                &manifest_path.to_string_lossy(),
+                                import_stmt.span.clone(),
+                                &inner,
+                                &base_dir,
+                            )
+                        })?;
+
+                        // Each non-empty, non-comment line must be:  import <path> [as alias]
+                        for (idx, line) in manifest_src.lines().enumerate() {
+                            let trimmed = line.trim();
+
+                            // Skip blanks & simple comment styles
+                            if trimmed.is_empty()
+                                || trimmed.starts_with("///")
+                                || trimmed.starts_with("//")
+                                || trimmed.starts_with('#')
+                            {
+                                continue;
+                            }
+
+                            if !trimmed.starts_with("import ") {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::IMPORT_IO, // reuse
+                                        "import-manifest-syntax",
+                                        format!(
+                                            "only import statements are allowed in .imports files (offending line {}: '{}')",
+                                            idx + 1,
+                                            trimmed
+                                        ),
+                                        import_stmt.span.clone(),
+                                    )
+                                    .with_help("Use lines like: import modules/markdown_core/markdown as markdown_core")
+                                    .with_help("Comments are allowed with //, ///, or #. Blank lines are ignored.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                );
+                            }
+
+                            let rest = trimmed["import ".len()..].trim();
+                            if rest.is_empty() {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::IMPORT_IO,
+                                        "import-manifest-empty",
+                                        format!("missing module path in .imports file (line {})", idx + 1),
+                                        import_stmt.span.clone(),
+                                    )
+                                    .with_help("Example: import modules/markdown_core/markdown as markdown_core")
+                                    .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                );
+                            }
+
+                            // Parse: <module_path> [as alias]
+                            let mut parts = rest.split_whitespace();
+                            let module_path = parts.next().unwrap(); // safe: rest not empty
+
+                            let mut alias: Option<String> = None;
+
+                            if let Some(next) = parts.next() {
+                                if next == "as" {
+                                    if let Some(alias_tok) = parts.next() {
+                                        alias = Some(alias_tok.to_string());
+                                    } else {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                rtcode::IMPORT_IO,
+                                                "import-manifest-alias-missing",
+                                                format!(
+                                                    "expected alias after 'as' in .imports file (line {})",
+                                                    idx + 1
+                                                ),
+                                                import_stmt.span.clone(),
+                                            )
+                                            .with_help("Example: import modules/markdown_core/markdown as markdown_core")
+                                            .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                        );
+                                    }
+                                } else {
+                                    // Unexpected token – keep it strict so manifests don't go weird
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMPORT_IO,
+                                            "import-manifest-unexpected-token",
+                                            format!(
+                                                "unexpected token '{}' in .imports file (line {})",
+                                                next,
+                                                idx + 1
+                                            ),
+                                            import_stmt.span.clone(),
+                                        )
+                                        .with_help("Use: import <path> [as alias]")
+                                        .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                    );
+                                }
+
+                                // Disallow extra tokens after alias
+                                if parts.next().is_some() {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMPORT_IO,
+                                            "import-manifest-unexpected-token",
+                                            format!(
+                                                "unexpected extra tokens in .imports file (line {})",
+                                                idx + 1
+                                            ),
+                                            import_stmt.span.clone(),
+                                        )
+                                        .with_help("Use: import <path> [as alias] (no extra tokens)")
+                                        .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                    );
+                                }
+                            }
+
+                            // Reuse the normal module loader + executor (UNCHANGED signature)
+                            let (namespace, maybe_ast) = sess
+                                .modules
+                                .load_module(module_path, alias.as_deref(), &base_dir)
+                                .map_err(|msg| {
+                                    let inner = Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        rtcode::IMPORT_IO, // R0501
+                                        "import-io",
+                                        format!("read error: {}", msg),
+                                        import_stmt.span.clone(),
+                                    )
+                                    .with_help("Verify the imported path exists relative to the import base directory.")
+                                    .with_help("If this is a module, confirm its file name and extension rules match the loader.")
+                                    .with_link("https://goblinlang.org/docs/errors#R0501");
+
+                                    import_failed_focus_inner(
+                                        module_path,
+                                        import_stmt.span.clone(),
+                                        &inner,
+                                        &base_dir,
+                                    )
+                                })?;
+
+                            if let Some(module_ast) = maybe_ast {
+                                execute_module_wrapped(
+                                    sess,
+                                    namespace,
+                                    module_ast,
+                                    &import_stmt.span,
+                                    module_path,
+                                    &base_dir.as_path(),
+                                )?;
+                            }
+                        }
+
+                        // All manifest imports processed; nothing else to do for this stmt
+                        return Ok(None);
+                    }
+
+                    // Normal path import (existing behavior)
+                    let (namespace, maybe_ast) = sess
+                        .modules
+                        .load_module(&path_str, import_stmt.alias.as_deref(), &base_dir)
+                        .map_err(|msg| {
+                            // Turn the String into a proper Diagnostic so import_failed_* can wrap it.
+                            let inner = Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO, // R0501
+                                "import-io",
+                                format!("read error: {}", msg),
+                                import_stmt.span.clone(),
+                            )
+                            .with_help("Verify the imported path exists relative to the import base directory.")
+                            .with_help("If this import is dynamic, print the string to confirm it matches a real module path.")
+                            .with_link("https://goblinlang.org/docs/errors#R0501");
+
+                            import_failed_focus_inner(&path_str, import_stmt.span.clone(), &inner, &base_dir)
+                        })?;
+
+                    if let Some(module_ast) = maybe_ast {
+                        execute_module_wrapped(
+                            sess,
+                            namespace,
+                            module_ast,
+                            &import_stmt.span,
+                            &path_str,
+                            &base_dir.as_path(),
+                        )?;
                     }
                 }
             }
@@ -3562,10 +3873,16 @@ fn execute_module_wrapped(
     module_ast: ast::Module,
     import_span: &goblin_diagnostics::Span,
     import_name: &str,
-    base_dir: &std::path::Path,
+    resolved_abs_path: &std::path::Path, // CHANGED: was base_dir
 ) -> Result<(), goblin_diagnostics::Diagnostic> {
     use goblin_diagnostics::{Diagnostic, Severity};
     use crate::diagnostics::{import_failed_focus_inner, rtcode};
+
+    // NEW: automatic import context (no one "remembers" anything)
+    let _guard = sess.enter_file(resolved_abs_path.to_path_buf());
+
+    // base dir for wrapping/diagnostics = the directory of the module being executed
+    let base_dir = resolved_abs_path.parent().unwrap_or_else(|| std::path::Path::new("."));
 
     let old_module = sess.current_module.clone();
     sess.current_module = Some(namespace);
@@ -9299,6 +9616,44 @@ fn call_action_by_name(
             return call_action_by_name(sess, roll_fn, vec![Value::Map(cfg)], sp.clone());
         }
 
+        "env" => {
+            if args.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Provide exactly 1 argument (the environment variable name).")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+            
+            let var_name = match &args[0] {
+                Value::Str(s) => s.as_str(),
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            "env expects a string (variable name)",
+                            sp.clone(),
+                        )
+                        .with_help("Pass a string like \"GOBLIN_QUERY_STRING\".")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    )
+                }
+            };
+            
+            match std::env::var(var_name) {
+                Ok(val) => Value::Str(val),
+                Err(_) => Value::Str(String::new()), // or return an error if you prefer
+            }
+        }
+
         // ----- String case & transforms -----
         "upper"         => crate::actions::strings::upper(sess, &args, &sp)?,
         "lower"         => crate::actions::strings::lower(sess, &args, &sp)?,
@@ -9349,6 +9704,7 @@ fn call_action_by_name(
         "path_relative_to"  => crate::actions::files::path_relative_to(sess, &args, &sp)?,
         "pathfind"          => crate::actions::files::pathfind(sess, &args, &sp)?,
         "walk"              => crate::actions::files::walk(sess, &args, &sp)?,
+        "list_dirs"         => crate::actions::files::list_dirs(sess, &args, &sp)?,
         "escape_html"       => crate::actions::files::escape_html(sess, &args, &sp)?,
         "uuid_v4"           => crate::actions::files::uuid_v4(sess, &args, &sp)?,
         "uuid_v7"           => crate::actions::files::uuid_v7(sess, &args, &sp)?,

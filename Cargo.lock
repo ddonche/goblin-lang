@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -704,7 +704,7 @@ version = "0.1.0"
 
 [[package]]
 name = "goblin-host"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "goblin-diagnostics",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-interpreter"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "comrak",
  "dunce",
