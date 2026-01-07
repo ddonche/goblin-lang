@@ -4045,6 +4045,12 @@ fn eval_builtin(
             Value::Unit
         },
 
+        "clear_all_tokens" => {
+            arity(0)?;
+            sess.token_store.clear();
+            Value::Unit
+        },
+
         // --------- TOKENS DISCOVERABILITY --------------
         // list_tokens() -> { MODULE: { IDENT: Value, ... }, ... }
         // list_tokens(module: Str) -> { IDENT: Value, ... }
