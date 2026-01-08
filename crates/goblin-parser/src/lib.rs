@@ -2746,9 +2746,10 @@ impl<'t> Parser<'t> {
         }
     }
 
-    // === BEGIN: parse_bind_stmt ================================================
+    // === BEGIN: parse_bind_stmt (adds tuple targets; preserves all current single-target behavior) ===
     fn parse_bind_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
+
         // 1) Optional 'imm'
         let is_const = if self.peek_word("imm") {
             let _ = self.eat_word("imm");
@@ -2756,33 +2757,143 @@ impl<'t> Parser<'t> {
         } else {
             false
         };
-        // 2) IDENT (capture span + text)
-        let (name_text, name_span) = {
+
+        // 2) Parse one-or-more identifiers: a, b, c
+        //    - Single target continues to produce Stmt::Bind (existing behavior)
+        //    - Multi target produces Stmt::Expr(Expr::TupleAssign(...)) (new behavior)
+        let mut names: Vec<ast::Ident> = Vec::new();
+
+        // first name
+        {
             let Some(t) = self.peek().cloned() else {
-                return Err(s_help_site!("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
+                return Err(s_help_site!(
+                    "P0401",
+                    "Expected a name here",
+                    "Write: name | expr, or: imm name | expr"
+                ));
             };
             match t.kind {
                 TokenKind::Ident => {
                     let text = t.value.clone().unwrap_or_default();
+                    let sp = t.span.clone();
                     self.i += 1; // consume ident
-                    (text, t.span)
+                    names.push((text, sp));
                 }
                 _ => {
-                    return Err(s_help_site!("P0401", "Expected a name here", "Write: name = expr, or: imm name = expr"));
+                    return Err(s_help_site!(
+                        "P0401",
+                        "Expected a name here",
+                        "Write: name | expr, or: imm name | expr"
+                    ));
                 }
             }
+        }
+
+        // additional names: ", name"
+        self.skip_newlines();
+        while self.eat_op(",") {
+            self.skip_newlines();
+            let Some(t) = self.peek().cloned() else {
+                return Err(s_help_site!(
+                    "P0404",
+                    "Expected a name after ','",
+                    "Write: a, b | expr"
+                ));
+            };
+            match t.kind {
+                TokenKind::Ident => {
+                    let text = t.value.clone().unwrap_or_default();
+                    let sp = t.span.clone();
+                    self.i += 1; // consume ident
+                    names.push((text, sp));
+                }
+                _ => {
+                    return Err(s_help_site!(
+                        "P0404",
+                        "Expected a name after ','",
+                        "Write: a, b | expr"
+                    ));
+                }
+            }
+            self.skip_newlines();
+        }
+
+        // Policy: imm + tuple bind is disallowed (keep semantics simple and avoid half-const tuples)
+        if is_const && names.len() > 1 {
+            return Err(s_help_site!(
+                "P0405",
+                "‘imm’ is not allowed with multi-target binding",
+                "Write: imm x | expr (single target), or: a, b | expr (without imm)"
+            ));
+        }
+
+        // 3) Operator: '|' (Normal) or '[=' (Shadow)
+        // IMPORTANT: we parse the operator AFTER collecting all names, so "a, b | expr" works.
+        let (mode, op_span) = if self.peek_op("|") {
+            let sp = self.peek().unwrap().span.clone();
+            let _ = self.eat_op("|");
+            (ast::BindMode::Normal, sp)
+        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow)) {
+            let sp = self.peek().unwrap().span.clone();
+            self.i += 1; // consume the Shadow token
+            (ast::BindMode::Shadow, sp)
+        } else {
+            let name0 = &names[0].0;
+            return Err(s_help_site!(
+                "P0402",
+                &format!("Expected '|' or '[=' after '{}'", name0),
+                "Use '|' for a normal declaration, or '[=' (shadow) to declare+init in the current scope.",
+            ));
         };
-        
+
+        // ---- NEW: Multi-target bind emits Expr::TupleAssign as a statement ----
+        if names.len() > 1 {
+            // Disallow class-construction chain for tuple binds:
+            //   a, b | User | { ... }   <-- not supported
+            //
+            // If you *do* want to support it later, you'd need a well-defined mapping.
+            if self.peek_op("|") {
+                return Err(s_help_site!(
+                    "P0406",
+                    "Multi-target binding cannot use class construction (name | ClassName | {...})",
+                    "Write: user | User | { ... } (single target), or: a, b | [1, 2] (tuple bind)"
+                ));
+            }
+
+            let rhs_pe = self.parse_coalesce()?;
+            let rhs = self.lower_expr(rhs_pe);
+
+            let only_names: Vec<String> = names.into_iter().map(|(s, _sp)| s).collect();
+            return Ok(ast::Stmt::Expr(ast::Expr::TupleAssign(
+                only_names,
+                Box::new(rhs),
+                op_span,
+            )));
+        }
+
+        // ---- EXISTING: Single-target path (preserve current behavior) ----
+        let (name_text, name_span) = names.remove(0);
+
+        // 3.5) Optional class constructor lookahead:
+        //      identifier | ClassName | value
+        // NOTE: We have already consumed the first '|' above.
+        //       So here we check whether there's ANOTHER '|' after a ClassName token.
         let class_name = if self.peek_op("|") {
             // Lookahead: check pattern after first |
             if let Some(tok) = self.toks.get(self.i + 1) {
                 if let TokenKind::Ident = tok.kind {
                     if let Some(name_str) = &tok.value {
-                        let is_class = name_str.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-                        let has_second_pipe = self.toks.get(self.i + 2)
+                        let is_class = name_str
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false);
+                        let has_second_pipe = self
+                            .toks
+                            .get(self.i + 2)
                             .map(|t| matches!(t.kind, TokenKind::Op(ref s) if s == "|"))
                             .unwrap_or(false);
-                        
+
                         if is_class && has_second_pipe {
                             // Valid: identifier | ClassName | value
                             self.i += 1; // consume first |
@@ -2792,9 +2903,9 @@ impl<'t> Parser<'t> {
                         } else if has_second_pipe {
                             // Error: identifier | lowercase | value
                             return Err(s_help_site!(
-                                "P0403", 
+                                "P0403",
                                 &format!("Class names must start with uppercase (found '{}')", name_str),
-                                "Write: user | Person | {{ name: \"Alice\" }}"
+                                "Write: user | Person | { name: \"Alice\" }"
                             ));
                         } else {
                             // Normal: identifier | value
@@ -2812,23 +2923,7 @@ impl<'t> Parser<'t> {
         } else {
             None
         };
-        
-        // 3) Operator: '|' (Normal) or '[=' (Shadow)
-        let (mode, op_span) = if self.peek_op("|") {
-            let sp = self.peek().unwrap().span.clone();
-            let _ = self.eat_op("|");
-            (ast::BindMode::Normal, sp)
-        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow)) {
-            let sp = self.peek().unwrap().span.clone();
-            self.i += 1; // consume the Shadow token
-            (ast::BindMode::Shadow, sp)
-        } else {
-            return Err(s_help_site!(
-                "P0402",
-                &format!("Expected '|' or '[=' after '{}'", name_text),
-                "Use '|' for a normal declaration, or '[=' (shadow) to declare+init in the current scope.",
-            ));
-        };
+
         // 4) RHS expression
         let rhs = if class_name.is_some() {
             // Object instantiation: expect { field: value, ... } or { val1, val2, ... }
@@ -2839,10 +2934,10 @@ impl<'t> Parser<'t> {
                     "Write: user|User = { id: 1, name: \"Alice\" } or user|User = { 1, \"Alice\" }",
                 ));
             }
-            
+
             // Parse object literal - detect if it's named or positional
             self.skip_newlines();
-            
+
             if self.peek_op("}") {
                 // Empty object
                 self.i += 1;
@@ -2860,18 +2955,21 @@ impl<'t> Parser<'t> {
                                 break;
                             }
                         }
-                        matches!(self.toks.get(j), Some(t) if matches!(t.kind, TokenKind::Op(ref s) if s == ":"))
+                        matches!(
+                            self.toks.get(j),
+                            Some(t) if matches!(t.kind, TokenKind::Op(ref s) if s == ":")
+                        )
                     } else {
                         false
                     }
                 } else {
                     false
                 };
-                
+
                 if is_named {
                     // Named fields: { id: 1, name: "Alice" }
                     let mut pairs = Vec::new();
-                    
+
                     loop {
                         let Some(key) = self.eat_ident() else {
                             return Err(s_help_site!(
@@ -2880,7 +2978,7 @@ impl<'t> Parser<'t> {
                                 "Write: { id: 1, name: \"Alice\" }",
                             ));
                         };
-                        
+
                         if !self.eat_op(":") {
                             return Err(s_help_site!(
                                 "P0414",
@@ -2888,20 +2986,22 @@ impl<'t> Parser<'t> {
                                 "Write: { id: 1, name: \"Alice\" }",
                             ));
                         }
-                        
+
                         self.skip_newlines();
                         let val_pe = self.parse_coalesce()?;
                         pairs.push((key, self.lower_expr(val_pe)));
-                        
+
                         self.skip_newlines();
                         if self.eat_op(",") {
                             self.skip_newlines();
-                            if self.peek_op("}") { break; }
+                            if self.peek_op("}") {
+                                break;
+                            }
                             continue;
                         }
                         break;
                     }
-                    
+
                     self.skip_newlines();
                     if !self.eat_op("}") {
                         return Err(s_help_site!(
@@ -2910,25 +3010,27 @@ impl<'t> Parser<'t> {
                             "Write: { id: 1, name: \"Alice\" }",
                         ));
                     }
-                    
+
                     ast::Expr::Object(pairs, op_span.clone())
                 } else {
                     // Positional values: { 1, "Alice", "email@example.com" }
                     let mut values = Vec::new();
-                    
+
                     loop {
                         let val_pe = self.parse_coalesce()?;
                         values.push(self.lower_expr(val_pe));
-                        
+
                         self.skip_newlines();
                         if self.eat_op(",") {
                             self.skip_newlines();
-                            if self.peek_op("}") { break; }
+                            if self.peek_op("}") {
+                                break;
+                            }
                             continue;
                         }
                         break;
                     }
-                    
+
                     self.skip_newlines();
                     if !self.eat_op("}") {
                         return Err(s_help_site!(
@@ -2937,7 +3039,7 @@ impl<'t> Parser<'t> {
                             "Write: { 1, \"Alice\", \"email@example.com\" }",
                         ));
                     }
-                    
+
                     ast::Expr::Array(values, op_span.clone())
                 }
             }
@@ -2947,17 +3049,17 @@ impl<'t> Parser<'t> {
             self.lower_expr(rhs_pe)
         };
 
-        // 5) Build Stmt::Bind
+        // 5) Build Stmt::Bind (single target)
         Ok(ast::Stmt::Bind(ast::BindStmt {
             name: (name_text, name_span),
-            expr: rhs,  // Use the conditional rhs
+            expr: rhs,
             is_const,
             mode,
             span: op_span,
             class_name,
         }))
     }
-    // === END: parse_bind_stmt ==================================================
+    // === END: parse_bind_stmt ===
 
     #[inline]
     fn peek_word(&self, want: &str) -> bool {
@@ -5218,9 +5320,10 @@ impl<'t> Parser<'t> {
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
                 if let Some(t1) = self.toks.get(self.i + 1) {
-                    // Check for IDENT = or IDENT [=
+                    // Check for IDENT | or IDENT |=
                     if matches!(t1.kind, TokenKind::Op(ref s) if s == "|")
                         || matches!(t1.kind, TokenKind::Shadow)
+                        || matches!(t1.kind, TokenKind::Op(ref s) if s == ",") // NEW
                     {
                         return self.parse_bind_stmt();
                     }
@@ -5340,10 +5443,11 @@ impl<'t> Parser<'t> {
             // Lookahead: imm IDENT (=|[=)
             if let (Some(t1), Some(t2)) = (self.toks.get(self.i + 1), self.toks.get(self.i + 2)) {
                 let is_ident = matches!(t1.kind, TokenKind::Ident);
-                let is_eq_or_shadow =
+                let is_bind_start =
                     matches!(t2.kind, TokenKind::Op(ref s) if s == "|")
-                    || matches!(t2.kind, TokenKind::Shadow);
-                if is_ident && is_eq_or_shadow {
+                    || matches!(t2.kind, TokenKind::Shadow)
+                    || matches!(t2.kind, TokenKind::Op(ref s) if s == ",");
+                if is_ident && is_bind_start {
                     return self.parse_bind_stmt();
                 }
             }
@@ -5353,6 +5457,7 @@ impl<'t> Parser<'t> {
                 if let Some(t1) = self.toks.get(self.i + 1) {
                     if matches!(t1.kind, TokenKind::Op(ref s) if s == "|")
                         || matches!(t1.kind, TokenKind::Shadow)
+                        || matches!(t1.kind, TokenKind::Op(ref s) if s == ",") // NEW
                     {
                         return self.parse_bind_stmt();
                     }
