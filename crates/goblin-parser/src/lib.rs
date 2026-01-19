@@ -420,7 +420,7 @@ impl<'t> Parser<'t> {
         let local_text = self.eat_ident().ok_or_else(|| s_help_site!(
             "P0300",
             "Expected the keyword 'local'",
-            "Write: local name = value"
+            "Write: local name | value"
         ))?;
         debug_assert_eq!(local_text.as_str(), "local");
 
@@ -431,7 +431,7 @@ impl<'t> Parser<'t> {
                 return Err(s_help_site!(
                     "P0301",
                     "Expected an identifier after 'local'",
-                    "Write: local name = value"
+                    "Write: local name | value"
                 ));
             }
         };
@@ -536,7 +536,7 @@ impl<'t> Parser<'t> {
                                 let type_name = t2.value.clone().unwrap_or_default();
                                 j += 1;
 
-                                // Optional layout after type (be forgiving), but stay on same line for '='
+                                // Optional layout after type (stay on same line for '=')
                                 while let Some(t) = self.toks.get(j) {
                                     match t.kind {
                                         TokenKind::Indent | TokenKind::Dedent | TokenKind::Newline => j += 1,
@@ -547,16 +547,14 @@ impl<'t> Parser<'t> {
                                 // Expect '=' on same line
                                 if let Some(t3) = self.toks.get(j) {
                                     if t3.span.line_start == line && matches!(t3.kind, TokenKind::Op(ref op) if op == "=") {
-                                        // Assignments only at statement level (match normal '=' behavior)
                                         if !self.in_stmt {
                                             return Err(s_help_site!(
                                                 "P0301",
                                                 "You can't use assignment (=) inside an expression.",
-                                                "Put the assignment on its own line, then use the variable: result = calculate() then total = result * 2.",
+                                                "Put the assignment on its own line.",
                                             ));
                                         }
 
-                                        // Enforce capitalized Type
                                         if !type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                                             return Err(s_help_site!(
                                                 "P0910",
@@ -565,16 +563,16 @@ impl<'t> Parser<'t> {
                                             ));
                                         }
 
-                                        // Commit: consume through '='
+                                        // Commit
                                         self.i = j + 1;
-
-                                        // Allow newlines before pairs, then parse flexible object pairs:
-                                        // accepts ',' or '::', bare 'nc', and empty slots.
                                         self.skip_newlines();
                                         let pairs = self.parse_object_field_chain_line()?;
 
                                         let rhs = PExpr::FreeCall(type_name, vec![PExpr::Object(pairs)]);
-                                        return Ok(PExpr::Assign(Box::new(PExpr::Ident(obj_name)), Box::new(rhs)));
+                                        return Ok(PExpr::Assign(
+                                            Box::new(PExpr::Ident(obj_name)),
+                                            Box::new(rhs),
+                                        ));
                                     }
                                 }
                             }
@@ -585,38 +583,46 @@ impl<'t> Parser<'t> {
         }
         // ---------- END typed-LHS lookahead ----------
 
-        // Check for tuple assignment: name1, name2, ... = expr
+        // ---------- Tuple retether: a, b, c |= expr ----------
+        // Commit ONLY if we see '|='; otherwise roll back completely.
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
-                // Try to collect comma-separated identifiers
                 let start_pos = self.i;
-                let mut idents = vec![];
-                
+                let start_span = t0.span.clone();
+                let mut names: Vec<String> = Vec::new();
+
                 loop {
-                    if let Some(t) = self.peek() {
-                        if matches!(t.kind, TokenKind::Ident) {
-                            let name = t.value.clone().unwrap_or_default();
-                            idents.push(name);
-                            self.i += 1;
-                            
-                            // Check for comma
-                            if self.peek_op(",") {
-                                self.eat_op(",");
-                                continue; // Get next identifier
-                            } else {
-                                // No comma, check if we have '='
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    } else {
+                    self.skip_newlines();
+
+                    let Some(t) = self.peek() else { break };
+                    if !matches!(t.kind, TokenKind::Ident) {
                         break;
                     }
+
+                    names.push(t.value.clone().unwrap_or_default());
+                    self.i += 1;
+
+                    self.skip_newlines();
+
+                    if self.eat_op(",") {
+                        self.skip_newlines();
+                        let Some(tn) = self.peek() else {
+                            self.i = start_pos;
+                            break;
+                        };
+                        if !matches!(tn.kind, TokenKind::Ident) {
+                            self.i = start_pos;
+                            break;
+                        }
+                        continue;
+                    }
+
+                    break;
                 }
-                
-                // If we have multiple identifiers followed by '|=', it's tuple assignment
-                if idents.len() > 1 && self.peek_op("|=") {
+
+                self.skip_newlines();
+
+                if names.len() > 1 && self.peek_op("|=") {
                     if !self.in_stmt {
                         return Err(s_help_site!(
                             "P0301",
@@ -624,10 +630,9 @@ impl<'t> Parser<'t> {
                             "Put the assignment on its own line.",
                         ));
                     }
-                    
+
                     let _ = self.eat_op("|=");
-                    
-                    // Allow newlines before RHS
+
                     while let Some(t) = self.peek() {
                         if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
                             self.i += 1;
@@ -635,33 +640,24 @@ impl<'t> Parser<'t> {
                             break;
                         }
                     }
-                    
-                    // Parse RHS
+
                     let prev_in_stmt = self.in_stmt;
                     self.in_stmt = false;
                     let rhs = self.parse_coalesce()?;
                     self.in_stmt = prev_in_stmt;
-                    
-                    // Get span from start to current position
-                    let span = self.toks.get(start_pos)
-                        .map(|t| t.span.clone())
-                        .unwrap_or_else(|| {
-                            // Create a dummy span if we can't find one
-                            Span::new("", 0, 0, 0, 0, 0, 0)
-                        });
-                    
-                    return Ok(PExpr::TupleAssign(idents, Box::new(rhs), span));
-                } else {
-                    // Not tuple assignment, backtrack
-                    self.i = start_pos;
+
+                    return Ok(PExpr::TupleAssign(names, Box::new(rhs), start_span));
                 }
+
+                // Not tuple retether → roll back
+                self.i = start_pos;
             }
         }
+        // ---------- END tuple retether ----------
 
-        // Fallback: parse potential LHS as a normal expression
+        // ---------- Fallback: normal assignment ----------
         let lhs = self.parse_coalesce()?;
 
-        // Detect assignment / compound-assign
         let op: Option<&'static str> =
             if self.peek_op("??=") { Some("??=") }
             else if self.peek_op("//=") { Some("//=") }
@@ -679,16 +675,14 @@ impl<'t> Parser<'t> {
             return Ok(lhs);
         }
 
-        // Assignments only at statement level (applies to the normal path)
         if !self.in_stmt {
             return Err(s_help_site!(
                 "P0301",
                 "You can't use assignment (|=) inside an expression.",
-                "Put the assignment on its own line, then use the variable: result | calculate() then total | result * 2.",
+                "Put the assignment on its own line.",
             ));
         }
 
-        // Forbid assigning to meta .type
         if self.lhs_ends_with_dot_type_at(self.i) {
             return Err(s_help_site!(
                 "P0302",
@@ -700,7 +694,6 @@ impl<'t> Parser<'t> {
         let op = op.unwrap();
         let _ = self.eat_op(op);
 
-        // Allow newline(s) and indent before RHS
         while let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
                 self.i += 1;
@@ -709,7 +702,6 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // Parse RHS as expression (disable nested assignment while parsing RHS)
         let prev_in_stmt = self.in_stmt;
         self.in_stmt = false;
         let rhs = self.parse_coalesce()?;
@@ -718,7 +710,7 @@ impl<'t> Parser<'t> {
         if op == "|=" {
             Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
         } else if op == "|!" {
-            Ok(PExpr::MutateAssign(Box::new(lhs), Box::new(rhs))) 
+            Ok(PExpr::MutateAssign(Box::new(lhs), Box::new(rhs)))
         } else {
             Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
         }
@@ -2746,7 +2738,7 @@ impl<'t> Parser<'t> {
         }
     }
 
-    // === BEGIN: parse_bind_stmt (adds tuple targets; preserves all current single-target behavior) ===
+    // === BEGIN: parse_bind_stmt (tuple targets + |= + fallback-to-expr for comma expressions) ===
     fn parse_bind_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
@@ -2758,9 +2750,11 @@ impl<'t> Parser<'t> {
             false
         };
 
+        // For fallback-to-expr, rewind to "start of expression" AFTER optional imm.
+        // (imm is bind-only syntax; we do NOT want to treat "imm a, b + c" as an expr.)
+        let start_i_expr = self.i;
+
         // 2) Parse one-or-more identifiers: a, b, c
-        //    - Single target continues to produce Stmt::Bind (existing behavior)
-        //    - Multi target produces Stmt::Expr(Expr::TupleAssign(...)) (new behavior)
         let mut names: Vec<ast::Ident> = Vec::new();
 
         // first name
@@ -2818,7 +2812,7 @@ impl<'t> Parser<'t> {
             self.skip_newlines();
         }
 
-        // Policy: imm + tuple bind is disallowed (keep semantics simple and avoid half-const tuples)
+        // Policy: imm + tuple bind is disallowed
         if is_const && names.len() > 1 {
             return Err(s_help_site!(
                 "P0405",
@@ -2827,48 +2821,76 @@ impl<'t> Parser<'t> {
             ));
         }
 
-        // 3) Operator: '|' (Normal) or '[=' (Shadow)
-        // IMPORTANT: we parse the operator AFTER collecting all names, so "a, b | expr" works.
+        // 3) Operator:
+        //    - '|'  => Normal
+        //    - '|=' => Retether
+        //    - '[=' => Shadow
+        //
+        // CRITICAL FIX:
+        // If we parsed multiple names AND the next token is NOT a bind op,
+        // then this was NOT a bind statement (e.g. "g, h + i").
+        // Rewind and parse as an expression statement instead.
+        self.skip_newlines();
+
+        let next_is_shadow = matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow));
+        let next_is_bind_op = self.peek_op("|") || self.peek_op("|=") || next_is_shadow;
+
+        if !is_const && names.len() > 1 && !next_is_bind_op {
+            // rewind to start of expression (after optional imm)
+            self.i = start_i_expr;
+            let pe = self.parse_coalesce()?;
+            let e = self.lower_expr(pe);
+            return Ok(ast::Stmt::Expr(e));
+        }
+
+        // Now actually consume the operator (or error)
         let (mode, op_span) = if self.peek_op("|") {
             let sp = self.peek().unwrap().span.clone();
             let _ = self.eat_op("|");
             (ast::BindMode::Normal, sp)
-        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow)) {
+        } else if self.peek_op("|=") {
             let sp = self.peek().unwrap().span.clone();
-            self.i += 1; // consume the Shadow token
+            let _ = self.eat_op("|=");
+            (ast::BindMode::Retether, sp) // NOTE: BindMode must have Retether
+        } else if next_is_shadow {
+            let sp = self.peek().unwrap().span.clone();
+            self.i += 1; // consume Shadow token
             (ast::BindMode::Shadow, sp)
         } else {
             let name0 = &names[0].0;
             return Err(s_help_site!(
                 "P0402",
-                &format!("Expected '|' or '[=' after '{}'", name0),
-                "Use '|' for a normal declaration, or '[=' (shadow) to declare+init in the current scope.",
+                &format!("Expected '|' or '|=' or '[=' after '{}'", name0),
+                "Use '|' for a normal declaration, '|=' to retether, or '[=' (shadow) to declare+init in the current scope.",
             ));
         };
 
-        // ---- NEW: Multi-target bind emits Expr::TupleAssign as a statement ----
+        // ---- Multi-target tuple bind ----
         if names.len() > 1 {
-            // Disallow class-construction chain for tuple binds:
-            //   a, b | User | { ... }   <-- not supported
-            //
-            // If you *do* want to support it later, you'd need a well-defined mapping.
-            if self.peek_op("|") {
-                return Err(s_help_site!(
-                    "P0406",
-                    "Multi-target binding cannot use class construction (name | ClassName | {...})",
-                    "Write: user | User | { ... } (single target), or: a, b | [1, 2] (tuple bind)"
-                ));
+            // reject duplicates inside "a, a | expr"
+            {
+                use std::collections::HashSet;
+                let mut seen = HashSet::new();
+                for (n, _sp) in &names {
+                    if !seen.insert(n.clone()) {
+                        return Err(s_help_site!(
+                            "P0407",
+                            &format!("Duplicate name '{}' in multi-target binding", n),
+                            "Each name in a multi-target binding must be unique.",
+                        ));
+                    }
+                }
             }
 
             let rhs_pe = self.parse_coalesce()?;
             let rhs = self.lower_expr(rhs_pe);
 
-            let only_names: Vec<String> = names.into_iter().map(|(s, _sp)| s).collect();
-            return Ok(ast::Stmt::Expr(ast::Expr::TupleAssign(
-                only_names,
-                Box::new(rhs),
-                op_span,
-            )));
+            return Ok(ast::Stmt::TupleBind(ast::TupleBindStmt {
+                names,
+                expr: rhs,
+                mode,      // Normal / Shadow / Retether
+                span: op_span,
+            }));
         }
 
         // ---- EXISTING: Single-target path (preserve current behavior) ----
@@ -2876,10 +2898,8 @@ impl<'t> Parser<'t> {
 
         // 3.5) Optional class constructor lookahead:
         //      identifier | ClassName | value
-        // NOTE: We have already consumed the first '|' above.
-        //       So here we check whether there's ANOTHER '|' after a ClassName token.
+        // NOTE: We have already consumed the first operator above.
         let class_name = if self.peek_op("|") {
-            // Lookahead: check pattern after first |
             if let Some(tok) = self.toks.get(self.i + 1) {
                 if let TokenKind::Ident = tok.kind {
                     if let Some(name_str) = &tok.value {
@@ -2895,20 +2915,17 @@ impl<'t> Parser<'t> {
                             .unwrap_or(false);
 
                         if is_class && has_second_pipe {
-                            // Valid: identifier | ClassName | value
                             self.i += 1; // consume first |
                             let cname = name_str.clone();
                             self.i += 1; // consume ClassName
                             Some(cname)
                         } else if has_second_pipe {
-                            // Error: identifier | lowercase | value
                             return Err(s_help_site!(
                                 "P0403",
                                 &format!("Class names must start with uppercase (found '{}')", name_str),
                                 "Write: user | Person | { name: \"Alice\" }"
                             ));
                         } else {
-                            // Normal: identifier | value
                             None
                         }
                     } else {
@@ -2926,27 +2943,23 @@ impl<'t> Parser<'t> {
 
         // 4) RHS expression
         let rhs = if class_name.is_some() {
-            // Object instantiation: expect { field: value, ... } or { val1, val2, ... }
             if !self.eat_op("{") {
                 return Err(s_help_site!(
                     "P0412",
                     "Expected '{' after class name in object construction",
-                    "Write: user|User = { id: 1, name: \"Alice\" } or user|User = { 1, \"Alice\" }",
+                    "Write: user | User | { id: 1, name: \"Alice\" } or user | User | { 1, \"Alice\" }",
                 ));
             }
 
-            // Parse object literal - detect if it's named or positional
             self.skip_newlines();
 
             if self.peek_op("}") {
-                // Empty object
                 self.i += 1;
                 ast::Expr::Array(vec![], op_span.clone())
             } else {
                 // Check if first element is named (has ':' after identifier)
                 let is_named = if let Some(tok) = self.peek() {
                     if matches!(tok.kind, TokenKind::Ident) {
-                        // Look ahead for ':'
                         let mut j = self.i + 1;
                         while let Some(t) = self.toks.get(j) {
                             if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
@@ -2967,7 +2980,6 @@ impl<'t> Parser<'t> {
                 };
 
                 if is_named {
-                    // Named fields: { id: 1, name: "Alice" }
                     let mut pairs = Vec::new();
 
                     loop {
@@ -3013,7 +3025,6 @@ impl<'t> Parser<'t> {
 
                     ast::Expr::Object(pairs, op_span.clone())
                 } else {
-                    // Positional values: { 1, "Alice", "email@example.com" }
                     let mut values = Vec::new();
 
                     loop {
@@ -3044,7 +3055,6 @@ impl<'t> Parser<'t> {
                 }
             }
         } else {
-            // Normal binding: single expression
             let rhs_pe = self.parse_coalesce()?;
             self.lower_expr(rhs_pe)
         };

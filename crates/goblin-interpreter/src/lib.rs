@@ -2559,6 +2559,165 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             Ok(None)
         }
 
+        // -----------------------------------------------------------------------------
+        // ast::Stmt::TupleBind(tb)  — interpreter implementation (|  |=  [=)
+        // Uses ONLY your existing rtcode constants + your Diagnostic style.
+        // -----------------------------------------------------------------------------
+        ast::Stmt::TupleBind(tb) => {
+            use crate::diagnostics::rtcode;
+            use goblin_diagnostics::{Diagnostic, Severity};
+
+            let rhs = eval_expr(&tb.expr, sess)?;
+
+            let values: Vec<Value> = match rhs {
+                Value::Array(vs) => vs,
+                other => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            rtcode::ARRAY_EXPECTED, // R0402
+                            "array-expected",
+                            "tuple binding requires an array on the right-hand side",
+                            tb.span.clone(),
+                        )
+                        .with_help("Write: a, b | [1, 2] (right-hand side must be an array).")
+                        .with_link("https://goblinlang.org/docs/errors#R0402"),
+                    );
+                }
+            };
+
+            if values.len() != tb.names.len() {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        format!(
+                            "tuple binding expected {} value(s) but got {}",
+                            tb.names.len(),
+                            values.len()
+                        ),
+                        tb.span.clone(),
+                    )
+                    .with_help("Make the array length match the number of names on the left.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            for (ix, (name, name_span)) in tb.names.iter().cloned().enumerate() {
+                let val = values[ix].clone();
+
+                match tb.mode {
+                    // [= : explicit shadow declare (current frame only)
+                    BindMode::Shadow => {
+                        let cur = sess.env.len() - 1;
+                        if sess.env[cur].contains_key(&name) {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::DUPLICATE_LOCAL, // R0111
+                                    "duplicate-local",
+                                    format!("'{}' is already declared in this block", name),
+                                    name_span,
+                                )
+                                .with_help("Choose a different name, or use '|=' to reassign.")
+                                .with_link("https://goblinlang.org/docs/errors#R0111"),
+                            );
+                        }
+                        sess.define_local(name, val, false);
+                    }
+
+                    // | : declare-only (current frame only) — NEVER mutate
+                    BindMode::Normal => {
+                        let cur = sess.env.len() - 1;
+                        if sess.env[cur].contains_key(&name) {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::DUPLICATE_LOCAL, // R0111
+                                    "duplicate-local",
+                                    format!("'{}' is already declared in this block", name),
+                                    name_span,
+                                )
+                                .with_help("Use '|=' to reassign an existing variable.")
+                                .with_link("https://goblinlang.org/docs/errors#R0111"),
+                            );
+                        }
+                        sess.define_local(name, val, false);
+                    }
+
+                    // |= : retether-only — MUST exist somewhere, mutate nearest frame
+                    BindMode::Retether => {
+                        let Some(frame_ix) = sess.find_name_frame(&name) else {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::UNKNOWN_IDENT, // R0101
+                                    "unknown-ident",
+                                    format!("unknown identifier ‘{}’", name),
+                                    name_span,
+                                )
+                                .with_help("Declare it first with '|' (or 'local') before reassigning with '|='.")
+                                .with_link("https://goblinlang.org/docs/errors#R0101"),
+                            );
+                        };
+
+                        if sess.is_const_in_frame(frame_ix, &name) {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::IMMUTABLE_ASSIGN, // R0113
+                                    "immutable-assign",
+                                    format!("cannot reassign immutable '{}'", name),
+                                    name_span,
+                                )
+                                .with_help("Values declared with 'imm' cannot be reassigned.")
+                                .with_link("https://goblinlang.org/docs/errors#R0113"),
+                            );
+                        }
+
+                        if let Some(slot) = sess.env[frame_ix].get_mut(&name) {
+                            *slot = val;
+                        } else {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::INTERNAL_ASSIGN_SLOT, // R0009
+                                    "internal-assign-slot",
+                                    "internal: slot missing during retether",
+                                    name_span,
+                                )
+                                .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                                .with_link("https://goblinlang.org/docs/errors#R0009"),
+                            );
+                        }
+                    }
+
+                    // If you still have BindMode::Local on tb.mode, decide policy:
+                    // I’d reject it at parse-time for tuplebind, but if it can occur here:
+                    BindMode::Local => {
+                        let cur = sess.env.len() - 1;
+                        if sess.env[cur].contains_key(&name) {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    rtcode::DUPLICATE_LOCAL, // R0111
+                                    "duplicate-local",
+                                    format!("'{}' is already declared in this block", name),
+                                    name_span,
+                                )
+                                .with_help("Choose a different name, or use '|=' to reassign.")
+                                .with_link("https://goblinlang.org/docs/errors#R0111"),
+                            );
+                        }
+                        sess.define_local(name, val, false);
+                    }
+                }
+            }
+
+            Ok(None)
+        }
+
         ast::Stmt::Class(decl) => {
             // Build relationship metadata
             let mut relations = ClassRelations {
@@ -3782,47 +3941,96 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     Ok(None)
                 }
 
+                BindMode::Retether => {
+                    // Must already exist in SOME frame.
+                    let Some(frame_ix) = sess.find_name_frame(name) else {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::UNKNOWN_IDENT, // R0101
+                                "unknown-ident",
+                                format!("unknown identifier ‘{}’", name),
+                                name_span,
+                            )
+                            .with_help("Declare it first with '|' (or 'local') before reassigning with '|='.")
+                            .with_link("https://goblinlang.org/docs/errors#R0101"),
+                        );
+                    };
+
+                    // ---- CRITICAL: consts must mirror env. If missing, that's a runtime bug. ----
+                    let is_const = sess
+                        .consts
+                        .get(frame_ix)
+                        .and_then(|m| m.get(name))
+                        .copied()
+                        .ok_or_else(|| {
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::INTERNAL, // R0000
+                                "internal",
+                                format!("internal: const table missing entry for '{}'", name),
+                                name_span.clone(),
+                            )
+                            .with_help("A binding exists in env, but not in sess.consts for the same frame.")
+                            .with_help("Ensure ALL declare paths call sess.define_local(name, val, is_const).")
+                            .with_link("https://goblinlang.org/docs/errors#R0000")
+                        })?;
+
+                    if is_const {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMMUTABLE_ASSIGN, // R0113
+                                "immutable-assign",
+                                format!("cannot reassign immutable '{}'", name),
+                                name_span,
+                            )
+                            .with_help("Values declared with 'imm' cannot be reassigned.")
+                            .with_link("https://goblinlang.org/docs/errors#R0113"),
+                        );
+                    }
+
+                    // Mutate in the frame it was found in
+                    if let Some(slot) = sess.env[frame_ix].get_mut(name) {
+                        *slot = rhs;
+                        Ok(None)
+                    } else {
+                        Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::INTERNAL_ASSIGN_SLOT, // R0009
+                                "internal-assign-slot",
+                                "internal: slot missing during retether",
+                                name_span,
+                            )
+                            .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                            .with_link("https://goblinlang.org/docs/errors#R0009"),
+                        )
+                    }
+                }
+
                 BindMode::Normal => {
-                    // Back-compat: operate only on the CURRENT frame.
+                    // DECLARE-ONLY in the CURRENT frame.
+                    // If name already exists in this frame, error (use '|=' to reassign).
                     let cur = sess.env.len() - 1;
 
                     if sess.env[cur].contains_key(name) {
-                        // Mutate existing in current frame (respect immutability)
-                        if sess.is_const_in_frame(cur, name) {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::IMMUTABLE_ASSIGN, // R0113
-                                    "immutable-assign",
-                                    format!("cannot reassign immutable '{}'", name),
-                                    name_span,
-                                )
-                                .with_help("Values declared with 'imm' cannot be reassigned.")
-                                .with_help("Remove 'imm' or create a new variable if reassignment is intended.")
-                                .with_link("https://goblinlang.org/docs/errors#R0113"),
-                            );
-                        }
-                        if let Some(slot) = sess.env[cur].get_mut(name) {
-                            *slot = rhs;
-                            Ok(None)
-                        } else {
-                            Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::INTERNAL_ASSIGN_SLOT, // R0009
-                                    "internal-assign-slot",
-                                    "internal: slot missing during assign",
-                                    name_span,
-                                )
-                                .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
-                                .with_link("https://goblinlang.org/docs/errors#R0009"),
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::DUPLICATE_LOCAL, // R0111
+                                "duplicate-local",
+                                format!("'{}' is already declared in this block", name),
+                                name_span,
                             )
-                        }
-                    } else {
-                        // Not present in current frame → declare local here (respect constness).
-                        sess.define_local(name.clone(), rhs, b.is_const);
-                        Ok(None)
+                            .with_help("Use '|=' to reassign an existing variable.")
+                            .with_link("https://goblinlang.org/docs/errors#R0111"),
+                        );
                     }
+
+                    // Not present in current frame -> declare here (shadows outer if it exists there).
+                    sess.define_local(name.clone(), rhs, b.is_const);
+                    Ok(None)
                 }
             }
         }

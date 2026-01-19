@@ -966,6 +966,36 @@ fn run_repl() -> i32 {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
+            // --- helper: parse + dump AST (no eval) ---
+            fn repl_dump_ast(src: &str) {
+                // -------- LEX --------
+                let tokens = match lex(src, "<repl>") {
+                    Ok(t) => t,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() {
+                            eprintln!("{d}"); // exactly once
+                        }
+                        return;
+                    }
+                };
+
+                // -------- PARSE --------
+                let module = match Parser::new(&tokens).parse_module() {
+                    Ok(m) => m,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() {
+                            eprintln!("{d}"); // exactly once
+                        }
+                        return;
+                    }
+                };
+
+                // Dump statements so you can see TupleBind vs TupleAssign etc.
+                for (i, stmt) in module.items.iter().enumerate() {
+                    println!("[{i}] {stmt:#?}");
+                }
+            }
+
             let mut sess = Session::new();
             let mut form_no: usize = 1;
 
@@ -980,17 +1010,24 @@ fn run_repl() -> i32 {
                 } else {
                     print!("...       ");
                 }
-                if io::stdout().flush().is_err() { return 1; }
+                if io::stdout().flush().is_err() {
+                    return 1;
+                }
 
                 // Read one line
                 let mut line = String::new();
                 let read = io::stdin().read_line(&mut line).unwrap_or(0);
-                if read == 0 { println!(); break; } // Ctrl+D/Z
+                if read == 0 {
+                    println!();
+                    break;
+                } // Ctrl+D/Z
 
                 let trimmed = line.trim_end();
 
                 // Allow exit/quit only when not in a pending block
-                if buf.is_empty() && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit")) {
+                if buf.is_empty()
+                    && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit"))
+                {
                     break;
                 }
 
@@ -1000,10 +1037,31 @@ fn run_repl() -> i32 {
                     if let Some(rest) = s0.strip_prefix("enhance") {
                         if rest.is_empty() || rest.starts_with(char::is_whitespace) {
                             let payload = rest.trim();
-                            if payload.is_empty() { println!("Enhance what?"); } else { println!("{payload} has been enhanced."); }
+                            if payload.is_empty() {
+                                println!("Enhance what?");
+                            } else {
+                                println!("{payload} has been enhanced.");
+                            }
                             form_no += 1;
                             continue;
                         }
+                    }
+                }
+
+                // REPL meta: :ast <code>  (parse + dump AST, no eval)
+                if buf.is_empty() {
+                    let s0 = trimmed.trim_start();
+                    if let Some(rest) = s0.strip_prefix(":ast") {
+                        let payload = rest.trim();
+                        if payload.is_empty() {
+                            println!("usage: :ast <goblin code>");
+                        } else {
+                            repl_dump_ast(payload);
+                        }
+                        buf.clear();
+                        depth = 0;
+                        form_no += 1;
+                        continue;
                     }
                 }
 
@@ -1016,11 +1074,11 @@ fn run_repl() -> i32 {
                     let src_line = trimmed.trim_start();
 
                     let starts_block_kw = |kw: &str| -> bool {
-                        src_line == kw || (src_line.starts_with(kw) && src_line[kw.len()..].starts_with(char::is_whitespace))
+                        src_line == kw
+                            || (src_line.starts_with(kw)
+                                && src_line[kw.len()..].starts_with(char::is_whitespace))
                     };
 
-                    // 1) control-flow / block headers open a block
-                    // include all your statement headers that require a matching 'end'/'xx'
                     // 1) control-flow / block headers open a block
                     // BUT: if there's => on the same line, it's a single-line form
                     if starts_block_kw("if")
@@ -1032,7 +1090,6 @@ fn run_repl() -> i32 {
                         || starts_block_kw("judge")
                         || starts_block_kw("judge_all")
                     {
-                        // Check if this is an inline form (has => on the line)
                         if !src_line.contains("=>") {
                             depth += 1;
                         }
@@ -1049,8 +1106,15 @@ fn run_repl() -> i32 {
                         for ch in src_line.chars() {
                             match ch {
                                 '(' => paren_depth += 1,
-                                ')' => if paren_depth > 0 { paren_depth -= 1; },
-                                '=' if paren_depth == 0 => { has_eq_outside_parens = true; break; }
+                                ')' => {
+                                    if paren_depth > 0 {
+                                        paren_depth -= 1;
+                                    }
+                                }
+                                '=' if paren_depth == 0 => {
+                                    has_eq_outside_parens = true;
+                                    break;
+                                }
                                 _ => {}
                             }
                         }
@@ -1060,13 +1124,21 @@ fn run_repl() -> i32 {
                     }
 
                     // 3) closers
-                    if src_line == "end" { depth -= 1; }
-                    if src_line == "xx"  { depth -= 1; }
-                    if depth < 0 { depth = 0; }
+                    if src_line == "end" {
+                        depth -= 1;
+                    }
+                    if src_line == "xx" {
+                        depth -= 1;
+                    }
+                    if depth < 0 {
+                        depth = 0;
+                    }
                 }
 
                 // Keep reading if still inside a block
-                if depth > 0 { continue; }
+                if depth > 0 {
+                    continue;
+                }
 
                 // At top-level: empty form → new prompt
                 if buf.trim().is_empty() {
@@ -1079,7 +1151,7 @@ fn run_repl() -> i32 {
                     Ok(t) => t,
                     Err(diags) => {
                         if let Some(d) = diags.into_iter().next() {
-                            eprintln!("{d}");      // <-- exactly once
+                            eprintln!("{d}"); // <-- exactly once
                         }
                         buf.clear();
                         depth = 0;
@@ -1093,7 +1165,7 @@ fn run_repl() -> i32 {
                     Ok(m) => m,
                     Err(diags) => {
                         if let Some(d) = diags.into_iter().next() {
-                            eprintln!("{d}");      // <-- exactly once
+                            eprintln!("{d}"); // <-- exactly once
                         }
                         buf.clear();
                         depth = 0;
@@ -1110,13 +1182,15 @@ fn run_repl() -> i32 {
                     let result = match stmt {
                         ast::Stmt::Expr(e) => sess.eval_expr(e).map(|val| {
                             let echo = format!("{val}");
-                            if !echo.is_empty() { println!("{echo}"); }
+                            if !echo.is_empty() {
+                                println!("{echo}");
+                            }
                         }),
                         _ => sess.eval_stmt(stmt).map(|_| ()),
                     };
 
                     if let Err(d) = result {
-                        eprintln!("{d}");          // <-- exactly once
+                        eprintln!("{d}"); // <-- exactly once
                         had_error = true;
                         break;
                     }

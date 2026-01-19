@@ -13,6 +13,7 @@ pub enum BindMode {
     Normal, // '='  (smart declare/mutate; shadowing with '=' is forbidden)
     Shadow, // '[=' (shadow operator: always birth a new local in this scope)
     Local,
+    Retether,
 }
 
 #[derive(Debug, Clone)]
@@ -26,11 +27,20 @@ pub struct BindStmt {
 }
 
 #[derive(Debug, Clone)]
+pub struct TupleBindStmt {
+    pub names: Vec<Ident>,   // keep spans for good errors
+    pub expr: Expr,
+    pub mode: BindMode,      // Normal or Shadow (and maybe Local later)
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum Stmt {
     Expr(Expr),
     Class(ClassDecl),
     Action(ActionDecl),
     Bind(BindStmt),
+    TupleBind(TupleBindStmt), 
     Enum(EnumDecl),
     Import(ImportStmt),
     Judge(JudgeStmt),
