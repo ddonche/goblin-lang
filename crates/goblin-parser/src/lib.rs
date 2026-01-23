@@ -459,8 +459,9 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::Bind(ast::BindStmt {
             name: name_ident,
             expr: init_expr,
-            is_const: false,             // 'local' is mutable in v1
-            mode: ast::BindMode::Local,  // ← important
+            is_imm: false,
+            is_local: true,
+            mode: ast::BindMode::Tether,
             span,
             class_name: None,
         }))
@@ -515,205 +516,10 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_assign(&mut self) -> Result<PExpr, String> {
-        use goblin_lexer::TokenKind;
-
-        // ---------- EARLY LOOKAHEAD: typed-LHS  name | Type = <pairs> ----------
-        // Do not consume unless the entire pattern matches on the same line.
-        if let Some(t0) = self.toks.get(self.i).cloned() {
-            if matches!(t0.kind, TokenKind::Ident) {
-                let obj_name = t0.value.clone().unwrap_or_default();
-                let line = t0.span.line_start;
-                let mut j = self.i + 1;
-
-                // Expect '|'
-                if let Some(t1) = self.toks.get(j) {
-                    if t1.span.line_start == line && matches!(t1.kind, TokenKind::Op(ref op) if op == "|") {
-                        j += 1;
-
-                        // Expect Type ident
-                        if let Some(t2) = self.toks.get(j) {
-                            if t2.span.line_start == line && matches!(t2.kind, TokenKind::Ident) {
-                                let type_name = t2.value.clone().unwrap_or_default();
-                                j += 1;
-
-                                // Optional layout after type (stay on same line for '=')
-                                while let Some(t) = self.toks.get(j) {
-                                    match t.kind {
-                                        TokenKind::Indent | TokenKind::Dedent | TokenKind::Newline => j += 1,
-                                        _ => break,
-                                    }
-                                }
-
-                                // Expect '=' on same line
-                                if let Some(t3) = self.toks.get(j) {
-                                    if t3.span.line_start == line && matches!(t3.kind, TokenKind::Op(ref op) if op == "=") {
-                                        if !self.in_stmt {
-                                            return Err(s_help_site!(
-                                                "P0301",
-                                                "You can't use assignment (=) inside an expression.",
-                                                "Put the assignment on its own line.",
-                                            ));
-                                        }
-
-                                        if !type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                                            return Err(s_help_site!(
-                                                "P0910",
-                                                "Types used in object construction must begin with a capital letter.",
-                                                &format!("Write: myVar | {} = name: \"...\"", Self::capitalize_like(&type_name)),
-                                            ));
-                                        }
-
-                                        // Commit
-                                        self.i = j + 1;
-                                        self.skip_newlines();
-                                        let pairs = self.parse_object_field_chain_line()?;
-
-                                        let rhs = PExpr::FreeCall(type_name, vec![PExpr::Object(pairs)]);
-                                        return Ok(PExpr::Assign(
-                                            Box::new(PExpr::Ident(obj_name)),
-                                            Box::new(rhs),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // ---------- END typed-LHS lookahead ----------
-
-        // ---------- Tuple retether: a, b, c |= expr ----------
-        // Commit ONLY if we see '|='; otherwise roll back completely.
-        if let Some(t0) = self.peek() {
-            if matches!(t0.kind, TokenKind::Ident) {
-                let start_pos = self.i;
-                let start_span = t0.span.clone();
-                let mut names: Vec<String> = Vec::new();
-
-                loop {
-                    self.skip_newlines();
-
-                    let Some(t) = self.peek() else { break };
-                    if !matches!(t.kind, TokenKind::Ident) {
-                        break;
-                    }
-
-                    names.push(t.value.clone().unwrap_or_default());
-                    self.i += 1;
-
-                    self.skip_newlines();
-
-                    if self.eat_op(",") {
-                        self.skip_newlines();
-                        let Some(tn) = self.peek() else {
-                            self.i = start_pos;
-                            break;
-                        };
-                        if !matches!(tn.kind, TokenKind::Ident) {
-                            self.i = start_pos;
-                            break;
-                        }
-                        continue;
-                    }
-
-                    break;
-                }
-
-                self.skip_newlines();
-
-                if names.len() > 1 && self.peek_op("|=") {
-                    if !self.in_stmt {
-                        return Err(s_help_site!(
-                            "P0301",
-                            "You can't use assignment (|=) inside an expression.",
-                            "Put the assignment on its own line.",
-                        ));
-                    }
-
-                    let _ = self.eat_op("|=");
-
-                    while let Some(t) = self.peek() {
-                        if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
-                            self.i += 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    let prev_in_stmt = self.in_stmt;
-                    self.in_stmt = false;
-                    let rhs = self.parse_coalesce()?;
-                    self.in_stmt = prev_in_stmt;
-
-                    return Ok(PExpr::TupleAssign(names, Box::new(rhs), start_span));
-                }
-
-                // Not tuple retether → roll back
-                self.i = start_pos;
-            }
-        }
-        // ---------- END tuple retether ----------
-
-        // ---------- Fallback: normal assignment ----------
-        let lhs = self.parse_coalesce()?;
-
-        let op: Option<&'static str> =
-            if self.peek_op("??=") { Some("??=") }
-            else if self.peek_op("//=") { Some("//=") }
-            else if self.peek_op("+=")  { Some("+=")  }
-            else if self.peek_op("-=")  { Some("-=")  }
-            else if self.peek_op("*=")  { Some("*=")  }
-            else if self.peek_op("/=")  { Some("/=")  }
-            else if self.peek_op("%=")  { Some("%=")  }
-            else if self.peek_op("**=") { Some("**=") }
-            else if self.peek_op("|!")  { Some("|!")  }
-            else if self.peek_op("|=")  { Some("|=")  }
-            else { None };
-
-        if op.is_none() {
-            return Ok(lhs);
-        }
-
-        if !self.in_stmt {
-            return Err(s_help_site!(
-                "P0301",
-                "You can't use assignment (|=) inside an expression.",
-                "Put the assignment on its own line.",
-            ));
-        }
-
-        if self.lhs_ends_with_dot_type_at(self.i) {
-            return Err(s_help_site!(
-                "P0302",
-                "You can't assign to `.type`; it's a special system property.",
-                "If you want a field named 'type', write: person >> type = \"admin\".",
-            ));
-        }
-
-        let op = op.unwrap();
-        let _ = self.eat_op(op);
-
-        while let Some(t) = self.peek() {
-            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
-                self.i += 1;
-            } else {
-                break;
-            }
-        }
-
-        let prev_in_stmt = self.in_stmt;
-        self.in_stmt = false;
-        let rhs = self.parse_coalesce()?;
-        self.in_stmt = prev_in_stmt;
-
-        if op == "|=" {
-            Ok(PExpr::Assign(Box::new(lhs), Box::new(rhs)))
-        } else if op == "|!" {
-            Ok(PExpr::MutateAssign(Box::new(lhs), Box::new(rhs)))
-        } else {
-            Ok(PExpr::Binary(Box::new(lhs), op.to_string(), Box::new(rhs)))
-        }
+        // Assignment expressions are removed from the AST.
+        // Keep parse_assign as a compatibility entry-point for callers,
+        // but do not parse '=', '|=', '|!', tuple-assign, etc.
+        self.parse_coalesce()
     }
 
     fn is_const_ident(name: &str) -> bool {
@@ -1947,20 +1753,6 @@ impl<'t> Parser<'t> {
                 let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
                 ast::Expr::Binary(lhs, op, rhs, sp)
             }
-            PExpr::Assign(lhs, rhs) => {
-                let lhs = Box::new(Self::lower_expr_preview(*lhs, sp.clone()));
-                let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
-                ast::Expr::Assign(lhs, rhs, sp)
-            }
-            PExpr::MutateAssign(lhs, rhs) => {
-                let lhs = Box::new(Self::lower_expr_preview(*lhs, sp.clone()));
-                let rhs = Box::new(Self::lower_expr_preview(*rhs, sp.clone()));
-                ast::Expr::MutateAssign(lhs, rhs, sp)
-            }
-            PExpr::TupleAssign(names, rhs, tuple_sp) => {
-                let rhs = Box::new(Self::lower_expr_preview(*rhs, tuple_sp.clone()));
-                ast::Expr::TupleAssign(names, rhs, tuple_sp)
-            }
 
             // Template-style object construction: FreeCall("Type", [Object(pairs)], span)
             PExpr::TemplateApply { type_name, pairs, span } => {
@@ -2847,7 +2639,7 @@ impl<'t> Parser<'t> {
         let (mode, op_span) = if self.peek_op("|") {
             let sp = self.peek().unwrap().span.clone();
             let _ = self.eat_op("|");
-            (ast::BindMode::Normal, sp)
+            (ast::BindMode::Tether, sp)
         } else if self.peek_op("|=") {
             let sp = self.peek().unwrap().span.clone();
             let _ = self.eat_op("|=");
@@ -2888,7 +2680,9 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::TupleBind(ast::TupleBindStmt {
                 names,
                 expr: rhs,
-                mode,      // Normal / Shadow / Retether
+                is_imm: is_const,     // rename variable later; for now keep it compiling
+                is_local: false,      // because `local` is handled by parse_local_bind today
+                mode,
                 span: op_span,
             }));
         }
@@ -3063,7 +2857,8 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::Bind(ast::BindStmt {
             name: (name_text, name_span),
             expr: rhs,
-            is_const,
+            is_imm: is_const,
+            is_local: false,
             mode,
             span: op_span,
             class_name,
@@ -4640,12 +4435,8 @@ impl<'t> Parser<'t> {
                 .into_iter()
                 .map(|s| match s {
                     ast::Stmt::Expr(e) => Ok(e),
-                    ast::Stmt::Bind(b) => {
-                        Ok(ast::Expr::Assign(
-                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                            Box::new(b.expr),
-                            b.span
-                        ))
+                    ast::Stmt::Bind(_) | ast::Stmt::TupleBind(_) => {
+                        Err("Bind statements (`|`, `|=`, `[=`) are not expressions.".to_string())
                     }
                     ast::Stmt::Return(ret_stmt) => {
                         let values: Vec<ast::Expr> = ret_stmt.values.clone();
@@ -4740,12 +4531,8 @@ impl<'t> Parser<'t> {
         let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
             stmts.into_iter().map(|s| match s {
                 ast::Stmt::Expr(e) => Ok(e),
-                ast::Stmt::Bind(b) => {
-                    Ok(ast::Expr::Assign(
-                        Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                        Box::new(b.expr),
-                        b.span
-                    ))
+                ast::Stmt::Bind(_) | ast::Stmt::TupleBind(_) => {
+                    Err("Bind statements (`|`, `|=`, `[=`) are not expressions.".to_string())
                 }
                 ast::Stmt::Return(ret_stmt) => {
                     let values: Vec<ast::Expr> = ret_stmt.values.clone();
@@ -4827,12 +4614,8 @@ impl<'t> Parser<'t> {
                 .into_iter()
                 .map(|s| match s {
                     ast::Stmt::Expr(e) => Ok(e),
-                    ast::Stmt::Bind(b) => {
-                        Ok(ast::Expr::Assign(
-                            Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                            Box::new(b.expr),
-                            b.span
-                        ))
+                    ast::Stmt::Bind(_) | ast::Stmt::TupleBind(_) => {
+                        Err("Bind statements (`|`, `|=`, `[=`) are not expressions.".to_string())
                     }
                     ast::Stmt::Return(ret_stmt) => {
                         let values: Vec<ast::Expr> = ret_stmt.values.clone();
@@ -4910,12 +4693,8 @@ impl<'t> Parser<'t> {
         let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
             stmts.into_iter().map(|s| match s {
                 ast::Stmt::Expr(e) => Ok(e),
-                ast::Stmt::Bind(b) => {
-                    Ok(ast::Expr::Assign(
-                        Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                        Box::new(b.expr),
-                        b.span
-                    ))
+                ast::Stmt::Bind(_) | ast::Stmt::TupleBind(_) => {
+                    Err("Bind statements (`|`, `|=`, `[=`) are not expressions.".to_string())
                 }
                 ast::Stmt::Return(ret_stmt) => {
                     let values: Vec<ast::Expr> = ret_stmt.values.clone();
@@ -5089,11 +4868,9 @@ impl<'t> Parser<'t> {
                 .into_iter()
                 .map(|s| match s {
                     ast::Stmt::Expr(e) => Ok(e),
-                    ast::Stmt::Bind(b) => Ok(ast::Expr::Assign(
-                        Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                        Box::new(b.expr),
-                        b.span,
-                    )),
+                    ast::Stmt::Bind(_) | ast::Stmt::TupleBind(_) => {
+                        Err("Bind statements (`|`, `|=`, `[=`) are statements, not expressions.".to_string())
+                    }
                     ast::Stmt::Return(ret_stmt) => {
                         let values: Vec<ast::Expr> = ret_stmt.values.clone();
                         Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
@@ -5325,13 +5102,17 @@ impl<'t> Parser<'t> {
             return self.parse_return_stmt();
         }
 
+        if self.peek_ident() == Some("imm") {
+            return self.parse_bind_stmt();
+        }
+
         // ---- Friendly guard: looks like a class header but missing '@'
         // Pattern: Capitalized Ident '=' Ident ':'  (e.g., A = n: 1)
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
                 if let Some(t1) = self.toks.get(self.i + 1) {
                     // Check for IDENT | or IDENT |=
-                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|")
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|" || s == "|=")
                         || matches!(t1.kind, TokenKind::Shadow)
                         || matches!(t1.kind, TokenKind::Op(ref s) if s == ",") // NEW
                     {
@@ -5470,6 +5251,90 @@ impl<'t> Parser<'t> {
                         || matches!(t1.kind, TokenKind::Op(ref s) if s == ",") // NEW
                     {
                         return self.parse_bind_stmt();
+                    }
+                }
+            }
+        }
+        // -------- aug-assign statement sugar (legacy set only) --------
+        // Supports exactly what old parse_assign supported:
+        // ??= //= += -= *= /= %= **= |!  (|= already handled by parse_bind_stmt)
+        //
+        // Statement-only. LHS is IDENT only (matches Sheriff usage and avoids weirdness).
+        if let Some(t0) = self.peek().cloned() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                if let Some(t1) = self.toks.get(self.i + 1) {
+                    // match only the legacy operators
+                    let op: Option<&str> = match &t1.kind {
+                        TokenKind::Op(s) if s == "??=" => Some("??="),
+                        TokenKind::Op(s) if s == "//=" => Some("//="),
+                        TokenKind::Op(s) if s == "+="  => Some("+="),
+                        TokenKind::Op(s) if s == "-="  => Some("-="),
+                        TokenKind::Op(s) if s == "*="  => Some("*="),
+                        TokenKind::Op(s) if s == "/="  => Some("/="),
+                        TokenKind::Op(s) if s == "%="  => Some("%="),
+                        TokenKind::Op(s) if s == "**=" => Some("**="),
+                        TokenKind::Op(s) if s == "|!"  => Some("|!"),
+                        _ => None,
+                    };
+
+                    if let Some(op) = op {
+                        // Consume IDENT
+                        let name = t0.value.clone().unwrap_or_default();
+                        let name_sp = t0.span.clone();
+                        self.i += 1;
+
+                        // Consume operator
+                        let op_sp = t1.span.clone();
+                        self.i += 1;
+
+                        self.skip_newlines();
+
+                        // Parse RHS as a normal expression
+                        let rhs_pe = self.parse_coalesce()?;
+                        let rhs = self.lower_expr(rhs_pe);
+
+                        // Build LHS Ident expr for lowering
+                        let lhs_expr = ast::Expr::Ident(name.clone(), name_sp.clone());
+
+                        // |! is statement sugar for update!(name, rhs)
+                        if op == "|!" {
+                            let call = ast::Expr::FreeCall(
+                                "update!".to_string(),
+                                vec![lhs_expr, rhs],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        // Otherwise lower to: name |= (name <baseop> rhs)
+                        let base_op = match op {
+                            "+="  => "+",
+                            "-="  => "-",
+                            "*="  => "*",
+                            "/="  => "/",
+                            "%="  => "%",
+                            "**=" => "**",
+                            "??=" => "??",
+                            "//=" => "//",
+                            _ => unreachable!(),
+                        };
+
+                        let combined = ast::Expr::Binary(
+                            Box::new(lhs_expr),
+                            base_op.to_string(),
+                            Box::new(rhs),
+                            op_sp.clone(),
+                        );
+
+                        return Ok(ast::Stmt::Bind(ast::BindStmt {
+                            name: (name, name_sp),
+                            expr: combined,
+                            is_imm: false,
+                            is_local: false,
+                            mode: ast::BindMode::Retether,
+                            span: op_sp,
+                            class_name: None,
+                        }));
                     }
                 }
             }
@@ -7547,12 +7412,18 @@ impl<'t> Parser<'t> {
             let expr = match stmt {
                 ast::Stmt::Expr(e) => e,
                 ast::Stmt::Bind(b) => {
-                    // Convert binding to assignment
-                    ast::Expr::Assign(
-                        Box::new(ast::Expr::Ident(b.name.0, b.name.1.clone())),
-                        Box::new(b.expr),
-                        b.span
-                    )
+                    return Err(s_help_site!(
+                        "P0BIND",
+                        "Bind statements can't be used as expressions in judge cases",
+                        "Use the statement-form judge arm (stmts body), or make the case body a real expression"
+                    ));
+                }
+                ast::Stmt::TupleBind(tb) => {
+                    return Err(s_help_site!(
+                        "P0TBND",
+                        "Tuple bind statements can't be used as expressions in judge cases",
+                        "Use the statement-form judge arm (stmts body), or make the case body a real expression"
+                    ));
                 }
                 ast::Stmt::Return(r) => {
                     // Convert return to FreeCall

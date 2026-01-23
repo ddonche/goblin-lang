@@ -1750,7 +1750,6 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Index(_, _, sp)
         | ast::Expr::Slice(_, _, _, sp)
         | ast::Expr::Slice3(_, _, _, _, sp)
-        | ast::Expr::TupleAssign(_, _, sp)
         | ast::Expr::Call(_, _, _, sp)
         | ast::Expr::OptCall(_, _, _, sp)
         | ast::Expr::FreeCall(_, _, sp)
@@ -1758,8 +1757,6 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Prefix(_, _, sp)
         | ast::Expr::Postfix(_, _, sp)
         | ast::Expr::Binary(_, _, _, sp)
-        | ast::Expr::Assign(_, _, sp)
-        | ast::Expr::MutateAssign(_, _, sp)
         | ast::Expr::EnumVariant { span: sp, .. }
         | ast::Expr::Judge { span: sp, .. }
         | ast::Expr::Block { span: sp, .. }
@@ -2624,11 +2621,15 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 .with_link("https://goblinlang.org/docs/errors#R0111"),
                             );
                         }
+
+                        // TupleBind currently has no imm/local flags in this interpreter path.
+                        // Preserve existing behavior: declare in current frame.
                         sess.define_local(name, val, false);
                     }
 
                     // | : declare-only (current frame only) — NEVER mutate
-                    BindMode::Normal => {
+                    // New AST name: Tether
+                    BindMode::Tether => {
                         let cur = sess.env.len() - 1;
                         if sess.env[cur].contains_key(&name) {
                             return Err(
@@ -2643,6 +2644,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 .with_link("https://goblinlang.org/docs/errors#R0111"),
                             );
                         }
+
                         sess.define_local(name, val, false);
                     }
 
@@ -2691,26 +2693,6 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 .with_link("https://goblinlang.org/docs/errors#R0009"),
                             );
                         }
-                    }
-
-                    // If you still have BindMode::Local on tb.mode, decide policy:
-                    // I’d reject it at parse-time for tuplebind, but if it can occur here:
-                    BindMode::Local => {
-                        let cur = sess.env.len() - 1;
-                        if sess.env[cur].contains_key(&name) {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::DUPLICATE_LOCAL, // R0111
-                                    "duplicate-local",
-                                    format!("'{}' is already declared in this block", name),
-                                    name_span,
-                                )
-                                .with_help("Choose a different name, or use '|=' to reassign.")
-                                .with_link("https://goblinlang.org/docs/errors#R0111"),
-                            );
-                        }
-                        sess.define_local(name, val, false);
                     }
                 }
             }
@@ -3877,7 +3859,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
             // Check if this is object instantiation
             if let Some(class_name) = &b.class_name {
-                return instantiate_object(sess, name, class_name, &b.expr, name_span, b.is_const);
+                return instantiate_object(sess, name, class_name, &b.expr, name_span, b.is_imm);
             }
 
             // evaluate RHS once
@@ -3914,15 +3896,17 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         );
                     }
 
-                    // respect constness flag
-                    sess.define_local(name.clone(), rhs, b.is_const);
+                    // respect immutability flag
+                    sess.define_local(name.clone(), rhs, b.is_imm);
                     Ok(None)
                 }
 
-                BindMode::Local => {
-                    // Create a new binding in the *current* frame only.
-                    // Error if this frame already has the same name.
+                // New AST name: Tether (replaces Normal)
+                BindMode::Tether => {
+                    // DECLARE-ONLY in the CURRENT frame.
+                    // If name already exists in this frame, error (use '|=' to reassign).
                     let cur = sess.env.len() - 1;
+
                     if sess.env[cur].contains_key(name) {
                         return Err(
                             Diagnostic::new_with_code(
@@ -3932,12 +3916,13 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 format!("'{}' is already declared in this block", name),
                                 name_span,
                             )
-                            .with_help("Choose a different local name, or assign to the existing variable with '|='.")
+                            .with_help("Use '|=' to reassign an existing variable.")
                             .with_link("https://goblinlang.org/docs/errors#R0111"),
                         );
                     }
 
-                    sess.define_local(name.clone(), rhs, b.is_const);
+                    // Not present in current frame -> declare here (shadows outer if it exists there).
+                    sess.define_local(name.clone(), rhs, b.is_imm);
                     Ok(None)
                 }
 
@@ -4007,30 +3992,6 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                             .with_link("https://goblinlang.org/docs/errors#R0009"),
                         )
                     }
-                }
-
-                BindMode::Normal => {
-                    // DECLARE-ONLY in the CURRENT frame.
-                    // If name already exists in this frame, error (use '|=' to reassign).
-                    let cur = sess.env.len() - 1;
-
-                    if sess.env[cur].contains_key(name) {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                rtcode::DUPLICATE_LOCAL, // R0111
-                                "duplicate-local",
-                                format!("'{}' is already declared in this block", name),
-                                name_span,
-                            )
-                            .with_help("Use '|=' to reassign an existing variable.")
-                            .with_link("https://goblinlang.org/docs/errors#R0111"),
-                        );
-                    }
-
-                    // Not present in current frame -> declare here (shadows outer if it exists there).
-                    sess.define_local(name.clone(), rhs, b.is_const);
-                    Ok(None)
                 }
             }
         }
@@ -13663,605 +13624,6 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
         }
 
-        ast::Expr::TupleAssign(names, rhs, sp) => {
-            let rhs_val = eval_expr(rhs, sess)?;
-
-            match &rhs_val {
-                Value::Map(map) => {
-                    for (i, name) in names.iter().enumerate() {
-                        let positional_key = format!("_{}", i + 1);
-                        let val = map.get(&positional_key)
-                            .cloned()
-                            .or_else(|| map.get(name).cloned())
-                            .ok_or_else(|| Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::NO_RESULT, // R0902
-                                "no-result",
-                                &format!("action didn’t return a value for position {} (variable ‘{}’)", i + 1, name),
-                                sp.clone(),
-                            )
-                            .with_help("Ensure the action sets a return value or yields one via ‘stop’/return semantics.")
-                            .with_link("https://goblinlang.org/docs/errors#R0902"))?;
-                        sess.set_var(name.clone(), val);
-                    }
-                    Ok(rhs_val)
-                }
-
-                // NEW: allow array RHS for tuple assignment (bind by index)
-                Value::Array(elems) => {
-                    if elems.len() != names.len() {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::RETURN_ARITY_MISMATCH, // R0903
-                                "return-arity-mismatch",
-                                &format!("multi-target assignment expected {} value(s), but got {}.", names.len(), elems.len()),
-                                sp.clone(),
-                            )
-                            .with_help("Adjust the number of targets or the number of values in the array.")
-                            .with_link("https://goblinlang.org/docs/errors#R0903")
-                        );
-                    }
-                    for (i, name) in names.iter().enumerate() {
-                        sess.set_var(name.clone(), elems[i].clone());
-                    }
-                    Ok(rhs_val)
-                }
-
-                // existing fallback (single value vs multiple targets)
-                _ => {
-                    if names.len() == 1 {
-                        sess.set_var(names[0].clone(), rhs_val.clone());
-                        Ok(rhs_val)
-                    } else {
-                        Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::RETURN_ARITY_MISMATCH, // R0903
-                                "return-arity-mismatch",
-                                &format!("expected {} values, but got a single value", names.len()),
-                                sp.clone(),
-                            )
-                            .with_help("Use an array literal: x, y = [1, 2], or return named values that match your targets.")
-                            .with_link("https://goblinlang.org/docs/errors#R0903")
-                        )
-                    }
-                }
-            }
-        }
-
-        ast::Expr::MutateAssign(lhs, rhs, sp) => {
-            use goblin_ast::Expr as A;
-
-            // For now we support:  ident[index] |! value
-            // where `ident` is a variable name and `index` is:
-            //   - Int for arrays
-            //   - Str for maps / ordered maps
-            let (var_name, idx_expr) = match &**lhs {
-                A::Index(inner, idx, _) => {
-                    if let A::Ident(name, _) = inner.as_ref() {
-                        (name.clone(), idx.as_ref())
-                    } else {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
-                                "lvalue-expected",
-                                "mutate-assign (|!) requires an indexed collection variable on the left-hand side",
-                                sp.clone(),
-                            )
-                            .with_help("Write: stuff[0] |! \"d\" or cfg[\"key\"] |! value.")
-                            .with_link("https://goblinlang.org/docs/errors#P0802"),
-                        );
-                    }
-                }
-                _ => {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
-                            "lvalue-expected",
-                            "mutate-assign (|!) requires an indexed collection variable on the left-hand side",
-                            sp.clone(),
-                        )
-                        .with_help("Write: stuff[0] |! \"d\" or cfg[\"key\"] |! value.")
-                        .with_link("https://goblinlang.org/docs/errors#P0802"),
-                    );
-                }
-            };
-
-            // Evaluate index and new value
-            let idx_val = eval_expr(idx_expr, sess)?;
-            let new_val = eval_expr(rhs.as_ref(), sess)?;
-
-            // Grab the collection variable slot mutably
-            let slot = sess.get_var_mut(&var_name).ok_or_else(|| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
-                    "unknown-ident",
-                    &format!("unknown variable ‘{}’", var_name),
-                    sp.clone(),
-                )
-                .with_help("Declare the variable before use or check the spelling.")
-                .with_link("https://goblinlang.org/docs/errors#R0101")
-            })?;
-
-            match slot {
-                // -------- arrays: stuff[0] |! "d" ----------
-                Value::Array(items) => {
-                    // index must be a non-negative integer
-                    let idx = match idx_val {
-                        Value::Int(n) if n >= 0 => n as usize,
-                        v => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    &format!(
-                                        "array index for |! must be a non-negative integer, got {:?}",
-                                        v
-                                    ),
-                                    sp.clone(),
-                                )
-                                .with_help("Use an integer index like 0, 1, 2…")
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                    };
-
-                    if idx >= items.len() {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::TYPE_MISMATCH, // generic
-                                "index-out-of-range",
-                                &format!(
-                                    "index {} is out of range for array of length {}",
-                                    idx,
-                                    items.len()
-                                ),
-                                sp.clone(),
-                            )
-                            .with_help("Ensure the index is within the array’s bounds.")
-                            .with_link("https://goblinlang.org/docs/errors#T0205"),
-                        );
-                    }
-
-                    items[idx] = new_val.clone();
-                    Ok(new_val)
-                }
-
-                // -------- maps: cfg["theme"] |! "light" ----------
-                Value::Map(map) => {
-                    let key = match idx_val {
-                        Value::Str(s) => s,
-                        v => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    &format!(
-                                        "map key for |! must be a string, got {:?}",
-                                        v
-                                    ),
-                                    sp.clone(),
-                                )
-                                .with_help("Use a string key like \"theme\".")
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                    };
-
-                    if !map.contains_key(&key) {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                "missing-key",
-                                &format!("map has no key ‘{}’", key),
-                                sp.clone(),
-                            )
-                            .with_help("Ensure the key exists before mutating, or insert it first.")
-                            .with_link("https://goblinlang.org/docs/errors#R0403"),
-                        );
-                    }
-
-                    map.insert(key, new_val.clone());
-                    Ok(new_val)
-                }
-
-                // -------- ordered maps: same semantics ----------
-                Value::MapOrd(map) => {
-                    let key = match idx_val {
-                        Value::Str(s) => s,
-                        v => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    &format!(
-                                        "ordered-map key for |! must be a string, got {:?}",
-                                        v
-                                    ),
-                                    sp.clone(),
-                                )
-                                .with_help("Use a string key like \"theme\".")
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                    };
-
-                    if !map.contains_key(&key) {
-                        return Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                "missing-key",
-                                &format!("map has no key ‘{}’", key),
-                                sp.clone(),
-                            )
-                            .with_help("Ensure the key exists before mutating, or insert it first.")
-                            .with_link("https://goblinlang.org/docs/errors#R0403"),
-                        );
-                    }
-
-                    map.insert(key, new_val.clone());
-                    Ok(new_val)
-                }
-
-                // -------- everything else: error ----------
-                _ => {
-                    Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                            "type-mismatch",
-                            "mutate-assign (|!) requires an array, map, or ordered map variable on the left-hand side",
-                            sp.clone(),
-                        )
-                        .with_help("Use ‘name[index] |! value’ where ‘name’ is a collection variable.")
-                        .with_link("https://goblinlang.org/docs/errors#T0205"),
-                    )
-                }
-            }
-        }
-
-        // Plain assignment (ident = expr)
-        ast::Expr::Assign(lhs, rhs, sp) => {
-            // Check for field assignment: object >> field = value
-            // Could be Binary or Member depending on how parser handles >>
-            match &**lhs {
-                ast::Expr::Member(base, name, sp) => {
-                    let base_v = eval_expr(base, sess)?;
-                    match base_v {
-                        // object field OR method reference
-                        Value::Object { class_name, fields, readonly_fields: _ } => {
-                            // 1) If it's a method name on this class, return a bound-method wrapper
-                            if let Some(class) = sess.classes.get(&class_name) {
-                                if class.actions.iter().any(|a| a.name == *name) {
-                                    let mut m = BTreeMap::new();
-                                    m.insert("__kind__".to_string(), Value::Str("__bound_action__".to_string()));
-                                    m.insert("__name__".to_string(), Value::Str(name.to_string()));
-                                    // If the receiver is an identifier, capture its var name so mutations persist
-                                    if let ast::Expr::Ident(var_name, _) = &**base {
-                                        m.insert("__var__".to_string(), Value::Str(var_name.clone()));
-                                    } else {
-                                        // Otherwise capture the value so it can still be called (mutations won't persist)
-                                        m.insert(
-                                            "__recv__".to_string(),
-                                            Value::Object {
-                                                class_name: class_name.clone(),
-                                                fields: fields.clone(),
-                                                readonly_fields: BTreeSet::new(),
-                                            },
-                                        );
-                                    }
-                                    return Ok(Value::Map(m));
-                                }
-                            }
-
-                            // 2) Otherwise: normal field lookup
-                            match fields.get(name) {
-                                Some(v) => Ok(v.clone()),
-                                None => {
-                                    return Err(
-                                        Diagnostic::new_with_code(
-                                            Severity::Error,
-                                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                            "no-such-field",
-                                            &format!("no field ‘{}’", name),
-                                            sp.clone(),
-                                        )
-                                        .with_help("Ensure the receiver has this field/key, or guard before accessing.")
-                                        .with_link("https://goblinlang.org/docs/errors#R0403"),
-                                    );
-                                }
-                            }
-                        }
-
-                        // map key
-                        Value::Map(map) => {
-                            match map.get(name) {
-                                Some(v) => Ok(v.clone()),
-                                None => {
-                                    return Err(
-                                        Diagnostic::new_with_code(
-                                            Severity::Error,
-                                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                            "missing-key",
-                                            &format!("missing key ‘{}’", name),
-                                            sp.clone(),
-                                        )
-                                        .with_help("Ensure the map contains this key, or guard before accessing.")
-                                        .with_link("https://goblinlang.org/docs/errors#R0403"),
-                                    );
-                                }
-                            }
-                        },
-
-                        // NEW: ordered map (YAML)
-                        Value::MapOrd(map) => {
-                            match map.get(name) {
-                                Some(v) => Ok(v.clone()),
-                                None => {
-                                    return Err(
-                                        Diagnostic::new_with_code(
-                                            Severity::Error,
-                                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                            "missing-key",
-                                            &format!("missing key ‘{}’", name),
-                                            sp.clone(),
-                                        )
-                                        .with_help("Ensure the map contains this key, or guard before accessing.")
-                                        .with_link("https://goblinlang.org/docs/errors#R0403"),
-                                    );
-                                }
-                            }
-                        },
-
-                        // enum field on a variant-with-fields
-                        Value::Enum { fields: Some(field_map), variant_name, .. } => {
-                            match field_map.get(name) {
-                                Some(v) => Ok(v.clone()),
-                                None => {
-                                    return Err(
-                                        Diagnostic::new_with_code(
-                                            Severity::Error,
-                                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                            "no-such-field",
-                                            &format!("variant ‘{}’ has no field ‘{}’", variant_name, name),
-                                            sp.clone(),
-                                        )
-                                        .with_help("Check the variant’s declared fields or correct the field name.")
-                                        .with_link("https://goblinlang.org/docs/errors#R0403"),
-                                    );
-                                }
-                            }
-                        }
-
-                        // enum variant with no fields
-                        Value::Enum { fields: None, variant_name, .. } => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                    "no-such-field",
-                                    &format!("variant ‘{}’ has no fields", variant_name),
-                                    sp.clone(),
-                                )
-                                .with_help("Use a fieldless pattern for this variant, or pick a variant that defines fields.")
-                                .with_link("https://goblinlang.org/docs/errors#R0403"),
-                            );
-                        }
-
-                        // everything else is a type error for member access
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "member-access-type",
-                                    "member access requires a map, object, or enum",
-                                    sp.clone(),
-                                )
-                                .with_help("Use ‘obj.field’ only on a map/object, or an enum variant with fields.")
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                    }
-                }
-                
-                ast::Expr::Binary(obj_expr, op, field_expr, _) if op == ">>" => {
-                    // lhs must be an identifier (object var)
-                    let var_name = match &**obj_expr {
-                        ast::Expr::Ident(n, _) => n.clone(),
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::FIELD_NAME_REQUIRED, // P0804
-                                    "field-name-required",
-                                    "can only assign to fields of object variables (e.g., obj >> field = …)",
-                                    sp.clone(),
-                                )
-                                .with_help("Use an identifier on the left of ‘>>’, e.g. ‘user >> name’.")
-                                .with_link("https://goblinlang.org/docs/errors#P0804"),
-                            );
-                        }
-                    };
-
-                    // rhs (after >>) must be a bare field name
-                    let field_name = match &**field_expr {
-                        ast::Expr::Ident(n, _) => n.clone(),
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::FIELD_NAME_REQUIRED, // P0804
-                                    "field-name-required",
-                                    "field name required after ‘>>’.",
-                                    sp.clone(),
-                                )
-                                .with_help("Write ‘obj >> field’, where ‘field’ is an identifier.")
-                                .with_link("https://goblinlang.org/docs/errors#P0804"),
-                            );
-                        }
-                    };
-
-                    let new_value = eval_expr(rhs, sess)?;
-
-                    // ensure the variable exists and is an object; capture its class name
-                    let class_name = match sess.get_var(&var_name) {
-                        Some(Value::Object { class_name, .. }) => class_name.clone(),
-                        Some(_) => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    "not an object",
-                                    sp.clone(),
-                                )
-                                .with_help(&format!("‘{}’ must be an object to use ‘>>’.", var_name))
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                        None => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
-                                    "unknown-ident",
-                                    &format!("unknown variable ‘{}’", var_name),
-                                    sp.clone(),
-                                )
-                                .with_help("Declare the variable before assigning its fields.")
-                                .with_link("https://goblinlang.org/docs/errors#R0101"),
-                            );
-                        }
-                    };
-
-                    let class = sess
-                        .classes
-                        .get(&class_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::NAMESPACE_NOT_FOUND, // R0115
-                                "namespace-not-found",
-                                &format!("unknown class ‘{}’", class_name),
-                                sp.clone(),
-                            )
-                            .with_help("Ensure the class is defined and imported.")
-                            .with_link("https://goblinlang.org/docs/errors#R0115")
-                        })?;
-
-                    let field_decl = class
-                        .fields
-                        .iter()
-                        .find(|f| f.name == field_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                "no-such-field",
-                                &format!("no field ‘{}’", field_name),
-                                sp.clone(),
-                            )
-                            .with_help(&format!("‘{}’ is not a field on class ‘{}’.", field_name, class_name))
-                            .with_link("https://goblinlang.org/docs/errors#R0403")
-                        })?;
-
-                    let obj_slot = sess.get_var_mut(&var_name).ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
-                            "unknown-ident",
-                            &format!("unknown variable ‘{}’", var_name),
-                            sp.clone(),
-                        )
-                        .with_link("https://goblinlang.org/docs/errors#R0101")
-                    })?;
-
-                    match obj_slot {
-                        Value::Object { fields, readonly_fields, .. } => {
-                            if readonly_fields.contains(&field_name) {
-                                return Err(
-                                    Diagnostic::new_with_code(
-                                        Severity::Error,
-                                        crate::diagnostics::rtcode::READONLY_FIELD, // P9001
-                                        "readonly-field",
-                                        &format!("cannot modify readonly field ‘{}’", field_name),
-                                        sp.clone(),
-                                    )
-                                    .with_help("Remove the mutation or write to a different, mutable field.")
-                                    .with_link("https://goblinlang.org/docs/errors#P9001"),
-                                );
-                            }
-
-                            if matches!(new_value, Value::Nil) && !field_decl.nullable {
-                                return Err(
-                                    Diagnostic::new_with_code(
-                                        Severity::Error,
-                                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205 (use generic type mismatch)
-                                        "type-mismatch",
-                                        &format!("cannot assign nil to non-nullable field ‘{}’", field_name),
-                                        sp.clone(),
-                                    )
-                                    .with_help("Make the field nullable or provide a non-nil value.")
-                                    .with_link("https://goblinlang.org/docs/errors#T0205"),
-                                );
-                            }
-
-                            fields.insert(field_name.clone(), new_value.clone());
-                            return Ok(new_value);
-                        }
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    "not an object",
-                                    sp.clone(),
-                                )
-                                .with_help(&format!("‘{}’ must be an object to use ‘>>’.", var_name))
-                                .with_link("https://goblinlang.org/docs/errors#T0205"),
-                            );
-                        }
-                    }
-                }
-                
-                ast::Expr::Ident(name, _) => {
-                    // Simple assignment: name = expr
-                    let v = eval_expr(rhs, sess)?;
-                    sess.set_var(name.clone(), v.clone());
-                    return Ok(v);
-                }
-
-                _ => {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
-                            "lvalue-expected",
-                            "left-hand side of assignment must be a variable name or field access",
-                            sp.clone(),
-                        )
-                        .with_help("Assign to a variable (e.g., ‘x = ...’) or an object field (e.g., ‘obj >> field = ...’).")
-                        .with_link("https://goblinlang.org/docs/errors#P0802"),
-                    );
-                }
-
-            }
-        }
-
         // ---- Collections ----
         ast::Expr::Array(elems, _sp) => {
             let mut v = Vec::with_capacity(elems.len());
@@ -15382,19 +14744,86 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             let v = eval_expr(expr, sess)?;
             match op.as_str() {
                 // ---------- MUTATING POSTFIX OPS ----------
-                "++" => {
-                    // expr++  ==>  expr = expr + 1
+                "++" | "--" => {
+                    use goblin_diagnostics::{Diagnostic, Severity};
+
+                    // Only allow ident++ / ident--
+                    let (var_name, name_sp) = match expr.as_ref() {
+                        ast::Expr::Ident(n, sp2) => (n.clone(), sp2.clone()),
+                        _ => {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::LVALUE_EXPECTED, // P0802
+                                    "lvalue-expected",
+                                    "postfix ++/-- requires a variable name (e.g. x++ or x--).",
+                                    sp.clone(),
+                                )
+                                .with_help("Use ++/-- only on identifiers, or rewrite as: x |= x + 1")
+                                .with_link("https://goblinlang.org/docs/errors#P0802"),
+                            );
+                        }
+                    };
+
+                    // Ensure the variable exists somewhere (retether semantics)
+                    let Some(frame_ix) = sess.find_name_frame(&var_name) else {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
+                                "unknown-ident",
+                                format!("unknown identifier ‘{}’", var_name),
+                                name_sp,
+                            )
+                            .with_help("Declare it first with '|' before using ++/--.")
+                            .with_link("https://goblinlang.org/docs/errors#R0101"),
+                        );
+                    };
+
+                    // Respect immutability (use your existing const table)
+                    if sess.is_const_in_frame(frame_ix, &var_name) {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::IMMUTABLE_ASSIGN, // R0113
+                                "immutable-assign",
+                                format!("cannot modify immutable '{}'", var_name),
+                                sp.clone(),
+                            )
+                            .with_help("Values declared with 'imm' cannot be modified.")
+                            .with_link("https://goblinlang.org/docs/errors#R0113"),
+                        );
+                    }
+
+                    // Compute rhs using existing numeric semantics (Binary eval)
                     let one = ast::Expr::Number("1".to_string(), sp.clone());
-                    let rhs = ast::Expr::Binary(expr.clone(), "+".to_string(), Box::new(one), sp.clone());
-                    let assign = ast::Expr::Assign(expr.clone(), Box::new(rhs), sp.clone());
-                    return eval_expr(&assign, sess); // reuse existing Assign semantics
-                }
-                "--" => {
-                    // expr--  ==>  expr = expr - 1
-                    let one = ast::Expr::Number("1".to_string(), sp.clone());
-                    let rhs = ast::Expr::Binary(expr.clone(), "-".to_string(), Box::new(one), sp.clone());
-                    let assign = ast::Expr::Assign(expr.clone(), Box::new(rhs), sp.clone());
-                    return eval_expr(&assign, sess);
+                    let op = if op == "++" { "+".to_string() } else { "-".to_string() };
+                    let rhs = ast::Expr::Binary(
+                        Box::new(ast::Expr::Ident(var_name.clone(), sp.clone())),
+                        op,
+                        Box::new(one),
+                        sp.clone(),
+                    );
+
+                    let new_val = eval_expr(&rhs, sess)?;
+
+                    // Mutate the frame we found (true retether)
+                    if let Some(slot) = sess.env[frame_ix].get_mut(&var_name) {
+                        *slot = new_val.clone();
+                        Ok(new_val)
+                    } else {
+                        Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::INTERNAL_ASSIGN_SLOT, // R0009
+                                "internal-assign-slot",
+                                "internal: slot missing during ++/-- update",
+                                sp.clone(),
+                            )
+                            .with_help("This indicates a bug in scope tracking.")
+                            .with_link("https://goblinlang.org/docs/errors#R0009"),
+                        )
+                    }
                 }
 
                 // ---------- NON-MUTATING POSTFIX OPS ----------

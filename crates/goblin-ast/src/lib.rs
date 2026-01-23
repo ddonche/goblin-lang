@@ -10,27 +10,29 @@ pub struct Module {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindMode {
-    Normal, // '='  (smart declare/mutate; shadowing with '=' is forbidden)
-    Shadow, // '[=' (shadow operator: always birth a new local in this scope)
-    Local,
-    Retether,
+    Tether,    // |
+    Retether,  // |=
+    Shadow,    // [=
 }
 
 #[derive(Debug, Clone)]
 pub struct BindStmt {
     pub name: Ident,
     pub expr: Expr,
-    pub is_const: bool,   // true if preceded by 'imm'
-    pub mode: BindMode,   // Normal or Shadow
+    pub is_imm: bool,      // preceded by `imm`
+    pub is_local: bool,    // preceded by `local`
+    pub mode: BindMode,    // Tether | Retether | Shadow
     pub span: Span,
     pub class_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TupleBindStmt {
-    pub names: Vec<Ident>,   // keep spans for good errors
+    pub names: Vec<Ident>,
     pub expr: Expr,
-    pub mode: BindMode,      // Normal or Shadow (and maybe Local later)
+    pub is_imm: bool,
+    pub is_local: bool,
+    pub mode: BindMode,
     pub span: Span,
 }
 
@@ -223,7 +225,6 @@ pub enum Expr {
     Ident(String, Span),
     Slice(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>, Span),
     Slice3(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>, Option<Box<Expr>>, Span),
-    TupleAssign(Vec<String>, Box<Expr>, Span),
 
     // Collections & objects
     Array(Vec<Expr>, Span),
@@ -244,8 +245,6 @@ pub enum Expr {
     Prefix(String, Box<Expr>, Span),
     Postfix(Box<Expr>, String, Span),
     Binary(Box<Expr>, String, Box<Expr>, Span),
-    Assign(Box<Expr>, Box<Expr>, Span),
-    MutateAssign(Box<Expr>, Box<Expr>, Span),
 
     // Other
     EnumVariant {
@@ -279,7 +278,6 @@ impl Expr {
             Expr::Ident(_, sp) => sp,
             Expr::Slice(_, _, _, sp) => sp,
             Expr::Slice3(_, _, _, _, sp) => sp,
-            Expr::TupleAssign(_, _, sp) => sp,
             Expr::Array(_, sp) => sp,
             Expr::Object(_, sp) => sp,
             Expr::Member(_, _, sp) => sp,
@@ -292,8 +290,6 @@ impl Expr {
             Expr::Prefix(_, _, sp) => sp,
             Expr::Postfix(_, _, sp) => sp,  
             Expr::Binary(_, _, _, sp) => sp,
-            Expr::Assign(_, _, sp) => sp,
-            Expr::MutateAssign(_, _, sp) => sp,
             Expr::EnumVariant { span, .. } => span,
             Expr::Judge { span, .. } => span,
             Expr::Block { span, .. } => span,  
