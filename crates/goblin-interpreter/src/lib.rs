@@ -344,6 +344,7 @@ pub struct Session {
     pub classes: BTreeMap<String, ast::ClassDecl>,
     pub enums: BTreeMap<String, ast::EnumDecl>,
     pub loop_depth: i32,
+    pub sweep_depth: i32,
     eval_depth: usize,                                 // recursion depth for eval_expr
     rng_state: u128,
     pub consts: Vec<BTreeMap<String, bool>>,           // true = immutable binding
@@ -387,6 +388,7 @@ impl Session {
             classes: BTreeMap::new(),
             enums: BTreeMap::new(),
             loop_depth: 0,
+            sweep_depth: 0,
             eval_depth: 0,
             consts: vec![BTreeMap::new()],
             relationship_graph: BTreeMap::new(),
@@ -2567,6 +2569,105 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 // Destructure mode (existing behavior)
                 // ------------------------------------------------------------
                 Value::Array(values) => {
+                    // SPECIAL CASE: empty array broadcasts to ALL names
+                    if values.is_empty() {
+                        for (name, name_span) in tb.names.iter().cloned() {
+                            // fresh empty array per binding (safer for future mutation semantics)
+                            let val = Value::Array(vec![]);
+
+                            match tb.mode {
+                                BindMode::Shadow => {
+                                    let cur = sess.env.len() - 1;
+                                    if sess.env[cur].contains_key(&name) {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                rtcode::DUPLICATE_LOCAL, // R0111
+                                                "duplicate-local",
+                                                format!("'{}' is already declared in this block", name),
+                                                name_span,
+                                            )
+                                            .with_help("Choose a different name, or use '|=' to reassign.")
+                                            .with_link("https://goblinlang.org/docs/errors#R0111"),
+                                        );
+                                    }
+                                    sess.define_local(name, val, false);
+                                }
+
+                                BindMode::Tether => {
+                                    let cur = sess.env.len() - 1;
+                                    if sess.env[cur].contains_key(&name) {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                rtcode::DUPLICATE_LOCAL, // R0111
+                                                "duplicate-local",
+                                                format!("'{}' is already declared in this block", name),
+                                                name_span,
+                                            )
+                                            .with_help("Use '|=' to reassign an existing variable.")
+                                            .with_link("https://goblinlang.org/docs/errors#R0111"),
+                                        );
+                                    }
+                                    sess.define_local(name, val, false);
+                                }
+
+                                BindMode::Retether => {
+                                    let Some(frame_ix) = sess.find_name_frame(&name) else {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                rtcode::UNKNOWN_IDENT, // R0101
+                                                "unknown-ident",
+                                                format!("unknown identifier ‘{}’", name),
+                                                name_span,
+                                            )
+                                            .with_help(
+                                                "Declare it first with '|' (or 'local') before reassigning with '|='.",
+                                            )
+                                            .with_link("https://goblinlang.org/docs/errors#R0101"),
+                                        );
+                                    };
+
+                                    if sess.is_const_in_frame(frame_ix, &name) {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                rtcode::IMMUTABLE_ASSIGN, // R0113
+                                                "immutable-assign",
+                                                format!("cannot reassign immutable '{}'", name),
+                                                name_span,
+                                            )
+                                            .with_help("Values declared with 'imm' cannot be reassigned.")
+                                            .with_link("https://goblinlang.org/docs/errors#R0113"),
+                                        );
+                                    }
+
+                                    if let Some(slot) = sess.env[frame_ix].get_mut(&name) {
+                                        *slot = val;
+                                    } else {
+                                        return Err(
+                                            Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                rtcode::INTERNAL_ASSIGN_SLOT, // R0009
+                                                "internal-assign-slot",
+                                                "internal: slot missing during retether",
+                                                name_span,
+                                            )
+                                            .with_help(
+                                                "This indicates a bug in Goblin’s runtime environment or scope tracking.",
+                                            )
+                                            .with_link("https://goblinlang.org/docs/errors#R0009"),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        return Ok(None);
+                    }
+
+                    // Normal destructure arity
                     if values.len() != tb.names.len() {
                         return Err(
                             Diagnostic::new_with_code(
@@ -2580,7 +2681,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 ),
                                 tb.span.clone(),
                             )
-                            .with_help("Make the array length match the number of names on the left.")
+                            .with_help(
+                                "Make the array length match the number of names on the left (or use [] to broadcast an empty array).",
+                            )
                             .with_link("https://goblinlang.org/docs/errors#R0301"),
                         );
                     }
@@ -2635,7 +2738,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                             format!("unknown identifier ‘{}’", name),
                                             name_span,
                                         )
-                                        .with_help("Declare it first with '|' (or 'local') before reassigning with '|='.")
+                                        .with_help(
+                                            "Declare it first with '|' (or 'local') before reassigning with '|='.",
+                                        )
                                         .with_link("https://goblinlang.org/docs/errors#R0101"),
                                     );
                                 };
@@ -2665,7 +2770,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                             "internal: slot missing during retether",
                                             name_span,
                                         )
-                                        .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                                        .with_help(
+                                            "This indicates a bug in Goblin’s runtime environment or scope tracking.",
+                                        )
                                         .with_link("https://goblinlang.org/docs/errors#R0009"),
                                     );
                                 }
@@ -2677,7 +2784,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 }
 
                 // ------------------------------------------------------------
-                // Broadcast mode (NEW behavior)
+                // Broadcast mode (existing behavior you discovered)
                 // ------------------------------------------------------------
                 other => {
                     // Evaluate RHS once (already done), then tether/retether each name to it.
@@ -2731,7 +2838,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                             format!("unknown identifier ‘{}’", name),
                                             name_span,
                                         )
-                                        .with_help("Declare it first with '|' (or 'local') before reassigning with '|='.")
+                                        .with_help(
+                                            "Declare it first with '|' (or 'local') before reassigning with '|='.",
+                                        )
                                         .with_link("https://goblinlang.org/docs/errors#R0101"),
                                     );
                                 };
@@ -2761,7 +2870,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                             "internal: slot missing during retether",
                                             name_span,
                                         )
-                                        .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                                        .with_help(
+                                            "This indicates a bug in Goblin’s runtime environment or scope tracking.",
+                                        )
                                         .with_link("https://goblinlang.org/docs/errors#R0009"),
                                     );
                                 }
@@ -3416,7 +3527,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
             // 2) Split into filesystem paths vs in-memory content
             let mut path_candidates: Vec<String> = Vec::new();
-            let mut mem_targets: Vec<String>    = Vec::new();
+            let mut mem_targets: Vec<String> = Vec::new();
 
             for t in raw_targets {
                 let p = Path::new(&t);
@@ -3457,7 +3568,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
                         let before = file_text.clone();
 
-                        file_text = sweep_run_arm_on_scope(
+                        let (new_text, ctl) = sweep_run_arm_on_scope(
                             sess,
                             path,
                             file_text,
@@ -3465,31 +3576,65 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                             &arm.body,
                         )?;
 
-                        if file_text != before {
-                            std::fs::write(path, &file_text).map_err(|e| {
-                                goblin_diagnostics::Diagnostic::new_with_code(
-                                    goblin_diagnostics::Severity::Error,
-                                    crate::diagnostics::rtcode::FILESYSTEM_IO,
-                                    "filesystem-io",
-                                    format!("failed to write file ‘{}’: {}", path, e),
-                                    sw.span.clone(),
-                                )
-                                .with_help("Ensure the file is writable.")
-                                .with_link("https://goblinlang.org/docs/errors#FS0001")
-                            })?;
+                        match ctl {
+                            SweepCtl::Continue => {
+                                file_text = new_text;
+                                if file_text != before {
+                                    std::fs::write(path, &file_text).map_err(|e| {
+                                        goblin_diagnostics::Diagnostic::new_with_code(
+                                            goblin_diagnostics::Severity::Error,
+                                            crate::diagnostics::rtcode::FILESYSTEM_IO,
+                                            "filesystem-io",
+                                            format!("failed to write file ‘{}’: {}", path, e),
+                                            sw.span.clone(),
+                                        )
+                                        .with_help("Ensure the file is writable.")
+                                        .with_link("https://goblinlang.org/docs/errors#FS0001")
+                                    })?;
+                                }
+                            }
+
+                            // For sweep_all, "skip" means: don't apply this arm’s edit.
+                            SweepCtl::SkipMatch => {
+                                // do nothing; keep original
+                            }
+
+                            // "stop" means: stop processing any remaining targets
+                            SweepCtl::StopAll => {
+                                return Ok(None);
+                            }
+
+                            // "return" bubbles out like in loops
+                            SweepCtl::Return(v) => {
+                                return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                            }
                         }
                     }
 
                     // --- In-memory sweep_all: run over raw content only ---
                     for content in mem_targets.iter() {
-                        let _ = sweep_run_arm_on_scope(
+                        let (mut _buf, ctl) = sweep_run_arm_on_scope(
                             sess,
                             "<memory>",
                             content.clone(),
                             Some((0, content.len())),
                             &arm.body,
                         )?;
-                        // No write-back; only side-effects inside the arm (e.g. put_last! into collected)
+
+                        match ctl {
+                            SweepCtl::Continue => {
+                                // no write-back; side-effects only
+                            }
+                            SweepCtl::SkipMatch => {
+                                // no-op
+                            }
+                            SweepCtl::StopAll => {
+                                return Ok(None);
+                            }
+                            SweepCtl::Return(v) => {
+                                return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                            }
+                        }
                     }
                 }
 
@@ -3505,31 +3650,25 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             //                 `self` = whole file.
             // - Range arms (All/First): handled in a forward, text-ordered pass.
             // - Range arms (Last): handled in a final, backwards-looking pass.
+            //
+            // IMPORTANT: this returns (changed, ctl) so skip/stop/return can propagate.
             let mut run_arms_on_buffer = |sess: &mut Session,
                                           buffer: &mut String,
                                           file_label: &str|
-                 -> Result<bool, Diag> {
+             -> Result<(bool, SweepCtl), Diag> {
                 use crate::ast::{SweepArmKind, SweepArmRepeat};
 
                 let mut changed = false;
-                let arm_count   = sw.arms.len();
+                let arm_count = sw.arms.len();
 
                 // Track which pattern arms have already fired, and which First-range arms
                 // have already consumed their single match.
                 let mut pattern_used: Vec<bool> = vec![false; arm_count];
-                let mut first_used:   Vec<bool> = vec![false; arm_count];
+                let mut first_used: Vec<bool> = vec![false; arm_count];
 
                 // ================
                 // Forward pass: Pattern + Range(All/First), in *document order*
                 // ================
-                //
-                // We repeatedly:
-                //  - For each arm, find the next candidate match at or after `cursor`.
-                //  - Pick the earliest match across all arms.
-                //  - Execute that arm on the appropriate scope.
-                //  - Advance cursor past the matched region.
-                //
-                // Range(Last) arms are skipped here and handled in a second pass.
                 let mut cursor: usize = 0;
 
                 'outer: loop {
@@ -3659,32 +3798,74 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
                     if is_pattern {
                         // Pattern arm: `self` sees the whole file.
-                        *buffer = sweep_run_arm_on_scope(
+                        let (new_buf, ctl) = sweep_run_arm_on_scope(
                             sess,
                             file_label,
                             std::mem::take(buffer),
                             None, // whole file
                             &arm.body,
                         )?;
-                        pattern_used[arm_idx] = true;
+
+                        match ctl {
+                            SweepCtl::Continue => {
+                                *buffer = new_buf;
+                                pattern_used[arm_idx] = true;
+                            }
+                            SweepCtl::SkipMatch => {
+                                // Do not apply changes; still mark as used (pattern fires once)
+                                *buffer = before_text.clone();
+                                pattern_used[arm_idx] = true;
+                            }
+                            SweepCtl::StopAll => {
+                                *buffer = before_text;
+                                return Ok((changed, SweepCtl::StopAll));
+                            }
+                            SweepCtl::Return(v) => {
+                                *buffer = before_text;
+                                return Ok((changed, SweepCtl::Return(v)));
+                            }
+                        }
                     } else {
                         // Range arm (All/First): `self` is the [s_ix, e_ix) slice.
-                        *buffer = sweep_run_arm_on_scope(
+                        let (new_buf, ctl) = sweep_run_arm_on_scope(
                             sess,
                             file_label,
                             std::mem::take(buffer),
                             Some((s_ix, e_ix)),
                             &arm.body,
                         )?;
-                        if matches!(arm.repeat, SweepArmRepeat::First) {
-                            first_used[arm_idx] = true;
+
+                        match ctl {
+                            SweepCtl::Continue => {
+                                *buffer = new_buf;
+                                if matches!(arm.repeat, SweepArmRepeat::First) {
+                                    first_used[arm_idx] = true;
+                                }
+                            }
+
+                            SweepCtl::SkipMatch => {
+                                // Do not apply the edit; keep original buffer.
+                                *buffer = before_text.clone();
+                                if matches!(arm.repeat, SweepArmRepeat::First) {
+                                    first_used[arm_idx] = true;
+                                }
+                            }
+
+                            SweepCtl::StopAll => {
+                                *buffer = before_text;
+                                return Ok((changed, SweepCtl::StopAll));
+                            }
+
+                            SweepCtl::Return(v) => {
+                                *buffer = before_text;
+                                return Ok((changed, SweepCtl::Return(v)));
+                            }
                         }
                     }
 
                     changed |= *buffer != before_text;
 
-                    // Move cursor to just past the original end of the match.
-                    // Clamp to current buffer length in case the edit shrank the text.
+                    // Advance cursor past the match (even if SkipMatch), clamped to buffer length.
                     let new_len = buffer.len();
                     if new_len == 0 {
                         break 'outer;
@@ -3696,13 +3877,6 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 // ================
                 // Second pass: Range(Last) arms
                 // ================
-                //
-                // For each Range arm marked Last:
-                //  - Scan the *final* buffer for all spans.
-                //  - Remember the last span for that arm.
-                //  - Run the arm body once on that last span.
-                //
-                // These run after all Pattern / All / First operations.
                 for (arm_idx, arm) in sw.arms.iter().enumerate() {
                     if !matches!(arm.kind, SweepArmKind::Range { .. }) {
                         continue;
@@ -3763,24 +3937,42 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         };
 
                         last_span = Some((s_ix, e_ix));
-                        cursor    = e_ix;
-                        hb        = buffer.as_bytes(); // in case buffer changes size later
+                        cursor = e_ix;
+                        hb = buffer.as_bytes(); // keep fresh
                     }
 
                     if let Some((s_ix, e_ix)) = last_span {
                         let before_text = buffer.clone();
-                        *buffer = sweep_run_arm_on_scope(
+
+                        let (new_buf, ctl) = sweep_run_arm_on_scope(
                             sess,
                             file_label,
                             std::mem::take(buffer),
                             Some((s_ix, e_ix)),
                             &arm.body,
                         )?;
-                        changed |= *buffer != before_text;
+
+                        match ctl {
+                            SweepCtl::Continue => {
+                                *buffer = new_buf;
+                                changed |= *buffer != before_text;
+                            }
+                            SweepCtl::SkipMatch => {
+                                *buffer = before_text;
+                            }
+                            SweepCtl::StopAll => {
+                                *buffer = before_text;
+                                return Ok((changed, SweepCtl::StopAll));
+                            }
+                            SweepCtl::Return(v) => {
+                                *buffer = before_text;
+                                return Ok((changed, SweepCtl::Return(v)));
+                            }
+                        }
                     }
                 }
 
-                Ok(changed)
+                Ok((changed, SweepCtl::Continue))
             };
 
             // --- File-backed sweeps: read + write like before ---
@@ -3797,28 +3989,51 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     .with_link("https://goblinlang.org/docs/errors#FS0001")
                 })?;
 
-                let changed = run_arms_on_buffer(sess, &mut file_text, path)?;
+                let (changed, ctl) = run_arms_on_buffer(sess, &mut file_text, path)?;
 
-                if changed {
-                    std::fs::write(path, &file_text).map_err(|e| {
-                        goblin_diagnostics::Diagnostic::new_with_code(
-                            goblin_diagnostics::Severity::Error,
-                            crate::diagnostics::rtcode::FILESYSTEM_IO,
-                            "filesystem-io",
-                            format!("failed to write file ‘{}’: {}", path, e),
-                            sw.span.clone(),
-                        )
-                        .with_help("Ensure the file is writable.")
-                        .with_link("https://goblinlang.org/docs/errors#FS0001")
-                    })?;
+                match ctl {
+                    SweepCtl::Continue | SweepCtl::SkipMatch => {
+                        if changed {
+                            std::fs::write(path, &file_text).map_err(|e| {
+                                goblin_diagnostics::Diagnostic::new_with_code(
+                                    goblin_diagnostics::Severity::Error,
+                                    crate::diagnostics::rtcode::FILESYSTEM_IO,
+                                    "filesystem-io",
+                                    format!("failed to write file ‘{}’: {}", path, e),
+                                    sw.span.clone(),
+                                )
+                                .with_help("Ensure the file is writable.")
+                                .with_link("https://goblinlang.org/docs/errors#FS0001")
+                            })?;
+                        }
+                    }
+
+                    SweepCtl::StopAll => {
+                        return Ok(None);
+                    }
+
+                    SweepCtl::Return(v) => {
+                        return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                    }
                 }
             }
 
             // --- In-memory sweeps: NO filesystem I/O at all ---
             for content in mem_targets.iter() {
                 let mut buf = content.clone();
-                let _ = run_arms_on_buffer(sess, &mut buf, "<memory>")?;
-                // Ignore modified buf; we only care that the arms ran with `self` populated.
+                let (_changed, ctl) = run_arms_on_buffer(sess, &mut buf, "<memory>")?;
+
+                match ctl {
+                    SweepCtl::Continue | SweepCtl::SkipMatch => {
+                        // Ignore modified buf; we only care that the arms ran with `self` populated.
+                    }
+                    SweepCtl::StopAll => {
+                        return Ok(None);
+                    }
+                    SweepCtl::Return(v) => {
+                        return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                    }
+                }
             }
 
             Ok(None)
@@ -14627,7 +14842,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
 
                 "skip" => {
-                    if sess.loop_depth <= 0 {
+                    if sess.loop_depth <= 0 && sess.sweep_depth <= 0 {
                         return Err(
                             Diagnostic::new_with_code(
                                 Severity::Error,
@@ -14644,7 +14859,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "stop" => {
-                    if sess.loop_depth <= 0 {
+                    if sess.loop_depth <= 0 && sess.sweep_depth <= 0 {
                         return Err(
                             Diagnostic::new_with_code(
                                 Severity::Error,
@@ -16809,19 +17024,28 @@ fn sweep_walk_push_files(dir: &std::path::Path, out: &mut Vec<String>, sp: &Span
 /// For Range arms, `scope = Some((start,end))` and the actions should operate within that slice.
 /// For Pattern arms, `scope = None` and the actions see the whole file as the current buffer.
 /// Returns the (maybe) modified file_text.
+#[derive(Debug)]
+pub enum SweepCtl {
+    Continue,
+    SkipMatch,
+    StopAll,
+    Return(Value),
+}
+
 fn sweep_run_arm_on_scope(
     sess: &mut Session,
     file_path: &str,
     mut file_text: String,
     scope: Option<(usize, usize)>,
     body: &Vec<ast::Stmt>,
-) -> Result<String, Diag> {
+) -> Result<(String, SweepCtl), Diag> {
+
     // Save old sweep runtime context
     let old_path  = sess.sweep_file_path.clone();
     let old_buf   = sess.sweep_buf.take();
     let old_scope = sess.sweep_scope.take();
 
-    // Save old 'self' from top frame
+    // Save old 'self'
     let old_self = sess.env
         .last()
         .and_then(|frm| frm.get("self").cloned());
@@ -16841,55 +17065,76 @@ fn sweep_run_arm_on_scope(
         }
     }
 
-    // Inject sweep buffer into Goblin variable `self`
+    // Inject Goblin variable `self`
     if let Some(ref buf) = sess.sweep_buf {
         if let Some(frame) = sess.env.last_mut() {
             frame.insert("self".into(), Value::Str(buf.clone()));
         }
     }
 
+    // IMPORTANT: allow skip/stop inside sweep arms
+    sess.sweep_depth += 1;
+
     // Execute body
+    let mut control = SweepCtl::Continue;
+
     for stmt in body {
         if let Some(ctrl) = eval_stmt(stmt, sess)? {
             match ctrl {
-                Value::CtrlSkip => continue,
-                Value::CtrlStop | Value::CtrlReturn(_) => break,
-                _ => {
-                    // normal values ignored; sweeps don't propagate stmt value
+                Value::CtrlSkip => {
+                    control = SweepCtl::SkipMatch;
+                    break;
                 }
+
+                Value::CtrlStop => {
+                    control = SweepCtl::StopAll;
+                    break;
+                }
+
+                Value::CtrlReturn(inner) => {
+                    control = SweepCtl::Return(*inner);
+                    break;
+                }
+
+                _ => {}
             }
         }
     }
 
-    // Extract updated `self` back into sweep_buf
+    // Done executing sweep arm
+    sess.sweep_depth -= 1;
+
+    // Pull updated self
     if let Some(frame) = sess.env.last() {
         if let Some(Value::Str(updated)) = frame.get("self") {
             sess.sweep_buf = Some(updated.clone());
         }
     }
 
-    // Splice back into file
     let new_buf = sess.sweep_buf.take().unwrap_or_default();
 
+    // Splice back into file
     file_text = match scope {
         Some((s, e)) => {
             let mut out = String::with_capacity(
                 file_text.len() - (e - s) + new_buf.len()
             );
+
             out.push_str(&file_text[..s]);
             out.push_str(&new_buf);
             out.push_str(&file_text[e..]);
             out
         }
-        None => new_buf,
+
+        None => new_buf
     };
 
-    // Restore sweep context
+    // Restore sweep runtime context
     sess.sweep_file_path = old_path;
     sess.sweep_buf       = old_buf;
     sess.sweep_scope     = old_scope;
 
-    // Restore old self or remove
+    // Restore previous self
     if let Some(frame) = sess.env.last_mut() {
         match old_self {
             Some(v) => { frame.insert("self".into(), v); }
@@ -16897,7 +17142,7 @@ fn sweep_run_arm_on_scope(
         }
     }
 
-    Ok(file_text)
+    Ok((file_text, control))
 }
 
 /// Returns Vec<(synthetic_path_or_real_path, Option<memory_string>)>
