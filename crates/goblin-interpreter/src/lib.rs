@@ -2556,148 +2556,222 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             Ok(None)
         }
 
-        // -----------------------------------------------------------------------------
-        // ast::Stmt::TupleBind(tb)  — interpreter implementation (|  |=  [=)
-        // Uses ONLY your existing rtcode constants + your Diagnostic style.
-        // -----------------------------------------------------------------------------
         ast::Stmt::TupleBind(tb) => {
             use crate::diagnostics::rtcode;
             use goblin_diagnostics::{Diagnostic, Severity};
 
             let rhs = eval_expr(&tb.expr, sess)?;
 
-            let values: Vec<Value> = match rhs {
-                Value::Array(vs) => vs,
+            match rhs {
+                // ------------------------------------------------------------
+                // Destructure mode (existing behavior)
+                // ------------------------------------------------------------
+                Value::Array(values) => {
+                    if values.len() != tb.names.len() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::WRONG_ARITY, // R0301
+                                "wrong-arity",
+                                format!(
+                                    "tuple binding expected {} value(s) but got {}",
+                                    tb.names.len(),
+                                    values.len()
+                                ),
+                                tb.span.clone(),
+                            )
+                            .with_help("Make the array length match the number of names on the left.")
+                            .with_link("https://goblinlang.org/docs/errors#R0301"),
+                        );
+                    }
+
+                    for (ix, (name, name_span)) in tb.names.iter().cloned().enumerate() {
+                        let val = values[ix].clone();
+
+                        match tb.mode {
+                            BindMode::Shadow => {
+                                let cur = sess.env.len() - 1;
+                                if sess.env[cur].contains_key(&name) {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::DUPLICATE_LOCAL, // R0111
+                                            "duplicate-local",
+                                            format!("'{}' is already declared in this block", name),
+                                            name_span,
+                                        )
+                                        .with_help("Choose a different name, or use '|=' to reassign.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0111"),
+                                    );
+                                }
+                                sess.define_local(name, val, false);
+                            }
+
+                            BindMode::Tether => {
+                                let cur = sess.env.len() - 1;
+                                if sess.env[cur].contains_key(&name) {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::DUPLICATE_LOCAL, // R0111
+                                            "duplicate-local",
+                                            format!("'{}' is already declared in this block", name),
+                                            name_span,
+                                        )
+                                        .with_help("Use '|=' to reassign an existing variable.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0111"),
+                                    );
+                                }
+                                sess.define_local(name, val, false);
+                            }
+
+                            BindMode::Retether => {
+                                let Some(frame_ix) = sess.find_name_frame(&name) else {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::UNKNOWN_IDENT, // R0101
+                                            "unknown-ident",
+                                            format!("unknown identifier ‘{}’", name),
+                                            name_span,
+                                        )
+                                        .with_help("Declare it first with '|' (or 'local') before reassigning with '|='.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0101"),
+                                    );
+                                };
+
+                                if sess.is_const_in_frame(frame_ix, &name) {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMMUTABLE_ASSIGN, // R0113
+                                            "immutable-assign",
+                                            format!("cannot reassign immutable '{}'", name),
+                                            name_span,
+                                        )
+                                        .with_help("Values declared with 'imm' cannot be reassigned.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0113"),
+                                    );
+                                }
+
+                                if let Some(slot) = sess.env[frame_ix].get_mut(&name) {
+                                    *slot = val;
+                                } else {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::INTERNAL_ASSIGN_SLOT, // R0009
+                                            "internal-assign-slot",
+                                            "internal: slot missing during retether",
+                                            name_span,
+                                        )
+                                        .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0009"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(None)
+                }
+
+                // ------------------------------------------------------------
+                // Broadcast mode (NEW behavior)
+                // ------------------------------------------------------------
                 other => {
-                    return Err(
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            rtcode::ARRAY_EXPECTED, // R0402
-                            "array-expected",
-                            "tuple binding requires an array on the right-hand side",
-                            tb.span.clone(),
-                        )
-                        .with_help("Write: a, b | [1, 2] (right-hand side must be an array).")
-                        .with_link("https://goblinlang.org/docs/errors#R0402"),
-                    );
-                }
-            };
+                    // Evaluate RHS once (already done), then tether/retether each name to it.
+                    for (name, name_span) in tb.names.iter().cloned() {
+                        let val = other.clone();
 
-            if values.len() != tb.names.len() {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        rtcode::WRONG_ARITY, // R0301
-                        "wrong-arity",
-                        format!(
-                            "tuple binding expected {} value(s) but got {}",
-                            tb.names.len(),
-                            values.len()
-                        ),
-                        tb.span.clone(),
-                    )
-                    .with_help("Make the array length match the number of names on the left.")
-                    .with_link("https://goblinlang.org/docs/errors#R0301"),
-                );
-            }
+                        match tb.mode {
+                            BindMode::Shadow => {
+                                let cur = sess.env.len() - 1;
+                                if sess.env[cur].contains_key(&name) {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::DUPLICATE_LOCAL, // R0111
+                                            "duplicate-local",
+                                            format!("'{}' is already declared in this block", name),
+                                            name_span,
+                                        )
+                                        .with_help("Choose a different name, or use '|=' to reassign.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0111"),
+                                    );
+                                }
+                                sess.define_local(name, val, false);
+                            }
 
-            for (ix, (name, name_span)) in tb.names.iter().cloned().enumerate() {
-                let val = values[ix].clone();
+                            BindMode::Tether => {
+                                let cur = sess.env.len() - 1;
+                                if sess.env[cur].contains_key(&name) {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::DUPLICATE_LOCAL, // R0111
+                                            "duplicate-local",
+                                            format!("'{}' is already declared in this block", name),
+                                            name_span,
+                                        )
+                                        .with_help("Use '|=' to reassign an existing variable.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0111"),
+                                    );
+                                }
+                                sess.define_local(name, val, false);
+                            }
 
-                match tb.mode {
-                    // [= : explicit shadow declare (current frame only)
-                    BindMode::Shadow => {
-                        let cur = sess.env.len() - 1;
-                        if sess.env[cur].contains_key(&name) {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::DUPLICATE_LOCAL, // R0111
-                                    "duplicate-local",
-                                    format!("'{}' is already declared in this block", name),
-                                    name_span,
-                                )
-                                .with_help("Choose a different name, or use '|=' to reassign.")
-                                .with_link("https://goblinlang.org/docs/errors#R0111"),
-                            );
-                        }
+                            BindMode::Retether => {
+                                let Some(frame_ix) = sess.find_name_frame(&name) else {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::UNKNOWN_IDENT, // R0101
+                                            "unknown-ident",
+                                            format!("unknown identifier ‘{}’", name),
+                                            name_span,
+                                        )
+                                        .with_help("Declare it first with '|' (or 'local') before reassigning with '|='.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0101"),
+                                    );
+                                };
 
-                        // TupleBind currently has no imm/local flags in this interpreter path.
-                        // Preserve existing behavior: declare in current frame.
-                        sess.define_local(name, val, false);
-                    }
+                                if sess.is_const_in_frame(frame_ix, &name) {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMMUTABLE_ASSIGN, // R0113
+                                            "immutable-assign",
+                                            format!("cannot reassign immutable '{}'", name),
+                                            name_span,
+                                        )
+                                        .with_help("Values declared with 'imm' cannot be reassigned.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0113"),
+                                    );
+                                }
 
-                    // | : declare-only (current frame only) — NEVER mutate
-                    // New AST name: Tether
-                    BindMode::Tether => {
-                        let cur = sess.env.len() - 1;
-                        if sess.env[cur].contains_key(&name) {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::DUPLICATE_LOCAL, // R0111
-                                    "duplicate-local",
-                                    format!("'{}' is already declared in this block", name),
-                                    name_span,
-                                )
-                                .with_help("Use '|=' to reassign an existing variable.")
-                                .with_link("https://goblinlang.org/docs/errors#R0111"),
-                            );
-                        }
-
-                        sess.define_local(name, val, false);
-                    }
-
-                    // |= : retether-only — MUST exist somewhere, mutate nearest frame
-                    BindMode::Retether => {
-                        let Some(frame_ix) = sess.find_name_frame(&name) else {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::UNKNOWN_IDENT, // R0101
-                                    "unknown-ident",
-                                    format!("unknown identifier ‘{}’", name),
-                                    name_span,
-                                )
-                                .with_help("Declare it first with '|' (or 'local') before reassigning with '|='.")
-                                .with_link("https://goblinlang.org/docs/errors#R0101"),
-                            );
-                        };
-
-                        if sess.is_const_in_frame(frame_ix, &name) {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::IMMUTABLE_ASSIGN, // R0113
-                                    "immutable-assign",
-                                    format!("cannot reassign immutable '{}'", name),
-                                    name_span,
-                                )
-                                .with_help("Values declared with 'imm' cannot be reassigned.")
-                                .with_link("https://goblinlang.org/docs/errors#R0113"),
-                            );
-                        }
-
-                        if let Some(slot) = sess.env[frame_ix].get_mut(&name) {
-                            *slot = val;
-                        } else {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::INTERNAL_ASSIGN_SLOT, // R0009
-                                    "internal-assign-slot",
-                                    "internal: slot missing during retether",
-                                    name_span,
-                                )
-                                .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
-                                .with_link("https://goblinlang.org/docs/errors#R0009"),
-                            );
+                                if let Some(slot) = sess.env[frame_ix].get_mut(&name) {
+                                    *slot = val;
+                                } else {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::INTERNAL_ASSIGN_SLOT, // R0009
+                                            "internal-assign-slot",
+                                            "internal: slot missing during retether",
+                                            name_span,
+                                        )
+                                        .with_help("This indicates a bug in Goblin’s runtime environment or scope tracking.")
+                                        .with_link("https://goblinlang.org/docs/errors#R0009"),
+                                    );
+                                }
+                            }
                         }
                     }
+
+                    Ok(None)
                 }
             }
-
-            Ok(None)
         }
 
         ast::Stmt::Class(decl) => {
@@ -11734,6 +11808,156 @@ fn call_action_by_name(
                     out.push_str(&text[i..]);
                     break;
                 }
+            }
+
+            Value::Str(out)
+        },
+
+        // -- line-fenced span remove (first match only): ignore_blocks_first(text, open, close, opts) --
+        "ignore_blocks_first" => {
+            let argc = args.len();
+            if argc < 3 || argc > 4 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 3–4, got {})", argc),
+                        sp.clone(),
+                    )
+                    .with_help("Use: ignore_blocks_first(text, open, close, opts: Map|Nil)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301")
+                );
+            }
+
+            let text  = want_str(&args[0], "ignore_blocks_first text")?;
+            let open  = want_str(&args[1], "ignore_blocks_first open")?;
+            let close = want_str(&args[2], "ignore_blocks_first close")?;
+
+            let mut include_delims   = true;  // removes fences by default
+            let mut require_bol      = true;  // fences at BOL by default
+            let mut leading_blanks   = true;  // allow spaces/tabs before fence
+            let mut allow_eof_close  = true;  // allow EOF as close if no terminator
+
+            if argc == 4 {
+                match &args[3] {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("include_delims")    { include_delims  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("require_bol")       { require_bol     = *b; }
+                        if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { leading_blanks  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { allow_eof_close = *b; }
+                    }
+                    _ => {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                                "type-mismatch",
+                                "opts must be a Map or Nil",
+                                sp.clone(),
+                            )
+                            .with_help("Pass opts like: { require_bol: true, leading_blanks_ok: true } or Nil.")
+                            .with_link("https://goblinlang.org/docs/errors#T0205")
+                        );
+                    }
+                }
+            }
+
+            if open.is_empty() || close.is_empty() {
+                return Ok(Value::Str(text));
+            }
+
+            let bytes = text.as_bytes();
+
+            // Find the FIRST eligible opening fence (respecting BOL rules)
+            let mut i: usize = 0;
+            let mut open_pos: Option<usize> = None;
+
+            while i < text.len() {
+                if let Some(rel) = text[i..].find(&open) {
+                    let abs = i + rel;
+
+                    // BOL condition (with optional leading blanks)
+                    let at_bol = if abs == 0 { true } else {
+                        let mut k = abs;
+                        if leading_blanks {
+                            while k > 0
+                                && bytes[k - 1] != b'\n'
+                                && (bytes[k - 1] == b' ' || bytes[k - 1] == b'\t')
+                            {
+                                k -= 1;
+                            }
+                        }
+                        k == 0 || bytes[k - 1] == b'\n'
+                    };
+
+                    if !require_bol || at_bol {
+                        open_pos = Some(abs);
+                        break;
+                    } else {
+                        // not eligible; keep scanning
+                        i = abs + 1;
+                        continue;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            let abs = match open_pos {
+                Some(v) => v,
+                None => return Ok(Value::Str(text)), // no eligible open → no change
+            };
+
+            // Find eligible closing fence at BOL after open
+            let mut j = abs + open.len();
+            let mut close_pos: Option<usize> = None;
+
+            while j <= text.len() {
+                if let Some(relc) = text[j..].find(&close) {
+                    let cabs = j + relc;
+
+                    let c_at_bol = if cabs == 0 { true } else {
+                        let mut k = cabs;
+                        if leading_blanks {
+                            while k > 0
+                                && bytes[k - 1] != b'\n'
+                                && (bytes[k - 1] == b' ' || bytes[k - 1] == b'\t')
+                            {
+                                k -= 1;
+                            }
+                        }
+                        k == 0 || bytes[k - 1] == b'\n'
+                    };
+
+                    if !require_bol || c_at_bol {
+                        close_pos = Some(cabs);
+                        break;
+                    } else {
+                        j = cabs + 1;
+                    }
+                } else {
+                    if allow_eof_close { close_pos = Some(text.len()); }
+                    break;
+                }
+            }
+
+            let cpos = match close_pos {
+                Some(v) => v,
+                None => return Ok(Value::Str(text)), // unmatched open → no change
+            };
+
+            // Build output: remove ONLY this first span
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..abs]);
+
+            if include_delims {
+                out.push_str(&text[(cpos + close.len())..]);
+            } else {
+                out.push_str(&text[abs .. abs + open.len()]);
+                out.push_str(&text[cpos .. cpos + close.len()]);
+                out.push_str(&text[(cpos + close.len())..]);
             }
 
             Value::Str(out)
