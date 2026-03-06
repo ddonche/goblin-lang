@@ -301,6 +301,58 @@ fn safe_join(root: &Path, req_path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
+fn host_without_port(host: &str) -> &str {
+    let host = host.trim();
+
+    if let Some(stripped) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return stripped;
+    }
+
+    if let Some((left, right)) = host.rsplit_once(':') {
+        if !left.is_empty() && right.chars().all(|c| c.is_ascii_digit()) {
+            return left;
+        }
+    }
+
+    host
+}
+
+fn site_name_from_host(host: &str) -> Option<&str> {
+    let host = host_without_port(host);
+    let (site, rest) = host.split_once('.')?;
+
+    if site.is_empty() || site.eq_ignore_ascii_case("www") {
+        return None;
+    }
+
+    if rest.eq_ignore_ascii_case("localhost") {
+        return Some(site);
+    }
+
+    if !rest.contains('.') {
+        return None;
+    }
+
+    Some(site)
+}
+
+fn resolve_request_root(base_docroot: &Path, host_header: Option<&str>) -> PathBuf {
+    let Some(host_header) = host_header else {
+        return base_docroot.to_path_buf();
+    };
+
+    let Some(site_name) = site_name_from_host(host_header) else {
+        return base_docroot.to_path_buf();
+    };
+
+    let candidate = base_docroot.join(site_name);
+    if candidate.is_dir() {
+        candidate
+    } else {
+        base_docroot.to_path_buf()
+    }
+}
+
 impl Host {
     pub async fn run(&mut self) -> Result<(), HostError> {
         use tokio::net::TcpListener;
@@ -439,6 +491,10 @@ impl Host {
                                 }
                             }
 
+
+                            let host_header = headers_map.get("host").map(String::as_str);
+                            let request_root = resolve_request_root(&docroot, host_header);
+
                             // Connection strategy (HTTP/1.1 keep-alive by default; /1.0 is close unless keep-alive)
                             let conn_req = headers_map.get("connection").map(|s| s.to_ascii_lowercase());
                             let mut want_close = false;
@@ -483,9 +539,14 @@ impl Host {
                             }
 
                             if path == "/_info" {
+                                let host_json = host_header
+                                    .map(|h| format!("\"{}\"", h.replace('\\', "\\\\").replace('"', "\\\"")))
+                                    .unwrap_or_else(|| "null".to_string());
                                 let body = format!(
-                                    r#"{{"ok":true,"docroot":"{}","contract":"{}"}}"#,
+                                    r#"{{"ok":true,"docroot":"{}","request_root":"{}","host":{},"contract":"{}"}}"#,
                                     docroot.display(),
+                                    request_root.display(),
+                                    host_json,
                                     crate::CONTRACT_VERSION
                                 );
                                 let headers = format!(
@@ -700,8 +761,8 @@ impl Host {
                                 }
                             }
 
-                            // --- serve from docroot (CWD) ---
-                            let root = docroot.clone();
+                            // --- serve from resolved request root ---
+                            let root = request_root.clone();
 
                             // map "/" to index.html
                             let mut candidate = if path == "/" {
@@ -794,8 +855,7 @@ impl Host {
                                 // }
 
                                 // Real 404 -> serve 404.html if present
-                                let docroot = docroot.clone(); // or however you have it in scope
-                                let not_found_path = docroot.join("404.html");
+                                let not_found_path = root.join("404.html");
 
                                 let (body, content_type) = match tokio::fs::read(&not_found_path).await {
                                     Ok(bytes) => (bytes, "text/html; charset=utf-8"),
