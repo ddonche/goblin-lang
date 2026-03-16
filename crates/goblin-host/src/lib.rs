@@ -425,8 +425,9 @@ impl Host {
                                 buf.extend_from_slice(&tmp[..n]);
 
                                 if let Some(pos) = find_double_crlf(&buf) {
-                                    let head = buf[..pos].to_vec();
-                                    let rest = buf[pos + 4..].to_vec();
+                                    let head_end = pos.saturating_sub(4);
+                                    let head = buf[..head_end].to_vec();
+                                    let rest = buf[pos..].to_vec();
                                     break Some((head, rest));
                                 }
 
