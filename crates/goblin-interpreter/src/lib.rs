@@ -10173,6 +10173,11 @@ fn call_action_by_name(
         "unique"          => crate::actions::collections::unique(sess, &args, &sp)?,
         "dups"            => crate::actions::collections::dups(sess, &args, &sp)?,
 
+        // ----- Processes -----
+        "run_cmd" => {
+            return crate::actions::process::run_cmd(sess, &args, &sp);
+        }
+
         // ----- Files / paths / uuids / html -----
         "file_exists"       => crate::actions::files::file_exists(sess, &args, &sp)?,
         "create_dir"        => crate::actions::files::create_dir(sess, &args, &sp)?,

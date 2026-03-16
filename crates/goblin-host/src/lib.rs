@@ -404,19 +404,17 @@ impl Host {
                         // Reusable socket loop: handle multiple requests on the same connection.
                         // We’ll close when the client requests it or on idle timeout/error.
                         'conn: loop {
-                            // ---- read until CRLFCRLF (end of headers) with idle timeout ----
+                            // ---- read until CRLFCRLF (end of headers), then keep any remaining body bytes ----
                             let mut buf = Vec::with_capacity(4096);
                             let mut tmp = [0u8; 512];
 
                             let request = loop {
-                                // apply idle timeout to each read chunk
                                 let read_res = timeout(Duration::from_millis(idle_ms), socket.read(&mut tmp)).await;
                                 let n = match read_res {
-                                    Err(_) => { // idle timeout
-                                        // no response; just close the connection quietly
+                                    Err(_) => {
                                         break None;
                                     }
-                                    Ok(Ok(0)) => break None, // client closed
+                                    Ok(Ok(0)) => break None,
                                     Ok(Ok(n)) => n,
                                     Ok(Err(e)) => {
                                         eprintln!("read error from {}: {}", peer, e);
@@ -428,7 +426,8 @@ impl Host {
 
                                 if let Some(pos) = find_double_crlf(&buf) {
                                     let head = buf[..pos].to_vec();
-                                    break Some(head);
+                                    let rest = buf[pos + 4..].to_vec();
+                                    break Some((head, rest));
                                 }
 
                                 if buf.len() > 16 * 1024 {
@@ -442,7 +441,7 @@ impl Host {
                             };
 
                             // If no header block, close the connection.
-                            let Some(head) = request else {
+                            let Some((head, mut body_buf)) = request else {
                                 break 'conn;
                             };
 
@@ -490,6 +489,35 @@ impl Host {
                                     headers_map.insert(name.trim().to_ascii_lowercase(), val.trim().to_string());
                                 }
                             }
+                            let content_length = headers_map
+                                .get("content-length")
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap_or(0);
+
+                            while body_buf.len() < content_length {
+                                let read_res = timeout(Duration::from_millis(idle_ms), socket.read(&mut tmp)).await;
+                                let n = match read_res {
+                                    Err(_) => {
+                                        break 'conn;
+                                    }
+                                    Ok(Ok(0)) => {
+                                        break 'conn;
+                                    }
+                                    Ok(Ok(n)) => n,
+                                    Ok(Err(e)) => {
+                                        eprintln!("read body error from {}: {}", peer, e);
+                                        break 'conn;
+                                    }
+                                };
+
+                                body_buf.extend_from_slice(&tmp[..n]);
+                            }
+
+                            if body_buf.len() > content_length {
+                                body_buf.truncate(content_length);
+                            }
+
+                            let body_text = String::from_utf8_lossy(&body_buf).into_owned();
 
 
                             let host_header = headers_map.get("host").map(String::as_str);
@@ -571,10 +599,16 @@ impl Host {
                                 use tokio::io::AsyncWriteExt; // ensure in scope
 
                                 let api_rel = path.trim_start_matches("/api/");
-                                let script_path = std::path::PathBuf::from("./api").join(format!("{api_rel}.gbln"));
+                                let script_path = request_root.join("api").join(format!("{api_rel}.gbln"));
 
                                 if script_path.exists() {
-                                    match exec_goblin_script_via_cli_timeout(&script_path, 5000, query_string).await {
+                                    match exec_goblin_script_via_cli_timeout(
+                                        &script_path,
+                                        5000,
+                                        query_string,
+                                        method,
+                                        &body_text,
+                                    ).await {
                                         Ok(body) => {
                                             let headers = format!(
                                                 "HTTP/1.1 200 OK\r\n\
@@ -645,7 +679,7 @@ impl Host {
                                         }
                                     }
                                 } else {
-                                    let body = "API script not found";
+                                    let body = format!("API script not found: {}", script_path.display());
                                     let headers = format!(
                                         "HTTP/1.1 404 Not Found\r\n\
                                          Content-Type: text/plain; charset=utf-8\r\n\
@@ -924,16 +958,20 @@ async fn exec_goblin_script_via_cli_timeout(
     script_path: &std::path::Path,
     timeout_ms: u64,
     query_string: &str,
+    method: &str,
+    body: &str,
 ) -> Result<String, ExecErr> {
     use tokio::process::Command;
     use tokio::time::{timeout, Duration};
     use std::process::Stdio;
 
     let mut cmd = Command::new("goblin");
-    cmd.kill_on_drop(true); // child will be terminated if dropped
+    cmd.kill_on_drop(true);
     cmd.arg(script_path.as_os_str())
        .env("GOBLIN_NONINTERACTIVE", "1")
        .env("GOBLIN_QUERY_STRING", query_string)
+       .env("GOBLIN_METHOD", method)
+       .env("GOBLIN_BODY", body)
        .stdin(Stdio::null())
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());
@@ -943,8 +981,6 @@ async fn exec_goblin_script_via_cli_timeout(
 
     match timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await {
         Err(_) => {
-            // Timed out: the future (and thus the Child) will be dropped here.
-            // Because kill_on_drop(true) is set, the subprocess is terminated.
             Err(ExecErr::Timeout)
         }
         Ok(Ok(out)) => {
