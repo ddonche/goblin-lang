@@ -49,6 +49,11 @@ pub enum Stmt {
     JudgeAll(JudgeAllStmt),
     Sweep(SweepStmt),
     Return(ReturnStmt),
+
+    Block {
+        stmts: Vec<Stmt>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]

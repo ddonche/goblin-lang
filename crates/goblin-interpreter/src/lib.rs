@@ -2923,6 +2923,14 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             Ok(None)
         }
 
+        ast::Stmt::Block { stmts, .. } => {
+            let mut last: Option<Value> = None;
+            for stmt in stmts {
+                last = eval_stmt(stmt, sess)?;
+            }
+            Ok(last)
+        }
+
         ast::Stmt::Import(import_stmt) => {
             use std::path::{Path, PathBuf};
             use goblin_diagnostics::{Diagnostic, Severity};
@@ -14463,13 +14471,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                            "member-access-type",
-                            "member access requires a map, object, or enum.",
+                            crate::diagnostics::rtcode::UNKNOWN_ACTION, // A0401
+                            "unknown-postfix-action",
+                            &format!("unknown postfix action ‘{}’", name),
                             sp.clone(),
                         )
-                        .with_help("Use ‘obj.field’ only on a map/object/enum variant.")
-                        .with_link("https://goblinlang.org/docs/errors#T0205")
+                        .with_help("Bare dot only works with built-in postfix actions.")
+                        .with_help("If you meant to call a user-defined action, use parentheses: ‘value.action()’.")
+                        .with_help("If you meant to access a field, use ‘>>’ instead of ‘.’.")
+                        .with_link("https://goblinlang.org/docs/errors#A0401")
                     )
                 }
             }
@@ -16286,11 +16296,20 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                 }
 
+                // nix coalesce, works for nil or empty
                 "??" => {
                     let lv = eval_expr(lhs, sess)?;
-                    if !matches!(lv, Value::Nil) { return Ok(lv); }
-                    let rv = eval_expr(rhs, sess)?;
-                    Ok(rv)
+                    match &lv {
+                        Value::Nil => {
+                            let rv = eval_expr(rhs, sess)?;
+                            Ok(rv)
+                        }
+                        Value::Str(s) if s.is_empty() => {
+                            let rv = eval_expr(rhs, sess)?;
+                            Ok(rv)
+                        }
+                        _ => Ok(lv),
+                    }
                 }
 
                 // compound assigns on identifiers only
