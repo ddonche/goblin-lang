@@ -10190,6 +10190,7 @@ fn call_action_by_name(
         "file_exists"       => crate::actions::files::file_exists(sess, &args, &sp)?,
         "create_dir"        => crate::actions::files::create_dir(sess, &args, &sp)?,
         "append_file"       => crate::actions::files::append_file(sess, &args, &sp)?,
+        "delete_path"       => crate::actions::files::delete_path(sess, &args, &sp)?,
         "write_text"        => crate::actions::files::write_text(sess, &args, &sp)?,
         "read_text"         => crate::actions::files::read_text(sess, &args, &sp)?,
         "copy_file"         => crate::actions::files::copy_file(sess, &args, &sp)?,
@@ -13096,6 +13097,69 @@ fn mutate_via_call_name(
                 .with_help("Create parent directories or use an absolute path if needed.")
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
+
+            return Ok(Value::Unit)
+        }
+
+        "delete_path" => {
+            // delete_path!(path)
+            if arg_exprs.len() != 1 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 1, got {})", arg_exprs.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: delete_path!(path)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let vpath = eval_expr(&arg_exprs[0], sess)?;
+            let path = want_str(&vpath, "delete_path! path", sp.clone())?;
+            let p = std::path::Path::new(&path);
+
+            if !p.exists() {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO,
+                        "filesystem-io",
+                        &format!("path does not exist: {}", path),
+                        sp.clone(),
+                    )
+                    .with_help("Check the path exists before deleting it.")
+                    .with_link("https://goblinlang.org/docs/errors#FS0001"),
+                );
+            }
+
+            if p.is_dir() {
+                std::fs::remove_dir_all(p).map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO,
+                        "filesystem-io",
+                        &format!("failed to delete directory: {e}"),
+                        sp.clone(),
+                    )
+                    .with_help("Check path permissions and whether files are in use.")
+                    .with_link("https://goblinlang.org/docs/errors#FS0001")
+                })?;
+            } else {
+                std::fs::remove_file(p).map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO,
+                        "filesystem-io",
+                        &format!("failed to delete file: {e}"),
+                        sp.clone(),
+                    )
+                    .with_help("Check path permissions and whether the file is in use.")
+                    .with_link("https://goblinlang.org/docs/errors#FS0001")
+                })?;
+            }
 
             return Ok(Value::Unit)
         }

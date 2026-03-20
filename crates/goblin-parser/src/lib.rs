@@ -5128,6 +5128,15 @@ impl<'t> Parser<'t> {
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
+        // Strip leading : from builtin calls at statement level
+        if self.peek_op(":") {
+            if let Some(next) = self.toks.get(self.i + 1) {
+                if matches!(next.kind, TokenKind::Ident) {
+                    self.i += 1; // consume the colon
+                }
+            }
+        }
+
         // --- block-local bind: local <name> = <expr>
         if self.peek_ident() == Some("local") {
             return self.parse_local_bind();
@@ -6042,40 +6051,6 @@ impl<'t> Parser<'t> {
                     ));
                 }
 
-                // ---- SPECIAL: say ----
-                if name == "say" {
-                    self.skip_newlines();
-                    let mut args = Vec::<PExpr>::new();
-
-                    if self.peek_op("(") {
-                        let _ = self.eat_op("(");
-                        self.skip_newlines();
-                        if !self.peek_op(")") {
-                            // IMPORTANT: parse the FULL expression (additive chain etc.)
-                            let expr = self.parse_coalesce()?;
-                            self.skip_newlines();
-                            if !self.eat_op(")") {
-                                return Err(s_help_site!(
-                                    "P0707",
-                                    "Expected ')' to close this call",
-                                    "Add the closing ')': say(\"hi\")",
-                                ));
-                            }
-                            args.push(expr);
-                        } else {
-                            let _ = self.eat_op(")");
-                        }
-                    } else {
-                        // no-paren form: say <expr>
-                        // IMPORTANT: full expression, not just coalesce/primary
-                        let expr = self.parse_additive()?;       // ← not parse_coalesce
-                        args.push(expr);
-                    }
-
-                    // CRUCIAL: do NOT allow postfix ops on say
-                    return Ok(PExpr::FreeCall("say".to_string(), args));
-                }
-
                 if name == "skip" {
                     // no args
                     let span = self.toks[self.i - 1].span.clone();
@@ -6155,27 +6130,20 @@ impl<'t> Parser<'t> {
                 fn is_no_parens_freecall(name: &str) -> bool {
                     matches!(
                         name,
-                        // string/text transforms (unary, pure)
+                        "say" |
                         "upper" | "lower" | "title" | "slug" | "mixed" | "raw" |
                         "trim" | "trim_lead" | "trim_trail" | "minimize" |
                         "reverse" | "reverse_chars" | "lines" | "words" | "chars" |
-
-                        // maps
                         "keys" | "values" | "items" |
-
-                        // size helpers (unary view)
                         "count" | "len" |
-
-                        // parsing/formatting (unary, pure)
                         "parse_bool" | "json_parse" | "json_stringify" | "json_stringify_pretty" |
-
-                        // unary predicates (total, pure)
                         "is_even" | "is_odd" | "is_positive" | "is_negative" |
                         "is_alpha" | "is_digit" | "is_alnum" | "is_whitespace"
                     )
                 }
 
-                if is_no_parens_freecall(&name) {
+                let bare = name.strip_prefix(':').unwrap_or(&name);
+                if is_no_parens_freecall(bare) {
                     self.skip_newlines();
 
                     // Inline: does the next token start an expression?
@@ -6206,12 +6174,12 @@ impl<'t> Parser<'t> {
                         // and must NOT allow postfix chaining on the call itself.
                         if name == "say" {
                             let arg = self.parse_additive()?;   // <-- full expr (handles ++, +, >>, etc.)
-                            return Ok(PExpr::FreeCall(name, vec![arg])); // <-- no apply_postfix_ops here
+                            return Ok(PExpr::FreeCall(bare.to_string(), vec![arg])); // <-- no apply_postfix_ops here
                         }
 
                         // All other bare calls keep the existing behavior.
                         let arg = self.parse_coalesce()?;
-                        return Ok(self.apply_postfix_ops(PExpr::FreeCall(name, vec![arg])));
+                        return Ok(self.apply_postfix_ops(PExpr::FreeCall(bare.to_string(), vec![arg])));
                     }
                     // else: fall through to ident handling below
                 }

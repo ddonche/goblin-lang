@@ -80,6 +80,24 @@ pub fn append_file(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Va
 }
 
 // ==========================================================
+// delete_path(path)
+// ==========================================================
+
+pub fn delete_path(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    Err(
+        Diagnostic::new_with_code(
+            Severity::Error,
+            rtcode::MUTATION_OPERATOR_REQUIRED,
+            "mutation-operator-required",
+            "‘delete_path’ requires the bang form: use delete_path!(…)",
+            sp.clone(),
+        )
+        .with_help("Append ‘!’ to delete files or directories, e.g., delete_path!(path).")
+        .with_link("https://goblinlang.org/docs/errors#M0001"),
+    )
+}
+
+// ==========================================================
 // read_text(path)
 // ==========================================================
 
