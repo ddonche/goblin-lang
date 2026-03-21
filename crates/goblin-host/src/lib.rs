@@ -605,7 +605,7 @@ impl Host {
                                 if script_path.exists() {
                                     match exec_goblin_script_via_cli_timeout(
                                         &script_path,
-                                        5000,
+                                        30000,
                                         query_string,
                                         method,
                                         &body_text,

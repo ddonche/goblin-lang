@@ -29,6 +29,66 @@ pub mod markdown {
     }
 }
 
+pub mod highlight {
+    use std::sync::OnceLock;
+    use syntect::highlighting::ThemeSet;
+    use syntect::html::highlighted_html_for_string;
+    use syntect::parsing::{SyntaxSet, SyntaxDefinition};
+
+    const GOBLIN_SYNTAX: &str = include_str!("../syntaxes/Goblin.sublime-syntax");
+
+    static SS: OnceLock<SyntaxSet> = OnceLock::new();
+    static TS: OnceLock<ThemeSet> = OnceLock::new();
+
+    fn ss() -> &'static SyntaxSet {
+        SS.get_or_init(|| {
+            let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+            match SyntaxDefinition::load_from_str(GOBLIN_SYNTAX, true, None) {
+                Ok(goblin) => { builder.add(goblin); }
+                Err(e) => { eprintln!("Warning: failed to load Goblin syntax: {}", e); }
+            }
+            builder.build()
+        })
+    }
+
+    fn ts() -> &'static ThemeSet {
+        TS.get_or_init(ThemeSet::load_defaults)
+    }
+
+    pub fn highlight_code(code: &str, lang: &str, dark_theme: &str, light_theme: &str) -> String {
+        let ss = ss();
+        let ts = ts();
+
+        let syntax = ss
+            .find_syntax_by_token(lang)
+            .or_else(|| ss.find_syntax_by_extension(lang))
+            .unwrap_or_else(|| ss.find_syntax_plain_text());
+
+        let render = |theme_name: &str| {
+            let theme = ts.themes.get(theme_name)
+                .unwrap_or_else(|| ts.themes.values().next().unwrap());
+            match highlighted_html_for_string(code, ss, syntax, theme) {
+                Ok(html) => {
+                    let start = html.find("background-color:");
+                    if let Some(s) = start {
+                        let end = html[s..].find(';').map(|e| s + e + 1).unwrap_or(s);
+                        format!("{}{}", &html[..s], &html[end..])
+                    } else {
+                        html
+                    }
+                }
+                Err(_) => format!("<pre><code>{}</code></pre>", code),
+            }
+        };
+
+        format!(
+            "<div class=\"hl-dark\">{}</div><div class=\"hl-light\">{}</div>",
+            render(dark_theme),
+            render(light_theme)
+        )
+    }
+}
+
 pub struct ModuleCache {
     loaded: BTreeMap<String, Module>,
 }

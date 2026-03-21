@@ -1,0 +1,178 @@
+%YAML 1.2
+---
+name: Goblin
+file_extensions:
+  - gbln
+scope: source.goblin
+
+contexts:
+  prototype:
+    - include: comments
+
+  main:
+    - include: comments
+    - include: triple_strings
+    - include: strings
+    - include: intrinsics
+    - include: keywords
+    - include: control_flow
+    - include: types
+    - include: booleans
+    - include: nulls
+    - include: self_keyword
+    - include: functions
+    - include: money
+    - include: percent
+    - include: dice
+    - include: template_names
+    - include: private_variables
+    - include: numbers
+    - include: tether_operators
+    - include: operators
+    - include: punctuation
+
+  comments:
+    - match: '////'
+      scope: punctuation.definition.comment.goblin
+      push:
+        - meta_scope: comment.block.goblin
+        - match: '////'
+          scope: punctuation.definition.comment.goblin
+          pop: true
+    - match: '///.*$'
+      scope: comment.line.triple-slash.goblin
+
+  triple_strings:
+    - match: '"""'
+      scope: punctuation.definition.string.begin.goblin
+      push:
+        - meta_scope: string.quoted.triple.goblin
+        - match: '\\.'
+          scope: constant.character.escape.goblin
+        - match: '\{'
+          scope: punctuation.section.interpolation.begin.goblin
+          push:
+            - meta_scope: meta.interpolation.goblin
+            - match: '[a-zA-Z_][a-zA-Z0-9_.]*'
+              scope: variable.other.interpolation.goblin
+            - match: '\}'
+              scope: punctuation.section.interpolation.end.goblin
+              pop: true
+        - match: '"""'
+          scope: punctuation.definition.string.end.goblin
+          pop: true
+
+  strings:
+    - match: '"'
+      scope: punctuation.definition.string.begin.goblin
+      push:
+        - meta_scope: string.quoted.double.goblin
+        - match: '\\.'
+          scope: constant.character.escape.goblin
+        - match: '\{'
+          scope: punctuation.section.interpolation.begin.goblin
+          push:
+            - meta_scope: meta.interpolation.goblin
+            - match: '[a-zA-Z_][a-zA-Z0-9_.]*'
+              scope: variable.other.interpolation.goblin
+            - match: '\}'
+              scope: punctuation.section.interpolation.end.goblin
+              pop: true
+        - match: '"'
+          scope: punctuation.definition.string.end.goblin
+          pop: true
+
+  intrinsics:
+    # Any word preceded by : is a built-in intrinsic call
+    - match: ':[a-zA-Z_][a-zA-Z0-9_!?]*'
+      scope: support.function.intrinsic.goblin
+
+  keywords:
+    - match: '\b(act|action|import|export|expose|use|via|as|from|banish|unbanish|imm|vault|morph|test|enum|trait|impl|set|settle)\b'
+      scope: keyword.declaration.goblin
+
+  control_flow:
+    - match: '\b(if|else|elif|end|xx|unless|while|for|repeat|in|where|return|skip|stop|jump|until|sweep|sweep_all|judge|judge_all|using|attempt|rescue|ensure|assert)\b'
+      scope: keyword.control.goblin
+
+  types:
+    - match: '\b(int|float|bool|string|big|str|i|f|b|pct|money)\b'
+      scope: storage.type.goblin
+
+  booleans:
+    - match: '\b(true|false)\b'
+      scope: constant.language.boolean.goblin
+
+  nulls:
+    - match: '\b(nil|nix)\b'
+      scope: constant.language.nil.goblin
+    - match: '\.nix\?'
+      scope: constant.language.nil.goblin
+
+  self_keyword:
+    - match: '\bself\b'
+      scope: variable.language.self.goblin
+
+  functions:
+    - match: '\b[a-zA-Z_][a-zA-Z0-9_]*(?=\s*\()'
+      scope: entity.name.function.goblin
+
+  money:
+    - match: '(?:\$|EUR|GBP|JPY|£|€|¥|USD)\s*\d+(?:\.\d{2})?'
+      scope: constant.numeric.money.goblin
+
+  percent:
+    - match: '\d+(?:\.\d+)?%'
+      scope: constant.numeric.percent.goblin
+
+  dice:
+    - match: '\b\d+d\d+(?:[+-]\d+)?\b'
+      scope: constant.numeric.dice.goblin
+
+  template_names:
+    - match: '@[a-zA-Z_][a-zA-Z0-9_]*'
+      scope: variable.other.template.goblin
+
+  private_variables:
+    - match: '#[a-zA-Z_][a-zA-Z0-9_]*'
+      scope: variable.other.private.goblin
+
+  numbers:
+    - match: '\b\d[\d_]*(?:\.\d[\d_]*)?\b'
+      scope: constant.numeric.goblin
+
+  tether_operators:
+    - match: '\|\='
+      scope: keyword.operator.goblin
+    - match: '\|!'
+      scope: keyword.operator.goblin
+    - match: '\[='
+      scope: keyword.operator.goblin
+    - match: '!\|'
+      scope: keyword.operator.goblin
+    - match: '\|(?![=!])'
+      scope: keyword.operator.goblin
+
+  operators:
+    - match: '(?:===|!==|==|!=|<=|>=|<>|<|>)'
+      scope: keyword.operator.comparison.goblin
+    - match: '(?:\?\?=>|\?\?=?>|\?\?)'
+      scope: keyword.operator.nullish.goblin
+    - match: '(?:=>)'
+      scope: keyword.operator.arrow.goblin
+    - match: '(?:>>)'
+      scope: keyword.operator.field.goblin
+    - match: '(?:\*\*|\/\/|\+\+|--|&&|\|\|)'
+      scope: keyword.operator.special.goblin
+    - match: '(?:::|\.\.\.|\.\.|\.)'
+      scope: keyword.operator.range.goblin
+    - match: '\b(and|or|not)\b'
+      scope: keyword.operator.logical.goblin
+    - match: '[+\-*\/%^]'
+      scope: keyword.operator.arithmetic.goblin
+
+  punctuation:
+    - match: '::'
+      scope: punctuation.separator.namespace.goblin
+    - match: '[{}()\[\],;]'
+      scope: punctuation.goblin

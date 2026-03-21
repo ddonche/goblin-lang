@@ -7666,6 +7666,17 @@ fn call_action_by_name(
             Value::Str(crate::modules::markdown::md_to_html(&s))
         }
 
+        // ----- SYNTAX HIGHLIGHT -----
+
+        "highlight_code" => {
+            arity(4)?;
+            let code = want_str(&args[0], "highlight_code(code, lang, dark_theme, light_theme)")?;
+            let lang = want_str(&args[1], "highlight_code(code, lang, dark_theme, light_theme)")?;
+            let dark = want_str(&args[2], "highlight_code(code, lang, dark_theme, light_theme)")?;
+            let light = want_str(&args[3], "highlight_code(code, lang, dark_theme, light_theme)")?;
+            Value::Str(crate::modules::highlight::highlight_code(&code, &lang, &dark, &light))
+        }
+
         "invoke" => {
             use goblin_diagnostics::{Diagnostic, Severity};
             use crate::diagnostics::rtcode;

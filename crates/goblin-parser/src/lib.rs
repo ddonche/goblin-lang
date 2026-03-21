@@ -6130,7 +6130,7 @@ impl<'t> Parser<'t> {
                 fn is_no_parens_freecall(name: &str) -> bool {
                     matches!(
                         name,
-                        "say" |
+                        "say" | "sweep" | "sweep_all" |
                         "upper" | "lower" | "title" | "slug" | "mixed" | "raw" |
                         "trim" | "trim_lead" | "trim_trail" | "minimize" |
                         "reverse" | "reverse_chars" | "lines" | "words" | "chars" |
