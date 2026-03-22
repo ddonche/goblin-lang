@@ -14823,68 +14823,227 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "repeat" => {
-                    if args.len() != 2 {
-                        return Err(
-                            Diagnostic::new_with_code(
+
+                    // Support old 2-arg form during transition
+                    let (expr_arg, body_arg, as_arg) = match args.len() {
+                        2 => (&args[0], &args[1], None),
+                        3 => (&args[0], &args[1], Some(&args[2])),
+                        n => {
+                            return Err(Diagnostic::new_with_code(
                                 Severity::Error,
-                                crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                                crate::diagnostics::rtcode::WRONG_ARITY,
                                 "wrong-arity",
-                                &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                                &format!("Wrong number of arguments to repeat (expected 2 or 3, got {}).", n),
                                 sp.clone(),
                             )
-                            .with_help("Usage: repeat(count, body_block)")
-                            .with_help("‘body_block’ must be a block expression.")
-                            .with_link("https://goblinlang.org/docs/errors#R0301"),
-                        );
-                    }
-
-                    // count
-                    let count_val = eval_expr(&args[0], sess)?;
-                    let count = match count_val {
-                        Value::Int(n) if n >= 0 => n as usize,
-                        Value::Int(n) => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::MATH_DOMAIN, // R0207
-                                    "math-domain",
-                                    &format!("‘repeat’ count must be ≥ 0 (got {}).", n),
-                                    sp.clone(),
-                                )
-                                .with_help("Use a non-negative integer, e.g. 0, 1, 2, …")
-                                .with_link("https://goblinlang.org/docs/errors#R0207"),
-                            )
-                        }
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::INTEGER_EXPECTED, // T0204
-                                    "integer-expected",
-                                    "‘repeat’ count must be an integer.",
-                                    sp.clone(),
-                                )
-                                .with_help("Example: repeat(3, { say \"hi\" })")
-                                .with_link("https://goblinlang.org/docs/errors#T0204"),
-                            )
+                            .with_help("Usage: repeat(expr, body) or repeat(expr, body, as_name)")
+                            .with_link("https://goblinlang.org/docs/errors#R0301"));
                         }
                     };
 
-                    sess.loop_depth += 1;
-                    'outer: for _ in 0..count {
-                        let v = Session::with_block(sess, |sess| eval_expr(&args[1], sess))?;
-                        match v {
-                            Value::CtrlSkip   => continue 'outer,
-                            Value::CtrlStop   => break 'outer,
-                            Value::CtrlReturn(inner) => {
-                                sess.loop_depth -= 1;
-                                return Ok(Value::CtrlReturn(inner));  // FIX - keep the box
+                    // Extract optional `as` binding name
+                    let as_name: Option<String> = match as_arg {
+                        Some(expr) => {
+                            match eval_expr(expr, sess)? {
+                                Value::Str(s) if !s.is_empty() => Some(s),
+                                _ => None,
                             }
-                            _ => {}
                         }
-                    }
+                        None => None,
+                    };
+
+                    // Evaluate the expression to determine loop mode
+                    let expr_val = eval_expr(expr_arg, sess)?;
+
+                    sess.loop_depth += 1;
+
+                    let result = match expr_val {
+
+                        // ---- INFINITE LOOP: expr is nil ----
+                        Value::Nil => {
+                            'inf: loop {
+                                let v = Session::with_block(sess, |sess| eval_expr(body_arg, sess))?;
+                                match v {
+                                    Value::CtrlSkip => continue 'inf,
+                                    Value::CtrlStop => break 'inf,
+                                    Value::CtrlReturn(inner) => {
+                                        sess.loop_depth -= 1;
+                                        return Ok(Value::CtrlReturn(inner));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Ok(Value::Unit)
+                        }
+
+                        // ---- COUNT LOOP: expr is an integer ----
+                        Value::Int(n) => {
+                            let count = if n >= 0 { n as usize } else {
+                                return Err(Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::MATH_DOMAIN,
+                                    "math-domain",
+                                    &format!("'repeat' count must be >= 0 (got {}).", n),
+                                    sp.clone(),
+                                )
+                                .with_help("Use a non-negative integer.")
+                                .with_link("https://goblinlang.org/docs/errors#R0207"));
+                            };
+                            'count: for idx in 0..count {
+                                Session::with_block(sess, |sess| {
+                                    sess.set_var("idx".to_string(), Value::Int(idx as i64));
+                                    let v = eval_expr(body_arg, sess)?;
+                                    Ok(v)
+                                }).and_then(|v| match v {
+                                    Value::CtrlSkip => Ok(Value::CtrlSkip),
+                                    Value::CtrlStop => Ok(Value::CtrlStop),
+                                    Value::CtrlReturn(inner) => {
+                                        Ok(Value::CtrlReturn(inner))
+                                    }
+                                    _ => Ok(Value::Unit)
+                                }).map(|v| match v {
+                                    Value::CtrlStop => { Ok::<_, _>(true) }
+                                    Value::CtrlReturn(_) => { Ok(true) }
+                                    _ => Ok(false)
+                                })??;
+                            }
+                            Ok(Value::Unit)
+                        }
+
+                        // ---- CONDITIONAL LOOP: expr is a bool ----
+                        // Note: we re-evaluate the condition each iteration from the original expr
+                        Value::Bool(_) => {
+                            // Re-eval from expr_arg each time
+                            'cond: loop {
+                                let c = eval_expr(expr_arg, sess)?;
+                                match c {
+                                    Value::Bool(false) => break 'cond,
+                                    Value::Bool(true) => {}
+                                    _ => break 'cond,
+                                }
+                                let v = Session::with_block(sess, |sess| eval_expr(body_arg, sess))?;
+                                match v {
+                                    Value::CtrlSkip => continue 'cond,
+                                    Value::CtrlStop => break 'cond,
+                                    Value::CtrlReturn(inner) => {
+                                        sess.loop_depth -= 1;
+                                        return Ok(Value::CtrlReturn(inner));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Ok(Value::Unit)
+                        }
+
+                        // ---- ITEM LOOP: expr is an array ----
+                        Value::Array(items) => {
+                            let binding = as_name.unwrap_or_else(|| "it".to_string());
+                            'arr: for (idx, item) in items.iter().enumerate() {
+                                let v = Session::with_block(sess, |sess| {
+                                    sess.set_var(binding.clone(), item.clone());
+                                    sess.set_var("idx".to_string(), Value::Int(idx as i64));
+                                    eval_expr(body_arg, sess)
+                                })?;
+                                match v {
+                                    Value::CtrlSkip => continue 'arr,
+                                    Value::CtrlStop => break 'arr,
+                                    Value::CtrlReturn(inner) => {
+                                        sess.loop_depth -= 1;
+                                        return Ok(Value::CtrlReturn(inner));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Ok(Value::Unit)
+                        }
+
+                        // ---- ITEM LOOP: expr is a string (iterate chars) ----
+                        Value::Str(s) => {
+                            let binding = as_name.unwrap_or_else(|| "it".to_string());
+                            'str: for (idx, ch) in s.chars().enumerate() {
+                                let v = Session::with_block(sess, |sess| {
+                                    sess.set_var(binding.clone(), Value::Str(ch.to_string()));
+                                    sess.set_var("idx".to_string(), Value::Int(idx as i64));
+                                    eval_expr(body_arg, sess)
+                                })?;
+                                match v {
+                                    Value::CtrlSkip => continue 'str,
+                                    Value::CtrlStop => break 'str,
+                                    Value::CtrlReturn(inner) => {
+                                        sess.loop_depth -= 1;
+                                        return Ok(Value::CtrlReturn(inner));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Ok(Value::Unit)
+                        }
+
+                        // ---- MAP LOOP: key/value pairs ----
+                        Value::Map(m) => {
+                            let (key_binding, val_binding) = match &as_name {
+                                Some(s) => {
+                                    // `as (k, v)` — for now just use "key"/"val" defaults
+                                    // TODO: parse tuple binding from as_name
+                                    ("key".to_string(), "val".to_string())
+                                }
+                                None => ("key".to_string(), "val".to_string()),
+                            };
+                            'map: for (idx, (k, v)) in m.iter().enumerate() {
+                                let v2 = Session::with_block(sess, |sess| {
+                                    sess.set_var(key_binding.clone(), Value::Str(k.clone()));
+                                    sess.set_var(val_binding.clone(), v.clone());
+                                    sess.set_var("idx".to_string(), Value::Int(idx as i64));
+                                    eval_expr(body_arg, sess)
+                                })?;
+                                match v2 {
+                                    Value::CtrlSkip => continue 'map,
+                                    Value::CtrlStop => break 'map,
+                                    Value::CtrlReturn(inner) => {
+                                        sess.loop_depth -= 1;
+                                        return Ok(Value::CtrlReturn(inner));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Ok(Value::Unit)
+                        }
+
+                        other => {
+                            let type_str = match &other {
+                                Value::Int(_)        => "int",
+                                Value::Float(_)      => "float",
+                                Value::Big(_)        => "big",
+                                Value::Str(_)        => "string",
+                                Value::Char(_)       => "char",
+                                Value::Bool(_)       => "bool",
+                                Value::Pct(_)        => "percent",
+                                Value::Formatted(..) => "formatted",
+                                Value::Array(_)      => "array",
+                                Value::Map(_)        => "map",
+                                Value::MapOrd(_)     => "map",
+                                Value::Pair(..)      => "pair",
+                                Value::Seq(_)        => "seq",
+                                Value::Nil           => "nil",
+                                Value::Unit          => "unit",
+                                Value::Object { class_name, .. } => class_name.as_str(),
+                                Value::Enum { enum_name, .. }    => enum_name.as_str(),
+                                _                    => "unknown",
+                            };
+                            return Err(Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::TYPE_MISMATCH,
+                                "type-mismatch",
+                                &format!("'repeat' doesn't know how to loop over a {}.", type_str),
+                                sp.clone(),
+                            )
+                            .with_help("Pass a number, bool, array, string, map, or nothing (for infinite loop).")
+                            .with_link("https://goblinlang.org/docs/errors#T0205"));
+                        }
+                    };
+
                     sess.loop_depth -= 1;
-                    Ok(Value::Unit)
+                    result
                 }
 
                 "attempt" => {

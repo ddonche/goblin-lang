@@ -4675,18 +4675,46 @@ impl<'t> Parser<'t> {
 
     fn parse_repeat_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
-        
+
         let start_i = self.i;
         let repeat_col = self.toks[start_i].span.col_start;
-        
         debug_assert_eq!(self.peek_ident().as_deref(), Some("repeat"));
         let _ = self.eat_ident();
-        
-        // Parse count expression
-        let count_pe = self.parse_assign()?;
-        let count = self.lower_expr(count_pe);
-        
-        // Skip newline/indent after count
+
+        let is_word = |t: &goblin_lexer::Token, word: &str| {
+            matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some(word)
+        };
+
+        // Bare repeat (infinite loop) — nothing before newline / closer
+        let (count, as_name) = if self.peek_newline_or_eof()
+            || self.peek_op("xx")
+            || matches!(self.peek(), Some(t) if is_word(t, "end"))
+        {
+            (None, None)
+        } else {
+            // Parse the repeat target/count/condition
+            let expr_pe = self.parse_primary()?;
+
+            // Optional: `as name`
+            let alias = match self.peek() {
+                Some(t) if is_word(t, "as") => {
+                    let _ = self.eat_ident(); // consume 'as'
+                    let Some(name) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P0324",
+                            "Expected a name after 'as' in repeat",
+                            "Write: repeat items as item"
+                        ));
+                    };
+                    Some(name)
+                }
+                _ => None,
+            };
+
+            (Some(self.lower_expr(expr_pe)), alias)
+        };
+
+        // Skip newline/indent after header
         while let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
                 self.i += 1;
@@ -4694,11 +4722,11 @@ impl<'t> Parser<'t> {
                 break;
             }
         }
-        
-        // Parse body block
-        let body_stmts = self.parse_indented_block(repeat_col, &["end"])?;
-        
-        // Skip dedents/newlines
+
+        // IMPORTANT: let the block parser stop on BOTH end and xx
+        let body_stmts = self.parse_indented_block(repeat_col, &["end", "xx"])?;
+
+        // Skip dedents/newlines before closer
         while let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Dedent | TokenKind::Newline) {
                 self.i += 1;
@@ -4706,7 +4734,7 @@ impl<'t> Parser<'t> {
                 break;
             }
         }
-        
+
         // Consume closer
         if let Some(t) = self.peek() {
             match &t.kind {
@@ -4717,35 +4745,38 @@ impl<'t> Parser<'t> {
                     let _ = self.eat_op("xx");
                 }
                 _ => {
-                    return Err(s_help_site!("P0322", "Expected 'end' or 'xx' (crossbones) to close repeat block", "Add 'end' or 'xx'"));
+                    return Err(s_help_site!(
+                        "P0322",
+                        "Expected 'end' or 'xx' (crossbones) to close repeat block",
+                        "Add 'end' or 'xx'"
+                    ));
                 }
             }
         } else {
-            return Err(s_help_site!("P0322", "Expected 'end' or 'xx' (crossbones) to close repeat block", "Add 'end' or 'xx' before end of file"));
+            return Err(s_help_site!(
+                "P0322",
+                "Expected 'end' or 'xx' (crossbones) to close repeat block",
+                "Add 'end' or 'xx' before end of file"
+            ));
         }
-        
-        // Convert body to expressions
-        let to_exprs = |stmts: Vec<ast::Stmt>| -> Result<Vec<ast::Expr>, String> {
-            stmts.into_iter().map(|s| match s {
-                ast::Stmt::Expr(e) => Ok(e),
-                ast::Stmt::Bind(_) | ast::Stmt::TupleBind(_) => {
-                    Err("Bind statements (`|`, `|=`, `[=`) are not expressions.".to_string())
-                }
-                ast::Stmt::Return(ret_stmt) => {
-                    let values: Vec<ast::Expr> = ret_stmt.values.clone();
-                    Ok(ast::Expr::FreeCall("return".to_string(), values, ret_stmt.span.clone()))
-                }
-                _ => Err(s_help_site!("P0323", "Only expressions allowed in repeat block", "Move declarations outside")),
-            }).collect()
-        };
-        
+
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let body_block = ast::Expr::Block {
+            stmts: body_stmts,
+            span: span.clone(),
+        };
 
-        // Body is a statement block now; no P0323 conversion.
-        let body_block = ast::Expr::Block { stmts: body_stmts, span: span.clone() };
+        let expr_arg = count.unwrap_or(ast::Expr::Nil(span.clone()));
+        let as_arg = match as_name {
+            Some(name) => ast::Expr::Str(name, span.clone()),
+            None => ast::Expr::Nil(span.clone()),
+        };
 
-        let args = vec![count, body_block];
-        Ok(ast::Stmt::Expr(ast::Expr::FreeCall("repeat".to_string(), args, span)))
+        Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+            "repeat".to_string(),
+            vec![expr_arg, body_block, as_arg],
+            span,
+        )))
     }
 
     fn parse_stmt_block_until<F>(&mut self, mut stop: F) -> Result<Vec<ast::Stmt>, String>
@@ -5164,6 +5195,100 @@ impl<'t> Parser<'t> {
                     }
                 }
             }
+        }
+
+        if self.peek_ident() == Some("stop") {
+            let start_i = self.i;
+            let _ = self.eat_ident(); // consume stop
+
+            if self.peek_ident() == Some("if") {
+                let _ = self.eat_ident(); // consume if
+
+                if !self.eat_op(":") {
+                    return Err(s_help_site!(
+                        "P0325",
+                        "Expected ':' after 'stop if'",
+                        "Write: stop if: condition"
+                    ));
+                }
+
+                let cond_pe = self.parse_coalesce()?;
+                let cond = self.lower_expr(cond_pe);
+
+                let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+
+                let stop_stmt = ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "stop".to_string(),
+                    vec![],
+                    span.clone(),
+                ));
+
+                let then_block = ast::Expr::Block {
+                    stmts: vec![stop_stmt],
+                    span: span.clone(),
+                };
+
+                return Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![cond, then_block],
+                    span,
+                )));
+            }
+
+            // plain stop
+            let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+            return Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+                "stop".to_string(),
+                vec![],
+                span,
+            )));
+        }
+
+        if self.peek_ident() == Some("skip") {
+            let start_i = self.i;
+            let _ = self.eat_ident(); // consume skip
+
+            if self.peek_ident() == Some("if") {
+                let _ = self.eat_ident(); // consume if
+
+                if !self.eat_op(":") {
+                    return Err(s_help_site!(
+                        "P0326",
+                        "Expected ':' after 'skip if'",
+                        "Write: skip if: condition"
+                    ));
+                }
+
+                let cond_pe = self.parse_coalesce()?;
+                let cond = self.lower_expr(cond_pe);
+
+                let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+
+                let skip_stmt = ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "skip".to_string(),
+                    vec![],
+                    span.clone(),
+                ));
+
+                let then_block = ast::Expr::Block {
+                    stmts: vec![skip_stmt],
+                    span: span.clone(),
+                };
+
+                return Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "if".to_string(),
+                    vec![cond, then_block],
+                    span,
+                )));
+            }
+
+            // plain skip
+            let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+            return Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+                "skip".to_string(),
+                vec![],
+                span,
+            )));
         }
 
         // -------- keyword-first dispatch (keeps style consistent) --------
@@ -6149,17 +6274,21 @@ impl<'t> Parser<'t> {
                     // Inline: does the next token start an expression?
                     let starts_expr = match self.peek() {
                         Some(t) => match &t.kind {
-                            // literals & identifiers
+                            // literals
                             TokenKind::String
                             | TokenKind::Int
                             | TokenKind::Float
                             | TokenKind::Money
                             | TokenKind::Duration
-                            | TokenKind::Ident
                             | TokenKind::Date
                             | TokenKind::Time
                             | TokenKind::DateTime
                             | TokenKind::Blob => true,
+
+                            // identifiers, but do NOT swallow repeat aliases
+                            TokenKind::Ident => {
+                                !matches!(t.value.as_deref(), Some("as"))
+                            }
 
                             // grouping / collection / prefix ops that begin an expr
                             TokenKind::Op(s) if s == "(" || s == "[" || s == "{" || s == "-" || s == "+" || s == "!" => true,
