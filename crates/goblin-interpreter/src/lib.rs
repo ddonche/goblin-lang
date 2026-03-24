@@ -17,6 +17,8 @@ use goblin_diagnostics::Span;
 use goblin_yall as yall;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::copy;
 
 static SEED_BUMP: AtomicU64 = AtomicU64::new(0);
 
@@ -10200,6 +10202,7 @@ fn call_action_by_name(
         // ----- Files / paths / uuids / html -----
         "file_exists"       => crate::actions::files::file_exists(sess, &args, &sp)?,
         "create_dir"        => crate::actions::files::create_dir(sess, &args, &sp)?,
+        "zip_dir"           => crate::actions::files::zip_dir(sess, &args, &sp)?,
         "append_file"       => crate::actions::files::append_file(sess, &args, &sp)?,
         "delete_path"       => crate::actions::files::delete_path(sess, &args, &sp)?,
         "write_text"        => crate::actions::files::write_text(sess, &args, &sp)?,
@@ -13106,6 +13109,170 @@ fn mutate_via_call_name(
                 )
                 .with_help(&format!("Check permissions and that ‘{}’ is not an existing file.", path))
                 .with_help("Create parent directories or use an absolute path if needed.")
+                .with_link("https://goblinlang.org/docs/errors#FS0001")
+            })?;
+
+            return Ok(Value::Unit)
+        }
+
+        "zip_dir" => {
+            // zip_dir!(src_dir, dst_zip_path)
+            if arg_exprs.len() != 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments (expected 2, got {})", arg_exprs.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: zip_dir!(src_dir, dst_zip_path)")
+                    .with_help("‘zip_dir’ takes exactly 2 arguments.")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let vsrc = eval_expr(&arg_exprs[0], sess)?;
+            let vdst = eval_expr(&arg_exprs[1], sess)?;
+
+            let src = want_str(&vsrc, "zip_dir! src_dir", sp.clone())?;
+            let dst = want_str(&vdst, "zip_dir! dst_zip_path", sp.clone())?;
+
+            let src_path = std::path::Path::new(&src);
+            let dst_path = std::path::Path::new(&dst);
+
+            if !src_path.exists() || !src_path.is_dir() {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                        "filesystem-io",
+                        &format!("source directory does not exist or is not a directory: {}", src),
+                        sp.clone(),
+                    )
+                    .with_help("Pass an existing directory as the first argument to zip_dir!.")
+                    .with_link("https://goblinlang.org/docs/errors#FS0001"),
+                );
+            }
+
+            if let Some(parent) = dst_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                            "filesystem-io",
+                            &format!("failed to create zip parent directory: {e}"),
+                            sp.clone(),
+                        )
+                        .with_help("Check permissions for the destination path.")
+                        .with_link("https://goblinlang.org/docs/errors#FS0001")
+                    })?;
+                }
+            }
+
+            let file = std::fs::File::create(dst_path).map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                    "filesystem-io",
+                    &format!("failed to create zip file: {e}"),
+                    sp.clone(),
+                )
+                .with_help("Check that the destination path is valid and writable.")
+                .with_link("https://goblinlang.org/docs/errors#FS0001")
+            })?;
+
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+
+            for entry in walkdir::WalkDir::new(src_path) {
+                let entry = entry.map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                        "filesystem-io",
+                        &format!("failed while traversing source directory: {e}"),
+                        sp.clone(),
+                    )
+                    .with_help("Check permissions and ensure the directory can be read.")
+                    .with_link("https://goblinlang.org/docs/errors#FS0001")
+                })?;
+
+                let path = entry.path();
+                let rel = path.strip_prefix(src_path).map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                        "filesystem-io",
+                        &format!("failed to compute relative zip path: {e}"),
+                        sp.clone(),
+                    )
+                    .with_link("https://goblinlang.org/docs/errors#FS0001")
+                })?;
+
+                if rel.as_os_str().is_empty() {
+                    continue;
+                }
+
+                let rel_name = rel.to_string_lossy().replace('\\', "/");
+
+                if path.is_dir() {
+                    zip.add_directory(format!("{}/", rel_name), options).map_err(|e| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                            "filesystem-io",
+                            &format!("failed to add directory to zip: {e}"),
+                            sp.clone(),
+                        )
+                        .with_link("https://goblinlang.org/docs/errors#FS0001")
+                    })?;
+                } else if path.is_file() {
+                    zip.start_file(rel_name, options).map_err(|e| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                            "filesystem-io",
+                            &format!("failed to add file to zip: {e}"),
+                            sp.clone(),
+                        )
+                        .with_link("https://goblinlang.org/docs/errors#FS0001")
+                    })?;
+
+                    let mut f = std::fs::File::open(path).map_err(|e| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                            "filesystem-io",
+                            &format!("failed to open file for zipping: {e}"),
+                            sp.clone(),
+                        )
+                        .with_link("https://goblinlang.org/docs/errors#FS0001")
+                    })?;
+
+                    std::io::copy(&mut f, &mut zip).map_err(|e| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                            "filesystem-io",
+                            &format!("failed to write file into zip: {e}"),
+                            sp.clone(),
+                        )
+                        .with_link("https://goblinlang.org/docs/errors#FS0001")
+                    })?;
+                }
+            }
+
+            zip.finish().map_err(|e| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::FILESYSTEM_IO, // FS0001
+                    "filesystem-io",
+                    &format!("failed to finalize zip archive: {e}"),
+                    sp.clone(),
+                )
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 

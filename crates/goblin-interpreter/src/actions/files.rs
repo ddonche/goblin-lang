@@ -51,6 +51,20 @@ pub fn create_dir(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Val
     )
 }
 
+pub fn zip_dir(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    Err(
+        Diagnostic::new_with_code(
+            Severity::Error,
+            rtcode::MUTATION_OPERATOR_REQUIRED,
+            "mutation-operator-required",
+            "‘zip_dir’ requires the bang form: use zip_dir!(…)",
+            sp.clone(),
+        )
+        .with_help("Append ‘!’ to create zip archives, e.g., zip_dir!(src, dst).")
+        .with_link("https://goblinlang.org/docs/errors#M0001"),
+    )
+}
+
 pub fn write_text(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value, Diag> {
     Err(
         Diagnostic::new_with_code(
