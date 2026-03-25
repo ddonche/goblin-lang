@@ -4063,12 +4063,15 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         if as_bool(v, arm.span.clone(), "judge condition")? {
                             match &arm.body {
                                 ast::JudgeArmBody::Expr(e) => {
-                                    let _ = eval_expr(e, sess)?;  // discard value in stmt form
+                                    let v = eval_expr(e, sess)?;
+                                    if !matches!(v, Value::Nil) {
+                                        return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                                    }
                                 }
                                 ast::JudgeArmBody::Stmts(stmts) => {
                                     for s in stmts {
                                         if let Some(Value::CtrlReturn(val)) = eval_stmt(s, sess)? {
-                                            return Ok(Some(Value::CtrlReturn(val))); // keep the boxed value
+                                            return Ok(Some(Value::CtrlReturn(val)));
                                         }
                                     }
                                 }
@@ -4083,12 +4086,15 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             if let Some(arm) = else_arm {
                 match &arm.body {
                     ast::JudgeArmBody::Expr(e) => {
-                        let _ = eval_expr(e, sess)?;
+                        let v = eval_expr(e, sess)?;
+                        if !matches!(v, Value::Nil) {
+                            return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                        }
                     }
                     ast::JudgeArmBody::Stmts(stmts) => {
                         for s in stmts {
                             if let Some(Value::CtrlReturn(val)) = eval_stmt(s, sess)? {
-                                return Ok(Some(Value::CtrlReturn(val))); // keep the boxed value
+                                return Ok(Some(Value::CtrlReturn(val)));
                             }
                         }
                     }
@@ -4120,7 +4126,10 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 if let Some(arm) = else_arm {
                     match &arm.body {
                         ast::JudgeArmBody::Expr(e) => {
-                            let _ = eval_expr(e, sess)?;
+                            let v = eval_expr(e, sess)?;
+                            if !matches!(v, Value::Nil) {
+                                return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                            }
                         }
                         ast::JudgeArmBody::Stmts(stmts) => {
                             for s in stmts {
@@ -4138,7 +4147,10 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             for arm in hits {
                 match &arm.body {
                     ast::JudgeArmBody::Expr(e) => {
-                        let _ = eval_expr(e, sess)?;
+                        let v = eval_expr(e, sess)?;
+                        if !matches!(v, Value::Nil) {
+                            return Ok(Some(Value::CtrlReturn(Box::new(v))));
+                        }
                     }
                     ast::JudgeArmBody::Stmts(stmts) => {
                         for s in stmts {
@@ -12470,16 +12482,41 @@ fn call_action_by_name(
 
         "starts_with" => {
             arity(2)?;
-            let text   = want_str(&args[0], "starts_with text")?;
-            let prefix = want_str(&args[1], "starts_with prefix")?;
-            Value::Bool(text.starts_with(&prefix))
+            let text = want_str(&args[0], "starts_with text")?;
+            match &args[1] {
+                Value::Array(needles) => {
+                    Value::Bool(needles.iter().any(|n| {
+                        if let Value::Str(ns) = n {
+                            text.starts_with(ns.as_str())
+                        } else {
+                            false
+                        }
+                    }))
+                }
+                _ => {
+                    let prefix = want_str(&args[1], "starts_with prefix")?;
+                    Value::Bool(text.starts_with(&prefix))
+                }
+            }
         }
-
         "ends_with" => {
             arity(2)?;
-            let text   = want_str(&args[0], "ends_with text")?;
-            let suffix = want_str(&args[1], "ends_with suffix")?;
-            Value::Bool(text.ends_with(&suffix))
+            let text = want_str(&args[0], "ends_with text")?;
+            match &args[1] {
+                Value::Array(needles) => {
+                    Value::Bool(needles.iter().any(|n| {
+                        if let Value::Str(ns) = n {
+                            text.ends_with(ns.as_str())
+                        } else {
+                            false
+                        }
+                    }))
+                }
+                _ => {
+                    let suffix = want_str(&args[1], "ends_with suffix")?;
+                    Value::Bool(text.ends_with(&suffix))
+                }
+            }
         }
 
         "after" => {

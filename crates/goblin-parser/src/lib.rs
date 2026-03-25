@@ -1867,13 +1867,13 @@ impl<'t> Parser<'t> {
         let start_i = self.i;
         // expect literal 'return'
         match self.peek() {
-            Some(t) if matches!(t.kind, TokenKind::Ident) && self.peek_ident() == Some("return") => {
+            Some(t) if matches!(t.kind, TokenKind::Ident) && self.peek_is_return() => {
                 self.i += 1; // consume 'return'
             }
             _ => {
                 return Err(s_help_site!(
                     "P0600",
-                    "Internal parser error: parse_return_stmt called when next token is not 'return'",
+                    "Internal parser error: parse_return_stmt called when next token is not 'return' or 'send'",
                     "Parser bug.",
                 ));
             }
@@ -2380,7 +2380,7 @@ impl<'t> Parser<'t> {
                 
                 // Check if this is a return statement
                 if let Some(ret_tok) = self.toks.get(self.i) {
-                    if matches!(ret_tok.kind, TokenKind::Ident) && ret_tok.value.as_deref() == Some("return") {
+                    if matches!(ret_tok.kind, TokenKind::Ident) && matches!(ret_tok.value.as_deref(), Some("return") | Some("send")) {
                         self.i += 1; // consume 'return'
                         let pexpr = self.parse_coalesce()?;
                         let expr = self.lower_expr(pexpr);
@@ -2931,6 +2931,10 @@ impl<'t> Parser<'t> {
                 None
             }
         })
+    }
+
+    fn peek_is_return(&self) -> bool {
+        matches!(self.peek_ident(), Some("return") | Some("send"))
     }
 
     #[inline]
@@ -5173,7 +5177,7 @@ impl<'t> Parser<'t> {
             return self.parse_local_bind();
         }
 
-        if self.peek_ident() == Some("return") {
+        if self.peek_is_return() {
             return self.parse_return_stmt();
         }
 
@@ -5836,6 +5840,12 @@ impl<'t> Parser<'t> {
             }
         }
 
+        // Sugar: standalone `..` → empty string ""
+        if self.peek_op("..") {
+            self.i += 1;
+            return Ok(PExpr::Str(String::new()));
+        }
+
         // Check for :builtin pattern
         if self.peek_op(":") {
             if let Some(next_tok) = self.toks.get(self.i + 1) {
@@ -5864,7 +5874,7 @@ impl<'t> Parser<'t> {
 
             // Optional subject (but not if next is 'using' or 'return')
             if self.peek_ident() != Some("using")
-                && self.peek_ident() != Some("return")
+                && !self.peek_is_return()
                 && !self.peek_newline_or_eof()
                 && !self.peek_op("{")
             {
@@ -5889,7 +5899,7 @@ impl<'t> Parser<'t> {
             }
 
             // NEW: optional header 'return <expr>'
-            if self.peek_ident() == Some("return") {
+            if self.peek_is_return() {
                 let _ = self.eat_ident();
                 self.skip_newlines();
                 let pe = self.parse_assign()?;
@@ -5967,7 +5977,7 @@ impl<'t> Parser<'t> {
 
             // Optional subject (same rule: not 'using'/'return')
             if self.peek_ident() != Some("using")
-                && self.peek_ident() != Some("return")
+                && !self.peek_is_return()
                 && !self.peek_newline_or_eof()
                 && !self.peek_op("{")
             {
@@ -5991,7 +6001,7 @@ impl<'t> Parser<'t> {
             }
 
             // Optional header 'return <expr>'
-            if self.peek_ident() == Some("return") {
+            if self.peek_is_return() {
                 let _ = self.eat_ident();
                 self.skip_newlines();
                 let pe = self.parse_assign()?;
@@ -7100,7 +7110,7 @@ impl<'t> Parser<'t> {
         let mut default_body: Option<ast::JudgeArmBody> = None;
 
         if self.peek_ident() != Some("using")
-            && self.peek_ident() != Some("return")
+            && !self.peek_is_return()
             && !self.peek_newline_or_eof()
             && !self.peek_op("{")
         {
@@ -7120,7 +7130,7 @@ impl<'t> Parser<'t> {
         }
 
         // Single keyword: 'return' <expr>  (default body for empty arms)
-        if self.peek_ident() == Some("return") {
+        if self.peek_is_return() {
             let _ = self.eat_ident();
             self.skip_newlines();
             let pe = self.parse_assign()?;
@@ -7251,7 +7261,7 @@ impl<'t> Parser<'t> {
         let mut default_body: Option<ast::JudgeArmBody> = None;
 
         if self.peek_ident() != Some("using")
-            && self.peek_ident() != Some("return")
+            && !self.peek_is_return()
             && !self.peek_newline_or_eof()
             && !self.peek_op("{")
         {
@@ -7270,7 +7280,7 @@ impl<'t> Parser<'t> {
             if is_cap { using_enum = Some(name); } else { using_expr = Some(Box::new(PExpr::Ident(name))); }
         }
 
-        if self.peek_ident() == Some("return") {
+        if self.peek_is_return() {
             let _ = self.eat_ident();
             self.skip_newlines();
             let pe = self.parse_assign()?;

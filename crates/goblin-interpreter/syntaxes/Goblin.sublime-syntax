@@ -92,7 +92,7 @@ contexts:
       scope: keyword.declaration.goblin
 
   control_flow:
-    - match: '\b(if|else|elif|end|xx|unless|while|for|repeat|in|where|return|skip|stop|jump|until|sweep|sweep_all|judge|judge_all|using|attempt|rescue|ensure|assert)\b'
+    - match: '\b(if|else|elif|end|xx|unless|while|for|repeat|in|where|return|send|skip|stop|jump|until|sweep|sweep_all|judge|judge_all|using|attempt|rescue|ensure|assert)\b'
       scope: keyword.control.goblin
 
   types:

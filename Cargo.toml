@@ -12,5 +12,5 @@ members = [
   "crates/goblin-cli",
   "crates/goblin-gql",
   "crates/goblin-host",
-  "crates/goblin-devserver", "crates/goblin-db",
+  "crates/goblin-devserver", 
 ]

@@ -959,52 +959,97 @@ fn run_repl() -> i32 {
     use goblin_parser::Parser;
     use goblin_ast as ast;
     use goblin_lexer::lex;
-
+ 
     println!("{}", repl_banner());
-
+ 
     // Run REPL in a thread with 8MB stack (Windows default is only 1MB)
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             // --- helper: parse + dump AST (no eval) ---
             fn repl_dump_ast(src: &str) {
-                // -------- LEX --------
                 let tokens = match lex(src, "<repl>") {
                     Ok(t) => t,
                     Err(diags) => {
                         if let Some(d) = diags.into_iter().next() {
-                            eprintln!("{d}"); // exactly once
+                            eprintln!("{d}");
                         }
                         return;
                     }
                 };
-
-                // -------- PARSE --------
+ 
                 let module = match Parser::new(&tokens).parse_module() {
                     Ok(m) => m,
                     Err(diags) => {
                         if let Some(d) = diags.into_iter().next() {
-                            eprintln!("{d}"); // exactly once
+                            eprintln!("{d}");
                         }
                         return;
                     }
                 };
-
-                // Dump statements so you can see TupleBind vs TupleAssign etc.
+ 
                 for (i, stmt) in module.items.iter().enumerate() {
                     println!("[{i}] {stmt:#?}");
                 }
             }
-
+ 
+            // --- helper: load + eval a file into the session ---
+            fn repl_load_file(path: &str, sess: &mut Session) {
+                let src = match std::fs::read_to_string(path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("error: could not read '{}': {}", path, e);
+                        return;
+                    }
+                };
+ 
+                let tokens = match lex(&src, path) {
+                    Ok(t) => t,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() {
+                            eprintln!("{d}");
+                        }
+                        return;
+                    }
+                };
+ 
+                let module = match Parser::new(&tokens).parse_module() {
+                    Ok(m) => m,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() {
+                            eprintln!("{d}");
+                        }
+                        return;
+                    }
+                };
+ 
+                for stmt in &module.items {
+                    let result = match stmt {
+                        ast::Stmt::Expr(e) => sess.eval_expr(e).map(|val| {
+                            let echo = format!("{val}");
+                            if !echo.is_empty() {
+                                println!("{echo}");
+                            }
+                        }),
+                        _ => sess.eval_stmt(stmt).map(|_| ()),
+                    };
+ 
+                    if let Err(d) = result {
+                        eprintln!("{d}");
+                        return;
+                    }
+                }
+ 
+                println!("loaded: {}", path);
+            }
+ 
             let mut sess = Session::new();
             let mut form_no: usize = 1;
-
-            // Accumulator for multi-line input and a tiny depth counter for blocks.
+ 
             let mut buf = String::new();
             let mut depth: i32 = 0;
-
+ 
             loop {
-                // Primary/continuation prompts
                 if buf.is_empty() {
                     print!("gbln({}): ", form_no);
                 } else {
@@ -1013,42 +1058,39 @@ fn run_repl() -> i32 {
                 if io::stdout().flush().is_err() {
                     return 1;
                 }
-
-                // Read one line
+ 
                 let mut line = String::new();
                 let read = io::stdin().read_line(&mut line).unwrap_or(0);
                 if read == 0 {
                     println!();
                     break;
-                } // Ctrl+D/Z
-
+                }
+ 
                 let trimmed = line.trim_end();
-
-                // Allow exit/quit only when not in a pending block
+ 
+                // exit/quit
                 if buf.is_empty()
                     && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit"))
                 {
                     break;
                 }
-
-                // Tiny easter egg: "enhance ..."
+ 
+                // :load <path>
                 if buf.is_empty() {
                     let s0 = trimmed.trim_start();
-                    if let Some(rest) = s0.strip_prefix("enhance") {
-                        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-                            let payload = rest.trim();
-                            if payload.is_empty() {
-                                println!("Enhance what?");
-                            } else {
-                                println!("{payload} has been enhanced.");
-                            }
-                            form_no += 1;
-                            continue;
+                    if let Some(rest) = s0.strip_prefix(":load") {
+                        let path = rest.trim();
+                        if path.is_empty() {
+                            println!("usage: :load <path>");
+                        } else {
+                            repl_load_file(path, &mut sess);
                         }
+                        form_no += 1;
+                        continue;
                     }
                 }
-
-                // REPL meta: :ast <code>  (parse + dump AST, no eval)
+ 
+                // :ast <code>
                 if buf.is_empty() {
                     let s0 = trimmed.trim_start();
                     if let Some(rest) = s0.strip_prefix(":ast") {
@@ -1064,23 +1106,38 @@ fn run_repl() -> i32 {
                         continue;
                     }
                 }
-
-                // Accumulate this line
+ 
+                // enhance easter egg
+                if buf.is_empty() {
+                    let s0 = trimmed.trim_start();
+                    if let Some(rest) = s0.strip_prefix("enhance") {
+                        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                            let payload = rest.trim();
+                            if payload.is_empty() {
+                                println!("Enhance what?");
+                            } else {
+                                println!("{payload} has been enhanced.");
+                            }
+                            form_no += 1;
+                            continue;
+                        }
+                    }
+                }
+ 
+                // Accumulate
                 buf.push_str(trimmed);
                 buf.push('\n');
-
-                // ----- Update block depth from THIS line only -----
+ 
+                // Update block depth
                 {
                     let src_line = trimmed.trim_start();
-
+ 
                     let starts_block_kw = |kw: &str| -> bool {
                         src_line == kw
                             || (src_line.starts_with(kw)
                                 && src_line[kw.len()..].starts_with(char::is_whitespace))
                     };
-
-                    // 1) control-flow / block headers open a block
-                    // BUT: if there's => on the same line, it's a single-line form
+ 
                     if starts_block_kw("if")
                         || starts_block_kw("unless")
                         || starts_block_kw("while")
@@ -1094,8 +1151,7 @@ fn run_repl() -> i32 {
                             depth += 1;
                         }
                     }
-
-                    // 2) action header opens a block unless single-line "act ... = expr"
+ 
                     if src_line.starts_with("act ")
                         || src_line.starts_with("act(")
                         || src_line.starts_with("action ")
@@ -1122,36 +1178,27 @@ fn run_repl() -> i32 {
                             depth += 1;
                         }
                     }
-
-                    // 3) closers
-                    if src_line == "end" {
-                        depth -= 1;
-                    }
-                    if src_line == "xx" {
-                        depth -= 1;
-                    }
-                    if depth < 0 {
-                        depth = 0;
-                    }
+ 
+                    if src_line == "end" { depth -= 1; }
+                    if src_line == "xx"  { depth -= 1; }
+                    if depth < 0 { depth = 0; }
                 }
-
-                // Keep reading if still inside a block
+ 
                 if depth > 0 {
                     continue;
                 }
-
-                // At top-level: empty form → new prompt
+ 
                 if buf.trim().is_empty() {
                     buf.clear();
                     continue;
                 }
-
+ 
                 // -------- LEX --------
                 let tokens = match lex(&buf, "<repl>") {
                     Ok(t) => t,
                     Err(diags) => {
                         if let Some(d) = diags.into_iter().next() {
-                            eprintln!("{d}"); // <-- exactly once
+                            eprintln!("{d}");
                         }
                         buf.clear();
                         depth = 0;
@@ -1159,13 +1206,13 @@ fn run_repl() -> i32 {
                         continue;
                     }
                 };
-
+ 
                 // -------- PARSE --------
                 let module = match Parser::new(&tokens).parse_module() {
                     Ok(m) => m,
                     Err(diags) => {
                         if let Some(d) = diags.into_iter().next() {
-                            eprintln!("{d}"); // <-- exactly once
+                            eprintln!("{d}");
                         }
                         buf.clear();
                         depth = 0;
@@ -1173,12 +1220,11 @@ fn run_repl() -> i32 {
                         continue;
                     }
                 };
-
+ 
                 // -------- EVAL --------
                 let mut had_error = false;
-
+ 
                 for stmt in &module.items {
-                    // Unify both branches so each stmt yields at most one Err printed once.
                     let result = match stmt {
                         ast::Stmt::Expr(e) => sess.eval_expr(e).map(|val| {
                             let echo = format!("{val}");
@@ -1188,24 +1234,23 @@ fn run_repl() -> i32 {
                         }),
                         _ => sess.eval_stmt(stmt).map(|_| ()),
                     };
-
+ 
                     if let Err(d) = result {
-                        eprintln!("{d}"); // <-- exactly once
+                        eprintln!("{d}");
                         had_error = true;
                         break;
                     }
                 }
-
-                // Reset for next form regardless of success/failure
+ 
                 buf.clear();
                 depth = 0;
                 form_no += 1;
-
+ 
                 if had_error {
-                    // Just proceed to next prompt.
+                    // proceed to next prompt
                 }
             }
-
+ 
             0
         })
         .unwrap()
