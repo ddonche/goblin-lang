@@ -1,7 +1,120 @@
-act main
-    x = [[[[[[[[[[[[[[[[[[[[20]]]]]]]]]]]]]]]]]]]]
-    say x
-    say "Success"
+@Nation matrix
+    id: "{id}", USA, Russia
+    aggression: .5, .3, .8
+    cooperation: .5, .7, .2
+    trust: .5, .5, .2
+    resistance: .1, nc, nc
 end
 
-main()
+overlay Nationalism |
+    hosts Nation
+    decays .05 per tick
+    conflicts Globalism
+    modifies:
+        aggression + .2
+        cooperation - .1
+    end
+    spawns Resistance when strength > .6:
+        strength .3
+    end
+end
+
+overlay Globalism |
+    hosts Nation
+    decays .03 per tick
+    conflicts Nationalism
+    modifies:
+        cooperation + .15
+        trust + .1
+    end
+end
+
+overlay Resistance |
+    hosts Nation
+    decays .04 per tick
+    modifies:
+        resistance + .15
+    end
+end
+
+say "=== INITIAL STATE ==="
+say USA
+say Russia
+
+say "=== APPLY OVERLAYS ==="
+overlay Nationalism on Russia at .8
+overlay Globalism on Russia at .4
+overlay Globalism on USA at .7
+
+say "Russia after Nationalism + Globalism applied:"
+say Russia
+say "USA after Globalism applied:"
+say USA
+
+say "=== STRENGTHS AFTER APPLY ==="
+say "Nationalism on Russia:"
+say overlay_strength("Nationalism", "Russia")
+say "Globalism on Russia:"
+say overlay_strength("Globalism", "Russia")
+say "Globalism on USA:"
+say overlay_strength("Globalism", "USA")
+say "Resistance on Russia (not yet spawned):"
+say overlay_strength("Resistance", "Russia")
+
+say "=== TICK 1 ==="
+tick()
+say "Russia:"
+say Russia
+say "USA:"
+say USA
+say "Nationalism on Russia:"
+say overlay_strength("Nationalism", "Russia")
+say "Globalism on Russia (weaker, conflicts Nationalism, decays faster):"
+say overlay_strength("Globalism", "Russia")
+say "Globalism on USA:"
+say overlay_strength("Globalism", "USA")
+say "Resistance on Russia (spawned because Nationalism > .6):"
+say overlay_strength("Resistance", "Russia")
+say "Russia resistance trait:"
+say Russia >> resistance
+
+say "=== TICK 2 ==="
+tick()
+say "Nationalism on Russia:"
+say overlay_strength("Nationalism", "Russia")
+say "Globalism on Russia:"
+say overlay_strength("Globalism", "Russia")
+say "Resistance on Russia:"
+say overlay_strength("Resistance", "Russia")
+say "Russia resistance trait:"
+say Russia >> resistance
+
+say "=== TICK 3 ==="
+tick()
+say "Nationalism on Russia:"
+say overlay_strength("Nationalism", "Russia")
+say "Globalism on Russia (should be nil or very weak):"
+say overlay_strength("Globalism", "Russia")
+say "Russia resistance trait:"
+say Russia >> resistance
+
+say "=== TEMPORARY OVERLAY ==="
+overlay Nationalism on USA at .5 for 2 ticks
+say "Nationalism on USA (temporary, 2 ticks):"
+say overlay_strength("Nationalism", "USA")
+say USA
+tick()
+say "After tick 1:"
+say overlay_strength("Nationalism", "USA")
+tick()
+say "After tick 2 (should be nil, effects reversed):"
+say overlay_strength("Nationalism", "USA")
+say USA
+
+say "=== DETACH ==="
+overlay Globalism on USA at .6
+say "Globalism on USA before detach:"
+say overlay_strength("Globalism", "USA")
+detach Globalism from USA
+say "Globalism on USA after detach (should be nil):"
+say overlay_strength("Globalism", "USA")

@@ -586,14 +586,115 @@ impl Host {
                                 let script_path = request_root.join("api").join(format!("{api_rel}.gbln"));
 
                                 if script_path.exists() {
+                                    let authorization = headers_map.iter()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or_default();
+
+                                    let host = host_header.unwrap_or("").to_string();
+
+                                    let headers_json = serde_json::to_string(&headers_map)
+                                        .unwrap_or_else(|_| "{}".to_string());
+
+                                    // Trusted auth context comes from trusted upstream request headers.
+                                    // Keep this generic — no vendor-specific auth here.
+                                    let auth_user_id = headers_map.iter()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-user-id"))
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or_default();
+
+                                    let auth_email = headers_map.iter()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-email"))
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or_default();
+
+                                    let auth_role = headers_map.iter()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-role"))
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or_default();
+
+                                    let auth_json = headers_map.iter()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-json"))
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or_default();
+
                                     match exec_goblin_script_via_cli_timeout(
                                         &script_path,
                                         30000,
                                         query_string,
                                         method,
+                                        path,
+                                        &host,
                                         &body_text,
+                                        &authorization,
+                                        &headers_json,
+                                        &auth_user_id,
+                                        &auth_email,
+                                        &auth_role,
+                                        &auth_json,
                                     ).await {
                                         Ok(body) => {
+                                            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
+
+                                            if let Ok(v) = parsed {
+                                                let status = v.get("status")
+                                                    .and_then(|x| x.as_u64())
+                                                    .unwrap_or(200) as u16;
+
+                                                let response_body = v.get("body")
+                                                    .and_then(|x| x.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+
+                                                let mut extra_headers = String::new();
+
+                                                if let Some(headers_obj) = v.get("headers").and_then(|x| x.as_object()) {
+                                                    for (k, val) in headers_obj {
+                                                        if let Some(s) = val.as_str() {
+                                                            extra_headers.push_str(&format!("{k}: {s}\r\n"));
+                                                        }
+                                                    }
+                                                }
+
+                                                if let Some(cookies_arr) = v.get("cookies").and_then(|x| x.as_array()) {
+                                                    for c in cookies_arr {
+                                                        if let Some(s) = c.as_str() {
+                                                            extra_headers.push_str(&format!("Set-Cookie: {s}\r\n"));
+                                                        }
+                                                    }
+                                                }
+
+                                                let reason = match status {
+                                                    200 => "OK",
+                                                    201 => "Created",
+                                                    204 => "No Content",
+                                                    400 => "Bad Request",
+                                                    401 => "Unauthorized",
+                                                    403 => "Forbidden",
+                                                    404 => "Not Found",
+                                                    500 => "Internal Server Error",
+                                                    504 => "Gateway Timeout",
+                                                    _ => "OK",
+                                                };
+
+                                                let content_type = v.get("headers")
+                                                    .and_then(|h| h.get("Content-Type"))
+                                                    .and_then(|x| x.as_str())
+                                                    .unwrap_or("text/plain; charset=utf-8");
+
+                                                let headers = format!(
+                                                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
+                                                    response_body.len(),
+                                                    crate::CONTRACT_VERSION
+                                                );
+
+                                                if socket.write_all(headers.as_bytes()).await.is_ok() {
+                                                    let _ = socket.write_all(response_body.as_bytes()).await;
+                                                }
+                                                log.done(status, response_body.len());
+                                                if want_close { break 'conn; } else { continue 'conn; }
+                                            }
+
                                             let headers = format!(
                                                 "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
                                                 body.len(), crate::CONTRACT_VERSION
@@ -835,7 +936,15 @@ async fn exec_goblin_script_via_cli_timeout(
     timeout_ms: u64,
     query_string: &str,
     method: &str,
+    path: &str,
+    host: &str,
     body: &str,
+    authorization: &str,
+    headers_json: &str,
+    auth_user_id: &str,
+    auth_email: &str,
+    auth_role: &str,
+    auth_json: &str,
 ) -> Result<String, ExecErr> {
     use tokio::process::Command;
     use tokio::time::{timeout, Duration};
@@ -847,7 +956,15 @@ async fn exec_goblin_script_via_cli_timeout(
        .env("GOBLIN_NONINTERACTIVE", "1")
        .env("GOBLIN_QUERY_STRING", query_string)
        .env("GOBLIN_METHOD", method)
+       .env("GOBLIN_PATH", path)
+       .env("GOBLIN_HOST", host)
        .env("GOBLIN_BODY", body)
+       .env("GOBLIN_AUTHORIZATION", authorization)
+       .env("GOBLIN_HEADERS_JSON", headers_json)
+       .env("AUTH_USER_ID", auth_user_id)
+       .env("AUTH_EMAIL", auth_email)
+       .env("AUTH_ROLE", auth_role)
+       .env("AUTH_JSON", auth_json)
        .stdin(Stdio::null())
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());

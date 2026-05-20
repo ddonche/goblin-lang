@@ -6,3 +6,6 @@ pub mod utils;
 pub mod files;
 pub mod ipsum;
 pub mod process;
+pub mod db;
+pub mod request;
+pub mod response;

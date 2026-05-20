@@ -240,6 +240,9 @@ pub enum Value {
         class_name: String,
         fields: BTreeMap<String, Value>,
         readonly_fields: BTreeSet<String>,
+        /// Fields inferred as traits: numeric, 0..1, not prefixed with ~ (raw).
+        /// Populated at instantiation time. Used by overlays and links.
+        trait_fields: BTreeSet<String>,
     },
     Enum {                              
         enum_name: String,
@@ -339,6 +342,56 @@ impl Drop for FileGuard {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ResponseState {
+    pub status: Option<i64>,
+    pub headers: indexmap::IndexMap<String, String>,
+    pub cookies: Vec<String>,
+}
+
+// ── Overlay runtime structures ──────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct OverlayDef {
+    pub name: String,
+    pub host_types: Vec<String>,
+    pub spread_channels: Vec<(String, f64)>,
+    pub decay_rate: f64,
+    pub modifiers: Vec<(String, f64)>,
+    pub conflict_rules: Vec<OverlayConflictRule>,
+    pub spawn_rules: Vec<OverlaySpawnRule>,
+    pub default_duration: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlayConflictRule {
+    pub opponent: String,
+    pub suppress_rate: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlaySpawnRule {
+    pub condition_field: String,
+    pub condition_op: String,
+    pub condition_val: f64,
+    pub spawn_overlay: String,
+    pub spawn_strength: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlayInstance {
+    pub overlay_name: String,
+    /// Variable name of the host object in the session env.
+    pub host_var: String,
+    pub strength: f64,
+    pub age: u32,
+    /// Remaining ticks for temporary overlays. None = permanent.
+    pub ticks_remaining: Option<u32>,
+    /// Snapshot of host field values before modifiers were applied.
+    /// Used to undo modifications when a temporary overlay expires.
+    pub original_values: Vec<(String, Value)>,
+}
+
 pub struct Session {
     history: Vec<Value>,                               // v(n)
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
@@ -365,6 +418,12 @@ pub struct Session {
     pub sweep_file_path: Option<String>,
     pub sweep_buf: Option<String>,
     pub sweep_scope: Option<(usize, usize)>,
+
+    pub response: ResponseState,
+
+    // ==== OVERLAY SYSTEM ====
+    pub overlay_defs: HashMap<String, OverlayDef>,
+    pub overlay_instances: Vec<OverlayInstance>,
 }
 
 impl Session {
@@ -408,6 +467,11 @@ impl Session {
             sweep_file_path: None,
             sweep_buf: None,
             sweep_scope: None,
+
+            response: ResponseState::default(),
+
+            overlay_defs: HashMap::new(),
+            overlay_instances: Vec::new(),
 
             rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
         }
@@ -2925,6 +2989,144 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             Ok(None)
         }
 
+        // ── Overlay: definition ──────────────────────────────────────────────
+        ast::Stmt::OverlayDef(def_stmt) => {
+            let def = OverlayDef {
+                name: def_stmt.name.clone(),
+                host_types: def_stmt.host_types.clone(),
+                spread_channels: def_stmt.spread_channels.clone(),
+                decay_rate: def_stmt.decay_rate,
+                modifiers: def_stmt.modifiers.clone(),
+                conflict_rules: def_stmt.conflict_rules.iter().map(|r| OverlayConflictRule {
+                    opponent: r.opponent.clone(),
+                    suppress_rate: r.suppress_rate,
+                }).collect(),
+                spawn_rules: def_stmt.spawn_rules.iter().map(|r| OverlaySpawnRule {
+                    condition_field: r.condition_field.clone(),
+                    condition_op: r.condition_op.clone(),
+                    condition_val: r.condition_val,
+                    spawn_overlay: r.spawn_overlay.clone(),
+                    spawn_strength: r.spawn_strength,
+                }).collect(),
+                default_duration: def_stmt.default_duration,
+            };
+            sess.overlay_defs.insert(def.name.clone(), def);
+            Ok(None)
+        }
+
+        // ── Overlay: apply to host ───────────────────────────────────────────
+        ast::Stmt::OverlayApply(apply_stmt) => {
+            let span = apply_stmt.span.clone();
+
+            // Evaluate host expression to get the variable name
+            let host_val = eval_expr(&apply_stmt.host_expr, sess)?;
+            let host_var = match &apply_stmt.host_expr {
+                ast::Expr::Ident(name, _) => name.clone(),
+                _ => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        "R1200",
+                        "overlay-host-not-ident",
+                        "overlay host must be a variable name",
+                        span,
+                    ).with_help("Write: overlay plague on city_a — where city_a is a variable"));
+                }
+            };
+
+            // Look up overlay definition
+            let def = sess.overlay_defs.get(&apply_stmt.overlay_name).cloned()
+                .ok_or_else(|| Diagnostic::new_with_code(
+                    Severity::Error,
+                    "R1201",
+                    "unknown-overlay",
+                    &format!("unknown overlay '{}'", apply_stmt.overlay_name),
+                    span.clone(),
+                ).with_help("Declare the overlay before applying it"))?;
+
+            // Validate host type if hosts are declared
+            if !def.host_types.is_empty() {
+                if let Value::Object { ref class_name, .. } = host_val {
+                    if !def.host_types.contains(class_name) {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            "R1202",
+                            "overlay-host-type-mismatch",
+                            &format!(
+                                "overlay '{}' cannot occupy '{}' (valid hosts: {})",
+                                apply_stmt.overlay_name,
+                                class_name,
+                                def.host_types.join(", ")
+                            ),
+                            span,
+                        ));
+                    }
+                }
+            }
+
+            let duration = apply_stmt.duration_override.or(def.default_duration);
+
+            // Snapshot original values of modified fields for undo on expiry
+            let original_values: Vec<(String, Value)> = if duration.is_some() {
+                def.modifiers.iter().filter_map(|(field_name, _)| {
+                    if let Value::Object { ref fields, .. } = host_val {
+                        fields.get(field_name).map(|v| (field_name.clone(), v.clone()))
+                    } else {
+                        None
+                    }
+                }).collect()
+            } else {
+                Vec::new()
+            };
+
+            // Apply modifiers immediately to host
+            overlay_apply_modifiers(sess, &host_var, &def.modifiers);
+
+            let instance = OverlayInstance {
+                overlay_name: apply_stmt.overlay_name.clone(),
+                host_var,
+                strength: apply_stmt.strength.clamp(0.0, 1.0),
+                age: 0,
+                ticks_remaining: duration,
+                original_values,
+            };
+            sess.overlay_instances.push(instance);
+            Ok(None)
+        }
+
+        // ── Overlay: detach from host ────────────────────────────────────────
+        ast::Stmt::OverlayDetach(detach_stmt) => {
+            let span = detach_stmt.span.clone();
+            let host_var = match &detach_stmt.host_expr {
+                ast::Expr::Ident(name, _) => name.clone(),
+                _ => {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        "R1203",
+                        "overlay-detach-not-ident",
+                        "overlay detach host must be a variable name",
+                        span,
+                    ));
+                }
+            };
+
+            // Remove ALL matching instances, undoing modifiers for temporary ones
+            let mut i = 0;
+            while i < sess.overlay_instances.len() {
+                if sess.overlay_instances[i].overlay_name == detach_stmt.overlay_name
+                    && sess.overlay_instances[i].host_var == host_var
+                {
+                    let inst = sess.overlay_instances.remove(i);
+                    if !inst.original_values.is_empty() {
+                        overlay_restore_originals(sess, &inst.host_var, &inst.original_values);
+                    }
+                    // don't increment i — next element shifted into position i
+                } else {
+                    i += 1;
+                }
+            }
+            Ok(None)
+        }
+
         ast::Stmt::Block { stmts, .. } => {
             let mut last: Option<Value> = None;
             for stmt in stmts {
@@ -5178,10 +5380,213 @@ fn eval_builtin(
         }
 
         // Unknown builtin → tell caller to fall back to R0301 etc. (None signals “not a builtin here”)
+        "tick" => {
+            overlay_tick(sess);
+            Value::Unit
+        }
+
+        "overlays_of" => {
+            // overlays_of(host_var_name) → array of overlay name strings
+            arity(1)?;
+            let host_var = match &args[0] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+            let names: Vec<Value> = sess.overlay_instances.iter()
+                .filter(|inst| inst.host_var == host_var)
+                .map(|inst| Value::Str(inst.overlay_name.clone()))
+                .collect();
+            Value::Array(names)
+        }
+
+        "overlay_strength" => {
+            // overlay_strength(overlay_name, host_var_name) → Float or Nil
+            arity(2)?;
+            let ov_name = match &args[0] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+            let host_var = match &args[1] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+            let found = sess.overlay_instances.iter()
+                .find(|inst| inst.overlay_name == ov_name && inst.host_var == host_var)
+                .map(|inst| Value::Float(inst.strength));
+            found.unwrap_or(Value::Nil)
+        }
+
         _ => return Ok(None),
     };
 
     Ok(Some(out))
+}
+
+// ── Overlay helper functions ─────────────────────────────────────────────────
+
+/// Apply a set of field modifiers to a host object variable.
+/// Traits (0..1 fields) are clamped. Plain numeric fields are unclamped.
+fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(String, f64)]) {
+    if modifiers.is_empty() { return; }
+    if let Some(val) = sess.get_var_mut(host_var) {
+        if let Value::Object { fields, trait_fields, .. } = val {
+            for (field_name, delta) in modifiers {
+                if let Some(field_val) = fields.get_mut(field_name) {
+                    let current = match field_val {
+                        Value::Float(f) => *f,
+                        Value::Int(i) => *i as f64,
+                        _ => continue,
+                    };
+                    let new_val = current + delta;
+                    let new_val = if trait_fields.contains(field_name) {
+                        new_val.clamp(0.0, 1.0)
+                    } else {
+                        new_val
+                    };
+                    *field_val = Value::Float(new_val);
+                }
+            }
+        }
+    }
+}
+
+/// Restore snapshotted field values to a host object (used when temporary overlay expires).
+fn overlay_restore_originals(sess: &mut Session, host_var: &str, originals: &[(String, Value)]) {
+    if let Some(val) = sess.get_var_mut(host_var) {
+        if let Value::Object { fields, .. } = val {
+            for (field_name, orig_val) in originals {
+                fields.insert(field_name.clone(), orig_val.clone());
+            }
+        }
+    }
+}
+
+/// Run one simulation tick: decay, conflict resolution, spawn, expiry.
+/// Spread is deferred until the link system is implemented.
+fn overlay_tick(sess: &mut Session) {
+    // Collect defs snapshot to avoid borrow issues
+    let defs: HashMap<String, OverlayDef> = sess.overlay_defs.clone();
+
+    // 1. Apply per-tick modifiers and decay
+    let instance_count = sess.overlay_instances.len();
+    for idx in 0..instance_count {
+        let inst = &sess.overlay_instances[idx];
+        let host_var = inst.host_var.clone();
+        let overlay_name = inst.overlay_name.clone();
+
+        if let Some(def) = defs.get(&overlay_name) {
+            // Apply modifiers each tick
+            let modifiers = def.modifiers.clone();
+            overlay_apply_modifiers(sess, &host_var, &modifiers);
+
+            // Apply decay
+            let new_strength = sess.overlay_instances[idx].strength - def.decay_rate;
+            // Treat anything below the decay rate as zero to avoid floating point residue
+            sess.overlay_instances[idx].strength = if new_strength <= def.decay_rate { 0.0 } else { new_strength.max(0.0) };
+        }
+
+        sess.overlay_instances[idx].age += 1;
+
+        // Tick down duration
+        if let Some(ref mut remaining) = sess.overlay_instances[idx].ticks_remaining {
+            if *remaining > 0 {
+                *remaining -= 1;
+            }
+        }
+    }
+
+    // 2. Conflict resolution: find pairs on same host, suppress weaker
+    let inst_count = sess.overlay_instances.len();
+    let mut suppress_adjustments: Vec<(usize, f64)> = Vec::new();
+
+    for i in 0..inst_count {
+        let inst_a = &sess.overlay_instances[i];
+        if let Some(def_a) = defs.get(&inst_a.overlay_name) {
+            for rule in &def_a.conflict_rules {
+                // Find opponent on same host
+                for j in 0..inst_count {
+                    if i == j { continue; }
+                    let inst_b = &sess.overlay_instances[j];
+                    if inst_b.host_var != inst_a.host_var { continue; }
+                    if inst_b.overlay_name != rule.opponent { continue; }
+
+                    // Both conflict — suppress weaker more aggressively
+                    let str_a = inst_a.strength;
+                    let str_b = inst_b.strength;
+                    if str_a >= str_b {
+                        // b is weaker — suppress b extra
+                        suppress_adjustments.push((j, def_a.decay_rate * (rule.suppress_rate - 1.0)));
+                    } else {
+                        // a is weaker — suppress a extra
+                        suppress_adjustments.push((i, def_a.decay_rate * (rule.suppress_rate - 1.0)));
+                    }
+                }
+            }
+        }
+    }
+
+    for (idx, extra_decay) in suppress_adjustments {
+        if idx < sess.overlay_instances.len() {
+            sess.overlay_instances[idx].strength -= extra_decay;
+        }
+    }
+
+    // 3. Spawn rules
+    let mut to_spawn: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_var, strength)
+    for inst in &sess.overlay_instances {
+        if let Some(def) = defs.get(&inst.overlay_name) {
+            for rule in &def.spawn_rules {
+                let check_val = if rule.condition_field == "strength" {
+                    inst.strength
+                } else {
+                    continue; // only strength conditions for now
+                };
+                let triggered = match rule.condition_op.as_str() {
+                    ">" => check_val > rule.condition_val,
+                    ">=" => check_val >= rule.condition_val,
+                    "<" => check_val < rule.condition_val,
+                    "<=" => check_val <= rule.condition_val,
+                    "==" => (check_val - rule.condition_val).abs() < 1e-9,
+                    _ => false,
+                };
+                if triggered {
+                    // Only spawn if not already occupying this host
+                    let already = sess.overlay_instances.iter().any(|i| {
+                        i.overlay_name == rule.spawn_overlay && i.host_var == inst.host_var
+                    });
+                    if !already {
+                        to_spawn.push((rule.spawn_overlay.clone(), inst.host_var.clone(), rule.spawn_strength));
+                    }
+                }
+            }
+        }
+    }
+
+    for (ov_name, host_var, strength) in to_spawn {
+        if let Some(def) = defs.get(&ov_name).cloned() {
+            let modifiers = def.modifiers.clone();
+            let duration = def.default_duration;
+            overlay_apply_modifiers(sess, &host_var, &modifiers);
+            sess.overlay_instances.push(OverlayInstance {
+                overlay_name: ov_name,
+                host_var,
+                strength: strength.clamp(0.0, 1.0),
+                age: 0,
+                ticks_remaining: duration,
+                original_values: Vec::new(),
+            });
+        }
+    }
+
+    // 4. Remove dead instances (strength <= 0 or ticks_remaining == 0)
+    let mut to_remove: Vec<usize> = Vec::new();
+    for (idx, inst) in sess.overlay_instances.iter().enumerate() {
+        let expired = inst.ticks_remaining == Some(0);
+        let dead = inst.strength <= 0.0;
+        if expired || dead {
+            to_remove.push(idx);
+        }
+    }
+    // Remove in reverse order to preserve indices
+    for idx in to_remove.iter().rev() {
+        let inst = sess.overlay_instances.remove(*idx);
+        // Restore original values if temporary overlay expired
+        if !inst.original_values.is_empty() {
+            let originals = inst.original_values.clone();
+            overlay_restore_originals(sess, &inst.host_var, &originals);
+        }
+    }
 }
 
 // ===================== Collection Operation Refactoring =====================
@@ -10211,6 +10616,24 @@ fn call_action_by_name(
             return crate::actions::process::run_cmd(sess, &args, &sp);
         }
 
+        // ----- Database -----
+        "db_query"      => crate::actions::db::db_query(sess, &args, &sp)?,
+        "db_query_one"  => crate::actions::db::db_query_one(sess, &args, &sp)?,
+        "db_exec"       => crate::actions::db::db_exec(sess, &args, &sp)?,
+
+        // ----- Request -----
+        "req_method"    => crate::actions::request::req_method(sess, &args, &sp)?,
+        "req_path"      => crate::actions::request::req_path(sess, &args, &sp)?,
+        "req_query"     => crate::actions::request::req_query(sess, &args, &sp)?,
+        "req_body"      => crate::actions::request::req_body(sess, &args, &sp)?,
+        "req_header"    => crate::actions::request::req_header(sess, &args, &sp)?,
+        "cookie"        => crate::actions::request::cookie(sess, &args, &sp)?,
+
+        // ----- Response -----
+        "set_status"    => crate::actions::response::set_status(sess, &args, &sp)?,
+        "set_header"    => crate::actions::response::set_header(sess, &args, &sp)?,
+        "set_cookie"    => crate::actions::response::set_cookie(sess, &args, &sp)?,
+
         // ----- Files / paths / uuids / html -----
         "file_exists"       => crate::actions::files::file_exists(sess, &args, &sp)?,
         "create_dir"        => crate::actions::files::create_dir(sess, &args, &sp)?,
@@ -14674,7 +15097,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                 }
 
-                Value::Object { class_name, fields, readonly_fields: _ } => {
+                Value::Object { class_name, fields, readonly_fields: _, .. } => {
                     // 1) If it's a method name on this class, return a bound-method wrapper
                     if let Some(class) = sess.classes.get(&class_name) {
                         if class.actions.iter().any(|a| a.name == *name) {
@@ -14692,6 +15115,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                         class_name: class_name.clone(),
                                         fields: fields.clone(),
                                         readonly_fields: BTreeSet::new(),
+                                        trait_fields: BTreeSet::new(),
                                     },
                                 );
                             }
@@ -15434,7 +15858,43 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     } else {
                         eval_expr(&args[0], sess)?
                     };
-                    println!("{}", fmt_value_raw(&printed));
+
+                    let body = fmt_value_raw(&printed);
+
+                    // Detect API mode
+                    let is_api = std::env::var("GOBLIN_NONINTERACTIVE").unwrap_or_default() == "1";
+
+                    if !is_api {
+                        // Normal CLI behavior
+                        println!("{}", body);
+                        return Ok(Value::Unit);
+                    }
+
+                    // API mode → emit envelope
+                    let status = sess.response.status.unwrap_or(200);
+
+                    let mut headers_obj = serde_json::Map::new();
+                    for (k, v) in &sess.response.headers {
+                        headers_obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+                    }
+                    let headers_json = serde_json::Value::Object(headers_obj);
+
+                    let cookies_json = serde_json::Value::Array(
+                        sess.response
+                            .cookies
+                            .iter()
+                            .map(|c| serde_json::Value::String(c.clone()))
+                            .collect()
+                    );
+
+                    let envelope = serde_json::json!({
+                        "status": status,
+                        "headers": headers_json,
+                        "cookies": cookies_json,
+                        "body": body
+                    });
+
+                    println!("{}", envelope.to_string());
                     Ok(Value::Unit)
                 }
 
@@ -15518,7 +15978,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             
             // Object method calls - check if receiver is an object AND base is a variable
             if let ast::Expr::Ident(var_name, _) = &**base {
-                if let Value::Object { class_name, mut fields, readonly_fields } = recv {
+                if let Value::Object { class_name, mut fields, readonly_fields, trait_fields } = recv {
                     let result = call_object_method(sess, &class_name, &mut fields, name, args, sp.clone())?;
                     
                     // Update the object variable with modified fields
@@ -15526,6 +15986,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         class_name, 
                         fields,
                         readonly_fields,
+                        trait_fields,
                     };
                     sess.set_var(var_name.clone(), updated_obj);
                     
@@ -17417,10 +17878,35 @@ fn instantiate_object(
         }
     }
     
+    // Infer trait fields: numeric fields with value in 0.0..=1.0,
+    // excluding the auto-generated id field and any fields marked raw on the class.
+    let raw_fields: BTreeSet<String> = class.fields.iter()
+        .filter(|f| f.raw)
+        .map(|f| f.name.clone())
+        .collect();
+
+    let trait_fields: BTreeSet<String> = field_map.iter()
+        .filter_map(|(k, v)| {
+            if k == "id" { return None; }
+            if raw_fields.contains(k) { return None; }
+            let n = match v {
+                Value::Float(f) => *f,
+                Value::Int(i) => *i as f64,
+                _ => return None,
+            };
+            if n >= 0.0 && n <= 1.0 {
+                Some(k.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let obj = Value::Object {
         class_name: class_name.to_string(),
         fields: field_map,
         readonly_fields,
+        trait_fields,
     };
     
     sess.define_local(var_name.to_string(), obj, is_const);

@@ -49,11 +49,76 @@ pub enum Stmt {
     JudgeAll(JudgeAllStmt),
     Sweep(SweepStmt),
     Return(ReturnStmt),
+    OverlayDef(OverlayDefStmt),
+    OverlayApply(OverlayApplyStmt),
+    OverlayDetach(OverlayDetachStmt),
 
     Block {
         stmts: Vec<Stmt>,
         span: Span,
     },
+}
+
+// ── Overlay AST nodes ────────────────────────────────────────────────────────
+
+/// `overlay Name | ... end` — defines an overlay type.
+#[derive(Debug, Clone)]
+pub struct OverlayDefStmt {
+    pub name: String,
+    /// Class names this overlay may occupy. Empty = any host.
+    pub host_types: Vec<String>,
+    /// (channel_name, rate_per_tick) — requires links to function.
+    pub spread_channels: Vec<(String, f64)>,
+    /// Strength lost per tick.
+    pub decay_rate: f64,
+    /// (field_name, delta) — applied to host fields each tick.
+    pub modifiers: Vec<(String, f64)>,
+    pub conflict_rules: Vec<OverlayConflictRule>,
+    pub spawn_rules: Vec<OverlaySpawnRule>,
+    /// Default duration in ticks. None = permanent.
+    pub default_duration: Option<u32>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlayConflictRule {
+    pub opponent: String,
+    /// Multiplier on the weaker overlay's decay rate during conflict. Default 2.0.
+    pub suppress_rate: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlaySpawnRule {
+    /// Field on the overlay instance to test (currently always "strength").
+    pub condition_field: String,
+    /// Comparison operator: ">", "<", ">=", "<=", "=="
+    pub condition_op: String,
+    pub condition_val: f64,
+    /// Name of the overlay to spawn.
+    pub spawn_overlay: String,
+    /// Initial strength of the spawned instance.
+    pub spawn_strength: f64,
+}
+
+/// `overlay Name on target at strength` — applies an overlay instance to a host.
+#[derive(Debug, Clone)]
+pub struct OverlayApplyStmt {
+    pub overlay_name: String,
+    /// Expression that evaluates to the host object variable name.
+    pub host_expr: Expr,
+    /// Occupation strength (0..1). Defaults to 1.0 if omitted.
+    pub strength: f64,
+    /// Override duration in ticks. None = use overlay default.
+    pub duration_override: Option<u32>,
+    pub span: Span,
+}
+
+/// `detach Name from target` — removes an overlay instance from a host.
+#[derive(Debug, Clone)]
+pub struct OverlayDetachStmt {
+    pub overlay_name: String,
+    pub host_expr: Expr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +135,7 @@ pub struct FieldDecl {
     pub private: bool,
     pub nullable: bool,      // true if field has `?` suffix
     pub readonly: bool,      // true if field has `!` prefix
+    pub raw: bool,           // true if field has `~` prefix — opts out of trait inference
     pub relation: Option<RelationDef>,
     pub default: Option<Expr>,
     pub span: Span,

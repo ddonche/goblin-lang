@@ -102,6 +102,13 @@ pub mod rtcode {
     // ACTION
     pub const UNKNOWN_ACTION: &str = "A0401";
 
+    // DATABASE
+    pub const DB_CONNECT_FAILED: &str = "DB0001";
+    pub const DB_QUERY_FAILED:   &str = "DB0002";
+    pub const DB_INVALID_PARAMS: &str = "DB0003";
+    pub const DB_MISSING_URL:    &str = "DB0004";
+    pub const DB_EXEC_FAILED:    &str = "DB0005";
+
     // FILESYSTEM
     pub const FILESYSTEM_IO: &str = "FS0001";
 
