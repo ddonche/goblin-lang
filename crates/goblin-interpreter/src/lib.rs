@@ -238,7 +238,7 @@ pub enum Value {
     CtrlReturn(Box<Value>),
     Object {
         class_name: String,
-        fields: BTreeMap<String, Value>,
+        fields: IndexMap<String, Value>,
         readonly_fields: BTreeSet<String>,
         /// Fields inferred as traits: numeric, 0..1, not prefixed with ~ (raw).
         /// Populated at instantiation time. Used by overlays and links.
@@ -247,7 +247,7 @@ pub enum Value {
     Enum {                              
         enum_name: String,
         variant_name: String,
-        fields: Option<BTreeMap<String, Value>>,
+        fields: Option<IndexMap<String, Value>>,
     },
 }
 
@@ -392,6 +392,20 @@ pub struct OverlayInstance {
     pub original_values: Vec<(String, Value)>,
 }
 
+// ── Link runtime structures ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct LinkDef {
+    /// Class name this link applies to.
+    pub class_name: String,
+    /// The formula AST — evaluated with self/target bound in a temp scope.
+    pub formula: ast::Expr,
+    /// Theoretical minimum of the formula (derived at registration).
+    pub formula_min: f64,
+    /// Theoretical maximum of the formula (derived at registration).
+    pub formula_max: f64,
+}
+
 pub struct Session {
     history: Vec<Value>,                               // v(n)
     pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
@@ -424,6 +438,16 @@ pub struct Session {
     // ==== OVERLAY SYSTEM ====
     pub overlay_defs: HashMap<String, OverlayDef>,
     pub overlay_instances: Vec<OverlayInstance>,
+
+    // ==== LINK SYSTEM ====
+    /// Class-level link definitions keyed by class name.
+    pub link_defs: HashMap<String, LinkDef>,
+    /// Per-object link formula overrides keyed by variable name.
+    pub object_link_defs: HashMap<String, LinkDef>,
+
+    // ==== TRANSITION SYSTEM ====
+    /// Variables erased by transitions — kept for friendly error messages.
+    pub erased_vars: HashMap<String, String>, // var_name -> class_name at time of erasure
 }
 
 impl Session {
@@ -472,6 +496,11 @@ impl Session {
 
             overlay_defs: HashMap::new(),
             overlay_instances: Vec::new(),
+
+            link_defs: HashMap::new(),
+            object_link_defs: HashMap::new(),
+
+            erased_vars: HashMap::new(),
 
             rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
         }
@@ -546,6 +575,12 @@ impl Session {
             .wrapping_mul(6364136223846793005u128)
             .wrapping_add(1u128);
         self.rng_state
+    }
+
+    /// Generate a random f64 in [0.0, 1.0)
+    pub fn next_f64(&mut self) -> f64 {
+        let r = self.next_u128();
+        (r as f64) / (u128::MAX as f64)
     }
 
     // --- scope helpers ---
@@ -2979,7 +3014,26 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             }
             
             sess.relationship_graph.insert(decl.name.clone(), relations);
-            sess.classes.insert(decl.name.clone(), decl.clone());
+
+            // If a class already exists and the incoming decl has no decision/judge/actions,
+            // preserve them from the existing class (matrix-synthesized classes
+            // should not overwrite a full class declaration).
+            let final_decl = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+                if let Some(existing) = sess.classes.get(&decl.name) {
+                    let mut merged = decl.clone();
+                    merged.actions = existing.actions.clone();
+                    merged.decision = existing.decision.clone();
+                    merged.judge = existing.judge.clone();
+                    merged.transitions = existing.transitions.clone();
+                    merged
+                } else {
+                    decl.clone()
+                }
+            } else {
+                decl.clone()
+            };
+
+            sess.classes.insert(decl.name.clone(), final_decl);
             Ok(None)
         }
 
@@ -3124,6 +3178,32 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     i += 1;
                 }
             }
+            Ok(None)
+        }
+
+        // ── Link: class-level definition ────────────────────────────────────────
+        ast::Stmt::LinkDef(def_stmt) => {
+            let (min, max) = derive_link_formula_range(&def_stmt.formula);
+            let def = LinkDef {
+                class_name: def_stmt.class_name.clone(),
+                formula: def_stmt.formula.clone(),
+                formula_min: min,
+                formula_max: max,
+            };
+            sess.link_defs.insert(def_stmt.class_name.clone(), def);
+            Ok(None)
+        }
+
+        // ── Link: object-level override ──────────────────────────────────────
+        ast::Stmt::ObjectLinkDef(def_stmt) => {
+            let (min, max) = derive_link_formula_range(&def_stmt.formula);
+            let def = LinkDef {
+                class_name: String::new(), // not class-bound
+                formula: def_stmt.formula.clone(),
+                formula_min: min,
+                formula_max: max,
+            };
+            sess.object_link_defs.insert(def_stmt.object_var.clone(), def);
             Ok(None)
         }
 
@@ -5385,6 +5465,25 @@ fn eval_builtin(
             Value::Unit
         }
 
+        "decision_debug" => {
+            // Prints diagnostic info about what decision_tick can see
+            for frame in &sess.env {
+                for (var_name, val) in frame {
+                    if let Value::Object { class_name, .. } = val {
+                        let has_decision = sess.classes.get(class_name)
+                            .map(|c| c.decision.is_some())
+                            .unwrap_or(false);
+                        let has_judge = sess.classes.get(class_name)
+                            .map(|c| c.judge.is_some())
+                            .unwrap_or(false);
+                        println!("  var={} class={} has_decision={} has_judge={}", 
+                            var_name, class_name, has_decision, has_judge);
+                    }
+                }
+            }
+            Value::Unit
+        }
+
         "overlays_of" => {
             // overlays_of(host_var_name) → array of overlay name strings
             arity(1)?;
@@ -5405,6 +5504,44 @@ fn eval_builtin(
                 .find(|inst| inst.overlay_name == ov_name && inst.host_var == host_var)
                 .map(|inst| Value::Float(inst.strength));
             found.unwrap_or(Value::Nil)
+        }
+
+        "link_score" => {
+            // link_score(class_name, obj_a_var, obj_b_var) -> Float
+            // Evaluates the link formula from obj_a's perspective toward obj_b.
+            // Uses obj_a's object-level formula if defined, else the class formula.
+            arity(3)?;
+            let class_name = match &args[0] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+            let obj_a_var = match &args[1] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+            let obj_b_var = match &args[2] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+
+            let obj_a = sess.get_var(&obj_a_var).cloned();
+            let obj_b = sess.get_var(&obj_b_var).cloned();
+
+            let (self_val, target_val) = match (obj_a, obj_b) {
+                (Some(a), Some(b)) => (a, b),
+                _ => return Ok(Some(Value::Nil)),
+            };
+
+            // Look up formula: object override first, then class default
+            let def = sess.object_link_defs.get(&obj_a_var).cloned()
+                .or_else(|| sess.link_defs.get(&class_name).cloned());
+
+            match def {
+                None => Value::Nil,
+                Some(d) => {
+                    let score = eval_link_score(
+                        sess,
+                        self_val,
+                        target_val,
+                        &d.formula.clone(),
+                        d.formula_min,
+                        d.formula_max,
+                        sp,
+                    )?;
+                    Value::Float(score)
+                }
+            }
         }
 
         _ => return Ok(None),
@@ -5587,6 +5724,845 @@ fn overlay_tick(sess: &mut Session) {
             overlay_restore_originals(sess, &inst.host_var, &originals);
         }
     }
+
+    // 5. Run decisions for all objects with a decision formula
+    decision_tick(sess);
+
+    // 6. Evaluate and execute transitions
+    transition_tick(sess);
+}
+
+// ── Link helper functions ────────────────────────────────────────────────────
+
+/// Derive theoretical (min, max) range from a link formula expression.
+/// Walks the AST and computes worst-case bounds assuming all trait values are 0..1.
+/// Falls back to (0.0, 1.0) for complex expressions it can't analyze.
+/// Run decisions for all objects that have a decision formula on their class.
+/// For each such object: evaluate formula against all valid targets, pick best,
+/// apply margin, run judge block, execute selected action.
+fn decision_tick(sess: &mut Session) {
+    // Collect all (var_name, class_name) pairs that have a decision defined
+    let candidates: Vec<(String, String)> = {
+        let mut out = Vec::new();
+        for frame in &sess.env {
+            for (var_name, val) in frame {
+                if let Value::Object { class_name, .. } = val {
+                    if let Some(class) = sess.classes.get(class_name) {
+                        if class.decision.is_some() {
+                            out.push((var_name.clone(), class_name.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+
+    for (self_var, class_name) in candidates {
+        // Get the decision def and judge from the class
+        let (decision, judge) = {
+            let class = match sess.classes.get(&class_name) {
+                Some(c) => c.clone(),
+                None => continue,
+            };
+            match (class.decision.clone(), class.judge.clone()) {
+                (Some(d), Some(j)) => (d, j),
+                _ => continue,
+            }
+        };
+
+        // Find all valid targets of the target class (excluding self)
+        let target_candidates: Vec<(String, Value)> = {
+            let mut out = Vec::new();
+            for frame in &sess.env {
+                for (var_name, val) in frame {
+                    if var_name == &self_var { continue; }
+                    if let Value::Object { class_name, .. } = val {
+                        if class_name == &decision.target_class {
+                            out.push((var_name.clone(), val.clone()));
+                        }
+                    }
+                }
+            }
+            out
+        };
+
+        if target_candidates.is_empty() { continue; }
+
+        let self_val = match sess.get_var(&self_var).cloned() {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // Evaluate formula against each target, pick best scoring
+        let mut best_score = -1.0f64;
+        let mut best_target_var = String::new();
+        let mut best_target_val: Option<Value> = None;
+
+        for (target_var, target_val) in &target_candidates {
+            let raw_score = match eval_link_score(
+                sess,
+                self_val.clone(),
+                target_val.clone(),
+                &decision.formula,
+                decision.formula_min,
+                decision.formula_max,
+                &decision.span,
+            ) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if raw_score > best_score {
+                best_score = raw_score;
+                best_target_var = target_var.clone();
+                best_target_val = Some(target_val.clone());
+            }
+        }
+
+        if best_target_val.is_none() { continue; }
+
+        // Apply margin noise: score += random in range (-margin, +margin)
+        let margin = if let Value::Object { ref fields, .. } = self_val {
+            fields.get("margin")
+                .and_then(|v| match v {
+                    Value::Float(f) => Some(*f),
+                    Value::Int(i) => Some(*i as f64),
+                    _ => None,
+                })
+                .unwrap_or(0.0)
+        } else { 0.0 };
+
+        let noise = if margin > 0.0 {
+            let r = sess.next_f64(); // 0..1
+            (r * 2.0 - 1.0) * margin // -margin..+margin
+        } else { 0.0 };
+
+        let final_score = (best_score + noise).clamp(0.0, 1.0);
+
+        // Run judge block: evaluate conditions against score, find matching arm,
+        // then execute the selected action as a method on self.
+        let target_val_owned = best_target_val.unwrap();
+
+        // Find the matching judge arm
+        let mut selected_action: Option<(String, Vec<ast::Expr>)> = None;
+        let mut else_action: Option<(String, Vec<ast::Expr>)> = None;
+
+        // Push scope for condition evaluation
+        sess.push_frame();
+        sess.define_local("score".to_string(), Value::Float(final_score), false);
+        sess.define_local("self".to_string(), self_val.clone(), false);
+        sess.define_local("target".to_string(), target_val_owned.clone(), false);
+        if let Value::Object { ref fields, .. } = self_val {
+            for (k, v) in fields { sess.define_local(k.clone(), v.clone(), false); }
+        }
+
+        for arm in &judge.arms {
+            match &arm.condition {
+                None => {
+                    // else arm — extract action call
+                    if let Some((name, args)) = extract_action_call(&arm.body) {
+                        else_action = Some((name, args));
+                    }
+                }
+                Some(cond) => {
+                    if let Ok(v) = eval_expr(cond.as_ref(), sess) {
+                        let is_true = match &v {
+                            Value::Bool(b) => *b,
+                            Value::Int(i) => *i != 0,
+                            Value::Float(f) => *f != 0.0,
+                            Value::Nil => false,
+                            _ => true,
+                        };
+                        if is_true {
+                            if let Some((name, args)) = extract_action_call(&arm.body) {
+                                selected_action = Some((name, args));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        sess.pop_frame();
+
+        let (action_name, action_args) = selected_action
+            .or(else_action)
+            .unwrap_or_default();
+
+        if !action_name.is_empty() {
+            // Get class name from the self object
+            let class_name = match sess.get_var(&self_var) {
+                Some(Value::Object { class_name, .. }) => class_name.clone(),
+                _ => continue,
+            };
+
+            // Get fields snapshot
+            let fields_snapshot = match sess.get_var(&self_var) {
+                Some(Value::Object { fields, .. }) => fields.clone(),
+                _ => continue,
+            };
+
+            // Build arg values
+            let arg_vals: Vec<Value> = action_args.iter().map(|arg_expr| {
+                match arg_expr {
+                    ast::Expr::Ident(n, _) if n == "target" => target_val_owned.clone(),
+                    other => eval_expr(other, sess).unwrap_or(Value::Nil),
+                }
+            }).collect();
+
+            // Find the action on the class
+            let action = match sess.classes.get(&class_name).cloned() {
+                Some(class) => class.actions.iter().find(|a| a.name == action_name).cloned(),
+                None => None,
+            };
+
+            if let Some(action) = action {
+                sess.push_frame();
+
+                // Get the actual trait_fields and readonly_fields from the real object
+                let (real_readonly, real_traits) = match sess.get_var(&self_var) {
+                    Some(Value::Object { readonly_fields, trait_fields, .. }) =>
+                        (readonly_fields.clone(), trait_fields.clone()),
+                    _ => (BTreeSet::new(), BTreeSet::new()),
+                };
+                let (target_readonly, target_traits) = match sess.get_var(&best_target_var) {
+                    Some(Value::Object { readonly_fields, trait_fields, .. }) =>
+                        (readonly_fields.clone(), trait_fields.clone()),
+                    _ => (BTreeSet::new(), BTreeSet::new()),
+                };
+
+                // Bind self and its fields
+                sess.define_local("self".to_string(), Value::Object {
+                    class_name: class_name.clone(),
+                    fields: fields_snapshot.clone(),
+                    readonly_fields: real_readonly,
+                    trait_fields: real_traits,
+                }, false);
+                for (k, v) in &fields_snapshot {
+                    sess.define_local(k.clone(), v.clone(), false);
+                }
+
+                // Bind target with its real trait_fields
+                let target_with_traits = match target_val_owned.clone() {
+                    Value::Object { class_name: tcn, fields: tf, .. } => Value::Object {
+                        class_name: tcn,
+                        fields: tf,
+                        readonly_fields: target_readonly,
+                        trait_fields: target_traits,
+                    },
+                    other => other,
+                };
+                sess.define_local("target".to_string(), target_with_traits, false);
+                if let Value::Object { ref fields, .. } = target_val_owned {
+                    for (k, v) in fields {
+                        sess.define_local(format!("target_{}", k), v.clone(), false);
+                    }
+                }
+
+                // Bind action params
+                for (i, param) in action.params.iter().enumerate() {
+                    let val = arg_vals.get(i).cloned().unwrap_or(Value::Nil);
+                    sess.define_local(param.name.clone(), val, false);
+                }
+
+                // Execute action body
+                match &action.body {
+                    ast::ActionBody::Block(stmts) => {
+                        for s in stmts {
+                            let _ = eval_stmt(s, sess);
+                        }
+                    }
+                    ast::ActionBody::Expr(e) => {
+                        let _ = eval_expr(e, sess);
+                    }
+                }
+
+                // Write back modified self and target to the frame where they live
+                if let Some(updated_self) = sess.get_var("self").cloned() {
+                    if let Some(slot) = sess.get_var_mut(&self_var) {
+                        *slot = updated_self;
+                    }
+                }
+                if let Some(updated_target) = sess.get_var("target").cloned() {
+                    if let Some(slot) = sess.get_var_mut(&best_target_var) {
+                        *slot = updated_target;
+                    }
+                }
+
+                sess.pop_frame();
+            }
+        }
+    }
+}
+
+/// Extract an action name and args from a judge arm body.
+/// Handles: `attack(target)` as FreeCall or Expr stmt.
+fn extract_action_call(body: &ast::JudgeArmBody) -> Option<(String, Vec<ast::Expr>)> {
+    match body {
+        ast::JudgeArmBody::Expr(e) => extract_call_from_expr(e),
+        ast::JudgeArmBody::Stmts(stmts) => {
+            for s in stmts {
+                if let ast::Stmt::Expr(e) = s {
+                    if let Some(result) = extract_call_from_expr(e) {
+                        return Some(result);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+fn extract_call_from_expr(expr: &ast::Expr) -> Option<(String, Vec<ast::Expr>)> {
+    match expr {
+        ast::Expr::FreeCall(name, args, _) => Some((name.clone(), args.clone())),
+        ast::Expr::Call(_, name, args, _) => Some((name.clone(), args.clone())),
+        _ => None,
+    }
+}
+
+// ── Transition helper functions ──────────────────────────────────────────────
+
+/// Global counter for auto-naming successor objects.
+static TRANSITION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_successor_name(class_name: &str) -> String {
+    let n = TRANSITION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}_{}", class_name, n)
+}
+
+/// Evaluate a successor field map with self/target bound in a temp scope.
+fn eval_successor_fields(
+    sess: &mut Session,
+    fields: &[(String, ast::Expr)],
+    self_val: &Value,
+    target_val: Option<&Value>,
+    sp: &goblin_diagnostics::Span,
+) -> IndexMap<String, Value> {
+    sess.push_frame();
+    sess.define_local("self".to_string(), self_val.clone(), true);
+    if let Some(tv) = target_val {
+        sess.define_local("target".to_string(), tv.clone(), true);
+    }
+    // Also bind self fields directly
+    if let Value::Object { fields, .. } = self_val {
+        for (k, v) in fields {
+            sess.define_local(k.clone(), v.clone(), false);
+        }
+    }
+    let mut result = IndexMap::new();
+    for (fname, fexpr) in fields {
+        if let Ok(v) = eval_expr(fexpr, sess) {
+            result.insert(fname.clone(), v);
+        }
+    }
+    sess.pop_frame();
+    result
+}
+
+/// Create a new object instance in the session from a class name and field overrides.
+fn create_successor_object(
+    sess: &mut Session,
+    var_name: &str,
+    class_name: &str,
+    field_overrides: IndexMap<String, Value>,
+) {
+    // Start from class defaults
+    let class_fields = sess.classes.get(class_name).map(|c| c.fields.clone()).unwrap_or_default();
+    let mut fields: IndexMap<String, Value> = IndexMap::new();
+
+    // Apply class defaults first
+    for fd in &class_fields {
+        if let Some(default_expr) = &fd.default {
+            if let Ok(v) = eval_expr(default_expr, sess) {
+                fields.insert(fd.name.clone(), v);
+            }
+        }
+    }
+
+    // Apply overrides
+    for (k, v) in field_overrides {
+        fields.insert(k, v);
+    }
+
+    // Auto-insert id, and replace {id} placeholder with the var name
+    let id_val = fields.get("id").cloned();
+    let needs_id = id_val.is_none()
+        || matches!(id_val, Some(Value::Str(ref s)) if s == "{id}");
+    if needs_id {
+        fields.insert("id".to_string(), Value::Str(var_name.to_string()));
+    }
+
+    // Build raw_fields and trait_fields
+    let raw_fields: BTreeSet<String> = class_fields.iter()
+        .filter(|f| f.raw)
+        .map(|f| f.name.clone())
+        .collect();
+
+    let trait_fields: BTreeSet<String> = fields.iter()
+        .filter_map(|(k, v)| {
+            if k == "id" || raw_fields.contains(k) { return None; }
+            let n = match v {
+                Value::Float(f) => *f,
+                Value::Int(i) => *i as f64,
+                _ => return None,
+            };
+            if n >= 0.0 && n <= 1.0 { Some(k.clone()) } else { None }
+        })
+        .collect();
+
+    let readonly_fields: BTreeSet<String> = class_fields.iter()
+        .filter(|f| f.readonly)
+        .map(|f| f.name.clone())
+        .collect();
+
+    let obj = Value::Object {
+        class_name: class_name.to_string(),
+        fields,
+        readonly_fields,
+        trait_fields,
+    };
+
+    // Store in global frame (env[0])
+    if let Some(frame) = sess.env.first_mut() {
+        frame.insert(var_name.to_string(), obj);
+        if let Some(consts_frame) = sess.consts.first_mut() {
+            consts_frame.insert(var_name.to_string(), false);
+        }
+    }
+}
+
+/// Transfer overlays from one host var to another (used by split/fracture continuity).
+fn transfer_overlays(sess: &mut Session, from_var: &str, to_var: &str) {
+    let instances_to_transfer: Vec<OverlayInstance> = sess.overlay_instances.iter()
+        .filter(|inst| inst.host_var == from_var)
+        .cloned()
+        .collect();
+    for mut inst in instances_to_transfer {
+        inst.host_var = to_var.to_string();
+        sess.overlay_instances.push(inst);
+    }
+}
+
+/// Remove all overlay instances for a given host var.
+fn drop_overlays_for(sess: &mut Session, host_var: &str) {
+    sess.overlay_instances.retain(|inst| inst.host_var != host_var);
+}
+
+/// Remove a variable from all env frames and record its erasure.
+fn erase_var(sess: &mut Session, var_name: &str) {
+    // Record class name before erasing
+    let class_name = sess.get_var(var_name)
+        .and_then(|v| if let Value::Object { class_name, .. } = v { Some(class_name.clone()) } else { None })
+        .unwrap_or_default();
+    sess.erased_vars.insert(var_name.to_string(), class_name);
+
+    for frame in sess.env.iter_mut() {
+        frame.remove(var_name);
+    }
+    for frame in sess.consts.iter_mut() {
+        frame.remove(var_name);
+    }
+}
+
+/// Main transition evaluation loop — called once per tick after decisions.
+fn transition_tick(sess: &mut Session) {
+    // Collect candidates: (var_name, class_name)
+    let candidates: Vec<(String, String)> = {
+        let mut out = Vec::new();
+        for frame in &sess.env {
+            for (var_name, val) in frame {
+                if let Value::Object { class_name, .. } = val {
+                    if let Some(class) = sess.classes.get(class_name) {
+                        if !class.transitions.is_empty() {
+                            out.push((var_name.clone(), class_name.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+
+    // Track which vars were erased this tick — skip them for subsequent transitions
+    let mut erased: BTreeSet<String> = BTreeSet::new();
+
+    // Process unary transitions first (erase, spawn, split, fracture, mutate),
+    // then binary (absorb, subjugate, merge). This ensures objects get a chance
+    // to undergo their own transformation before being consumed by another.
+    let unary_kinds = [
+        ast::TransitionKind::Erase,
+        ast::TransitionKind::Spawn,
+        ast::TransitionKind::Split,
+        ast::TransitionKind::Fracture,
+        ast::TransitionKind::Mutate,
+    ];
+    let binary_kinds = [
+        ast::TransitionKind::Absorb,
+        ast::TransitionKind::Subjugate,
+        ast::TransitionKind::Merge,
+    ];
+
+    for pass in 0..2usize {
+        for (var_name, class_name) in &candidates {
+        if erased.contains(var_name) { continue; }
+
+        let transitions = match sess.classes.get(class_name) {
+            Some(c) => c.transitions.clone(),
+            None => continue,
+        };
+
+        let self_val = match sess.get_var(var_name).cloned() {
+            Some(v) => v,
+            None => continue,
+        };
+
+        let dummy_sp = synth_span();
+
+        'transition_loop: for tdef in &transitions {
+                // Pass 0: unary only. Pass 1: binary only.
+                let is_binary = matches!(tdef.kind,
+                    ast::TransitionKind::Absorb |
+                    ast::TransitionKind::Subjugate |
+                    ast::TransitionKind::Merge
+                );
+                if pass == 0 && is_binary { continue; }
+                if pass == 1 && !is_binary { continue; }
+            // Bind self for trigger evaluation
+            sess.push_frame();
+            sess.define_local("self".to_string(), self_val.clone(), true);
+            if let Value::Object { ref fields, .. } = self_val {
+                for (k, v) in fields {
+                    sess.define_local(k.clone(), v.clone(), false);
+                }
+            }
+
+            // For binary transitions, find a valid target — only among original candidates
+            // (objects that existed before this tick started, not newly spawned ones)
+            let target_val: Option<(String, Value)> = if let Some(ref tc) = tdef.target_class {
+                let all_targets: Vec<(String, Value)> = candidates.iter()
+                    .filter(|(vn, cn)| {
+                        vn != var_name
+                        && !erased.contains(vn.as_str())
+                        && cn == tc
+                    })
+                    .filter_map(|(vn, _)| {
+                        sess.get_var(vn).map(|v| (vn.clone(), v.clone()))
+                    })
+                    .collect();
+
+                // Find first target where trigger fires
+                let mut found = None;
+                for (tvn, tv) in all_targets {
+                    sess.define_local("target".to_string(), tv.clone(), true);
+                    let fired = eval_expr(&tdef.trigger, sess)
+                        .ok()
+                        .map(|v| match v {
+                            Value::Bool(b) => b,
+                            Value::Int(i) => i != 0,
+                            Value::Float(f) => f != 0.0,
+                            Value::Nil => false,
+                            _ => true,
+                        })
+                        .unwrap_or(false);
+                    if fired {
+                        found = Some((tvn, tv));
+                        break;
+                    }
+                }
+                found
+            } else {
+                // Unary — just evaluate trigger
+                None
+            };
+
+            // For unary transitions evaluate trigger without target
+            let trigger_fired = if tdef.target_class.is_none() {
+                eval_expr(&tdef.trigger, sess)
+                    .ok()
+                    .map(|v| match v {
+                        Value::Bool(b) => b,
+                        Value::Int(i) => i != 0,
+                        Value::Float(f) => f != 0.0,
+                        Value::Nil => false,
+                        _ => true,
+                    })
+                    .unwrap_or(false)
+            } else {
+                target_val.is_some()
+            };
+
+            sess.pop_frame();
+
+            if !trigger_fired { continue; }
+
+            // Execute the transition
+            let target_ref = target_val.as_ref().map(|(_, tv)| tv);
+            let target_var_name = target_val.as_ref().map(|(tvn, _)| tvn.clone());
+
+            match tdef.kind {
+                ast::TransitionKind::Erase => {
+                    match tdef.overlay_rule {
+                        ast::OverlayContinuity::Drop => drop_overlays_for(sess, &var_name),
+                        _ => drop_overlays_for(sess, &var_name),
+                    }
+                    erase_var(sess, &var_name);
+                    erased.insert(var_name.clone());
+                    break 'transition_loop;
+                }
+
+                ast::TransitionKind::Spawn => {
+                    let child_class = tdef.into_classes.first()
+                        .cloned()
+                        .unwrap_or(class_name.clone());
+                    let child_name = next_successor_name(&child_class);
+                    let child_fields = if let Some(succ) = tdef.successors.iter().find(|s| s.label == "child") {
+                        eval_successor_fields(sess, &succ.fields, &self_val, target_ref, &dummy_sp)
+                    } else {
+                        IndexMap::new()
+                    };
+                    create_successor_object(sess, &child_name, &child_class, child_fields);
+                }
+
+                ast::TransitionKind::Split => {
+                    let class_a = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
+                    let class_b = tdef.into_classes.get(1).cloned().unwrap_or(class_name.clone());
+                    let name_a = next_successor_name(&class_a);
+                    let name_b = next_successor_name(&class_b);
+
+                    let fields_a = if let Some(s) = tdef.successors.iter().find(|s| s.label == "first") {
+                        eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
+                    } else { IndexMap::new() };
+                    let fields_b = if let Some(s) = tdef.successors.iter().find(|s| s.label == "second") {
+                        eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
+                    } else { IndexMap::new() };
+
+                    create_successor_object(sess, &name_a, &class_a, fields_a);
+                    create_successor_object(sess, &name_b, &class_b, fields_b);
+
+                    // Handle overlay continuity
+                    match tdef.overlay_rule {
+                        ast::OverlayContinuity::Split => {
+                            transfer_overlays(sess, &var_name, &name_a);
+                            transfer_overlays(sess, &var_name, &name_b);
+                        }
+                        ast::OverlayContinuity::Transfer => {
+                            transfer_overlays(sess, &var_name, &name_a);
+                        }
+                        ast::OverlayContinuity::Drop => {}
+                    }
+                    drop_overlays_for(sess, &var_name);
+                    erase_var(sess, &var_name);
+                    erased.insert(var_name.clone());
+                    break 'transition_loop;
+                }
+
+                ast::TransitionKind::Fracture => {
+                    let frag_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
+                    let frag_name = next_successor_name(&frag_class);
+                    let frag_fields = if let Some(s) = tdef.successors.iter().find(|s| s.label == "fragment") {
+                        eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
+                    } else { IndexMap::new() };
+                    create_successor_object(sess, &frag_name, &frag_class, frag_fields);
+                    match tdef.overlay_rule {
+                        ast::OverlayContinuity::Split => transfer_overlays(sess, &var_name, &frag_name),
+                        _ => {}
+                    }
+                    // Original remains — no erase
+                }
+
+                ast::TransitionKind::Mutate => {
+                    let new_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
+                    let carries_fields = if let Some(s) = tdef.successors.iter().find(|s| s.label == "carries") {
+                        eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
+                    } else { IndexMap::new() };
+
+                    // Replace class_name on the object, update fields
+                    if let Some(slot) = sess.get_var_mut(&var_name) {
+                        if let Value::Object { class_name: cn, fields, .. } = slot {
+                            *cn = new_class.clone();
+                            for (k, v) in carries_fields {
+                                fields.insert(k, v);
+                            }
+                        }
+                    }
+                    match tdef.overlay_rule {
+                        ast::OverlayContinuity::Drop => drop_overlays_for(sess, &var_name),
+                        _ => {}
+                    }
+                }
+
+                ast::TransitionKind::Absorb => {
+                    if let Some(ref tvn) = target_var_name {
+                        let carries_fields = if let Some(s) = tdef.successors.iter().find(|s| s.label == "carries") {
+                            eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
+                        } else { IndexMap::new() };
+
+                        // Apply carries to self
+                        if let Some(slot) = sess.get_var_mut(&var_name) {
+                            if let Value::Object { fields, .. } = slot {
+                                for (k, v) in carries_fields {
+                                    fields.insert(k, v);
+                                }
+                            }
+                        }
+
+                        // Handle target overlays
+                        match tdef.overlay_rule {
+                            ast::OverlayContinuity::Transfer => transfer_overlays(sess, tvn, &var_name),
+                            _ => drop_overlays_for(sess, tvn),
+                        }
+                        erase_var(sess, tvn);
+                        erased.insert(tvn.clone());
+                    }
+                }
+
+                ast::TransitionKind::Subjugate => {
+                    if let Some(ref tvn) = target_var_name {
+                        // Apply a Subjugated overlay on the target
+                        let inst = OverlayInstance {
+                            overlay_name: "Subjugated".to_string(),
+                            host_var: tvn.clone(),
+                            strength: 1.0,
+                            age: 0,
+                            ticks_remaining: None,
+                            original_values: Vec::new(),
+                        };
+                        sess.overlay_instances.push(inst);
+                    }
+                }
+
+                ast::TransitionKind::Merge => {
+                    if let Some(ref tvn) = target_var_name {
+                        let new_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
+                        let new_name = next_successor_name(&new_class);
+                        let carries_fields = if let Some(s) = tdef.successors.iter().find(|s| s.label == "carries") {
+                            eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
+                        } else { IndexMap::new() };
+
+                        create_successor_object(sess, &new_name, &new_class, carries_fields);
+
+                        match tdef.overlay_rule {
+                            ast::OverlayContinuity::Transfer | ast::OverlayContinuity::Split => {
+                                transfer_overlays(sess, &var_name, &new_name);
+                                transfer_overlays(sess, tvn, &new_name);
+                            }
+                            ast::OverlayContinuity::Drop => {}
+                        }
+
+                        drop_overlays_for(sess, &var_name);
+                        drop_overlays_for(sess, tvn);
+                        erase_var(sess, &var_name);
+                        erase_var(sess, tvn);
+                        erased.insert(var_name.clone());
+                        erased.insert(tvn.clone());
+                        break 'transition_loop;
+                    }
+                }
+            }
+        }
+        }
+    }
+}
+
+fn derive_link_formula_range(expr: &ast::Expr) -> (f64, f64) {
+    match expr {
+        // Number literal
+        ast::Expr::Number(s, _) => {
+            let v = s.parse::<f64>().unwrap_or(0.0);
+            (v, v)
+        }
+
+        // self >> field or target >> field — trait value, range 0..1
+        ast::Expr::Binary(lhs, op, rhs, _) if op == ">>" => {
+            match lhs.as_ref() {
+                ast::Expr::Ident(name, _) if name == "self" || name == "target" => {
+                    // plain trait access: 0..1
+                    let _ = rhs;
+                    (0.0, 1.0)
+                }
+                _ => (0.0, 1.0),
+            }
+        }
+
+        // Binary ops: +, -, *
+        ast::Expr::Binary(lhs, op, rhs, _) => {
+            let (lmin, lmax) = derive_link_formula_range(lhs);
+            let (rmin, rmax) = derive_link_formula_range(rhs);
+            match op.as_str() {
+                "+" => (lmin + rmin, lmax + rmax),
+                "-" => (lmin - rmax, lmax - rmin),
+                "*" => {
+                    // Both sides could be negative; take all combinations
+                    let products = [lmin*rmin, lmin*rmax, lmax*rmin, lmax*rmax];
+                    (products.iter().cloned().fold(f64::INFINITY, f64::min),
+                     products.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                }
+                _ => (0.0, 1.0),
+            }
+        }
+
+        // Prefix negation
+        ast::Expr::Prefix(op, inner, _) if op == "-" => {
+            let (imin, imax) = derive_link_formula_range(inner);
+            (-imax, -imin)
+        }
+
+        // (1 - expr) pattern: handled via binary subtraction above
+        // FreeCall: abs(), etc — fall back to conservative range
+        ast::Expr::FreeCall(name, args, _) if name == "abs" => {
+            if let Some(arg) = args.first() {
+                let (amin, amax) = derive_link_formula_range(arg);
+                let abs_min = if amin <= 0.0 && amax >= 0.0 { 0.0 } else { amin.abs().min(amax.abs()) };
+                let abs_max = amin.abs().max(amax.abs());
+                (abs_min, abs_max)
+            } else {
+                (0.0, 1.0)
+            }
+        }
+
+        // Parenthesized or block — fall through
+        _ => (0.0, 1.0),
+    }
+}
+
+/// Evaluate a link formula between two objects, returning a normalized 0..1 score.
+fn eval_link_score(
+    sess: &mut Session,
+    self_val: Value,
+    target_val: Value,
+    formula: &ast::Expr,
+    formula_min: f64,
+    formula_max: f64,
+    sp: &goblin_diagnostics::Span,
+) -> Result<f64, Diag> {
+    // Push a temporary scope with self and target bound
+    sess.env.push(BTreeMap::new());
+    sess.consts.push(BTreeMap::new());
+    sess.define_local("self".to_string(), self_val, true);
+    sess.define_local("target".to_string(), target_val, true);
+
+    let result = eval_expr(formula, sess);
+
+    sess.env.pop();
+    sess.consts.pop();
+
+    let raw = match result? {
+        Value::Float(f) => f,
+        Value::Int(i) => i as f64,
+        _ => return Ok(0.5),
+    };
+
+    // Normalize to 0..1
+    let range = formula_max - formula_min;
+    let normalized = if range.abs() < 1e-12 {
+        0.5 // degenerate formula — all values identical
+    } else {
+        ((raw - formula_min) / range).clamp(0.0, 1.0)
+    };
+
+    Ok(normalized)
 }
 
 // ===================== Collection Operation Refactoring =====================
@@ -14237,6 +15213,35 @@ fn mutate_via_call_name(
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
     match e {
+        // ---- Member path assignment: (Object >> field) |= value ----
+        ast::Expr::Binary(lhs, op, rhs, sp) if op == "|=" => {
+            let rhs_val = eval_expr(rhs, sess)?;
+            let path = parse_lvalue(lhs, sess)?;
+
+            // Check if this field is a trait on the parent object — if so, clamp to 0..1
+            let is_trait = if let LValuePath::Field { ref base, ref field } = path {
+                if let Some(parent) = eval_lvalue(base, sess, sp).ok() {
+                    if let Value::Object { ref trait_fields, .. } = parent {
+                        trait_fields.contains(field)
+                    } else { false }
+                } else { false }
+            } else { false };
+
+            let final_val = if is_trait {
+                match rhs_val {
+                    Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
+                    Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
+                    other => other,
+                }
+            } else {
+                rhs_val
+            };
+
+            let slot = get_lvalue_mut(&path, sess, sp)?;
+            *slot = final_val.clone();
+            return Ok(final_val);
+        }
+
         // ---- Literals & identifiers ----
         ast::Expr::Nil(_) => Ok(Value::Nil),
         ast::Expr::Bool(b, _) => Ok(Value::Bool(*b)),
@@ -14330,12 +15335,21 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(v.clone())
                 }
                 None => {
+                    if let Some(class_name) = sess.erased_vars.get(name.as_str()) {
+                        let msg = if class_name.is_empty() {
+                            format!("warning: '{}' no longer exists (erased by transition)", name)
+                        } else {
+                            format!("warning: '{}' no longer exists (the {} was erased by transition)", name, class_name)
+                        };
+                        eprintln!("{}", msg);
+                        return Ok(Value::Nil);
+                    }
                     return Err(
                         Diagnostic::new_with_code(
                             Severity::Error,
-                            crate::diagnostics::rtcode::UNKNOWN_IDENT, // R0101
+                            crate::diagnostics::rtcode::UNKNOWN_IDENT,
                             "unknown-ident",
-                            &format!("unknown identifier ‘{}’", name),
+                            &format!("unknown identifier {}", name),
                             sp.clone(),
                         )
                         .with_help("Declare the variable before use or check the spelling.")
@@ -14558,7 +15572,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                     }
                                 }
                             }
-                            Some(m)
+                            // Convert BTreeMap to IndexMap for Value::Enum fields
+                            let im: IndexMap<String, Value> = m.into_iter().collect();
+                            Some(im)
                         }
                         _other => {
                             return Err(
@@ -14648,7 +15664,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             
             // Now we can mutably borrow sess to evaluate fields
             let field_values = if let Some(field_exprs) = fields {
-                let mut field_map = BTreeMap::new();
+                let mut field_map = IndexMap::new();
                 
                 for (field_name, field_expr) in field_exprs {
                     let value = eval_expr(field_expr, sess)?;
@@ -17335,7 +18351,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 fn call_object_method_with_values(
     sess: &mut Session,
     class_name: &str,
-    fields: &mut BTreeMap<String, Value>,
+    fields: &mut IndexMap<String, Value>,
     method_name: &str,
     arg_vals: Vec<Value>,
     sp: Span,
@@ -17394,7 +18410,7 @@ fn call_object_method_with_values(
     }
 
     sess.push_frame();
-    sess.set_var("self".to_string(), Value::Map(fields.clone()));
+    sess.set_var("self".to_string(), Value::Map(fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()));
 
     // Bind each field as a variable
     for (field_name, field_value) in fields.iter() {
@@ -17477,7 +18493,7 @@ fn call_object_method_with_values(
 fn call_object_method(
     sess: &mut Session,
     class_name: &str,
-    fields: &mut BTreeMap<String, Value>,
+    fields: &mut IndexMap<String, Value>,
     method_name: &str,
     arg_exprs: &[ast::Expr],
     sp: Span,
@@ -17519,7 +18535,7 @@ fn call_object_method(
     }
 
     sess.push_frame();
-    sess.set_var("self".to_string(), Value::Map(fields.clone()));
+    sess.set_var("self".to_string(), Value::Map(fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()));
 
     // Bind each field as a variable
     for (field_name, field_value) in fields.iter() {
@@ -17635,7 +18651,7 @@ fn instantiate_object(
     // Evaluate RHS expression
     let rhs_val = eval_expr(expr, sess)?;
     
-    let mut field_map = BTreeMap::new();
+    let mut field_map = IndexMap::new();
     let mut readonly_fields = BTreeSet::new();
     
     // Mark readonly fields

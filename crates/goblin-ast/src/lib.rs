@@ -52,11 +52,33 @@ pub enum Stmt {
     OverlayDef(OverlayDefStmt),
     OverlayApply(OverlayApplyStmt),
     OverlayDetach(OverlayDetachStmt),
+    LinkDef(LinkDefStmt),
+    ObjectLinkDef(ObjectLinkDefStmt),
 
     Block {
         stmts: Vec<Stmt>,
         span: Span,
     },
+}
+
+// ── Link AST nodes ───────────────────────────────────────────────────────────
+
+/// `link ClassName by [ formula ]` — defines a class-level link formula.
+#[derive(Debug, Clone)]
+pub struct LinkDefStmt {
+    pub class_name: String,
+    /// The formula expression. May reference `self` and `target` as identifiers.
+    pub formula: Expr,
+    pub span: Span,
+}
+
+/// `ObjectName link by [ formula ]` — defines an object-level link formula override.
+#[derive(Debug, Clone)]
+pub struct ObjectLinkDefStmt {
+    pub object_var: String,
+    /// The formula expression. May reference `self` and `target` as identifiers.
+    pub formula: Expr,
+    pub span: Span,
 }
 
 // ── Overlay AST nodes ────────────────────────────────────────────────────────
@@ -126,6 +148,85 @@ pub struct ClassDecl {
     pub name: String,
     pub fields: Vec<FieldDecl>,
     pub actions: Vec<ActionDecl>,
+    /// Optional decision formula declared inside the class body.
+    pub decision: Option<DecisionDef>,
+    /// Optional judge block declared inside the class body.
+    pub judge: Option<JudgeStmt>,
+    /// Transition declarations — what identity changes this class can undergo.
+    pub transitions: Vec<TransitionDef>,
+    pub span: Span,
+}
+
+// ── Transition AST nodes ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionKind {
+    Spawn,
+    Erase,
+    Split,
+    Fracture,
+    Merge,
+    Absorb,
+    Subjugate,
+    Mutate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayContinuity {
+    Split,    // distribute overlays to all successors
+    Transfer, // move overlays to primary successor
+    Drop,     // remove all overlays
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkContinuity {
+    Inherit, // transfer links to successors
+    Reset,   // drop all links
+}
+
+/// One named successor state block: `first: ... end`, `carries: ... end`, etc.
+#[derive(Debug, Clone)]
+pub struct SuccessorDef {
+    /// Label: "first", "second", "child", "fragment", "carries"
+    pub label: String,
+    /// Field assignments. Expressions may reference `self` and `target`.
+    pub fields: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+/// A full transition declaration inside a class body.
+#[derive(Debug, Clone)]
+pub struct TransitionDef {
+    pub kind: TransitionKind,
+    /// Trigger condition. Evaluated each tick with `self` (and `target` for binary transitions).
+    pub trigger: Expr,
+    /// For absorb/subjugate/merge — the class of object to act on.
+    pub target_class: Option<String>,
+    /// Class name(s) for successors (split, fracture, spawn, mutate).
+    /// Split may produce multiple classes; others produce one.
+    pub into_classes: Vec<String>,
+    /// Successor state blocks.
+    pub successors: Vec<SuccessorDef>,
+    pub overlay_rule: OverlayContinuity,
+    pub link_rule: LinkContinuity,
+    pub span: Span,
+}
+
+// ── Decision AST nodes ───────────────────────────────────────────────────────
+
+/// `score | decision against TargetClass by [ formula ]`
+/// Declared inside a class body. The runtime evaluates this formula
+/// against all valid targets each tick and selects the best one.
+#[derive(Debug, Clone)]
+pub struct DecisionDef {
+    /// The class of objects to evaluate as potential targets.
+    pub target_class: String,
+    /// Formula expression. References `self` and `target` as identifiers.
+    pub formula: Expr,
+    /// Derived theoretical minimum (computed at registration).
+    pub formula_min: f64,
+    /// Derived theoretical maximum (computed at registration).
+    pub formula_max: f64,
     pub span: Span,
 }
 

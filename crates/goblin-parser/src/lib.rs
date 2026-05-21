@@ -59,6 +59,9 @@ enum PExpr {
         name: String,
         fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>,
         actions: Vec<PAction>,
+        decision: Option<Box<PDecisionDef>>,
+        judge: Option<ast::JudgeStmt>,
+        transitions: Vec<ast::TransitionDef>,
     },
     EnumVariant {
         enum_name: String,
@@ -201,6 +204,13 @@ struct PAction {
     is_single: bool,
 }
 
+/// Parser-internal representation of a decision formula inside a class.
+#[derive(Debug, Clone)]
+struct PDecisionDef {
+    target_class: String,
+    formula: Box<PExpr>,
+}
+
 #[derive(Debug, Clone)]
 struct PEnumDecl {
     name: String,
@@ -217,7 +227,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -2718,37 +2728,27 @@ impl<'t> Parser<'t> {
         let (name_text, name_span) = names.remove(0);
 
         // 3.5) Optional class constructor lookahead:
-        //      identifier | ClassName | value
-        // NOTE: We have already consumed the first operator above.
-        let class_name = if self.peek_op("|") {
-            if let Some(tok) = self.toks.get(self.i + 1) {
-                if let TokenKind::Ident = tok.kind {
-                    if let Some(name_str) = &tok.value {
-                        let is_class = name_str
-                            .chars()
-                            .next()
-                            .map(|c| c.is_uppercase())
-                            .unwrap_or(false);
-                        let has_second_pipe = self
-                            .toks
-                            .get(self.i + 2)
-                            .map(|t| matches!(t.kind, TokenKind::Op(ref s) if s == "|"))
-                            .unwrap_or(false);
+        //      name | ClassName | { fields }
+        // After consuming the bind operator, check if current token is an uppercase Ident
+        // followed by another '|'.
+        let class_name = if let Some(tok) = self.peek() {
+            if let TokenKind::Ident = tok.kind {
+                if let Some(name_str) = tok.value.clone() {
+                    let is_class = name_str
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false);
+                    let has_pipe = self
+                        .toks
+                        .get(self.i + 1)
+                        .map(|t| matches!(t.kind, TokenKind::Op(ref s) if s == "|"))
+                        .unwrap_or(false);
 
-                        if is_class && has_second_pipe {
-                            self.i += 1; // consume first |
-                            let cname = name_str.clone();
-                            self.i += 1; // consume ClassName
-                            Some(cname)
-                        } else if has_second_pipe {
-                            return Err(s_help_site!(
-                                "P0403",
-                                &format!("Class names must start with uppercase (found '{}')", name_str),
-                                "Write: user | Person | { name: \"Alice\" }"
-                            ));
-                        } else {
-                            None
-                        }
+                    if is_class && has_pipe {
+                        self.i += 1; // consume ClassName
+                        self.i += 1; // consume |
+                        Some(name_str)
                     } else {
                         None
                     }
@@ -2789,14 +2789,32 @@ impl<'t> Parser<'t> {
 
             if self.peek_op("}") {
                 self.i += 1;
-                ast::Expr::Array(vec![], op_span.clone())
+                ast::Expr::Object(vec![], op_span.clone())
             } else {
-                // (existing named vs positional object body logic unchanged)
-                // ...
-                // ensure the closing `}` is consumed exactly as before
-                // return ast::Expr::Object(...) or ast::Expr::Array(...)
-                // ...
-                unreachable!("keep existing class-body parsing here")
+                // Parse named fields: key: value, key: value, ...
+                let mut named: Vec<(String, ast::Expr)> = Vec::new();
+                loop {
+                    self.skip_newlines();
+                    if self.peek_op("}") { self.i += 1; break; }
+                    if self.is_eof() { break; }
+
+                    // Named field: key: value
+                    let Some(fname) = self.eat_ident() else { break; };
+                    self.skip_layout_inline();
+                    if self.eat_op(":") {
+                        self.skip_layout_inline();
+                        let fval_pe = self.parse_coalesce()?;
+                        let fval = self.lower_expr(fval_pe);
+                        named.push((fname, fval));
+                    }
+                    self.skip_newlines();
+                    if !self.eat_op(",") {
+                        self.skip_newlines();
+                        if self.peek_op("}") { self.i += 1; }
+                        break;
+                    }
+                }
+                ast::Expr::Object(named, op_span.clone())
             }
         } else {
             // Parse RHS like `parse_coalesce()`, but STOP if the next `??` is
@@ -3762,6 +3780,7 @@ impl<'t> Parser<'t> {
                     && matches!(
                         tok.value.as_deref(),
                         Some("act") | Some("action") | Some("end") | Some("xx")
+                        | Some("score") | Some("judge") | Some("transition")
                     )
                 {
                     break;
@@ -3870,11 +3889,14 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new() });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new() });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
         let mut actions: Vec<PAction> = Vec::new();
+        let mut decision: Option<PDecisionDef> = None;
+        let mut judge: Option<ast::JudgeStmt> = None;
+        let mut transitions: Vec<ast::TransitionDef> = Vec::new();
 
         loop {
             // Skip layout
@@ -3892,7 +3914,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions });
                 }
             }
 
@@ -3916,7 +3938,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions });
             }
 
             if self.is_eof() {
@@ -3939,13 +3961,105 @@ impl<'t> Parser<'t> {
                 || (matches!(act_tok.kind, TokenKind::Ident)
                     && matches!(act_tok.value.as_deref(), Some("act") | Some("action")));
 
+            // Handle decision formula: `score | decision against TargetClass by [ formula ]`
+            let is_decision = matches!(act_tok.kind, TokenKind::Ident)
+                && act_tok.value.as_deref() == Some("score");
+
+            // Handle judge block inside class
+            let is_judge = matches!(act_tok.kind, TokenKind::Ident)
+                && act_tok.value.as_deref() == Some("judge");
+
+            if is_decision {
+                self.i += 1; // consume 'score'
+                if !self.eat_op("|") {
+                    return Err(s_help_site!(
+                        "P1400",
+                        "Expected '|' after 'score' in decision declaration",
+                        "Write: score | decision against Fighter by [ formula ]",
+                    ));
+                }
+                if self.peek_ident() != Some("decision") {
+                    return Err(s_help_site!(
+                        "P1401",
+                        "Expected 'decision' after 'score |'",
+                        "Write: score | decision against Fighter by [ formula ]",
+                    ));
+                }
+                let _ = self.eat_ident(); // consume 'decision'
+                self.skip_layout();
+                if self.peek_ident() != Some("against") {
+                    return Err(s_help_site!(
+                        "P1402",
+                        "Expected 'against' after 'decision'",
+                        "Write: score | decision against Fighter by [ formula ]",
+                    ));
+                }
+                let _ = self.eat_ident(); // consume 'against'
+                self.skip_layout();
+                let Some(target_class) = self.eat_ident() else {
+                    return Err(s_help_site!(
+                        "P1403",
+                        "Expected target class name after 'against'",
+                        "Write: score | decision against Fighter by [ formula ]",
+                    ));
+                };
+                self.skip_layout();
+                if self.peek_ident() != Some("by") {
+                    return Err(s_help_site!(
+                        "P1404",
+                        "Expected 'by' after target class name",
+                        "Write: score | decision against Fighter by [ formula ]",
+                    ));
+                }
+                let _ = self.eat_ident(); // consume 'by'
+                self.skip_layout();
+                if !self.eat_op("[") {
+                    return Err(s_help_site!(
+                        "P1405",
+                        "Expected '[' to open decision formula",
+                        "Write: score | decision against Fighter by [ formula ]",
+                    ));
+                }
+                self.skip_layout();
+                let formula = self.parse_coalesce()?;
+                self.skip_layout();
+                if !self.eat_op("]") {
+                    return Err(s_help_site!(
+                        "P1406",
+                        "Expected ']' to close decision formula",
+                        "Write: score | decision against Fighter by [ self >> aggression ]",
+                    ));
+                }
+                decision = Some(PDecisionDef { target_class, formula: Box::new(formula) });
+                continue;
+            }
+
+            if is_judge {
+                // Parse the judge block using the existing judge parser
+                let stmt = self.parse_judge_stmt()?;
+                if let ast::Stmt::Judge(js) = stmt {
+                    judge = Some(js);
+                }
+                continue;
+            }
+
+            // Handle transition declaration inside class body
+            let is_transition = matches!(act_tok.kind, TokenKind::Ident)
+                && act_tok.value.as_deref() == Some("transition");
+
+            if is_transition {
+                let td = self.parse_transition_def()?;
+                transitions.push(td);
+                continue;
+            }
+
             if !is_action_kw {
                 // A new top-level declaration (@Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::AtIdent)
                     || matches!(act_tok.kind, TokenKind::Op(ref s) if s == "@")
                 {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4021,7 +4135,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4170,8 +4284,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and fall through to normal class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions } = class {
-                        return Ok(PDecl::Class { name, fields, actions });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions });
                     }
                 }
 
@@ -4190,8 +4304,8 @@ impl<'t> Parser<'t> {
                         return Ok(PDecl::Matrix(matrix));
                     }
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions } = class {
-                        return Ok(PDecl::Class { name, fields, actions });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions });
                     }
                 }
 
@@ -5606,6 +5720,24 @@ impl<'t> Parser<'t> {
             return self.parse_overlay_detach();
         }
 
+        // -------- link definitions --------
+        // class-level: link ClassName by [ formula ]
+        if self.peek_ident() == Some("link") {
+            return self.parse_link_def();
+        }
+
+        // object-level: ObjectName link by [ formula ]
+        if let Some(t0) = self.peek() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                let next_is_link = self.toks.get(self.i + 1)
+                    .and_then(|t| t.value.as_deref().map(str::to_owned))
+                    .as_deref() == Some("link");
+                if next_is_link {
+                    return self.parse_object_link_def();
+                }
+            }
+        }
+
         // -------- free action: dedicated token from the lexer --------
         if let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Act) {
@@ -5694,6 +5826,53 @@ impl<'t> Parser<'t> {
                 }
             }
         }
+        // -------- member path assignment: Object >> field |= value --------
+        // Detects IDENT >> ... |= pattern and lowers to a member retether.
+        if let Some(t0) = self.peek().cloned() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                if let Some(t1) = self.toks.get(self.i + 1) {
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == ">>") {
+                        // Scan ahead to find |= anywhere in this member chain
+                        let mut k = self.i + 2;
+                        let mut found_retether = false;
+                        while let Some(t) = self.toks.get(k) {
+                            match &t.kind {
+                                TokenKind::Op(s) if s == "|=" => { found_retether = true; break; }
+                                TokenKind::Op(s) if s == ">>" => { k += 2; } // skip >> and field name
+                                TokenKind::Ident => { k += 1; }
+                                _ => break,
+                            }
+                        }
+                        if found_retether {
+                            let start_i = self.i;
+                            // Parse the full LHS expression (member chain)
+                            let lhs_pe = self.parse_coalesce()?;
+                            let lhs = self.lower_expr(lhs_pe);
+                            // Consume |=
+                            let op_sp = self.peek().map(|t| t.span.clone()).unwrap_or_else(|| t0.span.clone());
+                            if !self.eat_op("|=") {
+                                self.i = start_i;
+                            } else {
+                                self.skip_newlines();
+                                let rhs_pe = self.parse_coalesce()?;
+                                let rhs = self.lower_expr(rhs_pe);
+                                // Lower to: lhs |= rhs as an Expr assignment
+                                // We use a FreeCall to set_field or handle via eval
+                                // Actually lower as TupleAssign using lhs path
+                                // Simplest: emit as Expr(Binary(lhs, "|=", rhs)) and handle in interpreter
+                                return Ok(ast::Stmt::Expr(ast::Expr::Binary(
+                                    Box::new(lhs),
+                                    "|=".to_string(),
+                                    Box::new(rhs),
+                                    op_sp,
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // -------- aug-assign statement sugar (legacy set only) --------
         // Supports exactly what old parse_assign supported:
         // ??= //= += -= *= /= %= **= |!  (|= already handled by parse_bind_stmt)
@@ -5862,6 +6041,9 @@ impl<'t> Parser<'t> {
             name: type_name.clone(),
             fields: fields_ast,
             actions: vec![],
+            decision: None,
+            judge: None,
+            transitions: vec![],
             span: sp.clone(),
         }));
 
@@ -5958,13 +6140,50 @@ impl<'t> Parser<'t> {
         }
     }
 
+
+    /// Derive theoretical (min, max) from a link/decision formula for normalization.
+    /// This is the parser-side version operating on ast::Expr.
+    fn derive_link_formula_range_parser(expr: &ast::Expr) -> (f64, f64) {
+        match expr {
+            ast::Expr::Number(s, _) => {
+                let v = s.parse::<f64>().unwrap_or(0.0);
+                (v, v)
+            }
+            ast::Expr::Binary(lhs, op, rhs, _) if op == ">>" => {
+                match lhs.as_ref() {
+                    ast::Expr::Ident(name, _) if name == "self" || name == "target" => (0.0, 1.0),
+                    _ => (0.0, 1.0),
+                }
+            }
+            ast::Expr::Binary(lhs, op, rhs, _) => {
+                let (lmin, lmax) = Self::derive_link_formula_range_parser(lhs);
+                let (rmin, rmax) = Self::derive_link_formula_range_parser(rhs);
+                match op.as_str() {
+                    "+" => (lmin + rmin, lmax + rmax),
+                    "-" => (lmin - rmax, lmax - rmin),
+                    "*" => {
+                        let products = [lmin*rmin, lmin*rmax, lmax*rmin, lmax*rmax];
+                        (products.iter().cloned().fold(f64::INFINITY, f64::min),
+                         products.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                    }
+                    _ => (0.0, 1.0),
+                }
+            }
+            ast::Expr::Prefix(op, inner, _) if op == "-" => {
+                let (imin, imax) = Self::derive_link_formula_range_parser(inner);
+                (-imax, -imin)
+            }
+            _ => (0.0, 1.0),
+        }
+    }
+
     fn lower_class_stmt_from_pexpr(
         &mut self,
         pe: PExpr,
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions } => {
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -5995,17 +6214,33 @@ impl<'t> Parser<'t> {
                         ast::ActionDecl {
                             name: pa.name,
                             params,
-                            body: ast::ActionBody::Block(pa.body),  // Already Vec<ast::Stmt>
+                            body: ast::ActionBody::Block(pa.body),
                             span: sp.clone(),
                             ret: None,
                         }
                     })
                     .collect();
 
+                // Lower decision formula if present
+                let decision_ast = decision.map(|d| {
+                    let formula = self.lower_expr(*d.formula);
+                    let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+                    ast::DecisionDef {
+                        target_class: d.target_class,
+                        formula,
+                        formula_min,
+                        formula_max,
+                        span: sp.clone(),
+                    }
+                });
+
                 Ok(ast::Stmt::Class(ast::ClassDecl {
                     name,
                     fields: fields_ast,
                     actions: actions_ast,
+                    decision: decision_ast,
+                    judge,
+                    transitions,
                     span: sp,
                 }))
             }
@@ -6422,6 +6657,295 @@ impl<'t> Parser<'t> {
     /// Eat a numeric token and return it as u32.
     fn eat_number_u32(&mut self) -> Option<u32> {
         self.eat_number_f64().map(|f| f as u32)
+    }
+
+    /// Parse `link ClassName by [ formula ]`
+    fn parse_link_def(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let _ = self.eat_ident(); // consume 'link'
+
+        let Some(class_name) = self.eat_ident() else {
+            return Err(s_help_site!(
+                "P1300",
+                "Expected class name after 'link'",
+                "Write: link Nation by [ self >> trust - target >> aggression ]",
+            ));
+        };
+
+        self.skip_layout();
+
+        if self.peek_ident() != Some("by") {
+            return Err(s_help_site!(
+                "P1301",
+                "Expected 'by' after class name in link declaration",
+                "Write: link Nation by [ formula ]",
+            ));
+        }
+        let _ = self.eat_ident(); // consume 'by'
+
+        self.skip_layout();
+
+        if !self.eat_op("[") {
+            return Err(s_help_site!(
+                "P1302",
+                "Expected '[' to open link formula",
+                "Write: link Nation by [ self >> trust - target >> aggression ]",
+            ));
+        }
+
+        let formula_pe = self.parse_link_formula()?;
+        let formula = self.lower_expr(formula_pe);
+
+        self.skip_layout();
+        if !self.eat_op("]") {
+            return Err(s_help_site!(
+                "P1303",
+                "Expected ']' to close link formula",
+                "Write: link Nation by [ self >> trust - target >> aggression ]",
+            ));
+        }
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, formula, span }))
+    }
+
+    /// Parse `ObjectName link by [ formula ]`
+    fn parse_object_link_def(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+
+        let Some(object_var) = self.eat_ident() else {
+            return Err(s_help_site!(
+                "P1310",
+                "Expected object variable name before 'link'",
+                "Write: Russia link by [ formula ]",
+            ));
+        };
+
+        let _ = self.eat_ident(); // consume 'link'
+
+        self.skip_layout();
+
+        if self.peek_ident() != Some("by") {
+            return Err(s_help_site!(
+                "P1311",
+                "Expected 'by' after 'link' in object link declaration",
+                "Write: Russia link by [ formula ]",
+            ));
+        }
+        let _ = self.eat_ident(); // consume 'by'
+
+        self.skip_layout();
+
+        if !self.eat_op("[") {
+            return Err(s_help_site!(
+                "P1312",
+                "Expected '[' to open link formula",
+                "Write: Russia link by [ self >> power - target >> aggression ]",
+            ));
+        }
+
+        let formula_pe = self.parse_link_formula()?;
+        let formula = self.lower_expr(formula_pe);
+
+        self.skip_layout();
+        if !self.eat_op("]") {
+            return Err(s_help_site!(
+                "P1313",
+                "Expected ']' to close link formula",
+                "Write: Russia link by [ self >> power - target >> aggression ]",
+            ));
+        }
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::ObjectLinkDef(ast::ObjectLinkDefStmt { object_var, formula, span }))
+    }
+
+    /// Parse the expression inside a link formula block `[ ... ]`.
+    /// Allows multi-line expressions with `self` and `target` as identifiers.
+    /// Newlines inside the brackets are treated as whitespace.
+    fn parse_link_formula(&mut self) -> Result<PExpr, String> {
+        self.skip_layout();
+
+        // Collect all tokens until the matching ']', substituting newlines with spaces
+        // so the expression parser sees a flat expression.
+        // We parse it as a normal expression — `self` and `target` are just idents.
+        let expr = self.parse_coalesce()?;
+        Ok(expr)
+    }
+
+    /// Parse a `transition KIND [(TargetClass)] when CONDITION ... end` inside a class body.
+    fn parse_transition_def(&mut self) -> Result<ast::TransitionDef, String> {
+        use goblin_lexer::TokenKind;
+
+        let start_i = self.i;
+        let _ = self.eat_ident(); // consume 'transition'
+
+        self.skip_layout_inline();
+
+        // Parse transition kind
+        let Some(kind_str) = self.eat_ident() else {
+            return Err(s_help_site!("P1500", "Expected transition kind after 'transition'",
+                "Write: transition split when ... end"));
+        };
+        let kind = match kind_str.as_str() {
+            "spawn"      => ast::TransitionKind::Spawn,
+            "erase"      => ast::TransitionKind::Erase,
+            "split"      => ast::TransitionKind::Split,
+            "fracture"   => ast::TransitionKind::Fracture,
+            "merge"      => ast::TransitionKind::Merge,
+            "absorb"     => ast::TransitionKind::Absorb,
+            "subjugate"  => ast::TransitionKind::Subjugate,
+            "mutate"     => ast::TransitionKind::Mutate,
+            other => return Err(s_help_site!("P1501",
+                &format!("Unknown transition kind '{}'. Valid kinds: spawn erase split fracture merge absorb subjugate mutate", other),
+                "Write: transition split when ... end")),
+        };
+
+        self.skip_layout_inline();
+
+        // Optional target class for binary transitions: absorb(Faction)
+        let target_class = if self.eat_op("(") {
+            let tc = self.eat_ident();
+            self.eat_op(")");
+            tc
+        } else {
+            None
+        };
+
+        self.skip_layout_inline();
+
+        // Consume 'when'
+        if self.peek_ident() != Some("when") {
+            return Err(s_help_site!("P1502", "Expected 'when' after transition kind",
+                "Write: transition split when self >> stability < .2"));
+        }
+        let _ = self.eat_ident();
+
+        self.skip_layout_inline();
+
+        // Parse trigger condition expression
+        let trigger_pe = self.parse_coalesce()?;
+        let trigger = self.lower_expr(trigger_pe);
+
+        self.skip_layout();
+
+        // Optional: into ClassName, ClassName, ...
+        let mut into_classes: Vec<String> = Vec::new();
+        if self.peek_ident() == Some("into") {
+            let _ = self.eat_ident();
+            self.skip_layout_inline();
+            loop {
+                let Some(cls) = self.eat_ident() else { break; };
+                into_classes.push(cls);
+                self.skip_layout_inline();
+                if !self.eat_op(",") { break; }
+                self.skip_layout_inline();
+            }
+            self.skip_layout();
+        }
+
+        // Parse successor blocks and continuity rules until end/xx
+        let mut successors: Vec<ast::SuccessorDef> = Vec::new();
+        let mut overlay_rule = ast::OverlayContinuity::Drop;
+        let mut link_rule = ast::LinkContinuity::Reset;
+
+        loop {
+            self.skip_layout();
+            if self.is_eof() { break; }
+            if let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Ident)
+                    && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
+                {
+                    self.i += 1;
+                    break;
+                }
+            }
+
+            let Some(kw) = self.eat_ident() else { break; };
+
+            match kw.as_str() {
+                "overlays" => {
+                    self.skip_layout_inline();
+                    self.eat_op(":");
+                    self.skip_layout_inline();
+                    let Some(rule) = self.eat_ident() else { continue; };
+                    overlay_rule = match rule.as_str() {
+                        "split"    => ast::OverlayContinuity::Split,
+                        "transfer" => ast::OverlayContinuity::Transfer,
+                        "drop"     => ast::OverlayContinuity::Drop,
+                        _ => ast::OverlayContinuity::Drop,
+                    };
+                }
+                "links" => {
+                    self.skip_layout_inline();
+                    self.eat_op(":");
+                    self.skip_layout_inline();
+                    let Some(rule) = self.eat_ident() else { continue; };
+                    link_rule = match rule.as_str() {
+                        "inherit" => ast::LinkContinuity::Inherit,
+                        "reset"   => ast::LinkContinuity::Reset,
+                        _ => ast::LinkContinuity::Reset,
+                    };
+                }
+                // Successor state blocks: first, second, child, fragment, carries
+                label @ ("first" | "second" | "child" | "fragment" | "carries") => {
+                    self.skip_layout_inline();
+                    self.eat_op(":");
+                    self.skip_layout();
+                    let mut fields: Vec<(String, ast::Expr)> = Vec::new();
+                    loop {
+                        self.skip_layout();
+                        if self.is_eof() { break; }
+                        if let Some(tok) = self.peek() {
+                            if matches!(tok.kind, TokenKind::Ident)
+                                && matches!(tok.value.as_deref(), Some("end") | Some("xx")
+                                    | Some("first") | Some("second") | Some("child")
+                                    | Some("fragment") | Some("carries") | Some("overlays")
+                                    | Some("links") | Some("into"))
+                            {
+                                // Only consume end/xx here — other keywords continue outer loop
+                                if matches!(tok.value.as_deref(), Some("end") | Some("xx")) {
+                                    self.i += 1;
+                                }
+                                break;
+                            }
+                        }
+                        let Some(fname) = self.eat_ident() else { break; };
+                        self.skip_layout_inline();
+                        if !self.eat_op(":") { break; }
+                        self.skip_layout_inline();
+                        let fval_pe = self.parse_coalesce()?;
+                        let fval = self.lower_expr(fval_pe);
+                        fields.push((fname, fval));
+                    }
+                    let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+                    successors.push(ast::SuccessorDef {
+                        label: label.to_string(),
+                        fields,
+                        span: sp,
+                    });
+                }
+                _ => {
+                    // Unknown keyword — skip to newline
+                    while let Some(tok) = self.peek() {
+                        if matches!(tok.kind, TokenKind::Newline | TokenKind::Eof) { break; }
+                        self.i += 1;
+                    }
+                }
+            }
+        }
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::TransitionDef {
+            kind,
+            trigger,
+            target_class,
+            into_classes,
+            successors,
+            overlay_rule,
+            link_rule,
+            span,
+        })
     }
 
     fn parse_import(&mut self) -> Result<ast::Stmt, String> {

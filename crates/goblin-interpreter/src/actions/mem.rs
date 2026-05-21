@@ -56,12 +56,12 @@ fn ptr_for_value(v: &Value) -> *const u8 {
 
         // Object: use the address of its fields map as the stash location.
         Value::Object { fields, .. } => {
-            (fields as *const BTreeMap<String, Value>) as *const u8
+            (fields as *const IndexMap<String, Value>) as *const u8
         }
 
         // Enum with optional fields: use fields map if present, else fall back.
         Value::Enum { fields: Some(f), .. } => {
-            (f as *const BTreeMap<String, Value>) as *const u8
+            (f as *const IndexMap<String, Value>) as *const u8
         }
 
         Value::Enum { fields: None, .. } => {

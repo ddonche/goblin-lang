@@ -1,120 +1,176 @@
+@Nation |
+    power: .5
+    stability: .5
+    cohesion: .5
+    population: .5
+    aggression: .5
+    instability: .5
+    energy: .5
+
+    transition erase when self >> power < .1 and self >> stability < .1
+        overlays: drop
+        links: reset
+    end
+
+    transition spawn when self >> energy > .9
+        into Nation
+        child:
+            power: self >> power * .3
+            stability: .5
+            cohesion: .5
+            population: self >> population * .2
+            aggression: self >> aggression
+            instability: .3
+            energy: .3
+        end
+        overlays: drop
+        links: reset
+    end
+
+    transition split when self >> stability < .2 and self >> cohesion < .2
+        into Nation, Nation
+        first:
+            power: self >> power * .6
+            stability: self >> stability
+            cohesion: .4
+            population: self >> population * .55
+            aggression: self >> aggression
+            instability: self >> instability
+            energy: self >> energy
+        end
+        second:
+            power: self >> power * .4
+            stability: self >> stability
+            cohesion: .4
+            population: self >> population * .45
+            aggression: self >> aggression
+            instability: self >> instability
+            energy: self >> energy
+        end
+        overlays: split
+        links: inherit
+    end
+
+    transition fracture when self >> instability > .8 and self >> power > .6
+        into Nation
+        fragment:
+            power: self >> power * .2
+            stability: .3
+            cohesion: .3
+            population: self >> population * .15
+            aggression: self >> aggression
+            instability: .4
+            energy: .5
+        end
+        overlays: split
+        links: reset
+    end
+
+    transition mutate when self >> instability > .8 and self >> cohesion < .2
+        into Cult
+        carries:
+            power: self >> power * .5
+            aggression: self >> aggression
+            cohesion: .7
+            instability: self >> instability
+            stability: self >> stability
+            population: self >> population
+            energy: self >> energy
+        end
+        overlays: transfer
+        links: reset
+    end
+
+    transition absorb(Nation) when self >> power > target >> power * 2.0
+        carries:
+            power: self >> power + target >> power * .7
+            population: self >> population + target >> population * .8
+            stability: self >> stability
+            cohesion: self >> cohesion
+            aggression: self >> aggression
+            instability: self >> instability
+            energy: self >> energy
+        end
+        overlays: transfer
+        links: inherit
+    end
+
+    transition subjugate(Nation) when self >> power > target >> power * 1.5 and target >> cohesion > .5
+        overlays: transfer
+        links: inherit
+    end
+
+    transition merge(Nation) when self >> cohesion > .8 and target >> cohesion > .8
+        into Nation
+        carries:
+            power: self >> power + target >> power * .8
+            stability: self >> stability + target >> stability * .5
+            cohesion: self >> cohesion
+            population: self >> population + target >> population
+            aggression: self >> aggression
+            instability: self >> instability
+            energy: self >> energy
+        end
+        overlays: split
+        links: inherit
+    end
+end
+
+@Cult |
+    power: .3
+    stability: .3
+    cohesion: .7
+    aggression: .7
+    instability: .5
+    population: .3
+    energy: .4
+end
+
 @Nation matrix
-    id: "{id}", USA, Russia
-    aggression: .5, .3, .8
-    cooperation: .5, .7, .2
-    trust: .5, .5, .2
-    resistance: .1, nc, nc
-end
-
-overlay Nationalism |
-    hosts Nation
-    decays .05 per tick
-    conflicts Globalism
-    modifies:
-        aggression + .2
-        cooperation - .1
-    end
-    spawns Resistance when strength > .6:
-        strength .3
-    end
-end
-
-overlay Globalism |
-    hosts Nation
-    decays .03 per tick
-    conflicts Nationalism
-    modifies:
-        cooperation + .15
-        trust + .1
-    end
-end
-
-overlay Resistance |
-    hosts Nation
-    decays .04 per tick
-    modifies:
-        resistance + .15
-    end
+    id: "{id}", Rome, Carthage, Gaul, Sparta, Athens, Collapse
+    power: .5, .5, .3, .8, .4, .6, .05
+    stability: .5, .6, .15, .4, .85, .5, .05
+    cohesion: .5, .6, .15, .5, .9, .85, .3
+    population: .5, .8, .4, .7, .6, .5, .2
+    aggression: .5, .5, .5, .8, .3, .4, .3
+    instability: .5, .3, .3, .85, .2, .3, .5
+    energy: .5, .5, .5, .5, .5, .95, .5
 end
 
 say "=== INITIAL STATE ==="
-say USA
-say Russia
+say Rome
+say Carthage
+say Gaul
+say Sparta
+say Athens
+say Collapse
 
-say "=== APPLY OVERLAYS ==="
-overlay Nationalism on Russia at .8
-overlay Globalism on Russia at .4
-overlay Globalism on USA at .7
-
-say "Russia after Nationalism + Globalism applied:"
-say Russia
-say "USA after Globalism applied:"
-say USA
-
-say "=== STRENGTHS AFTER APPLY ==="
-say "Nationalism on Russia:"
-say overlay_strength("Nationalism", "Russia")
-say "Globalism on Russia:"
-say overlay_strength("Globalism", "Russia")
-say "Globalism on USA:"
-say overlay_strength("Globalism", "USA")
-say "Resistance on Russia (not yet spawned):"
-say overlay_strength("Resistance", "Russia")
+say Gaul >> instability
+say Gaul >> power
 
 say "=== TICK 1 ==="
 tick()
-say "Russia:"
-say Russia
-say "USA:"
-say USA
-say "Nationalism on Russia:"
-say overlay_strength("Nationalism", "Russia")
-say "Globalism on Russia (weaker, conflicts Nationalism, decays faster):"
-say overlay_strength("Globalism", "Russia")
-say "Globalism on USA:"
-say overlay_strength("Globalism", "USA")
-say "Resistance on Russia (spawned because Nationalism > .6):"
-say overlay_strength("Resistance", "Russia")
-say "Russia resistance trait:"
-say Russia >> resistance
 
-say "=== TICK 2 ==="
-tick()
-say "Nationalism on Russia:"
-say overlay_strength("Nationalism", "Russia")
-say "Globalism on Russia:"
-say overlay_strength("Globalism", "Russia")
-say "Resistance on Russia:"
-say overlay_strength("Resistance", "Russia")
-say "Russia resistance trait:"
-say Russia >> resistance
+say "--- erase: Collapse (power .05, stability .05 -> should be gone) ---"
+say Collapse
 
-say "=== TICK 3 ==="
-tick()
-say "Nationalism on Russia:"
-say overlay_strength("Nationalism", "Russia")
-say "Globalism on Russia (should be nil or very weak):"
-say overlay_strength("Globalism", "Russia")
-say "Russia resistance trait:"
-say Russia >> resistance
+say "--- spawn: Athens (energy .95 -> should spawn child) ---"
+say Athens
+say Nation_1
 
-say "=== TEMPORARY OVERLAY ==="
-overlay Nationalism on USA at .5 for 2 ticks
-say "Nationalism on USA (temporary, 2 ticks):"
-say overlay_strength("Nationalism", "USA")
-say USA
-tick()
-say "After tick 1:"
-say overlay_strength("Nationalism", "USA")
-tick()
-say "After tick 2 (should be nil, effects reversed):"
-say overlay_strength("Nationalism", "USA")
-say USA
+say "--- split: Gaul (stability .15, cohesion .15 -> should split) ---"
+say Gaul
+say Nation_2
+say Nation_3
 
-say "=== DETACH ==="
-overlay Globalism on USA at .6
-say "Globalism on USA before detach:"
-say overlay_strength("Globalism", "USA")
-detach Globalism from USA
-say "Globalism on USA after detach (should be nil):"
-say overlay_strength("Globalism", "USA")
+say "--- fracture: Carthage (instability .9, power .9 -> should fracture) ---"
+say Carthage
+say Nation_4
+
+say "--- mutate: Carthage if not fractured, or check Rome ---"
+
+say "--- absorb: Rome (power .9 vs smaller nations) ---"
+say Rome
+
+say "--- Athens/Sparta merge check (cohesion both high) ---"
+say Sparta
