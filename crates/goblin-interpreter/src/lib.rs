@@ -243,7 +243,13 @@ pub enum Value {
         /// Fields inferred as traits: numeric, 0..1, not prefixed with ~ (raw).
         /// Populated at instantiation time. Used by overlays and links.
         trait_fields: BTreeSet<String>,
+        /// Stable identity used to locate this object in Session::object_store.
+        uuid: String,
     },
+    /// Handle into Session::object_store. Stored in env frames in place of the
+    /// object itself so that mutations are always applied to the single
+    /// canonical copy.
+    Ref(String),
     Enum {                              
         enum_name: String,
         variant_name: String,
@@ -448,6 +454,19 @@ pub struct Session {
     // ==== TRANSITION SYSTEM ====
     /// Variables erased by transitions — kept for friendly error messages.
     pub erased_vars: HashMap<String, String>, // var_name -> class_name at time of erasure
+
+    // ==== OBJECT STORE (UUID system) ====
+    /// Canonical storage for all Object values. Env frames hold Value::Ref(uuid)
+    /// handles instead of the objects themselves so mutations are always applied
+    /// to the single authoritative copy regardless of call-frame depth.
+    pub object_store: HashMap<String, Value>,
+
+    // ==== OWNERSHIP SYSTEM ====
+    /// Maps owned object uuid -> owner object uuid.
+    pub ownership: HashMap<String, String>,
+    /// User-defined unit families for capacity field conversion.
+    /// Keyed by unit family name; value is list of (from_type, from_count, to_type, to_count).
+    pub unit_registry: HashMap<String, ast::UnitDecl>,
 }
 
 impl Session {
@@ -502,6 +521,11 @@ impl Session {
 
             erased_vars: HashMap::new(),
 
+            object_store: HashMap::new(),
+
+            ownership: HashMap::new(),
+            unit_registry: HashMap::new(),
+
             rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
         }
     }
@@ -555,8 +579,24 @@ impl Session {
     }
 
     pub fn get_var_mut(&mut self, name: &str) -> Option<&mut Value> {
+        // Find the frame containing the binding
+        for frame in self.env.iter().rev() {
+            if let Some(v) = frame.get(name) {
+                if let Value::Ref(uuid) = v {
+                    let uuid = uuid.clone();
+                    return self.object_store.get_mut(uuid.as_str());
+                }
+                // Not a ref — fall through to the mutable borrow path below
+                break;
+            }
+        }
+        // For non-Ref values, return a direct mutable reference from the frame
         for frame in self.env.iter_mut().rev() {
-            if let Some(v) = frame.get_mut(name) { return Some(v); }
+            if let Some(v) = frame.get_mut(name) {
+                // Don't return the Ref handle itself as mutable — that's handled above
+                if matches!(v, Value::Ref(_)) { return None; }
+                return Some(v);
+            }
         }
         None
     }
@@ -614,6 +654,9 @@ impl Session {
         if let Some(ref module_name) = self.current_module {
             if let Some(module_env) = self.modules.get_module_env(module_name) {
                 if let Some(v) = module_env.get(name) {
+                    if let Value::Ref(uuid) = v {
+                        return self.object_store.get(uuid.as_str());
+                    }
                     return Some(v);
                 }
             }
@@ -622,6 +665,9 @@ impl Session {
         // Then check local frames
         for frame in self.env.iter().rev() {
             if let Some(v) = frame.get(name) {
+                if let Value::Ref(uuid) = v {
+                    return self.object_store.get(uuid.as_str());
+                }
                 return Some(v);
             }
         }
@@ -632,23 +678,72 @@ impl Session {
         // If we're at the top level of a module, store in module env
         if let Some(ref module_name) = self.current_module {
             if self.env.len() == 1 {  // Top level
-                self.modules.set_module_var(module_name, name, val);
+                // Store objects in object_store, put Ref in module env
+                if let Value::Object { ref uuid, .. } = val {
+                    let uuid = uuid.clone();
+                    self.object_store.insert(uuid.clone(), val);
+                    self.modules.set_module_var(module_name, name, Value::Ref(uuid));
+                } else {
+                    self.modules.set_module_var(module_name, name, val);
+                }
                 return;
             }
         }
         
-        // Otherwise store in current frame
-        if let Some(top) = self.env.last_mut() {
-            top.insert(name, val);
+        // Check if an existing binding is a Ref — if so update object_store directly
+        let existing_uuid: Option<String> = {
+            let mut found = None;
+            for frame in self.env.iter().rev() {
+                if let Some(Value::Ref(uuid)) = frame.get(&name) {
+                    found = Some(uuid.clone());
+                    break;
+                } else if frame.contains_key(&name) {
+                    break;
+                }
+            }
+            found
+        };
+
+        if let Some(uuid) = existing_uuid {
+            // Overwriting an existing object binding
+            if let Value::Object { .. } = val {
+                self.object_store.insert(uuid, val);
+            } else {
+                // Rebinding to a non-object: remove old store entry, store value directly
+                self.object_store.remove(&uuid);
+                if let Some(top) = self.env.last_mut() {
+                    top.insert(name, val);
+                }
+            }
+            return;
+        }
+
+        // New binding
+        if let Value::Object { ref uuid, .. } = val {
+            let uuid = uuid.clone();
+            self.object_store.insert(uuid.clone(), val);
+            if let Some(top) = self.env.last_mut() {
+                top.insert(name, Value::Ref(uuid));
+            }
+        } else {
+            if let Some(top) = self.env.last_mut() {
+                top.insert(name, val);
+            }
         }
     }
 
     // Define a local in the current frame
     fn define_local(&mut self, name: String, val: Value, is_const: bool) {
-        let top = self.env.last_mut().expect("has frame");
-        top.insert(name.clone(), val);
         let tc = self.consts.last_mut().expect("has frame");
-        tc.insert(name, is_const);
+        tc.insert(name.clone(), is_const);
+        let top = self.env.last_mut().expect("has frame");
+        if let Value::Object { ref uuid, .. } = val {
+            let uuid = uuid.clone();
+            self.object_store.insert(uuid.clone(), val);
+            top.insert(name, Value::Ref(uuid));
+        } else {
+            top.insert(name, val);
+        }
     }
 
     // Find the nearest frame index containing `name` (0 = globals, len-1 = current)
@@ -1044,6 +1139,7 @@ fn to_json(v: &Value) -> sj::Value {
             }
             sj::Value::Object(obj)
         }
+        Value::Ref(uuid) => sj::Value::String(format!("<ref:{}>", uuid)),
         Value::Enum { enum_name, variant_name, .. } => {
             sj::Value::String(format!("{}::{}", enum_name, variant_name))
         }
@@ -2068,6 +2164,11 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
             s
         }
 
+        // Ref handles are internal — display as their UUID for debugging only
+        Value::Ref(uuid) => {
+            format!("<ref:{}>", uuid)
+        }
+
         Value::Enum { enum_name, variant_name, fields } => {
             let mut s = format!("{}::{}", enum_name, variant_name);
             if let Some(field_map) = fields {
@@ -2122,6 +2223,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::Formatted(_, _)     => "formatted",
         Value::Object { .. } => "object",
         Value::Enum { .. } => "enum",
+        Value::Ref(_) => "object",
     }
 }
 
@@ -3025,6 +3127,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     merged.decision = existing.decision.clone();
                     merged.judge = existing.judge.clone();
                     merged.transitions = existing.transitions.clone();
+                    if merged.capacity.is_none() {
+                        merged.capacity = existing.capacity.clone();
+                    }
                     merged
                 } else {
                     decl.clone()
@@ -3204,6 +3309,12 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 formula_max: max,
             };
             sess.object_link_defs.insert(def_stmt.object_var.clone(), def);
+            Ok(None)
+        }
+
+        // ── Unit declarations ────────────────────────────────────────────────
+        ast::Stmt::UnitDecl(unit_decl) => {
+            sess.unit_registry.insert(unit_decl.name.clone(), unit_decl.clone());
             Ok(None)
         }
 
@@ -5467,18 +5578,20 @@ fn eval_builtin(
 
         "decision_debug" => {
             // Prints diagnostic info about what decision_tick can see
-            for frame in &sess.env {
-                for (var_name, val) in frame {
-                    if let Value::Object { class_name, .. } = val {
-                        let has_decision = sess.classes.get(class_name)
-                            .map(|c| c.decision.is_some())
-                            .unwrap_or(false);
-                        let has_judge = sess.classes.get(class_name)
-                            .map(|c| c.judge.is_some())
-                            .unwrap_or(false);
-                        println!("  var={} class={} has_decision={} has_judge={}", 
-                            var_name, class_name, has_decision, has_judge);
-                    }
+            let var_names: Vec<String> = sess.env.iter()
+                .flat_map(|frame| frame.keys().cloned())
+                .collect();
+            for var_name in var_names {
+                if let Some(Value::Object { class_name, .. }) = sess.get_var(&var_name) {
+                    let class_name = class_name.clone();
+                    let has_decision = sess.classes.get(&class_name)
+                        .map(|c| c.decision.is_some())
+                        .unwrap_or(false);
+                    let has_judge = sess.classes.get(&class_name)
+                        .map(|c| c.judge.is_some())
+                        .unwrap_or(false);
+                    println!("  var={} class={} has_decision={} has_judge={}", 
+                        var_name, class_name, has_decision, has_judge);
                 }
             }
             Value::Unit
@@ -5567,7 +5680,9 @@ fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(Str
                     };
                     let new_val = current + delta;
                     let new_val = if trait_fields.contains(field_name) {
-                        new_val.clamp(0.0, 1.0)
+                        let clamped = new_val.clamp(0.0, 1.0);
+                        // Snap near-zero/near-one to exact bounds to avoid float drift
+                        if clamped < 1e-10 { 0.0 } else if clamped > 1.0 - 1e-10 { 1.0 } else { clamped }
                     } else {
                         new_val
                     };
@@ -5744,13 +5859,15 @@ fn decision_tick(sess: &mut Session) {
     // Collect all (var_name, class_name) pairs that have a decision defined
     let candidates: Vec<(String, String)> = {
         let mut out = Vec::new();
-        for frame in &sess.env {
-            for (var_name, val) in frame {
-                if let Value::Object { class_name, .. } = val {
-                    if let Some(class) = sess.classes.get(class_name) {
-                        if class.decision.is_some() {
-                            out.push((var_name.clone(), class_name.clone()));
-                        }
+        let var_names: Vec<String> = sess.env.iter()
+            .flat_map(|frame| frame.keys().cloned())
+            .collect();
+        for var_name in var_names {
+            if let Some(Value::Object { class_name, .. }) = sess.get_var(&var_name) {
+                let class_name = class_name.clone();
+                if let Some(class) = sess.classes.get(&class_name) {
+                    if class.decision.is_some() {
+                        out.push((var_name, class_name));
                     }
                 }
             }
@@ -5774,12 +5891,15 @@ fn decision_tick(sess: &mut Session) {
         // Find all valid targets of the target class (excluding self)
         let target_candidates: Vec<(String, Value)> = {
             let mut out = Vec::new();
-            for frame in &sess.env {
-                for (var_name, val) in frame {
-                    if var_name == &self_var { continue; }
-                    if let Value::Object { class_name, .. } = val {
-                        if class_name == &decision.target_class {
-                            out.push((var_name.clone(), val.clone()));
+            let var_names: Vec<String> = sess.env.iter()
+                .flat_map(|frame| frame.keys().cloned())
+                .collect();
+            for var_name in var_names {
+                if var_name == self_var { continue; }
+                if let Some(val) = sess.get_var(&var_name).cloned() {
+                    if let Value::Object { class_name: ref cn, .. } = val {
+                        if cn == &decision.target_class {
+                            out.push((var_name, val));
                         }
                     }
                 }
@@ -5933,11 +6053,16 @@ fn decision_tick(sess: &mut Session) {
                 };
 
                 // Bind self and its fields
+                let self_uuid = match sess.get_var(&self_var) {
+                    Some(Value::Object { uuid, .. }) => uuid.clone(),
+                    _ => self_var.clone(),
+                };
                 sess.define_local("self".to_string(), Value::Object {
                     class_name: class_name.clone(),
                     fields: fields_snapshot.clone(),
                     readonly_fields: real_readonly,
                     trait_fields: real_traits,
+                    uuid: self_uuid,
                 }, false);
                 for (k, v) in &fields_snapshot {
                     sess.define_local(k.clone(), v.clone(), false);
@@ -5945,11 +6070,12 @@ fn decision_tick(sess: &mut Session) {
 
                 // Bind target with its real trait_fields
                 let target_with_traits = match target_val_owned.clone() {
-                    Value::Object { class_name: tcn, fields: tf, .. } => Value::Object {
+                    Value::Object { class_name: tcn, fields: tf, uuid: tuuid, .. } => Value::Object {
                         class_name: tcn,
                         fields: tf,
                         readonly_fields: target_readonly,
                         trait_fields: target_traits,
+                        uuid: tuuid,
                     },
                     other => other,
                 };
@@ -6061,6 +6187,25 @@ fn eval_successor_fields(
     result
 }
 
+/// Clamp all trait fields on an object to 0.0..=1.0 in place.
+fn clamp_trait_fields(fields: &mut IndexMap<String, Value>, trait_fields: &BTreeSet<String>) {
+    for name in trait_fields {
+        if let Some(v) = fields.get_mut(name) {
+            *v = match v {
+                Value::Float(f) => {
+                    let c = f.clamp(0.0, 1.0);
+                    Value::Float(if c < 1e-10 { 0.0 } else if c > 1.0 - 1e-10 { 1.0 } else { c })
+                }
+                Value::Int(i) => {
+                    let c = (*i as f64).clamp(0.0, 1.0);
+                    Value::Float(if c < 1e-10 { 0.0 } else if c > 1.0 - 1e-10 { 1.0 } else { c })
+                }
+                _ => continue,
+            };
+        }
+    }
+}
+
 /// Create a new object instance in the session from a class name and field overrides.
 fn create_successor_object(
     sess: &mut Session,
@@ -6100,6 +6245,17 @@ fn create_successor_object(
         .map(|f| f.name.clone())
         .collect();
 
+    // Clamp any numeric field that would be a trait to 0..1 before inferring trait_fields.
+    // Carries can produce values > 1.0 which then get excluded from trait_fields and escape clamping.
+    for (k, v) in fields.iter_mut() {
+        if k == "id" || raw_fields.contains(k) { continue; }
+        *v = match v {
+            Value::Float(f) if *f > 1.0 || *f < 0.0 => Value::Float(f.clamp(0.0, 1.0)),
+            Value::Int(i) if *i > 1 || *i < 0 => Value::Float((*i as f64).clamp(0.0, 1.0)),
+            _ => continue,
+        };
+    }
+
     let trait_fields: BTreeSet<String> = fields.iter()
         .filter_map(|(k, v)| {
             if k == "id" || raw_fields.contains(k) { return None; }
@@ -6122,11 +6278,13 @@ fn create_successor_object(
         fields,
         readonly_fields,
         trait_fields,
+        uuid: var_name.to_string(),
     };
 
-    // Store in global frame (env[0])
+    // Store in object_store; put Ref in global frame (env[0])
+    sess.object_store.insert(var_name.to_string(), obj);
     if let Some(frame) = sess.env.first_mut() {
-        frame.insert(var_name.to_string(), obj);
+        frame.insert(var_name.to_string(), Value::Ref(var_name.to_string()));
         if let Some(consts_frame) = sess.consts.first_mut() {
             consts_frame.insert(var_name.to_string(), false);
         }
@@ -6152,17 +6310,34 @@ fn drop_overlays_for(sess: &mut Session, host_var: &str) {
 
 /// Remove a variable from all env frames and record its erasure.
 fn erase_var(sess: &mut Session, var_name: &str) {
-    // Record class name before erasing
+    // Record class name before erasing (resolve through object_store if needed)
     let class_name = sess.get_var(var_name)
         .and_then(|v| if let Value::Object { class_name, .. } = v { Some(class_name.clone()) } else { None })
         .unwrap_or_default();
     sess.erased_vars.insert(var_name.to_string(), class_name);
+
+    // Pull UUID from the Ref handle (if present) before removing from env
+    let uuid_to_drop: Option<String> = {
+        let mut found = None;
+        for frame in sess.env.iter() {
+            if let Some(Value::Ref(uuid)) = frame.get(var_name) {
+                found = Some(uuid.clone());
+                break;
+            }
+        }
+        found
+    };
 
     for frame in sess.env.iter_mut() {
         frame.remove(var_name);
     }
     for frame in sess.consts.iter_mut() {
         frame.remove(var_name);
+    }
+
+    // Remove from object_store
+    if let Some(uuid) = uuid_to_drop {
+        sess.object_store.remove(&uuid);
     }
 }
 
@@ -6171,13 +6346,16 @@ fn transition_tick(sess: &mut Session) {
     // Collect candidates: (var_name, class_name)
     let candidates: Vec<(String, String)> = {
         let mut out = Vec::new();
-        for frame in &sess.env {
-            for (var_name, val) in frame {
-                if let Value::Object { class_name, .. } = val {
-                    if let Some(class) = sess.classes.get(class_name) {
-                        if !class.transitions.is_empty() {
-                            out.push((var_name.clone(), class_name.clone()));
-                        }
+        // Collect all variable names that hold objects (either direct or via Ref)
+        let var_names: Vec<String> = sess.env.iter()
+            .flat_map(|frame| frame.keys().cloned())
+            .collect();
+        for var_name in var_names {
+            if let Some(Value::Object { class_name, .. }) = sess.get_var(&var_name) {
+                let class_name = class_name.clone();
+                if let Some(class) = sess.classes.get(&class_name) {
+                    if !class.transitions.is_empty() {
+                        out.push((var_name, class_name));
                     }
                 }
             }
@@ -6187,6 +6365,8 @@ fn transition_tick(sess: &mut Session) {
 
     // Track which vars were erased this tick — skip them for subsequent transitions
     let mut erased: BTreeSet<String> = BTreeSet::new();
+    // Objects that have already fired a transition this tick — skip further transitions
+    let mut transitioned: BTreeSet<String> = BTreeSet::new();
 
     // Process unary transitions first (erase, spawn, split, fracture, mutate),
     // then binary (absorb, subjugate, merge). This ensures objects get a chance
@@ -6207,6 +6387,7 @@ fn transition_tick(sess: &mut Session) {
     for pass in 0..2usize {
         for (var_name, class_name) in &candidates {
         if erased.contains(var_name) { continue; }
+        if transitioned.contains(var_name.as_str()) { continue; }
 
         let transitions = match sess.classes.get(class_name) {
             Some(c) => c.transitions.clone(),
@@ -6245,6 +6426,7 @@ fn transition_tick(sess: &mut Session) {
                     .filter(|(vn, cn)| {
                         vn != var_name
                         && !erased.contains(vn.as_str())
+                        && !transitioned.contains(vn.as_str())
                         && cn == tc
                     })
                     .filter_map(|(vn, _)| {
@@ -6307,8 +6489,9 @@ fn transition_tick(sess: &mut Session) {
                         ast::OverlayContinuity::Drop => drop_overlays_for(sess, &var_name),
                         _ => drop_overlays_for(sess, &var_name),
                     }
-                    erase_var(sess, &var_name);
+                    erase_var(sess, var_name);
                     erased.insert(var_name.clone());
+    transitioned.insert(var_name.clone());
                     break 'transition_loop;
                 }
 
@@ -6323,6 +6506,8 @@ fn transition_tick(sess: &mut Session) {
                         IndexMap::new()
                     };
                     create_successor_object(sess, &child_name, &child_class, child_fields);
+    transitioned.insert(var_name.clone());
+                    break 'transition_loop;
                 }
 
                 ast::TransitionKind::Split => {
@@ -6353,8 +6538,9 @@ fn transition_tick(sess: &mut Session) {
                         ast::OverlayContinuity::Drop => {}
                     }
                     drop_overlays_for(sess, &var_name);
-                    erase_var(sess, &var_name);
+                    erase_var(sess, var_name);
                     erased.insert(var_name.clone());
+    transitioned.insert(var_name.clone());
                     break 'transition_loop;
                 }
 
@@ -6370,6 +6556,8 @@ fn transition_tick(sess: &mut Session) {
                         _ => {}
                     }
                     // Original remains — no erase
+    transitioned.insert(var_name.clone());
+                    break 'transition_loop;
                 }
 
                 ast::TransitionKind::Mutate => {
@@ -6378,19 +6566,20 @@ fn transition_tick(sess: &mut Session) {
                         eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
                     } else { IndexMap::new() };
 
-                    // Replace class_name on the object, update fields
-                    if let Some(slot) = sess.get_var_mut(&var_name) {
-                        if let Value::Object { class_name: cn, fields, .. } = slot {
-                            *cn = new_class.clone();
-                            for (k, v) in carries_fields {
-                                fields.insert(k, v);
-                            }
+                    // Replace class_name on the object, update fields — via object_store
+                    if let Some(Value::Object { class_name: cn, fields, trait_fields, .. }) = sess.get_var_mut(var_name) {
+                        *cn = new_class.clone();
+                        for (k, v) in carries_fields {
+                            fields.insert(k, v);
                         }
+                        clamp_trait_fields(fields, trait_fields);
                     }
                     match tdef.overlay_rule {
                         ast::OverlayContinuity::Drop => drop_overlays_for(sess, &var_name),
                         _ => {}
                     }
+    transitioned.insert(var_name.clone());
+                    break 'transition_loop;
                 }
 
                 ast::TransitionKind::Absorb => {
@@ -6399,13 +6588,12 @@ fn transition_tick(sess: &mut Session) {
                             eval_successor_fields(sess, &s.fields, &self_val, target_ref, &dummy_sp)
                         } else { IndexMap::new() };
 
-                        // Apply carries to self
-                        if let Some(slot) = sess.get_var_mut(&var_name) {
-                            if let Value::Object { fields, .. } = slot {
-                                for (k, v) in carries_fields {
-                                    fields.insert(k, v);
-                                }
+                        // Apply carries to self via object_store
+                        if let Some(Value::Object { fields, trait_fields, .. }) = sess.get_var_mut(var_name) {
+                            for (k, v) in carries_fields {
+                                fields.insert(k, v);
                             }
+                            clamp_trait_fields(fields, trait_fields);
                         }
 
                         // Handle target overlays
@@ -6415,6 +6603,8 @@ fn transition_tick(sess: &mut Session) {
                         }
                         erase_var(sess, tvn);
                         erased.insert(tvn.clone());
+        transitioned.insert(var_name.clone());
+                        break 'transition_loop;
                     }
                 }
 
@@ -6430,6 +6620,9 @@ fn transition_tick(sess: &mut Session) {
                             original_values: Vec::new(),
                         };
                         sess.overlay_instances.push(inst);
+        transitioned.insert(var_name.clone());
+                        transitioned.insert(tvn.clone());
+                        break 'transition_loop;
                     }
                 }
 
@@ -6453,10 +6646,11 @@ fn transition_tick(sess: &mut Session) {
 
                         drop_overlays_for(sess, &var_name);
                         drop_overlays_for(sess, tvn);
-                        erase_var(sess, &var_name);
+                        erase_var(sess, var_name);
                         erase_var(sess, tvn);
                         erased.insert(var_name.clone());
                         erased.insert(tvn.clone());
+        transitioned.insert(var_name.clone());
                         break 'transition_loop;
                     }
                 }
@@ -9281,7 +9475,8 @@ fn call_action_by_name(
                 | v @ Value::Pair(_, _)
                 | v @ Value::Seq(_)
                 | v @ Value::Object { .. }
-                | v @ Value::Enum { .. } => v,
+                | v @ Value::Enum { .. }
+                | v @ Value::Ref(_) => v,
 
                 // implicit-return: Unit means "no value", do NOT fallback to forwarded args
                 Value::Unit => Value::Unit,
@@ -11591,6 +11786,11 @@ fn call_action_by_name(
         "run_cmd" => {
             return crate::actions::process::run_cmd(sess, &args, &sp);
         }
+
+        // ----- Memory introspection -----
+        "mem_addr"  => crate::actions::mem::mem_addr(sess, &args, &sp)?,
+        "mem_total" => crate::actions::mem::mem_total(sess, &args, &sp)?,
+        "mem_human" => crate::actions::mem::mem_human(sess, &args, &sp)?,
 
         // ----- Database -----
         "db_query"      => crate::actions::db::db_query(sess, &args, &sp)?,
@@ -16113,7 +16313,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
                 }
 
-                Value::Object { class_name, fields, readonly_fields: _, .. } => {
+                Value::Object { class_name, fields, readonly_fields: _, uuid, .. } => {
                     // 1) If it's a method name on this class, return a bound-method wrapper
                     if let Some(class) = sess.classes.get(&class_name) {
                         if class.actions.iter().any(|a| a.name == *name) {
@@ -16132,6 +16332,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                         fields: fields.clone(),
                                         readonly_fields: BTreeSet::new(),
                                         trait_fields: BTreeSet::new(),
+                                        uuid: uuid.clone(),
                                     },
                                 );
                             }
@@ -16994,7 +17195,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             
             // Object method calls - check if receiver is an object AND base is a variable
             if let ast::Expr::Ident(var_name, _) = &**base {
-                if let Value::Object { class_name, mut fields, readonly_fields, trait_fields } = recv {
+                if let Value::Object { class_name, mut fields, readonly_fields, trait_fields, uuid } = recv {
                     let result = call_object_method(sess, &class_name, &mut fields, name, args, sp.clone())?;
                     
                     // Update the object variable with modified fields
@@ -17003,6 +17204,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         fields,
                         readonly_fields,
                         trait_fields,
+                        uuid,
                     };
                     sess.set_var(var_name.clone(), updated_obj);
                     
@@ -18923,6 +19125,7 @@ fn instantiate_object(
         fields: field_map,
         readonly_fields,
         trait_fields,
+        uuid: id_str.clone(),
     };
     
     sess.define_local(var_name.to_string(), obj, is_const);

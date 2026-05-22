@@ -1,176 +1,229 @@
 @Nation |
-    power: .5
-    stability: .5
-    cohesion: .5
-    population: .5
-    aggression: .5
+    power:       .5
+    stability:   .5
+    cohesion:    .5
+    population:  .5
+    aggression:  .5
+    trust:       .5
+    cooperation: .5
     instability: .5
-    energy: .5
+    energy:      .5
+    margin:      .08
 
-    transition erase when self >> power < .1 and self >> stability < .1
+    act pressure(target)
+        target >> aggression * .3
+        + (1.0 - target >> trust) * .2
+        + (1.0 - target >> stability) * .25
+        + (self >> power - target >> power) * .25
+    end
+
+    act absorb_attempt(target)
+        say self >> id ++ " eyes " ++ target >> id
+    end
+
+    act pressure_target(target)
+        say self >> id ++ " pressures " ++ target >> id
+    end
+
+    act cooperate(target)
+        say self >> id ++ " cooperates with " ++ target >> id
+    end
+
+    transition erase when (self >> power) < .05 and (self >> stability) < .1 and (self >> instability) > .9
         overlays: drop
         links: reset
     end
 
-    transition spawn when self >> energy > .9
-        into Nation
-        child:
-            power: self >> power * .3
-            stability: .5
-            cohesion: .5
-            population: self >> population * .2
-            aggression: self >> aggression
-            instability: .3
-            energy: .3
-        end
-        overlays: drop
-        links: reset
-    end
-
-    transition split when self >> stability < .2 and self >> cohesion < .2
-        into Nation, Nation
-        first:
-            power: self >> power * .6
-            stability: self >> stability
-            cohesion: .4
-            population: self >> population * .55
-            aggression: self >> aggression
-            instability: self >> instability
-            energy: self >> energy
-        end
-        second:
-            power: self >> power * .4
-            stability: self >> stability
-            cohesion: .4
-            population: self >> population * .45
-            aggression: self >> aggression
-            instability: self >> instability
-            energy: self >> energy
-        end
-        overlays: split
-        links: inherit
-    end
-
-    transition fracture when self >> instability > .8 and self >> power > .6
-        into Nation
-        fragment:
-            power: self >> power * .2
-            stability: .3
-            cohesion: .3
-            population: self >> population * .15
-            aggression: self >> aggression
-            instability: .4
-            energy: .5
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition mutate when self >> instability > .8 and self >> cohesion < .2
-        into Cult
+    transition mutate when (self >> instability) > .85 and (self >> cohesion) < .15 and (self >> stability) < .2
+        into Rogue
         carries:
-            power: self >> power * .5
-            aggression: self >> aggression
-            cohesion: .7
-            instability: self >> instability
-            stability: self >> stability
-            population: self >> population
-            energy: self >> energy
+            power: (self >> power) * .6
+            aggression: (self >> aggression) + .2
+            cohesion: .2
+            instability: (self >> instability)
+            stability: (self >> stability)
+            population: (self >> population)
+            energy: (self >> energy)
+            trust: .1
+            cooperation: .1
         end
         overlays: transfer
         links: reset
     end
 
-    transition absorb(Nation) when self >> power > target >> power * 2.0
+    transition absorb(Nation) when (self >> power) > (target >> power) * 2.5 and (target >> stability) < .25 and (target >> cohesion) < .3
         carries:
-            power: self >> power + target >> power * .7
-            population: self >> population + target >> population * .8
-            stability: self >> stability
-            cohesion: self >> cohesion
-            aggression: self >> aggression
-            instability: self >> instability
-            energy: self >> energy
+            power: (self >> power) + (target >> power) * .6
+            population: (self >> population) + (target >> population) * .7
+            stability: (self >> stability)
+            cohesion: (self >> cohesion)
+            aggression: (self >> aggression)
+            instability: (self >> instability)
+            energy: (self >> energy)
+            trust: (self >> trust)
+            cooperation: (self >> cooperation)
         end
         overlays: transfer
         links: inherit
     end
 
-    transition subjugate(Nation) when self >> power > target >> power * 1.5 and target >> cohesion > .5
-        overlays: transfer
-        links: inherit
-    end
-
-    transition merge(Nation) when self >> cohesion > .8 and target >> cohesion > .8
+    transition merge(Nation) when (self >> trust) > .8 and (target >> trust) > .8 and (self >> cohesion) > .75 and (target >> cohesion) > .75
         into Nation
         carries:
-            power: self >> power + target >> power * .8
-            stability: self >> stability + target >> stability * .5
-            cohesion: self >> cohesion
-            population: self >> population + target >> population
-            aggression: self >> aggression
-            instability: self >> instability
-            energy: self >> energy
+            power: (self >> power) + (target >> power) * .8
+            stability: (self >> stability) + (target >> stability) * .4
+            cohesion: (self >> cohesion)
+            population: (self >> population) + (target >> population)
+            aggression: (self >> aggression)
+            instability: (self >> instability)
+            energy: (self >> energy)
+            trust: (self >> trust)
+            cooperation: (self >> cooperation)
         end
         overlays: split
         links: inherit
+    end
+
+    score | decision against Nation by [
+        self >> aggression * .3
+        + self >> power * .3
+        - target >> trust * .2
+        - target >> cooperation * .2
+    ]
+
+    judge using score
+        >= .65: absorb_attempt(target)
+        >= .40: pressure_target(target)
+        else: cooperate(target)
     end
 end
 
-@Cult |
-    power: .3
-    stability: .3
-    cohesion: .7
-    aggression: .7
-    instability: .5
-    population: .3
-    energy: .4
+@Rogue |
+    power:       .3
+    stability:   .2
+    cohesion:    .2
+    aggression:  .8
+    trust:       .1
+    cooperation: .1
+    instability: .7
+    population:  .3
+    energy:      .4
+    margin:      .15
 end
 
 @Nation matrix
-    id: "{id}", Rome, Carthage, Gaul, Sparta, Athens, Collapse
-    power: .5, .5, .3, .8, .4, .6, .05
-    stability: .5, .6, .15, .4, .85, .5, .05
-    cohesion: .5, .6, .15, .5, .9, .85, .3
-    population: .5, .8, .4, .7, .6, .5, .2
-    aggression: .5, .5, .5, .8, .3, .4, .3
-    instability: .5, .3, .3, .85, .2, .3, .5
-    energy: .5, .5, .5, .5, .5, .95, .5
+    id:          "{id}",  Hegemon,  Rival,   Fragile,  Stable,   Allied_A,  Allied_B
+    power:       .5,      .85,      .6,      .15,      .55,      .45,       .45
+    stability:   .5,      .7,       .5,      .12,      .7,       .75,       .75
+    cohesion:    .5,      .65,      .4,      .1,       .6,       .82,       .82
+    population:  .5,      .7,       .5,      .3,       .5,       .5,        .5
+    aggression:  .5,      .6,       .55,     .4,       .3,       .2,        .2
+    trust:       .5,      .4,       .35,     .3,       .6,       .85,       .85
+    cooperation: .5,      .45,      .3,      .25,      .65,      .8,        .8
+    instability: .5,      .25,      .4,      .88,      .2,       .15,       .15
+    energy:      .5,      .6,       .5,      .4,       .55,      .5,        .5
+    margin:      .08,     .06,      .1,      .12,      .07,      .05,       .05
+end
+
+link Nation by [
+    self >> trust * .35
+    + self >> cooperation * .25
+    + target >> trust * .20
+    - target >> aggression * .20
+]
+
+overlay Nationalism |
+    hosts Nation
+    decays .04 per tick
+    conflicts Globalism
+    modifies:
+        aggression + .15
+        trust - .1
+        cooperation - .1
+    end
+end
+
+overlay Globalism |
+    hosts Nation
+    decays .03 per tick
+    conflicts Nationalism
+    modifies:
+        cooperation + .15
+        trust + .1
+    end
+end
+
+overlay Crisis |
+    hosts Nation
+    decays .06 per tick
+    modifies:
+        stability - .15
+        instability + .15
+        cohesion - .1
+    end
 end
 
 say "=== INITIAL STATE ==="
-say Rome
-say Carthage
-say Gaul
-say Sparta
-say Athens
-say Collapse
+say Hegemon
+say Fragile
 
-say Gaul >> instability
-say Gaul >> power
+say "=== LINK SCORES (initial) ==="
+say "Hegemon -> Fragile:"
+say link_score("Nation", "Hegemon", "Fragile")
+say "Allied_A -> Allied_B:"
+say link_score("Nation", "Allied_A", "Allied_B")
+say "Hegemon -> Rival:"
+say link_score("Nation", "Hegemon", "Rival")
+
+say "=== APPLY OVERLAYS ==="
+overlay Nationalism on Hegemon at .6
+overlay Crisis on Fragile at .75
+overlay Globalism on Allied_A at .5
+overlay Globalism on Allied_B at .5
+
+say "=== MEMORY BEFORE SIM ==="
+say mem_total()
+say mem_human()
 
 say "=== TICK 1 ==="
 tick()
+say "Hegemon:"
+say Hegemon
+say "Fragile:"
+say Fragile
+say "Allied_A:"
+say Allied_A
+say "Nationalism on Hegemon:"
+say overlay_strength("Nationalism", "Hegemon")
+say "Crisis on Fragile:"
+say overlay_strength("Crisis", "Fragile")
+say "Globalism on Allied_A:"
+say overlay_strength("Globalism", "Allied_A")
 
-say "--- erase: Collapse (power .05, stability .05 -> should be gone) ---"
-say Collapse
+say "=== TICK 2 ==="
+tick()
+say "Hegemon:"
+say Hegemon
+say "Fragile (may erase or mutate):"
+say Fragile
+say "Crisis on Fragile:"
+say overlay_strength("Crisis", "Fragile")
 
-say "--- spawn: Athens (energy .95 -> should spawn child) ---"
-say Athens
-say Nation_1
+say "=== TICK 3 ==="
+tick()
+say "Hegemon:"
+say Hegemon
+say "Fragile:"
+say Fragile
+say "Allied_A -> Allied_B (high trust, may merge):"
+say link_score("Nation", "Allied_A", "Allied_B")
 
-say "--- split: Gaul (stability .15, cohesion .15 -> should split) ---"
-say Gaul
-say Nation_2
-say Nation_3
+say "=== LINK SCORES (after overlays + decisions) ==="
+say "Hegemon -> Rival:"
+say link_score("Nation", "Hegemon", "Rival")
+say "Hegemon -> Fragile:"
+say link_score("Nation", "Hegemon", "Fragile")
 
-say "--- fracture: Carthage (instability .9, power .9 -> should fracture) ---"
-say Carthage
-say Nation_4
-
-say "--- mutate: Carthage if not fractured, or check Rome ---"
-
-say "--- absorb: Rome (power .9 vs smaller nations) ---"
-say Rome
-
-say "--- Athens/Sparta merge check (cohesion both high) ---"
-say Sparta
+say "=== MEMORY AFTER SIM ==="
+say mem_total()
+say mem_human()

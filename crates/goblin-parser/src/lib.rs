@@ -62,6 +62,7 @@ enum PExpr {
         decision: Option<Box<PDecisionDef>>,
         judge: Option<ast::JudgeStmt>,
         transitions: Vec<ast::TransitionDef>,
+        capacity: Option<ast::CapacityDecl>,
     },
     EnumVariant {
         enum_name: String,
@@ -227,7 +228,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -3086,8 +3087,9 @@ impl<'t> Parser<'t> {
         // Now check if we see a closer
         let is_close = match self.toks.get(self.i) {
             Some(t) => {
-                t.value.as_deref() == Some("end") 
+                t.value.as_deref() == Some("end")
                 || t.value.as_deref() == Some("xx")
+                || matches!(t.kind, TokenKind::Op(ref s) if s == "xx")
             }
             None => true,
         };
@@ -3780,7 +3782,7 @@ impl<'t> Parser<'t> {
                     && matches!(
                         tok.value.as_deref(),
                         Some("act") | Some("action") | Some("end") | Some("xx")
-                        | Some("score") | Some("judge") | Some("transition")
+                        | Some("score") | Some("judge") | Some("transition") | Some("capacity")
                     )
                 {
                     break;
@@ -3889,7 +3891,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new() });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -3897,6 +3899,7 @@ impl<'t> Parser<'t> {
         let mut decision: Option<PDecisionDef> = None;
         let mut judge: Option<ast::JudgeStmt> = None;
         let mut transitions: Vec<ast::TransitionDef> = Vec::new();
+        let mut capacity: Option<ast::CapacityDecl> = None;
 
         loop {
             // Skip layout
@@ -3914,7 +3917,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
                 }
             }
 
@@ -3938,7 +3941,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
             }
 
             if self.is_eof() {
@@ -4053,13 +4056,74 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
+            // Handle capacity declaration inside class body
+            // `capacity: N` or `capacity from field_name: N`
+            let is_capacity = matches!(act_tok.kind, TokenKind::Ident)
+                && act_tok.value.as_deref() == Some("capacity");
+
+            if is_capacity {
+                let _ = self.eat_ident(); // consume 'capacity'
+                self.skip_layout();
+                if self.peek_ident() == Some("from") {
+                    let _ = self.eat_ident(); // consume 'from'
+                    self.skip_layout();
+                    let Some(field_name) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P1550",
+                            "Expected field name after 'capacity from'",
+                            "Write: capacity from weight: 100",
+                        ));
+                    };
+                    self.skip_layout();
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!(
+                            "P1551",
+                            "Expected ':' after field name in capacity declaration",
+                            "Write: capacity from weight: 100",
+                        ));
+                    }
+                    self.skip_layout();
+                    let limit_expr = self.parse_primary()?;
+                    let limit = match &limit_expr {
+                        PExpr::Float(n) | PExpr::Int(n) => n.parse::<f64>().unwrap_or(0.0),
+                        _ => return Err(s_help_site!(
+                            "P1552",
+                            "Expected a numeric limit in capacity declaration",
+                            "Write: capacity from weight: 100",
+                        )),
+                    };
+                    capacity = Some(ast::CapacityDecl::Field { field_name, limit });
+                } else {
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!(
+                            "P1553",
+                            "Expected ':' after 'capacity'",
+                            "Write: capacity: 20",
+                        ));
+                    }
+                    self.skip_layout();
+                    let count_expr = self.parse_primary()?;
+                    let count = match &count_expr {
+                        PExpr::Int(n) => n.parse::<u64>().unwrap_or(0),
+                        PExpr::Float(n) => n.parse::<f64>().unwrap_or(0.0) as u64,
+                        _ => return Err(s_help_site!(
+                            "P1554",
+                            "Expected a numeric count in capacity declaration",
+                            "Write: capacity: 20",
+                        )),
+                    };
+                    capacity = Some(ast::CapacityDecl::Count(count));
+                }
+                continue;
+            }
+
             if !is_action_kw {
                 // A new top-level declaration (@Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::AtIdent)
                     || matches!(act_tok.kind, TokenKind::Op(ref s) if s == "@")
                 {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4135,7 +4199,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4284,8 +4348,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and fall through to normal class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity });
                     }
                 }
 
@@ -4304,8 +4368,8 @@ impl<'t> Parser<'t> {
                         return Ok(PDecl::Matrix(matrix));
                     }
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity });
                     }
                 }
 
@@ -5726,6 +5790,11 @@ impl<'t> Parser<'t> {
             return self.parse_link_def();
         }
 
+        // -------- unit declarations --------
+        if self.peek_ident() == Some("unit") {
+            return self.parse_unit_decl();
+        }
+
         // object-level: ObjectName link by [ formula ]
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
@@ -6044,6 +6113,7 @@ impl<'t> Parser<'t> {
             decision: None,
             judge: None,
             transitions: vec![],
+            capacity: None,
             span: sp.clone(),
         }));
 
@@ -6183,7 +6253,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } => {
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -6241,6 +6311,7 @@ impl<'t> Parser<'t> {
                     decision: decision_ast,
                     judge,
                     transitions,
+                    capacity,
                     span: sp,
                 }))
             }
@@ -6304,15 +6375,25 @@ impl<'t> Parser<'t> {
 
             if self.is_eof() { break; }
             if let Some(tok) = self.peek() {
-                if matches!(tok.kind, TokenKind::Ident)
-                    && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
-                {
+                let is_closer = matches!(tok.kind, TokenKind::Ident if tok.value.as_deref() == Some("end"))
+                    || matches!(tok.kind, TokenKind::Op(ref s) if s == "xx");
+                if is_closer {
                     self.i += 1;
                     break;
                 }
             }
 
-            let Some(kw) = self.eat_ident() else { break; };
+            // Eat either an Ident keyword or skip Op("xx") as closer
+            let kw = if let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Op(ref s) if s == "xx") {
+                    self.i += 1;
+                    break;
+                }
+                match self.eat_ident() {
+                    Some(k) => k,
+                    None => break,
+                }
+            } else { break };
 
             match kw.as_str() {
                 "hosts" => {
@@ -6760,6 +6841,90 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::ObjectLinkDef(ast::ObjectLinkDefStmt { object_var, formula, span }))
     }
 
+    /// Parse `unit name | types: a, b; N a = M b end/xx`
+    fn parse_unit_decl(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let start_i = self.i;
+        let _ = self.eat_ident(); // consume 'unit'
+        self.skip_layout();
+
+        let Some(name) = self.eat_ident() else {
+            return Err(s_help_site!(
+                "P1600",
+                "Expected unit name after 'unit'",
+                "Write: unit weight | types: kg, g; 1 kg = 1000 g end",
+            ));
+        };
+
+        self.skip_layout();
+        if !self.eat_op("|") {
+            return Err(s_help_site!(
+                "P1601",
+                "Expected '|' after unit name",
+                "Write: unit weight | types: kg, g end",
+            ));
+        }
+
+        let mut types: Vec<String> = Vec::new();
+        let mut conversions: Vec<(String, f64, String, f64)> = Vec::new();
+
+        loop {
+            self.skip_layout();
+            if self.peek_block_close() || self.is_eof() { break; }
+
+            let Some(kw) = self.peek_ident() else { break; };
+
+            if kw == "types" {
+                let _ = self.eat_ident(); // consume 'types'
+                self.skip_layout();
+                if !self.eat_op(":") {
+                    return Err(s_help_site!("P1602", "Expected ':' after 'types'", "Write: types: kg, g"));
+                }
+                loop {
+                    self.skip_layout();
+                    let Some(type_name) = self.eat_ident() else { break; };
+                    types.push(type_name);
+                    self.skip_layout();
+                    if !self.eat_op(",") { break; }
+                }
+                continue;
+            }
+
+            // Conversion rule: N type_a = M type_b
+            if let Some(from_count) = self.eat_number_f64() {
+                self.skip_layout();
+                let Some(from_type) = self.eat_ident() else {
+                    return Err(s_help_site!("P1603", "Expected type name in conversion rule", "Write: 1 kg = 1000 g"));
+                };
+                self.skip_layout();
+                if !self.eat_op("=") {
+                    return Err(s_help_site!("P1604", "Expected '=' in conversion rule", "Write: 1 kg = 1000 g"));
+                }
+                self.skip_layout();
+                let Some(to_count) = self.eat_number_f64() else {
+                    return Err(s_help_site!("P1605", "Expected number after '=' in conversion rule", "Write: 1 kg = 1000 g"));
+                };
+                self.skip_layout();
+                let Some(to_type) = self.eat_ident() else {
+                    return Err(s_help_site!("P1606", "Expected type name after count in conversion rule", "Write: 1 kg = 1000 g"));
+                };
+                conversions.push((from_type, from_count, to_type, to_count));
+                // optional separator
+                self.eat_op(";");
+                self.eat_op(",");
+                continue;
+            }
+
+            break;
+        }
+
+        // consume end/xx
+        self.eat_block_close();
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::UnitDecl(ast::UnitDecl { name, types, conversions, span }))
+    }
+
     /// Parse the expression inside a link formula block `[ ... ]`.
     /// Allows multi-line expressions with `self` and `target` as identifiers.
     /// Newlines inside the brackets are treated as whitespace.
@@ -6852,14 +7017,18 @@ impl<'t> Parser<'t> {
         loop {
             self.skip_layout();
             if self.is_eof() { break; }
+            // Check for end/xx closer (end=Ident, xx=Op)
             if let Some(tok) = self.peek() {
-                if matches!(tok.kind, TokenKind::Ident)
-                    && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
+                if matches!(tok.kind, TokenKind::Ident if tok.value.as_deref() == Some("end"))
+                    || matches!(tok.kind, TokenKind::Op(ref s) if s == "xx")
                 {
                     self.i += 1;
                     break;
                 }
             }
+
+            // xx as Op won't be eaten by eat_ident — handle separately
+            if self.eat_op("xx") { break; }
 
             let Some(kw) = self.eat_ident() else { break; };
 
@@ -6897,19 +7066,22 @@ impl<'t> Parser<'t> {
                         self.skip_layout();
                         if self.is_eof() { break; }
                         if let Some(tok) = self.peek() {
-                            if matches!(tok.kind, TokenKind::Ident)
-                                && matches!(tok.value.as_deref(), Some("end") | Some("xx")
-                                    | Some("first") | Some("second") | Some("child")
-                                    | Some("fragment") | Some("carries") | Some("overlays")
-                                    | Some("links") | Some("into"))
-                            {
-                                // Only consume end/xx here — other keywords continue outer loop
-                                if matches!(tok.value.as_deref(), Some("end") | Some("xx")) {
-                                    self.i += 1;
-                                }
+                            let is_end = matches!(tok.kind, TokenKind::Ident if tok.value.as_deref() == Some("end"))
+                                || matches!(tok.kind, TokenKind::Op(ref s) if s == "xx");
+                            let is_section_kw = matches!(tok.kind, TokenKind::Ident)
+                                && matches!(tok.value.as_deref(), Some("first") | Some("second")
+                                    | Some("child") | Some("fragment") | Some("carries")
+                                    | Some("overlays") | Some("links") | Some("into"));
+                            if is_end {
+                                self.i += 1;
+                                break;
+                            }
+                            if is_section_kw {
                                 break;
                             }
                         }
+                        // Also handle xx as Op directly
+                        if self.eat_op("xx") { break; }
                         let Some(fname) = self.eat_ident() else { break; };
                         self.skip_layout_inline();
                         if !self.eat_op(":") { break; }
@@ -6924,6 +7096,10 @@ impl<'t> Parser<'t> {
                         fields,
                         span: sp,
                     });
+                }
+                "end" | "xx" => {
+                    // Consumed the closer — done
+                    break;
                 }
                 _ => {
                     // Unknown keyword — skip to newline

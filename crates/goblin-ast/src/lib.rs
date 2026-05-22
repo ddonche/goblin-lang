@@ -54,6 +54,7 @@ pub enum Stmt {
     OverlayDetach(OverlayDetachStmt),
     LinkDef(LinkDefStmt),
     ObjectLinkDef(ObjectLinkDefStmt),
+    UnitDecl(UnitDecl),
 
     Block {
         stmts: Vec<Stmt>,
@@ -61,7 +62,31 @@ pub enum Stmt {
     },
 }
 
-// ── Link AST nodes ───────────────────────────────────────────────────────────
+// ── Ownership AST nodes ──────────────────────────────────────────────────────
+
+/// How capacity is measured on an owning object.
+#[derive(Debug, Clone)]
+pub enum CapacityDecl {
+    /// `capacity: N` — owner can hold at most N objects.
+    Count(u64),
+    /// `capacity from field_name: N` — sum of `field_name` across owned objects
+    /// must not exceed N.
+    Field { field_name: String, limit: f64 },
+}
+
+/// `unit name | types: a, b; N a = M b end` — user-defined unit conversion.
+#[derive(Debug, Clone)]
+pub struct UnitDecl {
+    pub name: String,
+    /// All type names in this unit family.
+    pub types: Vec<String>,
+    /// Conversion rules: (from_type, from_count, to_type, to_count)
+    /// e.g. `1 lb = 16 oz` → ("lb", 1.0, "oz", 16.0)
+    pub conversions: Vec<(String, f64, String, f64)>,
+    pub span: Span,
+}
+
+
 
 /// `link ClassName by [ formula ]` — defines a class-level link formula.
 #[derive(Debug, Clone)]
@@ -154,6 +179,9 @@ pub struct ClassDecl {
     pub judge: Option<JudgeStmt>,
     /// Transition declarations — what identity changes this class can undergo.
     pub transitions: Vec<TransitionDef>,
+    /// Optional capacity declaration — how many/how much this class can own.
+    /// None = infinite capacity.
+    pub capacity: Option<CapacityDecl>,
     pub span: Span,
 }
 
