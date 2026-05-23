@@ -1,229 +1,71 @@
 @Nation |
     power:       .5
-    stability:   .5
-    cohesion:    .5
-    population:  .5
-    aggression:  .5
+    military:    .5
+    economy:     .5
     trust:       .5
+    aggression:  .5
     cooperation: .5
-    instability: .5
-    energy:      .5
-    margin:      .08
-
-    act pressure(target)
-        target >> aggression * .3
-        + (1.0 - target >> trust) * .2
-        + (1.0 - target >> stability) * .25
-        + (self >> power - target >> power) * .25
-    end
-
-    act absorb_attempt(target)
-        say self >> id ++ " eyes " ++ target >> id
-    end
-
-    act pressure_target(target)
-        say self >> id ++ " pressures " ++ target >> id
-    end
-
-    act cooperate(target)
-        say self >> id ++ " cooperates with " ++ target >> id
-    end
-
-    transition erase when (self >> power) < .05 and (self >> stability) < .1 and (self >> instability) > .9
-        overlays: drop
-        links: reset
-    end
-
-    transition mutate when (self >> instability) > .85 and (self >> cohesion) < .15 and (self >> stability) < .2
-        into Rogue
-        carries:
-            power: (self >> power) * .6
-            aggression: (self >> aggression) + .2
-            cohesion: .2
-            instability: (self >> instability)
-            stability: (self >> stability)
-            population: (self >> population)
-            energy: (self >> energy)
-            trust: .1
-            cooperation: .1
-        end
-        overlays: transfer
-        links: reset
-    end
-
-    transition absorb(Nation) when (self >> power) > (target >> power) * 2.5 and (target >> stability) < .25 and (target >> cohesion) < .3
-        carries:
-            power: (self >> power) + (target >> power) * .6
-            population: (self >> population) + (target >> population) * .7
-            stability: (self >> stability)
-            cohesion: (self >> cohesion)
-            aggression: (self >> aggression)
-            instability: (self >> instability)
-            energy: (self >> energy)
-            trust: (self >> trust)
-            cooperation: (self >> cooperation)
-        end
-        overlays: transfer
-        links: inherit
-    end
-
-    transition merge(Nation) when (self >> trust) > .8 and (target >> trust) > .8 and (self >> cohesion) > .75 and (target >> cohesion) > .75
-        into Nation
-        carries:
-            power: (self >> power) + (target >> power) * .8
-            stability: (self >> stability) + (target >> stability) * .4
-            cohesion: (self >> cohesion)
-            population: (self >> population) + (target >> population)
-            aggression: (self >> aggression)
-            instability: (self >> instability)
-            energy: (self >> energy)
-            trust: (self >> trust)
-            cooperation: (self >> cooperation)
-        end
-        overlays: split
-        links: inherit
-    end
-
-    score | decision against Nation by [
-        self >> aggression * .3
-        + self >> power * .3
-        - target >> trust * .2
-        - target >> cooperation * .2
-    ]
-
-    judge using score
-        >= .65: absorb_attempt(target)
-        >= .40: pressure_target(target)
-        else: cooperate(target)
-    end
 end
 
-@Rogue |
-    power:       .3
-    stability:   .2
-    cohesion:    .2
-    aggression:  .8
-    trust:       .1
-    cooperation: .1
-    instability: .7
-    population:  .3
-    energy:      .4
-    margin:      .15
-end
-
-@Nation matrix
-    id:          "{id}",  Hegemon,  Rival,   Fragile,  Stable,   Allied_A,  Allied_B
-    power:       .5,      .85,      .6,      .15,      .55,      .45,       .45
-    stability:   .5,      .7,       .5,      .12,      .7,       .75,       .75
-    cohesion:    .5,      .65,      .4,      .1,       .6,       .82,       .82
-    population:  .5,      .7,       .5,      .3,       .5,       .5,        .5
-    aggression:  .5,      .6,       .55,     .4,       .3,       .2,        .2
-    trust:       .5,      .4,       .35,     .3,       .6,       .85,       .85
-    cooperation: .5,      .45,      .3,      .25,      .65,      .8,        .8
-    instability: .5,      .25,      .4,      .88,      .2,       .15,       .15
-    energy:      .5,      .6,       .5,      .4,       .55,      .5,        .5
-    margin:      .08,     .06,      .1,      .12,      .07,      .05,       .05
-end
-
-link Nation by [
-    self >> trust * .35
-    + self >> cooperation * .25
-    + target >> trust * .20
-    - target >> aggression * .20
+link Nation border by [
+    self >> military * .4
+    + self >> aggression * .3
+    - target >> military * .3
 ]
 
-overlay Nationalism |
-    hosts Nation
-    decays .04 per tick
-    conflicts Globalism
-    modifies:
-        aggression + .15
-        trust - .1
-        cooperation - .1
-    end
+link Nation trade by [
+    self >> economy * .4
+    + self >> cooperation * .4
+    + target >> economy * .2
+]
+
+link Nation culture by [
+    self >> trust * .5
+    + target >> trust * .5
+]
+
+@Nation matrix
+    id:          "{id}", Rome,  Carthage, Greece
+    power:       .5,     .8,    .6,       .5
+    military:    .5,     .9,    .5,       .4
+    economy:     .5,     .6,    .8,       .7
+    trust:       .5,     .3,    .5,       .8
+    aggression:  .5,     .8,    .4,       .2
+    cooperation: .5,     .3,    .7,       .8
 end
 
-overlay Globalism |
-    hosts Nation
-    decays .03 per tick
-    conflicts Nationalism
-    modifies:
-        cooperation + .15
-        trust + .1
-    end
-end
+say "=== INITIAL LINK SCORES ==="
+say "Rome -> Carthage border:"
+say link_score("Nation", "border", "Rome", "Carthage")
+say "Rome -> Carthage trade:"
+say link_score("Nation", "trade", "Rome", "Carthage")
+say "Rome -> Carthage culture:"
+say link_score("Nation", "culture", "Rome", "Carthage")
+say "Greece -> Rome trade:"
+say link_score("Nation", "trade", "Greece", "Rome")
 
-overlay Crisis |
-    hosts Nation
-    decays .06 per tick
-    modifies:
-        stability - .15
-        instability + .15
-        cohesion - .1
-    end
-end
+say "=== OBJECT OVERRIDE ==="
+Rome link border by [
+    self >> military * .7
+    - target >> military * .3
+]
+say "Rome -> Carthage border (Rome's own formula):"
+say link_score("Nation", "border", "Rome", "Carthage")
+say "Carthage -> Rome border (still class formula):"
+say link_score("Nation", "border", "Carthage", "Rome")
 
-say "=== INITIAL STATE ==="
-say Hegemon
-say Fragile
+say "=== PAIR OFFSETS ==="
+Rome link to Carthage on culture offset -.5
+say "Rome -> Carthage culture after betrayal:"
+say link_score("Nation", "culture", "Rome", "Carthage")
 
-say "=== LINK SCORES (initial) ==="
-say "Hegemon -> Fragile:"
-say link_score("Nation", "Hegemon", "Fragile")
-say "Allied_A -> Allied_B:"
-say link_score("Nation", "Allied_A", "Allied_B")
-say "Hegemon -> Rival:"
-say link_score("Nation", "Hegemon", "Rival")
+Rome link to Greece on trade offset +.3 for 5 ticks
+say "Rome -> Greece trade after treaty (temporary):"
+say link_score("Nation", "trade", "Rome", "Greece")
 
-say "=== APPLY OVERLAYS ==="
-overlay Nationalism on Hegemon at .6
-overlay Crisis on Fragile at .75
-overlay Globalism on Allied_A at .5
-overlay Globalism on Allied_B at .5
-
-say "=== MEMORY BEFORE SIM ==="
-say mem_total()
-say mem_human()
-
-say "=== TICK 1 ==="
-tick()
-say "Hegemon:"
-say Hegemon
-say "Fragile:"
-say Fragile
-say "Allied_A:"
-say Allied_A
-say "Nationalism on Hegemon:"
-say overlay_strength("Nationalism", "Hegemon")
-say "Crisis on Fragile:"
-say overlay_strength("Crisis", "Fragile")
-say "Globalism on Allied_A:"
-say overlay_strength("Globalism", "Allied_A")
-
-say "=== TICK 2 ==="
-tick()
-say "Hegemon:"
-say Hegemon
-say "Fragile (may erase or mutate):"
-say Fragile
-say "Crisis on Fragile:"
-say overlay_strength("Crisis", "Fragile")
-
-say "=== TICK 3 ==="
-tick()
-say "Hegemon:"
-say Hegemon
-say "Fragile:"
-say Fragile
-say "Allied_A -> Allied_B (high trust, may merge):"
-say link_score("Nation", "Allied_A", "Allied_B")
-
-say "=== LINK SCORES (after overlays + decisions) ==="
-say "Hegemon -> Rival:"
-say link_score("Nation", "Hegemon", "Rival")
-say "Hegemon -> Fragile:"
-say link_score("Nation", "Hegemon", "Fragile")
-
-say "=== MEMORY AFTER SIM ==="
-say mem_total()
-say mem_human()
+say "=== AFTER 5 TICKS ==="
+repeat 5
+    tick()
+xx
+say "Rome -> Greece trade after treaty expires:"
+say link_score("Nation", "trade", "Rome", "Greece")

@@ -358,10 +358,19 @@ pub struct ResponseState {
 // ── Overlay runtime structures ──────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+pub enum SpreadRule {
+    Channel { channel: String, rate: f64 },
+    All { class_name: String, rate: f64 },
+    Nearby { rate: f64 },
+    Ownership { rate: f64 },
+    Predicate { condition: ast::Expr, rate: f64 },
+}
+
+#[derive(Debug, Clone)]
 pub struct OverlayDef {
     pub name: String,
     pub host_types: Vec<String>,
-    pub spread_channels: Vec<(String, f64)>,
+    pub spread_rules: Vec<SpreadRule>,
     pub decay_rate: f64,
     pub modifiers: Vec<(String, f64)>,
     pub conflict_rules: Vec<OverlayConflictRule>,
@@ -377,9 +386,7 @@ pub struct OverlayConflictRule {
 
 #[derive(Debug, Clone)]
 pub struct OverlaySpawnRule {
-    pub condition_field: String,
-    pub condition_op: String,
-    pub condition_val: f64,
+    pub condition: ast::Expr,
     pub spawn_overlay: String,
     pub spawn_strength: f64,
 }
@@ -404,12 +411,21 @@ pub struct OverlayInstance {
 pub struct LinkDef {
     /// Class name this link applies to.
     pub class_name: String,
+    /// Named channel (e.g. "border", "trade"). "default" if unspecified.
+    pub channel: String,
     /// The formula AST — evaluated with self/target bound in a temp scope.
     pub formula: ast::Expr,
     /// Theoretical minimum of the formula (derived at registration).
     pub formula_min: f64,
     /// Theoretical maximum of the formula (derived at registration).
     pub formula_max: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkOffset {
+    pub value: f64,
+    /// None = permanent. Some(N) = ticks remaining before expiry.
+    pub ticks_remaining: Option<u32>,
 }
 
 pub struct Session {
@@ -447,9 +463,12 @@ pub struct Session {
 
     // ==== LINK SYSTEM ====
     /// Class-level link definitions keyed by class name.
-    pub link_defs: HashMap<String, LinkDef>,
-    /// Per-object link formula overrides keyed by variable name.
-    pub object_link_defs: HashMap<String, LinkDef>,
+    /// Class-level link defs keyed by (class_name, channel).
+    pub link_defs: HashMap<(String, String), LinkDef>,
+    /// Per-object link formula overrides keyed by (var_name, channel).
+    pub object_link_defs: HashMap<(String, String), LinkDef>,
+    /// Pair-level link offsets: (from_var, to_var, channel) -> Vec<LinkOffset>
+    pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>>,
 
     // ==== TRANSITION SYSTEM ====
     /// Variables erased by transitions — kept for friendly error messages.
@@ -462,10 +481,7 @@ pub struct Session {
     pub object_store: HashMap<String, Value>,
 
     // ==== OWNERSHIP SYSTEM ====
-    /// Maps owned object uuid -> owner object uuid.
-    pub ownership: HashMap<String, String>,
     /// User-defined unit families for capacity field conversion.
-    /// Keyed by unit family name; value is list of (from_type, from_count, to_type, to_count).
     pub unit_registry: HashMap<String, ast::UnitDecl>,
 }
 
@@ -518,12 +534,12 @@ impl Session {
 
             link_defs: HashMap::new(),
             object_link_defs: HashMap::new(),
+            link_offsets: HashMap::new(),
 
             erased_vars: HashMap::new(),
 
             object_store: HashMap::new(),
 
-            ownership: HashMap::new(),
             unit_registry: HashMap::new(),
 
             rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
@@ -604,6 +620,19 @@ impl Session {
     #[inline]
     pub fn reseed(&mut self, seed: u128) {
         self.rng_state = seed;
+    }
+
+    /// Generate a UUID v4 string using the session RNG.
+    pub fn gen_uuid(&mut self) -> String {
+        let a = self.next_u128();
+        let b = self.next_u128();
+        // Format as UUID v4: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+        let p1 = (a >> 96) as u32;
+        let p2 = ((a >> 80) & 0xFFFF) as u16;
+        let p3 = (((a >> 64) & 0x0FFF) as u16) | 0x4000;
+        let p4 = ((((a >> 48) & 0x3FFF) as u16) | 0x8000);
+        let p5 = a & 0xFFFF_FFFF_FFFF;
+        format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}", p1, p2, p3, p4, p5)
     }
 
     // Fast 128-bit LCG
@@ -2154,6 +2183,7 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
             let mut s = format!("{}{{", class_name);
             let mut first = true;
             for (k, v) in fields.iter() {
+                if k == "uuid" { continue; }
                 if !first { s.push_str(", "); }
                 first = false;
                 s.push_str(k);
@@ -3153,7 +3183,13 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             let def = OverlayDef {
                 name: def_stmt.name.clone(),
                 host_types: def_stmt.host_types.clone(),
-                spread_channels: def_stmt.spread_channels.clone(),
+                spread_rules: def_stmt.spread_rules.iter().map(|r| match r {
+                    ast::SpreadRule::Channel { channel, rate } => SpreadRule::Channel { channel: channel.clone(), rate: *rate },
+                    ast::SpreadRule::All { class_name, rate } => SpreadRule::All { class_name: class_name.clone(), rate: *rate },
+                    ast::SpreadRule::Nearby { rate } => SpreadRule::Nearby { rate: *rate },
+                    ast::SpreadRule::Ownership { rate } => SpreadRule::Ownership { rate: *rate },
+                    ast::SpreadRule::Predicate { condition, rate } => SpreadRule::Predicate { condition: condition.clone(), rate: *rate },
+                }).collect(),
                 decay_rate: def_stmt.decay_rate,
                 modifiers: def_stmt.modifiers.clone(),
                 conflict_rules: def_stmt.conflict_rules.iter().map(|r| OverlayConflictRule {
@@ -3161,9 +3197,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     suppress_rate: r.suppress_rate,
                 }).collect(),
                 spawn_rules: def_stmt.spawn_rules.iter().map(|r| OverlaySpawnRule {
-                    condition_field: r.condition_field.clone(),
-                    condition_op: r.condition_op.clone(),
-                    condition_val: r.condition_val,
+                    condition: r.condition.clone(),
                     spawn_overlay: r.spawn_overlay.clone(),
                     spawn_strength: r.spawn_strength,
                 }).collect(),
@@ -3237,8 +3271,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 Vec::new()
             };
 
-            // Apply modifiers immediately to host
-            overlay_apply_modifiers(sess, &host_var, &def.modifiers);
+            // Apply modifiers immediately to host at declared strength
+            overlay_apply_modifiers(sess, &host_var, &def.modifiers, apply_stmt.strength.clamp(0.0, 1.0));
 
             let instance = OverlayInstance {
                 overlay_name: apply_stmt.overlay_name.clone(),
@@ -3289,26 +3323,46 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         // ── Link: class-level definition ────────────────────────────────────────
         ast::Stmt::LinkDef(def_stmt) => {
             let (min, max) = derive_link_formula_range(&def_stmt.formula);
+            let channel = def_stmt.channel.clone().unwrap_or_else(|| "default".to_string());
             let def = LinkDef {
                 class_name: def_stmt.class_name.clone(),
+                channel: channel.clone(),
                 formula: def_stmt.formula.clone(),
                 formula_min: min,
                 formula_max: max,
             };
-            sess.link_defs.insert(def_stmt.class_name.clone(), def);
+            sess.link_defs.insert((def_stmt.class_name.clone(), channel), def);
             Ok(None)
         }
 
         // ── Link: object-level override ──────────────────────────────────────
         ast::Stmt::ObjectLinkDef(def_stmt) => {
             let (min, max) = derive_link_formula_range(&def_stmt.formula);
+            let channel = def_stmt.channel.clone().unwrap_or_else(|| "default".to_string());
             let def = LinkDef {
-                class_name: String::new(), // not class-bound
+                class_name: def_stmt.object_var.clone(),
+                channel: channel.clone(),
                 formula: def_stmt.formula.clone(),
                 formula_min: min,
                 formula_max: max,
             };
-            sess.object_link_defs.insert(def_stmt.object_var.clone(), def);
+            sess.object_link_defs.insert((def_stmt.object_var.clone(), channel), def);
+            Ok(None)
+        }
+
+        ast::Stmt::LinkOffset(s) => {
+            let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
+            let offset = LinkOffset {
+                value: s.offset,
+                ticks_remaining: s.ticks,
+            };
+            sess.link_offsets.entry(key).or_default().push(offset);
+            Ok(None)
+        }
+
+        ast::Stmt::ClearLink(s) => {
+            let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
+            sess.link_offsets.remove(&key);
             Ok(None)
         }
 
@@ -5620,13 +5674,22 @@ fn eval_builtin(
         }
 
         "link_score" => {
-            // link_score(class_name, obj_a_var, obj_b_var) -> Float
-            // Evaluates the link formula from obj_a's perspective toward obj_b.
-            // Uses obj_a's object-level formula if defined, else the class formula.
-            arity(3)?;
-            let class_name = match &args[0] { Value::Str(s) => s.clone(), _ => return Ok(None) };
-            let obj_a_var = match &args[1] { Value::Str(s) => s.clone(), _ => return Ok(None) };
-            let obj_b_var = match &args[2] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+            // link_score(class_name, obj_a_var, obj_b_var) -> Float          (default channel)
+            // link_score(class_name, channel, obj_a_var, obj_b_var) -> Float (named channel)
+            if args.len() < 3 { return Ok(Some(Value::Nil)); }
+
+            let (class_name, channel, obj_a_var, obj_b_var) = if args.len() >= 4 {
+                let cn = match &args[0] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+                let ch = match &args[1] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+                let a  = match &args[2] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+                let b  = match &args[3] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+                (cn, ch, a, b)
+            } else {
+                let cn = match &args[0] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+                let a  = match &args[1] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+                let b  = match &args[2] { Value::Str(s) => s.clone(), _ => return Ok(None) };
+                (cn, "default".to_string(), a, b)
+            };
 
             let obj_a = sess.get_var(&obj_a_var).cloned();
             let obj_b = sess.get_var(&obj_b_var).cloned();
@@ -5636,14 +5699,14 @@ fn eval_builtin(
                 _ => return Ok(Some(Value::Nil)),
             };
 
-            // Look up formula: object override first, then class default
-            let def = sess.object_link_defs.get(&obj_a_var).cloned()
-                .or_else(|| sess.link_defs.get(&class_name).cloned());
+            // Look up formula: object override first, then class default (both channel-keyed)
+            let def = sess.object_link_defs.get(&(obj_a_var.clone(), channel.clone())).cloned()
+                .or_else(|| sess.link_defs.get(&(class_name.clone(), channel.clone())).cloned());
 
             match def {
                 None => Value::Nil,
                 Some(d) => {
-                    let score = eval_link_score(
+                    let mut score = eval_link_score(
                         sess,
                         self_val,
                         target_val,
@@ -5652,7 +5715,14 @@ fn eval_builtin(
                         d.formula_max,
                         sp,
                     )?;
-                    Value::Float(score)
+                    // Apply pair-level offsets
+                    let offset_key = (obj_a_var.clone(), obj_b_var.clone(), channel.clone());
+                    if let Some(offsets) = sess.link_offsets.get(&offset_key) {
+                        for o in offsets {
+                            score += o.value;
+                        }
+                    }
+                    Value::Float(score.clamp(0.0, 1.0))
                 }
             }
         }
@@ -5667,7 +5737,7 @@ fn eval_builtin(
 
 /// Apply a set of field modifiers to a host object variable.
 /// Traits (0..1 fields) are clamped. Plain numeric fields are unclamped.
-fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(String, f64)]) {
+fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(String, f64)], strength: f64) {
     if modifiers.is_empty() { return; }
     if let Some(val) = sess.get_var_mut(host_var) {
         if let Value::Object { fields, trait_fields, .. } = val {
@@ -5678,7 +5748,7 @@ fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(Str
                         Value::Int(i) => *i as f64,
                         _ => continue,
                     };
-                    let new_val = current + delta;
+                    let new_val = current + delta * strength;
                     let new_val = if trait_fields.contains(field_name) {
                         let clamped = new_val.clamp(0.0, 1.0);
                         // Snap near-zero/near-one to exact bounds to avoid float drift
@@ -5704,9 +5774,19 @@ fn overlay_restore_originals(sess: &mut Session, host_var: &str, originals: &[(S
     }
 }
 
-/// Run one simulation tick: decay, conflict resolution, spawn, expiry.
-/// Spread is deferred until the link system is implemented.
+/// Run one simulation tick: decay, conflict resolution, spread, spawn, expiry.
 fn overlay_tick(sess: &mut Session) {
+    // Decay temporary link offsets
+    for offsets in sess.link_offsets.values_mut() {
+        for o in offsets.iter_mut() {
+            if let Some(ref mut t) = o.ticks_remaining {
+                if *t > 0 { *t -= 1; }
+            }
+        }
+        offsets.retain(|o| o.ticks_remaining.map(|t| t > 0).unwrap_or(true));
+    }
+    sess.link_offsets.retain(|_, v| !v.is_empty());
+
     // Collect defs snapshot to avoid borrow issues
     let defs: HashMap<String, OverlayDef> = sess.overlay_defs.clone();
 
@@ -5718,9 +5798,10 @@ fn overlay_tick(sess: &mut Session) {
         let overlay_name = inst.overlay_name.clone();
 
         if let Some(def) = defs.get(&overlay_name) {
-            // Apply modifiers each tick
+            // Apply modifiers each tick, scaled by overlay strength
             let modifiers = def.modifiers.clone();
-            overlay_apply_modifiers(sess, &host_var, &modifiers);
+            let strength = sess.overlay_instances[idx].strength;
+            overlay_apply_modifiers(sess, &host_var, &modifiers, strength);
 
             // Apply decay
             let new_strength = sess.overlay_instances[idx].strength - def.decay_rate;
@@ -5776,29 +5857,51 @@ fn overlay_tick(sess: &mut Session) {
 
     // 3. Spawn rules
     let mut to_spawn: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_var, strength)
-    for inst in &sess.overlay_instances {
+
+    // Snapshot so eval_expr can mutably borrow sess without fighting
+    // the immutable borrow from iterating sess.overlay_instances.
+    let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
+
+    for inst in &instances_snap {
         if let Some(def) = defs.get(&inst.overlay_name) {
             for rule in &def.spawn_rules {
-                let check_val = if rule.condition_field == "strength" {
-                    inst.strength
-                } else {
-                    continue; // only strength conditions for now
+                let host_val = match sess.get_var(&inst.host_var).cloned() {
+                    Some(v) => v,
+                    None => continue,
                 };
-                let triggered = match rule.condition_op.as_str() {
-                    ">" => check_val > rule.condition_val,
-                    ">=" => check_val >= rule.condition_val,
-                    "<" => check_val < rule.condition_val,
-                    "<=" => check_val <= rule.condition_val,
-                    "==" => (check_val - rule.condition_val).abs() < 1e-9,
+
+                sess.push_frame();
+                sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                sess.define_local("self".to_string(), host_val.clone(), true);
+
+                if let Value::Object { ref fields, .. } = host_val {
+                    for (k, v) in fields {
+                        sess.define_local(k.clone(), v.clone(), false);
+                    }
+                }
+
+                let condition_result = eval_expr(&rule.condition, sess);
+
+                sess.pop_frame();
+
+                let triggered = match condition_result {
+                    Ok(Value::Bool(b)) => b,
+                    Ok(Value::Float(f)) => f != 0.0,
+                    Ok(Value::Int(i)) => i != 0,
                     _ => false,
                 };
+
                 if triggered {
-                    // Only spawn if not already occupying this host
                     let already = sess.overlay_instances.iter().any(|i| {
                         i.overlay_name == rule.spawn_overlay && i.host_var == inst.host_var
                     });
+
                     if !already {
-                        to_spawn.push((rule.spawn_overlay.clone(), inst.host_var.clone(), rule.spawn_strength));
+                        to_spawn.push((
+                            rule.spawn_overlay.clone(),
+                            inst.host_var.clone(),
+                            rule.spawn_strength,
+                        ));
                     }
                 }
             }
@@ -5809,15 +5912,235 @@ fn overlay_tick(sess: &mut Session) {
         if let Some(def) = defs.get(&ov_name).cloned() {
             let modifiers = def.modifiers.clone();
             let duration = def.default_duration;
-            overlay_apply_modifiers(sess, &host_var, &modifiers);
+            let clamped_strength = strength.clamp(0.0, 1.0);
+
+            overlay_apply_modifiers(sess, &host_var, &modifiers, clamped_strength);
+
             sess.overlay_instances.push(OverlayInstance {
                 overlay_name: ov_name,
                 host_var,
-                strength: strength.clamp(0.0, 1.0),
+                strength: clamped_strength,
                 age: 0,
                 ticks_remaining: duration,
                 original_values: Vec::new(),
             });
+        }
+    }
+
+    // 3b. Spread — propagate overlay to new hosts based on spread rules
+    {
+        let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
+        let defs_snap: HashMap<String, OverlayDef> = sess.overlay_defs.clone();
+
+        // Collect all live var names for All/Ownership spread
+        let all_vars: Vec<String> = sess.env.iter()
+            .flat_map(|f| f.keys().cloned())
+            .collect();
+
+        for inst in &instances_snap {
+            let def = match defs_snap.get(&inst.overlay_name) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            for rule in &def.spread_rules {
+                match rule {
+                    SpreadRule::Channel { channel, rate } => {
+                        // Find all valid hosts and spread based on link score
+                        let host_class = sess.get_var(&inst.host_var)
+                            .and_then(|v| if let Value::Object { class_name, .. } = v { Some(class_name.clone()) } else { None });
+                        let host_class = match host_class { Some(c) => c, None => continue };
+
+                        let candidates: Vec<(String, Value)> = all_vars.iter()
+                            .filter(|vn| *vn != &inst.host_var)
+                            .filter_map(|vn| sess.get_var(vn).map(|v| (vn.clone(), v.clone())))
+                            .filter(|(_, v)| matches!(v, Value::Object { class_name, .. } if class_name == &host_class))
+                            .collect();
+
+                        let link_def = sess.link_defs.get(&(host_class.clone(), channel.clone())).cloned()
+                            .or_else(|| sess.link_defs.get(&(host_class.clone(), "default".to_string())).cloned());
+
+                        let link_def = match link_def { Some(d) => d, None => continue };
+
+                        let self_val = match sess.get_var(&inst.host_var).cloned() { Some(v) => v, None => continue };
+
+                        for (target_var, target_val) in candidates {
+                            // Only spread if already occupied or link score above threshold
+                            let already_occupied = sess.overlay_instances.iter()
+                                .any(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var);
+
+                            let link_score = eval_link_score(
+                                sess,
+                                self_val.clone(),
+                                target_val,
+                                &link_def.formula,
+                                link_def.formula_min,
+                                link_def.formula_max,
+                                &synth_span(),
+                            ).unwrap_or(0.0);
+
+                            if link_score < 0.3 { continue; }
+
+                            let spread_amount = inst.strength * rate * link_score;
+                            if spread_amount <= 0.0 { continue; }
+
+                            if already_occupied {
+                                if let Some(existing) = sess.overlay_instances.iter_mut()
+                                    .find(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var) {
+                                    existing.strength = (existing.strength + spread_amount).min(1.0);
+                                }
+                            } else if spread_amount > 0.01 {
+                                sess.overlay_instances.push(OverlayInstance {
+                                    overlay_name: inst.overlay_name.clone(),
+                                    host_var: target_var,
+                                    strength: spread_amount,
+                                    age: 0,
+                                    ticks_remaining: None,
+                                    original_values: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+
+                    SpreadRule::All { class_name, rate } => {
+                        let candidates: Vec<String> = all_vars.iter()
+                            .filter(|vn| *vn != &inst.host_var)
+                            .filter(|vn| {
+                                sess.get_var(vn)
+                                    .map(|v| matches!(v, Value::Object { class_name: cn, .. } if cn == class_name))
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect();
+
+                        for target_var in candidates {
+                            let spread_amount = inst.strength * rate;
+                            if spread_amount <= 0.0 { continue; }
+
+                            let already_occupied = sess.overlay_instances.iter()
+                                .any(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var);
+
+                            if already_occupied {
+                                if let Some(existing) = sess.overlay_instances.iter_mut()
+                                    .find(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var) {
+                                    existing.strength = (existing.strength + spread_amount).min(1.0);
+                                }
+                            } else if spread_amount > 0.01 {
+                                sess.overlay_instances.push(OverlayInstance {
+                                    overlay_name: inst.overlay_name.clone(),
+                                    host_var: target_var,
+                                    strength: spread_amount,
+                                    age: 0,
+                                    ticks_remaining: None,
+                                    original_values: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+
+                    SpreadRule::Ownership { rate } => {
+                        // Spread to objects that have owner_id pointing to this host's uuid/var
+                        let host_id = sess.get_var(&inst.host_var)
+                            .and_then(|v| if let Value::Object { fields, .. } = v {
+                                fields.get("id").and_then(|f| if let Value::Str(s) = f { Some(s.clone()) } else { None })
+                            } else { None });
+                        let host_id = match host_id { Some(id) => id, None => continue };
+
+                        let candidates: Vec<String> = all_vars.iter()
+                            .filter(|vn| *vn != &inst.host_var)
+                            .filter(|vn| {
+                                sess.get_var(vn)
+                                    .map(|v| if let Value::Object { fields, .. } = v {
+                                        fields.get("owner_id")
+                                            .map(|o| matches!(o, Value::Str(s) if s == &host_id))
+                                            .unwrap_or(false)
+                                    } else { false })
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect();
+
+                        for target_var in candidates {
+                            let spread_amount = inst.strength * rate;
+                            if spread_amount <= 0.0 { continue; }
+
+                            let already_occupied = sess.overlay_instances.iter()
+                                .any(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var);
+
+                            if already_occupied {
+                                if let Some(existing) = sess.overlay_instances.iter_mut()
+                                    .find(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var) {
+                                    existing.strength = (existing.strength + spread_amount).min(1.0);
+                                }
+                            } else if spread_amount > 0.01 {
+                                sess.overlay_instances.push(OverlayInstance {
+                                    overlay_name: inst.overlay_name.clone(),
+                                    host_var: target_var,
+                                    strength: spread_amount,
+                                    age: 0,
+                                    ticks_remaining: None,
+                                    original_values: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+
+                    SpreadRule::Predicate { condition, rate } => {
+                        let self_val = match sess.get_var(&inst.host_var).cloned() { Some(v) => v, None => continue };
+
+                        let candidates: Vec<String> = all_vars.iter()
+                            .filter(|vn| *vn != &inst.host_var)
+                            .cloned()
+                            .collect();
+
+                        for target_var in candidates {
+                            let target_val = match sess.get_var(&target_var).cloned() { Some(v) => v, None => continue };
+
+                            // Evaluate predicate with self and target bound
+                            sess.push_frame();
+                            sess.define_local("self".to_string(), self_val.clone(), true);
+                            sess.define_local("target".to_string(), target_val, true);
+                            let fires = eval_expr(condition, sess)
+                                .ok()
+                                .map(|v| match v {
+                                    Value::Bool(b) => b,
+                                    Value::Int(i) => i != 0,
+                                    _ => false,
+                                })
+                                .unwrap_or(false);
+                            sess.pop_frame();
+
+                            if !fires { continue; }
+
+                            let spread_amount = inst.strength * rate;
+                            if spread_amount <= 0.0 { continue; }
+
+                            let already_occupied = sess.overlay_instances.iter()
+                                .any(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var);
+
+                            if already_occupied {
+                                if let Some(existing) = sess.overlay_instances.iter_mut()
+                                    .find(|i| i.overlay_name == inst.overlay_name && i.host_var == target_var) {
+                                    existing.strength = (existing.strength + spread_amount).min(1.0);
+                                }
+                            } else if spread_amount > 0.01 {
+                                sess.overlay_instances.push(OverlayInstance {
+                                    overlay_name: inst.overlay_name.clone(),
+                                    host_var: target_var,
+                                    strength: spread_amount,
+                                    age: 0,
+                                    ticks_remaining: None,
+                                    original_values: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+
+                    SpreadRule::Nearby { .. } => {
+                        // Requires map feature — not yet implemented
+                    }
+                }
+            }
         }
     }
 
@@ -6273,18 +6596,20 @@ fn create_successor_object(
         .map(|f| f.name.clone())
         .collect();
 
+    let new_uuid = sess.gen_uuid();
+    fields.insert("uuid".to_string(), Value::Str(new_uuid.clone()));
     let obj = Value::Object {
         class_name: class_name.to_string(),
         fields,
         readonly_fields,
         trait_fields,
-        uuid: var_name.to_string(),
+        uuid: new_uuid.clone(),
     };
 
     // Store in object_store; put Ref in global frame (env[0])
-    sess.object_store.insert(var_name.to_string(), obj);
+    sess.object_store.insert(new_uuid.clone(), obj);
     if let Some(frame) = sess.env.first_mut() {
-        frame.insert(var_name.to_string(), Value::Ref(var_name.to_string()));
+        frame.insert(var_name.to_string(), Value::Ref(new_uuid));
         if let Some(consts_frame) = sess.consts.first_mut() {
             consts_frame.insert(var_name.to_string(), false);
         }
@@ -11791,6 +12116,92 @@ fn call_action_by_name(
         "mem_addr"  => crate::actions::mem::mem_addr(sess, &args, &sp)?,
         "mem_total" => crate::actions::mem::mem_total(sess, &args, &sp)?,
         "mem_human" => crate::actions::mem::mem_human(sess, &args, &sp)?,
+
+        // ----- CSPRG -----
+        "secure_pick"    => crate::actions::csprng::secure_pick(sess, &args, &sp)?,
+        "secure_random"  => crate::actions::csprng::secure_random(sess, &args, &sp)?,
+        "secure_shuffle" => crate::actions::csprng::secure_shuffle(sess, &args, &sp)?,
+
+        // ── Ownership query builtins ─────────────────────────────────────────
+
+        "owned_by" => {
+            // owned_by(owner) — returns all objects whose owner_id matches owner's UUID
+            let owner_uuid = match args.get(0) {
+                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Str(s)) => s.clone(),
+                _ => return Err(Diagnostic::new_with_code(Severity::Error, "A0412", "owned-by-bad-arg", "owned_by() argument must be an object", sp.clone())),
+            };
+            let owned: Vec<Value> = sess.object_store.values()
+                .filter(|v| {
+                    if let Value::Object { fields, .. } = v {
+                        matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)
+                    } else { false }
+                })
+                .cloned()
+                .collect();
+            Value::Array(owned)
+        }
+
+        "owns_tree" => {
+            // owns_tree(root) — recursively show ownership hierarchy by UUID via owner_id field
+            fn build_tree(owner_uuid: &str, object_store: &HashMap<String, Value>, depth: usize) -> String {
+                let indent = "  ".repeat(depth);
+                let label = if let Some(Value::Object { class_name, fields, .. }) = object_store.get(owner_uuid) {
+                    let id = fields.get("id")
+                        .map(|v| fmt_value_with_depth(v, 0))
+                        .unwrap_or_else(|| owner_uuid.to_string());
+                    format!("{}{{{}: {}}}", indent, class_name, id)
+                } else {
+                    format!("{}{}", indent, owner_uuid)
+                };
+                let mut children: Vec<String> = object_store.iter()
+                    .filter(|(_, v)| matches!(v, Value::Object { fields, .. } if
+                        matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner_uuid)))
+                    .map(|(child_uuid, _)| build_tree(child_uuid, object_store, depth + 1))
+                    .collect();
+                children.sort();
+                if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
+            }
+
+            let root_uuid = match args.get(0) {
+                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Str(s)) => s.clone(),
+                _ => return Err(Diagnostic::new_with_code(Severity::Error, "A0413", "owns-tree-bad-arg", "owns_tree() argument must be an object", sp.clone())),
+            };
+            let tree = build_tree(&root_uuid, &sess.object_store, 0);
+            Value::Str(tree)
+        }
+
+        "clone_object" => {
+            let source_var = match args.get(0) {
+                Some(Value::Str(s)) => s.clone(),
+                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                _ => return Err(Diagnostic::new_with_code(Severity::Error, "A0414", "clone-object-bad-source", "clone_object() argument must be an object", sp.clone())),
+            };
+
+            let source_uuid = {
+                let mut found = None;
+                for frame in sess.env.iter().rev() {
+                    if let Some(Value::Ref(uuid)) = frame.get(&source_var) {
+                        found = Some(uuid.clone());
+                        break;
+                    }
+                }
+                found.unwrap_or(source_var)
+            };
+
+            match sess.object_store.get(&source_uuid).cloned() {
+                Some(Value::Object { class_name, mut fields, readonly_fields, trait_fields, .. }) => {
+                    fields.insert("owner_id".to_string(), Value::Str(String::new()));
+                    let new_uuid = sess.gen_uuid();
+                    fields.insert("uuid".to_string(), Value::Str(new_uuid.clone()));
+                    let cloned = Value::Object { class_name, fields, readonly_fields, trait_fields, uuid: new_uuid.clone() };
+                    sess.object_store.insert(new_uuid, cloned.clone());
+                    cloned
+                }
+                _ => return Err(Diagnostic::new_with_code(Severity::Error, "A0416", "clone-object-not-found", "clone_object() source object not found", sp.clone())),
+            }
+        }
 
         // ----- Database -----
         "db_query"      => crate::actions::db::db_query(sess, &args, &sp)?,
@@ -19120,12 +19531,14 @@ fn instantiate_object(
         })
         .collect();
 
+    let uuid = sess.gen_uuid();
+    field_map.insert("uuid".to_string(), Value::Str(uuid.clone()));
     let obj = Value::Object {
         class_name: class_name.to_string(),
         fields: field_map,
         readonly_fields,
         trait_fields,
-        uuid: id_str.clone(),
+        uuid,
     };
     
     sess.define_local(var_name.to_string(), obj, is_const);

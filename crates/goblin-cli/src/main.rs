@@ -1322,36 +1322,27 @@ fn run_run(path: &std::path::Path) -> i32 {
                     goblin_ast::Stmt::Expr(e) => {
                         match sess.eval_expr(e) {
                             Ok(val) => {
-                                // Suppress top-level Unit/nil outputs
-                                if !matches!(val, Value::Unit) {
+                                let is_api = std::env::var("GOBLIN_NONINTERACTIVE").unwrap_or_default() == "1";
+                                if is_api && !matches!(val, Value::Unit) {
                                     let echo = format!("{}", val);
                                     if !echo.is_empty() && echo != "nil" {
-
-                                        let body = echo;
-
                                         let status = sess.response.status.unwrap_or(200);
-
                                         let mut headers_obj = serde_json::Map::new();
                                         for (k, v) in &sess.response.headers {
                                             headers_obj.insert(k.clone(), serde_json::Value::String(v.clone()));
                                         }
                                         let headers_json = serde_json::Value::Object(headers_obj);
-
                                         let cookies_json = serde_json::Value::Array(
-                                            sess.response
-                                                .cookies
-                                                .iter()
+                                            sess.response.cookies.iter()
                                                 .map(|c| serde_json::Value::String(c.clone()))
                                                 .collect()
                                         );
-
                                         let envelope = json!({
                                             "status": status,
                                             "headers": headers_json,
                                             "cookies": cookies_json,
-                                            "body": body
+                                            "body": echo
                                         });
-
                                         println!("{}", envelope.to_string());
                                     }
                                 }
@@ -1456,35 +1447,27 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
                 match stmt {
                     goblin_ast::Stmt::Expr(e) => match sess.eval_expr(e) {
                         Ok(val) => {
-                            // Suppress top-level Unit/nil outputs
-                            if !matches!(val, Value::Unit) {
+                            let is_api = std::env::var("GOBLIN_NONINTERACTIVE").unwrap_or_default() == "1";
+                            if is_api && !matches!(val, Value::Unit) {
                                 let echo = format!("{}", val);
                                 if !echo.is_empty() && echo != "nil" {
-                                    let body = echo;
-
                                     let status = sess.response.status.unwrap_or(200);
-
                                     let mut headers_obj = serde_json::Map::new();
                                     for (k, v) in &sess.response.headers {
                                         headers_obj.insert(k.clone(), serde_json::Value::String(v.clone()));
                                     }
                                     let headers_json = serde_json::Value::Object(headers_obj);
-
                                     let cookies_json = serde_json::Value::Array(
-                                        sess.response
-                                            .cookies
-                                            .iter()
+                                        sess.response.cookies.iter()
                                             .map(|c| serde_json::Value::String(c.clone()))
                                             .collect()
                                     );
-
                                     let envelope = json!({
                                         "status": status,
                                         "headers": headers_json,
                                         "cookies": cookies_json,
-                                        "body": body
+                                        "body": echo
                                     });
-
                                     println!("{}", envelope.to_string());
                                 }
                             }
@@ -1494,6 +1477,7 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
                             return 1;
                         }
                     },
+
                     _ => {
                         if let Err(d) = sess.eval_stmt(stmt) {
                             eprintln!("{}", d);

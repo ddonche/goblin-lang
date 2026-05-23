@@ -5807,6 +5807,16 @@ impl<'t> Parser<'t> {
             }
         }
 
+        // clear link VarA to VarB on channel
+        if self.peek_ident() == Some("clear") {
+            if self.toks.get(self.i + 1)
+                .and_then(|t| t.value.as_deref())
+                == Some("link")
+            {
+                return self.parse_clear_link();
+            }
+        }
+
         // -------- free action: dedicated token from the lexer --------
         if let Some(t) = self.peek() {
             if matches!(t.kind, TokenKind::Act) {
@@ -6361,7 +6371,7 @@ impl<'t> Parser<'t> {
         use goblin_lexer::TokenKind;
 
         let mut host_types: Vec<String> = Vec::new();
-        let mut spread_channels: Vec<(String, f64)> = Vec::new();
+        let mut spread_rules: Vec<ast::SpreadRule> = Vec::new();
         let mut decay_rate: f64 = 0.0;
         let mut modifiers: Vec<(String, f64)> = Vec::new();
         let mut conflict_rules: Vec<ast::OverlayConflictRule> = Vec::new();
@@ -6408,43 +6418,56 @@ impl<'t> Parser<'t> {
                 }
                 "spreads" => {
                     // spreads through channel at rate per tick
-                    // consume optional 'through'
+                    // spreads to all ClassName at rate per tick
+                    // spreads to nearby at rate per tick
+                    // spreads through ownership at rate per tick
+                    // spreads where condition at rate per tick
                     self.skip_layout_inline();
-                    if self.peek_ident() == Some("through") {
-                        let _ = self.eat_ident();
-                    }
-                    self.skip_layout_inline();
-                    // channel names (comma separated)
-                    let mut channels: Vec<String> = Vec::new();
-                    loop {
+                    let mode_kw = self.peek_ident();
+                    let rule = if mode_kw == Some("through") {
+                        let _ = self.eat_ident(); // consume 'through'
                         self.skip_layout_inline();
                         let Some(ch) = self.eat_ident() else { break; };
-                        channels.push(ch);
-                        self.skip_layout_inline();
-                        if !self.eat_op(",") { break; }
-                    }
-                    self.skip_layout_inline();
-                    // optional 'at rate per tick'
-                    let mut rate = 0.1f64;
-                    if self.peek_ident() == Some("at") {
-                        let _ = self.eat_ident();
-                        self.skip_layout_inline();
-                        if let Some(n) = self.eat_number_f64() {
-                            rate = n;
+                        let rate = self.parse_spread_rate();
+                        if ch == "ownership" {
+                            ast::SpreadRule::Ownership { rate }
+                        } else {
+                            ast::SpreadRule::Channel { channel: ch, rate }
                         }
+                    } else if mode_kw == Some("to") {
+                        let _ = self.eat_ident(); // consume 'to'
                         self.skip_layout_inline();
-                        // consume optional 'per tick'
-                        if self.peek_ident() == Some("per") {
+                        let next = self.peek_ident();
+                        if next == Some("nearby") {
                             let _ = self.eat_ident();
+                            let rate = self.parse_spread_rate();
+                            ast::SpreadRule::Nearby { rate }
+                        } else if next == Some("all") {
+                            let _ = self.eat_ident(); // consume 'all'
                             self.skip_layout_inline();
-                            if self.peek_ident() == Some("tick") {
-                                let _ = self.eat_ident();
-                            }
+                            let class_name = self.eat_ident().unwrap_or_else(|| "Object".to_string());
+                            let rate = self.parse_spread_rate();
+                            ast::SpreadRule::All { class_name, rate }
+                        } else {
+                            // fallback: treat as class name
+                            let class_name = self.eat_ident().unwrap_or_else(|| "Object".to_string());
+                            let rate = self.parse_spread_rate();
+                            ast::SpreadRule::All { class_name, rate }
                         }
-                    }
-                    for ch in channels {
-                        spread_channels.push((ch, rate));
-                    }
+                    } else if mode_kw == Some("where") {
+                        let _ = self.eat_ident(); // consume 'where'
+                        self.skip_layout_inline();
+                        let cond_pe = self.parse_coalesce().unwrap_or(PExpr::Bool(true));
+                        let condition = self.lower_expr(cond_pe);
+                        let rate = self.parse_spread_rate();
+                        ast::SpreadRule::Predicate { condition, rate }
+                    } else {
+                        // bare channel name (legacy: spreads culture at .1)
+                        let ch = self.eat_ident().unwrap_or_default();
+                        let rate = self.parse_spread_rate();
+                        ast::SpreadRule::Channel { channel: ch, rate }
+                    };
+                    spread_rules.push(rule);
                 }
                 "decays" => {
                     // decays rate per tick
@@ -6562,33 +6585,56 @@ impl<'t> Parser<'t> {
                     conflict_rules.push(ast::OverlayConflictRule { opponent, suppress_rate });
                 }
                 "spawns" => {
-                    // spawns overlay_name when field op val: strength val end
                     self.skip_layout_inline();
-                    let Some(spawn_name) = self.eat_ident() else { continue; };
+
+                    let Some(spawn_name) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P1230",
+                            "Expected overlay name after 'spawns'",
+                            "Write: spawns Revolution when strength > .75:"
+                        ));
+                    };
+
                     self.skip_layout_inline();
-                    // consume 'when'
-                    if self.peek_ident() == Some("when") { let _ = self.eat_ident(); }
+
+                    if self.peek_ident() != Some("when") {
+                        return Err(s_help_site!(
+                            "P1231",
+                            "Expected 'when' after spawned overlay name",
+                            "Write: spawns Revolution when strength > .75:"
+                        ));
+                    }
+                    let _ = self.eat_ident();
+
                     self.skip_layout_inline();
-                    // condition field
-                    let condition_field = self.eat_ident().unwrap_or("strength".to_string());
+
+                    self.suspend_colon_call += 1;
+                    let condition_pe = self.parse_coalesce()?;
+                    self.suspend_colon_call -= 1;
+
                     self.skip_layout_inline();
-                    // op
-                    let condition_op = if self.eat_op(">=") { ">=".to_string() }
-                        else if self.eat_op("<=") { "<=".to_string() }
-                        else if self.eat_op(">") { ">".to_string() }
-                        else if self.eat_op("<") { "<".to_string() }
-                        else if self.eat_op("==") { "==".to_string() }
-                        else { ">".to_string() };
-                    self.skip_layout_inline();
-                    let condition_val = self.eat_number_f64().unwrap_or(0.5);
-                    self.skip_layout_inline();
-                    self.eat_op(":");
+
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!(
+                            "P1232",
+                            "Expected ':' after overlay spawn condition",
+                            "Write: spawns Revolution when strength > .75:"
+                        ));
+                    }
+
+                    let condition = self.lower_expr(condition_pe);
+
                     self.skip_layout();
-                    // body: strength val
+
                     let mut spawn_strength = 0.5f64;
+
                     loop {
                         self.skip_layout();
-                        if self.is_eof() { break; }
+
+                        if self.is_eof() {
+                            break;
+                        }
+
                         if let Some(tok) = self.peek() {
                             if matches!(tok.kind, TokenKind::Ident)
                                 && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
@@ -6597,8 +6643,13 @@ impl<'t> Parser<'t> {
                                 break;
                             }
                         }
-                        let Some(prop) = self.eat_ident() else { break; };
+
+                        let Some(prop) = self.eat_ident() else {
+                            break;
+                        };
+
                         self.skip_layout_inline();
+
                         match prop.as_str() {
                             "strength" => {
                                 if let Some(n) = self.eat_number_f64() {
@@ -6608,10 +6659,9 @@ impl<'t> Parser<'t> {
                             _ => {}
                         }
                     }
+
                     spawn_rules.push(ast::OverlaySpawnRule {
-                        condition_field,
-                        condition_op,
-                        condition_val,
+                        condition,
                         spawn_overlay: spawn_name,
                         spawn_strength,
                     });
@@ -6630,7 +6680,7 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::OverlayDef(ast::OverlayDefStmt {
             name,
             host_types,
-            spread_channels,
+            spread_rules,
             decay_rate,
             modifiers,
             conflict_rules,
@@ -6740,7 +6790,7 @@ impl<'t> Parser<'t> {
         self.eat_number_f64().map(|f| f as u32)
     }
 
-    /// Parse `link ClassName by [ formula ]`
+    /// Parse `link ClassName [channel] by [ formula ]`
     fn parse_link_def(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
         let _ = self.eat_ident(); // consume 'link'
@@ -6749,8 +6799,18 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1300",
                 "Expected class name after 'link'",
-                "Write: link Nation by [ self >> trust - target >> aggression ]",
+                "Write: link Nation border by [ formula ]",
             ));
+        };
+
+        self.skip_layout_inline();
+
+        // Optional channel name: link Nation border by [...]
+        //                        link Nation by [...]  (no channel)
+        let channel = if self.peek_ident() != Some("by") {
+            self.eat_ident()
+        } else {
+            None
         };
 
         self.skip_layout();
@@ -6759,7 +6819,7 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1301",
                 "Expected 'by' after class name in link declaration",
-                "Write: link Nation by [ formula ]",
+                "Write: link Nation border by [ formula ]",
             ));
         }
         let _ = self.eat_ident(); // consume 'by'
@@ -6770,7 +6830,7 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1302",
                 "Expected '[' to open link formula",
-                "Write: link Nation by [ self >> trust - target >> aggression ]",
+                "Write: link Nation border by [ formula ]",
             ));
         }
 
@@ -6782,15 +6842,16 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1303",
                 "Expected ']' to close link formula",
-                "Write: link Nation by [ self >> trust - target >> aggression ]",
+                "Write: link Nation border by [ formula ]",
             ));
         }
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, formula, span }))
+        Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, span }))
     }
 
-    /// Parse `ObjectName link by [ formula ]`
+    /// Parse `ObjectName link [channel] by [ formula ]`
+    /// OR   `VarA link to VarB on channel offset value [for N ticks]`
     fn parse_object_link_def(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
 
@@ -6798,11 +6859,75 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1310",
                 "Expected object variable name before 'link'",
-                "Write: Russia link by [ formula ]",
+                "Write: Russia link border by [ formula ]",
             ));
         };
 
         let _ = self.eat_ident(); // consume 'link'
+
+        self.skip_layout_inline();
+
+        // Check for offset syntax: VarA link to VarB on channel offset value [for N ticks]
+        if self.peek_ident() == Some("to") {
+            let _ = self.eat_ident(); // consume 'to'
+            self.skip_layout_inline();
+            let Some(to_var) = self.eat_ident() else {
+                return Err(s_help_site!("P1320", "Expected target variable after 'to'",
+                    "Write: Rome link to Carthage on trust offset -.6"));
+            };
+            self.skip_layout_inline();
+            if self.peek_ident() != Some("on") {
+                return Err(s_help_site!("P1321", "Expected 'on' after target variable",
+                    "Write: Rome link to Carthage on trust offset -.6"));
+            }
+            let _ = self.eat_ident(); // consume 'on'
+            self.skip_layout_inline();
+            let Some(channel) = self.eat_ident() else {
+                return Err(s_help_site!("P1322", "Expected channel name after 'on'",
+                    "Write: Rome link to Carthage on trust offset -.6"));
+            };
+            self.skip_layout_inline();
+            if self.peek_ident() != Some("offset") {
+                return Err(s_help_site!("P1323", "Expected 'offset' keyword",
+                    "Write: Rome link to Carthage on trust offset -.6"));
+            }
+            let _ = self.eat_ident(); // consume 'offset'
+            self.skip_layout_inline();
+            // Parse offset value (may have + or - prefix)
+            let negative = self.eat_op("-");
+            let positive = if !negative { self.eat_op("+") } else { false };
+            let Some(offset_abs) = self.eat_number_f64() else {
+                return Err(s_help_site!("P1324", "Expected numeric offset value",
+                    "Write: Rome link to Carthage on trust offset -.6"));
+            };
+            let offset: f64 = if negative { -offset_abs } else { offset_abs };
+            self.skip_layout_inline();
+            // Optional: for N ticks
+            let ticks = if self.peek_ident() == Some("for") {
+                let _ = self.eat_ident(); // consume 'for'
+                self.skip_layout_inline();
+                if let Some(n) = self.eat_number_u32() {
+                    let _ = self.eat_ident(); // consume 'ticks' (optional label)
+                    Some(n)
+                } else { None }
+            } else { None };
+            let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+            return Ok(ast::Stmt::LinkOffset(ast::LinkOffsetStmt {
+                from_var: object_var,
+                to_var,
+                channel,
+                offset,
+                ticks,
+                span,
+            }));
+        }
+
+        // Optional channel name before 'by'
+        let channel = if self.peek_ident() != Some("by") {
+            self.eat_ident()
+        } else {
+            None
+        };
 
         self.skip_layout();
 
@@ -6810,7 +6935,7 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1311",
                 "Expected 'by' after 'link' in object link declaration",
-                "Write: Russia link by [ formula ]",
+                "Write: Russia link border by [ formula ]",
             ));
         }
         let _ = self.eat_ident(); // consume 'by'
@@ -6821,7 +6946,7 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1312",
                 "Expected '[' to open link formula",
-                "Write: Russia link by [ self >> power - target >> aggression ]",
+                "Write: Russia link border by [ self >> power - target >> aggression ]",
             ));
         }
 
@@ -6833,12 +6958,48 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1313",
                 "Expected ']' to close link formula",
-                "Write: Russia link by [ self >> power - target >> aggression ]",
+                "Write: Russia link border by [ self >> power - target >> aggression ]",
             ));
         }
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        Ok(ast::Stmt::ObjectLinkDef(ast::ObjectLinkDefStmt { object_var, formula, span }))
+        Ok(ast::Stmt::ObjectLinkDef(ast::ObjectLinkDefStmt { object_var, channel, formula, span }))
+    }
+
+    /// Parse `clear link VarA to VarB on channel`
+    fn parse_clear_link(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let _ = self.eat_ident(); // consume 'clear'
+        let _ = self.eat_ident(); // consume 'link'
+        self.skip_layout_inline();
+        let Some(from_var) = self.eat_ident() else {
+            return Err(s_help_site!("P1330", "Expected source variable after 'clear link'",
+                "Write: clear link Rome to Carthage on trust"));
+        };
+        self.skip_layout_inline();
+        if self.peek_ident() != Some("to") {
+            return Err(s_help_site!("P1331", "Expected 'to' after source variable",
+                "Write: clear link Rome to Carthage on trust"));
+        }
+        let _ = self.eat_ident(); // consume 'to'
+        self.skip_layout_inline();
+        let Some(to_var) = self.eat_ident() else {
+            return Err(s_help_site!("P1332", "Expected target variable",
+                "Write: clear link Rome to Carthage on trust"));
+        };
+        self.skip_layout_inline();
+        if self.peek_ident() != Some("on") {
+            return Err(s_help_site!("P1333", "Expected 'on' after target variable",
+                "Write: clear link Rome to Carthage on trust"));
+        }
+        let _ = self.eat_ident(); // consume 'on'
+        self.skip_layout_inline();
+        let Some(channel) = self.eat_ident() else {
+            return Err(s_help_site!("P1334", "Expected channel name after 'on'",
+                "Write: clear link Rome to Carthage on trust"));
+        };
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::ClearLink(ast::ClearLinkStmt { from_var, to_var, channel, span }))
     }
 
     /// Parse `unit name | types: a, b; N a = M b end/xx`
@@ -7082,7 +7243,10 @@ impl<'t> Parser<'t> {
                         }
                         // Also handle xx as Op directly
                         if self.eat_op("xx") { break; }
-                        let Some(fname) = self.eat_ident() else { break; };
+                        // Handle ~ prefix for raw fields (e.g. ~gold: ...)
+                        let raw_prefix = self.eat_op("~");
+                        let Some(base_name) = self.eat_ident() else { break; };
+                        let fname = if raw_prefix { format!("{}", base_name) } else { base_name };
                         self.skip_layout_inline();
                         if !self.eat_op(":") { break; }
                         self.skip_layout_inline();
@@ -7122,6 +7286,28 @@ impl<'t> Parser<'t> {
             link_rule,
             span,
         })
+    }
+
+    /// Parse optional `at rate [per tick]` after a spread mode keyword.
+    fn parse_spread_rate(&mut self) -> f64 {
+        self.skip_layout_inline();
+        let mut rate = 0.1f64;
+        if self.peek_ident() == Some("at") {
+            let _ = self.eat_ident();
+            self.skip_layout_inline();
+            if let Some(n) = self.eat_number_f64() {
+                rate = n;
+            }
+            self.skip_layout_inline();
+            if self.peek_ident() == Some("per") {
+                let _ = self.eat_ident();
+                self.skip_layout_inline();
+                if self.peek_ident() == Some("tick") {
+                    let _ = self.eat_ident();
+                }
+            }
+        }
+        rate
     }
 
     fn parse_import(&mut self) -> Result<ast::Stmt, String> {
@@ -9480,7 +9666,7 @@ impl<'t> Parser<'t> {
             //
             //   reap <count:int | {var} | var> from <expr or range>
             //   // Note: reap does NOT support digit shorthand or dups modifiers.
-            if self.peek_ident() == Some("pick") || self.peek_ident() == Some("reap") {
+            if self.peek_ident() == Some("pick") || self.peek_ident() == Some("reap") || self.peek_ident() == Some("secure_pick") {
                 let verb = self.peek_ident().unwrap().to_string(); // "pick" or "reap"
                 let _ = self.eat_ident(); // consume verb
                 self.skip_layout();
@@ -9581,7 +9767,7 @@ impl<'t> Parser<'t> {
                 // Digit shorthand is ONLY for 'pick', never for 'reap'
                 // And ONLY when count is static (not dynamic)
                 let mut digits_expr: Option<PExpr> = None;
-                if verb == "pick" && count_expr.is_none() {
+                if (verb == "pick" || verb == "secure_pick") && count_expr.is_none() {
                     // (a) packed detection — only when the raw count text contains exactly one underscore
                     if let Some(udx) = count_txt.find('_') {
                         let (lhs, rhs) = (&count_txt[..udx], &count_txt[udx + 1..]);
@@ -9640,7 +9826,7 @@ impl<'t> Parser<'t> {
                 let mut allow_dups: Option<bool> = None;
                 let mut unique_digits = false;
 
-                if verb == "pick" {
+                if verb == "pick" || verb == "secure_pick" {
                     loop {
                         self.skip_layout();                // <-- CHANGED (was skip_newlines)
 
@@ -9682,7 +9868,7 @@ impl<'t> Parser<'t> {
                 }
 
                 // Compile-time sanity check (same as before) — only for 'pick' with static count
-                if verb == "pick" && allow_dups != Some(true) && count_expr.is_none() {
+                if (verb == "pick" || verb == "secure_pick") && allow_dups != Some(true) && count_expr.is_none() {
                     if let Some(PExpr::Array(ref elems)) = src_expr {
                         use std::collections::HashSet;
                         let mut set: HashSet<String> = HashSet::new();
@@ -9731,7 +9917,7 @@ impl<'t> Parser<'t> {
                         _ => { props.push(("src".into(), s)); }
                     }
                 }
-                if verb == "pick" {
+                if verb == "pick" || verb == "secure_pick" {
                     if let Some(b) = allow_dups { props.push(("allow_dups".into(), PExpr::Bool(b))); }
                     if unique_digits { props.push(("unique".into(), PExpr::Bool(true))); }
                     if let Some(d) = digits_expr { props.push(("digits".into(), d)); }

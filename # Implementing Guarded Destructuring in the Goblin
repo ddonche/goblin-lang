@@ -1,0 +1,314 @@
+# Implementing Guarded Destructuring in the Goblin Parser
+
+This report focuses on the concrete parser changes required to support **Guarded Destructuring** as specified (required bindings via `<req>`, per-binding defaults via `:`, and explicit fallback via `=>`). All file references and line numbers are from the current parser implementation in `lib.rs`. fileciteturn0file0
+
+## Current parser behavior relevant to the feature
+
+The parser currently has a single entry-point for “bind-like” statement parsing: `parse_bind_stmt`. It supports:
+
+- **Single-target bind**: `name | expr`, plus `|=` (retether) and a lexer token for shadow (`[=`). fileciteturn0file0L2533-L2660  
+- **Multi-target tuple bind**: `a, b | expr` which returns `ast::Stmt::TupleBind(ast::TupleBindStmt { names, expr, ... })` after duplicate checking. fileciteturn0file0L2660-L2687  
+- **Single-target RHS “guard” sugar**: `name | <expr> ?? => <stmt>`, which is lowered into two statements: the bind plus an inline `if name.is_nix => <stmt>`, wrapped in `ast::Stmt::Block`. fileciteturn0file0L2738-L2897  
+
+Two important implications for Guarded Destructuring:
+
+1. **There is no existing handling for `<req>` or per-binding defaults on the LHS**. `parse_bind_stmt` currently reads only identifiers separated by commas and expects a bind operator next. fileciteturn0file0L2549-L2660  
+2. **There is no existing handling for a plain `=> fallback` after the RHS** of a bind/tuple-bind statement. The only `=>` handling around binds is the `?? => <stmt>` RHS-guard special-case for *single-target binds*. fileciteturn0file0L2738-L2897  
+
+Also crucial: the statement dispatcher (`parse_stmt`) only routes to `parse_bind_stmt` when it sees patterns like:
+
+- `IDENT` followed by `|`, `|=`, shadow token, or `,` (multi-target). fileciteturn0file0L5144-L5156  
+- The same dispatch is duplicated later in `parse_stmt` with similar lookahead constraints. fileciteturn0file0L5264-L5291  
+
+Therefore, a line like `filename<req>, size:"full", ... | expr => fallback` will **not even enter `parse_bind_stmt` today** because after `filename` the next token is `<` (or `:` for defaults), neither of which is in the current dispatch table. fileciteturn0file0L5144-L5156
+
+## Target grammar and the ambiguity you must address
+
+The intended syntax introduces two new “LHS decorations” on binding targets:
+
+- **Required marker**: `name<req>`
+- **Default marker**: `name:"value"` (default is an expression, not just a string)
+- **Explicit fallback**: `=> fallback` after the destructured source expression
+
+This creates a real ambiguity at statement start, because `:` already participates in the expression grammar as a **colon-call** operator (`say: "hi"`). The expression parser explicitly handles colon-call at the postfix stage by consuming `:` after an expression and parsing comma-separated arguments. fileciteturn0file0L8948-L8994  
+
+So if you simply “treat `:` after an identifier as destructuring-default,” you will break normal colon-calls unless your bind parser can **backtrack** and re-parse as an expression statement when there is no subsequent bind operator (`|`, `|=`, `[=`).
+
+The good news: `parse_bind_stmt` already has a backtrack mechanism for one specific ambiguity—multi-name “comma expressions” that aren’t actually tuple binds. It rewinds and parses as an expression statement if it parsed multiple identifiers but didn’t see a bind operator next. fileciteturn0file0L2621-L2636  
+
+Guarded Destructuring requires extending that idea to cover:
+
+- **single name + `<req>`**
+- **single name + `:` default**
+- **`<req>`/defaults combined with commas**
+- **`=> fallback` after RHS**
+
+## Parsing model for guarded destructuring targets
+
+A practical parsing approach that fits this parser’s existing architecture is:
+
+### LHS target item shape
+
+Parse each comma-separated target as:
+
+- `Ident(name)`
+- optional `<req>` marker
+- optional `:` default-expression
+
+Store this as a target record:
+
+- `name: ast::Ident`
+- `is_req: bool`
+- `default: Option<PExpr>` (or `Option<ast::Expr>` depending on when you lower)
+
+This replaces the current `names: Vec<ast::Ident>` parsing in `parse_bind_stmt`. fileciteturn0file0L2549-L2605  
+
+### Bind statement detection and backtracking must be widened
+
+Today, backtracking to “parse as expression instead” exists only for `names.len() > 1`. fileciteturn0file0L2621-L2636  
+
+You must expand that to:
+
+- If **no bind operator** (`|`, `|=`, or shadow token) follows the target list, and the statement did not begin with `imm`, then **rewind and parse as an expression statement**.
+
+This is necessary to keep expression statements like `say: "hi"` working once you expand `parse_stmt` dispatch to include `:` and `<`. The colon-call operator is a first-class expression feature. fileciteturn0file0L8948-L8994  
+
+### `=>` scanning should copy the inline-if style
+
+The parser already contains a reliable pattern for finding `=>` without forcing the expression parser to understand it: inline `if` parses the condition expression, then scans forward over newlines/semicolons to locate `=>`. fileciteturn0file0L4118-L4161  
+
+You should reuse that technique after parsing the destructure RHS expression, so `=> fallback` can be consumed by the bind parser rather than incorrectly treated as trailing garbage.
+
+## Required lowering/desugaring strategy consistent with existing AST patterns
+
+You have two broad options:
+
+- Add a new AST node for guarded destructuring, and implement semantics in later phases.
+- Desugar in the parser into existing `ast::Stmt`/`ast::Expr` constructs.
+
+Given the file already desugars RHS-guard binds into `Bind + if(name.is_nix) { ... }` wrapped in `ast::Stmt::Block`, the second approach is the most consistent and minimizes downstream work. fileciteturn0file0L2864-L2897  
+
+### Concrete desugaring that matches the specification
+
+For:
+
+```gbln
+filename<req>, size:"full", caption | expr => fallback
+```
+
+Generate the equivalent statement sequence:
+
+1. Evaluate `expr` exactly once into a temp
+2. Bind each target from `temp[i]`, applying defaults:
+   - explicit default via `?? explicit`
+   - implicit default `?? ""` **only for non-required, un-defaulted targets**
+   - required without default: no implicit `""`
+3. If any required is nix: `return fallback`
+
+This uses existing language pieces already recognized by the parser:
+- `??` nullish coalesce is parsed as a binary operator. fileciteturn0file0L6549-L6558  
+- The “is nix” check is represented as a member expression with property `"is_nix"` (the bind-guard implementation uses it directly). fileciteturn0file0L2868-L2873  
+- `if` inline bodies are represented as `ast::Expr::FreeCall("if", [cond, block])`. fileciteturn0file0L2881-L2890  
+- `return` is a first-class statement in the AST and parser. fileciteturn0file0L1865-L1919  
+
+For “any required fails,” you’ll need boolean OR. In this grammar, OR is the keyword `or` (not `||`), and it is lowered into `PExpr::Binary(..., "or", ...)`. fileciteturn0file0L6561-L6570  
+
+So the required condition becomes:
+
+```gbln
+filename.is_nix or provider.is_nix or vid.is_nix
+```
+
+## Exact code changes to make in `lib.rs`
+
+This section is intentionally specific: which functions to edit, what to replace, and what to add.
+
+### Update statement dispatch so `<req>` / defaults enter `parse_bind_stmt`
+
+You must update **both** bind-dispatch lookaheads in `parse_stmt` to treat `<` and `:` as possible starts of a bind statement, so that:
+
+- `filename<req>, ... | ...`
+- `size:"full", ... | ...`
+
+reach `parse_bind_stmt` instead of being parsed as expression statements.
+
+Current lookahead only checks `|`, `|=`, shadow, or `,`. fileciteturn0file0L5144-L5156 fileciteturn0file0L5264-L5291  
+
+Patch sketch (applies in both places):
+
+```rust
+// add s == "<" and s == ":" to the lookahead set
+if matches!(t1.kind, TokenKind::Op(ref s) if s == "|" || s == "|=" || s == "," || s == "<" || s == ":")
+    || matches!(t1.kind, TokenKind::Shadow)
+{
+    return self.parse_bind_stmt();
+}
+```
+
+This change is safe only if `parse_bind_stmt` can backtrack when it turns out not to be a bind statement (see next subsection), otherwise you will break `say: "hi"` expression statements. Colon-call is real. fileciteturn0file0L8948-L8994  
+
+### Replace `names: Vec<ast::Ident>` parsing with “target specs”
+
+In `parse_bind_stmt`, replace the “identifiers only” collection with a target-spec collection.
+
+Current code (ident-only, comma-separated) starts at `// 2) Parse one-or-more identifiers`. fileciteturn0file0L2549-L2605  
+
+You want something like:
+
+```rust
+#[derive(Clone)]
+struct GdTarget {
+    name: ast::Ident,
+    is_req: bool,
+    default: Option<PExpr>,
+}
+```
+
+Then parse each target:
+
+- consume `Ident` into `name`
+- attempt to consume `<req>`
+- attempt to consume `:` + parse default expression (use `parse_assign()` or `parse_coalesce()`)
+
+Important: implement `<req>` consumption as a *speculative match* that rolls back if it is not exactly `< req >` in the right position. This prevents accidentally consuming ordinary comparisons like `a < req > b` when a line begins with an identifier.
+
+### Generalize the existing “not actually a bind” fallback to include single-target
+
+Currently the parser only backtracks for `names.len() > 1` when no bind operator follows. fileciteturn0file0L2621-L2636  
+
+You must generalize this so that, **after parsing targets and optional decorations**, if the next significant token is not `|`, `|=`, or shadow, then:
+
+- if statement started with `imm`: error (bind-only)
+- otherwise: rewind to `start_i_expr` and parse as an expression statement
+
+This is required so expression statements starting with:
+- `a < b`
+- `say: "hi"`
+still parse correctly after you expand dispatch to `<` / `:`.
+
+Patch sketch:
+
+```rust
+self.skip_newlines();
+let next_is_shadow = matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow));
+let next_is_bind_op = self.peek_op("|") || self.peek_op("|=") || next_is_shadow;
+
+if !next_is_bind_op {
+    if !is_const {
+        self.i = start_i_expr;
+        let pe = self.parse_coalesce()?;
+        let e  = self.lower_expr(pe);
+        return Ok(ast::Stmt::Expr(e));
+    }
+    // imm => hard error as before
+}
+```
+
+This is the same backtrack pattern already used for comma-ambiguity; you’re just making it apply for single-target too. fileciteturn0file0L2621-L2636  
+
+### Add `=> fallback` parsing after the destructure RHS
+
+After parsing the RHS expression for a bind/tuple-bind, scan for `=>` using the same style as inline `if` (skip newlines/semicolons, then check for `=>`). fileciteturn0file0L4118-L4161  
+
+This must be implemented in:
+
+- the multi-target path (currently returns immediately as `TupleBind`) fileciteturn0file0L2660-L2687  
+- and (optionally) the single-target path if you want `x<req> | expr => fallback` as a supported degenerate form.
+
+Patch sketch for scanning:
+
+```rust
+let mut j = self.i;
+while let Some(tok) = self.toks.get(j) {
+    match &tok.kind {
+        TokenKind::Newline => { j += 1; continue; }
+        TokenKind::Op(s) if s == ";" => { j += 1; continue; }
+        _ => break,
+    }
+}
+
+let fallback_expr_opt = if matches!(self.toks.get(j), Some(t) if matches!(t.kind, TokenKind::Op(ref s) if s == "=>")) {
+    self.i = j + 1; // consume =>
+    while let Some(t) = self.peek() {
+        if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) { self.i += 1; } else { break; }
+    }
+    let fb_pe = self.parse_assign()?;
+    Some(self.lower_expr(fb_pe))
+} else {
+    None
+};
+```
+
+### Multi-target: keep old `TupleBind` only when no guarded features are used
+
+Today, `if names.len() > 1` returns `ast::Stmt::TupleBind(...)` immediately. fileciteturn0file0L2660-L2687  
+
+You need to change that to:
+
+- parse RHS
+- parse optional `=> fallback`
+- decide whether this is a guarded destructure
+
+Decision rule that matches the spec and avoids breaking existing code:
+
+- If **no target uses `<req>` and no target has `:` default and there is no `=>`**, keep current `TupleBind`.
+- Otherwise, **build a desugared `ast::Stmt::Block`** implementing guarded destructuring.
+
+### Build the desugared block
+
+You can reuse the same block-wrapping pattern used for single-bind RHS guard (`ast::Stmt::Block { stmts: vec![bind_stmt, if_stmt], ... }`). fileciteturn0file0L2892-L2897  
+
+Concrete statement list for guarded destructuring:
+
+1. **Temp bind** (evaluate RHS once)
+   - Emit `ast::Stmt::Bind` with a generated name like `__gd_parts_<start_i_expr>`
+   - Set `is_local: true` to mimic `local` behavior without requiring a keyword (you already have this flag in `ast::BindStmt`). The parser uses `is_local` for explicit `local` binds. fileciteturn0file0L405-L470  
+
+2. **Per-target binds**
+   - For target index `i`, compute:
+     - `idx = temp[i]`
+     - If explicit default exists: `idx ?? <default>`
+     - Else if not required: `idx ?? ""`
+     - Else: `idx` (no implicit default)
+   - Bind with the original mode (`|`, `|=`, shadow). Mode parsing is already established in `parse_bind_stmt`. fileciteturn0file0L2638-L2658  
+
+3. **Required check and fallback**
+   - If any required target exists:
+     - build `cond = name1.is_nix or name2.is_nix or ...`
+       - note: OR is the keyword `or` in this grammar. fileciteturn0file0L6561-L6570  
+     - then emit:
+       - `if cond => return fallback`
+   - The bind guard implementation shows exactly how to build `name.is_nix` and inline-if blocks. fileciteturn0file0L2868-L2890  
+   - `return` is a real statement and is parsed/represented as `ast::Stmt::Return(ast::ReturnStmt { values, ... })`. fileciteturn0file0L1865-L1919  
+
+## Diagnostics and test coverage you should add
+
+### Diagnostics rules that prevent “silent wrong parses”
+
+Given the ambiguity with colon-call and `<` comparisons, you should add explicit errors for the “obviously intended guarded destructure but incomplete” cases:
+
+- `<req>` present anywhere in a target list, but **no `=> fallback`** exists:
+  - Error: “Guarded destructuring requires an explicit fallback: add `=> <expr>`”
+- `=> fallback` exists, but **no `<req>` targets** exist:
+  - Either error (strict) or allow but warn (no warnings exist here); strict error is safer because the fallback would be unreachable under the described semantics.
+
+### Test matrix
+
+Use parser tests (or snapshot tests) to cover these cases:
+
+- Valid guarded destructure:
+  - `filename<req>, size:"full", caption | :split(body, "|") => "Invalid"`
+- Defaults:
+  - Ensure explicit defaults become `?? "full"`
+  - Ensure implicit defaults become `?? ""` *only for unmarked non-required bindings*
+  - Ensure required bindings do **not** get implicit `""`
+- Multiple required:
+  - `provider<req>, vid<req>, size:"full" | ... => "Invalid video"`
+  - Verify the required condition is chained with `"or"` (not `||`). fileciteturn0file0L6561-L6570  
+- Ambiguity regressions:
+  - `say: "hi"` must remain an expression statement (colon-call). fileciteturn0file0L8948-L8994  
+  - `a < b` must remain an expression statement (comparison), not a bind error.
+- Failure-mode enforcement:
+  - `x<req> | expr` should error (missing `=> fallback`)
+- Existing behavior unaffected:
+  - `a, b | expr` should still produce `ast::Stmt::TupleBind` when no guarded features are used. fileciteturn0file0L2660-L2687

@@ -54,6 +54,8 @@ pub enum Stmt {
     OverlayDetach(OverlayDetachStmt),
     LinkDef(LinkDefStmt),
     ObjectLinkDef(ObjectLinkDefStmt),
+    LinkOffset(LinkOffsetStmt),
+    ClearLink(ClearLinkStmt),
     UnitDecl(UnitDecl),
 
     Block {
@@ -88,25 +90,66 @@ pub struct UnitDecl {
 
 
 
-/// `link ClassName by [ formula ]` — defines a class-level link formula.
+/// `link ClassName [channel] by [ formula ]` — defines a class-level link formula.
+/// If channel is None, defaults to "default".
 #[derive(Debug, Clone)]
 pub struct LinkDefStmt {
     pub class_name: String,
+    /// Named channel (e.g. "border", "trade", "culture"). None = "default".
+    pub channel: Option<String>,
     /// The formula expression. May reference `self` and `target` as identifiers.
     pub formula: Expr,
     pub span: Span,
 }
 
-/// `ObjectName link by [ formula ]` — defines an object-level link formula override.
+/// `ObjectName link [channel] by [ formula ]` — defines an object-level link formula override.
 #[derive(Debug, Clone)]
 pub struct ObjectLinkDefStmt {
     pub object_var: String,
+    /// Named channel. None = "default".
+    pub channel: Option<String>,
     /// The formula expression. May reference `self` and `target` as identifiers.
     pub formula: Expr,
+    pub span: Span,
+}
+
+/// `VarA link to VarB on channel offset value [for N ticks]` — pair-level link offset.
+#[derive(Debug, Clone)]
+pub struct LinkOffsetStmt {
+    pub from_var: String,
+    pub to_var: String,
+    pub channel: String,
+    pub offset: f64,
+    /// None = permanent. Some(N) = expires after N ticks.
+    pub ticks: Option<u32>,
+    pub span: Span,
+}
+
+/// `clear link VarA to VarB on channel` — removes all offsets on a pair+channel.
+#[derive(Debug, Clone)]
+pub struct ClearLinkStmt {
+    pub from_var: String,
+    pub to_var: String,
+    pub channel: String,
     pub span: Span,
 }
 
 // ── Overlay AST nodes ────────────────────────────────────────────────────────
+
+/// How an overlay propagates to new hosts each tick.
+#[derive(Debug, Clone)]
+pub enum SpreadRule {
+    /// `spreads through channel at rate` — only to hosts with link score > threshold on channel.
+    Channel { channel: String, rate: f64 },
+    /// `spreads to all ClassName at rate` — broadcasts to all live objects of that class.
+    All { class_name: String, rate: f64 },
+    /// `spreads to nearby at rate` — spatial proximity (requires map feature).
+    Nearby { rate: f64 },
+    /// `spreads through ownership at rate` — follows owner_id chain.
+    Ownership { rate: f64 },
+    /// `spreads where condition at rate` — predicate-based spread.
+    Predicate { condition: Expr, rate: f64 },
+}
 
 /// `overlay Name | ... end` — defines an overlay type.
 #[derive(Debug, Clone)]
@@ -114,8 +157,8 @@ pub struct OverlayDefStmt {
     pub name: String,
     /// Class names this overlay may occupy. Empty = any host.
     pub host_types: Vec<String>,
-    /// (channel_name, rate_per_tick) — requires links to function.
-    pub spread_channels: Vec<(String, f64)>,
+    /// Spread rules — multiple modes may be declared on one overlay.
+    pub spread_rules: Vec<SpreadRule>,
     /// Strength lost per tick.
     pub decay_rate: f64,
     /// (field_name, delta) — applied to host fields each tick.
@@ -136,14 +179,8 @@ pub struct OverlayConflictRule {
 
 #[derive(Debug, Clone)]
 pub struct OverlaySpawnRule {
-    /// Field on the overlay instance to test (currently always "strength").
-    pub condition_field: String,
-    /// Comparison operator: ">", "<", ">=", "<=", "=="
-    pub condition_op: String,
-    pub condition_val: f64,
-    /// Name of the overlay to spawn.
+    pub condition: Expr,
     pub spawn_overlay: String,
-    /// Initial strength of the spawned instance.
     pub spawn_strength: f64,
 }
 
