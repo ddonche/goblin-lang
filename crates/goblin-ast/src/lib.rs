@@ -56,6 +56,8 @@ pub enum Stmt {
     ObjectLinkDef(ObjectLinkDefStmt),
     LinkOffset(LinkOffsetStmt),
     ClearLink(ClearLinkStmt),
+    /// `VarName score | decision against Class by [ formula ]`
+    ObjectDecision(String, DecisionDef),
     UnitDecl(UnitDecl),
 
     Block {

@@ -7,211 +7,251 @@
     aggression:  .5
     cooperation: .5
     population:  .5
+
+    /// Margin is intended for target-choice tolerance in the runtime.
+    /// It is kept here as nation behavior data, even though this sim rewrite focuses only on action mechanics.
     margin:      .08
 
+    /// Raw resource fields are material constraints.
+    /// They should matter whenever an action requires ships, armies, food, fuel, industrial capacity, or political spending.
     ~gold:   500
     ~oil:    200
     ~grain:  400
     ~steel:  200
 
+    /// Limited military attack.
+    /// The judge decides when this is selected.
+    /// This action does not contain its own strategic selection criteria.
+    /// It simply applies the consequence of a limited strike.
+    act strike(target)
+        say "ACTION strike"
+        target >> military |= target >> military - .018
+        target >> economy |= target >> economy - .012
+        target >> stability |= target >> stability - .014
+        target >> aggression |= target >> aggression + .014
+        self >> gold |= self >> gold - 35
+        self >> oil |= self >> oil - 15
+        self >> steel |= self >> steel - 20
+        self link to target on border offset +.18 for 8 ticks
+        self link to target on trade offset -.08 for 8 ticks
+        overlay WarExhaustion on self at .12 for 5 ticks
+        overlay WarExhaustion on target at .18 for 6 ticks
+    end
+
+    /// Resource raid.
+    /// The raid is not selected here.
+    /// If the judge chose raid, the raid happens.
+    /// This creates material gain for the actor and material/stability loss for the target.
+    act raid(target)
+        say "ACTION raid"
+        self >> gold |= self >> gold + 20
+        self >> oil |= self >> oil + 10
+        self >> steel |= self >> steel + 8
+        target >> gold |= target >> gold - 25
+        target >> oil |= target >> oil - 12
+        target >> steel |= target >> steel - 10
+        target >> stability |= target >> stability - .012
+        target >> aggression |= target >> aggression + .018
+        self >> gold |= self >> gold - 20
+        self link to target on border offset +.14 for 6 ticks
+        self link to target on trade offset -.1 for 8 ticks
+    end
+
+    /// Full invasion attempt.
+    /// This is the heavy war action.
+    /// Absorption/annexation remains a transition outcome, not a normal action.
     act invade(target)
-        if (self >> gold) > 80
-           and (self >> steel) > 40
-           and (self >> military) > (target >> military) * 1.3
-           and (self >> stability) > .45
-           and link_score("Nation", "trade", self >> id, target >> id) < .45
-           and link_score("Nation", "culture", self >> id, target >> id) < .5
-            overlay War on self at .35 for 8 ticks
-            overlay War on target at .6 for 8 ticks
-            self >> gold |= self >> gold - 80
-            self >> steel |= self >> steel - 40
-            self >> grain |= self >> grain - 20
-        end
+        say "ACTION invade"
+        overlay WarExhaustion on self at .35 for 10 ticks
+        overlay WarExhaustion on target at .65 for 12 ticks
+        target >> military |= target >> military - .035
+        target >> economy |= target >> economy - .025
+        target >> stability |= target >> stability - .035
+        target >> population |= target >> population - .01
+        target >> aggression |= target >> aggression + .025
+        self >> gold |= self >> gold - 100
+        self >> oil |= self >> oil - 30
+        self >> steel |= self >> steel - 60
+        self >> grain |= self >> grain - 40
+        self link to target on border offset +.35 for 16 ticks
+        self link to target on trade offset -.22 for 16 ticks
+        self link to target on culture offset -.12 for 16 ticks
     end
 
-    act blockade(target)
-        if (self >> gold) > 25
-           and (self >> military) > .45
-           and link_score("Nation", "trade", self >> id, target >> id) < .4
-            overlay Embargo on target at .45 for 6 ticks
-            self link to target on trade offset -.3 for 10 ticks
-            self >> gold |= self >> gold - 25
-        end
-    end
-
-    act intimidate(target)
-        if (self >> military) > (target >> military)
-           and (self >> stability) > .4
-            target >> stability |= target >> stability - .012
-            target >> aggression |= target >> aggression + .015
-            self link to target on border offset +.12 for 4 ticks
-        end
-    end
-
-    act sanction(target)
-        if (self >> economy) > .4
-           and (self >> gold) > 30
-           and link_score("Nation", "trade", self >> id, target >> id) < .5
-            target >> economy |= target >> economy - .018
-            self link to target on trade offset -.2 for 12 ticks
-            target >> gold |= target >> gold - 25
-            self >> gold |= self >> gold - 15
-        end
-    end
-
-    act trade(target)
-        if link_score("Nation", "trade", self >> id, target >> id) > .3
-            self >> economy |= self >> economy + .01
-            target >> economy |= target >> economy + .01
-            self >> gold |= self >> gold + 35
-            target >> gold |= target >> gold + 35
-            self >> steel |= self >> steel + 10
-            target >> steel |= target >> steel + 10
-            self >> oil |= self >> oil + 6
-            target >> oil |= target >> oil + 6
-            self link to target on trade offset +.1 for 10 ticks
-        end
-    end
-
-    act bribe(target)
-        if (self >> gold) > 80
-           and (target >> aggression) > .5
-            target >> cooperation |= target >> cooperation + .03
-            target >> aggression |= target >> aggression - .02
-            self >> gold |= self >> gold - 60
-        end
-    end
-
-    act embargo(target)
-        if (self >> economy) > .45
-           and link_score("Nation", "trade", self >> id, target >> id) < .4
-           and (target >> oil) > 50
-            target >> oil |= target >> oil - 20
-            target >> steel |= target >> steel - 15
-            self link to target on trade offset -.12 for 8 ticks
-        end
-    end
-
+    /// Military intimidation.
+    /// This is saber-rattling: border tension rises and the target becomes less stable.
     act threaten(target)
-        if (self >> military) > (target >> military) * 1.1
-           and link_score("Nation", "border", self >> id, target >> id) > .5
-            target >> stability |= target >> stability - .008
-            target >> aggression |= target >> aggression + .012
-            self link to target on border offset +.1 for 5 ticks
-        end
+        say "ACTION threaten"
+        target >> stability |= target >> stability - .008
+        target >> aggression |= target >> aggression + .012
+        self link to target on border offset +.1 for 5 ticks
     end
 
-    act appease(target)
-        if (self >> gold) > 50
-           and (self >> stability) < .55
-           and (target >> aggression) > .55
-           and link_score("Nation", "border", self >> id, target >> id) > .5
-            self >> gold |= self >> gold - 40
-            target >> aggression |= target >> aggression - .025
-            target >> cooperation |= target >> cooperation + .015
-            self link to target on border offset -.2 for 8 ticks
-            self link to target on trade offset +.08 for 8 ticks
-        end
+    /// Economic pressure.
+    /// This is policy pressure, not a blockade.
+    /// It damages economy/trade and costs the actor some political/economic capital.
+    act sanction(target)
+        say "ACTION sanction"
+        target >> economy |= target >> economy - .018
+        target >> gold |= target >> gold - 25
+        self >> gold |= self >> gold - 15
+        self link to target on trade offset -.18 for 12 ticks
+        self link to target on culture offset -.04 for 8 ticks
     end
 
-    act denounce(target)
-        if (self >> democracy) > (target >> democracy) + .2
-           and link_score("Nation", "culture", self >> id, target >> id) < .45
-            target >> stability |= target >> stability - .008
-            target >> cohesion |= target >> cohesion - .007
-            self link to target on culture offset -.12 for 8 ticks
-        end
-    end
-
-    act legitimize(target)
-        if link_score("Nation", "culture", self >> id, target >> id) > .4
-           and (target >> stability) < .5
-            target >> stability |= target >> stability + .015
-            target >> cohesion |= target >> cohesion + .008
-            self link to target on culture offset +.12 for 8 ticks
-        end
-    end
-
-    act propagandize(target)
-        if (self >> aggression) > .5
-           and link_score("Nation", "culture", self >> id, target >> id) > .25
-            overlay Nationalism on target at .18 for 5 ticks
-            self link to target on culture offset -.08 for 6 ticks
-        end
-    end
-
-    act convert(target)
-        if (self >> democracy) > .5
-           and link_score("Nation", "culture", self >> id, target >> id) > .3
-            overlay Liberalism on target at .15 for 6 ticks
-            self link to target on culture offset +.08 for 6 ticks
-        end
-    end
-
-    act treaty(target)
-        if link_score("Nation", "border", self >> id, target >> id) > .35
-           and (self >> cooperation) > .4
-           and (target >> cooperation) > .35
-            self link to target on border offset -.22 for 20 ticks
-            self link to target on trade offset +.18 for 20 ticks
-            self link to target on culture offset +.1 for 20 ticks
-            self >> cooperation |= self >> cooperation + .018
-            target >> cooperation |= target >> cooperation + .018
-            self >> gold |= self >> gold + 12
-            target >> gold |= target >> gold + 12
-        end
-    end
-
-    act annex(target)
-        if (self >> military) > (target >> military) * 2.0
-           and (self >> gold) > 60
-           and (self >> aggression) > .65
-            self >> gold |= self >> gold + 80
-            self >> oil |= self >> oil + 40
-            self >> steel |= self >> steel + 30
-            self >> population |= self >> population + .04
-            overlay War on self at .2 for 4 ticks
-        end
-    end
-
-    act recognize(target)
-        if link_score("Nation", "culture", self >> id, target >> id) > .45
-            self link to target on culture offset +.08 for 12 ticks
-            target >> stability |= target >> stability + .008
-            self >> gold |= self >> gold + 5
-        end
-    end
-
+    /// Espionage.
+    /// This improves the actor's military readiness and destabilizes the target.
     act spy(target)
-        if (self >> gold) > 20
-           and link_score("Nation", "border", self >> id, target >> id) > .4
-            self >> military |= self >> military + .007
-            target >> stability |= target >> stability - .007
-            self >> gold |= self >> gold - 15
-        end
+        say "ACTION spy"
+        self >> military |= self >> military + .007
+        target >> stability |= target >> stability - .007
+        self >> gold |= self >> gold - 15
+        self link to target on culture offset -.04 for 5 ticks
     end
 
+    /// Cultural/political smear campaign.
+    /// This is informational pressure against the target's cohesion and legitimacy.
     act smear(target)
-        if (self >> aggression) > .45
-           and link_score("Nation", "culture", self >> id, target >> id) > .2
-           and (target >> democracy) > .3
-            target >> cohesion |= target >> cohesion - .009
-            target >> democracy |= target >> democracy - .007
-            self link to target on culture offset -.1 for 6 ticks
-        end
+        say "ACTION smear"
+        target >> cohesion |= target >> cohesion - .009
+        target >> democracy |= target >> democracy - .007
+        self link to target on culture offset -.1 for 6 ticks
     end
 
+    /// Public condemnation.
+    /// This damages legitimacy/cohesion and worsens cultural relations.
+    act denounce(target)
+        say "ACTION denounce"
+        target >> stability |= target >> stability - .008
+        target >> cohesion |= target >> cohesion - .007
+        self link to target on culture offset -.12 for 8 ticks
+    end
+
+    /// Ideological export through propaganda.
+    /// This applies a spreadable overlay instead of directly rewriting the target.
+    act propagandize(target)
+        say "ACTION propagandize"
+        overlay Nationalism on target at .18 for 5 ticks
+        self link to target on culture offset -.08 for 6 ticks
+    end
+
+    /// Liberal/democratic influence.
+    /// This is cultural influence, not conquest.
+    act convert(target)
+        say "ACTION convert"
+        overlay Liberalism on target at .15 for 6 ticks
+        self link to target on culture offset +.08 for 6 ticks
+    end
+
+    /// Bribery/payment to soften an aggressive target.
+    /// This transfers gold into reduced aggression and better cooperation.
+    act bribe(target)
+        say "ACTION bribe"
+        target >> cooperation |= target >> cooperation + .03
+        target >> aggression |= target >> aggression - .02
+        self >> gold |= self >> gold - 60
+        self link to target on trade offset +.04 for 5 ticks
+    end
+
+    /// Appeasement.
+    /// Defensive pressure reduction by paying down tension.
+    act appease(target)
+        say "ACTION appease"
+        self >> gold |= self >> gold - 40
+        target >> aggression |= target >> aggression - .025
+        target >> cooperation |= target >> cooperation + .015
+        self link to target on border offset -.2 for 8 ticks
+        self link to target on trade offset +.08 for 8 ticks
+    end
+
+    /// Recognition.
+    /// Improves legitimacy and cultural ties.
+    act recognize(target)
+        say "ACTION recognize"
+        self link to target on culture offset +.08 for 12 ticks
+        target >> stability |= target >> stability + .008
+        self >> gold |= self >> gold + 5
+    end
+
+    /// Legitimization.
+    /// Stronger than recognition; stabilizes and coheres the target.
+    act legitimize(target)
+        say "ACTION legitimize"
+        target >> stability |= target >> stability + .015
+        target >> cohesion |= target >> cohesion + .008
+        self link to target on culture offset +.12 for 8 ticks
+    end
+
+    /// Trade.
+    /// Material cooperation: both sides gain resources and trade relations improve.
+    act trade(target)
+        say "ACTION trade"
+        self >> economy |= self >> economy + .01
+        target >> economy |= target >> economy + .01
+        self >> gold |= self >> gold + 35
+        target >> gold |= target >> gold + 35
+        self >> steel |= self >> steel + 10
+        target >> steel |= target >> steel + 10
+        self >> oil |= self >> oil + 6
+        target >> oil |= target >> oil + 6
+        self link to target on trade offset +.1 for 10 ticks
+    end
+
+    /// Aid.
+    /// Transfers resources and stabilizes the target while increasing cooperation.
+    act aid(target)
+        say "ACTION aid"
+        self >> gold |= self >> gold - 50
+        self >> grain |= self >> grain - 40
+        target >> gold |= target >> gold + 35
+        target >> grain |= target >> grain + 35
+        target >> stability |= target >> stability + .012
+        target >> cooperation |= target >> cooperation + .018
+        self link to target on trade offset +.08 for 8 ticks
+        self link to target on culture offset +.08 for 8 ticks
+    end
+
+    /// Treaty.
+    /// Bilateral de-escalation and cooperation.
+    act treaty(target)
+        say "ACTION treaty"
+        self link to target on border offset -.22 for 20 ticks
+        self link to target on trade offset +.18 for 20 ticks
+        self link to target on culture offset +.1 for 20 ticks
+        self >> cooperation |= self >> cooperation + .018
+        target >> cooperation |= target >> cooperation + .018
+        self >> gold |= self >> gold + 12
+        target >> gold |= target >> gold + 12
+    end
+
+    /// Coalition alignment.
+    /// With the current one-target action shape, this means "align with this nation."
+    /// A true coalition-against-third-party mechanic needs explicit coalition state later.
+    act coalition(target)
+        say "ACTION coalition"
+        self link to target on culture offset +.18 for 24 ticks
+        self link to target on trade offset +.12 for 24 ticks
+        self link to target on border offset -.18 for 24 ticks
+        self >> cooperation |= self >> cooperation + .02
+        target >> cooperation |= target >> cooperation + .02
+        self >> stability |= self >> stability + .006
+        target >> stability |= target >> stability + .006
+    end
+
+    /// Internal consolidation.
+    /// This ignores the target.
+    /// It exists as a self-repair fallback.
     act consolidate(target)
-        if (self >> stability) < .6
-           or (self >> gold) < 100
-           or (self >> economy) < .4
-            self >> stability |= self >> stability + .015
-            self >> cohesion |= self >> cohesion + .008
-            self >> economy |= self >> economy + .005
-            self >> gold |= self >> gold + 10
-        end
+        say "ACTION consolidate"
+        self >> stability |= self >> stability + .015
+        self >> cohesion |= self >> cohesion + .008
+        self >> economy |= self >> economy + .005
+        self >> gold |= self >> gold + 10
     end
 
+    /// This is a hostile-pressure score, not a friendliness/link score.
+    /// High score means the actor is more likely to choose coercive or violent action.
+    /// Low score means the actor is more likely to cooperate, trade, aid, or consolidate.
     score | decision against Nation by [
         self >> aggression * .20
         + self >> military * .14
@@ -226,31 +266,40 @@
         + link_score("Nation", "border", self >> id, target >> id) * .06
     ]
 
+    /// Judge bands now map hostile pressure to action tiers.
+    /// Highest bands are war/force.
+    /// Middle bands are coercion and information pressure.
+    /// Lower bands are diplomacy, trade, aid, coalition, or self-repair.
     judge using score
         >= .78: invade(target)
-        >= .70: blockade(target)
-        >= .64: intimidate(target)
-        >= .58: sanction(target)
-        >= .54: embargo(target)
-        >= .50: threaten(target)
-        >= .46: spy(target)
-        >= .42: propagandize(target)
-        >= .38: smear(target)
-        >= .34: denounce(target)
-        >= .30: appease(target)
-        >= .26: bribe(target)
-        >= .22: convert(target)
-        >= .18: legitimize(target)
-        >= .14: treaty(target)
-        >= .08: trade(target)
+        >= .68: strike(target)
+        >= .58: raid(target)
+        >= .48: sanction(target)
+        >= .40: threaten(target)
+        >= .34: spy(target)
+        >= .28: smear(target)
+        >= .22: denounce(target)
+        >= .18: propagandize(target)
+        >= .14: appease(target)
+        >= .11: bribe(target)
+        >= .08: convert(target)
+        >= .06: legitimize(target)
+        >= .04: recognize(target)
+        >= .035: coalition(target)
+        >= .025: treaty(target)
+        >= .015: trade(target)
+        >= .005: aid(target)
         else:   consolidate(target)
     end
 
+    /// Entity disappears only under extreme collapse.
     transition erase when (self >> stability) < .06 and (self >> military) < .06
         overlays: drop
         links: reset
     end
 
+    /// Internal fragmentation.
+    /// This should remain rare; it represents the nation ceasing to act as one coherent actor.
     transition split when (self >> cohesion) < .18 and (self >> stability) < .25
         into Nation, Nation
         first:
@@ -287,6 +336,8 @@
         links: reset
     end
 
+    /// Regime mutation.
+    /// This is not conquest. It is internal transformation after severe instability.
     transition mutate when (self >> stability) < .22 and (self >> democracy) < .18
         into Nation
         carries:
@@ -308,6 +359,8 @@
         links: reset
     end
 
+    /// Absorption is the closest thing to annexation.
+    /// It remains a transition because it changes entity identity and resource ownership.
     transition absorb(Nation) when (self >> military) > (target >> military) * 2.5 and (self >> aggression) > .72
         carries:
             military:    (self >> military) + (target >> military) * .35
@@ -417,7 +470,9 @@ overlay Liberalism |
     end
 end
 
-overlay War |
+/// War exhaustion is a persistent condition caused by war actions.
+/// War itself is not modeled as a contagious ideology.
+overlay WarExhaustion |
     hosts Nation
     spreads through border at .015
     decays .08

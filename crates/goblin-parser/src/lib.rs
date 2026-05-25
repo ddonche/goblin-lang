@@ -5796,13 +5796,16 @@ impl<'t> Parser<'t> {
         }
 
         // object-level: ObjectName link by [ formula ]
+        // object-level: ObjectName score | decision against Class by [ formula ]
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
-                let next_is_link = self.toks.get(self.i + 1)
-                    .and_then(|t| t.value.as_deref().map(str::to_owned))
-                    .as_deref() == Some("link");
-                if next_is_link {
+                let next_tok = self.toks.get(self.i + 1)
+                    .and_then(|t| t.value.as_deref().map(str::to_owned));
+                if next_tok.as_deref() == Some("link") {
                     return self.parse_object_link_def();
+                }
+                if next_tok.as_deref() == Some("score") {
+                    return self.parse_object_decision();
                 }
             }
         }
@@ -6967,6 +6970,63 @@ impl<'t> Parser<'t> {
     }
 
     /// Parse `clear link VarA to VarB on channel`
+    /// Parse `VarName score | decision against Class by [ formula ]`
+    fn parse_object_decision(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let Some(var_name) = self.eat_ident() else {
+            return Err("expected var name".to_string());
+        };
+        let _ = self.eat_ident(); // consume 'score'
+        if !self.eat_op("|") {
+            return Err(s_help_site!("P1410", "Expected '|' after 'score'",
+                "Write: Germany score | decision against Nation by [ formula ]"));
+        }
+        if self.peek_ident() != Some("decision") {
+            return Err(s_help_site!("P1411", "Expected 'decision' after 'score |'",
+                "Write: Germany score | decision against Nation by [ formula ]"));
+        }
+        let _ = self.eat_ident(); // consume 'decision'
+        self.skip_layout();
+        if self.peek_ident() != Some("against") {
+            return Err(s_help_site!("P1412", "Expected 'against'",
+                "Write: Germany score | decision against Nation by [ formula ]"));
+        }
+        let _ = self.eat_ident(); // consume 'against'
+        self.skip_layout();
+        let Some(target_class) = self.eat_ident() else {
+            return Err(s_help_site!("P1413", "Expected target class name",
+                "Write: Germany score | decision against Nation by [ formula ]"));
+        };
+        self.skip_layout();
+        if self.peek_ident() != Some("by") {
+            return Err(s_help_site!("P1414", "Expected 'by'",
+                "Write: Germany score | decision against Nation by [ formula ]"));
+        }
+        let _ = self.eat_ident(); // consume 'by'
+        self.skip_layout();
+        if !self.eat_op("[") {
+            return Err(s_help_site!("P1415", "Expected '[' to open formula",
+                "Write: Germany score | decision against Nation by [ formula ]"));
+        }
+        self.skip_layout();
+        let formula_pe = self.parse_coalesce()?;
+        let formula = self.lower_expr(formula_pe);
+        self.skip_layout();
+        if !self.eat_op("]") {
+            return Err(s_help_site!("P1416", "Expected ']' to close formula",
+                "Write: Germany score | decision against Nation by [ formula ]"));
+        }
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let def = ast::DecisionDef {
+            target_class,
+            formula,
+            formula_min: 0.0,
+            formula_max: 1.0,
+            span: span.clone(),
+        };
+        Ok(ast::Stmt::ObjectDecision(var_name, def))
+    }
+
     fn parse_clear_link(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
         let _ = self.eat_ident(); // consume 'clear'
