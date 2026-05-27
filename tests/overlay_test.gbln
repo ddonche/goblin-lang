@@ -1,0 +1,49 @@
+@Polity |
+    stability: .8
+    fear: .1
+    ~gold: 500
+end
+
+overlay Blight |
+    stacks as cases
+    modifies:
+        stability - .00001
+        fear      + .000005
+    end
+end
+
+overlay Stunned |
+    lasts 2 ticks
+    modifies:
+        stability - .15
+    end
+end
+
+@Polity matrix
+    name:      "{name}", rome, carthage, athens
+    stability: .8,       nc,   nc,       nc
+    fear:      .1,       nc,   nc,       nc
+    gold:      500,      nc,   nc,       nc
+end
+
+overlay Blight on rome at .5
+overlay Blight on rome at .5
+overlay Blight on rome at .5
+
+say "=== ROME STABILITY (should be 0.79997) ==="
+say rome >> stability
+
+say "=== ROME FEAR (should be 0.100015) ==="
+say rome >> fear
+
+/// === TEST: temporary restore ===
+overlay Stunned on athens at .5 for 2 ticks
+
+say "=== ATHENS STABILITY AFTER STUNNED APPLIED (should be 0.65) ==="
+say athens >> stability
+
+tick()
+tick()
+
+say "=== ATHENS STABILITY AFTER 2 TICKS (should be back to 0.8) ==="
+say athens >> stability

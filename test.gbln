@@ -1,6 +1,14 @@
-@Kingdom |
+/// This is a fucking comment
+
+//// This is a fucking multiline comment
+See how it goes
+For multiple lines
+////
+
+<>Kingdom |
+    kind: "polity"
     aggression: .5
-    cooperation: .5
+    cooperation: .5 <---- this is a fucking inline comment
     fear: .5
     ambition: .5
 
@@ -73,7 +81,6 @@
 
     end
 
-
     act treaty(target)
         treaty_strength | (self >> cooperation) + (target >> cooperation) + (self >> honor) + (target >> honor)
 
@@ -113,7 +120,6 @@
 
     end
 
-
     act aid(target)
         resources | ["gold", "food", "wood", "stone", "mana"]
 
@@ -142,7 +148,6 @@
 
     end
 
-
     act denounce(target)
         pressure | ((self >> aggression) + (self >> fear)) * (pick 1 from .01....03)
 
@@ -164,7 +169,6 @@
         self link to target on border offset +.02 for 8 ticks
 
     end
-
 
     act raid(target)
         resources | ["gold", "food", "iron", "wood", "horses", "stone"]
@@ -212,8 +216,10 @@
             overlay AshenRiteFaith on target at .008 for 10 ticks
         end
 
-    end
+        self >> power |= ((self >> population) * .0000015) + ((self >> food) * .00008) + ((self >> gold) * .00012) + ((self >> iron) * .00004) + ((self >> horses) * .0008) + ((self >> discipline) * .22) + ((self >> stability) * .18) + ((self >> cohesion) * .12)
+        target >> power |= ((target >> population) * .0000015) + ((target >> food) * .00008) + ((target >> gold) * .00012) + ((target >> iron) * .00004) + ((target >> horses) * .0008) + ((target >> discipline) * .22) + ((target >> stability) * .18) + ((target >> cohesion) * .12)
 
+    end
 
     act strike(target)
         strike_power | (self >> aggression) + (self >> discipline) + (self >> ambition)
@@ -264,7 +270,6 @@
             self >> cohesion |= self >> cohesion - .004
         end
     end
-
 
     act invade(target)
         invasion_power | (self >> aggression) + (self >> ambition) + (self >> discipline) + (self >> cohesion)
@@ -330,6 +335,9 @@
             if (self >> spirituality) > .5
                 overlay AshenRiteFaith on target at .012 for 12 ticks
             end
+
+            self >> power |= ((self >> population) * .0000015) + ((self >> food) * .00008) + ((self >> gold) * .00012) + ((self >> iron) * .00004) + ((self >> horses) * .0008) + ((self >> discipline) * .22) + ((self >> stability) * .18) + ((self >> cohesion) * .12)
+            target >> power |= ((target >> population) * .0000015) + ((target >> food) * .00008) + ((target >> gold) * .00012) + ((target >> iron) * .00004) + ((target >> horses) * .0008) + ((target >> discipline) * .22) + ((target >> stability) * .18) + ((target >> cohesion) * .12)
         else
             self >> fear |= self >> fear + .018
             self >> aggression |= self >> aggression - .012
@@ -339,7 +347,6 @@
             self >> cohesion |= self >> cohesion - .006
         end
     end
-
 
     act spy(target)
         infiltration | ((self >> discipline) + (self >> openness)) * (pick 1 from .01....04)
@@ -357,7 +364,6 @@
         self >> cooperation |= self >> cooperation - .003
 
     end
-
 
     act bless(target)
         mana_cost | ((self >> spirituality) + (self >> honor)) * (pick 1 from 8...24)
@@ -399,7 +405,6 @@
             self >> honor |= self >> honor - .004
         end
     end
-
 
     act curse(target)
         corruption_power | ((self >> aggression) + (self >> spirituality)) * (pick 1 from .01....05)
@@ -477,17 +482,16 @@
         end
     end
 
-
     score | decision against Kingdom by [
         self >> aggression * .14
         + self >> ambition * .12
         + self >> fear * .04
         + self >> spirituality * .04
 
-        + link_score("Kingdom", "border", self >> id, target >> id) * .12
+        + (self >> aggression * .25 + self >> fear * .2 + self >> ambition * .15 + target >> aggression * .2 - self >> cooperation * .15 - target >> cooperation * .05) * .12
 
-        - link_score("Kingdom", "trade", self >> id, target >> id) * .12
-        - link_score("Kingdom", "culture", self >> id, target >> id) * .10
+        - (self >> cooperation * .3 + self >> openness * .25 + target >> cooperation * .25 + target >> openness * .15 - self >> fear * .05) * .12
+        - (self >> openness * .25 + target >> openness * .25 + self >> spirituality * .15 + target >> spirituality * .15 + self >> honor * .1 + target >> honor * .1) * .10
 
         - self >> cooperation * .12
         - self >> honor * .1
@@ -500,7 +504,7 @@
         - ((1 - (self >> stability)) * .25)
         - ((1 - (self >> cohesion)) * .22)
 
-        - ((1 - (self >>discipline)) * .15)
+        - ((1 - (self >> discipline)) * .15)
 
         - (self >> fear * .12)
 
@@ -523,9 +527,6 @@
         >= .04: trade(target)
         else: govern(target)
     end
-
-
-
 
     transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
@@ -693,24 +694,24 @@
             spirituality: self >> spirituality
             openness: self >> openness * .65
             discipline: self >> discipline * .8
-            power: self >> power * .22
-            population: self >> population * .22
-            gold: self >> gold * .12
-            food: self >> food * .12
-            iron: self >> iron * .16
-            mana: self >> mana * .1
-            wood: self >> wood * .12
-            horses: self >> horses * .16
-            stone: self >> stone * .12
-            relics: 1
-            ships: 1
+            power: self >> power * .85
+            population: self >> population * .85
+            gold: self >> gold * .75
+            food: self >> food * .75
+            iron: self >> iron * .75
+            mana: self >> mana * .6
+            wood: self >> wood * .75
+            horses: self >> horses * .7
+            stone: self >> stone * .75
+            relics: self >> relics
+            ships: self >> ships * .8
             margin: .15
         end
         overlays: split
         links: reset
     end
 
-    transition mutate when (self >> aggression) > .78 and (self >> discipline) > .72 and (self >> power) > .7 and (self >> openness) < .35
+    transition mutate when (self >> aggression) > .72 and (self >> discipline) > .65 and (self >> power) > .6 and (self >> openness) < .40
         into Empire
         carries:
             aggression: self >> aggression
@@ -741,7 +742,7 @@
         links: inherit
     end
 
-    transition mutate when (self >> spirituality) > .78 and (self >> cohesion) > .72 and (self >> openness) < .42
+    transition mutate when (self >> spirituality) > .72 and (self >> cohesion) > .65 and (self >> openness) < .45
         into Theocracy
         carries:
             aggression: self >> aggression
@@ -772,7 +773,7 @@
         links: inherit
     end
 
-    transition mutate when (self >> cooperation) > .78 and (self >> openness) > .78 and (self >> gold) > 700
+    transition mutate when (self >> cooperation) > .72 and (self >> openness) > .70 and (self >> gold) > 500
         into TradeLeague
         carries:
             aggression: self >> aggression
@@ -817,17 +818,17 @@
             spirituality: self >> spirituality
             openness: self >> openness
             discipline: .35
-            power: self >> power * .25
-            population: self >> population * .24
-            gold: self >> gold * .12
-            food: self >> food * .12
-            iron: self >> iron * .18
-            mana: self >> mana * .12
-            wood: self >> wood * .12
-            horses: self >> horses * .18
-            stone: self >> stone * .12
-            relics: 1
-            ships: 1
+            power: self >> power * .85
+            population: self >> population * .85
+            gold: self >> gold * .75
+            food: self >> food * .75
+            iron: self >> iron * .75
+            mana: self >> mana * .6
+            wood: self >> wood * .75
+            horses: self >> horses * .7
+            stone: self >> stone * .75
+            relics: self >> relics
+            ships: self >> ships * .8
             margin: .13
         end
         overlays: split
@@ -865,127 +866,34 @@
         links: inherit
     end
 
-    transition mutate when (self >> population) <= 0
+    transition fracture when (self >> stability) < .22 and (self >> fear) > .70 and (self >> succession) < .25
         into WarlordState
-        carries:
-            aggression: .65
-            cooperation: .1
-            fear: .85
-            ambition: .45
-            cohesion: .25
-            stability: .18
-            succession: .1
-            honor: .15
-            spirituality: self >> spirituality
-            openness: self >> openness * .5
-            discipline: .35
-            power: .08
-            population: 25000
-            gold: self >> gold
-            food: self >> food
-            iron: self >> iron
-            mana: self >> mana
-            wood: self >> wood
-            horses: self >> horses
-            stone: self >> stone
-            relics: self >> relics
-            ships: self >> ships
-            margin: .16
-        end
-        overlays: transfer
-        links: reset
-    end
-
-    transition mutate when (self >> stability) < .05 and (self >> cohesion) < .05 and (self >> power) < .05
-        into RebelFederation
-        carries:
-            aggression: self >> aggression
-            cooperation: .35
+        fragment:
+            aggression: self >> aggression + .15
+            cooperation: self >> cooperation * .45
             fear: self >> fear
-            ambition: .5
-            cohesion: .32
-            stability: .24
-            succession: .18
-            honor: self >> honor
+            ambition: self >> ambition
+            cohesion: .28
+            stability: .22
+            succession: .12
+            honor: self >> honor * .55
             spirituality: self >> spirituality
-            openness: self >> openness
-            discipline: .28
-            power: .18
-            population: self >> population
-            gold: self >> gold
-            food: self >> food
-            iron: self >> iron
-            mana: self >> mana
-            wood: self >> wood
-            horses: self >> horses
-            stone: self >> stone
+            openness: self >> openness * .6
+            discipline: self >> discipline * .8
+            power: self >> power * .85
+            margin: .16
+            population: self >> population * .85
+            gold: self >> gold * .75
+            food: self >> food * .75
+            iron: self >> iron * .75
+            mana: self >> mana * .6
+            wood: self >> wood * .75
+            horses: self >> horses * .7
+            stone: self >> stone * .75
             relics: self >> relics
-            ships: self >> ships
-            margin: .15
+            ships: self >> ships * .8
         end
-        overlays: transfer
-        links: reset
-    end
-
-    transition mutate when (self >> stability) < .05 and (self >> food) < 1 and (self >> gold) < 2
-        into Kingdom
-        carries:
-            aggression:  (self >> aggression) + .1
-            cooperation: (self >> cooperation) * .7
-            fear:        .5
-            ambition:    .4
-            cohesion:    .3
-            stability:   .25
-            succession:  .3
-            honor:       (self >> honor) * .6
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness) * .8
-            discipline:  (self >> discipline)
-            power:       .1
-            margin:      (self >> margin)
-            population:  50000
-            gold:        50
-            food:        100
-            iron:        50
-            mana:        20
-            wood:        100
-            horses:      10
-            stone:       50
-            relics:      0
-            ships:       2
-        end
-        overlays: drop
-        links: reset
-    end
-
-    transition mutate when (self >> stability) < .18 and (self >> cohesion) < .16 and (self >> fear) > .85 and (self >> succession) < .18
-        into Kingdom
-        carries:
-            aggression:  (self >> aggression) + .12
-            cooperation: (self >> cooperation) - .18
-            fear:        .45
-            ambition:    (self >> ambition) * .45
-            cohesion:    .46
-            stability:   .48
-            succession:  .42
-            honor:       (self >> honor) * .75
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness) * .8
-            discipline:  (self >> discipline) * .65
-            power:       (self >> power) * .85
-            margin:      (self >> margin)
-            population:  (self >> population) * .85
-            gold:        (self >> gold) * .7
-            food:        (self >> food) * .8
-            iron:        (self >> iron) * .75
-            mana:        (self >> mana)
-            wood:        (self >> wood) * .85
-            horses:      (self >> horses) * .65
-            stone:       (self >> stone) * .85
-            relics:      (self >> relics)
-            ships:       (self >> ships) * .7
-        end
-        overlays: transfer
+        overlays: split
         links: reset
     end
 
@@ -1045,7 +953,7 @@
         links: reset
     end
 
-    transition mutate when (self >> stability) > .88 and (self >> discipline) > .82 and (self >> honor) > .82 and (self >> succession) > .78 and (self >> population) > 800000
+    transition mutate when (self >> stability) > .82 and (self >> discipline) > .75 and (self >> honor) > .75 and (self >> succession) > .72 and (self >> population) > 500000
         into Kingdom
         carries:
             aggression:  (self >> aggression) * .85
@@ -1076,9 +984,7 @@
         links: reset
     end
 
-
-
-    transition mutate when (self >> spirituality) > .88 and (self >> mana) > 600 and (self >> stability) > .75 and (self >> succession) > .65 and (self >> population) > 600000
+    transition mutate when (self >> spirituality) > .80 and (self >> mana) > 400 and (self >> stability) > .65 and (self >> succession) > .55 and (self >> population) > 350000
         into Kingdom
         carries:
             aggression:  (self >> aggression) * .85
@@ -1109,7 +1015,7 @@
         links: reset
     end
 
-    transition mutate when (self >> aggression) > .85 and (self >> ambition) > .80 and (self >> honor) < .22 and (self >> succession) < .35 and (self >> population) > 400000
+    transition mutate when (self >> aggression) > .78 and (self >> ambition) > .72 and (self >> honor) < .28 and (self >> succession) < .40 and (self >> population) > 250000
         into Kingdom
         carries:
             aggression:  1
@@ -1159,23 +1065,22 @@
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
             discipline:  (self >> discipline) * .7
-            power:       (self >> power) * .2
+            power:       (self >> power) * .85
             margin:      (self >> margin)
-            population:  (self >> population) * .2
-            gold:        (self >> gold) * .25
-            food:        (self >> food) * .25
-            iron:        (self >> iron) * .2
-            mana:        (self >> mana) * .2
-            wood:        (self >> wood) * .25
-            horses:      (self >> horses) * .2
-            stone:       (self >> stone) * .2
-            relics:      0
-            ships:       (self >> ships) * .15
+            population:  (self >> population) * .85
+            gold:        (self >> gold) * .75
+            food:        (self >> food) * .75
+            iron:        (self >> iron) * .75
+            mana:        (self >> mana) * .6
+            wood:        (self >> wood) * .75
+            horses:      (self >> horses) * .7
+            stone:       (self >> stone) * .75
+            relics:      self >> relics
+            ships:       (self >> ships) * .8
         end
-        overlays: drop
+        overlays: split
         links: reset
     end
-
     transition spawn when (self >> ambition) > .92 and (self >> stability) > .90 and (self >> succession) > .80 and (self >> gold) > 1200 and (self >> population) > 1200000
         into Kingdom
         child:
@@ -1205,12 +1110,6 @@
         end
         overlays: drop
         links: reset
-    end
-end
-
-act recalculate_power(target)
-    if is_nil(target) == false
-        target >> power |= ((target >> population) * .0000015) + ((target >> food) * .00008) + ((target >> gold) * .00012) + ((target >> iron) * .00004) + ((target >> horses) * .0008) + ((target >> discipline) * .22) + ((target >> stability) * .18) + ((target >> cohesion) * .12)
     end
 end
 
@@ -1322,7 +1221,6 @@ act event(target)
         target >> population |= target >> population - ((target >> population) * (severity * .12))
         target >> stability |= target >> stability - (severity * .25)
     end
-
 end
 
 act population_pressure(target)
@@ -1427,8 +1325,6 @@ act population_pressure(target)
             target >> aggression |= target >> aggression + .004
         end
 
-
-
         if (target >> population) < 50000
             target >> fear |= target >> fear + .012
             target >> stability |= target >> stability - .01
@@ -1436,7 +1332,6 @@ act population_pressure(target)
             target >> power |= target >> power - .008
             target >> ambition |= target >> ambition - .006
         end
-
 
         border_fear | ((target >> aggression) * .0025) + ((1 - (target >> stability)) * .003) + ((1 - (target >> succession)) * .002)
         target >> fear |= target >> fear + border_fear
@@ -1479,12 +1374,12 @@ act population_pressure(target)
             target >> cohesion |= target >> cohesion - .002
         end
 
-        recalculate_power(target)
+        target >> power |= ((target >> population) * .0000015) + ((target >> food) * .00008) + ((target >> gold) * .00012) + ((target >> iron) * .00004) + ((target >> horses) * .0008) + ((target >> discipline) * .22) + ((target >> stability) * .18) + ((target >> cohesion) * .12)
     end
 end
 
-
-@Empire |
+<>Empire |
+    kind: "polity"
     aggression: .75
     cooperation: .35
     fear: .45
@@ -1569,196 +1464,66 @@ end
         links: inherit
     end
 
-
-    transition split when (self >> cohesion) < .35 and (self >> stability) < .42 and (self >> succession) < .42 and (self >> population) > 360000
+    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
         into Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .52
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .52
-            gold:        (self >> gold) * .52
-            food:        (self >> food) * .52
-            iron:        (self >> iron) * .52
-            mana:        (self >> mana) * .52
-            wood:        (self >> wood) * .52
-            horses:      (self >> horses) * .52
-            stone:       (self >> stone) * .52
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .52
+            ships:       (self >> ships) * .5
         end
+
         second:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .48
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .48
-            gold:        (self >> gold) * .48
-            food:        (self >> food) * .48
-            iron:        (self >> iron) * .48
-            mana:        (self >> mana) * .48
-            wood:        (self >> wood) * .48
-            horses:      (self >> horses) * .48
-            stone:       (self >> stone) * .48
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .48
+            ships:       (self >> ships) * .5
         end
         overlays: split
         links: inherit
     end
-
-    transition fracture when (self >> fear) > .55 and (self >> succession) < .55 and (self >> population) > 320000
-        into RebelFederation
-        fragment:
-            aggression:  (self >> aggression) + .08
-            cooperation: (self >> cooperation) * .65
-            fear:        (self >> fear)
-            ambition:    (self >> ambition)
-            cohesion:    .42
-            stability:   .35
-            succession:  .28
-            honor:       (self >> honor) * .75
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .7
-            power:       (self >> power) * .22
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .18
-            gold:        (self >> gold) * .18
-            food:        (self >> food) * .18
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .18
-            wood:        (self >> wood) * .18
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .18
-            relics:      1
-            ships:       (self >> ships) * .18
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition fracture when (self >> aggression) > .82 and (self >> discipline) > .78 and (self >> population) > 450000
-        into WarlordState
-        fragment:
-            aggression:  .8
-            cooperation: (self >> cooperation) * .45
-            fear:        (self >> fear) + .12
-            ambition:    (self >> ambition)
-            cohesion:    .35
-            stability:   .32
-            succession:  .2
-            honor:       (self >> honor) * .55
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness) * .55
-            discipline:  (self >> discipline)
-            power:       (self >> power) * .18
-            margin:      .16
-            population:  (self >> population) * .14
-            gold:        (self >> gold) * .14
-            food:        (self >> food) * .14
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .1
-            wood:        (self >> wood) * .14
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .14
-            relics:      1
-            ships:       (self >> ships) * .12
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition spawn when (self >> ambition) > .92 and (self >> stability) > .75 and (self >> population) > 700000 and (self >> food) > 2000
-        into Kingdom
-        child:
-            aggression:  (self >> aggression) * .7
-            cooperation: (self >> cooperation)
-            fear:        .35
-            ambition:    .5
-            cohesion:    .45
-            stability:   .4
-            succession:  .32
-            honor:       (self >> honor)
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .75
-            power:       (self >> power) * .15
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .12
-            gold:        (self >> gold) * .12
-            food:        (self >> food) * .12
-            iron:        (self >> iron) * .12
-            mana:        (self >> mana) * .12
-            wood:        (self >> wood) * .12
-            horses:      (self >> horses) * .12
-            stone:       (self >> stone) * .12
-            relics:      1
-            ships:       (self >> ships) * .2
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition subjugate(Kingdom) when (self >> power) > (target >> power) * 1.45 and (self >> aggression) > .58 and (target >> stability) < .65
-        overlays: transfer
-        links: inherit
-    end
-
-    transition merge(Kingdom) when (self >> cooperation) > .82 and (target >> cooperation) > .82 and (self >> openness) > .65 and (target >> openness) > .65
-        into TradeLeague
-        carries:
-            aggression:  (self >> aggression + target >> aggression) * .5
-            cooperation: (self >> cooperation + target >> cooperation) * .5
-            fear:        (self >> fear + target >> fear) * .5
-            ambition:    (self >> ambition + target >> ambition) * .5
-            cohesion:    (self >> cohesion + target >> cohesion) * .42
-            stability:   (self >> stability + target >> stability) * .5
-            succession:  (self >> succession + target >> succession) * .5
-            honor:       (self >> honor + target >> honor) * .5
-            spirituality: (self >> spirituality + target >> spirituality) * .5
-            openness:    (self >> openness + target >> openness) * .5
-            discipline:  (self >> discipline + target >> discipline) * .45
-            power:       (self >> power) + (target >> power) * .8
-            margin:      (self >> margin) + .02
-            population:  (self >> population) + (target >> population)
-            gold:        (self >> gold) + (target >> gold)
-            food:        (self >> food) + (target >> food)
-            iron:        (self >> iron) + (target >> iron)
-            mana:        (self >> mana) + (target >> mana)
-            wood:        (self >> wood) + (target >> wood)
-            horses:      (self >> horses) + (target >> horses)
-            stone:       (self >> stone) + (target >> stone)
-            relics:      (self >> relics) + (target >> relics)
-            ships:       (self >> ships) + (target >> ships)
-        end
-        overlays: split
-        links: inherit
-    end
-
-
 end
 
-@Theocracy |
+<>Theocracy |
+    kind: "polity"
     aggression: .35
     cooperation: .45
     fear: .35
@@ -1843,196 +1608,66 @@ end
         links: inherit
     end
 
-
-    transition split when (self >> cohesion) < .35 and (self >> stability) < .42 and (self >> succession) < .42 and (self >> population) > 360000
+    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
         into Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .52
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .52
-            gold:        (self >> gold) * .52
-            food:        (self >> food) * .52
-            iron:        (self >> iron) * .52
-            mana:        (self >> mana) * .52
-            wood:        (self >> wood) * .52
-            horses:      (self >> horses) * .52
-            stone:       (self >> stone) * .52
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .52
+            ships:       (self >> ships) * .5
         end
+
         second:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .48
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .48
-            gold:        (self >> gold) * .48
-            food:        (self >> food) * .48
-            iron:        (self >> iron) * .48
-            mana:        (self >> mana) * .48
-            wood:        (self >> wood) * .48
-            horses:      (self >> horses) * .48
-            stone:       (self >> stone) * .48
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .48
+            ships:       (self >> ships) * .5
         end
         overlays: split
         links: inherit
     end
-
-    transition fracture when (self >> fear) > .55 and (self >> succession) < .55 and (self >> population) > 320000
-        into RebelFederation
-        fragment:
-            aggression:  (self >> aggression) + .08
-            cooperation: (self >> cooperation) * .65
-            fear:        (self >> fear)
-            ambition:    (self >> ambition)
-            cohesion:    .42
-            stability:   .35
-            succession:  .28
-            honor:       (self >> honor) * .75
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .7
-            power:       (self >> power) * .22
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .18
-            gold:        (self >> gold) * .18
-            food:        (self >> food) * .18
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .18
-            wood:        (self >> wood) * .18
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .18
-            relics:      1
-            ships:       (self >> ships) * .18
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition fracture when (self >> aggression) > .82 and (self >> discipline) > .78 and (self >> population) > 450000
-        into WarlordState
-        fragment:
-            aggression:  .8
-            cooperation: (self >> cooperation) * .45
-            fear:        (self >> fear) + .12
-            ambition:    (self >> ambition)
-            cohesion:    .35
-            stability:   .32
-            succession:  .2
-            honor:       (self >> honor) * .55
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness) * .55
-            discipline:  (self >> discipline)
-            power:       (self >> power) * .18
-            margin:      .16
-            population:  (self >> population) * .14
-            gold:        (self >> gold) * .14
-            food:        (self >> food) * .14
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .1
-            wood:        (self >> wood) * .14
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .14
-            relics:      1
-            ships:       (self >> ships) * .12
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition spawn when (self >> ambition) > .92 and (self >> stability) > .75 and (self >> population) > 700000 and (self >> food) > 2000
-        into Kingdom
-        child:
-            aggression:  (self >> aggression) * .7
-            cooperation: (self >> cooperation)
-            fear:        .35
-            ambition:    .5
-            cohesion:    .45
-            stability:   .4
-            succession:  .32
-            honor:       (self >> honor)
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .75
-            power:       (self >> power) * .15
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .12
-            gold:        (self >> gold) * .12
-            food:        (self >> food) * .12
-            iron:        (self >> iron) * .12
-            mana:        (self >> mana) * .12
-            wood:        (self >> wood) * .12
-            horses:      (self >> horses) * .12
-            stone:       (self >> stone) * .12
-            relics:      1
-            ships:       (self >> ships) * .2
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition subjugate(Kingdom) when (self >> power) > (target >> power) * 1.45 and (self >> aggression) > .58 and (target >> stability) < .65
-        overlays: transfer
-        links: inherit
-    end
-
-    transition merge(Kingdom) when (self >> cooperation) > .82 and (target >> cooperation) > .82 and (self >> openness) > .65 and (target >> openness) > .65
-        into TradeLeague
-        carries:
-            aggression:  (self >> aggression + target >> aggression) * .5
-            cooperation: (self >> cooperation + target >> cooperation) * .5
-            fear:        (self >> fear + target >> fear) * .5
-            ambition:    (self >> ambition + target >> ambition) * .5
-            cohesion:    (self >> cohesion + target >> cohesion) * .42
-            stability:   (self >> stability + target >> stability) * .5
-            succession:  (self >> succession + target >> succession) * .5
-            honor:       (self >> honor + target >> honor) * .5
-            spirituality: (self >> spirituality + target >> spirituality) * .5
-            openness:    (self >> openness + target >> openness) * .5
-            discipline:  (self >> discipline + target >> discipline) * .45
-            power:       (self >> power) + (target >> power) * .8
-            margin:      (self >> margin) + .02
-            population:  (self >> population) + (target >> population)
-            gold:        (self >> gold) + (target >> gold)
-            food:        (self >> food) + (target >> food)
-            iron:        (self >> iron) + (target >> iron)
-            mana:        (self >> mana) + (target >> mana)
-            wood:        (self >> wood) + (target >> wood)
-            horses:      (self >> horses) + (target >> horses)
-            stone:       (self >> stone) + (target >> stone)
-            relics:      (self >> relics) + (target >> relics)
-            ships:       (self >> ships) + (target >> ships)
-        end
-        overlays: split
-        links: inherit
-    end
-
-
 end
 
-@TradeLeague |
+<>TradeLeague |
+    kind: "polity"
     aggression: .2
     cooperation: .85
     fear: .25
@@ -2117,196 +1752,66 @@ end
         links: inherit
     end
 
-
-    transition split when (self >> cohesion) < .35 and (self >> stability) < .42 and (self >> succession) < .42 and (self >> population) > 360000
+    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
         into Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .52
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .52
-            gold:        (self >> gold) * .52
-            food:        (self >> food) * .52
-            iron:        (self >> iron) * .52
-            mana:        (self >> mana) * .52
-            wood:        (self >> wood) * .52
-            horses:      (self >> horses) * .52
-            stone:       (self >> stone) * .52
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .52
+            ships:       (self >> ships) * .5
         end
+
         second:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .48
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .48
-            gold:        (self >> gold) * .48
-            food:        (self >> food) * .48
-            iron:        (self >> iron) * .48
-            mana:        (self >> mana) * .48
-            wood:        (self >> wood) * .48
-            horses:      (self >> horses) * .48
-            stone:       (self >> stone) * .48
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .48
+            ships:       (self >> ships) * .5
         end
         overlays: split
         links: inherit
     end
-
-    transition fracture when (self >> fear) > .55 and (self >> succession) < .55 and (self >> population) > 320000
-        into RebelFederation
-        fragment:
-            aggression:  (self >> aggression) + .08
-            cooperation: (self >> cooperation) * .65
-            fear:        (self >> fear)
-            ambition:    (self >> ambition)
-            cohesion:    .42
-            stability:   .35
-            succession:  .28
-            honor:       (self >> honor) * .75
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .7
-            power:       (self >> power) * .22
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .18
-            gold:        (self >> gold) * .18
-            food:        (self >> food) * .18
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .18
-            wood:        (self >> wood) * .18
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .18
-            relics:      1
-            ships:       (self >> ships) * .18
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition fracture when (self >> aggression) > .82 and (self >> discipline) > .78 and (self >> population) > 450000
-        into WarlordState
-        fragment:
-            aggression:  .8
-            cooperation: (self >> cooperation) * .45
-            fear:        (self >> fear) + .12
-            ambition:    (self >> ambition)
-            cohesion:    .35
-            stability:   .32
-            succession:  .2
-            honor:       (self >> honor) * .55
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness) * .55
-            discipline:  (self >> discipline)
-            power:       (self >> power) * .18
-            margin:      .16
-            population:  (self >> population) * .14
-            gold:        (self >> gold) * .14
-            food:        (self >> food) * .14
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .1
-            wood:        (self >> wood) * .14
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .14
-            relics:      1
-            ships:       (self >> ships) * .12
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition spawn when (self >> ambition) > .92 and (self >> stability) > .75 and (self >> population) > 700000 and (self >> food) > 2000
-        into Kingdom
-        child:
-            aggression:  (self >> aggression) * .7
-            cooperation: (self >> cooperation)
-            fear:        .35
-            ambition:    .5
-            cohesion:    .45
-            stability:   .4
-            succession:  .32
-            honor:       (self >> honor)
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .75
-            power:       (self >> power) * .15
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .12
-            gold:        (self >> gold) * .12
-            food:        (self >> food) * .12
-            iron:        (self >> iron) * .12
-            mana:        (self >> mana) * .12
-            wood:        (self >> wood) * .12
-            horses:      (self >> horses) * .12
-            stone:       (self >> stone) * .12
-            relics:      1
-            ships:       (self >> ships) * .2
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition subjugate(Kingdom) when (self >> power) > (target >> power) * 1.45 and (self >> aggression) > .58 and (target >> stability) < .65
-        overlays: transfer
-        links: inherit
-    end
-
-    transition merge(Kingdom) when (self >> cooperation) > .82 and (target >> cooperation) > .82 and (self >> openness) > .65 and (target >> openness) > .65
-        into TradeLeague
-        carries:
-            aggression:  (self >> aggression + target >> aggression) * .5
-            cooperation: (self >> cooperation + target >> cooperation) * .5
-            fear:        (self >> fear + target >> fear) * .5
-            ambition:    (self >> ambition + target >> ambition) * .5
-            cohesion:    (self >> cohesion + target >> cohesion) * .42
-            stability:   (self >> stability + target >> stability) * .5
-            succession:  (self >> succession + target >> succession) * .5
-            honor:       (self >> honor + target >> honor) * .5
-            spirituality: (self >> spirituality + target >> spirituality) * .5
-            openness:    (self >> openness + target >> openness) * .5
-            discipline:  (self >> discipline + target >> discipline) * .45
-            power:       (self >> power) + (target >> power) * .8
-            margin:      (self >> margin) + .02
-            population:  (self >> population) + (target >> population)
-            gold:        (self >> gold) + (target >> gold)
-            food:        (self >> food) + (target >> food)
-            iron:        (self >> iron) + (target >> iron)
-            mana:        (self >> mana) + (target >> mana)
-            wood:        (self >> wood) + (target >> wood)
-            horses:      (self >> horses) + (target >> horses)
-            stone:       (self >> stone) + (target >> stone)
-            relics:      (self >> relics) + (target >> relics)
-            ships:       (self >> ships) + (target >> ships)
-        end
-        overlays: split
-        links: inherit
-    end
-
-
 end
 
-@WarlordState |
+<>WarlordState |
+    kind: "polity"
     aggression: .85
     cooperation: .15
     fear: .65
@@ -2391,196 +1896,66 @@ end
         links: inherit
     end
 
-
-    transition split when (self >> cohesion) < .35 and (self >> stability) < .42 and (self >> succession) < .42 and (self >> population) > 360000
+    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
         into Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .52
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .52
-            gold:        (self >> gold) * .52
-            food:        (self >> food) * .52
-            iron:        (self >> iron) * .52
-            mana:        (self >> mana) * .52
-            wood:        (self >> wood) * .52
-            horses:      (self >> horses) * .52
-            stone:       (self >> stone) * .52
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .52
+            ships:       (self >> ships) * .5
         end
+
         second:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .48
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .48
-            gold:        (self >> gold) * .48
-            food:        (self >> food) * .48
-            iron:        (self >> iron) * .48
-            mana:        (self >> mana) * .48
-            wood:        (self >> wood) * .48
-            horses:      (self >> horses) * .48
-            stone:       (self >> stone) * .48
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .48
+            ships:       (self >> ships) * .5
         end
         overlays: split
         links: inherit
     end
-
-    transition fracture when (self >> fear) > .55 and (self >> succession) < .55 and (self >> population) > 320000
-        into RebelFederation
-        fragment:
-            aggression:  (self >> aggression) + .08
-            cooperation: (self >> cooperation) * .65
-            fear:        (self >> fear)
-            ambition:    (self >> ambition)
-            cohesion:    .42
-            stability:   .35
-            succession:  .28
-            honor:       (self >> honor) * .75
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .7
-            power:       (self >> power) * .22
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .18
-            gold:        (self >> gold) * .18
-            food:        (self >> food) * .18
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .18
-            wood:        (self >> wood) * .18
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .18
-            relics:      1
-            ships:       (self >> ships) * .18
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition fracture when (self >> aggression) > .82 and (self >> discipline) > .78 and (self >> population) > 450000
-        into WarlordState
-        fragment:
-            aggression:  .8
-            cooperation: (self >> cooperation) * .45
-            fear:        (self >> fear) + .12
-            ambition:    (self >> ambition)
-            cohesion:    .35
-            stability:   .32
-            succession:  .2
-            honor:       (self >> honor) * .55
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness) * .55
-            discipline:  (self >> discipline)
-            power:       (self >> power) * .18
-            margin:      .16
-            population:  (self >> population) * .14
-            gold:        (self >> gold) * .14
-            food:        (self >> food) * .14
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .1
-            wood:        (self >> wood) * .14
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .14
-            relics:      1
-            ships:       (self >> ships) * .12
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition spawn when (self >> ambition) > .92 and (self >> stability) > .75 and (self >> population) > 700000 and (self >> food) > 2000
-        into Kingdom
-        child:
-            aggression:  (self >> aggression) * .7
-            cooperation: (self >> cooperation)
-            fear:        .35
-            ambition:    .5
-            cohesion:    .45
-            stability:   .4
-            succession:  .32
-            honor:       (self >> honor)
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .75
-            power:       (self >> power) * .15
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .12
-            gold:        (self >> gold) * .12
-            food:        (self >> food) * .12
-            iron:        (self >> iron) * .12
-            mana:        (self >> mana) * .12
-            wood:        (self >> wood) * .12
-            horses:      (self >> horses) * .12
-            stone:       (self >> stone) * .12
-            relics:      1
-            ships:       (self >> ships) * .2
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition subjugate(Kingdom) when (self >> power) > (target >> power) * 1.45 and (self >> aggression) > .58 and (target >> stability) < .65
-        overlays: transfer
-        links: inherit
-    end
-
-    transition merge(Kingdom) when (self >> cooperation) > .82 and (target >> cooperation) > .82 and (self >> openness) > .65 and (target >> openness) > .65
-        into TradeLeague
-        carries:
-            aggression:  (self >> aggression + target >> aggression) * .5
-            cooperation: (self >> cooperation + target >> cooperation) * .5
-            fear:        (self >> fear + target >> fear) * .5
-            ambition:    (self >> ambition + target >> ambition) * .5
-            cohesion:    (self >> cohesion + target >> cohesion) * .42
-            stability:   (self >> stability + target >> stability) * .5
-            succession:  (self >> succession + target >> succession) * .5
-            honor:       (self >> honor + target >> honor) * .5
-            spirituality: (self >> spirituality + target >> spirituality) * .5
-            openness:    (self >> openness + target >> openness) * .5
-            discipline:  (self >> discipline + target >> discipline) * .45
-            power:       (self >> power) + (target >> power) * .8
-            margin:      (self >> margin) + .02
-            population:  (self >> population) + (target >> population)
-            gold:        (self >> gold) + (target >> gold)
-            food:        (self >> food) + (target >> food)
-            iron:        (self >> iron) + (target >> iron)
-            mana:        (self >> mana) + (target >> mana)
-            wood:        (self >> wood) + (target >> wood)
-            horses:      (self >> horses) + (target >> horses)
-            stone:       (self >> stone) + (target >> stone)
-            relics:      (self >> relics) + (target >> relics)
-            ships:       (self >> ships) + (target >> ships)
-        end
-        overlays: split
-        links: inherit
-    end
-
-
 end
 
-@RebelFederation |
+<>RebelFederation |
+    kind: "polity"
     aggression: .55
     cooperation: .55
     fear: .45
@@ -2665,241 +2040,65 @@ end
         links: inherit
     end
 
-
-    transition split when (self >> cohesion) < .35 and (self >> stability) < .42 and (self >> succession) < .42 and (self >> population) > 360000
+    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
         into Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .52
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .52
-            gold:        (self >> gold) * .52
-            food:        (self >> food) * .52
-            iron:        (self >> iron) * .52
-            mana:        (self >> mana) * .52
-            wood:        (self >> wood) * .52
-            horses:      (self >> horses) * .52
-            stone:       (self >> stone) * .52
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .52
+            ships:       (self >> ships) * .5
         end
+
         second:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
             fear:        (self >> fear)
             ambition:    (self >> ambition)
-            cohesion:    .52
-            stability:   .44
-            succession:  (self >> succession) * .55
+            cohesion:    .55
+            stability:   .45
+            succession:  (self >> succession) * .5
             honor:       (self >> honor)
             spirituality: (self >> spirituality)
             openness:    (self >> openness)
-            discipline:  (self >> discipline) * .82
-            power:       (self >> power) * .48
+            discipline:  (self >> discipline) * .85
+            power:       (self >> power) * .5
             margin:      (self >> margin)
-            population:  (self >> population) * .48
-            gold:        (self >> gold) * .48
-            food:        (self >> food) * .48
-            iron:        (self >> iron) * .48
-            mana:        (self >> mana) * .48
-            wood:        (self >> wood) * .48
-            horses:      (self >> horses) * .48
-            stone:       (self >> stone) * .48
+            population:  (self >> population) * .5
+            gold:        (self >> gold) * .5
+            food:        (self >> food) * .5
+            iron:        (self >> iron) * .5
+            mana:        (self >> mana) * .5
+            wood:        (self >> wood) * .5
+            horses:      (self >> horses) * .5
+            stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
-            ships:       (self >> ships) * .48
+            ships:       (self >> ships) * .5
         end
         overlays: split
         links: inherit
-    end
-
-    transition fracture when (self >> fear) > .55 and (self >> succession) < .55 and (self >> population) > 320000
-        into RebelFederation
-        fragment:
-            aggression:  (self >> aggression) + .08
-            cooperation: (self >> cooperation) * .65
-            fear:        (self >> fear)
-            ambition:    (self >> ambition)
-            cohesion:    .42
-            stability:   .35
-            succession:  .28
-            honor:       (self >> honor) * .75
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .7
-            power:       (self >> power) * .22
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .18
-            gold:        (self >> gold) * .18
-            food:        (self >> food) * .18
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .18
-            wood:        (self >> wood) * .18
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .18
-            relics:      1
-            ships:       (self >> ships) * .18
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition fracture when (self >> aggression) > .82 and (self >> discipline) > .78 and (self >> population) > 450000
-        into WarlordState
-        fragment:
-            aggression:  .8
-            cooperation: (self >> cooperation) * .45
-            fear:        (self >> fear) + .12
-            ambition:    (self >> ambition)
-            cohesion:    .35
-            stability:   .32
-            succession:  .2
-            honor:       (self >> honor) * .55
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness) * .55
-            discipline:  (self >> discipline)
-            power:       (self >> power) * .18
-            margin:      .16
-            population:  (self >> population) * .14
-            gold:        (self >> gold) * .14
-            food:        (self >> food) * .14
-            iron:        (self >> iron) * .18
-            mana:        (self >> mana) * .1
-            wood:        (self >> wood) * .14
-            horses:      (self >> horses) * .18
-            stone:       (self >> stone) * .14
-            relics:      1
-            ships:       (self >> ships) * .12
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition spawn when (self >> ambition) > .92 and (self >> stability) > .75 and (self >> population) > 700000 and (self >> food) > 2000
-        into Kingdom
-        child:
-            aggression:  (self >> aggression) * .7
-            cooperation: (self >> cooperation)
-            fear:        .35
-            ambition:    .5
-            cohesion:    .45
-            stability:   .4
-            succession:  .32
-            honor:       (self >> honor)
-            spirituality: (self >> spirituality)
-            openness:    (self >> openness)
-            discipline:  (self >> discipline) * .75
-            power:       (self >> power) * .15
-            margin:      (self >> margin) + .03
-            population:  (self >> population) * .12
-            gold:        (self >> gold) * .12
-            food:        (self >> food) * .12
-            iron:        (self >> iron) * .12
-            mana:        (self >> mana) * .12
-            wood:        (self >> wood) * .12
-            horses:      (self >> horses) * .12
-            stone:       (self >> stone) * .12
-            relics:      1
-            ships:       (self >> ships) * .2
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition subjugate(Kingdom) when (self >> power) > (target >> power) * 1.45 and (self >> aggression) > .58 and (target >> stability) < .65
-        overlays: transfer
-        links: inherit
-    end
-
-    transition merge(Kingdom) when (self >> cooperation) > .82 and (target >> cooperation) > .82 and (self >> openness) > .65 and (target >> openness) > .65
-        into TradeLeague
-        carries:
-            aggression:  (self >> aggression + target >> aggression) * .5
-            cooperation: (self >> cooperation + target >> cooperation) * .5
-            fear:        (self >> fear + target >> fear) * .5
-            ambition:    (self >> ambition + target >> ambition) * .5
-            cohesion:    (self >> cohesion + target >> cohesion) * .42
-            stability:   (self >> stability + target >> stability) * .5
-            succession:  (self >> succession + target >> succession) * .5
-            honor:       (self >> honor + target >> honor) * .5
-            spirituality: (self >> spirituality + target >> spirituality) * .5
-            openness:    (self >> openness + target >> openness) * .5
-            discipline:  (self >> discipline + target >> discipline) * .45
-            power:       (self >> power) + (target >> power) * .8
-            margin:      (self >> margin) + .02
-            population:  (self >> population) + (target >> population)
-            gold:        (self >> gold) + (target >> gold)
-            food:        (self >> food) + (target >> food)
-            iron:        (self >> iron) + (target >> iron)
-            mana:        (self >> mana) + (target >> mana)
-            wood:        (self >> wood) + (target >> wood)
-            horses:      (self >> horses) + (target >> horses)
-            stone:       (self >> stone) + (target >> stone)
-            relics:      (self >> relics) + (target >> relics)
-            ships:       (self >> ships) + (target >> ships)
-        end
-        overlays: split
-        links: inherit
-    end
-
-
-end
-
-
-
-
-@Religion |
-    zeal: .5
-    mercy: .5
-    order: .5
-    mysticism: .5
-    margin: .08
-
-    transition split when (self >> zeal) > .92 and (self >> mercy) < .22 and (self >> order) > .82 and (self >> mysticism) > .35
-        into Religion, Religion
-        first:
-            zeal:      (self >> zeal)
-            mercy:     (self >> mercy)
-            order:     (self >> order)
-            mysticism: (self >> mysticism) * .7
-            margin:    (self >> margin) + .08
-        end
-        second:
-            zeal:      (self >> zeal) * .62
-            mercy:     (self >> mercy) + .22
-            order:     (self >> order) * .62
-            mysticism: (self >> mysticism) + .12
-            margin:    (self >> margin) + .12
-        end
-        overlays: split
-        links: reset
-    end
-
-    transition mutate when (self >> mysticism) > .9 and (self >> order) < .22 and (self >> zeal) < .45
-        into Religion
-        carries:
-            zeal:      (self >> zeal) * .75
-            mercy:     (self >> mercy) + .08
-            order:     .18
-            mysticism: 1
-            margin:    (self >> margin) + .1
-        end
-        overlays: transfer
-        links: reset
     end
 end
 
-
-@Faction |
+<>Faction |
     loyalty: .5
     greed: .5
     influence: .5
@@ -2957,9 +2156,8 @@ end
     end
 end
 
-
-@Kingdom matrix
-    id:            "{id}",  Aurelion, Drakmoor, Valedawn, Kharum, Sylvaris, Nerezza
+<>Kingdom matrix
+    name:          "{name}",  Aurelion, Drakmoor, Valedawn, Kharum, Sylvaris, Nerezza
 
     aggression:    .5,      .45,      .85,      .2,       .75,      .3,       .55
     cooperation:   .5,      .6,       .25,      .85,      .2,       .45,      .5
@@ -2990,7 +2188,6 @@ end
 
     margin:        .08,     .05,      .03,      .1,       .12,      .07,      .04
 end
-
 
 overlay ReligiousSchism |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
@@ -3056,18 +2253,8 @@ overlay HolyMilitia |
     end
 end
 
-
-@Religion matrix
-    id:        "{id}", SolarCreed, RootPact, AshenRite
-    zeal:      .5,     .7,         .35,      .85
-    mercy:     .5,     .65,        .8,       .2
-    order:     .5,     .8,         .45,      .55
-    mysticism: .5,     .45,        .85,      .75
-    margin:    .08,    .05,        .08,      .06
-end
-
-@Faction matrix
-    id:         "{id}", Nobles, Merchants, MageOrder, WarPriests, PeasantLeague
+<>Faction matrix
+    name:       "{name}", Nobles, Merchants, MageOrder, WarPriests, PeasantLeague
     loyalty:    .5,     .45,    .6,        .5,        .7,         .55
     greed:      .5,     .75,    .85,       .35,       .3,         .25
     influence:  .5,     .8,     .7,        .65,       .6,         .55
@@ -3075,8 +2262,8 @@ end
     margin:     .08,    .06,    .07,       .05,       .04,        .09
 end
 
-
 overlay WarWeariness |
+    replaces
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     decays .08
     modifies:
@@ -3092,6 +2279,7 @@ overlay WarWeariness |
 end
 
 overlay Famine |
+    stacks as outbreaks
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .0015
     decays .14
@@ -3106,6 +2294,7 @@ overlay Famine |
 end
 
 overlay Plague |
+    stacks as infected
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .004
     decays .22
@@ -3119,8 +2308,8 @@ overlay Plague |
     end
 end
 
-
 overlay WarMemory |
+    stacks as conflicts
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through border at .003
     decays .025
@@ -3134,6 +2323,7 @@ overlay WarMemory |
 end
 
 overlay PlagueMemory |
+    stacks as outbreaks
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .002
     decays .03
@@ -3146,6 +2336,7 @@ overlay PlagueMemory |
 end
 
 overlay FamineMemory |
+    stacks as shortages
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .002
     decays .03
@@ -3158,6 +2349,7 @@ overlay FamineMemory |
 end
 
 overlay BorderTension |
+    stacks as incidents
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through border at .004
     decays .045
@@ -3169,9 +2361,8 @@ overlay BorderTension |
     end
 end
 
-
-
 overlay ReligiousFervor |
+    replaces
     hosts Kingdom
     spreads through culture at .012
     decays .07
@@ -3187,6 +2378,7 @@ overlay ReligiousFervor |
 end
 
 overlay Corruption |
+    replaces
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through culture at .008
     decays .04
@@ -3203,6 +2395,7 @@ overlay Corruption |
 end
 
 overlay Rebellion |
+    replaces
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through culture at .0004
     decays .09
@@ -3219,6 +2412,7 @@ overlay Rebellion |
 end
 
 overlay ArcaneBloom |
+    replaces
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through arcane at .01
     decays .06
@@ -3231,6 +2425,7 @@ overlay ArcaneBloom |
 end
 
 overlay SuccessionCrisis |
+    replaces
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through culture at .004
     decays .05
@@ -3243,6 +2438,7 @@ overlay SuccessionCrisis |
 end
 
 overlay DragonFear |
+    replaces
     hosts Kingdom
     spreads through border at .006
     decays .06
@@ -3255,6 +2451,7 @@ overlay DragonFear |
 end
 
 overlay UndeadPressure |
+    replaces
     hosts Kingdom
     spreads through border at .008
     decays .05
@@ -3265,7 +2462,6 @@ overlay UndeadPressure |
         mana - 10
     end
 end
-
 
 overlay TradeCant |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
@@ -3299,8 +2495,6 @@ overlay ImperialDialect |
         cohesion + .004
     end
 end
-
-
 
 overlay AurelianDialect |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
@@ -3350,8 +2544,6 @@ overlay SylvanLiturgical |
     end
 end
 
-
-
 overlay Depression |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .0012
@@ -3365,7 +2557,6 @@ overlay Depression |
         openness - .012
     end
 end
-
 
 overlay Secularization |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
@@ -3412,12 +2603,12 @@ overlay Syncretism |
     end
 end
 
-
 overlay SolarReform |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through culture at .00045
     decays .06
-    conflicts SolarCreedFaith    conflicts SolarPurists
+    conflicts SolarCreedFaith    
+    conflicts SolarPurists
 
     modifies:
         openness + .018
@@ -3460,7 +2651,8 @@ overlay AshenOrthodoxy |
     spreads through border at .00045
     spreads through culture at .0004
     decays .052
-    conflicts AshenRiteFaith    conflicts SolarReform
+    conflicts AshenRiteFaith    
+    conflicts SolarReform
 
     modifies:
         aggression + .018
@@ -3475,7 +2667,8 @@ overlay MerchantGuilds |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .0015
     decays .028
-    conflicts NobleCoup    conflicts MilitaryJunta
+    conflicts NobleCoup    
+    conflicts MilitaryJunta
 
     modifies:
         cooperation + .018
@@ -3490,7 +2683,8 @@ overlay MilitaryJunta |
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through border at .001
     decays .03
-    conflicts ReformMovement    conflicts MerchantGuilds
+    conflicts ReformMovement    
+    conflicts MerchantGuilds
 
     modifies:
         discipline + .022
@@ -3501,8 +2695,8 @@ overlay MilitaryJunta |
     end
 end
 
-
 overlay AurelianTongue |
+    kind: "language"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .0006
     spreads through culture at .0005
@@ -3510,13 +2704,15 @@ overlay AurelianTongue |
     modifies:
         openness + .001
         cooperation + .0005
-    end    spawns AurelianDialect when strength > .18:
+    end    
+    spawns AurelianDialect when strength > .18:
         strength .035
     end
 
 end
 
 overlay DrakmoorTongue |
+    kind: "language"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through border at .0008
     spreads through culture at .0004
@@ -3524,13 +2720,15 @@ overlay DrakmoorTongue |
     modifies:
         aggression + .001
         discipline + .0005
-    end    spawns DrakmoorImperial when strength > .18:
+    end    
+    spawns DrakmoorImperial when strength > .18:
         strength .035
     end
 
 end
 
 overlay ValedawnTongue |
+    kind: "language"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .0007
     spreads through culture at .00045
@@ -3538,13 +2736,15 @@ overlay ValedawnTongue |
     modifies:
         cooperation + .001
         openness + .001
-    end    spawns ValedawnCant when strength > .18:
+    end    
+    spawns ValedawnCant when strength > .18:
         strength .04
     end
 
 end
 
 overlay KharumTongue |
+    kind: "language"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through border at .0006
     spreads through trade at .0003
@@ -3556,6 +2756,7 @@ overlay KharumTongue |
 end
 
 overlay SylvarisTongue |
+    kind: "language"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through culture at .00045
     spreads through arcane at .0005
@@ -3563,13 +2764,15 @@ overlay SylvarisTongue |
     modifies:
         spirituality + .001
         openness + .0005
-    end    spawns SylvanLiturgical when strength > .18:
+    end    
+    spawns SylvanLiturgical when strength > .18:
         strength .035
     end
 
 end
 
 overlay NerezzaTongue |
+    kind: "language"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through trade at .0006
     spreads through culture at .0005
@@ -3581,6 +2784,7 @@ overlay NerezzaTongue |
 end
 
 overlay SolarCreedFaith |
+    kind: "religion"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through culture at .001
     spreads through trade at .00035
@@ -3601,6 +2805,7 @@ overlay SolarCreedFaith |
 end
 
 overlay RootPactFaith |
+    kind: "religion"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through culture at .001
     spreads through trade at .00045
@@ -3618,6 +2823,7 @@ overlay RootPactFaith |
 end
 
 overlay AshenRiteFaith |
+    kind: "religion"
     hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
     spreads through border at .001
     spreads through culture at .00065
@@ -3670,10 +2876,10 @@ overlay AshenRiteFaith on Kharum at .7
 say "=== Memory Starting ==="
 say mem_human()
 
-repeat 500
+repeat 300
     tick()
 
-    repeat kingdoms
+    repeat :objects(it>>kind == "polity")
         population_pressure(it)
 
         chance | pick 1 from 1...1000
@@ -3686,13 +2892,8 @@ end
 say "=== Memory Ending ==="
 say mem_human()
 
-say "=== KINGDOMS ==="
-repeat kingdoms
-    say it
-xx
-
-say "=== RELIGIONS ==="
-repeat religions
+say "=== POLITIES ==="
+repeat :objects(it>>kind == "polity")
     say it
 xx
 
@@ -3701,7 +2902,7 @@ repeat factions
     say it
 xx
 
-say "=== OVERLAYS ==="
-repeat overlays
+say "=== ALL OVERLAYS ==="
+repeat :overlays()
     say it
 xx

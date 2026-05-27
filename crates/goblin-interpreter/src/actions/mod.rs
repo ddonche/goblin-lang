@@ -4,6 +4,7 @@ pub mod mem;
 pub mod collections; 
 pub mod utils;
 pub mod files;
+// pub mod grid;
 pub mod ipsum;
 pub mod process;
 pub mod db;

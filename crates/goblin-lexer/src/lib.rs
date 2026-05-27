@@ -13,7 +13,7 @@ use goblin_diagnostics::{Diagnostic, Span};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Ident,
-    AtIdent,
+    ClassIdent,
     HashIdent,
     Act,
     Action,
@@ -1344,26 +1344,17 @@ fn try_lex_money_suffix(state: &mut LexerState, start_i: usize, start_col: u32) 
     Some(())
 }
 
-fn lex_at_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
+fn lex_class_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
     let start_i = state.i;
     let start_col = state.col;
 
-    state.advance(); // consume '@'
+    state.advance_by(2); // consume '<>'
 
-    if state.i >= state.bytes.len() {
+    if state.i >= state.bytes.len() || !is_upper(state.current().unwrap()) {
         let span = state.span(start_i, start_col);
         return Err(vec![Diagnostic::error(
             "L0402",
-            "Expected a class name after `@`\n\nhelp: Start with an uppercase name: `@Player = username: \"john\" :: health: 100`",
-            span,
-        )]);
-    }
-
-    if !is_upper(state.current().unwrap()) {
-        let span = Span::new(state.file, start_i, state.i + 1, state.line, start_col, state.line, state.col + 1);
-        return Err(vec![Diagnostic::error(
-            "L0402",
-            "Expected a class name after `@`\n\nhelp: Class names start with uppercase: `@Player`, not `@player` or `@123`",
+            "Expected a class name after `<>`\n\nhelp: Class names start with uppercase: `<>Player`",
             span,
         )]);
     }
@@ -1373,27 +1364,19 @@ fn lex_at_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
         state.advance();
     }
 
-    let name = String::from_utf8_lossy(&state.bytes[(start_i + 1)..state.i]).into_owned();
+    let name = String::from_utf8_lossy(&state.bytes[(start_i + 2)..state.i]).into_owned();
     let span_name = state.span(start_i, start_col);
-
-    if state.current() == Some(b'!') {
-        state.tokens.push(Token::new(TokenKind::AtIdent, span_name, Some(name)));
-        let bang_span = Span::new(state.file, state.i, state.i + 1, state.line, state.col, state.line, state.col + 1);
-        state.tokens.push(Token::new(TokenKind::Op("!".to_string()), bang_span, None));
-        state.advance();
-        return Ok(());
-    }
 
     if state.current() == Some(b'?') {
         let sp = state.span(state.i, state.col);
         return Err(vec![Diagnostic::error(
             "L0403",
-            "Names can't end with `?`\n\nhelp: Remove the suffix: write `@Player`",
+            "Names can't end with `?`\n\nhelp: Remove the suffix: write `<>Player`",
             sp,
         )]);
     }
 
-    state.tokens.push(Token::new(TokenKind::AtIdent, span_name, Some(name)));
+    state.tokens.push(Token::new(TokenKind::ClassIdent, span_name, Some(name)));
     Ok(())
 }
 
@@ -1951,10 +1934,16 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     state.advance_by(2);
                     state.tokens.push(Token::simple_op("<=".to_string(), state.span(start_i, start_col)));
                 } else if state.peek(1) == Some(b'>') {
-                    let start_i = state.i;
-                    let start_col = state.col;
-                    state.advance_by(2);
-                    state.tokens.push(Token::simple_op("<>".to_string(), state.span(start_i, start_col)));
+                    // <>ClassName => class declaration/instantiation sigil
+                    // <>lowercase or <> alone => plain Op("<>") for parser to handle
+                    if state.i + 2 < state.bytes.len() && is_upper(state.bytes[state.i + 2]) {
+                        lex_class_identifier(&mut state)?;
+                    } else {
+                        let start_i = state.i;
+                        let start_col = state.col;
+                        state.advance_by(2);
+                        state.tokens.push(Token::simple_op("<>".to_string(), state.span(start_i, start_col)));
+                    }
                 } else {
                     let start_i = state.i;
                     let start_col = state.col;
@@ -2171,7 +2160,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 );
                 return Err(vec![Diagnostic::error(
                     "L0114",
-                    "There is no `||` operator in Goblin\n\nhelp: Use `or` or `<>` for logical OR: `if x or y` or `if x <> y`",
+                    "There is no `||` operator in Goblin\n\nhelp: Use `or` for logical OR: `if x or y`",
                     span,
                 )]);
             }
@@ -2216,8 +2205,18 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 state.tokens.push(Token::simple_op(";".to_string(), state.span(start_i, start_col)));
             }
 
-            // @ and # identifiers
-            b'@' => lex_at_identifier(&mut state)?,
+            // @ is no longer valid syntax; class declarations use <>
+            b'@' => {
+                let start_i = state.i;
+                let start_col = state.col;
+                state.advance();
+                let span = state.span(start_i, start_col);
+                return Err(vec![Diagnostic::error(
+                    "L0402",
+                    "`@` is not valid Goblin syntax\n\nhelp: Use `<>ClassName` to declare or instantiate a class: `<>Player |`",
+                    span,
+                )]);
+            }
             b'#' => lex_hash_identifier(&mut state)?,
 
             // Regular identifiers

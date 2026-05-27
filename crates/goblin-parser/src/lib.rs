@@ -1840,22 +1840,10 @@ impl<'t> Parser<'t> {
     }
 
     fn try_parse_class_decl(&mut self) -> Option<Result<PExpr, String>> {
-        if !self.peek_op("@") {
+        if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::ClassIdent)) {
             return None;
         }
-        
-        let save = self.i;
-        if self.eat_op("@") {
-            if let Some(_) = self.peek_ident() {
-                self.i = save;
-                Some(self.parse_class_decl())
-            } else {
-                self.i = save;
-                None
-            }
-        } else {
-            None
-        }
+        Some(self.parse_class_decl())
     }
 
     fn skip_action_block(&mut self) -> Result<(), String> {
@@ -2663,7 +2651,8 @@ impl<'t> Parser<'t> {
         self.skip_newlines();
 
         let next_is_shadow = matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Shadow));
-        let next_is_bind_op = self.peek_op("|") || self.peek_op("|=") || next_is_shadow;
+        let next_is_class_ident = matches!(self.peek().map(|t| &t.kind), Some(TokenKind::ClassIdent));
+        let next_is_bind_op = self.peek_op("|") || self.peek_op("|=") || self.peek_op("<>") || next_is_shadow || next_is_class_ident;
 
         if !is_const && names.len() > 1 && !next_is_bind_op {
             // rewind to start of expression (after optional imm)
@@ -2674,24 +2663,31 @@ impl<'t> Parser<'t> {
         }
 
         // Now actually consume the operator (or error)
-        let (mode, op_span) = if self.peek_op("|") {
+        let (mode, op_span, is_object_construct) = if self.peek_op("|") {
             let sp = self.peek().unwrap().span.clone();
             let _ = self.eat_op("|");
-            (ast::BindMode::Tether, sp)
+            (ast::BindMode::Tether, sp, false)
+        } else if self.peek_op("<>") {
+            let sp = self.peek().unwrap().span.clone();
+            let _ = self.eat_op("<>");
+            (ast::BindMode::Tether, sp, true)
+        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::ClassIdent)) {
+            let sp = self.peek().unwrap().span.clone();
+            (ast::BindMode::Tether, sp, true)
         } else if self.peek_op("|=") {
             let sp = self.peek().unwrap().span.clone();
             let _ = self.eat_op("|=");
-            (ast::BindMode::Retether, sp) // NOTE: BindMode must have Retether
+            (ast::BindMode::Retether, sp, false)
         } else if next_is_shadow {
             let sp = self.peek().unwrap().span.clone();
-            self.i += 1; // consume Shadow token
-            (ast::BindMode::Shadow, sp)
+            self.i += 1;
+            (ast::BindMode::Shadow, sp, false)
         } else {
             let name0 = &names[0].0;
             return Err(s_help_site!(
                 "P0402",
-                &format!("Expected '|' or '|=' or '[=' after '{}'", name0),
-                "Use '|' for a normal declaration, '|=' to retether, or '[=' (shadow) to declare+init in the current scope.",
+                &format!("Expected '|', '<>', '|=', or '[=' after '{}'", name0),
+                "Use '|' for a normal declaration, '<>' for object construction, '|=' to retether, or '[=' to shadow.",
             ));
         };
 
@@ -2729,35 +2725,36 @@ impl<'t> Parser<'t> {
         let (name_text, name_span) = names.remove(0);
 
         // 3.5) Optional class constructor lookahead:
-        //      name | ClassName | { fields }
-        // After consuming the bind operator, check if current token is an uppercase Ident
-        // followed by another '|'.
-        let class_name = if let Some(tok) = self.peek() {
-            if let TokenKind::Ident = tok.kind {
-                if let Some(name_str) = tok.value.clone() {
-                    let is_class = name_str
-                        .chars()
-                        .next()
-                        .map(|c| c.is_uppercase())
-                        .unwrap_or(false);
-                    let has_pipe = self
-                        .toks
-                        .get(self.i + 1)
-                        .map(|t| matches!(t.kind, TokenKind::Op(ref s) if s == "|"))
-                        .unwrap_or(false);
+        //      name <> ClassName | fields
+        // After consuming the bind operator, check if current token is a ClassIdent.
+        let class_name = if is_object_construct {
+            if let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::ClassIdent | TokenKind::Ident) {
+                    let name_str = tok.value.clone().unwrap_or_default();
+                    self.i += 1;
 
-                    if is_class && has_pipe {
-                        self.i += 1; // consume ClassName
-                        self.i += 1; // consume |
-                        Some(name_str)
-                    } else {
-                        None
+                    if !self.eat_op("|") {
+                        return Err(s_help_site!(
+                            "P0412",
+                            "Expected '|' after class name in object construction",
+                            r#"Write: rome <> Kingdom | name: "Rome", aggression: .7"#,
+                        ));
                     }
+
+                    Some(name_str)
                 } else {
-                    None
+                    return Err(s_help_site!(
+                        "P0411",
+                        "Expected class name after '<>' in object construction",
+                        r#"Write: rome <> Kingdom | name: "Rome", aggression: .7"#,
+                    ));
                 }
             } else {
-                None
+                return Err(s_help_site!(
+                    "P0411",
+                    "Expected class name after '<>' in object construction",
+                    r#"Write: rome <> Kingdom | name: "Rome", aggression: .7"#,
+                ));
             }
         } else {
             None
@@ -2777,46 +2774,46 @@ impl<'t> Parser<'t> {
         let mut rhs_guard: Option<ast::Stmt> = None;
 
         let rhs = if class_name.is_some() {
-            // --- EXISTING class construction parsing (unchanged) ---
-            if !self.eat_op("{") {
-                return Err(s_help_site!(
-                    "P0412",
-                    "Expected '{' after class name in object construction",
-                    "Write: user | User | { id: 1, name: \"Alice\" } or user | User | { 1, \"Alice\" }",
-                ));
-            }
-
-            self.skip_newlines();
-
-            if self.peek_op("}") {
-                self.i += 1;
-                ast::Expr::Object(vec![], op_span.clone())
-            } else {
-                // Parse named fields: key: value, key: value, ...
-                let mut named: Vec<(String, ast::Expr)> = Vec::new();
-                loop {
+            // --- Object construction: name <> ClassName | field: val, field: val ---
+            // Single-line: fields are comma-separated, terminated by newline/eof/end.
+            // Multi-line: fields one per line, terminated by end/xx.
+            let mut named: Vec<(String, ast::Expr)> = Vec::new();
+            let is_multiline = matches!(
+                self.peek().map(|t| &t.kind),
+                Some(TokenKind::Newline) | Some(TokenKind::Indent) | Some(TokenKind::Dedent)
+            );
+            loop {
+                if is_multiline {
                     self.skip_newlines();
-                    if self.peek_op("}") { self.i += 1; break; }
-                    if self.is_eof() { break; }
-
-                    // Named field: key: value
-                    let Some(fname) = self.eat_ident() else { break; };
+                } else {
                     self.skip_layout_inline();
-                    if self.eat_op(":") {
-                        self.skip_layout_inline();
-                        let fval_pe = self.parse_coalesce()?;
-                        let fval = self.lower_expr(fval_pe);
-                        named.push((fname, fval));
-                    }
-                    self.skip_newlines();
-                    if !self.eat_op(",") {
-                        self.skip_newlines();
-                        if self.peek_op("}") { self.i += 1; }
-                        break;
-                    }
                 }
-                ast::Expr::Object(named, op_span.clone())
+                // terminators
+                if self.is_eof() { break; }
+                if self.peek_word("end") || self.peek_op("xx") { break; }
+                if !is_multiline && matches!(self.peek().map(|t| &t.kind),
+                    Some(TokenKind::Newline) | Some(TokenKind::Eof)) { break; }
+
+                let Some(fname) = self.eat_ident() else { break; };
+                self.skip_layout_inline();
+                if !self.eat_op(":") { break; }
+                self.skip_layout_inline();
+                let fval_pe = self.parse_coalesce()?;
+                let fval = self.lower_expr(fval_pe);
+                named.push((fname, fval));
+
+                if is_multiline {
+                    // newline terminates this field; loop continues
+                } else {
+                    self.skip_layout_inline();
+                    if !self.eat_op(",") { break; }
+                }
             }
+            if is_multiline {
+                if self.peek_word("end") { let _ = self.eat_ident(); }
+                else if self.peek_op("xx") { self.i += 1; }
+            }
+            ast::Expr::Object(named, op_span.clone())
         } else {
             // Parse RHS like `parse_coalesce()`, but STOP if the next `??` is
             // actually the guard introducer `?? =>`.
@@ -3594,7 +3591,7 @@ impl<'t> Parser<'t> {
                     return Err(s_help_site!(
                         "P1100",
                         "Object matrix needs at least one column",
-                        "Write: id: \"{id}\", USA, France, Russia",
+                        "Write: name: \"default\", Col1, Col2, Col3",
                     ));
                 }
                 col_count = Some(cells.len());
@@ -3626,8 +3623,8 @@ impl<'t> Parser<'t> {
         let col_count = col_count.unwrap_or(0);
         let mut columns: Vec<String> = Vec::with_capacity(col_count);
 
-        if let Some(id_row) = rows.iter().find(|r| r.field == "id") {
-            for cell in &id_row.cells {
+        if let Some(first_row) = rows.first() {
+            for cell in &first_row.cells {
                 match cell {
                     MatrixCell::Expr(PExpr::Str(s)) => columns.push(s.clone()),
                     MatrixCell::Expr(PExpr::Ident(s)) => columns.push(s.clone()),
@@ -3635,7 +3632,7 @@ impl<'t> Parser<'t> {
                 }
             }
         } else {
-            // No id row — use positional names col_0, col_1, ...
+            // No rows — use positional names col_0, col_1, ...
             for i in 0..col_count {
                 columns.push(format!("col_{}", i));
             }
@@ -3685,39 +3682,26 @@ impl<'t> Parser<'t> {
             .map(|t| t.span.file.as_str() == "<repl>")
             .unwrap_or(false);
 
-        // ── Header: @Name = …
+        // ── Header: <>Name …
         let (name, hdr_col, hdr_line) = if let Some(tok0) = self.peek().cloned() {
             match tok0.kind {
-                TokenKind::AtIdent => {
+                TokenKind::ClassIdent => {
                     let nm = tok0.value.clone().unwrap_or_default();
                     if nm.is_empty() {
                         return Err(s_help_site!(
                             "P0906",
-                            "Expected a class name after '@'",
-                            "Start with a capitalized name: @Player = username: \"john\", health: 100",
+                            "Expected a class name after '<>'",
+                            "Start with a capitalized name: <>Player |",
                         ));
                     }
                     self.i += 1;
                     (nm, tok0.span.col_start, tok0.span.line_start)
                 }
-                TokenKind::Op(ref op) if op == "@" => {
-                    let at_col = tok0.span.col_start;
-                    let at_line = tok0.span.line_start;
-                    self.i += 1;
-                    let Some(nm) = self.eat_ident() else {
-                        return Err(s_help_site!(
-                            "P0906",
-                            "Expected a class name after '@'",
-                            "Start with a capitalized name: @Player = username: \"john\", health: 100",
-                        ));
-                    };
-                    (nm, at_col, at_line)
-                }
                 _ => {
                     return Err(s_help_site!(
                         "P0905",
-                        "Expected '@' to start a class declaration",
-                        "Start the class like: @Player = username: \"john\", health: 100",
+                        "Expected '<>' to start a class declaration",
+                        "Start the class like: <>Player |",
                     ));
                 }
             }
@@ -4118,10 +4102,8 @@ impl<'t> Parser<'t> {
             }
 
             if !is_action_kw {
-                // A new top-level declaration (@Name) on its own line closes a single-line class.
-                if matches!(act_tok.kind, TokenKind::AtIdent)
-                    || matches!(act_tok.kind, TokenKind::Op(ref s) if s == "@")
-                {
+                // A new top-level declaration (<>Name) on its own line closes a single-line class.
+                if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
                     return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
                 }
@@ -4336,8 +4318,8 @@ impl<'t> Parser<'t> {
             let kind = t.kind.clone();
             let val = t.value.clone();
             match kind {
-                // NEW: handle fused '@Ident' token
-                TokenKind::AtIdent => {
+                // <>ClassName token — class declaration or matrix
+                TokenKind::ClassIdent => {
                     let start_i = self.i;
                     let name = self.toks[self.i].value.clone().unwrap_or_default();
                     self.i += 1;
@@ -4345,28 +4327,8 @@ impl<'t> Parser<'t> {
                         let matrix = self.parse_matrix_decl(name, start_i)?;
                         return Ok(PDecl::Matrix(matrix));
                     }
-                    // not a matrix — backtrack and fall through to normal class decl
+                    // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
-                    let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity });
-                    }
-                }
-
-                // Existing: handle '@' then Ident
-                TokenKind::Op(op) if op == "@" => {
-                    let start_i = self.i;
-                    // peek two ahead: '@' then Ident then 'matrix'
-                    let name_ahead = self.toks.get(self.i + 1)
-                        .and_then(|t| if matches!(t.kind, TokenKind::Ident) { t.value.as_deref().map(str::to_owned) } else { None });
-                    let third_is_matrix = self.toks.get(self.i + 2)
-                        .and_then(|t| t.value.as_deref().map(str::to_owned))
-                        .as_deref() == Some("matrix");
-                    if let (Some(name), true) = (name_ahead, third_is_matrix) {
-                        self.i += 2; // consume '@' and name
-                        let matrix = self.parse_matrix_decl(name, start_i)?;
-                        return Ok(PDecl::Matrix(matrix));
-                    }
                     let class = self.parse_class_decl()?;
                     if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } = class {
                         return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity });
@@ -4466,8 +4428,8 @@ impl<'t> Parser<'t> {
         use goblin_lexer::TokenKind;
 
         match k {
-            // identifiers (including capitalized) and @Ident can begin expressions
-            TokenKind::Ident | TokenKind::AtIdent => true,
+            // identifiers (including capitalized) and <>Ident can begin expressions
+            TokenKind::Ident | TokenKind::ClassIdent => true,
 
             // grouping / collection literals
             TokenKind::Op(op) if op == "(" || op == "[" || op == "{" => true,
@@ -5412,47 +5374,21 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // Top-level guard: "@Class" (optionally "@Class!") must have an '=' on the same head line.
-        // We scan forward a few tokens (skipping layout and an optional '!') to find '='; if not found
-        // before a newline/indent/dedent/eof, report P0411.
+        // Top-level guard: "<>Class" must be followed by '|' or 'matrix' on the same head line.
         if let Some(tok0) = self.peek() {
-            if matches!(tok0.kind, TokenKind::AtIdent) {
-                // skip layout
-                let mut j = self.i + 1;
-                while let Some(t) = self.toks.get(j) {
-                    match t.kind {
-                        TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => j += 1,
-                        _ => break,
-                    }
-                }
-                // optionally skip a separate '!' token if your lexer produces one
-                if let Some(t) = self.toks.get(j) {
-                    if matches!(t.kind, TokenKind::Op(ref s) if s == "!") {
-                        j += 1;
-                        while let Some(t2) = self.toks.get(j) {
-                            match t2.kind {
-                                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => j += 1,
-                                _ => break,
-                            }
-                        }
-                    }
-                }
-
-                // scan ahead until layout/eof; succeed if we see '|' or 'matrix' anywhere in that head segment
-                let mut k = j;
-                let mut saw_eq = false;
+            if matches!(tok0.kind, TokenKind::ClassIdent) {
+                let mut k = self.i + 1;
                 while let Some(t) = self.toks.get(k) {
                     match &t.kind {
-                        TokenKind::Op(s) if s == "|" => { saw_eq = true; break; }
+                        TokenKind::Op(s) if s == "|" => { break; }
                         TokenKind::Ident => {
-                            if t.value.as_deref() == Some("matrix") { saw_eq = true; break; }
+                            if t.value.as_deref() == Some("matrix") { break; }
                             k += 1;
                         }
                         TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof => break,
                         _ => { k += 1; }
                     }
                 }
-
             }
         }
 
@@ -5601,9 +5537,10 @@ impl<'t> Parser<'t> {
             if matches!(t0.kind, TokenKind::Ident) {
                 if let Some(t1) = self.toks.get(self.i + 1) {
                     // Check for IDENT | or IDENT |=
-                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|" || s == "|=")
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "|" || s == "|=" || s == "<>")
+                        || matches!(t1.kind, TokenKind::ClassIdent)
                         || matches!(t1.kind, TokenKind::Shadow)
-                        || matches!(t1.kind, TokenKind::Op(ref s) if s == ",") // NEW
+                        || matches!(t1.kind, TokenKind::Op(ref s) if s == ",")
                     {
                         return self.parse_bind_stmt();
                     }
@@ -5836,46 +5773,23 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // -------- class declarations / matrices: @Class or '@' then Ident --------
+        // -------- class declarations / matrices: <>ClassName --------
         if let Some(tok0) = self.peek().cloned() {
-            match tok0.kind {
-                TokenKind::AtIdent => {
-                    let start_i = self.i;
-                    // Check for 'matrix' keyword after the @Name token
-                    let name = tok0.value.clone().unwrap_or_default();
-                    let next_is_matrix = self.toks.get(self.i + 1)
-                        .and_then(|t| t.value.as_deref().map(str::to_owned))
-                        .as_deref() == Some("matrix");
-                    if next_is_matrix {
-                        self.i += 1; // consume @Name
-                        let pe = self.parse_matrix_decl(name, start_i)?;
-                        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                        return self.lower_matrix_stmt(pe, sp);
-                    }
-                    let pe = self.parse_class_decl()?;
+            if matches!(tok0.kind, TokenKind::ClassIdent) {
+                let start_i = self.i;
+                let name = tok0.value.clone().unwrap_or_default();
+                let next_is_matrix = self.toks.get(self.i + 1)
+                    .and_then(|t| t.value.as_deref().map(str::to_owned))
+                    .as_deref() == Some("matrix");
+                if next_is_matrix {
+                    self.i += 1; // consume <>Name
+                    let pe = self.parse_matrix_decl(name, start_i)?;
                     let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                    return self.lower_class_stmt_from_pexpr(pe, sp);
+                    return self.lower_matrix_stmt(pe, sp);
                 }
-                TokenKind::Op(ref op) if op == "@" => {
-                    let start_i = self.i;
-                    // Check for '@' Ident 'matrix'
-                    let name_ahead = self.toks.get(self.i + 1)
-                        .filter(|t| matches!(t.kind, TokenKind::Ident))
-                        .and_then(|t| t.value.as_deref().map(str::to_owned));
-                    let third_is_matrix = self.toks.get(self.i + 2)
-                        .and_then(|t| t.value.as_deref().map(str::to_owned))
-                        .as_deref() == Some("matrix");
-                    if let (Some(name), true) = (name_ahead, third_is_matrix) {
-                        self.i += 2; // consume '@' and name
-                        let pe = self.parse_matrix_decl(name, start_i)?;
-                        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                        return self.lower_matrix_stmt(pe, sp);
-                    }
-                    let pe = self.parse_class_decl()?;
-                    let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                    return self.lower_class_stmt_from_pexpr(pe, sp);
-                }
-                _ => {}
+                let pe = self.parse_class_decl()?;
+                let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+                return self.lower_class_stmt_from_pexpr(pe, sp);
             }
         }
 
@@ -6154,12 +6068,12 @@ impl<'t> Parser<'t> {
                 // gets replaced with its resolved PExpr value.
                 let cell_pe = Self::substitute_matrix_field_refs(cell_pe, &resolved_pexprs);
 
-                // Handle id row: any Ident cell (e.g. USA, France) is a column name
-                // used as a string value, not a variable reference. Also handle "{id}" default.
-                let cell_pe = if row.field == "id" {
+                // Handle first row: any Ident cell (e.g. USA, France) is a column name
+                // used as a string value. The first row defines variable names.
+                let first_row_field = rows.first().map(|r| r.field.as_str()).unwrap_or("");
+                let cell_pe = if row.field == first_row_field {
                     match cell_pe {
                         PExpr::Ident(ref s) => PExpr::Str(s.clone()),
-                        PExpr::Str(ref s) if s == "{id}" => PExpr::Str(col_name.clone()),
                         other => other,
                     }
                 } else {
@@ -6376,10 +6290,13 @@ impl<'t> Parser<'t> {
         let mut host_types: Vec<String> = Vec::new();
         let mut spread_rules: Vec<ast::SpreadRule> = Vec::new();
         let mut decay_rate: f64 = 0.0;
-        let mut modifiers: Vec<(String, f64)> = Vec::new();
+        let mut modifiers: Vec<(String, ast::Expr)> = Vec::new();
         let mut conflict_rules: Vec<ast::OverlayConflictRule> = Vec::new();
         let mut spawn_rules: Vec<ast::OverlaySpawnRule> = Vec::new();
+        let mut transitions: Vec<ast::TransitionDef> = Vec::new();
         let mut default_duration: Option<u32> = None;
+        let mut apply_behavior: ast::OverlayApplyBehavior = ast::OverlayApplyBehavior::Caps;
+        let mut extra_fields: Vec<(String, ast::Expr)> = Vec::new();
 
         self.skip_layout();
 
@@ -6497,7 +6414,7 @@ impl<'t> Parser<'t> {
                     }
                 }
                 "modifies" => {
-                    // modifies: field +/- delta ... end
+                    // modifies: field +/- expr ... end
                     self.skip_layout_inline();
                     self.eat_op(":");
                     self.skip_layout();
@@ -6508,7 +6425,9 @@ impl<'t> Parser<'t> {
                             if matches!(tok.kind, TokenKind::Ident)
                                 && matches!(tok.value.as_deref(), Some("end") | Some("xx")
                                     | Some("conflicts") | Some("spawns") | Some("hosts")
-                                    | Some("spreads") | Some("decays") | Some("lasts"))
+                                    | Some("spreads") | Some("decays") | Some("lasts")
+                                    | Some("transition") | Some("stacks") | Some("replaces")
+                                    | Some("caps"))
                             {
                                 break;
                             }
@@ -6516,24 +6435,33 @@ impl<'t> Parser<'t> {
                         let Some(field_name) = self.eat_ident() else { break; };
                         self.skip_layout_inline();
                         // expect + or -
-                        let sign = if self.eat_op("+") {
-                            1.0f64
+                        let negative = if self.eat_op("+") {
+                            false
                         } else if self.eat_op("-") {
-                            -1.0f64
+                            true
                         } else {
                             break;
                         };
                         self.skip_layout_inline();
-                        let delta = self.eat_number_f64().unwrap_or(0.0) * sign;
-                        modifiers.push((field_name, delta));
+                        // parse full expression (supports self >> count * .0000003 etc)
+                        let val_pe = self.parse_coalesce().unwrap_or(PExpr::Int("0".to_string()));
+                        let val_expr = self.lower_expr(val_pe);
+                        let modifier_expr = if negative {
+                            ast::Expr::Prefix(
+                                "-".to_string(),
+                                Box::new(val_expr),
+                                goblin_diagnostics::Span::new("<synthetic>", 0, 0, 0, 0, 0, 0),
+                            )
+                        } else {
+                            val_expr
+                        };
+                        modifiers.push((field_name, modifier_expr));
                     }
                     // consume optional 'end' closing modifies block
                     if let Some(tok) = self.peek() {
                         if matches!(tok.kind, TokenKind::Ident)
                             && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
                         {
-                            // check it's the modifies end, not the overlay end
-                            // heuristic: only consume if next token after is another overlay keyword
                             let saved = self.i;
                             self.i += 1;
                             self.skip_layout();
@@ -6542,6 +6470,8 @@ impl<'t> Parser<'t> {
                                     && matches!(next.value.as_deref(),
                                         Some("conflicts") | Some("spawns") | Some("hosts")
                                         | Some("spreads") | Some("decays") | Some("lasts")
+                                        | Some("transition") | Some("stacks") | Some("replaces")
+                                        | Some("caps")
                                         | Some("end") | Some("xx"))
                                 {
                                     // consumed ok
@@ -6553,6 +6483,24 @@ impl<'t> Parser<'t> {
                             }
                         }
                     }
+                }
+                "stacks" => {
+                    // stacks  OR  stacks as label
+                    self.skip_layout_inline();
+                    let label = if self.peek_ident() == Some("as") {
+                        let _ = self.eat_ident(); // consume 'as'
+                        self.skip_layout_inline();
+                        self.eat_ident()
+                    } else {
+                        None
+                    };
+                    apply_behavior = ast::OverlayApplyBehavior::Stacks { label };
+                }
+                "replaces" => {
+                    apply_behavior = ast::OverlayApplyBehavior::Replaces;
+                }
+                "caps" => {
+                    apply_behavior = ast::OverlayApplyBehavior::Caps;
                 }
                 "conflicts" => {
                     // conflicts opponent_name  OR  conflicts opponent_name: suppress rate end
@@ -6586,6 +6534,10 @@ impl<'t> Parser<'t> {
                         }
                     }
                     conflict_rules.push(ast::OverlayConflictRule { opponent, suppress_rate });
+                }
+                "transition" => {
+                    let td = self.parse_transition_def()?;
+                    transitions.push(td);
                 }
                 "spawns" => {
                     self.skip_layout_inline();
@@ -6670,7 +6622,16 @@ impl<'t> Parser<'t> {
                     });
                 }
                 _ => {
-                    // unknown keyword — skip to next newline
+                    // Check if this is a field: value declaration (e.g. kind: "language")
+                    self.skip_layout_inline();
+                    if self.eat_op(":") {
+                        self.skip_layout_inline();
+                        if let Ok(val_pe) = self.parse_primary() {
+                            let val_expr = self.lower_expr(val_pe);
+                            extra_fields.push((kw, val_expr));
+                        }
+                    }
+                    // Skip to end of line
                     while let Some(tok) = self.peek() {
                         if matches!(tok.kind, TokenKind::Newline | TokenKind::Eof) { break; }
                         self.i += 1;
@@ -6688,7 +6649,10 @@ impl<'t> Parser<'t> {
             modifiers,
             conflict_rules,
             spawn_rules,
+            transitions,
             default_duration,
+            apply_behavior,
+            extra_fields,
             span,
         }))
     }
@@ -7601,6 +7565,21 @@ impl<'t> Parser<'t> {
                     self.i += 1; // consume ':'
                     let name = self.eat_ident().unwrap();
                     let builtin_name = format!(":{}", name);
+                    // If followed by '(', parse as FreeCall with args
+                    if self.peek_op("(") {
+                        self.i += 1; // consume '('
+                        let mut args = Vec::new();
+                        self.skip_layout();
+                        while !self.peek_op(")") {
+                            if self.i >= self.toks.len() { break; }
+                            args.push(self.parse_compare()?);
+                            self.skip_layout_inline();
+                            if !self.eat_op(",") { break; }
+                            self.skip_layout();
+                        }
+                        self.eat_op(")");
+                        return Ok(PExpr::FreeCall(builtin_name, args));
+                    }
                     return Ok(PExpr::Ident(builtin_name));
                 }
             }
@@ -10560,7 +10539,7 @@ impl<'t> Parser<'t> {
                         match &t.kind {
                             K::Int | K::Float | K::Money | K::String | K::Duration
                             | K::Date | K::Time | K::DateTime
-                            | K::Ident | K::AtIdent | K::HashIdent => true,
+                            | K::Ident | K::ClassIdent | K::HashIdent => true,
                             K::Op(s) if s == "(" => true,
                             _ => false,
                         }
@@ -11010,7 +10989,7 @@ pub(crate) fn parse_program_preview(tokens: &[goblin_lexer::Token]) -> Result<Ve
         p.skip_newlines();
         if p.i >= p.toks.len() { break; }
 
-        if p.peek_op("@") {
+        if matches!(p.peek().map(|t| &t.kind), Some(TokenKind::ClassIdent)) {
             if let Some(res) = p.try_parse_class_decl() {
                 let node = res?;
                 out.push(node);

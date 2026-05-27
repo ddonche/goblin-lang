@@ -366,16 +366,37 @@ pub enum SpreadRule {
     Predicate { condition: ast::Expr, rate: f64 },
 }
 
+/// What happens when an overlay is applied to a host that already carries it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverlayApplyBehavior {
+    /// First application wins. Subsequent applications are silently dropped. Default.
+    Caps,
+    /// New application overwrites the existing instance unconditionally.
+    Replaces,
+    /// Each application increments a counter on the existing instance.
+    Stacks { label: Option<String> },
+}
+
+/// A modifier delta — either a precomputed constant or a dynamic expression.
+#[derive(Debug, Clone)]
+pub enum ModifierValue {
+    Static(f64),
+    Dynamic(ast::Expr),
+}
+
 #[derive(Debug, Clone)]
 pub struct OverlayDef {
     pub name: String,
     pub host_types: Vec<String>,
     pub spread_rules: Vec<SpreadRule>,
     pub decay_rate: f64,
-    pub modifiers: Vec<(String, f64)>,
+    pub modifiers: Vec<(String, ModifierValue)>,
     pub conflict_rules: Vec<OverlayConflictRule>,
     pub spawn_rules: Vec<OverlaySpawnRule>,
+    pub transitions: Vec<ast::TransitionDef>,
     pub default_duration: Option<u32>,
+    pub apply_behavior: OverlayApplyBehavior,
+    pub extra_fields: indexmap::IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -394,19 +415,16 @@ pub struct OverlaySpawnRule {
 #[derive(Debug, Clone)]
 pub struct OverlayInstance {
     pub overlay_name: String,
-    /// Stable UUID of the host object. This is the real overlay host identity.
     pub host_uuid: String,
-    /// Display/debug name only. Do not use this as durable identity.
     pub host_var: String,
     pub strength: f64,
     pub age: u32,
-    /// Remaining ticks for temporary overlays. None = permanent.
     pub ticks_remaining: Option<u32>,
+    pub count: u64,
     /// Snapshot of host field values before modifiers were applied.
-    /// Used to undo modifications when a temporary overlay expires.
+    /// Only populated for temporary overlays. Restored on expiry/detach.
     pub original_values: Vec<(String, Value)>,
-    /// UUID of corresponding object in the object store (for repeat iteration).
-    pub object_uuid: String,
+    pub extra_fields: indexmap::IndexMap<String, Value>,
 }
 
 // ── Link runtime structures ──────────────────────────────────────────────────
@@ -3183,6 +3201,14 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     if merged.capacity.is_none() {
                         merged.capacity = existing.capacity.clone();
                     }
+                    // Preserve fields from existing class that aren't in the matrix
+                    let matrix_field_names: std::collections::HashSet<String> =
+                        merged.fields.iter().map(|f| f.name.clone()).collect();
+                    let extra_fields: Vec<_> = existing.fields.iter()
+                        .filter(|f| !matrix_field_names.contains(&f.name))
+                        .cloned()
+                        .collect();
+                    merged.fields.extend(extra_fields);
                     merged
                 } else {
                     decl.clone()
@@ -3214,7 +3240,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     ast::SpreadRule::Predicate { condition, rate } => SpreadRule::Predicate { condition: condition.clone(), rate: *rate },
                 }).collect(),
                 decay_rate: def_stmt.decay_rate,
-                modifiers: def_stmt.modifiers.clone(),
+                modifiers: def_stmt.modifiers.iter().map(|(fname, expr)| {
+                    (fname.clone(), fold_modifier_expr(expr.clone()))
+                }).collect(),
                 conflict_rules: def_stmt.conflict_rules.iter().map(|r| OverlayConflictRule {
                     opponent: r.opponent.clone(),
                     suppress_rate: r.suppress_rate,
@@ -3224,7 +3252,22 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     spawn_overlay: r.spawn_overlay.clone(),
                     spawn_strength: r.spawn_strength,
                 }).collect(),
+                transitions: def_stmt.transitions.clone(),
                 default_duration: def_stmt.default_duration,
+                apply_behavior: match &def_stmt.apply_behavior {
+                    ast::OverlayApplyBehavior::Caps => OverlayApplyBehavior::Caps,
+                    ast::OverlayApplyBehavior::Replaces => OverlayApplyBehavior::Replaces,
+                    ast::OverlayApplyBehavior::Stacks { label } => OverlayApplyBehavior::Stacks { label: label.clone() },
+                },
+                extra_fields: {
+                    let mut map = indexmap::IndexMap::new();
+                    for (k, expr) in &def_stmt.extra_fields {
+                        if let Ok(v) = eval_expr(expr, sess) {
+                            map.insert(k.clone(), v);
+                        }
+                    }
+                    map
+                },
             };
             sess.overlay_defs.insert(def.name.clone(), def);
             Ok(None)
@@ -3297,32 +3340,39 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             }
 
             let duration = apply_stmt.duration_override.or(def.default_duration);
+            let is_temporary = duration.is_some();
+            let clamped_strength = apply_stmt.strength.clamp(0.0, 1.0);
 
-            // Snapshot original values of modified fields for undo on expiry
-            let original_values: Vec<(String, Value)> = if duration.is_some() {
-                def.modifiers.iter().filter_map(|(field_name, _)| {
-                    if let Value::Object { ref fields, .. } = host_val {
-                        fields.get(field_name).map(|v| (field_name.clone(), v.clone()))
-                    } else {
-                        None
-                    }
-                }).collect()
+            let count_label = match &def.apply_behavior {
+                OverlayApplyBehavior::Stacks { label: Some(l) } => l.clone(),
+                _ => "count".to_string(),
+            };
+
+            // Snapshot current field values before applying (for temporary overlays)
+            let original_values: Vec<(String, Value)> = if is_temporary {
+                if let Some(Value::Object { fields, .. }) = sess.get_var(&host_var) {
+                    def.modifiers.iter().filter_map(|(fname, _)| {
+                        fields.get(fname).map(|v| (fname.clone(), v.clone()))
+                    }).collect()
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             };
 
-            // Apply modifiers immediately to host at declared strength
-            overlay_apply_modifiers(sess, &host_var, &def.modifiers, apply_stmt.strength.clamp(0.0, 1.0));
+            let extra_fields_snap: indexmap::IndexMap<String, Value> = def.extra_fields.clone();
 
             let instance = OverlayInstance {
                 overlay_name: apply_stmt.overlay_name.clone(),
                 host_uuid,
                 host_var,
-                strength: apply_stmt.strength.clamp(0.0, 1.0),
+                strength: clamped_strength,
                 age: 0,
                 ticks_remaining: duration,
+                count: 1,
                 original_values,
-                object_uuid: String::new(),
+                extra_fields: extra_fields_snap,
             };
             overlay_push(sess, instance);
             Ok(None)
@@ -3344,7 +3394,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 }
             };
 
-            // Remove ALL matching instances, undoing modifiers for temporary ones
+            // Remove ALL matching instances, restoring originals for temporary ones
             let mut i = 0;
             while i < sess.overlay_instances.len() {
                 if sess.overlay_instances[i].overlay_name == detach_stmt.overlay_name
@@ -3352,13 +3402,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 {
                     let inst = sess.overlay_instances.remove(i);
                     if !inst.original_values.is_empty() {
-                        overlay_restore_originals(sess, &inst.host_var, &inst.original_values);
+                        let originals = inst.original_values.clone();
+                        overlay_restore_originals(sess, &inst.host_var, &originals);
                     }
-                    // Remove from object store
-                    if !inst.object_uuid.is_empty() {
-                        sess.object_store.remove(&inst.object_uuid);
-                    }
-                    // don't increment i — next element shifted into position i
                 } else {
                     i += 1;
                 }
@@ -5803,23 +5849,68 @@ fn eval_builtin(
 
 // ── Overlay helper functions ─────────────────────────────────────────────────
 
-/// Apply a set of field modifiers to a host object variable.
-/// Traits (0..1 fields) are clamped. Plain numeric fields are unclamped.
-fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(String, f64)], strength: f64) {
+/// Compute effective field value for an object field, applying active overlay modifier pressure.
+/// Base field value is never modified. This is called at read time from >> field access.
+/// Modifier expressions may reference `self >> count` (or the stacks label) for dynamic scaling.
+/// Fold a modifier expression to Static if it is a plain numeric constant.
+fn fold_modifier_expr(expr: ast::Expr) -> ModifierValue {
+    match &expr {
+        ast::Expr::Number(n, _) => {
+            if let Ok(f) = n.parse::<f64>() { return ModifierValue::Static(f); }
+        }
+        ast::Expr::Prefix(op, inner, _) if op == "-" => {
+            if let ast::Expr::Number(n, _) = inner.as_ref() {
+                if let Ok(f) = n.parse::<f64>() { return ModifierValue::Static(-f); }
+            }
+        }
+        _ => {}
+    }
+    ModifierValue::Dynamic(expr)
+}
+
+/// Evaluate a modifier's delta value given the overlay instance context.
+/// Apply overlay modifier deltas directly to the host object's fields.
+fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(String, ModifierValue)], strength: f64, count: u64, count_label: &str, extra_fields: &indexmap::IndexMap<String, Value>) {
     if modifiers.is_empty() { return; }
+    // Snapshot the count_label for borrow purposes
+    let count_label = count_label.to_string();
+    let extra_snap = extra_fields.clone();
+    let mods: Vec<(String, f64)> = modifiers.iter().map(|(fname, modifier)| {
+        let delta = match modifier {
+            ModifierValue::Static(d) => *d,
+            ModifierValue::Dynamic(expr) => {
+                sess.push_frame();
+                let top = sess.env.last_mut().expect("has frame");
+                top.insert("strength".to_string(), Value::Float(strength));
+                top.insert("count".to_string(), Value::Int(count as i64));
+                top.insert(count_label.clone(), Value::Int(count as i64));
+                for (k, v) in &extra_snap {
+                    top.insert(k.clone(), v.clone());
+                }
+                let result = eval_expr(expr, sess).ok().and_then(|v| match v {
+                    Value::Float(f) => Some(f),
+                    Value::Int(i) => Some(i as f64),
+                    _ => None,
+                }).unwrap_or(0.0);
+                sess.pop_frame();
+                result
+            }
+        };
+        (fname.clone(), delta)
+    }).collect();
+
     if let Some(val) = sess.get_var_mut(host_var) {
         if let Value::Object { fields, trait_fields, .. } = val {
-            for (field_name, delta) in modifiers {
-                if let Some(field_val) = fields.get_mut(field_name) {
+            for (field_name, delta) in mods {
+                if let Some(field_val) = fields.get_mut(&field_name) {
                     let current = match field_val {
                         Value::Float(f) => *f,
                         Value::Int(i) => *i as f64,
                         _ => continue,
                     };
-                    let new_val = current + delta * strength;
-                    let new_val = if trait_fields.contains(field_name) {
+                    let new_val = current + delta;
+                    let new_val = if trait_fields.contains(&field_name) {
                         let clamped = new_val.clamp(0.0, 1.0);
-                        // Snap near-zero/near-one to exact bounds to avoid float drift
                         if clamped < 1e-10 { 0.0 } else if clamped > 1.0 - 1e-10 { 1.0 } else { clamped }
                     } else {
                         new_val
@@ -5831,7 +5922,7 @@ fn overlay_apply_modifiers(sess: &mut Session, host_var: &str, modifiers: &[(Str
     }
 }
 
-/// Restore snapshotted field values to a host object (used when temporary overlay expires).
+/// Restore snapshotted field values to host object. Called when temporary overlay expires.
 fn overlay_restore_originals(sess: &mut Session, host_var: &str, originals: &[(String, Value)]) {
     if let Some(val) = sess.get_var_mut(host_var) {
         if let Value::Object { fields, .. } = val {
@@ -5842,51 +5933,75 @@ fn overlay_restore_originals(sess: &mut Session, host_var: &str, originals: &[(S
     }
 }
 
-/// Push an overlay instance, enforcing one instance per overlay per host.
-/// If one already exists, strengthen it instead of adding a duplicate.
-/// Also maintains a corresponding Value::Object in the object store for repeat iteration.
-fn overlay_push(sess: &mut Session, mut inst: OverlayInstance) {
-    if let Some(existing) = sess.overlay_instances.iter_mut()
-        .find(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid) {
-        existing.strength = (existing.strength + inst.strength).min(1.0);
-        if inst.ticks_remaining.is_some() {
-            existing.ticks_remaining = inst.ticks_remaining;
+fn overlay_push(sess: &mut Session, inst: OverlayInstance) {
+    let behavior = sess.overlay_defs.get(&inst.overlay_name)
+        .map(|d| d.apply_behavior.clone())
+        .unwrap_or(OverlayApplyBehavior::Caps);
+
+    let modifiers: Vec<(String, ModifierValue)> = sess.overlay_defs.get(&inst.overlay_name)
+        .map(|d| d.modifiers.clone())
+        .unwrap_or_default();
+
+    let count_label = match &behavior {
+        OverlayApplyBehavior::Stacks { label: Some(l) } => l.clone(),
+        _ => "count".to_string(),
+    };
+
+    match behavior {
+        OverlayApplyBehavior::Caps => {
+            // First application wins — drop if already exists
+            let exists = sess.overlay_instances.iter()
+                .any(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid);
+            if !exists {
+                // Apply modifiers and push
+                overlay_apply_modifiers(sess, &inst.host_var, &modifiers, inst.strength, inst.count, &count_label, &inst.extra_fields);
+                sess.overlay_instances.push(inst);
+            }
+            // If already exists, the new application is silently dropped — no modifier change
         }
-        // Sync updated strength to object store
-        let uuid = existing.object_uuid.clone();
-        if let Some(Value::Object { fields, .. }) = sess.object_store.get_mut(&uuid) {
-            fields.insert("strength".to_string(), Value::Float(existing.strength));
-            if let Some(t) = existing.ticks_remaining {
-                fields.insert("ticks_remaining".to_string(), Value::Int(t as i64));
+        OverlayApplyBehavior::Replaces => {
+            if let Some(pos) = sess.overlay_instances.iter().position(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid) {
+                // Restore originals from existing instance first
+                let old_originals = sess.overlay_instances[pos].original_values.clone();
+                let host_var = sess.overlay_instances[pos].host_var.clone();
+                if !old_originals.is_empty() {
+                    overlay_restore_originals(sess, &host_var, &old_originals);
+                }
+                // Overwrite the instance
+                sess.overlay_instances[pos].strength = inst.strength;
+                sess.overlay_instances[pos].age = inst.age;
+                sess.overlay_instances[pos].count = 1;
+                sess.overlay_instances[pos].ticks_remaining = inst.ticks_remaining;
+                sess.overlay_instances[pos].original_values = inst.original_values.clone();
+                sess.overlay_instances[pos].extra_fields = inst.extra_fields.clone();
+                // Apply new modifiers
+                overlay_apply_modifiers(sess, &host_var, &modifiers, inst.strength, 1, &count_label, &inst.extra_fields);
+            } else {
+                overlay_apply_modifiers(sess, &inst.host_var, &modifiers, inst.strength, 1, &count_label, &inst.extra_fields);
+                sess.overlay_instances.push(inst);
             }
         }
-    } else {
-        // Create object in store
-        let uuid = sess.gen_uuid();
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
-        fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
-        fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
-        fields.insert("strength".to_string(), Value::Float(inst.strength));
-        fields.insert("age".to_string(), Value::Int(0));
-        fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
-            Some(t) => Value::Int(t as i64),
-            None => Value::Nil,
-        });
-        let obj = Value::Object {
-            class_name: inst.overlay_name.clone(),
-            fields,
-            readonly_fields: std::collections::BTreeSet::new(),
-            trait_fields: std::collections::BTreeSet::new(),
-            uuid: uuid.clone(),
-        };
-        sess.object_store.insert(uuid.clone(), obj);
-        inst.object_uuid = uuid;
-        sess.overlay_instances.push(inst);
+        OverlayApplyBehavior::Stacks { .. } => {
+            if let Some(pos) = sess.overlay_instances.iter().position(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid) {
+                // Increment count, apply one more delta worth of modifiers
+                sess.overlay_instances[pos].count += 1;
+                sess.overlay_instances[pos].strength = (sess.overlay_instances[pos].strength + inst.strength).min(1.0);
+                if inst.ticks_remaining.is_some() {
+                    sess.overlay_instances[pos].ticks_remaining = inst.ticks_remaining;
+                }
+                let host_var = sess.overlay_instances[pos].host_var.clone();
+                let extra = sess.overlay_instances[pos].extra_fields.clone();
+                // Apply one additional delta (the new stack's worth)
+                overlay_apply_modifiers(sess, &host_var, &modifiers, inst.strength, 1, &count_label, &extra);
+            } else {
+                overlay_apply_modifiers(sess, &inst.host_var, &modifiers, inst.strength, 1, &count_label, &inst.extra_fields);
+                sess.overlay_instances.push(inst);
+            }
+        }
     }
 }
 
-/// Run one simulation tick: decay, conflict resolution, spread, spawn, expiry.
+/// Run one simulation tick: spread, decay, conflict, spawn, transition, expiry, decisions, object transitions.
 fn overlay_tick(sess: &mut Session) {
     // Decay temporary link offsets
     for offsets in sess.link_offsets.values_mut() {
@@ -5902,200 +6017,22 @@ fn overlay_tick(sess: &mut Session) {
     // Collect defs snapshot to avoid borrow issues
     let defs: HashMap<String, OverlayDef> = sess.overlay_defs.clone();
 
-    // 1. Apply per-tick modifiers and decay
-    let instance_count = sess.overlay_instances.len();
-    for idx in 0..instance_count {
-        let inst = &sess.overlay_instances[idx];
-        let host_var = inst.host_var.clone();
-        let overlay_name = inst.overlay_name.clone();
-
-        if let Some(def) = defs.get(&overlay_name) {
-            // Apply modifiers each tick, scaled by overlay strength
-            let modifiers = def.modifiers.clone();
-            let strength = sess.overlay_instances[idx].strength;
-            overlay_apply_modifiers(sess, &host_var, &modifiers, strength);
-
-            // Apply decay
-            let new_strength = sess.overlay_instances[idx].strength - def.decay_rate;
-            // Treat anything below the decay rate as zero to avoid floating point residue
-            sess.overlay_instances[idx].strength = if new_strength <= def.decay_rate { 0.0 } else { new_strength.max(0.0) };
-        }
-
-        sess.overlay_instances[idx].age += 1;
-
-        // Tick down duration
-        if let Some(ref mut remaining) = sess.overlay_instances[idx].ticks_remaining {
-            if *remaining > 0 {
-                *remaining -= 1;
-            }
-        }
-
-        // Sync to object store
-        {
-            let inst = &sess.overlay_instances[idx];
-            let uuid = inst.object_uuid.clone();
-            let strength = inst.strength;
-            let age = inst.age;
-            let ticks = inst.ticks_remaining;
-            if !uuid.is_empty() {
-                if let Some(Value::Object { fields, .. }) = sess.object_store.get_mut(&uuid) {
-                    fields.insert("strength".to_string(), Value::Float(strength));
-                    fields.insert("age".to_string(), Value::Int(age as i64));
-                    fields.insert("ticks_remaining".to_string(), match ticks {
-                        Some(t) => Value::Int(t as i64),
-                        None => Value::Nil,
-                    });
-                }
-            }
-        }
-    }
-
-    // Build host index: host_var -> Vec<(idx, overlay_name, strength)>
-    // Used by conflict and spread to avoid O(n²) full scans.
-    let mut host_index: HashMap<String, Vec<usize>> = HashMap::new();
-    for (idx, inst) in sess.overlay_instances.iter().enumerate() {
-        host_index.entry(inst.host_var.clone()).or_default().push(idx);
-    }
-    // Also build (overlay_name, host_var) -> idx for O(1) lookup in spread
-    let mut overlay_host_index: HashMap<(String, String), usize> = HashMap::new();
-    for (idx, inst) in sess.overlay_instances.iter().enumerate() {
-        overlay_host_index.insert((inst.overlay_name.clone(), inst.host_var.clone()), idx);
-    }
-
-    // 2. Conflict resolution — strength-proportional suppression
-    // Only compare instances on the same host using the host index.
-    let mut suppress_adjustments: Vec<(usize, f64)> = Vec::new();
-    let mut boost_adjustments: Vec<(usize, f64)> = Vec::new();
-
-    for (_, indices) in &host_index {
-        for &i in indices {
-            let (overlay_name_a, str_a, decay_a) = {
-                let inst = &sess.overlay_instances[i];
-                (inst.overlay_name.clone(), inst.strength, 0.0f64)
-            };
-            if let Some(def_a) = defs.get(&overlay_name_a) {
-                let decay_a = def_a.decay_rate;
-                for rule in &def_a.conflict_rules {
-                    // Find opponent on same host using index
-                    if let Some(&j) = overlay_host_index.get(&(rule.opponent.clone(), sess.overlay_instances[i].host_var.clone())) {
-                        if i == j { continue; }
-                        let str_b = sess.overlay_instances[j].strength;
-                        let gap = (str_a - str_b).abs();
-
-                        if str_a >= str_b {
-                            let extra = decay_a * rule.suppress_rate * (1.0 + gap);
-                            suppress_adjustments.push((j, extra));
-                            boost_adjustments.push((i, decay_a * 0.1 * gap));
-                        } else {
-                            let extra = decay_a * rule.suppress_rate * (1.0 + gap);
-                            suppress_adjustments.push((i, extra));
-                            boost_adjustments.push((j, decay_a * 0.1 * gap));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for (idx, extra_decay) in suppress_adjustments {
-        if idx < sess.overlay_instances.len() {
-            sess.overlay_instances[idx].strength = (sess.overlay_instances[idx].strength - extra_decay).max(0.0);
-        }
-    }
-    for (idx, boost) in boost_adjustments {
-        if idx < sess.overlay_instances.len() {
-            sess.overlay_instances[idx].strength = (sess.overlay_instances[idx].strength + boost).min(1.0);
-        }
-    }
-
-    // 3. Spawn rules
-    let mut to_spawn: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_var, strength)
-
-    // Snapshot so eval_expr can mutably borrow sess without fighting
-    // the immutable borrow from iterating sess.overlay_instances.
-    let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
-
-    for inst in &instances_snap {
-        if let Some(def) = defs.get(&inst.overlay_name) {
-            for rule in &def.spawn_rules {
-                let host_val = match sess.get_var(&inst.host_var).cloned() {
-                    Some(v) => v,
-                    None => continue,
-                };
-
-                sess.push_frame();
-                sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
-                sess.define_local("self".to_string(), host_val.clone(), true);
-
-                if let Value::Object { ref fields, .. } = host_val {
-                    for (k, v) in fields {
-                        sess.define_local(k.clone(), v.clone(), false);
-                    }
-                }
-
-                let condition_result = eval_expr(&rule.condition, sess);
-
-                sess.pop_frame();
-
-                let triggered = match condition_result {
-                    Ok(Value::Bool(b)) => b,
-                    Ok(Value::Float(f)) => f != 0.0,
-                    Ok(Value::Int(i)) => i != 0,
-                    _ => false,
-                };
-
-                if triggered {
-                    let already = sess.overlay_instances.iter().any(|i| {
-                        i.overlay_name == rule.spawn_overlay && i.host_var == inst.host_var
-                    });
-
-                    if !already {
-                        to_spawn.push((
-                            rule.spawn_overlay.clone(),
-                            inst.host_var.clone(),
-                            rule.spawn_strength,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    for (ov_name, host_var, strength) in to_spawn {
-        if let Some(def) = defs.get(&ov_name).cloned() {
-            let modifiers = def.modifiers.clone();
-            let duration = def.default_duration;
-            let clamped_strength = strength.clamp(0.0, 1.0);
-
-            let host_uuid = match sess.get_var(&host_var) {
-                Some(Value::Object { uuid, .. }) => uuid.clone(),
-                _ => continue,
-            };
-
-            overlay_apply_modifiers(sess, &host_var, &modifiers, clamped_strength);
-
-            overlay_push(sess, OverlayInstance {
-                overlay_name: ov_name,
-                host_uuid,
-                host_var,
-                strength: clamped_strength,
-                age: 0,
-                ticks_remaining: duration,
-                original_values: Vec::new(),
-                object_uuid: String::new(),
-            });
-        }
-    }
-
-    // 3b. Spread — propagate overlay to new hosts based on spread rules
+    // 1. Spread pass — buffered to avoid same-tick chain explosions
     {
         let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
         let defs_snap: HashMap<String, OverlayDef> = sess.overlay_defs.clone();
-
-        // Collect all live var names using class_index for efficiency
         let all_vars: Vec<String> = sess.class_index.values()
             .flat_map(|names| names.iter().cloned())
             .collect();
+
+        // Build (overlay_name, host_var) -> idx index for spread target lookup
+        let mut overlay_host_index: HashMap<(String, String), usize> = HashMap::new();
+        for (idx, inst) in sess.overlay_instances.iter().enumerate() {
+            overlay_host_index.insert((inst.overlay_name.clone(), inst.host_var.clone()), idx);
+        }
+
+        // Collect pending spread additions into buffer
+        let mut spread_buffer: Vec<(String, String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, host_var, strength)
 
         for inst in &instances_snap {
             let def = match defs_snap.get(&inst.overlay_name) {
@@ -6106,7 +6043,6 @@ fn overlay_tick(sess: &mut Session) {
             for rule in &def.spread_rules {
                 match rule {
                     SpreadRule::Channel { channel, rate } => {
-                        // Find all valid hosts and spread based on link score
                         let host_class = sess.get_var(&inst.host_var)
                             .and_then(|v| if let Value::Object { class_name, .. } = v { Some(class_name.clone()) } else { None });
                         let host_class = match host_class { Some(c) => c, None => continue };
@@ -6119,31 +6055,18 @@ fn overlay_tick(sess: &mut Session) {
 
                         let link_def = sess.link_defs.get(&(host_class.clone(), channel.clone())).cloned()
                             .or_else(|| sess.link_defs.get(&(host_class.clone(), "default".to_string())).cloned());
-
                         let link_def = match link_def { Some(d) => d, None => continue };
-
                         let self_val = match sess.get_var(&inst.host_var).cloned() { Some(v) => v, None => continue };
 
                         for (target_var, target_val) in candidates {
-                            let already_occupied = overlay_host_index
-                                .contains_key(&(inst.overlay_name.clone(), target_var.clone()));
-
+                            let already_occupied = overlay_host_index.contains_key(&(inst.overlay_name.clone(), target_var.clone()));
                             let link_score = eval_link_score(
-                                sess,
-                                self_val.clone(),
-                                target_val,
-                                &link_def.formula,
-                                link_def.formula_min,
-                                link_def.formula_max,
-                                &synth_span(),
+                                sess, self_val.clone(), target_val,
+                                &link_def.formula, link_def.formula_min, link_def.formula_max, &synth_span(),
                             ).unwrap_or(0.0);
-
                             if link_score < 0.3 { continue; }
-
-                            // Spread scales with strength squared — weak overlays spread slowly
                             let spread_amount = inst.strength * inst.strength * rate * link_score;
                             if spread_amount <= 0.0 { continue; }
-
                             if already_occupied {
                                 if let Some(&eidx) = overlay_host_index.get(&(inst.overlay_name.clone(), target_var.clone())) {
                                     if eidx < sess.overlay_instances.len() {
@@ -6151,20 +6074,9 @@ fn overlay_tick(sess: &mut Session) {
                                     }
                                 }
                             } else if spread_amount > 0.15 {
-                                let target_uuid = match sess.get_var(&target_var) {
-                                    Some(Value::Object { uuid, .. }) => uuid.clone(),
-                                    _ => continue,
-                                };
-                                overlay_push(sess, OverlayInstance {
-                                    overlay_name: inst.overlay_name.clone(),
-                                    host_uuid: target_uuid,
-                                    host_var: target_var,
-                                    strength: spread_amount,
-                                    age: 0,
-                                    ticks_remaining: None,
-                                    original_values: Vec::new(),
-                                    object_uuid: String::new(),
-                                });
+                                if let Some(Value::Object { uuid, .. }) = sess.get_var(&target_var) {
+                                    spread_buffer.push((inst.overlay_name.clone(), uuid.clone(), target_var, spread_amount));
+                                }
                             }
                         }
                     }
@@ -6172,21 +6084,12 @@ fn overlay_tick(sess: &mut Session) {
                     SpreadRule::All { class_name, rate } => {
                         let candidates: Vec<String> = all_vars.iter()
                             .filter(|vn| *vn != &inst.host_var)
-                            .filter(|vn| {
-                                sess.get_var(vn)
-                                    .map(|v| matches!(v, Value::Object { class_name: cn, .. } if cn == class_name))
-                                    .unwrap_or(false)
-                            })
-                            .cloned()
-                            .collect();
-
+                            .filter(|vn| sess.get_var(vn).map(|v| matches!(v, Value::Object { class_name: cn, .. } if *cn == *class_name)).unwrap_or(false))
+                            .cloned().collect();
                         for target_var in candidates {
                             let spread_amount = inst.strength * inst.strength * rate;
                             if spread_amount <= 0.0 { continue; }
-
-                            let already_occupied = overlay_host_index
-                                .contains_key(&(inst.overlay_name.clone(), target_var.clone()));
-
+                            let already_occupied = overlay_host_index.contains_key(&(inst.overlay_name.clone(), target_var.clone()));
                             if already_occupied {
                                 if let Some(&eidx) = overlay_host_index.get(&(inst.overlay_name.clone(), target_var.clone())) {
                                     if eidx < sess.overlay_instances.len() {
@@ -6194,53 +6097,30 @@ fn overlay_tick(sess: &mut Session) {
                                     }
                                 }
                             } else if spread_amount > 0.15 {
-                                let target_uuid = match sess.get_var(&target_var) {
-                                    Some(Value::Object { uuid, .. }) => uuid.clone(),
-                                    _ => continue,
-                                };
-                                overlay_push(sess, OverlayInstance {
-                                    overlay_name: inst.overlay_name.clone(),
-                                    host_uuid: target_uuid,
-                                    host_var: target_var,
-                                    strength: spread_amount,
-                                    age: 0,
-                                    ticks_remaining: None,
-                                    original_values: Vec::new(),
-                                    object_uuid: String::new(),
-                                });
+                                if let Some(Value::Object { uuid, .. }) = sess.get_var(&target_var) {
+                                    spread_buffer.push((inst.overlay_name.clone(), uuid.clone(), target_var, spread_amount));
+                                }
                             }
                         }
                     }
 
                     SpreadRule::Ownership { rate } => {
-                        // Spread to objects that have owner_id pointing to this host's uuid/var
-                        let host_id = sess.get_var(&inst.host_var)
-                            .and_then(|v| if let Value::Object { fields, .. } = v {
-                                fields.get("id").and_then(|f| if let Value::Str(s) = f { Some(s.clone()) } else { None })
-                            } else { None });
-                        let host_id = match host_id { Some(id) => id, None => continue };
-
+                        let host_uuid = match sess.get_var(&inst.host_var) {
+                            Some(Value::Object { uuid, .. }) => uuid.clone(),
+                            _ => continue,
+                        };
                         let candidates: Vec<String> = all_vars.iter()
                             .filter(|vn| *vn != &inst.host_var)
                             .filter(|vn| {
-                                sess.get_var(vn)
-                                    .map(|v| if let Value::Object { fields, .. } = v {
-                                        fields.get("owner_id")
-                                            .map(|o| matches!(o, Value::Str(s) if s == &host_id))
-                                            .unwrap_or(false)
-                                    } else { false })
-                                    .unwrap_or(false)
+                                sess.get_var(vn).map(|v| if let Value::Object { fields, .. } = v {
+                                    fields.get("owner_id").map(|o| matches!(o, Value::Str(s) if s == &host_uuid)).unwrap_or(false)
+                                } else { false }).unwrap_or(false)
                             })
-                            .cloned()
-                            .collect();
-
+                            .cloned().collect();
                         for target_var in candidates {
                             let spread_amount = inst.strength * rate;
                             if spread_amount <= 0.0 { continue; }
-
-                            let already_occupied = overlay_host_index
-                                .contains_key(&(inst.overlay_name.clone(), target_var.clone()));
-
+                            let already_occupied = overlay_host_index.contains_key(&(inst.overlay_name.clone(), target_var.clone()));
                             if already_occupied {
                                 if let Some(&eidx) = overlay_host_index.get(&(inst.overlay_name.clone(), target_var.clone())) {
                                     if eidx < sess.overlay_instances.len() {
@@ -6248,57 +6128,31 @@ fn overlay_tick(sess: &mut Session) {
                                     }
                                 }
                             } else if spread_amount > 0.15 {
-                                let target_uuid = match sess.get_var(&target_var) {
-                                    Some(Value::Object { uuid, .. }) => uuid.clone(),
-                                    _ => continue,
-                                };
-                                overlay_push(sess, OverlayInstance {
-                                    overlay_name: inst.overlay_name.clone(),
-                                    host_uuid: target_uuid,
-                                    host_var: target_var,
-                                    strength: spread_amount,
-                                    age: 0,
-                                    ticks_remaining: None,
-                                    original_values: Vec::new(),
-                                    object_uuid: String::new(),
-                                });
+                                if let Some(Value::Object { uuid, .. }) = sess.get_var(&target_var) {
+                                    spread_buffer.push((inst.overlay_name.clone(), uuid.clone(), target_var, spread_amount));
+                                }
                             }
                         }
                     }
 
                     SpreadRule::Predicate { condition, rate } => {
                         let self_val = match sess.get_var(&inst.host_var).cloned() { Some(v) => v, None => continue };
-
-                        let candidates: Vec<String> = all_vars.iter()
-                            .filter(|vn| *vn != &inst.host_var)
-                            .cloned()
-                            .collect();
-
+                        let candidates: Vec<String> = all_vars.iter().filter(|vn| *vn != &inst.host_var).cloned().collect();
                         for target_var in candidates {
                             let target_val = match sess.get_var(&target_var).cloned() { Some(v) => v, None => continue };
-
-                            // Evaluate predicate with self and target bound
                             sess.push_frame();
                             sess.define_local("self".to_string(), self_val.clone(), true);
                             sess.define_local("target".to_string(), target_val, true);
-                            let fires = eval_expr(condition, sess)
-                                .ok()
-                                .map(|v| match v {
-                                    Value::Bool(b) => b,
-                                    Value::Int(i) => i != 0,
-                                    _ => false,
-                                })
-                                .unwrap_or(false);
+                            let fires = eval_expr(&condition, sess).ok().map(|v| match v {
+                                Value::Bool(b) => b,
+                                Value::Int(i) => i != 0,
+                                _ => false,
+                            }).unwrap_or(false);
                             sess.pop_frame();
-
                             if !fires { continue; }
-
                             let spread_amount = inst.strength * rate;
                             if spread_amount <= 0.0 { continue; }
-
-                            let already_occupied = overlay_host_index
-                                .contains_key(&(inst.overlay_name.clone(), target_var.clone()));
-
+                            let already_occupied = overlay_host_index.contains_key(&(inst.overlay_name.clone(), target_var.clone()));
                             if already_occupied {
                                 if let Some(&eidx) = overlay_host_index.get(&(inst.overlay_name.clone(), target_var.clone())) {
                                     if eidx < sess.overlay_instances.len() {
@@ -6306,20 +6160,9 @@ fn overlay_tick(sess: &mut Session) {
                                     }
                                 }
                             } else if spread_amount > 0.15 {
-                                let target_uuid = match sess.get_var(&target_var) {
-                                    Some(Value::Object { uuid, .. }) => uuid.clone(),
-                                    _ => continue,
-                                };
-                                overlay_push(sess, OverlayInstance {
-                                    overlay_name: inst.overlay_name.clone(),
-                                    host_uuid: target_uuid,
-                                    host_var: target_var,
-                                    strength: spread_amount,
-                                    age: 0,
-                                    ticks_remaining: None,
-                                    original_values: Vec::new(),
-                                    object_uuid: String::new(),
-                                });
+                                if let Some(Value::Object { uuid, .. }) = sess.get_var(&target_var) {
+                                    spread_buffer.push((inst.overlay_name.clone(), uuid.clone(), target_var, spread_amount));
+                                }
                             }
                         }
                     }
@@ -6330,41 +6173,488 @@ fn overlay_tick(sess: &mut Session) {
                 }
             }
         }
-    }
 
-    // 4. Remove orphaned overlays whose hosts no longer exist
-    {
-        let orphan_overlay_uuids: Vec<String> = sess.overlay_instances
-            .iter()
-            .filter(|inst| sess.get_var(&inst.host_var).is_none())
-            .filter_map(|inst| {
-                if inst.object_uuid.is_empty() {
-                    None
-                } else {
-                    Some(inst.object_uuid.clone())
-                }
-            })
-            .collect();
-
-        let orphan_overlay_keys: BTreeSet<String> = sess.overlay_instances
-            .iter()
-            .filter(|inst| sess.get_var(&inst.host_var).is_none())
-            .map(|inst| format!("{}::{}", inst.overlay_name, inst.host_var))
-            .collect();
-
-        sess.overlay_instances.retain(|inst| {
-            !orphan_overlay_keys.contains(&format!("{}::{}", inst.overlay_name, inst.host_var))
-        });
-
-        for uuid in orphan_overlay_uuids {
-            sess.object_store.remove(&uuid);
+        // Apply buffered spread additions
+        for (ov_name, host_uuid, host_var, strength) in spread_buffer {
+            if let Some(def) = defs.get(&ov_name).cloned() {
+                let duration = def.default_duration;
+                let is_temporary = duration.is_some();
+                let clamped = strength.clamp(0.0, 1.0);
+                let original_values: Vec<(String, Value)> = if is_temporary {
+                    if let Some(Value::Object { fields, .. }) = sess.get_var(&host_var) {
+                        def.modifiers.iter().filter_map(|(fname, _)| {
+                            fields.get(fname).map(|v| (fname.clone(), v.clone()))
+                        }).collect()
+                    } else { Vec::new() }
+                } else { Vec::new() };
+                overlay_push(sess, OverlayInstance {
+                    overlay_name: ov_name,
+                    host_uuid,
+                    host_var,
+                    strength: clamped,
+                    age: 0,
+                    ticks_remaining: duration,
+                    count: 1,
+                    original_values,
+                    extra_fields: def.extra_fields.clone(),
+                });
+            }
         }
     }
 
-    // 5. Run decisions for all objects with a decision formula
+    // 2. Decay pass — reduce strength, increment age, tick down duration
+    let instance_count = sess.overlay_instances.len();
+    for idx in 0..instance_count {
+        let overlay_name = sess.overlay_instances[idx].overlay_name.clone();
+        if let Some(def) = defs.get(&overlay_name) {
+            let new_strength = sess.overlay_instances[idx].strength - def.decay_rate;
+            sess.overlay_instances[idx].strength = if new_strength <= def.decay_rate { 0.0 } else { new_strength.max(0.0) };
+        }
+        sess.overlay_instances[idx].age += 1;
+        if let Some(ref mut remaining) = sess.overlay_instances[idx].ticks_remaining {
+            if *remaining > 0 { *remaining -= 1; }
+        }
+    }
+
+    // 3. Conflict pass — strength-proportional suppression
+    {
+        let mut host_index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, inst) in sess.overlay_instances.iter().enumerate() {
+            host_index.entry(inst.host_var.clone()).or_default().push(idx);
+        }
+        let mut overlay_host_index: HashMap<(String, String), usize> = HashMap::new();
+        for (idx, inst) in sess.overlay_instances.iter().enumerate() {
+            overlay_host_index.insert((inst.overlay_name.clone(), inst.host_var.clone()), idx);
+        }
+
+        let mut suppress_adjustments: Vec<(usize, f64)> = Vec::new();
+        let mut boost_adjustments: Vec<(usize, f64)> = Vec::new();
+
+        for (_, indices) in &host_index {
+            for &i in indices {
+                let (overlay_name_a, str_a) = {
+                    let inst = &sess.overlay_instances[i];
+                    (inst.overlay_name.clone(), inst.strength)
+                };
+                if let Some(def_a) = defs.get(&overlay_name_a) {
+                    let decay_a = def_a.decay_rate;
+                    for rule in &def_a.conflict_rules {
+                        if let Some(&j) = overlay_host_index.get(&(rule.opponent.clone(), sess.overlay_instances[i].host_var.clone())) {
+                            if i == j { continue; }
+                            let str_b = sess.overlay_instances[j].strength;
+                            let gap = (str_a - str_b).abs();
+                            if str_a >= str_b {
+                                suppress_adjustments.push((j, decay_a * rule.suppress_rate * (1.0 + gap)));
+                                boost_adjustments.push((i, decay_a * 0.1 * gap));
+                            } else {
+                                suppress_adjustments.push((i, decay_a * rule.suppress_rate * (1.0 + gap)));
+                                boost_adjustments.push((j, decay_a * 0.1 * gap));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (idx, extra_decay) in suppress_adjustments {
+            if idx < sess.overlay_instances.len() {
+                sess.overlay_instances[idx].strength = (sess.overlay_instances[idx].strength - extra_decay).max(0.0);
+            }
+        }
+        for (idx, boost) in boost_adjustments {
+            if idx < sess.overlay_instances.len() {
+                sess.overlay_instances[idx].strength = (sess.overlay_instances[idx].strength + boost).min(1.0);
+            }
+        }
+    }
+
+    // 4. Spawn pass — buffered
+    {
+        let mut to_spawn: Vec<(String, String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, host_var, strength)
+        let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
+
+        for inst in &instances_snap {
+            if let Some(def) = defs.get(&inst.overlay_name) {
+                for rule in &def.spawn_rules {
+                    sess.push_frame();
+                    sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                    let host_val = sess.get_var(&inst.host_var).cloned();
+                    if let Some(ref hv) = host_val {
+                        sess.define_local("self".to_string(), hv.clone(), true);
+                        if let Value::Object { fields, .. } = hv {
+                            for (k, v) in fields {
+                                sess.define_local(k.clone(), v.clone(), false);
+                            }
+                        }
+                    }
+                    let condition_result = eval_expr(&rule.condition, sess);
+                    sess.pop_frame();
+
+                    let triggered = match condition_result {
+                        Ok(Value::Bool(b)) => b,
+                        Ok(Value::Float(f)) => f != 0.0,
+                        Ok(Value::Int(i)) => i != 0,
+                        _ => false,
+                    };
+
+                    if triggered {
+                        let already = sess.overlay_instances.iter().any(|i| {
+                            i.overlay_name == rule.spawn_overlay && i.host_var == inst.host_var
+                        });
+                        if !already {
+                            if let Some(Value::Object { uuid, .. }) = sess.get_var(&inst.host_var) {
+                                to_spawn.push((rule.spawn_overlay.clone(), uuid.clone(), inst.host_var.clone(), rule.spawn_strength));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (ov_name, host_uuid, host_var, strength) in to_spawn {
+            if let Some(def) = defs.get(&ov_name).cloned() {
+                let is_temporary = def.default_duration.is_some();
+                let clamped = strength.clamp(0.0, 1.0);
+                let original_values: Vec<(String, Value)> = if is_temporary {
+                    if let Some(Value::Object { fields, .. }) = sess.get_var(&host_var) {
+                        def.modifiers.iter().filter_map(|(fname, _)| {
+                            fields.get(fname).map(|v| (fname.clone(), v.clone()))
+                        }).collect()
+                    } else { Vec::new() }
+                } else { Vec::new() };
+                overlay_push(sess, OverlayInstance {
+                    overlay_name: ov_name,
+                    host_uuid,
+                    host_var,
+                    strength: clamped,
+                    age: 0,
+                    ticks_remaining: def.default_duration,
+                    count: 1,
+                    original_values,
+                    extra_fields: def.extra_fields.clone(),
+                });
+            }
+        }
+    }
+
+    // 5. Transition pass — threshold-triggered, executed against overlay records
+    {
+        let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
+        let mut to_erase: Vec<usize> = Vec::new();
+        let mut to_mutate: Vec<(usize, String, indexmap::IndexMap<String, Value>)> = Vec::new();
+        let mut to_spawn_new: Vec<OverlayInstance> = Vec::new();
+
+        for (idx, inst) in instances_snap.iter().enumerate() {
+            let def = match defs.get(&inst.overlay_name) {
+                Some(d) => d,
+                None => continue,
+            };
+            if def.transitions.is_empty() { continue; }
+
+            for tdef in &def.transitions {
+                // Build self scope from overlay instance fields
+                sess.push_frame();
+                sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                sess.define_local("age".to_string(), Value::Int(inst.age as i64), true);
+                sess.define_local("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()), true);
+                sess.define_local("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()), true);
+                sess.define_local("host_var".to_string(), Value::Str(inst.host_var.clone()), true);
+                for (k, v) in &inst.extra_fields {
+                    sess.define_local(k.clone(), v.clone(), false);
+                }
+                // Also bind self >> strength etc via a map
+                let mut self_fields = indexmap::IndexMap::new();
+                self_fields.insert("strength".to_string(), Value::Float(inst.strength));
+                self_fields.insert("age".to_string(), Value::Int(inst.age as i64));
+                self_fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
+                self_fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
+                self_fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+                for (k, v) in &inst.extra_fields {
+                    self_fields.insert(k.clone(), v.clone());
+                }
+                let self_val = Value::Object {
+                    class_name: inst.overlay_name.clone(),
+                    fields: self_fields,
+                    readonly_fields: BTreeSet::new(),
+                    trait_fields: BTreeSet::new(),
+                    uuid: inst.host_uuid.clone(),
+                };
+                sess.define_local("self".to_string(), self_val, true);
+
+                let trigger_fired = eval_expr(&tdef.trigger, sess)
+                    .ok()
+                    .map(|v| match v {
+                        Value::Bool(b) => b,
+                        Value::Int(i) => i != 0,
+                        Value::Float(f) => f != 0.0,
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+
+                sess.pop_frame();
+
+                if !trigger_fired { continue; }
+
+                match tdef.kind {
+                    ast::TransitionKind::Erase => {
+                        to_erase.push(idx);
+                        break;
+                    }
+                    ast::TransitionKind::Mutate => {
+                        let new_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
+                        let mut carries = indexmap::IndexMap::new();
+                        if let Some(succ) = tdef.successors.iter().find(|s| s.label == "carries") {
+                            for (field, expr) in &succ.fields {
+                                sess.push_frame();
+                                sess.define_local("self".to_string(), Value::Float(inst.strength), true);
+                                sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                                if let Ok(v) = eval_expr(expr, sess) {
+                                    carries.insert(field.clone(), v);
+                                }
+                                sess.pop_frame();
+                            }
+                        }
+                        to_mutate.push((idx, new_name, carries));
+                        break;
+                    }
+                    ast::TransitionKind::Spawn => {
+                        let child_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
+                        let mut child_strength = inst.strength * 0.4;
+                        if let Some(succ) = tdef.successors.iter().find(|s| s.label == "child") {
+                            for (field, expr) in &succ.fields {
+                                if field == "strength" {
+                                    sess.push_frame();
+                                    sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                                    if let Ok(Value::Float(f)) = eval_expr(expr, sess) { child_strength = f; }
+                                    sess.pop_frame();
+                                }
+                            }
+                        }
+                        if let Some(def) = defs.get(&child_name) {
+                            to_spawn_new.push(OverlayInstance {
+                                overlay_name: child_name,
+                                host_uuid: inst.host_uuid.clone(),
+                                host_var: inst.host_var.clone(),
+                                strength: child_strength.clamp(0.0, 1.0),
+                                age: 0,
+                                ticks_remaining: def.default_duration,
+                                count: 1,
+                                original_values: Vec::new(),
+                                extra_fields: def.extra_fields.clone(),
+                            });
+                        }
+                        break;
+                    }
+                    ast::TransitionKind::Fracture => {
+                        let frag_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
+                        let mut frag_strength = inst.strength * 0.2;
+                        if let Some(succ) = tdef.successors.iter().find(|s| s.label == "fragment") {
+                            for (field, expr) in &succ.fields {
+                                if field == "strength" {
+                                    sess.push_frame();
+                                    sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                                    if let Ok(Value::Float(f)) = eval_expr(expr, sess) { frag_strength = f; }
+                                    sess.pop_frame();
+                                }
+                            }
+                        }
+                        if let Some(def) = defs.get(&frag_name) {
+                            to_spawn_new.push(OverlayInstance {
+                                overlay_name: frag_name,
+                                host_uuid: inst.host_uuid.clone(),
+                                host_var: inst.host_var.clone(),
+                                strength: frag_strength.clamp(0.0, 1.0),
+                                age: 0,
+                                ticks_remaining: def.default_duration,
+                                count: 1,
+                                original_values: Vec::new(),
+                                extra_fields: def.extra_fields.clone(),
+                            });
+                        }
+                        // Original remains — no erase
+                        break;
+                    }
+                    ast::TransitionKind::Split => {
+                        let name_a = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
+                        let name_b = tdef.into_classes.get(1).cloned().unwrap_or(inst.overlay_name.clone());
+                        let mut str_a = inst.strength * 0.55;
+                        let mut str_b = inst.strength * 0.45;
+                        if let Some(succ) = tdef.successors.iter().find(|s| s.label == "first") {
+                            for (field, expr) in &succ.fields {
+                                if field == "strength" {
+                                    sess.push_frame();
+                                    sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                                    if let Ok(Value::Float(f)) = eval_expr(expr, sess) { str_a = f; }
+                                    sess.pop_frame();
+                                }
+                            }
+                        }
+                        if let Some(succ) = tdef.successors.iter().find(|s| s.label == "second") {
+                            for (field, expr) in &succ.fields {
+                                if field == "strength" {
+                                    sess.push_frame();
+                                    sess.define_local("strength".to_string(), Value::Float(inst.strength), true);
+                                    if let Ok(Value::Float(f)) = eval_expr(expr, sess) { str_b = f; }
+                                    sess.pop_frame();
+                                }
+                            }
+                        }
+                        if let Some(def) = defs.get(&name_a) {
+                            to_spawn_new.push(OverlayInstance {
+                                overlay_name: name_a,
+                                host_uuid: inst.host_uuid.clone(),
+                                host_var: inst.host_var.clone(),
+                                strength: str_a.clamp(0.0, 1.0),
+                                age: 0,
+                                ticks_remaining: def.default_duration,
+                                count: 1,
+                                original_values: Vec::new(),
+                                extra_fields: def.extra_fields.clone(),
+                            });
+                        }
+                        if let Some(def) = defs.get(&name_b) {
+                            to_spawn_new.push(OverlayInstance {
+                                overlay_name: name_b,
+                                host_uuid: inst.host_uuid.clone(),
+                                host_var: inst.host_var.clone(),
+                                strength: str_b.clamp(0.0, 1.0),
+                                age: 0,
+                                ticks_remaining: def.default_duration,
+                                count: 1,
+                                original_values: Vec::new(),
+                                extra_fields: def.extra_fields.clone(),
+                            });
+                        }
+                        to_erase.push(idx);
+                        break;
+                    }
+                    ast::TransitionKind::Absorb => {
+                        // Find target overlay instance on a different host with matching type
+                        if let Some(ref tc) = tdef.target_class {
+                            let target_idx = instances_snap.iter().enumerate()
+                                .find(|(tidx, ti)| *tidx != idx && &ti.overlay_name == tc && ti.host_uuid != inst.host_uuid)
+                                .map(|(tidx, _)| tidx);
+                            if let Some(tidx) = target_idx {
+                                let target = &instances_snap[tidx];
+                                let new_strength = (inst.strength + target.strength * 0.6).min(1.0);
+                                to_mutate.push((idx, inst.overlay_name.clone(), {
+                                    let mut m = inst.extra_fields.clone();
+                                    m.insert("strength".to_string(), Value::Float(new_strength));
+                                    m
+                                }));
+                                to_erase.push(tidx);
+                                break;
+                            }
+                        }
+                    }
+                    ast::TransitionKind::Merge => {
+                        if let Some(ref tc) = tdef.target_class {
+                            let target_idx = instances_snap.iter().enumerate()
+                                .find(|(tidx, ti)| *tidx != idx && &ti.overlay_name == tc && ti.host_uuid != inst.host_uuid)
+                                .map(|(tidx, _)| tidx);
+                            if let Some(tidx) = target_idx {
+                                let target = &instances_snap[tidx];
+                                let new_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
+                                let new_strength = (inst.strength + target.strength * 0.8).min(1.0);
+                                if let Some(def) = defs.get(&new_name) {
+                                    to_spawn_new.push(OverlayInstance {
+                                        overlay_name: new_name,
+                                        host_uuid: inst.host_uuid.clone(),
+                                        host_var: inst.host_var.clone(),
+                                        strength: new_strength,
+                                        age: 0,
+                                        ticks_remaining: def.default_duration,
+                                        count: 1,
+                                        original_values: Vec::new(),
+                                        extra_fields: def.extra_fields.clone(),
+                                    });
+                                }
+                                to_erase.push(idx);
+                                to_erase.push(tidx);
+                                break;
+                            }
+                        }
+                    }
+                    ast::TransitionKind::Subjugate => {
+                        // Overlay subjugate: target overlay is weakened and marked as subordinate
+                        if let Some(ref tc) = tdef.target_class {
+                            let target_idx = instances_snap.iter().enumerate()
+                                .find(|(tidx, ti)| *tidx != idx && &ti.overlay_name == tc && ti.host_uuid != inst.host_uuid)
+                                .map(|(tidx, _)| tidx);
+                            if let Some(tidx) = target_idx {
+                                if tidx < sess.overlay_instances.len() {
+                                    sess.overlay_instances[tidx].strength = (sess.overlay_instances[tidx].strength * 0.5).max(0.0);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply transition mutations
+        for (idx, new_name, carries) in to_mutate {
+            if idx < sess.overlay_instances.len() {
+                sess.overlay_instances[idx].overlay_name = new_name;
+                for (k, v) in carries {
+                    if k == "strength" {
+                        if let Value::Float(f) = v {
+                            sess.overlay_instances[idx].strength = f.clamp(0.0, 1.0);
+                        }
+                    } else {
+                        sess.overlay_instances[idx].extra_fields.insert(k, v);
+                    }
+                }
+            }
+        }
+
+        // Apply spawns from transitions
+        for new_inst in to_spawn_new {
+            overlay_push(sess, new_inst);
+        }
+
+        // Erase marked instances (reverse order to preserve indices)
+        let mut to_erase_dedup: Vec<usize> = to_erase;
+        to_erase_dedup.sort_unstable();
+        to_erase_dedup.dedup();
+        for idx in to_erase_dedup.iter().rev() {
+            if *idx < sess.overlay_instances.len() {
+                sess.overlay_instances.remove(*idx);
+            }
+        }
+    }
+
+    // 6. Remove dead (strength <= 0) and expired (ticks_remaining == 0) overlays
+    // Restore original values for temporary overlays before removing
+    {
+        let mut to_remove: Vec<usize> = Vec::new();
+        for (idx, inst) in sess.overlay_instances.iter().enumerate() {
+            if inst.strength <= 0.0 || inst.ticks_remaining == Some(0) {
+                to_remove.push(idx);
+            }
+        }
+        for idx in to_remove.iter().rev() {
+            let inst = sess.overlay_instances.remove(*idx);
+            if !inst.original_values.is_empty() {
+                let originals = inst.original_values.clone();
+                overlay_restore_originals(sess, &inst.host_var, &originals);
+            }
+        }
+    }
+
+    // 7. Remove orphaned overlays whose hosts no longer exist
+    {
+        let live_vars: std::collections::HashSet<String> = sess.overlay_instances.iter()
+            .map(|inst| inst.host_var.clone())
+            .filter(|hv| sess.get_var(hv).is_some())
+            .collect();
+        sess.overlay_instances.retain(|inst| live_vars.contains(&inst.host_var));
+    }
+
+    // 8. Run decisions for all objects with a decision formula
     decision_tick(sess);
 
-    // 6. Evaluate and execute transitions
+    // 9. Evaluate and execute object transitions
     transition_tick(sess);
 }
 
@@ -6778,12 +7068,11 @@ fn create_successor_object(
         fields.insert(k, v);
     }
 
-    // Auto-insert id, and replace {id} placeholder with the var name
-    let id_val = fields.get("id").cloned();
-    let needs_id = id_val.is_none()
-        || matches!(id_val, Some(Value::Str(ref s)) if s == "{id}");
-    if needs_id {
-        fields.insert("id".to_string(), Value::Str(var_name.to_string()));
+    // Replace "{name}" placeholder in any string field with the variable name
+    for v in fields.values_mut() {
+        if matches!(v, Value::Str(s) if s == "{name}") {
+            *v = Value::Str(var_name.to_string());
+        }
     }
 
     // Build raw_fields and trait_fields
@@ -6843,57 +7132,30 @@ fn create_successor_object(
 }
 
 /// Transfer overlays from one host var to another (used by split/fracture continuity).
-/// Transfer overlays from one host var to another (used by split/fracture continuity).
 fn transfer_overlays(sess: &mut Session, from_var: &str, to_var: &str) {
     let from_uuid = match sess.get_var(from_var) {
         Some(Value::Object { uuid, .. }) => uuid.clone(),
         _ => return,
     };
-
     let to_uuid = match sess.get_var(to_var) {
         Some(Value::Object { uuid, .. }) => uuid.clone(),
         _ => return,
     };
-
     for inst in sess.overlay_instances.iter_mut() {
         if inst.host_uuid == from_uuid {
             inst.host_uuid = to_uuid.clone();
             inst.host_var = to_var.to_string();
-
-            if !inst.object_uuid.is_empty() {
-                if let Some(Value::Object { fields, .. }) = sess.object_store.get_mut(&inst.object_uuid) {
-                    fields.insert("host_uuid".to_string(), Value::Str(to_uuid.clone()));
-                    fields.insert("host_var".to_string(), Value::Str(to_var.to_string()));
-                }
-            }
         }
     }
 }
 
-/// Remove all overlay instances for a given host var,
-/// including their corresponding overlay objects in object_store.
+/// Remove all overlay instances for a given host var.
 fn drop_overlays_for(sess: &mut Session, host_var: &str) {
     let host_uuid = match sess.get_var(host_var) {
         Some(Value::Object { uuid, .. }) => uuid.clone(),
         _ => return,
     };
-
-    let mut overlay_object_uuids: Vec<String> = Vec::new();
-
-    sess.overlay_instances.retain(|inst| {
-        if inst.host_uuid == host_uuid {
-            if !inst.object_uuid.is_empty() {
-                overlay_object_uuids.push(inst.object_uuid.clone());
-            }
-            false
-        } else {
-            true
-        }
-    });
-
-    for uuid in overlay_object_uuids {
-        sess.object_store.remove(&uuid);
-    }
+    sess.overlay_instances.retain(|inst| inst.host_uuid != host_uuid);
 }
 
 fn remove_from_class_index(sess: &mut Session, class_name: &str, var_name: &str) {
@@ -6917,17 +7179,18 @@ fn erase_var(sess: &mut Session, var_name: &str) {
 
     sess.erased_vars.insert(var_name.to_string(), class_name.clone());
 
+    // Drop overlays BEFORE removing env bindings so get_var still resolves the host UUID
+    drop_overlays_for(sess, var_name);
+
     // Pull UUID from Ref handle before removing bindings
     let uuid_to_drop: Option<String> = {
         let mut found = None;
-
         for frame in sess.env.iter() {
             if let Some(Value::Ref(uuid)) = frame.get(var_name) {
                 found = Some(uuid.clone());
                 break;
             }
         }
-
         found
     };
 
@@ -6940,9 +7203,6 @@ fn erase_var(sess: &mut Session, var_name: &str) {
     for frame in sess.consts.iter_mut() {
         frame.remove(var_name);
     }
-
-    // Remove overlays hosted on this object before removing the host object.
-    drop_overlays_for(sess, var_name);
 
     // Remove object from object_store
     if let Some(uuid) = uuid_to_drop {
@@ -7109,10 +7369,6 @@ fn transition_tick(sess: &mut Session) {
 
             match tdef.kind {
                 ast::TransitionKind::Erase => {
-                    match tdef.overlay_rule {
-                        ast::OverlayContinuity::Drop => drop_overlays_for(sess, &var_name),
-                        _ => drop_overlays_for(sess, &var_name),
-                    }
                     erase_var(sess, var_name);
                     erased.insert(var_name.clone());
     transitioned.insert(var_name.clone());
@@ -7247,8 +7503,9 @@ fn transition_tick(sess: &mut Session) {
                             strength: 1.0,
                             age: 0,
                             ticks_remaining: None,
+                            count: 1,
                             original_values: Vec::new(),
-                            object_uuid: String::new(),
+                            extra_fields: indexmap::IndexMap::new(),
                         };
                         overlay_push(sess, inst);
         transitioned.insert(var_name.clone());
@@ -9432,13 +9689,30 @@ fn call_action_by_name(
                 }
             }
         } else {
-            // No such export in that module
+            // No such export — check if ns is a live object variable (instance action call)
+            // e.g. Rome fortify() or Rome trade(Valedawn)
+            if let Some(obj_val) = sess.get_var(ns).cloned() {
+                if let Value::Object { class_name: cn, mut fields, readonly_fields, trait_fields, uuid } = obj_val {
+                    let has_action = sess.classes.get(&cn)
+                        .map(|c| c.actions.iter().any(|a| a.name == action_name))
+                        .unwrap_or(false);
+                    if has_action {
+                        let result = call_object_method_with_values(sess, &cn, &mut fields, action_name, args, sp.clone())?;
+                        let updated = Value::Object { class_name: cn, fields, readonly_fields, trait_fields, uuid };
+                        sess.set_var(ns.to_string(), updated);
+                        return Ok(match result {
+                            Value::CtrlReturn(inner) => *inner,
+                            other => other,
+                        });
+                    }
+                }
+            }
             return Err(
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::IMPORT_FAILED, // R0502
                     "unknown-action",
-                    &format!("unknown action ‘{}’", name),
+                    &format!("unknown action '{}'", name),
                     sp.clone(),
                 )
                 .with_help("Check the action name or import the module that provides it.")
@@ -16277,6 +16551,34 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             let rhs_val = eval_expr(rhs, sess)?;
             let path = parse_lvalue(lhs, sess)?;
 
+            // Guard: prevent rebinding a live object variable to a non-object value.
+            // Rome |= 42 is a hard error if Rome points to a live object.
+            // Use erase, mutate, or field assignment instead.
+            if let LValuePath::Var(ref var_name) = path {
+                if !matches!(rhs_val, Value::Object { .. }) {
+                    let is_live_object = sess.env.iter().rev().find_map(|frame| {
+                        frame.get(var_name.as_str()).map(|v| {
+                            if let Value::Ref(uuid) = v {
+                                sess.object_store.contains_key(uuid.as_str())
+                            } else {
+                                false
+                            }
+                        })
+                    }).unwrap_or(false);
+                    if is_live_object {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            "R1300",
+                            "live-object-rebind",
+                            &format!("'{}' points to a live object and cannot be rebound to a different value", var_name),
+                            sp.clone(),
+                        )
+                        .with_help("To modify the object, use field assignment (obj >> field |= value), actions, transitions, or erase.")
+                        .with_link("https://goblinlang.org/docs/errors#R1300"));
+                    }
+                }
+            }
+
             // Check if this field is a trait on the parent object — if so, clamp to 0..1
             let is_trait = if let LValuePath::Field { ref base, ref field } = path {
                 if let Some(parent) = eval_lvalue(base, sess, sp).ok() {
@@ -17318,6 +17620,199 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             // Strip : prefix if present
             let name = name.strip_prefix(':').unwrap_or(name);
 
+            // ============ :count() OVERLAY QUERY BUILTIN ============
+            // count(OverlayName)        — how many hosts currently carry this overlay type
+            // count(host >> OverlayName) — the stack counter on a specific host's instance
+            if name == "count" && args.len() == 1 {
+                let arg = &args[0];
+                // Check if it's a >> expression: host >> OverlayName
+                if let ast::Expr::Binary(host_expr, op, overlay_expr, _) = arg {
+                    if op == ">>" {
+                        // Get overlay name from ident or string
+                        let overlay_name = match overlay_expr.as_ref() {
+                            ast::Expr::Ident(n, _) => Some(n.clone()),
+                            ast::Expr::Str(n, _) => Some(n.clone()),
+                            _ => eval_expr(overlay_expr, sess).ok().and_then(|v| match v {
+                                Value::Str(s) => Some(s),
+                                _ => None,
+                            }),
+                        };
+                        if let Some(overlay_name) = overlay_name {
+                            if sess.overlay_defs.contains_key(overlay_name.as_str()) {
+                                let def = sess.overlay_defs.get(&overlay_name).cloned().unwrap();
+                                if !matches!(def.apply_behavior, OverlayApplyBehavior::Stacks { .. }) {
+                                    return Err(Diagnostic::new_with_code(
+                                        Severity::Error, "R1211", "overlay-not-stacks",
+                                        &format!("overlay '{}' does not declare 'stacks' — count() stack query is only valid on stacking overlays", overlay_name),
+                                        sp.clone(),
+                                    ).with_help("Add 'stacks' or 'stacks as label' to the overlay declaration"));
+                                }
+                                let host_val = eval_expr(host_expr, sess)?;
+                                let host_uuid = match &host_val {
+                                    Value::Object { uuid, .. } => uuid.clone(),
+                                    _ => return Err(Diagnostic::new_with_code(
+                                        Severity::Error, "R1212", "overlay-count-host-not-object",
+                                        "left side of count(host >> overlay) must be an object",
+                                        sp.clone(),
+                                    )),
+                                };
+                                let count = sess.overlay_instances.iter()
+                                    .find(|i| i.overlay_name == overlay_name && i.host_uuid == host_uuid)
+                                    .map(|i| i.count)
+                                    .unwrap_or(0);
+                                return Ok(Value::Int(count as i64));
+                            }
+                        }
+                    }
+                }
+                // Check if arg is a bare overlay name (ident or string) — return host count
+                let overlay_name = match arg {
+                    ast::Expr::Ident(n, _) => Some(n.clone()),
+                    ast::Expr::Str(n, _) => Some(n.clone()),
+                    _ => eval_expr(arg, sess).ok().and_then(|v| match v {
+                        Value::Str(s) => Some(s),
+                        _ => None,
+                    }),
+                };
+                if let Some(ref overlay_name) = overlay_name {
+                    if sess.overlay_defs.contains_key(overlay_name.as_str()) {
+                        let host_count = sess.overlay_instances.iter()
+                            .filter(|i| &i.overlay_name == overlay_name)
+                            .count();
+                        return Ok(Value::Int(host_count as i64));
+                    }
+                }
+                // Fall through to normal count builtin for non-overlay args
+            }
+
+            // ============ overlay_count(host, overlay_name) ============
+            // Returns the stack counter on a specific host's overlay instance.
+            // Error if overlay does not declare stacks.
+            if name == "overlay_count" && args.len() == 2 {
+                let host_val = eval_expr(&args[0], sess)?;
+                let host_uuid = match &host_val {
+                    Value::Object { uuid, .. } => uuid.clone(),
+                    _ => return Err(Diagnostic::new_with_code(
+                        Severity::Error, "R1212", "overlay-count-host-not-object",
+                        "first argument to overlay_count() must be an object",
+                        sp.clone(),
+                    )),
+                };
+                let overlay_name = eval_expr(&args[1], sess).ok().and_then(|v| match v {
+                    Value::Str(s) => Some(s),
+                    _ => None,
+                }).or_else(|| match &args[1] {
+                    ast::Expr::Ident(n, _) => Some(n.clone()),
+                    ast::Expr::Str(n, _) => Some(n.clone()),
+                    _ => None,
+                });
+                let overlay_name = match overlay_name {
+                    Some(n) => n,
+                    None => return Err(Diagnostic::new_with_code(
+                        Severity::Error, "R1213", "overlay-count-bad-name",
+                        "second argument to overlay_count() must be an overlay name",
+                        sp.clone(),
+                    )),
+                };
+                if let Some(def) = sess.overlay_defs.get(&overlay_name).cloned() {
+                    if !matches!(def.apply_behavior, OverlayApplyBehavior::Stacks { .. }) {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error, "R1211", "overlay-not-stacks",
+                            &format!("overlay '{}' does not declare 'stacks' — overlay_count() is only valid on stacking overlays", overlay_name),
+                            sp.clone(),
+                        ).with_help("Add 'stacks' or 'stacks as label' to the overlay declaration"));
+                    }
+                }
+                let count = sess.overlay_instances.iter()
+                    .find(|i| i.overlay_name == overlay_name && i.host_uuid == host_uuid)
+                    .map(|i| i.count)
+                    .unwrap_or(0);
+                return Ok(Value::Int(count as i64));
+            }
+
+            // ============ :objects() and :overlays() QUERY BUILTINS ============
+            // :objects(predicate_expr) — iterate all class instances, filter by predicate
+            // :overlays(predicate_expr) — iterate all overlay instances, filter by predicate
+            if (name == "objects" || name == "overlays") && args.len() <= 1 {
+                let pred_expr: Option<&ast::Expr> = args.get(0);
+                let mut results: Vec<Value> = Vec::new();
+
+                if name == "objects" {
+                    // Collect all class instances from class_index
+                    let var_names: Vec<String> = sess.class_index.values()
+                        .flat_map(|names| names.iter().cloned())
+                        .collect();
+                    for var_name in var_names {
+                        if let Some(obj) = sess.get_var(&var_name).cloned() {
+                            let matches = if let Some(pred) = pred_expr {
+                                let result = Session::with_block(sess, |sess| {
+                                    sess.set_var("it".to_string(), obj.clone());
+                                    if let Value::Object { ref fields, .. } = obj {
+                                        for (k, v) in fields.iter() {
+                                            sess.set_var(k.clone(), v.clone());
+                                        }
+                                    }
+                                    eval_expr(pred, sess)
+                                });
+                                matches!(result, Ok(Value::Bool(true)))
+                            } else {
+                                true
+                            };
+                            if matches { results.push(obj); }
+                        }
+                    }
+                } else {
+                    // overlays — iterate overlay_instances directly, not object_store
+                    let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
+                    for inst in &instances_snap {
+                        // Build a value map from the instance fields
+                        let mut fields = indexmap::IndexMap::new();
+                        fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
+                        fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
+                        fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+                        fields.insert("strength".to_string(), Value::Float(inst.strength));
+                        fields.insert("age".to_string(), Value::Int(inst.age as i64));
+                        fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
+                            Some(t) => Value::Int(t as i64),
+                            None => Value::Nil,
+                        });
+                        // Expose count under its label (or "count" if no label)
+                        let count_key = sess.overlay_defs.get(&inst.overlay_name)
+                            .and_then(|d| if let OverlayApplyBehavior::Stacks { label: Some(l) } = &d.apply_behavior { Some(l.clone()) } else { None })
+                            .unwrap_or_else(|| "count".to_string());
+                        fields.insert(count_key, Value::Int(inst.count as i64));
+                        for (k, v) in &inst.extra_fields {
+                            fields.insert(k.clone(), v.clone());
+                        }
+                        let obj = Value::Object {
+                            class_name: inst.overlay_name.clone(),
+                            fields,
+                            readonly_fields: BTreeSet::new(),
+                            trait_fields: BTreeSet::new(),
+                            uuid: inst.host_uuid.clone(),
+                        };
+                        let matches = if let Some(pred) = pred_expr {
+                            let result = Session::with_block(sess, |sess| {
+                                sess.set_var("it".to_string(), obj.clone());
+                                if let Value::Object { ref fields, .. } = obj {
+                                    for (k, v) in fields.iter() {
+                                        sess.set_var(k.clone(), v.clone());
+                                    }
+                                }
+                                eval_expr(pred, sess)
+                            });
+                            matches!(result, Ok(Value::Bool(true)))
+                        } else {
+                            true
+                        };
+                        if matches { results.push(obj); }
+                    }
+                }
+
+                return Ok(Value::Array(results));
+            }
+            // ============ END QUERY BUILTINS ============
+
             // ============ BOUND METHOD DISPATCH ============
             // Check local frames for bound methods (but not module env to avoid recursion)
             let mut found_bound_method = None;
@@ -17604,23 +18099,63 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             let is_overlay_query = class_name == "__ALL_OVERLAYS__"
                                 || overlay_def_names.contains(class_name.as_str());
 
-                            let var_names: Vec<String> = if is_overlay_query {
-                                // Overlays are in object_store but not in env — scan store directly
-                                let mut names: Vec<String> = sess.object_store.iter()
-                                    .filter_map(|(uuid, val)| {
-                                        if let Value::Object { class_name: cn, .. } = val {
-                                            let matches = if class_name == "__ALL_OVERLAYS__" {
-                                                overlay_def_names.contains(cn.as_str())
-                                            } else {
-                                                cn == &class_name
-                                            };
-                                            if matches { Some(uuid.clone()) } else { None }
-                                        } else { None }
+                            if is_overlay_query {
+                                // Build overlay values from overlay_instances directly
+                                let instances_snap: Vec<OverlayInstance> = sess.overlay_instances.clone();
+                                let bind_vals: Vec<Value> = instances_snap.iter()
+                                    .filter(|inst| {
+                                        class_name == "__ALL_OVERLAYS__" || inst.overlay_name == class_name
+                                    })
+                                    .map(|inst| {
+                                        let mut fields = indexmap::IndexMap::new();
+                                        fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
+                                        fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
+                                        fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+                                        fields.insert("strength".to_string(), Value::Float(inst.strength));
+                                        fields.insert("age".to_string(), Value::Int(inst.age as i64));
+                                        fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
+                                            Some(t) => Value::Int(t as i64),
+                                            None => Value::Nil,
+                                        });
+                                        let count_key = sess.overlay_defs.get(&inst.overlay_name)
+                                            .and_then(|d| if let OverlayApplyBehavior::Stacks { label: Some(l) } = &d.apply_behavior { Some(l.clone()) } else { None })
+                                            .unwrap_or_else(|| "count".to_string());
+                                        fields.insert(count_key, Value::Int(inst.count as i64));
+                                        for (k, v) in &inst.extra_fields {
+                                            fields.insert(k.clone(), v.clone());
+                                        }
+                                        Value::Object {
+                                            class_name: inst.overlay_name.clone(),
+                                            fields,
+                                            readonly_fields: BTreeSet::new(),
+                                            trait_fields: BTreeSet::new(),
+                                            uuid: inst.host_uuid.clone(),
+                                        }
                                     })
                                     .collect();
-                                names.sort();
-                                names
-                            } else {
+
+                                sess.loop_depth += 1;
+                                'overlay_ident: for (idx, bind_val) in bind_vals.iter().enumerate() {
+                                    let v = Session::with_block(sess, |sess| {
+                                        sess.set_var(binding.clone(), bind_val.clone());
+                                        sess.set_var("idx".to_string(), Value::Int(idx as i64));
+                                        eval_expr(body_arg, sess)
+                                    })?;
+                                    match v {
+                                        Value::CtrlSkip => continue 'overlay_ident,
+                                        Value::CtrlStop => break 'overlay_ident,
+                                        Value::CtrlReturn(inner) => {
+                                            sess.loop_depth -= 1;
+                                            return Ok(Value::CtrlReturn(inner));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                sess.loop_depth -= 1;
+                                return Ok(Value::Unit);
+                            }
+
+                            let var_names: Vec<String> = {
                                 // Use class_index for O(1) lookup
                                 let mut names = sess.class_index
                                     .get(class_name.as_str())
@@ -17633,21 +18168,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                             sess.loop_depth += 1;
                             'class_ident: for (idx, var_name) in var_names.iter().enumerate() {
-                                // For overlays, var_name is a UUID in object_store
-                                // For regular objects, var_name is an env key holding a Ref
-                                let bind_val = if is_overlay_query {
-                                    match sess.object_store.get(var_name.as_str()).cloned() {
-                                        Some(v) => v,
-                                        None => continue 'class_ident,
-                                    }
-                                } else {
-                                    let ref_val = sess.env.first()
-                                        .and_then(|f| f.get(var_name))
-                                        .cloned();
-                                    match ref_val {
-                                        Some(v) => v,
-                                        None => continue 'class_ident,
-                                    }
+                                let ref_val = sess.env.first()
+                                    .and_then(|f| f.get(var_name))
+                                    .cloned();
+                                let bind_val = match ref_val {
+                                    Some(v) => v,
+                                    None => continue 'class_ident,
                                 };
                                 let v = Session::with_block(sess, |sess| {
                                     sess.set_var(binding.clone(), bind_val.clone());
@@ -18567,7 +19093,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     
                     match obj {
                         Value::Object { fields, .. } => {
-                            fields.get(&field_name)
+                            let base = fields.get(&field_name)
                                 .cloned()
                                 .ok_or_else(|| {
                                     Diagnostic::new_with_code(
@@ -18579,7 +19105,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                     )
                                     .with_help("Check the field name or ensure it exists on the object.")
                                     .with_link("https://goblinlang.org/docs/errors#R0403")
-                                })
+                                })?;
+                            Ok(base)
                         }
 
                         Value::Enum { fields: Some(field_map), variant_name, .. } => {
@@ -19608,7 +20135,7 @@ fn call_object_method_with_values(
                 Severity::Error,
                 crate::diagnostics::rtcode::UNKNOWN_ACTION, // A0401
                 "unknown-action",
-                "unknown action",
+                &format!("unknown action '{}'", method_name),
                 sp.clone(),
             )
             .with_help(&format!("Class ‘{}’ has no action named ‘{}’.", class_name, method_name))
@@ -19750,7 +20277,7 @@ fn call_object_method(
                 Severity::Error,
                 crate::diagnostics::rtcode::UNKNOWN_ACTION, // A0401
                 "unknown-action",
-                "unknown action",
+                &format!("unknown action '{}'", method_name),
                 sp.clone(),
             )
             .with_help(&format!("Class ‘{}’ has no action named ‘{}’.", class_name, method_name))
@@ -19767,7 +20294,7 @@ fn call_object_method(
     sess.push_frame();
     sess.set_var("self".to_string(), Value::Map(fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()));
 
-    // Bind each field as a variable
+    // Bind each field as a variable for direct access
     for (field_name, field_value) in fields.iter() {
         sess.set_var(field_name.clone(), field_value.clone());
     }
@@ -19830,11 +20357,20 @@ fn call_object_method(
     };
 
     // CRITICAL: Copy modified field values back BEFORE popping frame
+    // Check both bare field variables AND self map fields (for self >> field |= writes)
     let current_frame = sess.env.last().expect("has frame");
     let field_names: Vec<String> = fields.keys().cloned().collect();
-    for field_name in field_names {
-        if let Some(modified_value) = current_frame.get(&field_name) {
-            fields.insert(field_name, modified_value.clone());
+    for field_name in &field_names {
+        if let Some(modified_value) = current_frame.get(field_name) {
+            fields.insert(field_name.clone(), modified_value.clone());
+        }
+    }
+    // Also check self Map for self >> field |= writes
+    if let Some(Value::Map(self_map)) = current_frame.get("self") {
+        for field_name in &field_names {
+            if let Some(v) = self_map.get(field_name) {
+                fields.insert(field_name.clone(), v.clone());
+            }
         }
     }
 
@@ -19898,6 +20434,37 @@ fn instantiate_object(
     match rhs_val {
         Value::Map(provided_fields) => {
             // Named field construction: { name: "Alice", author: user_obj }
+            // Error if user tries to set reserved field names
+            if let Some(id_val) = provided_fields.get("id") {
+                let is_placeholder = matches!(id_val, Value::Str(s) if s == "{id}");
+                if !is_placeholder {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::RESERVED_FIELD, // R0412
+                            "reserved-field",
+                            "'id' is a reserved field name",
+                            span.clone(),
+                        )
+                        .with_help("'id' is automatically generated by the runtime as a unique identifier.")
+                        .with_help("Use a different field name such as 'name' or 'label' for user-defined identifiers.")
+                        .with_link("https://goblinlang.org/docs/errors#R0412")
+                    );
+                }
+            }
+            if provided_fields.contains_key("type") {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::RESERVED_FIELD, // R0412
+                        "reserved-field",
+                        "'type' is a reserved keyword and cannot be used as a field name",
+                        span.clone(),
+                    )
+                    .with_help("Use a different field name such as 'kind' or 'category'.")
+                    .with_link("https://goblinlang.org/docs/errors#R0412")
+                );
+            }
             for field in &class.fields {
                 // Handle relationship fields
                 if let Some(ref relation) = field.relation {

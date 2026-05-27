@@ -1,0 +1,38 @@
+@Kingdom |
+    strength: .5
+    stability: .5
+
+    act fortify()
+        self >> stability |= self >> stability + .1
+    end
+end
+
+@Empire |
+    strength: .5
+    stability: .5
+end
+
+act boost(target)
+    target >> strength |= target >> strength + .1
+end
+
+Rome      | Kingdom | { name: "Rome",      strength: .4, stability: .4 }
+Byzantium | Empire  | { name: "Byzantium", strength: .6, stability: .6 }
+
+say "=== BEFORE ==="
+say Rome
+say Byzantium
+
+say "=== calling free action boost on both ==="
+boost(Rome)
+boost(Byzantium)
+say Rome
+say Byzantium
+
+say "=== calling class action fortify on Kingdom ==="
+Rome.fortify()
+say Rome
+
+say "=== calling class action fortify on Empire (should error) ==="
+Byzantium.fortify()
+say Byzantium

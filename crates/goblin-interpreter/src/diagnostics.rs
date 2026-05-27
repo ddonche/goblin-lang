@@ -173,6 +173,7 @@ pub mod rtcode {
     pub const LOOP_CONTROL_OUTSIDE: &str = "R0405";
     pub const MALFORMED_BOUND_ACTION: &str = "R0410";
     pub const RELATION_VALUE_REQUIRED: &str = "R0411";
+    pub const RESERVED_FIELD: &str = "R0412";
 
     pub const UNCLOSED_INTERP_BRACE: &str = "R0500";
     pub const IMPORT_IO: &str = "R0501";

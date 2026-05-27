@@ -1,0 +1,45 @@
+@Nation |
+    type: "polity"
+    strength: .3
+    stability: .5
+
+    transition mutate when (self >> stability) > .4
+        into Empire
+        carries:
+            type: "polity"
+            strength: self >> strength
+            stability: self >> stability
+        end
+    end
+end
+
+@Empire |
+    type: "polity"
+    strength: .5
+    stability: .5
+end
+
+@Nation matrix
+    id:        "{id}", Rome,     Carthage, Athens
+    type:      "polity", "polity", "polity", "polity"
+    strength:  .3,      .3,       .3,       .3
+    stability: .5,      .5,       .3,       .6
+end
+
+say "=== BEFORE ==="
+repeat objects where type == "polity"
+    say it
+xx
+
+repeat 3
+    tick()
+
+    repeat objects where type == "polity"
+        it >> strength |= it >> strength + .1
+    xx
+end
+
+say "=== AFTER ==="
+repeat objects where type == "polity"
+    say it
+xx

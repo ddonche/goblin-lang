@@ -42,7 +42,7 @@ pub enum Stmt {
     Class(ClassDecl),
     Action(ActionDecl),
     Bind(BindStmt),
-    TupleBind(TupleBindStmt), 
+    TupleBind(TupleBindStmt),
     Enum(EnumDecl),
     Import(ImportStmt),
     Judge(JudgeStmt),
@@ -89,8 +89,6 @@ pub struct UnitDecl {
     pub conversions: Vec<(String, f64, String, f64)>,
     pub span: Span,
 }
-
-
 
 /// `link ClassName [channel] by [ formula ]` — defines a class-level link formula.
 /// If channel is None, defaults to "default".
@@ -153,6 +151,22 @@ pub enum SpreadRule {
     Predicate { condition: Expr, rate: f64 },
 }
 
+/// What happens when an overlay is applied to a host that already carries it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverlayApplyBehavior {
+    /// First application wins. Subsequent applications are silently dropped. Default.
+    Caps,
+    /// New application overwrites the existing instance unconditionally.
+    Replaces,
+    /// Each application increments a counter on the existing instance.
+    /// Optional semantic label replaces "count" in diagnostics and queries.
+    Stacks { label: Option<String> },
+}
+
+impl Default for OverlayApplyBehavior {
+    fn default() -> Self { OverlayApplyBehavior::Caps }
+}
+
 /// `overlay Name | ... end` — defines an overlay type.
 #[derive(Debug, Clone)]
 pub struct OverlayDefStmt {
@@ -163,12 +177,22 @@ pub struct OverlayDefStmt {
     pub spread_rules: Vec<SpreadRule>,
     /// Strength lost per tick.
     pub decay_rate: f64,
-    /// (field_name, delta) — applied to host fields each tick.
-    pub modifiers: Vec<(String, f64)>,
+    /// (field_name, expr) — effective modifier applied at read time during trait evaluation.
+    /// Expr may reference `self >> count` (or the stacks label) for dynamic scaling.
+    /// Never written to host fields. Base value is always clean.
+    pub modifiers: Vec<(String, Expr)>,
     pub conflict_rules: Vec<OverlayConflictRule>,
     pub spawn_rules: Vec<OverlaySpawnRule>,
+    /// Transition declarations — what identity changes this overlay can undergo.
+    /// Same model as object transitions. Triggered by threshold, executed by runtime.
+    /// Overlay transitions operate on overlay records, not objects.
+    pub transitions: Vec<TransitionDef>,
     /// Default duration in ticks. None = permanent.
     pub default_duration: Option<u32>,
+    /// What happens when applied to a host that already carries this overlay.
+    pub apply_behavior: OverlayApplyBehavior,
+    /// User-defined fields declared on the overlay (e.g. kind: "language")
+    pub extra_fields: Vec<(String, Expr)>,
     pub span: Span,
 }
 
@@ -261,7 +285,10 @@ pub struct SuccessorDef {
     pub span: Span,
 }
 
-/// A full transition declaration inside a class body.
+/// A full transition declaration inside a class or overlay body.
+/// When declared on an overlay, the runtime executes the transition against
+/// the overlay record rather than the object store. No agency is implied —
+/// overlay transitions are always threshold-triggered by the runtime.
 #[derive(Debug, Clone)]
 pub struct TransitionDef {
     pub kind: TransitionKind,
@@ -310,7 +337,7 @@ pub struct FieldDecl {
 }
 
 #[derive(Debug, Clone)]
-pub enum RelationDef {  // Changed from 'enum' to 'pub enum'
+pub enum RelationDef {
     Of { class_name: String, as_name: String },
     With { class_name: String },
     Re { class_name: String },
@@ -359,7 +386,7 @@ pub enum ActionBody {
 #[derive(Debug, Clone)]
 pub struct ActionDecl {
     pub name: String,
-    pub params: Vec<Param>,    // <-- single field; no PExpr here
+    pub params: Vec<Param>,
     pub body: ActionBody,
     pub span: Span,
     pub ret: Option<String>,
@@ -442,7 +469,7 @@ pub struct EnumDecl {
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: String,
-    pub fields: Option<Vec<FieldDecl>>,  // Reuse your existing FieldDecl
+    pub fields: Option<Vec<FieldDecl>>,
     pub span: Span,
 }
 
@@ -489,7 +516,7 @@ pub enum Expr {
     EnumVariant {
         enum_name: String,
         variant_name: String,
-        fields: Option<Vec<(String, Expr)>>,  // field name -> value
+        fields: Option<Vec<(String, Expr)>>,
         span: Span,
     },
     Judge {
@@ -500,7 +527,7 @@ pub enum Expr {
         span: Span,
     },
     Block {
-        stmts: Vec<Stmt>,  
+        stmts: Vec<Stmt>,
         span: Span,
     },
     LiteralToken { module: String, ident: String, span: Span },
@@ -527,11 +554,11 @@ impl Expr {
             Expr::FreeCall(_, _, sp) => sp,
             Expr::NsCall(_, _, _, sp) => sp,
             Expr::Prefix(_, _, sp) => sp,
-            Expr::Postfix(_, _, sp) => sp,  
+            Expr::Postfix(_, _, sp) => sp,
             Expr::Binary(_, _, _, sp) => sp,
             Expr::EnumVariant { span, .. } => span,
             Expr::Judge { span, .. } => span,
-            Expr::Block { span, .. } => span,  
+            Expr::Block { span, .. } => span,
             Expr::LiteralToken { span, .. } => span,
         }
     }

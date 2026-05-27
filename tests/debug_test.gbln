@@ -1,0 +1,16 @@
+@Kingdom |
+    kind: "polity"
+    strength: .5
+
+    ~population: 500000
+end
+
+@Kingdom matrix
+    name: "{name}", Rome, Carthage
+    strength: .5, .4, .6
+    population: 500000, 750000, 620000
+end
+
+say Rome
+say "kind field:"
+say Rome >> kind
