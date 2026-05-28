@@ -1,3 +1,4 @@
+// ---- version = "0.42.0"
 // goblin-cli/src/main.rs
 // Treat empty OK oracles as PASS and (for now) treat ERR oracles as PASS without comparing.
 // This gets the suite green so we can iterate on the lexer in small bites.
@@ -286,21 +287,21 @@ fn create_project(name: &str) {
     fs::write(path.join("goblin.yaml"), goblin_yaml(name))
         .expect("Failed to create goblin.yaml");
     
-    fs::write(path.join("main.gbln"), MAIN_GBLN)
-        .expect("Failed to create main.gbln");
+    fs::write(path.join("main.gob"), MAIN_GBLN)
+        .expect("Failed to create main.gob");
     
     fs::write(path.join("README.md"), readme_md(name))
         .expect("Failed to create README.md");
     
     println!("Created new Goblin project: {}", name);
     println!("  cd {}", name);
-    println!("  goblin main.gbln");
+    println!("  goblin main.gob");
 }
 
 fn goblin_yaml(name: &str) -> String {
     format!(r#"name: {}
 version: 0.1.0
-entry: main.gbln
+entry: main.gob
 
 # Define module paths for your project
 # Format: alias: ./path/to/folder
@@ -326,13 +327,13 @@ A Goblin project.
 
 ## Running
 Run your main file:
-    goblin main.gbln
+    goblin main.gob
 
 ## Project Structure
 Organize your code into modules by:
 1. Adding folders (e.g., game/, data/)
 2. Registering them in goblin.yaml under module_paths
-3. Creating .gbln files in those folders
+3. Creating .gob files in those folders
 4. Importing them: import game/hero
 "#, name)
 }
@@ -505,7 +506,7 @@ fn run_parse(path: &Path) -> i32 {
     // lex it
     // lex it (label temp here-strings as <snippet>)
     let label = match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) if name.starts_with("goblin_") && name.ends_with(".gbln") => "<snippet>".to_string(),
+        Some(name) if name.starts_with("goblin_") && (name.ends_with(".gob") || name.ends_with(".gbln")) => "<snippet>".to_string(),
         _ => path.display().to_string(),
     };
     let lexed = lex(&src, &label);
@@ -582,7 +583,7 @@ fn collect_tests(dir: &Path, hint: Option<Mode>) -> Vec<TestCase> {
         return out;
     }
     walk(dir, &mut |p| {
-        if p.extension() == Some(OsStr::new("gbln")) {
+        if matches!(p.extension(), Some(ext) if ext == OsStr::new("gob") || ext == OsStr::new("gbln")) {
             let expect = expect_for(p);
             out.push(TestCase {
                 source: p.to_path_buf(),
@@ -1274,7 +1275,7 @@ fn run_run(path: &std::path::Path) -> i32 {
     
     // 2) lex (match the label logic used elsewhere so spans look nice)
     let label = match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) if name.starts_with("goblin_") && name.ends_with(".gbln") => "<snippet>".to_string(),
+        Some(name) if name.starts_with("goblin_") && (name.ends_with(".gob") || name.ends_with(".gbln")) => "<snippet>".to_string(),
         _ => path.display().to_string(),
     };
     let tokens = match goblin_lexer::lex(&src, &label) {
@@ -1395,7 +1396,7 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 
     // 2) lex
     let label = match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) if name.starts_with("goblin_") && name.ends_with(".gbln") => "<snippet>".to_string(),
+        Some(name) if name.starts_with("goblin_") && (name.ends_with(".gob") || name.ends_with(".gbln")) => "<snippet>".to_string(),
         _ => path.display().to_string(),
     };
     let tokens = match goblin_lexer::lex(&src, &label) {
@@ -1507,7 +1508,7 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 
 fn is_probable_file(s: &str) -> bool {
     let p = std::path::Path::new(s);
-    p.exists() || s.ends_with(".gbln")
+    p.exists() || s.ends_with(".gob") || s.ends_with(".gbln")
 }
 
 fn resolve_entry_from_yaml(cwd: &std::path::Path) -> Option<std::path::PathBuf> {

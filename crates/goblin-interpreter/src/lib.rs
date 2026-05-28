@@ -1,3 +1,5 @@
+// ---- version = "0.42.2"
+
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -250,6 +252,17 @@ pub enum Value {
     /// object itself so that mutations are always applied to the single
     /// canonical copy.
     Ref(String),
+    /// A spatial coordinate reference into a named GridWorld.
+    /// Produced by :grid_ref(world, x, y) and returned by
+    /// :grid_neighbors, :grid_occupied, :grid_cells_with.
+    ///
+    /// This is a pure coordinate — it carries no value itself.
+    /// Use :grid_get / :grid_set to read or write the cell it names.
+    GridRef {
+        grid_id: String,
+        x: i32,
+        y: i32,
+    },
     Enum {                              
         enum_name: String,
         variant_name: String,
@@ -512,6 +525,9 @@ pub struct Session {
     /// Maps class_name -> Vec<var_name> for O(1) repeat Class iteration.
     /// Maintained by set_var and transition system.
     pub class_index: HashMap<String, Vec<String>>,
+
+    // ==== GRID SYSTEM ====
+    pub grid_store: crate::actions::grid_store::GridStore,
 }
 
 impl Session {
@@ -573,6 +589,8 @@ impl Session {
             unit_registry: HashMap::new(),
 
             class_index: HashMap::new(),
+
+            grid_store: crate::actions::grid_store::GridStore::new(),
 
             rng_state: if seed128 == 0 { 0xD1B5_4A32_D192_ED03u128 } else { seed128 },
         }
@@ -1210,6 +1228,9 @@ fn to_json(v: &Value) -> sj::Value {
             sj::Value::Object(obj)
         }
         Value::Ref(uuid) => sj::Value::String(format!("<ref:{}>", uuid)),
+        Value::GridRef { grid_id, x, y } => {
+            sj::Value::String(format!("GridRef({}, {}, {})", grid_id, x, y))
+        }
         Value::Enum { enum_name, variant_name, .. } => {
             sj::Value::String(format!("{}::{}", enum_name, variant_name))
         }
@@ -2017,6 +2038,7 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Member(_, _, sp)
         | ast::Expr::OptMember(_, _, sp)
         | ast::Expr::Index(_, _, sp)
+        | ast::Expr::Index2(_, _, _, sp)
         | ast::Expr::Slice(_, _, _, sp)
         | ast::Expr::Slice3(_, _, _, _, sp)
         | ast::Expr::Call(_, _, _, sp)
@@ -2258,6 +2280,10 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
             s
         }
 
+        Value::GridRef { grid_id, x, y } => {
+            format!("GridRef({}, {}, {})", grid_id, x, y)
+        }
+
         Value::Unit | Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => String::new(),
     }
 }
@@ -2295,6 +2321,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::Object { .. } => "object",
         Value::Enum { .. } => "enum",
         Value::Ref(_) => "object",
+        Value::GridRef { .. } => "gridref",
     }
 }
 
@@ -2917,6 +2944,25 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         );
                                     }
 
+
+                                    // Guard: object variables cannot be rebound to non-object values
+                                    if !matches!(val, Value::Object { .. }) {
+                                        let current = sess.env[frame_ix].get(&name);
+                                        let is_object = matches!(current, Some(Value::Object { .. }))
+                                            || matches!(current, Some(Value::Ref(uuid)) if sess.object_store.contains_key(uuid.as_str()));
+                                        if is_object {
+                                            return Err(Diagnostic::new_with_code(
+                                                Severity::Error,
+                                                "R1300",
+                                                "live-object-rebind",
+                                                &format!("'{}' is an object and cannot be rebound to a non-object value", name),
+                                                name_span.clone(),
+                                            )
+                                            .with_help("To modify a field, use: rome >> field |= value")
+                                            .with_help("To replace the object entirely, erase it first.")
+                                            .with_link("https://goblinlang.org/docs/errors#R1300"));
+                                        }
+                                    }
                                     if let Some(slot) = sess.env[frame_ix].get_mut(&name) {
                                         *slot = val;
                                     } else {
@@ -3033,6 +3079,25 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                     );
                                 }
 
+
+                                // Guard: object variables cannot be rebound to non-object values
+                                if !matches!(val, Value::Object { .. }) {
+                                    let current = sess.env[frame_ix].get(&name);
+                                    let is_object = matches!(current, Some(Value::Object { .. }))
+                                        || matches!(current, Some(Value::Ref(uuid)) if sess.object_store.contains_key(uuid.as_str()));
+                                    if is_object {
+                                        return Err(Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            "R1300",
+                                            "live-object-rebind",
+                                            &format!("'{}' is an object and cannot be rebound to a non-object value", name),
+                                            name_span.clone(),
+                                        )
+                                        .with_help("To modify a field, use: rome >> field |= value")
+                                        .with_help("To replace the object entirely, erase it first.")
+                                        .with_link("https://goblinlang.org/docs/errors#R1300"));
+                                    }
+                                }
                                 if let Some(slot) = sess.env[frame_ix].get_mut(&name) {
                                     *slot = val;
                                 } else {
@@ -4847,6 +4912,25 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         );
                     }
 
+
+                    // Guard: object variables cannot be rebound to non-object values
+                    if !matches!(rhs, Value::Object { .. }) {
+                        let current = sess.env[frame_ix].get(name);
+                        let is_object = matches!(current, Some(Value::Object { .. }))
+                            || matches!(current, Some(Value::Ref(uuid)) if sess.object_store.contains_key(uuid.as_str()));
+                        if is_object {
+                            return Err(Diagnostic::new_with_code(
+                                Severity::Error,
+                                "R1300",
+                                "live-object-rebind",
+                                &format!("'{}' is an object and cannot be rebound to a non-object value", name),
+                                name_span.clone(),
+                            )
+                            .with_help("To modify a field, use: rome >> field |= value")
+                            .with_help("To replace the object entirely, erase it first.")
+                            .with_link("https://goblinlang.org/docs/errors#R1300"));
+                        }
+                    }
                     // Mutate in the frame it was found in
                     if let Some(slot) = sess.env[frame_ix].get_mut(name) {
                         *slot = rhs;
@@ -10381,7 +10465,8 @@ fn call_action_by_name(
                 | v @ Value::Seq(_)
                 | v @ Value::Object { .. }
                 | v @ Value::Enum { .. }
-                | v @ Value::Ref(_) => v,
+                | v @ Value::Ref(_)
+                | v @ Value::GridRef { .. } => v,
 
                 // implicit-return: Unit means "no value", do NOT fallback to forwarded args
                 Value::Unit => Value::Unit,
@@ -12701,6 +12786,23 @@ fn call_action_by_name(
         "secure_pick"    => crate::actions::csprng::secure_pick(sess, &args, &sp)?,
         "secure_random"  => crate::actions::csprng::secure_random(sess, &args, &sp)?,
         "secure_shuffle" => crate::actions::csprng::secure_shuffle(sess, &args, &sp)?,
+
+        // ----- Grid system -----
+        "grid_new" => {
+            return crate::actions::grid::grid_new(sess, &args, &sp);
+        }
+        "grid_ref"            => crate::actions::grid::grid_ref(sess, &args, &sp)?,
+        "grid_get"            => crate::actions::grid::grid_get(sess, &args, &sp)?,
+        "grid_set"            => crate::actions::grid::grid_set(sess, &args, &sp)?,
+        "grid_void"           => crate::actions::grid::grid_void(sess, &args, &sp)?,
+        "grid_neighbors"      => crate::actions::grid::grid_neighbors(sess, &args, &sp)?,
+        "grid_tick_begin"     => crate::actions::grid::grid_tick_begin(sess, &args, &sp)?,
+        "grid_tick_commit"    => crate::actions::grid::grid_tick_commit(sess, &args, &sp)?,
+        "grid_occupied"       => crate::actions::grid::grid_occupied(sess, &args, &sp)?,
+        "grid_occupied_count" => crate::actions::grid::grid_occupied_count(sess, &args, &sp)?,
+        "grid_count"          => crate::actions::grid::grid_count(sess, &args, &sp)?,
+        "grid_cells_with"     => crate::actions::grid::grid_cells_with(sess, &args, &sp)?,
+        "grid_info"           => crate::actions::grid::grid_info(sess, &args, &sp)?,
 
         // ── Ownership query builtins ─────────────────────────────────────────
 
@@ -16546,23 +16648,74 @@ fn mutate_via_call_name(
 fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
     match e {
+        // ---- grid[x, y] | value  and  grid[x, y] |= value ----
+        // Both forms write to the "owner" layer.
+        ast::Expr::Binary(lhs, op, rhs, sp)
+            if (op == "|" || op == "|=")
+            && matches!(lhs.as_ref(), ast::Expr::Index2(..)) =>
+        {
+            let ast::Expr::Index2(base, x_expr, y_expr, _) = lhs.as_ref() else { unreachable!() };
+            let grid_id = match eval_expr(base, sess)? {
+                Value::Str(s) => s,
+                Value::GridRef { grid_id, .. } => grid_id,
+                other => return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    &format!("grid[x, y] requires a grid name, got {:?}", other),
+                    sp.clone(),
+                ).with_link("https://goblinlang.org/docs/errors#T0205")),
+            };
+            let x = match eval_expr(x_expr, sess)? {
+                Value::Int(n) => i32::try_from(n).map_err(|_| Diagnostic::new_with_code(
+                    Severity::Error, crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch", "grid x coordinate out of range", sp.clone(),
+                ))?,
+                other => return Err(Diagnostic::new_with_code(
+                    Severity::Error, crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    &format!("grid x must be an integer, got {:?}", other), sp.clone(),
+                ).with_link("https://goblinlang.org/docs/errors#T0205")),
+            };
+            let y = match eval_expr(y_expr, sess)? {
+                Value::Int(n) => i32::try_from(n).map_err(|_| Diagnostic::new_with_code(
+                    Severity::Error, crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch", "grid y coordinate out of range", sp.clone(),
+                ))?,
+                other => return Err(Diagnostic::new_with_code(
+                    Severity::Error, crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    &format!("grid y must be an integer, got {:?}", other), sp.clone(),
+                ).with_link("https://goblinlang.org/docs/errors#T0205")),
+            };
+            let value = eval_expr(rhs, sess)?;
+            let args = vec![
+                Value::Str(grid_id),
+                Value::Int(x as i64),
+                Value::Int(y as i64),
+                Value::Str("owner".to_string()),
+                value,
+            ];
+            crate::actions::grid::grid_set(sess, &args, sp)
+        }
+
         // ---- Member path assignment: (Object >> field) |= value ----
         ast::Expr::Binary(lhs, op, rhs, sp) if op == "|=" => {
             let rhs_val = eval_expr(rhs, sess)?;
             let path = parse_lvalue(lhs, sess)?;
 
             // Guard: prevent rebinding a live object variable to a non-object value.
-            // Rome |= 42 is a hard error if Rome points to a live object.
+            // rome |= 42 is a hard error if rome points to a live object.
             // Use erase, mutate, or field assignment instead.
             if let LValuePath::Var(ref var_name) = path {
                 if !matches!(rhs_val, Value::Object { .. }) {
                     let is_live_object = sess.env.iter().rev().find_map(|frame| {
-                        frame.get(var_name.as_str()).map(|v| {
-                            if let Value::Ref(uuid) = v {
-                                sess.object_store.contains_key(uuid.as_str())
-                            } else {
-                                false
-                            }
+                        frame.get(var_name.as_str()).map(|v| match v {
+                            // Object stored via Ref (old path)
+                            Value::Ref(uuid) => sess.object_store.contains_key(uuid.as_str()),
+                            // Object stored directly in frame (new <> instantiation path)
+                            Value::Object { .. } => true,
+                            _ => false,
                         })
                     }).unwrap_or(false);
                     if is_live_object {
@@ -16570,10 +16723,11 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             Severity::Error,
                             "R1300",
                             "live-object-rebind",
-                            &format!("'{}' points to a live object and cannot be rebound to a different value", var_name),
+                            &format!("'{}' is an object and cannot be rebound to a non-object value", var_name),
                             sp.clone(),
                         )
-                        .with_help("To modify the object, use field assignment (obj >> field |= value), actions, transitions, or erase.")
+                        .with_help("To modify a field, use: rome >> field |= value")
+                        .with_help("To replace the object entirely, erase it first.")
                         .with_link("https://goblinlang.org/docs/errors#R1300"));
                     }
                 }
@@ -17269,6 +17423,81 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     .with_link("https://goblinlang.org/docs/errors#T0205"),
                 ),
             }
+        }
+
+        // grid[x, y] — 2D coordinate index, produces Value::GridRef
+        ast::Expr::Index2(base, x_expr, y_expr, sp) => {
+            let grid_id = match eval_expr(base, sess)? {
+                Value::Str(s) => s,
+                Value::GridRef { grid_id, .. } => grid_id,
+                other => return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    &format!("grid[x, y] requires a grid name (string), got {:?}", other),
+                    sp.clone(),
+                )
+                .with_help("Bind the grid first: world | grid_new(\"world\", 100, 100)")
+                .with_link("https://goblinlang.org/docs/errors#T0205")),
+            };
+            let x = match eval_expr(x_expr, sess)? {
+                Value::Int(n) => i32::try_from(n).map_err(|_| Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    "grid x coordinate out of range",
+                    sp.clone(),
+                ))?,
+                other => return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    &format!("grid x coordinate must be an integer, got {:?}", other),
+                    sp.clone(),
+                )
+                .with_link("https://goblinlang.org/docs/errors#T0205")),
+            };
+            let y = match eval_expr(y_expr, sess)? {
+                Value::Int(n) => i32::try_from(n).map_err(|_| Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    "grid y coordinate out of range",
+                    sp.clone(),
+                ))?,
+                other => return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    &format!("grid y coordinate must be an integer, got {:?}", other),
+                    sp.clone(),
+                )
+                .with_link("https://goblinlang.org/docs/errors#T0205")),
+            };
+            let world = sess.grid_store.get(&grid_id).ok_or_else(|| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::UNKNOWN_IDENT,
+                    "unknown-grid",
+                    &format!("no grid named '{}'", grid_id),
+                    sp.clone(),
+                )
+                .with_help("Create the grid first with grid_new(name, width, height).")
+                .with_link("https://goblinlang.org/docs/errors#R0101")
+            })?;
+            if !world.in_bounds(x, y) {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::INVALID_INDEX,
+                    "grid-out-of-bounds",
+                    &format!("coordinate ({}, {}) is out of bounds for grid '{}' ({}x{})",
+                        x, y, grid_id, world.width, world.height),
+                    sp.clone(),
+                )
+                .with_help("Coordinates must be within [0, width) and [0, height).")
+                .with_link("https://goblinlang.org/docs/errors#R0401"));
+            }
+            Ok(Value::GridRef { grid_id, x, y })
         }
 
         // arr[start:end]  (strings or arrays)

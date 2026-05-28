@@ -1,4 +1,6 @@
-﻿#![allow(dead_code)]
+﻿// ---- version = "0.16.2"
+
+#![allow(dead_code)]
 #![allow(unused_assignments)]
 #![allow(unused_variables)]
 
@@ -36,6 +38,7 @@ enum PExpr {
     FreeCall(String, Vec<PExpr>),
     Ident(String),
     Index(Box<PExpr>, Box<PExpr>),
+    Index2(Box<PExpr>, Box<PExpr>, Box<PExpr>),  // grid[x, y]
     Int(String),
     IntWithUnit(String, String),
     IsBound(Box<PExpr>),
@@ -861,6 +864,11 @@ impl<'t> Parser<'t> {
             Index(x, y) => {
                 Self::key_expr_is_side_effect_free(x.as_ref())
                     && Self::key_expr_is_side_effect_free(y.as_ref())
+            }
+            Index2(x, a, b) => {
+                Self::key_expr_is_side_effect_free(x.as_ref())
+                    && Self::key_expr_is_side_effect_free(a.as_ref())
+                    && Self::key_expr_is_side_effect_free(b.as_ref())
             }
             Member(x, _) | OptMember(x, _) => Self::key_expr_is_side_effect_free(x.as_ref()),
 
@@ -1770,6 +1778,12 @@ impl<'t> Parser<'t> {
                 let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
                 let idx = Box::new(Self::lower_expr_preview(*idx, sp.clone()));
                 ast::Expr::Index(obj, idx, sp)
+            }
+            PExpr::Index2(expr, x, y) => {
+                let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                let x   = Box::new(Self::lower_expr_preview(*x, sp.clone()));
+                let y   = Box::new(Self::lower_expr_preview(*y, sp.clone()));
+                ast::Expr::Index2(obj, x, y, sp)
             }
 
             // Unary / postfix / binary / assignment
@@ -5822,6 +5836,71 @@ impl<'t> Parser<'t> {
                 }
             }
         }
+        // -------- grid[x, y] | value  and  grid[x, y] |= value --------
+        // Detects IDENT [ ... , ... ] followed by | or |=
+        // and lowers to Expr::Binary(Index2(...), "|" or "|=", rhs).
+        if let Some(t0) = self.peek().cloned() {
+            if matches!(t0.kind, TokenKind::Ident) {
+                if let Some(t1) = self.toks.get(self.i + 1) {
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == "[") {
+                        let mut k = self.i + 2;
+                        let mut depth = 1usize;
+                        let mut found_comma = false;
+                        let mut found_bind = false;
+                        while let Some(t) = self.toks.get(k) {
+                            match &t.kind {
+                                TokenKind::Op(s) if s == "[" => { depth += 1; k += 1; }
+                                TokenKind::Op(s) if s == "]" => {
+                                    depth -= 1;
+                                    k += 1;
+                                    if depth == 0 {
+                                        while matches!(self.toks.get(k), Some(t) if matches!(t.kind, TokenKind::Newline)) { k += 1; }
+                                        if let Some(tnext) = self.toks.get(k) {
+                                            if matches!(tnext.kind, TokenKind::Op(ref s) if s == "|" || s == "|=") {
+                                                found_bind = true;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                                TokenKind::Op(s) if s == "," && depth == 1 => {
+                                    found_comma = true;
+                                    k += 1;
+                                }
+                                _ => { k += 1; }
+                            }
+                        }
+                        if found_comma && found_bind {
+                            let start_i = self.i;
+                            let lhs_pe = self.parse_coalesce()?;
+                            let lhs = self.lower_expr(lhs_pe);
+                            self.skip_newlines();
+                            let op_sp = self.peek().map(|t| t.span.clone()).unwrap_or_else(|| t0.span.clone());
+                            let op = if self.eat_op("|=") {
+                                "|="
+                            } else if self.eat_op("|") {
+                                "|"
+                            } else {
+                                self.i = start_i;
+                                ""
+                            };
+                            if !op.is_empty() {
+                                self.skip_newlines();
+                                let rhs_pe = self.parse_coalesce()?;
+                                let rhs = self.lower_expr(rhs_pe);
+                                return Ok(ast::Stmt::Expr(ast::Expr::Binary(
+                                    Box::new(lhs),
+                                    op.to_string(),
+                                    Box::new(rhs),
+                                    op_sp,
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // -------- member path assignment: Object >> field |= value --------
         // Detects IDENT >> ... |= pattern and lowers to a member retether.
         if let Some(t0) = self.peek().cloned() {
@@ -10625,8 +10704,33 @@ impl<'t> Parser<'t> {
                     }
                 }
 
-                // Close bracket
+                // Close bracket — or 2D index: grid[x, y]
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+
+                // Check for comma before the close bracket: grid[x, y]
+                if !is_slice && self.peek_op(",") {
+                    let idx = start.ok_or_else(|| s_help_site!(
+                        "P0701",
+                        "Brackets need an index or slice expression",
+                        "Write something inside the brackets: items[0], data[1:5], or list[2:8:2]",
+                    ))?;
+                    let _ = self.eat_op(",");
+                    while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                    let idx2 = self.parse_coalesce()?;
+                    while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+                    if !self.eat_op("]") {
+                        self.suspend_colon_call -= 1;
+                        return Err(s_help_site!(
+                            "P0702",
+                            "Expected ']' to close this 2D index",
+                            "Write: grid[x, y] with exactly two coordinates",
+                        ));
+                    }
+                    self.suspend_colon_call -= 1;
+                    lhs = PExpr::Index2(Box::new(lhs), Box::new(idx), Box::new(idx2));
+                    continue;
+                }
+
                 if !self.eat_op("]") {
                     self.suspend_colon_call -= 1;
                     return Err(s_help_site!(

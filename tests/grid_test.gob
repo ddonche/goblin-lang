@@ -1,0 +1,70 @@
+/// ── Grid System: Full Behavior Test ──────────────────────────────────────────
+
+/// 1. World creation and info
+grid_new("world", 10, 10)
+world | "world"
+info | grid_info(world)
+say info["name"]           /// → world
+say info["width"]          /// → 10
+say info["height"]         /// → 10
+say info["mode"]           /// → 8
+
+/// 2. Explicit set/get
+grid_set("world", 2, 2, "state", 99)
+say grid_get("world", 2, 2, "state")   /// → 99
+
+/// 3. GridRef syntax — read
+say world[2, 2]                        /// → GridRef(world, 2, 2)
+
+/// 4. GridRef syntax — write with |
+world[5, 5] | "Russia"
+say grid_get("world", 5, 5, "owner")   /// → Russia
+
+/// 5. GridRef syntax — rebind with |=
+world[5, 5] |= "China"
+say grid_get("world", 5, 5, "owner")   /// → China
+
+/// 6. Nil clears a cell
+grid_set("world", 2, 2, "state", nil)
+say grid_get("world", 2, 2, "state")   /// → nil
+
+/// 7. Multiple layers are independent
+grid_set("world", 3, 3, "owner",   "France")
+grid_set("world", 3, 3, "terrain", "forest")
+say grid_get("world", 3, 3, "owner")    /// → France
+say grid_get("world", 3, 3, "terrain")  /// → forest
+
+/// 8. Neighbor count — center cell (8-neighbor mode)
+n | grid_neighbors("world", 5, 5)
+say count(n)   /// → 8
+
+/// 9. Neighbor count — corner cell
+nc | grid_neighbors("world", 0, 0)
+say count(nc)  /// → 3
+
+/// 10. Void cell excluded from neighbors
+grid_void("world", 5, 4)
+nv | grid_neighbors("world", 5, 5)
+say count(nv)  /// → 7
+
+/// 11. Query builtins
+grid_set("world", 1, 0, "state", 1)
+grid_set("world", 2, 0, "state", 1)
+grid_set("world", 3, 0, "state", 1)
+say grid_occupied_count("world", "state")   /// → 3
+say grid_count("world", "state", 1)         /// → 3
+
+/// 12. tick_db begin/commit
+grid_tick_begin("world")
+grid_tick_commit("world")
+say grid_count("world", "state", 1)         /// → 3 (unchanged)
+
+/// 13. Wrapped neighbor mode — corner has full 8 neighbors
+grid_new("wrapped", 10, 10, "wrapped")
+nw | grid_neighbors("wrapped", 0, 0)
+say count(nw)  /// → 8
+
+/// 14. 4-neighbor mode
+grid_new("four", 10, 10, 4)
+n4 | grid_neighbors("four", 5, 5)
+say count(n4)  /// → 4
