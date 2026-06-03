@@ -1,0 +1,74 @@
+/// big list of words
+gbln_words | [
+    "grak ", "snortum ", "jabberfang ", "muck-pit ", "shinies ", "grotto ", "cave ", "rev ", "pain ",
+    "skitter ", "chitter ", "scrapclave ", "bog-brew ", "stash ", "fang ", "hidden ", "treasures ", "keeper ",
+    "tether ", "hoard ", "stash ", "skrag ", "bones ", "gold ", "lock ", "club ", "hut ", "clan ", "warrior ",
+    "graveyard ", "coin ", "loot ", "glam-glam ", "mutton ", "hock ", "priest ", "priestess ", "magic ", "sorceror ",
+    "boom ", "goblin ", "filch ", "snicker ", "clank ", "rusty ", "witch ", "wizard ", "feast ", "supper ", "rotten ",
+    "zint ", "krell ", "vosh ", "tarrak ", "brumm ", "gless ", "sharn ", "dorr ", "ogre ", "giant ", "beast ", "monster ",
+    "jelt ", "murn ", "plesh ", "quarn ", "rellik ", "sann ", "torm ", "vellix ", "human ", "elf ", "dwarf ", "hobbit ", "orc ",
+    "zorn ", "brask ", "chull ", "drimm ", "fess ", "gann ", "hork ", "jinx ", "kress ", "troll ", "gremlin ", "imp ", "demons ",
+    "lorn ", "mizz ", "neth ", "phex ", "quill ", "rusk ", "seth ", "tazz ", "vorn ", "bats ", "spider ", "snake ", "pirates ",
+    "wex ", "yorn ", "zess ", "blint ", "crall ", "druss ", "frenn ", "grish ", "halth ", "fishy ", "me ", "mines ", "wanting ",
+    "jorr ", "krinn ", "lusk ", "morth ", "nall ", "prill ", "quess ", "rinth ", "took ", "ghouls ", "coffin ", "swampy ",
+    "soll ", "trenn ", "vask ", "winn ", "xell ", "zall ", "zi ", "kor ", "vu ", "taz ", "him ", "her ", "kiddie ", "itsy ",
+    "gle ", "shu ", "dor ", "je ", "mur ", "qar ", "re ", "sax ", "to ", "vex ", "zo ", "chu ", "bitsy ", "welcome ", "wishy ", "sparkle ",
+    "fex ", "ga ", "hor ", "ji ", "kru ", "lo ", "miz ", "ne ", "phi ", "qi ", "ruz ", "se ", "tav ", "sleepy ", "mad ", "hurt ", "come ",
+    "vo ", "wex ", "yo ", "zes ", "cra ", "dr ", "fri ", "gr ", "hal ", "jo ", "kri ", "lu ", "mor ", "cough ", "sick ", "taken ", "lost ",
+    "na ", "pri ", "qu ", "rin ", "so ", "tru ", "va ", "wil ", "xe ", "zal ", "away ", "gone ", "green ", "yellow ", "red ", "blue ",
+    "purple ", "brown ", "black ", "white ", "pink ", "orange ", "totem ", "power ", "thinky ", "good ", "tower ",
+    "knife ", "stick ", "runny ", "long ", "time ", "many-many ", "get ", "hooky ", "doggums ", "yum-yum ", "lashy ",
+    "terribles ",
+]
+
+/// words that will appear to make it feel more smooth; prepositions
+commons | [
+    "the ", "and ", "in ", "under ", "over ", "through ", "with ", "from ", "above ", "if ",
+    "of ", "a ", "this ", "that ", "little ", "old ", "hungry ", "loud ", "under ", "go ",
+    "quiet ", "strange ", "broken ", "big ", "tiny ", "at ", "there ", "be ", "for ", "out ",
+]
+
+act goblin_ipsum_sentence
+    /// generate random numbers of words from each list
+    wc | pick 1 from 2...18 
+    wc2 | pick 1 from 2...6  
+
+    rest_words | pick {wc} from gbln_words with dups
+    common_words | pick {wc2} from commons with dups
+
+    all_words | rest_words + common_words 
+
+    shuffled | shuffle(all_words)  
+    
+    /// capitalize the first word of each sentence
+    shuffled[0] |! :title(shuffled[0])
+    final | :pack(shuffled)
+    final.trim + ". "
+xx
+
+act goblin_ipsum_paragraph
+    sentence_count | pick 1 from 3...7
+    sentences | []
+    repeat sentence_count
+        s | goblin_ipsum_sentence()
+        put_last!(sentences, s)
+    xx
+    :pack(sentences)
+xx
+
+act goblin_ipsum
+    /// while loop using bare repeat
+    repeat
+        para_count | :ask("How many paragraphs? (1-5)").int
+
+        if (para_count >= 1) and (para_count <= 5)
+            repeat para_count
+                say goblin_ipsum_paragraph() + "\n"
+            xx
+        else
+            say "Please enter a number between 1 and 5."
+        xx
+    xx
+xx
+
+goblin_ipsum()

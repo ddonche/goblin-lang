@@ -1,4 +1,4 @@
-﻿// ---- version = "0.18.0"
+﻿// ---- version = "0.18.1"
 
 #![allow(dead_code)]
 #![allow(unused_assignments)]
@@ -6108,6 +6108,70 @@ impl<'t> Parser<'t> {
             }
         }
 
+        // ---- indexed |! update sugar: array[1] |! value ----
+        {
+            let save_i = self.i;
+
+            if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident)) {
+                // Parse a full LHS expression: array[1], map["key"], grid[x,y], etc.
+                let lhs_pe = self.parse_coalesce()?;
+
+                self.skip_newlines();
+
+                if self.peek_op("|!") {
+                    let op_sp = self.peek().unwrap().span.clone();
+                    let _ = self.eat_op("|!");
+
+                    self.skip_newlines();
+
+                    let rhs_pe = self.parse_coalesce()?;
+                    let rhs = self.lower_expr(rhs_pe);
+
+                    let lhs = self.lower_expr(lhs_pe);
+
+                    match lhs {
+                        ast::Expr::Index(base, index, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "update_at!".to_string(),
+                                vec![*base, *index, rhs],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        ast::Expr::Index2(base, x, y, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "update_at2!".to_string(),
+                                vec![*base, *x, *y, rhs],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        ast::Expr::Ident(_, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "update!".to_string(),
+                                vec![lhs, rhs],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        _ => {
+                            return Err(s_help_site!(
+                                "P04U1",
+                                "Invalid target for '|!' update",
+                                "Use '|!' with a name or indexed collection target: array |! value or array[0] |! value."
+                            ));
+                        }
+                    }
+                }
+
+                // Not actually a |! statement; rewind and let normal parsing handle it.
+                self.i = save_i;
+            }
+        }
+
         // -------- aug-assign statement sugar (legacy set only) --------
         // Supports exactly what old parse_assign supported:
         // ??= //= += -= *= /= %= **= |!  (|= already handled by parse_bind_stmt)
@@ -6151,12 +6215,25 @@ impl<'t> Parser<'t> {
 
                         // |! is statement sugar for update!(name, rhs)
                         if op == "|!" {
-                            let call = ast::Expr::FreeCall(
-                                "update!".to_string(),
-                                vec![lhs_expr, rhs],
-                                op_sp.clone(),
-                            );
-                            return Ok(ast::Stmt::Expr(call));
+                            match lhs_expr {
+                                ast::Expr::Index(base, index, _) => {
+                                    let call = ast::Expr::FreeCall(
+                                        "update_at!".to_string(),
+                                        vec![*base, *index, rhs],
+                                        op_sp.clone(),
+                                    );
+                                    return Ok(ast::Stmt::Expr(call));
+                                }
+
+                                _ => {
+                                    let call = ast::Expr::FreeCall(
+                                        "update!".to_string(),
+                                        vec![lhs_expr, rhs],
+                                        op_sp.clone(),
+                                    );
+                                    return Ok(ast::Stmt::Expr(call));
+                                }
+                            }
                         }
 
                         // Otherwise lower to: name |= (name <baseop> rhs)
