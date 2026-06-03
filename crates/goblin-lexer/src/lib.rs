@@ -1,5 +1,5 @@
 //! Goblin Lexer (refactored)
-//! 
+// ---- version = "0.4.1"
 //! Complete rewrite with improved organization while preserving all functionality.
 
 #![allow(dead_code)]
@@ -1390,7 +1390,7 @@ fn lex_hash_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
         let span = state.span(start_i, start_col);
         return Err(vec![Diagnostic::error(
             "L0401",
-            "Expected a name after `#`\n\nhelp: Write `#tag` or remove the `#`; if you meant to write a comment, use `///` instead",
+            "Expected a name after `#`\n\nhelp: Write `#namespace::name` or `#tag`",
             span,
         )]);
     }
@@ -1404,11 +1404,43 @@ fn lex_hash_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
         let sp = state.span(state.i, state.col);
         return Err(vec![Diagnostic::error(
             "L0403",
-            "Names can't end with `!` or `?`\n\nhelp: Remove the suffix: write `#tag`",
+            "Names can't end with `!` or `?`",
             sp,
         )]);
     }
 
+    // Optional ::name suffix — makes this a Box variable
+    if state.bytes.get(state.i) == Some(&b':')
+        && state.bytes.get(state.i + 1) == Some(&b':')
+    {
+        state.advance(); // first ':'
+        state.advance(); // second ':'
+
+        if !state.current().map_or(false, |b| is_alpha(b) || b == b'_') {
+            let span = state.span(state.i, state.col);
+            return Err(vec![Diagnostic::error(
+                "L0404",
+                "Expected a variable name after '::'",
+                span,
+            )]);
+        }
+
+        state.advance();
+        while state.current().map_or(false, is_ident_continue) {
+            state.advance();
+        }
+
+        if state.current() == Some(b'!') || state.current() == Some(b'?') {
+            let sp = state.span(state.i, state.col);
+            return Err(vec![Diagnostic::error(
+                "L0403",
+                "Names can't end with `!` or `?`",
+                sp,
+            )]);
+        }
+    }
+
+    // value is "namespace" or "namespace::varname"
     let name = String::from_utf8_lossy(&state.bytes[(start_i + 1)..state.i]).into_owned();
     state.push_token(TokenKind::HashIdent, start_i, start_col, Some(name));
     Ok(())

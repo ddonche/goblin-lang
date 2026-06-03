@@ -1,6 +1,6 @@
 [package]
 name = "goblin-parser"
-version = "0.16.2"
+version = "0.18.0"
 edition = "2024"
 
 [dependencies]

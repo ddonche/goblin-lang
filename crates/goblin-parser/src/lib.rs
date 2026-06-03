@@ -1,4 +1,4 @@
-﻿// ---- version = "0.16.2"
+﻿// ---- version = "0.18.0"
 
 #![allow(dead_code)]
 #![allow(unused_assignments)]
@@ -99,6 +99,7 @@ enum PExpr {
         ident: String,
         span: Span,
     },
+    BoxVar { namespace: String, name: String },
     ObjectMatrix {
         type_name: String,
         /// Column identifiers (the object names): USA, France, Russia
@@ -893,7 +894,7 @@ impl<'t> Parser<'t> {
             StrInterp(ps) => ps.iter().all(|p| matches!(p, StrPart::Text(_) | StrPart::LValue{..})),
 
             // Conservative defaults for complex constructs
-            ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) | ObjectMatrix { .. } => false,
+            ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) | ObjectMatrix { .. } | BoxVar { .. } => false,
         }
     }
 
@@ -1615,6 +1616,7 @@ impl<'t> Parser<'t> {
             PExpr::LiteralToken { module, ident, span } => {
                 ast::Expr::LiteralToken { module, ident, span }
             }
+            PExpr::BoxVar { namespace, name } => ast::Expr::BoxVar { namespace, name, span: sp },
             // Collections
             PExpr::Array(items) => {
                 let elems = items
@@ -5545,6 +5547,37 @@ impl<'t> Parser<'t> {
             return self.parse_bind_stmt();
         }
 
+        // Box variable write: #namespace::name | value
+        if let Some(tok) = self.peek() {
+            if matches!(tok.kind, TokenKind::HashIdent) {
+                let tok = self.toks[self.i].clone();
+                let raw = tok.value.clone().unwrap_or_default();
+                if let Some(pos) = raw.find("::") {
+                    let namespace = raw[..pos].to_string();
+                    let name = raw[pos + 2..].to_string();
+                    let span = tok.span.clone();
+                    self.i += 1;
+
+                    let mode = if self.eat_op("|=") {
+                        ast::BindMode::Retether
+                    } else if self.eat_op("|") {
+                        ast::BindMode::Tether
+                    } else {
+                        return Err(s_help_site!(
+                            "P0420",
+                            "Expected '|' or '|=' after Box variable",
+                            "Write: #namespace::name | value",
+                        ));
+                    };
+
+                    let rhs_pe = self.parse_coalesce()?;
+                    let rhs = self.lower_expr(rhs_pe);
+
+                    return Ok(ast::Stmt::BoxBind { namespace, name, expr: rhs, mode, span });
+                }
+            }
+        }
+
         // ---- Friendly guard: looks like a class header but missing '@'
         // Pattern: Capitalized Ident '=' Ident ':'  (e.g., A = n: 1)
         if let Some(t0) = self.peek() {
@@ -5654,6 +5687,133 @@ impl<'t> Parser<'t> {
                 vec![],
                 span,
             )));
+        }
+
+        // -------- grid(...) with optional hierarchy sub-block --------
+        // Handles:
+        //   world | grid("world", 1024, 1024)
+        //   world | grid("world", 1024, 1024, 8)
+        //       tile 32 by 32
+        //       regions 16
+        if self.peek_word("grid") {
+            let start_i = self.i;
+            self.i += 1; // consume 'grid'
+
+            if !self.eat_op("(") {
+                // Not a call — reset and fall through
+                self.i = start_i;
+            } else {
+                // Parse the argument list manually
+                let mut call_args: Vec<PExpr> = Vec::new();
+                loop {
+                    self.skip_newlines();
+                    if self.eat_op(")") { break; }
+                    if !call_args.is_empty() {
+                        if !self.eat_op(",") {
+                            return Err(s_help_site!(
+                                "P0801",
+                                "Expected ',' or ')' in grid_new argument list",
+                                "Write: grid_new(\"world\", 1024, 1024) or grid_new(\"world\", 1024, 1024, 8)",
+                            ));
+                        }
+                        self.skip_newlines();
+                    }
+                    let arg = self.parse_coalesce()?;
+                    call_args.push(arg);
+                }
+
+                // Check for optional sub-block (newline + indent)
+                let saved = self.i;
+                self.skip_newlines();
+                let has_block = matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, TokenKind::Indent));
+
+                let mut tile_w:   i64 = -1;
+                let mut tile_h:   i64 = -1;
+                let mut regions:  i64 = -1;
+
+                if has_block {
+                    self.i += 1; // consume Indent
+
+                    loop {
+                        self.skip_newlines();
+                        match self.toks.get(self.i) {
+                            Some(t) if matches!(t.kind, TokenKind::Dedent) => {
+                                self.i += 1;
+                                break;
+                            }
+                            None => break,
+                            _ => {}
+                        }
+
+                        if self.peek_word("tile") {
+                            self.i += 1; // consume 'tile'
+                            let tw_pe = self.parse_coalesce()?;
+                            if !self.eat_word("by") {
+                                return Err(s_help_site!(
+                                    "P0802",
+                                    "Expected 'by' in tile declaration",
+                                    "Write: tile 32 by 32",
+                                ));
+                            }
+                            let th_pe = self.parse_coalesce()?;
+                            // Extract literal ints from PExpr before lowering
+                            if let PExpr::Int(s) = &tw_pe { tile_w = s.parse::<i64>().unwrap_or(-1); }
+                            if let PExpr::Int(s) = &th_pe { tile_h = s.parse::<i64>().unwrap_or(-1); }
+                            if tile_w <= 0 || tile_h <= 0 {
+                                return Err(s_help_site!(
+                                    "P0803",
+                                    "Tile dimensions must be positive integers",
+                                    "Write: tile 32 by 32",
+                                ));
+                            }
+                        } else if self.peek_word("regions") {
+                            self.i += 1; // consume 'regions'
+                            let r_pe = self.parse_coalesce()?;
+                            if let PExpr::Int(s) = &r_pe { regions = s.parse::<i64>().unwrap_or(-1); }
+                            if regions <= 0 {
+                                return Err(s_help_site!(
+                                    "P0804",
+                                    "Region count must be a positive integer",
+                                    "Write: regions 16",
+                                ));
+                            }
+                        } else {
+                            return Err(s_help_site!(
+                                "P0805",
+                                "Unexpected declaration in grid_new block",
+                                "Only 'tile N by N' and 'regions N' are valid here",
+                            ));
+                        }
+
+                        self.skip_newlines();
+                    }
+                } else {
+                    // No block — reset to after the call args
+                    self.i = saved;
+                }
+
+                // Build the lowered call args
+                let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+                let mut lowered: Vec<ast::Expr> = call_args.into_iter()
+                    .map(|a| self.lower_expr(a))
+                    .collect();
+
+                // Pad to at least 4 args (name, w, h, mode) with -1 sentinels
+                while lowered.len() < 4 {
+                    lowered.push(self.lower_expr(PExpr::Int("-1".to_string())));
+                }
+
+                // Append tile_w, tile_h, regions
+                lowered.push(self.lower_expr(PExpr::Int(tile_w.to_string())));
+                lowered.push(self.lower_expr(PExpr::Int(tile_h.to_string())));
+                lowered.push(self.lower_expr(PExpr::Int(regions.to_string())));
+
+                return Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "grid".to_string(),
+                    lowered,
+                    sp,
+                )));
+            }
         }
 
         // -------- keyword-first dispatch (keeps style consistent) --------
@@ -7628,6 +7788,24 @@ impl<'t> Parser<'t> {
                 self.i += 1;
             } else {
                 break;
+            }
+        }
+
+        // Box variable read: #namespace::name
+        if let Some(tok) = self.peek() {
+            if matches!(tok.kind, TokenKind::HashIdent) {
+                let tok = self.toks[self.i].clone();
+                self.i += 1;
+                let raw = tok.value.unwrap_or_default();
+                return if let Some(pos) = raw.find("::") {
+                    Ok(PExpr::BoxVar {
+                        namespace: raw[..pos].to_string(),
+                        name: raw[pos + 2..].to_string(),
+                    })
+                } else {
+                    // plain #tag — preserve existing behaviour
+                    Ok(PExpr::Ident(format!("#{}", raw)))
+                };
             }
         }
 

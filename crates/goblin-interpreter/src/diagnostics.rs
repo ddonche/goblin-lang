@@ -207,6 +207,12 @@ pub mod rtcode {
     pub const NON_NULLABLE_FIELD_NIL: &str = "T0207";
     pub const OBJECT_OR_ARRAY_EXPECTED: &str = "T0208";
 
+    // BOX SYSTEM
+    pub const BOX_VALUE_NOT_FOUND:      &str = "B0101"; // read of missing Box variable
+    pub const BOX_NAMESPACE_VIOLATION:  &str = "B0102"; // GLAM writing outside its namespace
+    pub const BOX_ALREADY_SET:          &str = "B0103"; // Tether to already-set Box variable
+    pub const BOX_UNRESOLVED_NEED:      &str = "B0104"; // empty, invalid, or missing GLAM need
+
     // YALL
     pub const YALL_PARSE_FAILED:  &str = "YA0001"; // strict parse failure (syntax)
     pub const YALL_ENFORCE_FAILED:&str = "YA0002"; // enforcement-level fail (rules/comments)

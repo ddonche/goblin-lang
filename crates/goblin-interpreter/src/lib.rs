@@ -1,4 +1,4 @@
-// ---- version = "0.42.2"
+// ---- version = "0.44.1"
 
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
@@ -526,8 +526,116 @@ pub struct Session {
     /// Maintained by set_var and transition system.
     pub class_index: HashMap<String, Vec<String>>,
 
+    // ==== BOX SYSTEM ====
+    pub box_store: HashMap<String, Value>,
+    pub box_namespace: Option<String>,
+
     // ==== GRID SYSTEM ====
     pub grid_store: crate::actions::grid_store::GridStore,
+}
+
+pub fn load_box_toml(sess: &mut Session, path: &std::path::Path) -> Result<(), String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+
+    let table: toml::Table = content.parse()
+        .map_err(|e| format!("Invalid TOML in {}: {}", path.display(), e))?;
+
+    for (namespace, section) in &table {
+        if let toml::Value::Table(fields) = section {
+            for (key, val) in fields {
+                let v = match val {
+                    toml::Value::String(s)  => Value::Str(s.clone()),
+                    toml::Value::Integer(i) => Value::Int(*i),
+                    toml::Value::Float(f)   => Value::Float(*f),
+                    toml::Value::Boolean(b) => Value::Bool(*b),
+                    other                   => Value::Str(other.to_string()),
+                };
+                sess.box_store.insert(format!("{}::{}", namespace, key), v);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn load_glam_box_toml(
+    sess: &mut Session,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+
+    let table: toml::Table = content.parse()
+        .map_err(|e| format!("Invalid TOML in {}: {}", path.display(), e))?;
+
+    if let Some(toml::Value::Table(needs)) = table.get("needs") {
+        for (local_name, box_ref) in needs {
+            let ref_str = match box_ref {
+                toml::Value::String(s) if s.is_empty() => {
+                    return Err(format!(
+                        "B0104: unresolved-glam-need — '{}' has no value assigned\n\
+                         Fill it in your GLAM's .box.toml: {} = \"#namespace::varname\"",
+                        local_name, local_name
+                    ));
+                }
+                toml::Value::String(s) => s,
+                _ => return Err(format!(
+                    "B0104: unresolved-glam-need — '{}' must be a Box variable string like \"#local::content_dir\"",
+                    local_name
+                )),
+            };
+
+            if !ref_str.starts_with('#') || !ref_str.contains("::") {
+                return Err(format!(
+                    "B0104: unresolved-glam-need — '{}' value \"{}\" is not a valid Box reference\n\
+                     Must be in the form \"#namespace::varname\"",
+                    local_name, ref_str
+                ));
+            }
+
+            let trimmed = &ref_str[1..];
+            let pos = trimmed.find("::").unwrap();
+            let namespace = &trimmed[..pos];
+            let varname = &trimmed[pos + 2..];
+            let key = format!("{}::{}", namespace, varname);
+
+            match sess.box_store.get(&key).cloned() {
+                Some(v) => { sess.define_local(local_name.clone(), v, false); }
+                None => {
+                    return Err(format!(
+                        "B0104: unresolved-glam-need — '{}' references '#{}' \
+                         but that Box variable does not exist\n\
+                         Run 'goblin box dump' to see what is currently in the Box.",
+                        local_name, key
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(toml::Value::Table(values)) = table.get("values") {
+        for (local_name, val) in values {
+            let v = match val {
+                toml::Value::String(s)  => Value::Str(s.clone()),
+                toml::Value::Integer(i) => Value::Int(*i),
+                toml::Value::Float(f)   => Value::Float(*f),
+                toml::Value::Boolean(b) => Value::Bool(*b),
+                other                   => Value::Str(other.to_string()),
+            };
+            sess.define_local(local_name.clone(), v, false);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn box_dump(sess: &Session) -> String {
+    let mut lines: Vec<String> = sess.box_store
+        .iter()
+        .map(|(k, v)| format!("#{} = {}", k, v.to_string()))
+        .collect();
+    lines.sort();
+    lines.join("\n")
 }
 
 impl Session {
@@ -589,6 +697,9 @@ impl Session {
             unit_registry: HashMap::new(),
 
             class_index: HashMap::new(),
+            
+            box_store: HashMap::new(),
+            box_namespace: None,
 
             grid_store: crate::actions::grid_store::GridStore::new(),
 
@@ -2051,7 +2162,8 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::EnumVariant { span: sp, .. }
         | ast::Expr::Judge { span: sp, .. }
         | ast::Expr::Block { span: sp, .. }
-        | ast::Expr::LiteralToken { span: sp, .. } => sp.clone(),
+        | ast::Expr::LiteralToken { span: sp, .. }
+        | ast::Expr::BoxVar { namespace: _, name: _, span: sp } => sp.clone(),
     }
 }
 
@@ -4789,6 +4901,48 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             }
             Ok(None)
         },
+        ast::Stmt::BoxBind { namespace, name, expr, mode, span } => {
+            if let Some(current_ns) = sess.box_namespace.as_ref() {
+                if current_ns != namespace {
+                    return Err(Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::BOX_NAMESPACE_VIOLATION,
+                        "box-namespace-violation",
+                        &format!(
+                            "GLAM '{}' cannot write into namespace '{}'",
+                            current_ns, namespace
+                        ),
+                        span.clone(),
+                    ));
+                }
+            }
+
+            let value = eval_expr(expr, sess)?;
+            let key = format!("{}::{}", namespace, name);
+
+            match mode {
+                ast::BindMode::Tether => {
+                    if sess.box_store.contains_key(&key) {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::BOX_ALREADY_SET,
+                            "box-already-set",
+                            &format!(
+                                "Box variable '#{}::{}' is already set — use '|=' to reassign",
+                                namespace, name
+                            ),
+                            span.clone(),
+                        ));
+                    }
+                    sess.box_store.insert(key, value);
+                }
+                _ => {
+                    sess.box_store.insert(key, value);
+                }
+            }
+
+            Ok(None)
+        }
 
         ast::Stmt::Bind(b) => {
             // name + span
@@ -5825,6 +5979,13 @@ fn eval_builtin(
         // Unknown builtin → tell caller to fall back to R0301 etc. (None signals “not a builtin here”)
         "tick" => {
             overlay_tick(sess);
+            Value::Unit
+        }
+
+        "tick_db" => {
+            crate::actions::grid::all_grids_tick_db_begin(sess);
+            overlay_tick(sess);
+            crate::actions::grid::all_grids_tick_db_commit(sess);
             Value::Unit
         }
 
@@ -12788,21 +12949,29 @@ fn call_action_by_name(
         "secure_shuffle" => crate::actions::csprng::secure_shuffle(sess, &args, &sp)?,
 
         // ----- Grid system -----
-        "grid_new" => {
-            return crate::actions::grid::grid_new(sess, &args, &sp);
+        "grid" => {
+            return crate::actions::grid::grid(sess, &args, &sp);
         }
-        "grid_ref"            => crate::actions::grid::grid_ref(sess, &args, &sp)?,
         "grid_get"            => crate::actions::grid::grid_get(sess, &args, &sp)?,
         "grid_set"            => crate::actions::grid::grid_set(sess, &args, &sp)?,
         "grid_void"           => crate::actions::grid::grid_void(sess, &args, &sp)?,
         "grid_neighbors"      => crate::actions::grid::grid_neighbors(sess, &args, &sp)?,
-        "grid_tick_begin"     => crate::actions::grid::grid_tick_begin(sess, &args, &sp)?,
-        "grid_tick_commit"    => crate::actions::grid::grid_tick_commit(sess, &args, &sp)?,
         "grid_occupied"       => crate::actions::grid::grid_occupied(sess, &args, &sp)?,
+        "grid_unoccupied"     => crate::actions::grid::grid_unoccupied(sess, &args, &sp)?,
         "grid_occupied_count" => crate::actions::grid::grid_occupied_count(sess, &args, &sp)?,
+        "grid_unoccupied_count" => crate::actions::grid::grid_unoccupied_count(sess, &args, &sp)?,
         "grid_count"          => crate::actions::grid::grid_count(sess, &args, &sp)?,
-        "grid_cells_with"     => crate::actions::grid::grid_cells_with(sess, &args, &sp)?,
+        "grid_occupied_by"    => crate::actions::grid::grid_occupied_by(sess, &args, &sp)?,
+        "grid_has"            => crate::actions::grid::grid_has(sess, &args, &sp)?,
+        "grid_tile_get"       => crate::actions::grid::grid_tile_get(sess, &args, &sp)?,
+        "grid_tile_set"       => crate::actions::grid::grid_tile_set(sess, &args, &sp)?,
+        "grid_region_get"     => crate::actions::grid::grid_region_get(sess, &args, &sp)?,
+        "grid_region_set"     => crate::actions::grid::grid_region_set(sess, &args, &sp)?,
+        "grid_default_get"    => crate::actions::grid::grid_default_get(sess, &args, &sp)?,
+        "grid_default_set"    => crate::actions::grid::grid_default_set(sess, &args, &sp)?,
         "grid_info"           => crate::actions::grid::grid_info(sess, &args, &sp)?,
+        "grid_tile_info"      => crate::actions::grid::grid_tile_info(sess, &args, &sp)?,
+        "grid_region_info"    => crate::actions::grid::grid_region_info(sess, &args, &sp)?,
 
         // ── Ownership query builtins ─────────────────────────────────────────
 
@@ -16843,6 +17012,19 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 ),
             }
         }
+        ast::Expr::BoxVar { namespace, name, span } => {
+            let key = format!("{}::{}", namespace, name);
+            sess.box_store.get(&key).cloned().ok_or_else(|| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::BOX_VALUE_NOT_FOUND,
+                    "box-value-not-found",
+                    &format!("Box variable '#{}::{}' does not exist", namespace, name),
+                    span.clone(),
+                )
+                .with_help("Publish this value into the Box before reading it, or check your box.toml.")
+            })
+        }
         ast::Expr::Char(c, _sp) => Ok(Value::Char(*c)),
         ast::Expr::Ident(name, sp) => {
             match sess.get_var(name) {
@@ -17437,7 +17619,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     &format!("grid[x, y] requires a grid name (string), got {:?}", other),
                     sp.clone(),
                 )
-                .with_help("Bind the grid first: world | grid_new(\"world\", 100, 100)")
+                .with_help("Bind the grid first: world | grid(\"world\", 100, 100)")
                 .with_link("https://goblinlang.org/docs/errors#T0205")),
             };
             let x = match eval_expr(x_expr, sess)? {
@@ -17482,7 +17664,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     &format!("no grid named '{}'", grid_id),
                     sp.clone(),
                 )
-                .with_help("Create the grid first with grid_new(name, width, height).")
+                .with_help("Create the grid first with grid(name, width, height).")
                 .with_link("https://goblinlang.org/docs/errors#R0101")
             })?;
             if !world.in_bounds(x, y) {

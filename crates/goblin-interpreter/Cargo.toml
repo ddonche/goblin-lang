@@ -1,6 +1,6 @@
 [package]
 name = "goblin-interpreter"
-version = "0.42.2"
+version = "0.44.1"
 edition = "2024"
 
 [lib]
@@ -29,6 +29,8 @@ indexmap = "2"
 zip = "2"
 sqlx = { version = "0.7", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+toml = "1.1.2"
+getrandom = "0.3"
 
 [features]
 # Enabling "maths" here also enables rust_decimal's maths feature

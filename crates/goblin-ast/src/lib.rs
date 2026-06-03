@@ -1,4 +1,4 @@
-// ---- version = "0.15.0"
+// ---- version = "0.17.0"
 //! Abstract Syntax Tree (AST) for Goblin — aligned to the current parser.
 use goblin_diagnostics::Span;
 
@@ -63,6 +63,13 @@ pub enum Stmt {
 
     Block {
         stmts: Vec<Stmt>,
+        span: Span,
+    },
+    BoxBind {
+        namespace: String,
+        name: String,
+        expr: Expr,
+        mode: BindMode,
         span: Span,
     },
 }
@@ -533,6 +540,11 @@ pub enum Expr {
         span: Span,
     },
     LiteralToken { module: String, ident: String, span: Span },
+    BoxVar {
+        namespace: String,
+        name: String,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -563,6 +575,7 @@ impl Expr {
             Expr::Judge { span, .. } => span,
             Expr::Block { span, .. } => span,
             Expr::LiteralToken { span, .. } => span,
+            Expr::BoxVar { span, .. } => span,
         }
     }
 }

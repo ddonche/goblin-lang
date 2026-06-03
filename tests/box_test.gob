@@ -1,0 +1,19 @@
+/// Write to the Box
+#local::content_dir | "../site/content"
+#local::public_dir  | "../dist/public"
+#site::base_url     | "/docs/"
+
+/// Read from the Box
+content | #local::content_dir
+public  | #local::public_dir
+base    | #site::base_url
+
+/// Print them
+:say(content)
+:say(public)
+:say(base)
+
+#local::content_dir |= "overwritten"
+:say(#local::content_dir)
+
+x | #missing::value

@@ -1,4 +1,4 @@
-// ---- version = "0.42.0"
+// ---- version = "0.44.1"
 // goblin-cli/src/main.rs
 // Treat empty OK oracles as PASS and (for now) treat ERR oracles as PASS without comparing.
 // This gets the suite green so we can iterate on the lexer in small bites.
@@ -236,6 +236,24 @@ fn main() {
         args.remove(0);
         let input = args.get(0).map(|s| s.as_str()).unwrap_or("-");
         std::process::exit(run_gql_parse(input));
+    }
+
+    if args.len() >= 2 && args[0] == "box" && args[1] == "dump" {
+        let dir = if args.len() >= 3 {
+            PathBuf::from(&args[2])
+        } else {
+            env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        };
+        let box_toml = dir.join("box.toml");
+        let mut sess = goblin_interpreter::Session::new();
+        if box_toml.exists() {
+            if let Err(e) = goblin_interpreter::load_box_toml(&mut sess, &box_toml) {
+                eprintln!("box.toml error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        println!("{}", goblin_interpreter::box_dump(&sess));
+        std::process::exit(0);
     }
 
     // NEW: `goblin-cli run [<file>]`
@@ -1312,12 +1330,22 @@ fn run_run(path: &std::path::Path) -> i32 {
 
     // ---- timing starts here (after successful lex + parse) ----
     let start = Instant::now();
+    let box_toml_path: Option<PathBuf> = path.parent().map(|p| p.join("box.toml"));
 
     // 4) interpret with larger stack (8MB instead of default 1MB on Windows)
     let code = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
+            if let Some(ref box_toml) = box_toml_path {
+                if box_toml.exists() {
+                    if let Err(e) = goblin_interpreter::load_box_toml(&mut sess, box_toml) {
+                        eprintln!("box.toml error: {}", e);
+                        return 1;
+                    }
+                }
+            }
+
             for stmt in &module.items {
                 match stmt {
                     goblin_ast::Stmt::Expr(e) => {
@@ -1433,12 +1461,21 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 
     // ---- timing starts here (after successful lex + parse) ----
     let start = Instant::now();
+    let box_toml_path: Option<PathBuf> = path.parent().map(|p| p.join("box.toml"));
 
-    // 4) interpret with args injected
+    // 4) interpret with larger stack (8MB instead of default 1MB on Windows)
     let code = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let mut sess = Session::new();
+            if let Some(ref box_toml) = box_toml_path {
+                if box_toml.exists() {
+                    if let Err(e) = goblin_interpreter::load_box_toml(&mut sess, box_toml) {
+                        eprintln!("box.toml error: {}", e);
+                        return 1;
+                    }
+                }
+            }
 
             // Inject CLI args as global `args`
             let arr: Vec<Value> = extra_args.into_iter().map(Value::Str).collect();

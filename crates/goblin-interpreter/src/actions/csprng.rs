@@ -179,50 +179,32 @@ fn collect_filesystem_entropy(jitter_byte: u8) -> (u64, Vec<u8>, EntropyQuality)
 // ---------------------------------------------------------------------------
 
 fn generate_seed(sp: &Span) -> Result<[u8; 32], Diag> {
-    let (cpu_jitter, quality) = collect_cpu_jitter();
+    // 1. Primary secure entropy source: operating system CSPRNG.
+    let mut os_entropy = [0u8; 32];
 
-    if let EntropyQuality::Degraded { zeros, most_common } = quality {
+    if let Err(e) = getrandom::fill(&mut os_entropy) {
         return Err(Diagnostic::new_with_code(
             Severity::Error,
             rtcode::FILESYSTEM_IO,
-            "csprng-degraded-entropy",
+            "csprng-os-random-failed",
             &format!(
-                "secure RNG aborted: CPU jitter entropy is degraded \
-                 (zero-deltas={zeros}/1024, most_common={most_common}/1024). \
-                 This system's timer resolution may be too low for secure randomness."
+                "secure RNG aborted: operating system randomness failed ({e})."
             ),
             sp.clone(),
         )
         .with_help(
-            "secure_pick, secure_random, and secure_shuffle require sufficient \
-             CPU timing jitter. This error indicates the runtime clock has \
-             insufficient resolution on this machine."
+            "secure_pick, secure_random, and secure_shuffle require the \
+             operating system's secure random source. Goblin will not fall \
+             back to insecure randomness."
         )
         .with_link("https://goblinlang.org/docs/errors#FS0001"));
     }
+
+    // 2. Supplemental entropy only. Do NOT abort if jitter is degraded.
+    let (cpu_jitter, _cpu_quality) = collect_cpu_jitter();
 
     let jitter_byte = cpu_jitter.first().copied().unwrap_or(42);
-    let (file_bytes, io_deltas, io_quality) = collect_filesystem_entropy(jitter_byte);
-
-    if let EntropyQuality::Degraded { zeros, most_common } = io_quality {
-        return Err(Diagnostic::new_with_code(
-            Severity::Error,
-            rtcode::FILESYSTEM_IO,
-            "csprng-degraded-io-entropy",
-            &format!(
-                "secure RNG aborted: I/O timing entropy is degraded \
-                 (most_common={most_common}, zeros={zeros}). \
-                 Filesystem timing variance is too low on this system."
-            ),
-            sp.clone(),
-        )
-        .with_help(
-            "I/O timing deltas showed insufficient variance. \
-             This may occur on ramdisks, certain VMs, or systems with \
-             very fast cached filesystems."
-        )
-        .with_link("https://goblinlang.org/docs/errors#FS0001"));
-    }
+    let (file_bytes, io_deltas, _io_quality) = collect_filesystem_entropy(jitter_byte);
 
     let persistent = load_persistent_seed();
 
@@ -237,7 +219,8 @@ fn generate_seed(sp: &Span) -> Result<[u8; 32], Diag> {
     let interpreter_fingerprint = GOBLIN_SOURCE_CHAR_COUNT.wrapping_mul(multiplier);
 
     let mut hasher = Hasher::new();
-    hasher.update(b"goblin-seed-v1");
+    hasher.update(b"goblin-seed-v2");
+    hasher.update(&os_entropy);
     hasher.update(&file_bytes.to_le_bytes());
     hasher.update(&nanoseconds.to_le_bytes());
     hasher.update(&pid.to_le_bytes());
@@ -249,8 +232,9 @@ fn generate_seed(sp: &Span) -> Result<[u8; 32], Diag> {
     let seed = *hasher.finalize().as_bytes();
 
     let mut reseed_hasher = Hasher::new();
-    reseed_hasher.update(b"goblin-reseed-v1");
+    reseed_hasher.update(b"goblin-reseed-v2");
     reseed_hasher.update(&seed);
+    reseed_hasher.update(&os_entropy);
     reseed_hasher.update(&nanoseconds.to_le_bytes());
     save_persistent_seed(reseed_hasher.finalize().as_bytes());
 

@@ -1,0 +1,7 @@
+content | #local::content_dir
+public  | #local::public_dir
+base    | #site::base_url
+
+:say(content)
+:say(public)
+:say(base)

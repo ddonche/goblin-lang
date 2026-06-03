@@ -1,0 +1,6 @@
+[local]
+content_dir = "../site/content"
+public_dir = "../dist/public"
+
+[site]
+base_url = "/docs/"
