@@ -1,4 +1,4 @@
-// ---- version = "0.44.1"
+// ---- version = "0.45.3"
 
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,6 +34,23 @@ type TokenResolver = fn(&str) -> Value;
 const F64_SAFE_INT_MAX: i64 = 9_007_199_254_740_992; // for reference
 const MAX_EVAL_DEPTH: usize = 512; // maximum recursion depth for expression evaluation
 const RAW_SENTINEL: &str = "\u{001E}RAW:";
+
+// ── Map key normalization ──────────────────────────────────────────────────
+/// Convert any scalar Value into a map key string.
+/// Strings pass through unchanged so existing string-keyed maps keep working.
+/// Returns None for non-scalar types (arrays, maps, objects, etc.)
+fn value_to_map_key(v: &Value) -> Option<String> {
+    match v {
+        Value::Str(s)   => Some(s.clone()),
+        Value::Char(c)  => Some(c.to_string()),
+        Value::Int(n)   => Some(n.to_string()),
+        Value::Float(n) => Some(n.to_string()),
+        Value::Big(n)   => Some(n.to_string()),
+        Value::Bool(b)  => Some(b.to_string()),
+        _               => None,
+    }
+}
+
 
 // ===================== REGEX CACHE ====================
 pub struct RegexCache {
@@ -8075,22 +8092,17 @@ fn collection_operation(
                 }
 
                 Position::At(key_val) => {
-                    let key = match key_val {
-                        Value::Str(s) => s.clone(),
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    rtcode::TYPE_MISMATCH, // T0205
-                                    "type-mismatch",
-                                    "map key must be a string",
-                                    sp.clone(),
-                                )
-                                .with_help("Use \"key\" (double quotes) for string keys.")
-                                .with_link("https://goblinlang.org/docs/errors#T0205")
-                            );
-                        }
-                    };
+                    let key = value_to_map_key(&key_val).ok_or_else(|| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            "map key must be a string, char, number, or bool",
+                            sp.clone(),
+                        )
+                        .with_help("Use map[\"name\"], map[7], map[true], or map[\'x\'].")
+                        .with_link("https://goblinlang.org/docs/errors#T0205")
+                    })?;
 
                     match &op {
                         Operation::Grab | Operation::Reap => {
@@ -11286,7 +11298,19 @@ fn call_action_by_name(
                             }
                             Value::Str(out) // <- bare Value
                         } else {
-                            return Ok(Value::Nil); // mixed array → early return Result
+                            // mixed array — stringify everything and concatenate
+                            let mut out = String::new();
+                            for e in xs {
+                                match e {
+                                    Value::Str(s)  => out.push_str(s),
+                                    Value::Char(c) => out.push(*c),
+                                    Value::Int(n)  => out.push_str(&n.to_string()),
+                                    Value::Float(f) => out.push_str(&f.to_string()),
+                                    Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+                                    _ => return Ok(Value::Nil), // nil, objects, arrays — still bail
+                                }
+                            }
+                            Value::Str(out)
                         }
                     }
                 }
@@ -15599,33 +15623,15 @@ fn get_lvalue_mut<'a>(
             let base_val = get_lvalue_mut(base, sess, sp)?;
             
             match (base_val, index) {
-                // String key for maps
-                (Value::Map(map), Value::Str(key)) => {
-                    map.get_mut(key).ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                            "no-such-field",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                // Any scalar key for maps — auto-inserts Nil if key missing (enables seen[n] |! v)
+                (Value::Map(map), key_val) if value_to_map_key(key_val).is_some() => {
+                    let key = value_to_map_key(key_val).unwrap();
+                    Ok(map.entry(key).or_insert(Value::Nil))
                 }
                 
-                (Value::MapOrd(map), Value::Str(key)) => {
-                    map.get_mut(key).ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                            "no-such-field",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                (Value::MapOrd(map), key_val) if value_to_map_key(key_val).is_some() => {
+                    let key = value_to_map_key(key_val).unwrap();
+                    Ok(map.entry(key).or_insert(Value::Nil))
                 }
                 
                 // Integer index for arrays
@@ -15758,9 +15764,10 @@ fn eval_lvalue(path: &LValuePath, sess: &mut Session, sp: &Span) -> Result<Value
             let base_val = eval_lvalue(base, sess, sp)?;
             
             match (&base_val, index) {
-                // String key for maps
-                (Value::Map(map), Value::Str(key)) => {
-                    map.get(key).cloned().ok_or_else(|| {
+                // Any scalar key for maps
+                (Value::Map(map), key_val) if value_to_map_key(key_val).is_some() => {
+                    let key = value_to_map_key(key_val).unwrap();
+                    map.get(&key).cloned().ok_or_else(|| {
                         Diagnostic::new_with_code(
                             Severity::Error,
                             crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
@@ -15773,8 +15780,9 @@ fn eval_lvalue(path: &LValuePath, sess: &mut Session, sp: &Span) -> Result<Value
                     })
                 }
                 
-                (Value::MapOrd(map), Value::Str(key)) => {
-                    map.get(key).cloned().ok_or_else(|| {
+                (Value::MapOrd(map), key_val) if value_to_map_key(key_val).is_some() => {
+                    let key = value_to_map_key(key_val).unwrap();
+                    map.get(&key).cloned().ok_or_else(|| {
                         Diagnostic::new_with_code(
                             Severity::Error,
                             crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
@@ -17542,43 +17550,34 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     })
                 }
 
-                // Map (BTreeMap) by string key
-                (Value::Map(map), Value::Str(key)) => {
+                   // Any scalar key for maps (string, int, float, bool, char)
+                (Value::Map(map), key_val) if value_to_map_key(&key_val).is_some() => {
+                    let key = value_to_map_key(&key_val).unwrap();
                     map.get(&key).cloned().ok_or_else(|| {
                         Diagnostic::new_with_code(
                             Severity::Error,
                             crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
                             "no-such-field",
-                            &format!("missing key ‘{}’", key),
+                            &format!("missing key '{}'", key),
                             sp.clone(),
                         )
                         .with_help("Check the key exists in the map.")
                         .with_link("https://goblinlang.org/docs/errors#R0403")
                     })
                 }
-                // NEW: Ordered map (IndexMap) by string key
-                (Value::MapOrd(map), Value::Str(key)) => {
+                (Value::MapOrd(map), key_val) if value_to_map_key(&key_val).is_some() => {
+                    let key = value_to_map_key(&key_val).unwrap();
                     map.get(&key).cloned().ok_or_else(|| {
                         Diagnostic::new_with_code(
                             Severity::Error,
                             crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
                             "no-such-field",
-                            &format!("missing key ‘{}’", key),
+                            &format!("missing key '{}'", key),
                             sp.clone(),
                         )
                         .with_help("Check the key exists in the map.")
                         .with_link("https://goblinlang.org/docs/errors#R0403")
                     })
-                }
-
-                // Optional: allow single-char keys for both map kinds
-                (Value::Map(map), Value::Char(ch)) => {
-                    let k = ch.to_string();
-                    Ok(map.get(&k).cloned().unwrap_or(Value::Nil))
-                }
-                (Value::MapOrd(map), Value::Char(ch)) => {
-                    let k = ch.to_string();
-                    Ok(map.get(&k).cloned().unwrap_or(Value::Nil))
                 }
 
                 (Value::Map(_), other_idx) | (Value::MapOrd(_), other_idx) => Err(
@@ -17586,10 +17585,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         Severity::Error,
                         crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
                         "type-mismatch",
-                        "map index must be a string key",
+                        "map index must be a string, char, number, or bool key",
                         sp.clone(),
                     )
-                    .with_help(&format!("Got {:?}. Use a string key: map[\"name\"]", other_idx))
+                    .with_help(&format!("Got {:?}. Use: map[\"name\"], map[7], map[true].", other_idx))
                     .with_link("https://goblinlang.org/docs/errors#T0205"),
                 ),
 
@@ -18854,6 +18853,40 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                     sess.loop_depth -= 1;
                     result
+                }
+
+                "collect" => {
+                    if args.len() != 2 {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::WRONG_ARITY,
+                            "wrong-arity",
+                            &format!("Wrong number of arguments to collect (expected 2, got {}).", args.len()),
+                            sp.clone(),
+                        )
+                        .with_help("Usage: collect(count, expr)  or  collect N of expr")
+                        .with_link("https://goblinlang.org/docs/errors#R0301"));
+                    }
+
+                    let n = eval_expr(&args[0], sess)?;
+                    let n = match n {
+                        Value::Int(i) if i > 0 => i as usize,
+                        _ => return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::POSITIVE_INT_EXPECTED,
+                            "positive-int-expected",
+                            "'collect' count must be a positive integer",
+                            sp.clone(),
+                        )
+                        .with_help("Example: collect 4 of goblin_ipsum_sentence()")
+                        .with_link("https://goblinlang.org/docs/errors#T0202")),
+                    };
+
+                    let mut out = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        out.push(eval_expr(&args[1], sess)?);
+                    }
+                    Ok(Value::Array(out))
                 }
 
                 "attempt" => {

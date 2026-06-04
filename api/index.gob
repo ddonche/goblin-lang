@@ -1,0 +1,61 @@
+////
+act two_sum(numbers, target)
+    left_idx | 0
+
+    for left in numbers
+        right_idx | 0
+
+        for right in numbers
+            if right_idx > left_idx and left + right == target
+                return [left_idx, right_idx]
+            xx
+
+            right_idx |= right_idx + 1
+        xx
+
+        left_idx |= left_idx + 1
+    xx
+
+    return []
+xx
+////
+
+////
+act two_sum(numbers, target)
+    repeat numbers as left
+        left_idx | idx
+
+        repeat numbers as right
+            right_idx | idx
+
+            if right_idx > left_idx and left + right == target
+                return [left_idx, right_idx]
+            xx
+        xx
+    xx
+
+    return []
+xx
+////
+
+seen | {}
+numbers | [2, 7, 11, 15]
+target  | 9
+
+act two_sum(numbers, target)
+    seen | {}
+
+    repeat numbers as number
+        needed | target - number
+        if :has(seen, needed)
+            return [seen[needed], idx]
+        xx
+        seen | :put_at!(seen, number, idx)
+    xx
+
+    return []
+xx
+
+result | two_sum(numbers, target)
+
+:say(result)

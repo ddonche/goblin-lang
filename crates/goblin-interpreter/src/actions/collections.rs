@@ -71,50 +71,56 @@ pub fn has(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag
             .map(|sl| sl.iter().any(|v| v == needle))
             .unwrap_or(false),
 
-        // Map membership: key presence (string or char key)
-        Value::Map(m) => match needle {
-            Value::Str(k) => m.contains_key(k),
-            Value::Char(ch) => {
-                let mut k = String::new();
-                k.push(*ch);
-                m.contains_key(&k)
-            }
-            _ => {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                        "type-mismatch",
-                        "For maps, ‘has’ expects a string (or char) key.",
-                        sp.clone(),
-                    )
-                    .with_help("Use: has({a:1}, \"a\").")
-                    .with_link("https://goblinlang.org/docs/errors#T0205"),
-                );
-            }
+        // Map membership: key presence (any scalar key)
+        Value::Map(m) => {
+            let key = match needle {
+                Value::Str(s)   => s.clone(),
+                Value::Char(c)  => c.to_string(),
+                Value::Int(n)   => n.to_string(),
+                Value::Float(n) => n.to_string(),
+                Value::Big(n)   => n.to_string(),
+                Value::Bool(b)  => b.to_string(),
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            "For maps, 'has' expects a string, char, number, or bool key.",
+                            sp.clone(),
+                        )
+                        .with_help("Use: has({a:1}, \"a\") or has(seen, 7).")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    );
+                }
+            };
+            m.contains_key(&key)
         },
 
         // Ordered map membership: identical behavior
-        Value::MapOrd(m) => match needle {
-            Value::Str(k) => m.contains_key(k),
-            Value::Char(ch) => {
-                let mut k = String::new();
-                k.push(*ch);
-                m.contains_key(&k)
-            }
-            _ => {
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
-                        "type-mismatch",
-                        "For maps, ‘has’ expects a string (or char) key.",
-                        sp.clone(),
-                    )
-                    .with_help("Use: has({a:1}, \"a\").")
-                    .with_link("https://goblinlang.org/docs/errors#T0205"),
-                );
-            }
+        Value::MapOrd(m) => {
+            let key = match needle {
+                Value::Str(s)   => s.clone(),
+                Value::Char(c)  => c.to_string(),
+                Value::Int(n)   => n.to_string(),
+                Value::Float(n) => n.to_string(),
+                Value::Big(n)   => n.to_string(),
+                Value::Bool(b)  => b.to_string(),
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            "For maps, 'has' expects a string, char, number, or bool key.",
+                            sp.clone(),
+                        )
+                        .with_help("Use: has({a:1}, \"a\") or has(seen, 7).")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    );
+                }
+            };
+            m.contains_key(&key)
         },
 
         // Nil/Unit → false

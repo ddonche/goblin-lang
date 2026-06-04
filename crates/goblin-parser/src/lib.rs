@@ -1,4 +1,4 @@
-﻿// ---- version = "0.18.1"
+﻿// ---- version = "0.19.1"
 
 #![allow(dead_code)]
 #![allow(unused_assignments)]
@@ -93,6 +93,10 @@ enum PExpr {
     Dump {
         expr: Box<PExpr>,
         show_ids: bool,   // keep the flag; we’ll always false for now
+    },
+    Collect {
+        count: Box<PExpr>,
+        body:  Box<PExpr>,
     },
     LiteralToken {
         module: String,
@@ -894,7 +898,7 @@ impl<'t> Parser<'t> {
             StrInterp(ps) => ps.iter().all(|p| matches!(p, StrPart::Text(_) | StrPart::LValue{..})),
 
             // Conservative defaults for complex constructs
-            ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) | ObjectMatrix { .. } | BoxVar { .. } => false,
+            ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) | ObjectMatrix { .. } | BoxVar { .. } | Collect { .. } => false,
         }
     }
 
@@ -5167,6 +5171,42 @@ impl<'t> Parser<'t> {
         )))
     }
 
+    fn parse_collect_stmt(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        debug_assert_eq!(self.peek_ident().as_deref(), Some("collect"));
+        let _ = self.eat_ident(); // consume 'collect'
+
+        self.skip_layout();
+
+        // parse count expr
+        let count = self.parse_primary()?;
+
+        self.skip_layout();
+
+        // expect 'of'
+        if self.peek_ident().as_deref() != Some("of") {
+            return Err(s_help_site!(
+                "P0340",
+                "Expected 'of' after count in collect",
+                "Write: collect 4 of goblin_ipsum_sentence()"
+            ));
+        }
+        let _ = self.eat_ident(); // consume 'of'
+
+        self.skip_layout();
+
+        // parse body expr
+        let body = self.parse_coalesce()?;
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+
+        Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
+            "collect".to_string(),
+            vec![self.lower_expr(count), self.lower_expr(body)],
+            span,
+        )))
+    }
+
     fn parse_stmt_block_until<F>(&mut self, mut stop: F) -> Result<Vec<ast::Stmt>, String>
     where
         F: FnMut(&mut Parser<'_>) -> bool,
@@ -5835,6 +5875,10 @@ impl<'t> Parser<'t> {
 
         if let Some("repeat") = self.peek_ident() {
             return self.parse_repeat_stmt();
+        }
+
+        if self.peek_ident() == Some("collect") {
+            return self.parse_collect_stmt();
         }
 
         if self.peek_ident() == Some("attempt") {
@@ -10028,6 +10072,34 @@ impl<'t> Parser<'t> {
                         ));
                     }
                 }
+            }
+
+            // collect <count> of <expr>
+            if self.peek_ident() == Some("collect") {
+                let start_i = self.i;
+                let _ = self.eat_ident(); // consume 'collect'
+                self.skip_layout();
+
+                let count = self.parse_primary()?;
+                self.skip_layout();
+
+                if self.peek_ident().as_deref() != Some("of") {
+                    return Err(s_help_site!(
+                        "P0340",
+                        "Expected 'of' after count in collect",
+                        "Write: collect 4 of goblin_ipsum_sentence()"
+                    ));
+                }
+                let _ = self.eat_ident(); // consume 'of'
+                self.skip_layout();
+
+                let body = self.parse_coalesce()?;
+                let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+
+                return Ok(PExpr::FreeCall(
+                    "collect".to_string(),
+                    vec![count, body],
+                ));
             }
 
             // PICK / REAP (expression form)
