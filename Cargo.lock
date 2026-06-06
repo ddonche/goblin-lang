@@ -994,14 +994,14 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "goblin-ast"
-version = "0.17.0"
+version = "0.19.0"
 dependencies = [
  "goblin-diagnostics",
 ]
 
 [[package]]
 name = "goblin-cli"
-version = "0.44.0"
+version = "0.46.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1055,12 +1055,13 @@ dependencies = [
 
 [[package]]
 name = "goblin-interpreter"
-version = "0.44.0"
+version = "0.46.2"
 dependencies = [
  "blake3",
  "comrak",
  "dirs",
  "dunce",
+ "getrandom 0.3.3",
  "goblin-ast",
  "goblin-diagnostics",
  "goblin-lexer",
@@ -1091,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-parser"
-version = "0.18.0"
+version = "0.20.0"
 dependencies = [
  "goblin-ast",
  "goblin-diagnostics",

@@ -1,4 +1,4 @@
-﻿// ---- version = "0.19.1"
+﻿// ---- version = "0.20.1"
 
 #![allow(dead_code)]
 #![allow(unused_assignments)]
@@ -38,6 +38,7 @@ enum PExpr {
     FreeCall(String, Vec<PExpr>),
     Ident(String),
     Index(Box<PExpr>, Box<PExpr>),
+    IndexMap(Box<PExpr>, Box<PExpr>),             // map{key}
     Index2(Box<PExpr>, Box<PExpr>, Box<PExpr>),  // grid[x, y]
     Int(String),
     IntWithUnit(String, String),
@@ -867,6 +868,10 @@ impl<'t> Parser<'t> {
 
             // Index and member access - recurse
             Index(x, y) => {
+                Self::key_expr_is_side_effect_free(x.as_ref())
+                    && Self::key_expr_is_side_effect_free(y.as_ref())
+            }
+            IndexMap(x, y) => {
                 Self::key_expr_is_side_effect_free(x.as_ref())
                     && Self::key_expr_is_side_effect_free(y.as_ref())
             }
@@ -1784,6 +1789,11 @@ impl<'t> Parser<'t> {
                 let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
                 let idx = Box::new(Self::lower_expr_preview(*idx, sp.clone()));
                 ast::Expr::Index(obj, idx, sp)
+            }
+            PExpr::IndexMap(expr, key) => {
+                let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
+                let key = Box::new(Self::lower_expr_preview(*key, sp.clone()));
+                ast::Expr::IndexMap(obj, key, sp)
             }
             PExpr::Index2(expr, x, y) => {
                 let obj = Box::new(Self::lower_expr_preview(*expr, sp.clone()));
@@ -5085,7 +5095,7 @@ impl<'t> Parser<'t> {
             (None, None)
         } else {
             // Parse the repeat target/count/condition
-            let expr_pe = self.parse_primary()?;
+            let expr_pe = self.parse_assign()?;
 
             // Optional: `as name`
             let alias = match self.peek() {
@@ -8813,7 +8823,7 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_compare(&mut self) -> Result<PExpr, String> {
-        let mut lhs = self.with_depth(|p| p.parse_additive())?;
+        let mut lhs = self.with_depth(|p| p.parse_range())?;
 
         loop {
             // textual: is / is not
@@ -11090,6 +11100,34 @@ impl<'t> Parser<'t> {
                     ))?;
                     PExpr::Index(Box::new(lhs), Box::new(idx))
                 };
+                continue;
+            }
+
+            // ---------- map keyed lookup: map{key} ----------
+            if self.eat_op("{") {
+                while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+
+                if self.peek_op("}") {
+                    return Err(s_help_site!(
+                        "P0710",
+                        "Braces need a key expression",
+                        "Write the key inside the braces: ctx{\"body\"} or ages{2}",
+                    ));
+                }
+
+                let key = self.parse_coalesce()?;
+
+                while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
+
+                if !self.eat_op("}") {
+                    return Err(s_help_site!(
+                        "P0711",
+                        "Expected '}' to close this map lookup",
+                        "Add the closing '}': ctx{\"body\"}",
+                    ));
+                }
+
+                lhs = PExpr::IndexMap(Box::new(lhs), Box::new(key));
                 continue;
             }
 

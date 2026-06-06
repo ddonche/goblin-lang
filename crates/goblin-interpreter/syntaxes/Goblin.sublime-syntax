@@ -3,6 +3,7 @@
 name: Goblin
 file_extensions:
   - gbln
+  - gob
 scope: source.goblin
 
 contexts:
@@ -24,8 +25,11 @@ contexts:
     - include: money
     - include: percent
     - include: dice
-    - include: template_names
+    - include: durations
+    - include: class_names
+    - include: box_variables
     - include: private_variables
+    - include: map_keys
     - include: numbers
     - include: tether_operators
     - include: operators
@@ -53,7 +57,9 @@ contexts:
           scope: punctuation.section.interpolation.begin.goblin
           push:
             - meta_scope: meta.interpolation.goblin
-            - match: '[a-zA-Z_][a-zA-Z0-9_.]*'
+            - include: intrinsics
+            - include: numbers
+            - match: '[a-zA-Z_][a-zA-Z0-9_\.]*'
               scope: variable.other.interpolation.goblin
             - match: '\}'
               scope: punctuation.section.interpolation.end.goblin
@@ -73,7 +79,9 @@ contexts:
           scope: punctuation.section.interpolation.begin.goblin
           push:
             - meta_scope: meta.interpolation.goblin
-            - match: '[a-zA-Z_][a-zA-Z0-9_.]*'
+            - include: intrinsics
+            - include: numbers
+            - match: '[a-zA-Z_][a-zA-Z0-9_\.]*'
               scope: variable.other.interpolation.goblin
             - match: '\}'
               scope: punctuation.section.interpolation.end.goblin
@@ -83,16 +91,15 @@ contexts:
           pop: true
 
   intrinsics:
-    # Any word preceded by : is a built-in intrinsic call
     - match: ':[a-zA-Z_][a-zA-Z0-9_!?]*'
       scope: support.function.intrinsic.goblin
 
   keywords:
-    - match: '\b(act|action|import|export|expose|use|via|as|from|banish|unbanish|imm|vault|morph|test|enum|trait|impl|set|settle)\b'
+    - match: '\b(act|action|import|export|expose|use|via|as|from|banish|unbanish|imm|vault|morph|test|enum|trait|impl|set|settle|collect|pack|unpack|class|overlay|transition)\b'
       scope: keyword.declaration.goblin
 
   control_flow:
-    - match: '\b(if|else|elif|end|xx|unless|while|for|repeat|in|where|return|send|skip|stop|jump|until|sweep|sweep_all|judge|judge_all|using|attempt|rescue|ensure|assert)\b'
+    - match: '\b(if|else|elif|end|xx|unless|while|for|repeat|in|where|return|send|skip|stop|jump|stride|until|sweep|sweep_all|judge|judge_all|using|attempt|rescue|ensure|assert)\b'
       scope: keyword.control.goblin
 
   types:
@@ -128,14 +135,28 @@ contexts:
   dice:
     - match: '\b\d+d\d+(?:[+-]\d+)?\b'
       scope: constant.numeric.dice.goblin
+    - match: '\b\d+_\d+(?:[+-]\d+)?\b'
+      scope: constant.numeric.dice.goblin
 
-  template_names:
-    - match: '@[a-zA-Z_][a-zA-Z0-9_]*'
-      scope: variable.other.template.goblin
+  durations:
+    - match: '\b\d[\d_]*(?:\.\d[\d_]*)?(?:s|m|h|d|w|mo|y)\b'
+      scope: constant.numeric.duration.goblin
+
+  class_names:
+    - match: '<>[a-zA-Z_][a-zA-Z0-9_]*'
+      scope: entity.name.type.class.goblin
+
+  box_variables:
+    - match: '#[a-zA-Z_][a-zA-Z0-9_]*::[a-zA-Z_][a-zA-Z0-9_]*'
+      scope: variable.other.box.goblin
 
   private_variables:
     - match: '#[a-zA-Z_][a-zA-Z0-9_]*'
       scope: variable.other.private.goblin
+
+  map_keys:
+    - match: '\b[a-zA-Z_][a-zA-Z0-9_]*(?=\s*:)'
+      scope: variable.parameter.map-key.goblin
 
   numbers:
     - match: '\b\d[\d_]*(?:\.\d[\d_]*)?\b'
@@ -143,18 +164,18 @@ contexts:
 
   tether_operators:
     - match: '\|\='
-      scope: keyword.operator.goblin
+      scope: keyword.operator.tether.retether.goblin
     - match: '\|!'
-      scope: keyword.operator.goblin
+      scope: keyword.operator.tether.index.goblin
     - match: '\[='
-      scope: keyword.operator.goblin
+      scope: keyword.operator.tether.shadow.goblin
     - match: '!\|'
-      scope: keyword.operator.goblin
+      scope: keyword.operator.tether.untether.goblin
     - match: '\|(?![=!])'
-      scope: keyword.operator.goblin
+      scope: keyword.operator.tether.create.goblin
 
   operators:
-    - match: '(?:===|!==|==|!=|<=|>=|<>|<|>)'
+    - match: '(?:===|!==|==|!=|<=|>=|<|>)'
       scope: keyword.operator.comparison.goblin
     - match: '(?:\?\?=>|\?\?=?>|\?\?)'
       scope: keyword.operator.nullish.goblin
@@ -164,9 +185,13 @@ contexts:
       scope: keyword.operator.field.goblin
     - match: '(?:\*\*|\/\/|\+\+|--|&&|\|\|)'
       scope: keyword.operator.special.goblin
+    - match: '(?<=[a-zA-Z0-9_\)])_'
+      scope: keyword.operator.postfix.goblin
+    - match: '(?:!|\^)'
+      scope: keyword.operator.postfix.goblin
     - match: '(?:::|\.\.\.|\.\.|\.)'
       scope: keyword.operator.range.goblin
-    - match: '\b(and|or|not)\b'
+    - match: '\b(and|or|not|is)\b'
       scope: keyword.operator.logical.goblin
     - match: '[+\-*\/%^]'
       scope: keyword.operator.arithmetic.goblin
@@ -174,5 +199,5 @@ contexts:
   punctuation:
     - match: '::'
       scope: punctuation.separator.namespace.goblin
-    - match: '[{}()\[\],;]'
+    - match: '[{}()\[\],;:]'
       scope: punctuation.goblin

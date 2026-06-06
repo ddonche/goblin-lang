@@ -1,0 +1,22 @@
+////
+repeat 1...100 as n
+    if n % 15 == 0
+        :say("FizzBuzz")
+    elif n % 3 == 0
+        :say("Fizz")
+    elif n % 5 == 0
+        :say("Buzz")
+    else
+        :say(n)
+    xx
+xx
+////
+
+repeat 1...100 as n
+    judge
+        n % 15 == 0: :say("FizzBuzz")
+        n % 3 == 0: :say("Fizz")
+        n % 5 == 0: :say("Buzz")
+        else: :say(n)
+    xx
+xx

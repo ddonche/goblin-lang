@@ -1,4 +1,4 @@
-// ---- version = "0.45.3"
+// ---- version = "0.46.3"
 
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
@@ -2166,6 +2166,7 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::Member(_, _, sp)
         | ast::Expr::OptMember(_, _, sp)
         | ast::Expr::Index(_, _, sp)
+        | ast::Expr::IndexMap(_, _, sp)
         | ast::Expr::Index2(_, _, _, sp)
         | ast::Expr::Slice(_, _, _, sp)
         | ast::Expr::Slice3(_, _, _, _, sp)
@@ -8481,6 +8482,30 @@ fn collection_operation(
                     }
                 }
             }
+        }
+
+        // ==================== MAPORD ====================
+        // Delegate to the Map arm by converting IndexMap -> BTreeMap, running the op,
+        // then converting any Map result back to MapOrd to preserve the type.
+        Value::MapOrd(mo) => {
+            let as_btree: BTreeMap<String, Value> = mo.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let result = collection_operation(
+                &Value::Map(as_btree),
+                pos,
+                op,
+                sp,
+                sess,
+            )?;
+            // Convert Map results back to MapOrd; leave everything else as-is.
+            Ok(match result {
+                Value::Map(m) => {
+                    let ord: indexmap::IndexMap<String, Value> = m.into_iter().collect();
+                    Value::MapOrd(ord)
+                }
+                other => other,
+            })
         }
 
         // ==================== STRING ====================
@@ -15506,6 +15531,16 @@ fn parse_lvalue(expr: &ast::Expr, sess: &mut Session) -> Result<LValuePath, Diag
                 index: index_val,
             })
         }
+
+        // Keyed map access: map{key}
+        ast::Expr::IndexMap(base_expr, key_expr, _) => {
+            let base = parse_lvalue(base_expr, sess)?;
+            let key_val = eval_expr(key_expr, sess)?;
+            Ok(LValuePath::Index {
+                base: Box::new(base),
+                index: key_val,
+            })
+        }
         
         _ => {
             eprintln!("DEBUG: Unhandled expression type in parse_lvalue");
@@ -17603,6 +17638,72 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     .with_help(&format!("Got {:?}. Use an array (arr[i]) or map (obj[\"key\"]).", other_base))
                     .with_link("https://goblinlang.org/docs/errors#T0205"),
                 ),
+            }
+        }
+
+        // map{key} — keyed lookup, maps only
+        ast::Expr::IndexMap(base, key, sp) => {
+            let b = eval_expr(base, sess)?;
+            let k = eval_expr(key, sess)?;
+
+            match (b, k) {
+                (Value::Map(map), key_val) if value_to_map_key(&key_val).is_some() => {
+                    let key = value_to_map_key(&key_val).unwrap();
+                    map.get(&key).cloned().ok_or_else(|| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD,
+                            "no-such-key",
+                            &format!("missing key '{}'", key),
+                            sp.clone(),
+                        )
+                        .with_help("Check the key exists in the map.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    })
+                }
+                (Value::MapOrd(map), key_val) if value_to_map_key(&key_val).is_some() => {
+                    let key = value_to_map_key(&key_val).unwrap();
+                    map.get(&key).cloned().ok_or_else(|| {
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::NO_SUCH_FIELD,
+                            "no-such-key",
+                            &format!("missing key '{}'", key),
+                            sp.clone(),
+                        )
+                        .with_help("Check the key exists in the map.")
+                        .with_link("https://goblinlang.org/docs/errors#R0403")
+                    })
+                }
+                (Value::Array(_), _) => Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    "used {} on an array — arrays use positional lookup with []",
+                    sp.clone(),
+                )
+                .with_help("Use arr[i] for arrays, map{key} for maps.")
+                .with_link("https://goblinlang.org/docs/errors#T0205")),
+                (_, key_val) if value_to_map_key(&key_val).is_none() => Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::TYPE_MISMATCH,
+                        "type-mismatch",
+                        "map key must be a scalar (string, int, float, bool, char)",
+                        sp.clone(),
+                    )
+                    .with_help("Use a string, number, or bool as a map key.")
+                    .with_link("https://goblinlang.org/docs/errors#T0205"),
+                ),
+                (other, _) => Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::TYPE_MISMATCH,
+                    "type-mismatch",
+                    "keyed lookup requires a map",
+                    sp.clone(),
+                )
+                .with_help(&format!("Got {:?}. Use map{{key}} only on maps.", other))
+                .with_link("https://goblinlang.org/docs/errors#T0205")),
             }
         }
 
@@ -20530,6 +20631,37 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let out = Value::Float(new);
                     sess.set_var(name, out.clone());
                     Ok(out)
+                }
+
+                // ---- Range operators: lo..hi (exclusive) and lo...hi (inclusive) ----
+                ".." | "..." => {
+                    let lv = eval_expr(lhs, sess)?;
+                    let rv = eval_expr(rhs, sess)?;
+                    let lo = match &lv {
+                        Value::Int(n) => *n,
+                        _ => return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH,
+                            "type-mismatch",
+                            &format!("range start must be an Int"),
+                            sp.clone(),
+                        ).with_help("Write: 1..10 (exclusive) or 1...10 (inclusive)")
+                         .with_link("https://goblinlang.org/docs/errors#T0205")),
+                    };
+                    let hi = match &rv {
+                        Value::Int(n) => *n,
+                        _ => return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::TYPE_MISMATCH,
+                            "type-mismatch",
+                            &format!("range end must be an Int"),
+                            sp.clone(),
+                        ).with_help("Write: 1..10 (exclusive) or 1...10 (inclusive)")
+                         .with_link("https://goblinlang.org/docs/errors#T0205")),
+                    };
+                    let end = if op == "..." { hi + 1 } else { hi };
+                    let arr: Vec<Value> = (lo..end).map(Value::Int).collect();
+                    Ok(Value::Array(arr))
                 }
 
                 _ => Err(

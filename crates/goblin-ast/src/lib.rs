@@ -1,4 +1,4 @@
-// ---- version = "0.18.1"
+// ---- version = "0.19.0"
 //! Abstract Syntax Tree (AST) for Goblin — aligned to the current parser.
 use goblin_diagnostics::Span;
 
@@ -507,7 +507,8 @@ pub enum Expr {
     // Property & indexing
     Member(Box<Expr>, String, Span),      // obj.name
     OptMember(Box<Expr>, String, Span),   // obj?.name
-    Index(Box<Expr>, Box<Expr>, Span),    // obj[idx]
+    Index(Box<Expr>, Box<Expr>, Span),    // obj[idx]  — positional (arrays)
+    IndexMap(Box<Expr>, Box<Expr>, Span), // obj{key}  — keyed (maps)
     Index2(Box<Expr>, Box<Expr>, Box<Expr>, Span), // grid[x, y]
 
     // Calls
@@ -563,6 +564,7 @@ impl Expr {
             Expr::Member(_, _, sp) => sp,
             Expr::OptMember(_, _, sp) => sp,
             Expr::Index(_, _, sp) => sp,
+            Expr::IndexMap(_, _, sp) => sp,
             Expr::Index2(_, _, _, sp) => sp,
             Expr::Call(_, _, _, sp) => sp,
             Expr::OptCall(_, _, _, sp) => sp,

@@ -192,12 +192,12 @@ fn page_size() -> usize {
 
 #[cfg(target_os = "linux")]
 unsafe fn libc_sysconf_page_size() -> usize {
-    extern "C" {
+    unsafe extern "C" {
         fn sysconf(name: i32) -> isize;
     }
 
     const _SC_PAGESIZE: i32 = 30;
-    let size = sysconf(_SC_PAGESIZE);
+    let size = unsafe { sysconf(_SC_PAGESIZE) };
 
     if size <= 0 {
         4096
@@ -221,7 +221,7 @@ fn process_memory_bytes() -> usize {
         suspend_count: i32,
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn mach_task_self() -> u32;
         fn task_info(
             target_task: u32,
