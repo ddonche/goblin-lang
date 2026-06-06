@@ -8170,7 +8170,7 @@ fn collection_operation(
                     };
 
                     match &op {
-                        // grab_where / reap_where on a map → filter entries by *value* predicate
+                        // get_where / reap_where on a map → filter entries by *value* predicate
                         Operation::Grab | Operation::Reap => {
                             let mut out_map = BTreeMap::new();
                             for (k, v) in map {
@@ -8906,7 +8906,7 @@ fn collection_operation(
                             Ok(Value::Str(result))
                         }
 
-                        // For now, we don’t support grab/reap/put with string where;
+                        // For now, we don’t support get/reap/put with string where;
                         // they can be added later if needed.
                         Operation::Grab | Operation::Reap | Operation::Put(_) => {
                             return Err(
@@ -8914,7 +8914,7 @@ fn collection_operation(
                                     Severity::Error,
                                     rtcode::OP_NOT_SUPPORTED, // R0505
                                     "op-not-supported",
-                                    "grab/reap/put with 'where' is not supported for strings",
+                                    "get/reap/put with 'where' is not supported for strings",
                                     sp.clone(),
                                 )
                                 .with_help("Use update_where!/delete_where! for strings, or use where on arrays/maps instead.")
@@ -9236,7 +9236,7 @@ fn collection_operation(
                                 "operation not supported",
                                 sp.clone(),
                             )
-                            .with_help("Use grab/reap/delete/update/put with valid positions.")
+                            .with_help("Use get/reap/delete/update/put with valid positions.")
                             .with_link("https://goblinlang.org/docs/errors#R0505")
                         ),
                     }
@@ -9569,7 +9569,7 @@ fn collection_operation(
                                 "operation not supported",
                                 sp.clone(),
                             )
-                            .with_help("Use grab/reap/delete/update/put with Position::First/Last/At/Where/All.")
+                            .with_help("Use get/reap/delete/update/put with Position::First/Last/At/Where/All.")
                             .with_link("https://goblinlang.org/docs/errors#R0505")
                         ),
                     }
@@ -13148,52 +13148,51 @@ fn call_action_by_name(
         "uuid_v7"           => crate::actions::files::uuid_v7(sess, &args, &sp)?,
 
         // collections CRUD style
-        // Inside the match name { ... } block in call_action_by_name, replace all these functions:
-        "grab" => {
+        "get" => {
             arity(1)?;
             collection_operation(&args[0], Position::All, Operation::Grab, &sp, sess)?
         }
 
-        "grab_first" => {
+        "get_first" => {
             arity(1)?;
             collection_operation(&args[0], Position::First, Operation::Grab, &sp, sess)?
         }
 
-        "grab_last" => {
+        "get_last" => {
             arity(1)?;
             collection_operation(&args[0], Position::Last, Operation::Grab, &sp, sess)?
         }
 
-        "grab_at" => {
+        "get_at" => {
             arity(2)?;
             collection_operation(&args[0], Position::At(args[1].clone()), Operation::Grab, &sp, sess)?
         }
 
-        "grab_where" => {
+        "get_where" => {
             arity(2)?;
-            let pred = want_str(&args[1], "grab_where predicate")?;
+            let pred = want_str(&args[1], "get_where predicate")?;
             collection_operation(&args[0], Position::Where(pred), Operation::Grab, &sp, sess)?
         }
 
-        "grab_all" => {
+        "get_all" => {
             arity(1)?;
             collection_operation(&args[0], Position::All, Operation::Grab, &sp, sess)?
         }
 
-        "grab_matching" => {
+        "get_matching" => {
             arity(2)?;
             let pattern = want_str(&args[1], "pattern")?;
             collection_operation(&args[0], Position::Matching(pattern), Operation::Grab, &sp, sess)?
         }
 
-        "grab_between" => {
+        "get_between" => {
             arity(3)?;
             let start_pattern = want_str(&args[1], "start pattern")?;
             let end_pattern = want_str(&args[2], "end pattern")?;
             collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Grab, &sp, sess)?
         }
 
-        "grab_random" => {
+        "get_random" => {
             arity(1)?;
             collection_operation(&args[0], Position::Random, Operation::Grab, &sp, sess)?
         }
