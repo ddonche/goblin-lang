@@ -491,7 +491,8 @@ pub struct Session {
     eval_depth: usize,                                 // recursion depth for eval_expr
     rng_state: u128,
     pub consts: Vec<BTreeMap<String, bool>>,           // true = immutable binding
-    pub type_locks: Vec<BTreeMap<String, String>>,    // locked type name per binding
+    pub type_locks: Vec<BTreeMap<String, String>>,       // current type per binding (set by declaration AND recast)
+    pub hard_type_locks: Vec<BTreeMap<String, String>>,  // declared-only locks (set only on declaration)
     pub relationship_graph: BTreeMap<String, ClassRelations>,
     pub modules: crate::modules::ModuleCache,
     pub current_module: Option<String>,
@@ -683,6 +684,7 @@ impl Session {
             eval_depth: 0,
             consts: vec![BTreeMap::new()],
             type_locks: vec![BTreeMap::new()],
+            hard_type_locks: vec![BTreeMap::new()],
             relationship_graph: BTreeMap::new(),
             modules: crate::modules::ModuleCache::new(),
             current_module: None,
@@ -853,11 +855,13 @@ impl Session {
         self.env.push(BTreeMap::new());
         self.consts.push(BTreeMap::new());
         self.type_locks.push(BTreeMap::new());
+        self.hard_type_locks.push(BTreeMap::new());
     }
     fn pop_frame(&mut self) {
         let _ = self.env.pop();
         let _ = self.consts.pop();
         let _ = self.type_locks.pop();
+        let _ = self.hard_type_locks.pop();
     }
 
     pub fn get_var(&self, name: &str) -> Option<&Value> {
@@ -968,6 +972,13 @@ impl Session {
 
     fn find_type_lock(&self, frame_ix: usize, name: &str) -> Option<String> {
         self.type_locks
+            .get(frame_ix)
+            .and_then(|m| m.get(name))
+            .cloned()
+    }
+
+    fn find_hard_type_lock(&self, frame_ix: usize, name: &str) -> Option<String> {
+        self.hard_type_locks
             .get(frame_ix)
             .and_then(|m| m.get(name))
             .cloned()
@@ -5211,6 +5222,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         if let Some(frame) = sess.type_locks.get_mut(cur) {
                             frame.insert(name.clone(), lock.clone());
                         }
+                        if let Some(frame) = sess.hard_type_locks.get_mut(cur) {
+                            frame.insert(name.clone(), lock.clone());
+                        }
                     }
                     Ok(None)
                 }
@@ -5285,7 +5299,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
 
                     // If the variable has a type lock, cast the new value before storing.
-                    let rhs = if let Some(lock) = sess.find_type_lock(frame_ix, name) {
+                    let rhs = if let Some(lock) = sess.find_hard_type_lock(frame_ix, name) {
                         cast_value_to_lock(rhs, &lock, &b.span)?
                     } else {
                         rhs
@@ -8074,6 +8088,7 @@ fn eval_link_score(
     sess.env.push(BTreeMap::new());
     sess.consts.push(BTreeMap::new());
     sess.type_locks.push(BTreeMap::new());
+    sess.hard_type_locks.push(BTreeMap::new());
     sess.define_local("self".to_string(), self_val, true);
     sess.define_local("target".to_string(), target_val, true);
 
@@ -8082,6 +8097,7 @@ fn eval_link_score(
     sess.env.pop();
     sess.consts.pop();
     sess.type_locks.pop();
+    sess.hard_type_locks.pop();
 
     let raw = match result? {
         Value::Float(f) => f,
@@ -10760,6 +10776,7 @@ fn call_action_by_name(
                     sess.env.push(std::collections::BTreeMap::new());
                     sess.consts.push(std::collections::BTreeMap::new());
                     sess.type_locks.push(std::collections::BTreeMap::new());
+                    sess.hard_type_locks.push(std::collections::BTreeMap::new());
                     let old_module = sess.current_module.clone();
                     sess.current_module = Some(ns.to_string());
 
@@ -10783,6 +10800,7 @@ fn call_action_by_name(
                                                 sess.env.pop();
                                                 sess.consts.pop();
                                                 sess.type_locks.pop();
+    sess.hard_type_locks.pop();
                                                 sess.current_module = old_module;
                                                 return Ok(rv);
                                             }
@@ -10803,6 +10821,7 @@ fn call_action_by_name(
                     sess.env.pop();
                     sess.consts.pop();
                     sess.type_locks.pop();
+    sess.hard_type_locks.pop();
 
                     // ❗ CRITICAL CHANGE HERE:
                     // Do NOT "helpfully" replace Unit/Nil/Ctrl* with forwarded_args.
@@ -17370,6 +17389,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         sess.env.push(BTreeMap::new());
                         sess.consts.push(BTreeMap::new());
                         sess.type_locks.push(BTreeMap::new());
+    sess.hard_type_locks.push(BTreeMap::new());
 
                         let old_module = sess.current_module.clone();
                         sess.current_module = Some(ns.to_string());
@@ -17386,6 +17406,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 sess.env.pop();
                                 sess.consts.pop();
                                 sess.type_locks.pop();
+    sess.hard_type_locks.pop();
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -17414,6 +17435,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                                 sess.env.pop();
                                                 sess.consts.pop();
                                                 sess.type_locks.pop();
+    sess.hard_type_locks.pop();
                                                 return Ok(v);   // bubble loop control outward
                                             }
 
@@ -17423,6 +17445,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                                 sess.env.pop();
                                                 sess.consts.pop();
                                                 sess.type_locks.pop();
+    sess.hard_type_locks.pop();
                                                 return Ok(*rv);  // FIX - unwrap the box
                                             }
 
@@ -17455,6 +17478,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         sess.env.pop();
                         sess.consts.pop();
                         sess.type_locks.pop();
+    sess.hard_type_locks.pop();
 
                         return Ok(result);
                     }
@@ -18194,7 +18218,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 if CAST_TYPES.contains(&name.as_str()) {
                     if let ast::Expr::Ident(var_name, _) = base.as_ref() {
                         if let Some(frame_ix) = sess.find_name_frame(var_name) {
-                            if let Some(lock) = sess.find_type_lock(frame_ix, var_name) {
+                            if let Some(lock) = sess.find_hard_type_lock(frame_ix, var_name) {
                                 let canonical = if name.as_str() == "string" { "str" } else { name.as_str() };
                                 if lock != canonical {
                                     return Err(
@@ -18420,7 +18444,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             sp.clone(),
                         ).with_help("Values declared with 'imm' cannot be recast."));
                     }
-                    if let Some(lock) = sess.find_type_lock(frame_ix, &var_name) {
+                    if let Some(lock) = sess.find_hard_type_lock(frame_ix, &var_name) {
                         if lock != base_name {
                             return Err(Diagnostic::new_with_code(
                                 Severity::Error, "R0215", "type-lock-cast",
@@ -18434,6 +18458,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     if let Some(slot) = sess.env[frame_ix].get_mut(&var_name) {
                         *slot = new_val.clone();
                     }
+                    sess.type_locks[frame_ix].insert(var_name.clone(), base_name.to_string());
                     return Ok(new_val);
                 }
             }
@@ -19877,7 +19902,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             );
                         }
                         // Type lock check
-                        if let Some(lock) = sess.find_type_lock(frame_ix, &var_name) {
+                        if let Some(lock) = sess.find_hard_type_lock(frame_ix, &var_name) {
                             if lock != type_name {
                                 return Err(
                                     Diagnostic::new_with_code(
@@ -19897,6 +19922,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         if let Some(slot) = sess.env[frame_ix].get_mut(&var_name) {
                             *slot = new_val.clone();
                         }
+                        sess.type_locks[frame_ix].insert(var_name.clone(), type_name.clone());
                         return Ok(new_val);
                     }
 
