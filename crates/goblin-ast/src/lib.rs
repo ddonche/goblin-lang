@@ -25,6 +25,7 @@ pub struct BindStmt {
     pub mode: BindMode,    // Tether | Retether | Shadow
     pub span: Span,
     pub class_name: Option<String>,
+    pub lock_type: Option<String>, // type suffix on declaration: age.i32 | 46
 }
 
 #[derive(Debug, Clone)]

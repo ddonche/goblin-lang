@@ -491,6 +491,7 @@ pub struct Session {
     eval_depth: usize,                                 // recursion depth for eval_expr
     rng_state: u128,
     pub consts: Vec<BTreeMap<String, bool>>,           // true = immutable binding
+    pub type_locks: Vec<BTreeMap<String, String>>,    // locked type name per binding
     pub relationship_graph: BTreeMap<String, ClassRelations>,
     pub modules: crate::modules::ModuleCache,
     pub current_module: Option<String>,
@@ -681,6 +682,7 @@ impl Session {
             sweep_depth: 0,
             eval_depth: 0,
             consts: vec![BTreeMap::new()],
+            type_locks: vec![BTreeMap::new()],
             relationship_graph: BTreeMap::new(),
             modules: crate::modules::ModuleCache::new(),
             current_module: None,
@@ -849,11 +851,13 @@ impl Session {
 
     fn push_frame(&mut self) {
         self.env.push(BTreeMap::new());
-        self.consts.push(BTreeMap::new()); // mirror
+        self.consts.push(BTreeMap::new());
+        self.type_locks.push(BTreeMap::new());
     }
     fn pop_frame(&mut self) {
         let _ = self.env.pop();
-        let _ = self.consts.pop(); // mirror
+        let _ = self.consts.pop();
+        let _ = self.type_locks.pop();
     }
 
     pub fn get_var(&self, name: &str) -> Option<&Value> {
@@ -960,6 +964,13 @@ impl Session {
         } else {
             top.insert(name, val);
         }
+    }
+
+    fn find_type_lock(&self, frame_ix: usize, name: &str) -> Option<String> {
+        self.type_locks
+            .get(frame_ix)
+            .and_then(|m| m.get(name))
+            .cloned()
     }
 
     // Find the nearest frame index containing `name` (0 = globals, len-1 = current)
@@ -2976,7 +2987,132 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
     Ok(out)
 }
 
-fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {  
+/// Cast `v` to the type named by `lock` (e.g. "i32", "str", "bool").
+/// Returns an error with code R0215 if the cast is not possible.
+fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
+    let cast_err = |detail: &str| {
+        Diagnostic::new_with_code(
+            Severity::Error,
+            "R0215",
+            "type-lock-cast",
+            &format!("cannot cast value to locked type '{}': {}", lock, detail),
+            at.clone(),
+        )
+        .with_help("Declare the variable without a type suffix, or provide a compatible value.")
+        .with_link("https://goblinlang.org/docs/errors#R0215")
+    };
+
+    match lock {
+        // ── text ──────────────────────────────────────────────────────────────
+        "str" => cast_to_str(v).map_err(|_| cast_err("value cannot be represented as a string")),
+
+        // ── boolean ───────────────────────────────────────────────────────────
+        "bool" => match v {
+            Value::Bool(_) => Ok(v),
+            Value::Int(n) => Ok(Value::Bool(n != 0)),
+            Value::Str(ref s) => match s.as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                _ => Err(cast_err("string must be \"true\" or \"false\"")),
+            },
+            _ => Err(cast_err("value cannot be converted to bool")),
+        },
+
+        // ── signed integers ───────────────────────────────────────────────────
+        "i8" => {
+            let n = cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= i8::MIN as i64 && i <= i8::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows i8 ({}..{})", i, i8::MIN, i8::MAX))),
+                other => Ok(other),
+            }
+        }
+        "i16" => {
+            let n = cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= i16::MIN as i64 && i <= i16::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows i16 ({}..{})", i, i16::MIN, i16::MAX))),
+                other => Ok(other),
+            }
+        }
+        "i32" => {
+            let n = cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= i32::MIN as i64 && i <= i32::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows i32 ({}..{})", i, i32::MIN, i32::MAX))),
+                other => Ok(other),
+            }
+        }
+        "i64" | "int" => cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer")),
+
+        // ── unsigned integers ─────────────────────────────────────────────────
+        "u8" => {
+            let n = cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 && i <= u8::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows u8 (0..{})", i, u8::MAX))),
+                other => Ok(other),
+            }
+        }
+        "u16" => {
+            let n = cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 && i <= u16::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows u16 (0..{})", i, u16::MAX))),
+                other => Ok(other),
+            }
+        }
+        "u32" => {
+            let n = cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 && i <= u32::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows u32 (0..{})", i, u32::MAX))),
+                other => Ok(other),
+            }
+        }
+        "u64" | "uint" => {
+            let n = cast_to_int_like(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} is negative, cannot store in u64", i))),
+                other => Ok(other),
+            }
+        }
+
+        // ── floats ────────────────────────────────────────────────────────────
+        "f32" => {
+            let f = cast_to_float(v).map_err(|_| cast_err("value cannot be converted to float"))?;
+            // f32 range check: just verify it doesn't go to infinity
+            match f {
+                Value::Float(n) if (n as f32).is_infinite() && n.is_finite() =>
+                    Err(cast_err(&format!("{} overflows f32", n))),
+                other => Ok(other),
+            }
+        }
+        "f64" | "float" => cast_to_float(v).map_err(|_| cast_err("value cannot be converted to float")),
+
+        // ── arbitrary precision ───────────────────────────────────────────────
+        "big" => cast_to_big(v).map_err(|_| cast_err("value cannot be converted to big decimal")),
+
+        // ── financial ─────────────────────────────────────────────────────────
+        "money" => cast_to_float(v).map_err(|_| cast_err("value cannot be converted to money (float)")),
+        "pct" => cast_to_pct(v).map_err(|_| cast_err("value cannot be converted to pct")),
+
+        // ── temporal — pass through if already the right type, else error ─────
+        "date" | "time" | "datetime" | "duration" => {
+            // Temporal types are already stored as Str or specialized Value;
+            // accept string values and pass through, reject otherwise.
+            match &v {
+                Value::Str(_) => Ok(v),
+                _ => Err(cast_err("temporal types must be string literals like 1981-07-28")),
+            }
+        }
+
+        _ => Err(cast_err("unknown type lock")),
+    }
+}
+
+fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
     match s {
         ast::Stmt::Expr(e) => Ok(Some(eval_expr(e, sess)?)),
 
@@ -5031,7 +5167,19 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
 
                     // Not present in current frame -> declare here (shadows outer if it exists there).
-                    sess.define_local(name.clone(), rhs, b.is_imm);
+                    // If a type lock was declared (name.TYPE | value), cast and record it.
+                    let val_to_store = if let Some(ref lock) = b.lock_type {
+                        cast_value_to_lock(rhs, lock, &b.span)?
+                    } else {
+                        rhs
+                    };
+                    sess.define_local(name.clone(), val_to_store, b.is_imm);
+                    if let Some(ref lock) = b.lock_type {
+                        let cur = sess.env.len() - 1;
+                        if let Some(frame) = sess.type_locks.get_mut(cur) {
+                            frame.insert(name.clone(), lock.clone());
+                        }
+                    }
                     Ok(None)
                 }
 
@@ -5103,6 +5251,14 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                             .with_link("https://goblinlang.org/docs/errors#R1300"));
                         }
                     }
+
+                    // If the variable has a type lock, cast the new value before storing.
+                    let rhs = if let Some(lock) = sess.find_type_lock(frame_ix, name) {
+                        cast_value_to_lock(rhs, &lock, &b.span)?
+                    } else {
+                        rhs
+                    };
+
                     // Mutate in the frame it was found in
                     if let Some(slot) = sess.env[frame_ix].get_mut(name) {
                         *slot = rhs;
@@ -7885,6 +8041,7 @@ fn eval_link_score(
     // Push a temporary scope with self and target bound
     sess.env.push(BTreeMap::new());
     sess.consts.push(BTreeMap::new());
+    sess.type_locks.push(BTreeMap::new());
     sess.define_local("self".to_string(), self_val, true);
     sess.define_local("target".to_string(), target_val, true);
 
@@ -7892,6 +8049,7 @@ fn eval_link_score(
 
     sess.env.pop();
     sess.consts.pop();
+    sess.type_locks.pop();
 
     let raw = match result? {
         Value::Float(f) => f,
@@ -10569,6 +10727,7 @@ fn call_action_by_name(
                     // New scope
                     sess.env.push(std::collections::BTreeMap::new());
                     sess.consts.push(std::collections::BTreeMap::new());
+                    sess.type_locks.push(std::collections::BTreeMap::new());
                     let old_module = sess.current_module.clone();
                     sess.current_module = Some(ns.to_string());
 
@@ -10591,6 +10750,7 @@ fn call_action_by_name(
                                                 // restore env/module BEFORE returning
                                                 sess.env.pop();
                                                 sess.consts.pop();
+                                                sess.type_locks.pop();
                                                 sess.current_module = old_module;
                                                 return Ok(rv);
                                             }
@@ -10610,6 +10770,7 @@ fn call_action_by_name(
                     sess.current_module = old_module;
                     sess.env.pop();
                     sess.consts.pop();
+                    sess.type_locks.pop();
 
                     // ❗ CRITICAL CHANGE HERE:
                     // Do NOT "helpfully" replace Unit/Nil/Ctrl* with forwarded_args.
@@ -17163,6 +17324,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         // New scope for parameters
                         sess.env.push(BTreeMap::new());
                         sess.consts.push(BTreeMap::new());
+                        sess.type_locks.push(BTreeMap::new());
 
                         let old_module = sess.current_module.clone();
                         sess.current_module = Some(ns.to_string());
@@ -17178,6 +17340,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 sess.current_module = old_module;
                                 sess.env.pop();
                                 sess.consts.pop();
+                                sess.type_locks.pop();
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -17205,6 +17368,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                                 sess.current_module = old_module;
                                                 sess.env.pop();
                                                 sess.consts.pop();
+                                                sess.type_locks.pop();
                                                 return Ok(v);   // bubble loop control outward
                                             }
 
@@ -17213,6 +17377,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                                 sess.current_module = old_module;
                                                 sess.env.pop();
                                                 sess.consts.pop();
+                                                sess.type_locks.pop();
                                                 return Ok(*rv);  // FIX - unwrap the box
                                             }
 
@@ -17244,6 +17409,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         sess.current_module = old_module;
                         sess.env.pop();
                         sess.consts.pop();
+                        sess.type_locks.pop();
 
                         return Ok(result);
                     }

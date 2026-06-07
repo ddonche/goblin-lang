@@ -4,6 +4,17 @@
 #![allow(unused_assignments)]
 #![allow(unused_variables)]
 
+/// Type-lock keywords recognized in `name.TYPE | value` declarations.
+const TYPE_LOCK_KEYWORDS: &[&str] = &[
+    "str", "bool",
+    "i8", "i16", "i32", "i64",
+    "u8", "u16", "u32", "u64",
+    "f32", "f64",
+    "big", "money", "pct",
+    "date", "time", "datetime", "duration",
+    "int", "uint", "float",
+];
+
 use goblin_ast::{self as ast, RelationDef};
 use goblin_diagnostics::{Diagnostic, Span};
 use goblin_lexer::{Token, TokenKind};
@@ -511,6 +522,7 @@ impl<'t> Parser<'t> {
             mode: ast::BindMode::Tether,
             span,
             class_name: None,
+            lock_type: None,
         }))
     }
 
@@ -2605,6 +2617,9 @@ impl<'t> Parser<'t> {
         // 2) Parse one-or-more identifiers: a, b, c
         let mut names: Vec<ast::Ident> = Vec::new();
 
+        // Tracks a type-lock suffix peeled from the first name (name.TYPE | value).
+        let mut pending_lock_type: Option<String> = None;
+
         // first name
         {
             let Some(t) = self.peek().cloned() else {
@@ -2619,6 +2634,33 @@ impl<'t> Parser<'t> {
                     let text = t.value.clone().unwrap_or_default();
                     let sp = t.span.clone();
                     self.i += 1; // consume ident
+
+                    // Lookahead: name.TYPE | value  →  typed tether
+                    // Only peel if: next is '.', then a type keyword, then '|' (not '|=').
+                    if self.peek_op(".") {
+                        let save = self.i;
+                        self.i += 1; // tentatively consume '.'
+                        let type_word = self.peek()
+                            .filter(|t| matches!(t.kind, TokenKind::Ident))
+                            .and_then(|t| t.value.clone());
+                        if let Some(ref tw) = type_word {
+                            if TYPE_LOCK_KEYWORDS.contains(&tw.as_str()) {
+                                self.i += 1; // consume the type keyword
+                                // Next must be '|' (plain tether) — typed retether is not supported.
+                                if self.peek_op("|") {
+                                    pending_lock_type = Some(tw.clone());
+                                    // Leave '|' for the mode-detection step below.
+                                } else {
+                                    self.i = save; // rewind: not a typed tether
+                                }
+                            } else {
+                                self.i = save; // rewind: not a type keyword
+                            }
+                        } else {
+                            self.i = save; // rewind: no ident after '.'
+                        }
+                    }
+
                     names.push((text, sp));
                 }
                 _ => {
@@ -2932,6 +2974,7 @@ impl<'t> Parser<'t> {
             mode,
             span: op_span.clone(),
             class_name,
+            lock_type: pending_lock_type,
         });
 
         // If a guard was present, return a sequence equivalent to:
@@ -5641,6 +5684,20 @@ impl<'t> Parser<'t> {
                     {
                         return self.parse_bind_stmt();
                     }
+                    // Check for typed tether: IDENT . TYPE_KEYWORD |
+                    if matches!(t1.kind, TokenKind::Op(ref s) if s == ".") {
+                        if let Some(t2) = self.toks.get(self.i + 2) {
+                            let is_type_kw = matches!(&t2.kind, TokenKind::Ident)
+                                && t2.value.as_deref().map(|w| TYPE_LOCK_KEYWORDS.contains(&w)).unwrap_or(false);
+                            if is_type_kw {
+                                if let Some(t3) = self.toks.get(self.i + 3) {
+                                    if matches!(t3.kind, TokenKind::Op(ref s) if s == "|") {
+                                        return self.parse_bind_stmt();
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -6318,6 +6375,7 @@ impl<'t> Parser<'t> {
                             mode: ast::BindMode::Retether,
                             span: op_sp,
                             class_name: None,
+                            lock_type: None,
                         }));
                     }
                 }
@@ -6466,6 +6524,7 @@ impl<'t> Parser<'t> {
                 mode: ast::BindMode::Tether,
                 span: sp.clone(),
                 class_name: Some(type_name.clone()),
+                lock_type: None,
             };
 
             stmts.push(ast::Stmt::Bind(bind));
