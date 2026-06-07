@@ -11033,6 +11033,8 @@ fn call_action_by_name(
                 Value::Seq(_) => "seq",
                 Value::Unit => "unit",
                 Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => "control",
+                Value::Object { .. } => "object",
+                Value::Enum { .. } => "enum",
                 _ => "unknown",
             };
             Value::Str(kind.to_string())
