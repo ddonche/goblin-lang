@@ -11017,6 +11017,13 @@ fn call_action_by_name(
                 Value::Formatted(inner, _) => &**inner,
                 other => other,
             };
+            // Dynamic cases that need owned strings
+            if let Value::Object { class_name, .. } = recv {
+                return Ok(Value::Str(class_name.clone()));
+            }
+            if let Value::Enum { enum_name, .. } = recv {
+                return Ok(Value::Str(enum_name.clone()));
+            }
             let kind = match recv {
                 Value::Nil => "nil",
                 Value::Bool(_) => "bool",
@@ -11033,8 +11040,6 @@ fn call_action_by_name(
                 Value::Seq(_) => "seq",
                 Value::Unit => "unit",
                 Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => "control",
-                Value::Object { .. } => "object",
-                Value::Enum { .. } => "enum",
                 _ => "unknown",
             };
             Value::Str(kind.to_string())
