@@ -47,6 +47,10 @@ pub struct EntityStore {
     /// Variable name -> handle mapping (interpreter names entities by var name).
     handle_by_name: HashMap<String, EntityHandle>,
     name_by_handle: HashMap<EntityHandle, String>,
+    /// Interpreter UUID string -> handle. The interpreter assigns its own UUID
+    /// strings (stored as `fields["uuid"]`). This lets DES look up handles from
+    /// those strings without scanning the slot array.
+    handle_by_interp_uuid: HashMap<String, EntityHandle>,
 }
 
 impl EntityStore {
@@ -57,6 +61,7 @@ impl EntityStore {
             handle_by_uuid: HashMap::new(),
             handle_by_name: HashMap::new(),
             name_by_handle: HashMap::new(),
+            handle_by_interp_uuid: HashMap::new(),
         }
     }
 
@@ -79,6 +84,14 @@ impl EntityStore {
         let handle = EntityHandle { slot, generation };
         let entity = Entity::new(handle, class_name, fields, raw_fields);
 
+        // Index the interpreter-assigned UUID string (stored in fields["uuid"]).
+        let interp_uuid = entity.fields.get("uuid")
+            .and_then(|v| if let crate::entity::FieldValue::Str(s) = v { Some(s.clone()) } else { None })
+            .unwrap_or_default();
+        if !interp_uuid.is_empty() {
+            self.handle_by_interp_uuid.insert(interp_uuid, handle);
+        }
+
         self.handle_by_uuid.insert(entity.uuid, handle);
         self.handle_by_name.insert(name.to_string(), handle);
         self.name_by_handle.insert(handle, name.to_string());
@@ -90,6 +103,12 @@ impl EntityStore {
         }
 
         handle
+    }
+
+    /// Look up a handle by the interpreter's UUID string (the `uuid` field value,
+    /// not the DES-internal Uuid). Returns None if not registered.
+    pub fn handle_for_interp_uuid(&self, uuid_str: &str) -> Option<EntityHandle> {
+        self.handle_by_interp_uuid.get(uuid_str).copied()
     }
 
     /// Resolve a handle to an entity reference. Returns None if the handle
@@ -143,6 +162,10 @@ impl EntityStore {
             if let Slot::Occupied { entity } = slot {
                 if entity.handle.generation == handle.generation {
                     let uuid = entity.uuid;
+                    // Remove interpreter UUID from secondary index.
+                    if let Some(crate::entity::FieldValue::Str(s)) = entity.fields.get("uuid") {
+                        self.handle_by_interp_uuid.remove(s);
+                    }
                     let name = self.name_by_handle.remove(&handle).unwrap_or_default();
                     self.handle_by_uuid.remove(&uuid);
                     self.handle_by_name.remove(&name);

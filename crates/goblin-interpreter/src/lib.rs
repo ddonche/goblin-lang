@@ -6300,14 +6300,10 @@ fn eval_builtin(
         }
 
         // Unknown builtin → tell caller to fall back to R0301 etc. (None signals “not a builtin here”)
-        "tick" => {
-            sess.des_tick_runner.begin_tick();
-            overlay_tick(sess);
-            sess.des_tick_runner.end_tick(&mut sess.des_store, &mut sess.des_index);
-            Value::Unit
-        }
-
-        "tick_db" => {
+        // tick() and tick_db() are now identical — both run the full double-buffer:
+        // DES entity pending/committed swap + grid cell snapshot/commit.
+        // tick_db is kept as an alias for backward compatibility.
+        "tick" | "tick_db" => {
             sess.des_tick_runner.begin_tick();
             crate::actions::grid::all_grids_tick_db_begin(sess);
             overlay_tick(sess);
@@ -7267,23 +7263,26 @@ fn overlay_tick(sess: &mut Session) {
 /// Phase 1: score all targets, collect margin pool, pick randomly.
 /// Phase 2: run judge on that score, execute selected action.
 fn decision_tick(sess: &mut Session) {
-    // Collect all (var_name, class_name) pairs that have a decision defined
-    // Use class_index for O(1) lookup instead of scanning all env frames
+    // Collect all (var_name, class_name) pairs that have a decision defined.
+    // Uses DES index for O(1) class membership; falls back to class_index for
+    // classes not yet mirrored into DES.
     let candidates: Vec<(String, String)> = {
         let mut out = Vec::new();
-        for (class_name, var_names) in &sess.class_index {
+        for (class_name, _) in &sess.classes {
             let has_decision = sess.classes.get(class_name.as_str())
                 .map(|c| c.decision.is_some())
                 .unwrap_or(false);
-            if has_decision {
-                for var_name in var_names {
-                    if sess.get_var(var_name).is_some() {
-                        out.push((var_name.clone(), class_name.clone()));
+            if !has_decision { continue; }
+            let handles: Vec<_> = sess.des_index.handles_for_class(class_name).iter().copied().collect();
+            for h in handles {
+                if let Some(var_name) = sess.des_store.name_for_handle(h).map(|s| s.to_string()) {
+                    if sess.des_store.get(h).map(|e| e.alive).unwrap_or(false) {
+                        out.push((var_name, class_name.clone()));
                     }
                 }
             }
         }
-        // Also include object-level decision overrides
+        // Also include object-level decision overrides not covered by class index.
         for var_name in sess.object_decisions.keys().cloned().collect::<Vec<_>>() {
             if let Some(Value::Object { class_name, .. }) = sess.get_var(&var_name) {
                 let class_name = class_name.clone();
@@ -7865,16 +7864,16 @@ fn erase_var(sess: &mut Session, var_name: &str) {
 
 /// Main transition evaluation loop — called once per tick after decisions.
 fn transition_tick(sess: &mut Session) {
-    // Collect candidates using class_index for O(1) lookup
+    // Collect candidates via DES index — O(1) per class, no env frame scanning.
     let candidates: Vec<(String, String)> = {
         let mut out = Vec::new();
-        for (class_name, var_names) in &sess.class_index {
-            if let Some(class) = sess.classes.get(class_name.as_str()) {
-                if !class.transitions.is_empty() {
-                    for var_name in var_names {
-                        if sess.get_var(var_name).is_some() {
-                            out.push((var_name.clone(), class_name.clone()));
-                        }
+        for (class_name, class) in &sess.classes {
+            if class.transitions.is_empty() { continue; }
+            let handles: Vec<_> = sess.des_index.handles_for_class(class_name).iter().copied().collect();
+            for h in handles {
+                if let Some(var_name) = sess.des_store.name_for_handle(h).map(|s| s.to_string()) {
+                    if sess.des_store.get(h).map(|e| e.alive).unwrap_or(false) {
+                        out.push((var_name, class_name.clone()));
                     }
                 }
             }
@@ -13426,26 +13425,61 @@ fn call_action_by_name(
         // ── Ownership query builtins ─────────────────────────────────────────
 
         "owned_by" => {
-            // owned_by(owner) — returns all objects whose owner_id matches owner's UUID
+            // owned_by(owner) — O(1) via DES ownership index.
             let owner_uuid = match args.get(0) {
                 Some(Value::Object { uuid, .. }) => uuid.clone(),
                 Some(Value::Str(s)) => s.clone(),
                 _ => return Err(Diagnostic::new_with_code(Severity::Error, "A0412", "owned-by-bad-arg", "owned_by() argument must be an object", sp.clone())),
             };
-            let owned: Vec<Value> = sess.object_store.values()
-                .filter(|v| {
-                    if let Value::Object { fields, .. } = v {
-                        matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)
-                    } else { false }
-                })
-                .cloned()
-                .collect();
+            let owned: Vec<Value> = if let Some(owner_handle) = sess.des_store.handle_for_interp_uuid(&owner_uuid) {
+                // Fast path: use DES ownership index.
+                let child_handles: Vec<_> = sess.des_index.owned_by(owner_handle).iter().copied().collect();
+                child_handles.into_iter().filter_map(|h| {
+                    let var_name = sess.des_store.name_for_handle(h)?.to_string();
+                    sess.get_var(&var_name).cloned()
+                }).collect()
+            } else {
+                // Fallback: scan object_store (entity not yet in DES).
+                sess.object_store.values()
+                    .filter(|v| {
+                        if let Value::Object { fields, .. } = v {
+                            matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)
+                        } else { false }
+                    })
+                    .cloned()
+                    .collect()
+            };
             Value::Array(owned)
         }
 
         "owns_tree" => {
-            // owns_tree(root) — recursively show ownership hierarchy by UUID via owner_id field
-            fn build_tree(owner_uuid: &str, object_store: &HashMap<String, Value>, depth: usize) -> String {
+            // owns_tree(root) — recursive via DES ownership index; falls back to object_store scan.
+            fn build_tree_des(owner_handle: goblin_des::store::EntityHandle, store: &goblin_des::store::EntityStore, index: &goblin_des::index::EntityIndex, object_store: &HashMap<String, Value>, depth: usize) -> String {
+                let indent = "  ".repeat(depth);
+                let label = store.name_for_handle(owner_handle)
+                    .and_then(|var| object_store.values().find_map(|v| {
+                        if let Value::Object { uuid, class_name, fields, .. } = v {
+                            let interp_uuid = store.get(owner_handle)
+                                .and_then(|e| e.fields.get("uuid"))
+                                .and_then(|fv| if let goblin_des::entity::FieldValue::Str(s) = fv { Some(s.as_str()) } else { None })
+                                .unwrap_or("");
+                            if uuid == interp_uuid {
+                                let id = fields.get("id")
+                                    .map(|v| fmt_value_with_depth(v, 0))
+                                    .unwrap_or_else(|| var.to_string());
+                                Some(format!("{}{{{}: {}}}", indent, class_name, id))
+                            } else { None }
+                        } else { None }
+                    }))
+                    .unwrap_or_else(|| format!("{}?", indent));
+                let mut children: Vec<String> = index.owned_by(owner_handle).iter()
+                    .map(|&ch| build_tree_des(ch, store, index, object_store, depth + 1))
+                    .collect();
+                children.sort();
+                if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
+            }
+
+            fn build_tree_fallback(owner_uuid: &str, object_store: &HashMap<String, Value>, depth: usize) -> String {
                 let indent = "  ".repeat(depth);
                 let label = if let Some(Value::Object { class_name, fields, .. }) = object_store.get(owner_uuid) {
                     let id = fields.get("id")
@@ -13458,7 +13492,7 @@ fn call_action_by_name(
                 let mut children: Vec<String> = object_store.iter()
                     .filter(|(_, v)| matches!(v, Value::Object { fields, .. } if
                         matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner_uuid)))
-                    .map(|(child_uuid, _)| build_tree(child_uuid, object_store, depth + 1))
+                    .map(|(child_uuid, _)| build_tree_fallback(child_uuid, object_store, depth + 1))
                     .collect();
                 children.sort();
                 if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
@@ -13469,7 +13503,11 @@ fn call_action_by_name(
                 Some(Value::Str(s)) => s.clone(),
                 _ => return Err(Diagnostic::new_with_code(Severity::Error, "A0413", "owns-tree-bad-arg", "owns_tree() argument must be an object", sp.clone())),
             };
-            let tree = build_tree(&root_uuid, &sess.object_store, 0);
+            let tree = if let Some(root_handle) = sess.des_store.handle_for_interp_uuid(&root_uuid) {
+                build_tree_des(root_handle, &sess.des_store, &sess.des_index, &sess.object_store, 0)
+            } else {
+                build_tree_fallback(&root_uuid, &sess.object_store, 0)
+            };
             Value::Str(tree)
         }
 

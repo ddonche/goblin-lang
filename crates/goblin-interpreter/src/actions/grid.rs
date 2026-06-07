@@ -280,6 +280,19 @@ pub fn grid_set(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
     let layer = want_str_arg(args, 3, "layer", sp)?.to_string();
     let value = args[4].clone();
 
+    // Resolve entity var name before taking a mutable borrow on the world.
+    let entity_var: Option<String> = match &value {
+        Value::Object { uuid, .. } | Value::Ref(uuid) => {
+            let uuid = uuid.clone();
+            sess.env.iter().find_map(|frame| {
+                frame.iter().find_map(|(k, v)| {
+                    if let Value::Ref(u) = v { if *u == uuid { Some(k.clone()) } else { None } } else { None }
+                })
+            })
+        }
+        _ => None,
+    };
+
     let world = require_world_mut(sess, &grid_id, sp)?;
     require_in_bounds(world, x, y, sp)?;
 
@@ -294,7 +307,20 @@ pub fn grid_set(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
         Value::Nil => CellState::Unoccupied,
         v => CellState::Occupied(v),
     };
-    world.set(x, y, &layer, state);
+    world.set(x, y, &layer, state.clone());
+
+    // Mirror grid position to DES index when the "owner" layer changes.
+    if layer == "owner" {
+        if let Some(var) = entity_var {
+            if let Some(handle) = sess.des_store.handle_for_name(&var) {
+                match &state {
+                    CellState::Unoccupied | CellState::Void => sess.des_index.remove_from_grid(handle),
+                    CellState::Occupied(_) => sess.des_index.place_on_grid(handle, &grid_id, x, y),
+                }
+            }
+        }
+    }
+
     Ok(Value::Unit)
 }
 
