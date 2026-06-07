@@ -11298,21 +11298,37 @@ impl<'t> Parser<'t> {
                         };
                     }
                 } else {
-                    let is_method_reference = match self.toks.get(self.i) {
-                        Some(tok) => matches!(&tok.kind,
-                            goblin_lexer::TokenKind::Newline |
-                            goblin_lexer::TokenKind::Eof
-                        ) || matches!(&tok.kind, goblin_lexer::TokenKind::Op(s) if s == "," || s == ")"),
-                        None => true,
+                    // Strip trailing '!' from opname (lexer folds it into the ident token)
+                    // e.g. "str!" -> wrap in Postfix after building the inner Call/Member
+                    let (bare_opname, has_bang) = if opname.ends_with('!') {
+                        (opname[..opname.len()-1].to_string(), true)
+                    } else {
+                        (opname, false)
                     };
-                    
+
+                    let is_method_reference = if has_bang {
+                        false // bang form is never a method reference
+                    } else {
+                        match self.toks.get(self.i) {
+                            Some(tok) => matches!(&tok.kind,
+                                goblin_lexer::TokenKind::Newline |
+                                goblin_lexer::TokenKind::Eof
+                            ) || matches!(&tok.kind, goblin_lexer::TokenKind::Op(s) if s == "," || s == ")"),
+                            None => true,
+                        }
+                    };
+
                     if is_method_reference {
-                        lhs = PExpr::Member(Box::new(lhs), opname);
+                        lhs = PExpr::Member(Box::new(lhs), bare_opname);
                     } else {
                         lhs = match lhs {
-                            PExpr::IsBound(inner) => PExpr::OptCall(inner, opname, vec![]),
-                            other                  => PExpr::Call(Box::new(other),  opname, vec![]),
+                            PExpr::IsBound(inner) => PExpr::OptCall(inner, bare_opname, vec![]),
+                            other                  => PExpr::Call(Box::new(other), bare_opname, vec![]),
                         };
+                    }
+
+                    if has_bang {
+                        lhs = PExpr::Postfix(Box::new(lhs), "!".into());
                     }
                 }
 
