@@ -18170,7 +18170,14 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 if let ast::Expr::Ident(var_name, _) = base.as_ref() {
                     if let Some(frame_ix) = sess.find_name_frame(var_name) {
                         if let Some(lock) = sess.find_type_lock(frame_ix, var_name) {
-                            return Ok(Value::Str(lock));
+                            // If the variable holds a collection, qualify: array(int), map(str), etc.
+                            let val = sess.env[frame_ix].get(var_name).cloned().unwrap_or(Value::Nil);
+                            let label = match &val {
+                                Value::Array(_) => format!("array({})", lock),
+                                Value::Map(_) | Value::MapOrd(_) => format!("map({})", lock),
+                                _ => lock,
+                            };
+                            return Ok(Value::Str(label));
                         }
                     }
                 }
