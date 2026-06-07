@@ -1,0 +1,10 @@
+[package]
+name = "goblin-des"
+version = "0.46.10"
+edition = "2024"
+
+[dependencies]
+uuid = { version = "1", features = ["v4"] }
+indexmap = "2"
+
+[dev-dependencies]
