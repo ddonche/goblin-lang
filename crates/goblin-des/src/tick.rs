@@ -75,39 +75,18 @@ impl TickRunner {
         self.stats = TickStats { tick_number: self.tick_number, ..Default::default() };
     }
 
-    /// Call after all simulation phases complete.
-    /// Swaps pending -> committed for every live entity, then notifies the
-    /// index of what changed so it can update incrementally.
-    ///
-    /// Returns stats for the completed tick.
+    /// Call after all simulation phases complete and pending writes have been
+    /// flushed to object_store by the interpreter (Session::des_flush_pending).
+    /// Marks transition candidates and returns tick stats.
     pub fn end_tick(&mut self, store: &mut EntityStore, index: &mut EntityIndex) -> TickStats {
-        // Collect handles first to avoid borrow issues.
         let handles: Vec<EntityHandle> = store.live_handles().collect();
-
         for handle in handles {
             if let Some(entity) = store.get_mut(handle) {
-                let changed = entity.swap();
-                self.stats.fields_swapped += changed.len();
-
-                // If the class field changed (mutation), we need to update
-                // class index. For now we detect it by checking entity.class_name
-                // against pending class. Full class-change path is handled by
-                // TransitionRunner. Here we just do the swap.
-                //
-                // Trait re-inference happens after swap so that the new committed
-                // values are used.
-                if !changed.is_empty() {
-                    entity.refresh_traits();
-                }
-
-                // Mark as transition candidate if alive (TransitionEval will filter).
+                self.stats.fields_swapped += entity.pending.len(); // count any unflushed
                 index.mark_transition_candidate(&entity.class_name.clone(), handle);
-
                 self.stats.entities_evaluated += 1;
             }
         }
-
-        self.stats.index_updates = self.stats.fields_swapped; // 1:1 for now
         self.stats.clone()
     }
 }

@@ -66,6 +66,8 @@ impl EntityStore {
     }
 
     /// Create a new entity and return its handle.
+    /// `fields` is used only to infer trait_fields and extract interp_uuid —
+    /// it is NOT stored in the entity.
     pub fn create(
         &mut self,
         name: &str,
@@ -82,12 +84,15 @@ impl EntityStore {
         };
 
         let handle = EntityHandle { slot, generation };
-        let entity = Entity::new(handle, class_name, fields, raw_fields);
 
-        // Index the interpreter-assigned UUID string (stored in fields["uuid"]).
-        let interp_uuid = entity.fields.get("uuid")
+        let interp_uuid = fields.get("uuid")
             .and_then(|v| if let crate::entity::FieldValue::Str(s) = v { Some(s.clone()) } else { None })
             .unwrap_or_default();
+
+        let trait_fields = crate::entity::infer_trait_fields(&fields, &raw_fields);
+
+        let entity = Entity::new(handle, class_name, interp_uuid.clone(), trait_fields, raw_fields);
+
         if !interp_uuid.is_empty() {
             self.handle_by_interp_uuid.insert(interp_uuid, handle);
         }
@@ -162,10 +167,7 @@ impl EntityStore {
             if let Slot::Occupied { entity } = slot {
                 if entity.handle.generation == handle.generation {
                     let uuid = entity.uuid;
-                    // Remove interpreter UUID from secondary index.
-                    if let Some(crate::entity::FieldValue::Str(s)) = entity.fields.get("uuid") {
-                        self.handle_by_interp_uuid.remove(s);
-                    }
+                    self.handle_by_interp_uuid.remove(&entity.interp_uuid);
                     let name = self.name_by_handle.remove(&handle).unwrap_or_default();
                     self.handle_by_uuid.remove(&uuid);
                     self.handle_by_name.remove(&name);

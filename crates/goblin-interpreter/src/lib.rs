@@ -1014,8 +1014,9 @@ impl Session {
 
     // ── Dynamic Entity System helpers ────────────────────────────────────────
 
-    /// Convert a Value field map to the FieldValue map DES uses.
-    /// Non-representable values (nested objects, collections, etc.) become Nil.
+    /// Convert a Value field map to a FieldValue map for DES.
+    /// Used only at registration time to infer trait fields and extract interp_uuid.
+    /// The resulting map is NOT stored in the entity.
     fn value_fields_to_des(fields: &IndexMap<String, Value>) -> indexmap::IndexMap<String, FieldValue> {
         fields.iter().map(|(k, v)| {
             let fv = match v {
@@ -1029,12 +1030,39 @@ impl Session {
         }).collect()
     }
 
-    /// Register a newly-created object in des_store + des_index, mirroring what
-    /// was just put into object_store and class_index.
+    /// Register a newly-created object in des_store + des_index.
+    /// Fields are used only to infer trait_fields and extract interp_uuid — not stored.
     pub fn des_register(&mut self, var_name: &str, class_name: &str, fields: &IndexMap<String, Value>, raw_fields: &std::collections::BTreeSet<String>) {
         let des_fields = Self::value_fields_to_des(fields);
         let handle = self.des_store.create(var_name, class_name.to_string(), des_fields, raw_fields.clone());
         self.des_index.insert_class(class_name, handle);
+    }
+
+    /// Flush pending field writes from all DES entities back to object_store.
+    /// Called by TickRunner.end_tick path — this is the "swap" for the double-buffer.
+    pub fn des_flush_pending(&mut self) {
+        let handles: Vec<goblin_des::store::EntityHandle> = self.des_store.live_handles().collect();
+        for handle in handles {
+            if let Some(entity) = self.des_store.get_mut(handle) {
+                if !entity.has_pending() { continue; }
+                let changes = entity.drain_pending();
+                let interp_uuid = entity.interp_uuid.clone();
+                if let Some(obj) = self.object_store.get_mut(&interp_uuid) {
+                    if let Value::Object { fields, .. } = obj {
+                        for (field, fv) in changes {
+                            let val = match fv {
+                                FieldValue::Float(f) => Value::Float(f),
+                                FieldValue::Int(i)   => Value::Int(i),
+                                FieldValue::Bool(b)  => Value::Bool(b),
+                                FieldValue::Str(s)   => Value::Str(s),
+                                FieldValue::Nil      => Value::Nil,
+                            };
+                            fields.insert(field, val);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Erase an entity from des_store + des_index by variable name.
@@ -6301,13 +6329,14 @@ fn eval_builtin(
 
         // Unknown builtin → tell caller to fall back to R0301 etc. (None signals “not a builtin here”)
         // tick() and tick_db() are now identical — both run the full double-buffer:
-        // DES entity pending/committed swap + grid cell snapshot/commit.
+        // DES pending flush to object_store + grid cell snapshot/commit.
         // tick_db is kept as an alias for backward compatibility.
         "tick" | "tick_db" => {
             sess.des_tick_runner.begin_tick();
             crate::actions::grid::all_grids_tick_db_begin(sess);
             overlay_tick(sess);
             crate::actions::grid::all_grids_tick_db_commit(sess);
+            sess.des_flush_pending();
             sess.des_tick_runner.end_tick(&mut sess.des_store, &mut sess.des_index);
             Value::Unit
         }
@@ -13460,8 +13489,7 @@ fn call_action_by_name(
                     .and_then(|var| object_store.values().find_map(|v| {
                         if let Value::Object { uuid, class_name, fields, .. } = v {
                             let interp_uuid = store.get(owner_handle)
-                                .and_then(|e| e.fields.get("uuid"))
-                                .and_then(|fv| if let goblin_des::entity::FieldValue::Str(s) = fv { Some(s.as_str()) } else { None })
+                                .map(|e| e.interp_uuid.as_str())
                                 .unwrap_or("");
                             if uuid == interp_uuid {
                                 let id = fields.get("id")

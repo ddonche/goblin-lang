@@ -1,10 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
-use indexmap::IndexMap;
 use uuid::Uuid;
 use crate::store::EntityHandle;
 
 /// A field value in DES. Kept minimal — the interpreter owns full Value; we
-/// mirror only what DES needs to maintain indexes and run tick_db.
+/// mirror only what DES needs for index maintenance and tick_db writes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
     Nil,
@@ -15,7 +14,6 @@ pub enum FieldValue {
 }
 
 impl FieldValue {
-    /// Returns the f64 if this is a Float, else None.
     pub fn as_float(&self) -> Option<f64> {
         match self {
             FieldValue::Float(v) => Some(*v),
@@ -24,20 +22,29 @@ impl FieldValue {
         }
     }
 
-    /// True if this value qualifies as a trait field (numeric, 0..1).
     pub fn is_trait_value(&self) -> bool {
-        match self {
-            FieldValue::Float(v) => *v >= 0.0 && *v <= 1.0,
-            _ => false,
-        }
+        matches!(self, FieldValue::Float(v) if *v >= 0.0 && *v <= 1.0)
     }
 }
 
-/// The canonical entity record stored in EntityStore.
+/// Lightweight entity record. DES does NOT duplicate the committed field state —
+/// that lives exclusively in the interpreter's object_store. Entity carries only
+/// what the index and double-buffer system needs:
+///
+///   - identity (uuid, handle, class)
+///   - trait field set (for clamping during pending writes)
+///   - sparse pending buffer (only fields written during the current tick)
+///   - alive flag
+///
+/// Memory cost per entity: ~3 BTreeSet/HashMap headers + trait set entries.
+/// No full field copy. No pending clone at creation.
 #[derive(Debug, Clone)]
 pub struct Entity {
-    /// Stable, saveable identity. Never changes across the entity's lifetime.
+    /// DES-internal stable UUID.
     pub uuid: Uuid,
+
+    /// The interpreter's UUID string, mirrored here for index lookups.
+    pub interp_uuid: String,
 
     /// Fast runtime slot identity. Used by all indexes.
     pub handle: EntityHandle,
@@ -45,87 +52,76 @@ pub struct Entity {
     /// Current class name.
     pub class_name: String,
 
-    /// Current committed field state (what everyone reads from during a tick).
-    pub fields: IndexMap<String, FieldValue>,
-
-    /// Pending field state (where writes land during a tick).
-    /// Swapped with `fields` at end of tick.
-    pub pending: IndexMap<String, FieldValue>,
-
-    /// Field names that are raw (prefixed with `~`). Never clamped, never
-    /// treated as traits regardless of value.
-    pub raw_fields: BTreeSet<String>,
-
-    /// Field names inferred as traits (numeric 0..1, not raw).
-    /// Recomputed whenever fields change type or raw status changes.
+    /// Field names inferred as traits (numeric 0..1, not raw) at creation.
+    /// Used to clamp writes in set_pending. Re-set on mutate transition.
     pub trait_fields: BTreeSet<String>,
 
-    /// Whether this entity is alive. Dead entities stay in the store until
-    /// the next compaction but are excluded from all index queries.
-    pub alive: bool,
+    /// Field names that are raw (prefixed with `~`). Never clamped.
+    pub raw_fields: BTreeSet<String>,
 
-    /// Arbitrary metadata the host system (interpreter) may attach.
-    pub tags: HashMap<String, String>,
+    /// Sparse pending buffer. Only populated during a tick when set_pending()
+    /// is called. Cleared after TickRunner flushes changes to object_store.
+    pub pending: HashMap<String, FieldValue>,
+
+    /// Whether this entity is alive.
+    pub alive: bool,
 }
 
 impl Entity {
-    pub fn new(handle: EntityHandle, class_name: String, fields: IndexMap<String, FieldValue>, raw_fields: BTreeSet<String>) -> Self {
-        let trait_fields = infer_trait_fields(&fields, &raw_fields);
-        let pending = fields.clone();
+    /// Create a new entity. `initial_fields` is used only to infer trait_fields
+    /// and extract interp_uuid — it is NOT stored in the entity.
+    pub fn new(
+        handle: EntityHandle,
+        class_name: String,
+        interp_uuid: String,
+        trait_fields: BTreeSet<String>,
+        raw_fields: BTreeSet<String>,
+    ) -> Self {
         Self {
             uuid: Uuid::new_v4(),
+            interp_uuid,
             handle,
             class_name,
-            fields,
-            pending,
-            raw_fields,
             trait_fields,
+            raw_fields,
+            pending: HashMap::new(), // sparse — starts empty every tick
             alive: true,
-            tags: HashMap::new(),
         }
     }
 
-    /// Read a field from committed state (used during tick evaluation).
-    pub fn get(&self, field: &str) -> Option<&FieldValue> {
-        self.fields.get(field)
-    }
-
-    /// Write a field to pending state (batched until tick swap).
+    /// Write a field to the sparse pending buffer.
+    /// Trait fields are clamped to 0..1 on write.
     pub fn set_pending(&mut self, field: &str, value: FieldValue) {
-        if self.trait_fields.contains(field) {
-            // Clamp traits to 0..1 on write.
-            let v = match &value {
+        let v = if self.trait_fields.contains(field) {
+            match value {
                 FieldValue::Float(f) => FieldValue::Float(f.clamp(0.0, 1.0)),
-                FieldValue::Int(i) => FieldValue::Float((*i as f64).clamp(0.0, 1.0)),
-                other => other.clone(),
-            };
-            self.pending.insert(field.to_string(), v);
-        } else {
-            self.pending.insert(field.to_string(), value);
-        }
-    }
-
-    /// Swap pending into committed. Called by TickRunner at end of tick.
-    /// Returns the set of fields whose committed value actually changed,
-    /// so indexes can update only what changed.
-    pub fn swap(&mut self) -> Vec<String> {
-        let mut changed = Vec::new();
-        for (k, v) in &self.pending {
-            if self.fields.get(k) != Some(v) {
-                changed.push(k.clone());
-                self.fields.insert(k.clone(), v.clone());
+                FieldValue::Int(i) => FieldValue::Float((i as f64).clamp(0.0, 1.0)),
+                other => other,
             }
-        }
-        changed
+        } else {
+            value
+        };
+        self.pending.insert(field.to_string(), v);
     }
 
-    /// Recompute trait_fields from current committed state.
-    pub fn refresh_traits(&mut self) {
-        self.trait_fields = infer_trait_fields(&self.fields, &self.raw_fields);
+    /// Drain the pending buffer and return its contents.
+    /// Called by TickRunner — the caller writes changes to object_store.
+    pub fn drain_pending(&mut self) -> HashMap<String, FieldValue> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// True if there are any pending writes this tick.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 }
 
-fn infer_trait_fields(fields: &IndexMap<String, FieldValue>, raw: &BTreeSet<String>) -> BTreeSet<String> {
+/// Infer trait field names from a field map and raw-field set.
+/// Called at registration time; result is stored on Entity.
+pub fn infer_trait_fields(
+    fields: &indexmap::IndexMap<String, FieldValue>,
+    raw: &BTreeSet<String>,
+) -> BTreeSet<String> {
     fields
         .iter()
         .filter(|(k, v)| !raw.contains(*k) && v.is_trait_value())
