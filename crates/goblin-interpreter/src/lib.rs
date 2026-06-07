@@ -3002,6 +3002,32 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
         .with_link("https://goblinlang.org/docs/errors#R0215")
     };
 
+    // ── collections: apply cast element-wise ──────────────────────────────────
+    match v {
+        Value::Array(elems) => {
+            let mut results = Vec::with_capacity(elems.len());
+            for elem in elems {
+                results.push(cast_value_to_lock(elem, lock, at)?);
+            }
+            return Ok(Value::Array(results));
+        }
+        Value::Map(map) => {
+            let mut results = BTreeMap::new();
+            for (k, val) in map {
+                results.insert(k, cast_value_to_lock(val, lock, at)?);
+            }
+            return Ok(Value::Map(results));
+        }
+        Value::MapOrd(map) => {
+            let mut results = indexmap::IndexMap::new();
+            for (k, val) in map {
+                results.insert(k, cast_value_to_lock(val, lock, at)?);
+            }
+            return Ok(Value::MapOrd(results));
+        }
+        _ => {}
+    }
+
     match lock {
         // ── text ──────────────────────────────────────────────────────────────
         "str" => cast_to_str(v).map_err(|_| cast_err("value cannot be represented as a string")),
@@ -3009,13 +3035,17 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
         // ── boolean ───────────────────────────────────────────────────────────
         "bool" => match v {
             Value::Bool(_) => Ok(v),
-            Value::Int(n) => Ok(Value::Bool(n != 0)),
-            Value::Str(ref s) => match s.as_str() {
-                "true" => Ok(Value::Bool(true)),
-                "false" => Ok(Value::Bool(false)),
-                _ => Err(cast_err("string must be \"true\" or \"false\"")),
-            },
-            _ => Err(cast_err("value cannot be converted to bool")),
+            _ => Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    "R0215",
+                    "type-lock-cast",
+                    "bool lock only accepts boolean values — use true or false",
+                    at.clone(),
+                )
+                .with_help("Declare the variable without a type suffix, or provide a bool literal.")
+                .with_link("https://goblinlang.org/docs/errors#R0215"),
+            ),
         },
 
         // ── signed integers ───────────────────────────────────────────────────
@@ -3095,18 +3125,20 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
         "big" => cast_to_big(v).map_err(|_| cast_err("value cannot be converted to big decimal")),
 
         // ── financial ─────────────────────────────────────────────────────────
-        "money" => cast_to_float(v).map_err(|_| cast_err("value cannot be converted to money (float)")),
-        "pct" => cast_to_pct(v).map_err(|_| cast_err("value cannot be converted to pct")),
-
-        // ── temporal — pass through if already the right type, else error ─────
-        "date" | "time" | "datetime" | "duration" => {
-            // Temporal types are already stored as Str or specialized Value;
-            // accept string values and pass through, reject otherwise.
-            match &v {
-                Value::Str(_) => Ok(v),
-                _ => Err(cast_err("temporal types must be string literals like 1981-07-28")),
-            }
+        "money" | "date" | "time" | "datetime" | "duration" => {
+            Err(
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    "R0215",
+                    "type-lock-cast",
+                    &format!("type lock '{}' is not yet implemented — omit the type suffix for now", lock),
+                    at.clone(),
+                )
+                .with_help("Remove the type suffix and use a plain variable declaration.")
+                .with_link("https://goblinlang.org/docs/errors#R0215"),
+            )
         }
+        "pct" => cast_to_pct(v).map_err(|_| cast_err("value cannot be converted to pct")),
 
         _ => Err(cast_err("unknown type lock")),
     }
@@ -11769,28 +11801,42 @@ fn call_action_by_name(
         // ----- Numeric (methods) -----
         "int" | "i" => {
             arity(1)?;
-            cast_to_int_like(args[0].clone())?
+            cast_value_to_lock(args[0].clone(), "int", &synth_span())?
         }
         "float" | "f" => {
             arity(1)?;
-            cast_to_float(args[0].clone())?
+            cast_value_to_lock(args[0].clone(), "float", &synth_span())?
         }
         "big" | "b" => {
             arity(1)?;
-            cast_to_big(args[0].clone())?
+            cast_value_to_lock(args[0].clone(), "big", &synth_span())?
         }
         "str" | "string" => {
             arity(1)?;
-            cast_to_str(args[0].clone())?
+            cast_value_to_lock(args[0].clone(), "str", &synth_span())?
         }
         "pct" | "percent" => {
             arity(1)?;
-            cast_to_pct(args[0].clone())?
+            cast_value_to_lock(args[0].clone(), "pct", &synth_span())?
         }
         "to_map" | "m" => {
             arity(1)?;
             cast_to_map(args[0].clone())?
         }
+        "bool" => {
+            arity(1)?;
+            cast_value_to_lock(args[0].clone(), "bool", &synth_span())?
+        }
+        "i8" => { arity(1)?; cast_value_to_lock(args[0].clone(), "i8", &synth_span())? }
+        "i16" => { arity(1)?; cast_value_to_lock(args[0].clone(), "i16", &synth_span())? }
+        "i32" => { arity(1)?; cast_value_to_lock(args[0].clone(), "i32", &synth_span())? }
+        "i64" => { arity(1)?; cast_value_to_lock(args[0].clone(), "i64", &synth_span())? }
+        "u8" => { arity(1)?; cast_value_to_lock(args[0].clone(), "u8", &synth_span())? }
+        "u16" => { arity(1)?; cast_value_to_lock(args[0].clone(), "u16", &synth_span())? }
+        "u32" => { arity(1)?; cast_value_to_lock(args[0].clone(), "u32", &synth_span())? }
+        "u64" => { arity(1)?; cast_value_to_lock(args[0].clone(), "u64", &synth_span())? }
+        "f32" => { arity(1)?; cast_value_to_lock(args[0].clone(), "f32", &synth_span())? }
+        "f64" => { arity(1)?; cast_value_to_lock(args[0].clone(), "f64", &synth_span())? }
         "round" => {
             arity(1)?;
             match &args[0] {
@@ -18094,6 +18140,18 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Member access on maps / postfix builtins ----
         ast::Expr::Member(base, name, sp) => {
+            // Special-case: <expr>.vt / <expr>.valtype — report declared lock type
+            if name == "vt" || name == "valtype" {
+                if let ast::Expr::Ident(var_name, _) = base.as_ref() {
+                    if let Some(frame_ix) = sess.find_name_frame(var_name) {
+                        if let Some(lock) = sess.find_type_lock(frame_ix, var_name) {
+                            return Ok(Value::Str(lock));
+                        }
+                    }
+                }
+                // Fall through to runtime type detection
+            }
+
             let base_v = eval_expr(base, sess)?;
 
             // Detect builtin instance methods (postfix sugar, no-parens)
@@ -18120,7 +18178,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // Type/Meta
                     "valtype" | "vt" | "backend" | "metrics" | 
                     // Postfix casts
-                    "int" | "float" | "str" | "string" | "bool" | "big" | "pct" | "to_map"
+                    "int" | "float" | "str" | "string" | "bool" | "big" | "pct" | "to_map" |
+                    "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
                 ) || name.starts_with("is_");
 
             if is_builtin_method {
@@ -18264,7 +18323,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                             "replace" |
                             "round" | "floor" | "ceil" | "abs" | "sqrt" |
                             "valtype" | "vt" | "backend" | "metrics" |
-                            "int" | "float" | "str" | "bool" | "big" | "pct" | "to_map"
+                            "int" | "float" | "str" | "bool" | "big" | "pct" | "to_map" |
+                            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
                         ) || name.starts_with("is_");
 
                     if is_builtin_method {
@@ -18296,6 +18356,62 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         ast::Expr::FreeCall(name, args, sp) => {
             // Strip : prefix if present
             let name = name.strip_prefix(':').unwrap_or(name);
+
+            // ── Bang-cast free calls: str!(age), i32!(age), etc. ─────────────────
+            if name.ends_with('!') {
+                let base_name = &name[..name.len()-1];
+                const CAST_BANG_TYPES_FC: &[&str] = &[
+                    "str", "bool", "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64", "f32", "f64",
+                    "float", "big", "int", "uint", "pct",
+                ];
+                if CAST_BANG_TYPES_FC.contains(&base_name) {
+                    if args.len() != 1 {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error, "R0802", "lvalue-expected",
+                            format!("{}!() requires exactly one variable argument", base_name),
+                            sp.clone(),
+                        ));
+                    }
+                    let (var_name, name_sp) = match &args[0] {
+                        ast::Expr::Ident(n, s) => (n.clone(), s.clone()),
+                        _ => return Err(Diagnostic::new_with_code(
+                            Severity::Error, "R0802", "lvalue-expected",
+                            format!("{}!(name) requires a variable name, not an expression", base_name),
+                            sp.clone(),
+                        ).with_help("Use a plain variable name: str!(age) not str!(age + 1)")),
+                    };
+                    let Some(frame_ix) = sess.find_name_frame(&var_name) else {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error, crate::diagnostics::rtcode::UNKNOWN_IDENT, "unknown-ident",
+                            format!("unknown identifier '{}'", var_name),
+                            name_sp,
+                        ));
+                    };
+                    if sess.is_const_in_frame(frame_ix, &var_name) {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error, crate::diagnostics::rtcode::IMMUTABLE_ASSIGN, "immutable-assign",
+                            format!("cannot recast immutable '{}'", var_name),
+                            sp.clone(),
+                        ).with_help("Values declared with 'imm' cannot be recast."));
+                    }
+                    if let Some(lock) = sess.find_type_lock(frame_ix, &var_name) {
+                        if lock != base_name {
+                            return Err(Diagnostic::new_with_code(
+                                Severity::Error, "R0215", "type-lock-cast",
+                                format!("cannot recast '{}' to '{}': variable is locked to '{}'", var_name, base_name, lock),
+                                sp.clone(),
+                            ));
+                        }
+                    }
+                    let raw_val = sess.env[frame_ix].get(&var_name).cloned().unwrap_or(Value::Nil);
+                    let new_val = cast_value_to_lock(raw_val, base_name, sp)?;
+                    if let Some(slot) = sess.env[frame_ix].get_mut(&var_name) {
+                        *slot = new_val.clone();
+                    }
+                    return Ok(new_val);
+                }
+            }
 
             // ============ :count() OVERLAY QUERY BUILTIN ============
             // count(OverlayName)        — how many hosts currently carry this overlay type
@@ -19423,21 +19539,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
         // ---- Member/optional member calls (receiver becomes first argument) ----
         ast::Expr::Call(base, name, args, sp) => {
-            
-            // Mutating casts for function form when arg is a plain identifier.
-            if args.is_empty() {
-                if matches!(name.as_str(), "float" | "f" | "int" | "i" | "big" | "b" | "str" | "string" | "pct" | "percent") {
-                    if let ast::Expr::Ident(var_name, _) = &**base {
-                        let recv = eval_expr(base, sess)?;
-                        let out  = call_action_by_name(sess, &name, vec![recv], sp.clone())?;
-                        sess.set_var(var_name.clone(), out.clone());
-                        return Ok(out);
+            // Special-case: <expr>.valtype or <expr>.vt — report declared lock type if available
+            if (name == "valtype" || name == "vt") && args.is_empty() {
+                if let ast::Expr::Ident(var_name, _) = base.as_ref() {
+                    if let Some(frame_ix) = sess.find_name_frame(var_name) {
+                        if let Some(lock) = sess.find_type_lock(frame_ix, var_name) {
+                            return Ok(Value::Str(lock));
+                        }
                     }
                 }
-            }
-            
-            // Special-case: <expr>.valtype or <expr>.vt
-            if (name == "valtype" || name == "vt") && args.is_empty() {
                 let recv = eval_expr(base, sess)?;
                 return Ok(Value::Str(value_kind_str(&recv).to_string()));
             }
@@ -19688,6 +19798,84 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(Value::Float(n.sqrt()))
                 }
                 "!" => {
+                    // ── Cast-bang: age.str!, age.i32!, etc. ───────────────────────────────
+                    const CAST_BANG_TYPES: &[&str] = &[
+                        "str", "bool",
+                        "i8", "i16", "i32", "i64",
+                        "u8", "u16", "u32", "u64",
+                        "f32", "f64", "float",
+                        "big", "int", "uint", "pct",
+                    ];
+                    // Pattern: Postfix(Member(Ident(var_name), type_name), "!")
+                    //       or Postfix(Call(Ident(var_name), type_name, [], _), "!")
+                    let cast_bang_info: Option<(String, Span, String)> = match expr.as_ref() {
+                        ast::Expr::Member(inner_expr, type_name, _) if CAST_BANG_TYPES.contains(&type_name.as_str()) => {
+                            match inner_expr.as_ref() {
+                                ast::Expr::Ident(var_name, name_sp) => Some((var_name.clone(), name_sp.clone(), type_name.clone())),
+                                _ => None,
+                            }
+                        }
+                        ast::Expr::Call(inner_expr, type_name, args, _) if CAST_BANG_TYPES.contains(&type_name.as_str()) && args.is_empty() => {
+                            match inner_expr.as_ref() {
+                                ast::Expr::Ident(var_name, name_sp) => Some((var_name.clone(), name_sp.clone(), type_name.clone())),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    if let Some((var_name, name_sp, type_name)) = cast_bang_info {
+                        // Variable must exist
+                        let Some(frame_ix) = sess.find_name_frame(&var_name) else {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::UNKNOWN_IDENT,
+                                    "unknown-ident",
+                                    format!("unknown identifier '{}'", var_name),
+                                    name_sp,
+                                )
+                                .with_help("Declare the variable before recasting it."),
+                            );
+                        };
+                        // Must not be immutable
+                        if sess.is_const_in_frame(frame_ix, &var_name) {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::IMMUTABLE_ASSIGN,
+                                    "immutable-assign",
+                                    format!("cannot recast immutable '{}'", var_name),
+                                    sp.clone(),
+                                )
+                                .with_help("Values declared with 'imm' cannot be recast."),
+                            );
+                        }
+                        // Type lock check
+                        if let Some(lock) = sess.find_type_lock(frame_ix, &var_name) {
+                            if lock != type_name {
+                                return Err(
+                                    Diagnostic::new_with_code(
+                                        Severity::Error,
+                                        "R0215",
+                                        "type-lock-cast",
+                                        format!("cannot recast '{}' to '{}': variable is locked to '{}'", var_name, type_name, lock),
+                                        sp.clone(),
+                                    )
+                                    .with_help("A type-locked variable can only hold its declared type."),
+                                );
+                            }
+                        }
+                        // Get raw value and cast it
+                        let raw_val = sess.env[frame_ix].get(&var_name).cloned().unwrap_or(Value::Nil);
+                        let new_val = cast_value_to_lock(raw_val, &type_name, sp)?;
+                        if let Some(slot) = sess.env[frame_ix].get_mut(&var_name) {
+                            *slot = new_val.clone();
+                        }
+                        return Ok(new_val);
+                    }
+
+                    // ── Factorial (default "!" behavior) ──────────────────────────────────
                     let n = as_num(v, sp.clone(), "factorial")?;
                     // factorial(n): requires n to be a non-negative integer
                     if n < 0.0 {
