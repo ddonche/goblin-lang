@@ -280,10 +280,13 @@ pub enum Value {
         x: i32,
         y: i32,
     },
-    Enum {                              
+    Enum {
         enum_name: String,
         variant_name: String,
         fields: Option<IndexMap<String, Value>>,
+    },
+    Class {
+        name: String,
     },
 }
 
@@ -1384,6 +1387,7 @@ fn to_json(v: &Value) -> sj::Value {
         Value::Enum { enum_name, variant_name, .. } => {
             sj::Value::String(format!("{}::{}", enum_name, variant_name))
         }
+        Value::Class { name } => sj::Value::String(format!("<class:{}>", name)),
     }
 }
 
@@ -2438,6 +2442,7 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
         }
 
         Value::Unit | Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => String::new(),
+        Value::Class { name } => format!("<class {}>", name),
     }
 }
 
@@ -2475,6 +2480,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::Enum { .. } => "enum",
         Value::Ref(_) => "object",
         Value::GridRef { .. } => "gridref",
+        Value::Class { .. } => "class",
     }
 }
 
@@ -10877,7 +10883,8 @@ fn call_action_by_name(
                 | v @ Value::Object { .. }
                 | v @ Value::Enum { .. }
                 | v @ Value::Ref(_)
-                | v @ Value::GridRef { .. } => v,
+                | v @ Value::GridRef { .. }
+                | v @ Value::Class { .. } => v,
 
                 // implicit-return: Unit means "no value", do NOT fallback to forwarded args
                 Value::Unit => Value::Unit,
@@ -11035,6 +11042,7 @@ fn call_action_by_name(
                 Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => "control",
                 Value::Object { .. } => "object",
                 Value::Enum { .. } => "enum",
+                Value::Class { .. } => "class",
                 _ => "unknown",
             };
             Value::Str(kind.to_string())
@@ -17303,6 +17311,10 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     Ok(v.clone())
                 }
                 None => {
+                    // Check if it's a known class name
+                    if sess.classes.contains_key(name.as_str()) {
+                        return Ok(Value::Class { name: name.clone() });
+                    }
                     if let Some(class_name) = sess.erased_vars.get(name.as_str()) {
                         let msg = if class_name.is_empty() {
                             format!("warning: '{}' no longer exists (erased by transition)", name)
