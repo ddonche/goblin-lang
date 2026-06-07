@@ -18,7 +18,7 @@ use goblin_ast::BindMode;
 use goblin_diagnostics::Span;
 use goblin_yall as yall;
 use goblin_des::store::{EntityStore, EntityHandle};
-use goblin_des::index::EntityIndex;
+use goblin_des::index::{EntityIndex, OverlayInstanceId};
 use goblin_des::entity::FieldValue;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::{Path, PathBuf};
@@ -461,6 +461,8 @@ pub struct OverlayInstance {
     /// Only populated for temporary overlays. Restored on expiry/detach.
     pub original_values: Vec<(String, Value)>,
     pub extra_fields: indexmap::IndexMap<String, Value>,
+    /// Stable id used by DES overlay index. Assigned at push time.
+    pub des_id: OverlayInstanceId,
 }
 
 // ── Link runtime structures ──────────────────────────────────────────────────
@@ -558,6 +560,8 @@ pub struct Session {
     /// All fast-lookup indexes (class, ownership, overlays, links, grid,
     /// transition candidates). Updated in parallel with object_store mutations.
     pub des_index: EntityIndex,
+    /// Monotonic counter for OverlayInstanceId assignment. Never reused.
+    pub des_overlay_id_counter: u32,
 
     // ==== BOX SYSTEM ====
     pub box_store: HashMap<String, Value>,
@@ -735,6 +739,7 @@ impl Session {
 
             des_store: EntityStore::new(),
             des_index: EntityIndex::default(),
+            des_overlay_id_counter: 0,
 
             box_store: HashMap::new(),
             box_namespace: None,
@@ -3813,6 +3818,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 count: 1,
                 original_values,
                 extra_fields: extra_fields_snap,
+                des_id: OverlayInstanceId(0),
             };
             overlay_push(sess, instance);
             Ok(None)
@@ -3835,6 +3841,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             };
 
             // Remove ALL matching instances, restoring originals for temporary ones
+            let host_handle = sess.des_store.handle_for_name(&host_var);
             let mut i = 0;
             while i < sess.overlay_instances.len() {
                 if sess.overlay_instances[i].overlay_name == detach_stmt.overlay_name
@@ -3844,6 +3851,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     if !inst.original_values.is_empty() {
                         let originals = inst.original_values.clone();
                         overlay_restore_originals(sess, &inst.host_var, &originals);
+                    }
+                    if let Some(hh) = host_handle {
+                        sess.des_index.remove_overlay(hh, &detach_stmt.overlay_name, inst.des_id);
                     }
                 } else {
                     i += 1;
@@ -6464,7 +6474,12 @@ fn overlay_restore_originals(sess: &mut Session, host_var: &str, originals: &[(S
     }
 }
 
-fn overlay_push(sess: &mut Session, inst: OverlayInstance) {
+fn overlay_push(sess: &mut Session, mut inst: OverlayInstance) {
+    // Assign a stable DES id before any branch — placeholder 0 from construction sites.
+    let des_id = OverlayInstanceId(sess.des_overlay_id_counter);
+    sess.des_overlay_id_counter += 1;
+    inst.des_id = des_id;
+
     let behavior = sess.overlay_defs.get(&inst.overlay_name)
         .map(|d| d.apply_behavior.clone())
         .unwrap_or(OverlayApplyBehavior::Caps);
@@ -6480,41 +6495,37 @@ fn overlay_push(sess: &mut Session, inst: OverlayInstance) {
 
     match behavior {
         OverlayApplyBehavior::Caps => {
-            // First application wins — drop if already exists
             let exists = sess.overlay_instances.iter()
                 .any(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid);
             if !exists {
-                // Apply modifiers and push
                 overlay_apply_modifiers(sess, &inst.host_var, &modifiers, inst.strength, inst.count, &count_label, &inst.extra_fields);
+                des_overlay_add(sess, &inst.host_var, &inst.overlay_name, des_id);
                 sess.overlay_instances.push(inst);
             }
-            // If already exists, the new application is silently dropped — no modifier change
         }
         OverlayApplyBehavior::Replaces => {
             if let Some(pos) = sess.overlay_instances.iter().position(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid) {
-                // Restore originals from existing instance first
                 let old_originals = sess.overlay_instances[pos].original_values.clone();
                 let host_var = sess.overlay_instances[pos].host_var.clone();
                 if !old_originals.is_empty() {
                     overlay_restore_originals(sess, &host_var, &old_originals);
                 }
-                // Overwrite the instance
                 sess.overlay_instances[pos].strength = inst.strength;
                 sess.overlay_instances[pos].age = inst.age;
                 sess.overlay_instances[pos].count = 1;
                 sess.overlay_instances[pos].ticks_remaining = inst.ticks_remaining;
                 sess.overlay_instances[pos].original_values = inst.original_values.clone();
                 sess.overlay_instances[pos].extra_fields = inst.extra_fields.clone();
-                // Apply new modifiers
                 overlay_apply_modifiers(sess, &host_var, &modifiers, inst.strength, 1, &count_label, &inst.extra_fields);
+                // Replaces overwrites existing — index entry stays valid (same host, same overlay name)
             } else {
                 overlay_apply_modifiers(sess, &inst.host_var, &modifiers, inst.strength, 1, &count_label, &inst.extra_fields);
+                des_overlay_add(sess, &inst.host_var, &inst.overlay_name, des_id);
                 sess.overlay_instances.push(inst);
             }
         }
         OverlayApplyBehavior::Stacks { .. } => {
             if let Some(pos) = sess.overlay_instances.iter().position(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid) {
-                // Increment count, apply one more delta worth of modifiers
                 sess.overlay_instances[pos].count += 1;
                 sess.overlay_instances[pos].strength = (sess.overlay_instances[pos].strength + inst.strength).min(1.0);
                 if inst.ticks_remaining.is_some() {
@@ -6522,13 +6533,21 @@ fn overlay_push(sess: &mut Session, inst: OverlayInstance) {
                 }
                 let host_var = sess.overlay_instances[pos].host_var.clone();
                 let extra = sess.overlay_instances[pos].extra_fields.clone();
-                // Apply one additional delta (the new stack's worth)
                 overlay_apply_modifiers(sess, &host_var, &modifiers, inst.strength, 1, &count_label, &extra);
+                // Stacks adds to existing — index entry stays valid
             } else {
                 overlay_apply_modifiers(sess, &inst.host_var, &modifiers, inst.strength, 1, &count_label, &inst.extra_fields);
+                des_overlay_add(sess, &inst.host_var, &inst.overlay_name, des_id);
                 sess.overlay_instances.push(inst);
             }
         }
+    }
+}
+
+/// Update the DES overlay index when a new instance is actually pushed.
+fn des_overlay_add(sess: &mut Session, host_var: &str, overlay_name: &str, id: OverlayInstanceId) {
+    if let Some(host_handle) = sess.des_store.handle_for_name(host_var) {
+        sess.des_index.add_overlay(host_handle, overlay_name, id);
     }
 }
 
@@ -6728,6 +6747,7 @@ fn overlay_tick(sess: &mut Session) {
                     count: 1,
                     original_values,
                     extra_fields: def.extra_fields.clone(),
+                    des_id: OverlayInstanceId(0),
                 });
             }
         }
@@ -6862,6 +6882,7 @@ fn overlay_tick(sess: &mut Session) {
                     count: 1,
                     original_values,
                     extra_fields: def.extra_fields.clone(),
+                    des_id: OverlayInstanceId(0),
                 });
             }
         }
@@ -6971,6 +6992,7 @@ fn overlay_tick(sess: &mut Session) {
                                 count: 1,
                                 original_values: Vec::new(),
                                 extra_fields: def.extra_fields.clone(),
+                                des_id: OverlayInstanceId(0),
                             });
                         }
                         break;
@@ -6999,6 +7021,7 @@ fn overlay_tick(sess: &mut Session) {
                                 count: 1,
                                 original_values: Vec::new(),
                                 extra_fields: def.extra_fields.clone(),
+                                des_id: OverlayInstanceId(0),
                             });
                         }
                         // Original remains — no erase
@@ -7040,6 +7063,7 @@ fn overlay_tick(sess: &mut Session) {
                                 count: 1,
                                 original_values: Vec::new(),
                                 extra_fields: def.extra_fields.clone(),
+                                des_id: OverlayInstanceId(0),
                             });
                         }
                         if let Some(def) = defs.get(&name_b) {
@@ -7053,6 +7077,7 @@ fn overlay_tick(sess: &mut Session) {
                                 count: 1,
                                 original_values: Vec::new(),
                                 extra_fields: def.extra_fields.clone(),
+                                des_id: OverlayInstanceId(0),
                             });
                         }
                         to_erase.push(idx);
@@ -7097,6 +7122,7 @@ fn overlay_tick(sess: &mut Session) {
                                         count: 1,
                                         original_values: Vec::new(),
                                         extra_fields: def.extra_fields.clone(),
+                                        des_id: OverlayInstanceId(0),
                                     });
                                 }
                                 to_erase.push(idx);
@@ -7170,11 +7196,23 @@ fn overlay_tick(sess: &mut Session) {
                 let originals = inst.original_values.clone();
                 overlay_restore_originals(sess, &inst.host_var, &originals);
             }
+            if let Some(hh) = sess.des_store.handle_for_name(&inst.host_var) {
+                sess.des_index.remove_overlay(hh, &inst.overlay_name, inst.des_id);
+            }
         }
     }
 
     // 7. Remove orphaned overlays whose hosts no longer exist
     {
+        let orphans: Vec<(String, String, OverlayInstanceId)> = sess.overlay_instances.iter()
+            .filter(|inst| sess.get_var(&inst.host_var).is_none())
+            .map(|inst| (inst.host_var.clone(), inst.overlay_name.clone(), inst.des_id))
+            .collect();
+        for (host_var, overlay_name, des_id) in &orphans {
+            if let Some(hh) = sess.des_store.handle_for_name(host_var) {
+                sess.des_index.remove_overlay(hh, overlay_name, *des_id);
+            }
+        }
         let live_vars: std::collections::HashSet<String> = sess.overlay_instances.iter()
             .map(|inst| inst.host_var.clone())
             .filter(|hv| sess.get_var(hv).is_some())
@@ -7695,6 +7733,16 @@ fn drop_overlays_for(sess: &mut Session, host_var: &str) {
         Some(Value::Object { uuid, .. }) => uuid.clone(),
         _ => return,
     };
+    // Collect index removals before retain mutates the vec.
+    let to_remove: Vec<(String, OverlayInstanceId)> = sess.overlay_instances.iter()
+        .filter(|i| i.host_uuid == host_uuid)
+        .map(|i| (i.overlay_name.clone(), i.des_id))
+        .collect();
+    if let Some(host_handle) = sess.des_store.handle_for_name(host_var) {
+        for (overlay_name, id) in &to_remove {
+            sess.des_index.remove_overlay(host_handle, overlay_name, *id);
+        }
+    }
     sess.overlay_instances.retain(|inst| inst.host_uuid != host_uuid);
 }
 
@@ -8049,6 +8097,7 @@ fn transition_tick(sess: &mut Session) {
                             count: 1,
                             original_values: Vec::new(),
                             extra_fields: indexmap::IndexMap::new(),
+                            des_id: OverlayInstanceId(0),
                         };
                         overlay_push(sess, inst);
         transitioned.insert(var_name.clone());
@@ -15867,6 +15916,15 @@ fn parse_lvalue(expr: &ast::Expr, sess: &mut Session) -> Result<LValuePath, Diag
 }
 
 /// Get a mutable reference to the value at the end of an lvalue path
+/// Walk a LValuePath to its root variable name.
+fn lvalue_root_var(path: &LValuePath) -> Option<&str> {
+    match path {
+        LValuePath::Var(name) => Some(name.as_str()),
+        LValuePath::Field { base, .. } => lvalue_root_var(base),
+        LValuePath::Index { base, .. } => lvalue_root_var(base),
+    }
+}
+
 fn get_lvalue_mut<'a>(
     path: &LValuePath,
     sess: &'a mut Session,
@@ -17273,6 +17331,43 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
             let slot = get_lvalue_mut(&path, sess, sp)?;
             *slot = final_val.clone();
+
+            // ── DES ownership index maintenance ─────────────────────────────
+            // When `entity >> owner_id |= other >> uuid` runs, update the
+            // ownership index so owned_by / owner_of queries stay O(1).
+            if let LValuePath::Field { ref field, .. } = path {
+                if field == "owner_id" {
+                    if let Some(entity_var) = lvalue_root_var(&path) {
+                        let entity_var = entity_var.to_string();
+                        let new_owner_uuid = match &final_val {
+                            Value::Str(s) => s.clone(),
+                            _ => String::new(),
+                        };
+                        let entity_handle = sess.des_store.handle_for_name(&entity_var);
+                        if let Some(eh) = entity_handle {
+                            if new_owner_uuid.is_empty() {
+                                sess.des_index.clear_owner(eh);
+                            } else {
+                                // Find owner var name from env frames by matching UUID
+                                let owner_var: Option<String> = sess.env.iter().find_map(|frame| {
+                                    frame.iter().find_map(|(k, v)| {
+                                        if let Value::Ref(uuid) = v {
+                                            if uuid == &new_owner_uuid { Some(k.clone()) } else { None }
+                                        } else { None }
+                                    })
+                                });
+                                if let Some(ovar) = owner_var {
+                                    if let Some(oh) = sess.des_store.handle_for_name(&ovar) {
+                                        sess.des_index.set_owner(eh, oh);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // ────────────────────────────────────────────────────────────────
+
             return Ok(final_val);
         }
 
