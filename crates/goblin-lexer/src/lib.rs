@@ -1966,10 +1966,40 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     state.advance_by(2);
                     state.tokens.push(Token::simple_op("<=".to_string(), state.span(start_i, start_col)));
                 } else if state.peek(1) == Some(b'>') {
-                    // <>ClassName => class declaration/instantiation sigil
+                    // <>ClassName or <> ClassName => class declaration/instantiation sigil
                     // <>lowercase or <> alone => plain Op("<>") for parser to handle
-                    if state.i + 2 < state.bytes.len() && is_upper(state.bytes[state.i + 2]) {
-                        lex_class_identifier(&mut state)?;
+                    let next_after_arrow = {
+                        let mut j = state.i + 2;
+                        while j < state.bytes.len() && (state.bytes[j] == b' ' || state.bytes[j] == b'\t') {
+                            j += 1;
+                        }
+                        state.bytes.get(j).copied()
+                    };
+                    if next_after_arrow.map_or(false, is_upper) {
+                        // Skip any whitespace between <> and the class name before lexing
+                        let start_i = state.i;
+                        let start_col = state.col;
+                        state.advance_by(2); // consume '<>'
+                        while state.current().map_or(false, |b| b == b' ' || b == b'\t') {
+                            state.advance(); // skip spaces
+                        }
+                        if state.i >= state.bytes.len() || !is_upper(state.current().unwrap()) {
+                            let span = state.span(start_i, start_col);
+                            return Err(vec![Diagnostic::error(
+                                "L0402",
+                                "Expected a class name after `<>`\n\nhelp: Class names start with uppercase: `<>Player`",
+                                span,
+                            )]);
+                        }
+                        state.advance(); // first uppercase letter
+                        while state.current().map_or(false, is_ident_continue) {
+                            state.advance();
+                        }
+                        let name = String::from_utf8_lossy(&state.bytes[(start_i + 2)..state.i])
+                            .trim_start()
+                            .to_string();
+                        let span_name = state.span(start_i, start_col);
+                        state.tokens.push(Token::new(TokenKind::ClassIdent, span_name, Some(name)));
                     } else {
                         let start_i = state.i;
                         let start_col = state.col;
