@@ -1071,6 +1071,7 @@ dependencies = [
  "dunce",
  "getrandom 0.3.3",
  "goblin-ast",
+ "goblin-des",
  "goblin-diagnostics",
  "goblin-lexer",
  "goblin-parser",

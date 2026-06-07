@@ -17,6 +17,9 @@ use goblin_ast as ast;
 use goblin_ast::BindMode;
 use goblin_diagnostics::Span;
 use goblin_yall as yall;
+use goblin_des::store::{EntityStore, EntityHandle};
+use goblin_des::index::EntityIndex;
+use goblin_des::entity::FieldValue;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::{Path, PathBuf};
 use std::fs::File;
@@ -548,6 +551,14 @@ pub struct Session {
     /// Maintained by set_var and transition system.
     pub class_index: HashMap<String, Vec<String>>,
 
+    // ==== DYNAMIC ENTITY SYSTEM ====
+    /// Canonical slot-array entity store. Mirrors object_store but addressed
+    /// by EntityHandle (slot+generation) instead of UUID string.
+    pub des_store: EntityStore,
+    /// All fast-lookup indexes (class, ownership, overlays, links, grid,
+    /// transition candidates). Updated in parallel with object_store mutations.
+    pub des_index: EntityIndex,
+
     // ==== BOX SYSTEM ====
     pub box_store: HashMap<String, Value>,
     pub box_namespace: Option<String>,
@@ -721,7 +732,10 @@ impl Session {
             unit_registry: HashMap::new(),
 
             class_index: HashMap::new(),
-            
+
+            des_store: EntityStore::new(),
+            des_index: EntityIndex::default(),
+
             box_store: HashMap::new(),
             box_namespace: None,
 
@@ -937,9 +951,14 @@ impl Session {
         }
 
         // New binding
-        if let Value::Object { ref uuid, ref class_name, .. } = val {
+        if let Value::Object { ref uuid, ref class_name, ref fields, ref readonly_fields, .. } = val {
             let uuid = uuid.clone();
             let cn = class_name.clone();
+            let fields_snap = fields.clone();
+            let raw: BTreeSet<String> = readonly_fields.iter()
+                .filter(|f| f.starts_with('~'))
+                .map(|f| f.trim_start_matches('~').to_string())
+                .collect();
             self.object_store.insert(uuid.clone(), val);
             if let Some(top) = self.env.last_mut() {
                 top.insert(name.clone(), Value::Ref(uuid));
@@ -947,10 +966,14 @@ impl Session {
             // Maintain class index for global-frame bindings
             // Check if we're at global scope (env[0] is the current frame)
             if self.env.len() == 1 {
-                let idx = self.class_index.entry(cn).or_default();
+                let idx = self.class_index.entry(cn.clone()).or_default();
                 if !idx.contains(&name) {
-                    idx.push(name);
+                    idx.push(name.clone());
                 }
+            }
+            // Mirror to DES
+            if self.des_store.handle_for_name(&name).is_none() {
+                self.des_register(&name, &cn, &fields_snap, &raw);
             }
         } else {
             if let Some(top) = self.env.last_mut() {
@@ -970,6 +993,42 @@ impl Session {
             top.insert(name, Value::Ref(uuid));
         } else {
             top.insert(name, val);
+        }
+    }
+
+    // ── Dynamic Entity System helpers ────────────────────────────────────────
+
+    /// Convert a Value field map to the FieldValue map DES uses.
+    /// Non-representable values (nested objects, collections, etc.) become Nil.
+    fn value_fields_to_des(fields: &IndexMap<String, Value>) -> indexmap::IndexMap<String, FieldValue> {
+        fields.iter().map(|(k, v)| {
+            let fv = match v {
+                Value::Float(f) => FieldValue::Float(*f),
+                Value::Int(i)   => FieldValue::Int(*i),
+                Value::Bool(b)  => FieldValue::Bool(*b),
+                Value::Str(s)   => FieldValue::Str(s.clone()),
+                _               => FieldValue::Nil,
+            };
+            (k.clone(), fv)
+        }).collect()
+    }
+
+    /// Register a newly-created object in des_store + des_index, mirroring what
+    /// was just put into object_store and class_index.
+    pub fn des_register(&mut self, var_name: &str, class_name: &str, fields: &IndexMap<String, Value>, raw_fields: &std::collections::BTreeSet<String>) {
+        let des_fields = Self::value_fields_to_des(fields);
+        let handle = self.des_store.create(var_name, class_name.to_string(), des_fields, raw_fields.clone());
+        self.des_index.insert_class(class_name, handle);
+    }
+
+    /// Erase an entity from des_store + des_index by variable name.
+    pub fn des_erase(&mut self, var_name: &str) {
+        if let Some(handle) = self.des_store.handle_for_name(var_name) {
+            if let Some(entity) = self.des_store.get(handle) {
+                let class = entity.class_name.clone();
+                self.des_index.remove_all(handle, &class, None);
+            }
+            self.des_store.erase(handle);
         }
     }
 
@@ -7594,13 +7653,22 @@ fn create_successor_object(
     // Store in object_store; put Ref in global frame (env[0])
     sess.object_store.insert(new_uuid.clone(), obj);
     if let Some(frame) = sess.env.first_mut() {
-        frame.insert(var_name.to_string(), Value::Ref(new_uuid));
+        frame.insert(var_name.to_string(), Value::Ref(new_uuid.clone()));
         if let Some(consts_frame) = sess.consts.first_mut() {
             consts_frame.insert(var_name.to_string(), false);
         }
     }
     // Maintain class index
     sess.class_index.entry(class_name.to_string()).or_default().push(var_name.to_string());
+
+    // Mirror to DES (parallel operation — object_store remains canonical for now)
+    if let Some(Value::Object { fields: ref obj_fields, ref readonly_fields, .. }) = sess.object_store.get(&new_uuid).cloned() {
+        let raw: BTreeSet<String> = class_fields.iter()
+            .filter(|f| f.name.starts_with('~') || f.raw)
+            .map(|f| f.name.trim_start_matches('~').to_string())
+            .collect();
+        sess.des_register(var_name, class_name, obj_fields, &raw);
+    }
 }
 
 /// Transfer overlays from one host var to another (used by split/fracture continuity).
@@ -7687,6 +7755,9 @@ fn erase_var(sess: &mut Session, var_name: &str) {
             names.retain(|n| n != var_name);
         }
     }
+
+    // Mirror erasure to DES
+    sess.des_erase(var_name);
 
     // Remove object-specific decision overrides
     sess.object_decisions.remove(var_name);

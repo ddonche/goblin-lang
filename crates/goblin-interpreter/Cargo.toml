@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 goblin-ast = { path = "../goblin-ast" }
+goblin-des = { path = "../goblin-des" }
 goblin-diagnostics = { path = "../goblin-diagnostics" }
 goblin-lexer = { path = "../goblin-lexer" }
 goblin-parser = { path = "../goblin-parser" }
