@@ -18,8 +18,9 @@ use goblin_ast::BindMode;
 use goblin_diagnostics::Span;
 use goblin_yall as yall;
 use goblin_des::store::{EntityStore, EntityHandle};
-use goblin_des::index::{EntityIndex, OverlayInstanceId};
+use goblin_des::index::{EntityIndex, OverlayInstanceId, LinkId};
 use goblin_des::entity::FieldValue;
+use goblin_des::tick::TickRunner;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::{Path, PathBuf};
 use std::fs::File;
@@ -560,8 +561,15 @@ pub struct Session {
     /// All fast-lookup indexes (class, ownership, overlays, links, grid,
     /// transition candidates). Updated in parallel with object_store mutations.
     pub des_index: EntityIndex,
+    /// Double-buffer tick sequencer.
+    pub des_tick_runner: TickRunner,
     /// Monotonic counter for OverlayInstanceId assignment. Never reused.
     pub des_overlay_id_counter: u32,
+    /// Monotonic counter for LinkId assignment. Never reused.
+    pub des_link_id_counter: u32,
+    /// (from_var, to_var, channel) -> LinkId for active pair-level link offsets.
+    /// Mirrors the keys of link_offsets but gives O(1) handle-based lookup.
+    pub des_link_ids: HashMap<(String, String, String), LinkId>,
 
     // ==== BOX SYSTEM ====
     pub box_store: HashMap<String, Value>,
@@ -739,7 +747,10 @@ impl Session {
 
             des_store: EntityStore::new(),
             des_index: EntityIndex::default(),
+            des_tick_runner: TickRunner::new(),
             des_overlay_id_counter: 0,
+            des_link_id_counter: 0,
+            des_link_ids: HashMap::new(),
 
             box_store: HashMap::new(),
             box_namespace: None,
@@ -3907,12 +3918,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 value: s.offset,
                 ticks_remaining: s.ticks,
             };
-            let offsets = sess.link_offsets.entry(key).or_default();
-            // Replace existing offset with same duration type rather than stacking
-            // This prevents unbounded accumulation when actions fire repeatedly
+            let offsets = sess.link_offsets.entry(key.clone()).or_default();
             let existing = offsets.iter_mut().find(|o| o.ticks_remaining == new_offset.ticks_remaining);
             if let Some(existing) = existing {
-                // Refresh: take the stronger value and reset timer
                 if new_offset.value.abs() >= existing.value.abs() {
                     *existing = new_offset;
                 } else {
@@ -3921,12 +3929,31 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             } else {
                 offsets.push(new_offset);
             }
+            // Mirror to DES link index — register pair if first offset for this key.
+            if !sess.des_link_ids.contains_key(&key) {
+                let link_id = LinkId(sess.des_link_id_counter);
+                sess.des_link_id_counter += 1;
+                let from_h = sess.des_store.handle_for_name(&s.from_var);
+                let to_h   = sess.des_store.handle_for_name(&s.to_var);
+                if let (Some(fh), Some(th)) = (from_h, to_h) {
+                    sess.des_index.add_link(fh, th, link_id);
+                    sess.des_link_ids.insert(key, link_id);
+                }
+            }
             Ok(None)
         }
 
         ast::Stmt::ClearLink(s) => {
             let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
             sess.link_offsets.remove(&key);
+            // Mirror to DES link index.
+            if let Some(link_id) = sess.des_link_ids.remove(&key) {
+                let from_h = sess.des_store.handle_for_name(&s.from_var);
+                let to_h   = sess.des_store.handle_for_name(&s.to_var);
+                if let (Some(fh), Some(th)) = (from_h, to_h) {
+                    sess.des_index.remove_link(fh, th, link_id);
+                }
+            }
             Ok(None)
         }
 
@@ -6274,14 +6301,18 @@ fn eval_builtin(
 
         // Unknown builtin → tell caller to fall back to R0301 etc. (None signals “not a builtin here”)
         "tick" => {
+            sess.des_tick_runner.begin_tick();
             overlay_tick(sess);
+            sess.des_tick_runner.end_tick(&mut sess.des_store, &mut sess.des_index);
             Value::Unit
         }
 
         "tick_db" => {
+            sess.des_tick_runner.begin_tick();
             crate::actions::grid::all_grids_tick_db_begin(sess);
             overlay_tick(sess);
             crate::actions::grid::all_grids_tick_db_commit(sess);
+            sess.des_tick_runner.end_tick(&mut sess.des_store, &mut sess.des_index);
             Value::Unit
         }
 
@@ -7813,7 +7844,20 @@ fn erase_var(sess: &mut Session, var_name: &str) {
     // Remove object-specific link defs
     sess.object_link_defs.retain(|(obj, _), _| obj != var_name);
 
-    // Remove pair link offsets
+    // Remove pair link offsets — mirror removals to DES link index.
+    let dropped_keys: Vec<(String, String, String)> = sess.link_offsets.keys()
+        .filter(|(from, to, _)| from == var_name || to == var_name)
+        .cloned()
+        .collect();
+    for key in &dropped_keys {
+        if let Some(link_id) = sess.des_link_ids.remove(key) {
+            let from_h = sess.des_store.handle_for_name(&key.0);
+            let to_h   = sess.des_store.handle_for_name(&key.1);
+            if let (Some(fh), Some(th)) = (from_h, to_h) {
+                sess.des_index.remove_link(fh, th, link_id);
+            }
+        }
+    }
     sess.link_offsets.retain(|(from, to, _), _| {
         from != var_name && to != var_name
     });
@@ -17361,6 +17405,28 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                         sess.des_index.set_owner(eh, oh);
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── DES pending-buffer field write ──────────────────────────────
+            // Mirror every object field write to the DES entity's pending
+            // buffer so tick_db swap produces correct double-buffered state.
+            if let LValuePath::Field { ref field, .. } = path {
+                if let Some(entity_var) = lvalue_root_var(&path) {
+                    let fv = match &final_val {
+                        Value::Float(f) => Some(FieldValue::Float(*f)),
+                        Value::Int(i)   => Some(FieldValue::Int(*i)),
+                        Value::Bool(b)  => Some(FieldValue::Bool(*b)),
+                        Value::Str(s)   => Some(FieldValue::Str(s.clone())),
+                        _               => None,
+                    };
+                    if let Some(fv) = fv {
+                        if let Some(handle) = sess.des_store.handle_for_name(entity_var) {
+                            if let Some(entity) = sess.des_store.get_mut(handle) {
+                                entity.set_pending(field, fv);
                             }
                         }
                     }
