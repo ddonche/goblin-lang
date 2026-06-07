@@ -1778,6 +1778,7 @@ fn cast_to_pct(v: Value) -> Result<Value, Diag> {
     let to_pct = |f: f64| -> Value { Value::Pct(f) };
     match v {
         Value::Pct(p)   => Ok(Value::Pct(p)),
+        Value::Int(n)   => Ok(to_pct(n as f64)),
         Value::Float(f) => Ok(to_pct(f)),
         Value::Big(d)   => {
             if let Some(f) = d.to_f64() {
