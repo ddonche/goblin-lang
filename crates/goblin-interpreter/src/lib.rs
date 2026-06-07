@@ -18187,6 +18187,32 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 if matches!(name.as_str(), "count" | "len" | "length") && matches!(base_v, Value::Nil) {
                     return Ok(Value::Int(0));
                 }
+                // If this is a type-cast postfix on a type-locked variable, reject mismatched types.
+                const CAST_TYPES: &[&str] = &[
+                    "str", "string", "bool", "int", "uint", "float", "big", "pct",
+                    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+                ];
+                if CAST_TYPES.contains(&name.as_str()) {
+                    if let ast::Expr::Ident(var_name, _) = base.as_ref() {
+                        if let Some(frame_ix) = sess.find_name_frame(var_name) {
+                            if let Some(lock) = sess.find_type_lock(frame_ix, var_name) {
+                                let canonical = if name.as_str() == "string" { "str" } else { name.as_str() };
+                                if lock != canonical {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            "R0215",
+                                            "type-lock-cast",
+                                            format!("cannot cast '{}' to '{}': variable is locked to '{}'", var_name, canonical, lock),
+                                            sp.clone(),
+                                        )
+                                        .with_help("A type-locked variable can only be cast to its declared type.")
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 // Always delegate builtin postfix methods to their actions.
                 // The action itself will type-check and emit the correct diagnostics.
                 return call_action_by_name(sess, name, vec![base_v], sp.clone());
