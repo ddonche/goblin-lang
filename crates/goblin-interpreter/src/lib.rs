@@ -7926,7 +7926,7 @@ enum Position {
 
 #[derive(Debug, Clone)]
 enum Operation {
-    Grab,
+    Get,
     Put(Value),
     Update(Value),
     Delete,
@@ -7965,7 +7965,7 @@ fn collection_operation(
                     let rand_value = map.get(&rand_key).unwrap().clone();
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             Ok(rand_value)
                         }
                         Operation::Put(v) => {
@@ -7988,7 +7988,7 @@ fn collection_operation(
 
                 Position::First => {
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             map.iter()
                                 .next()
                                 .map(|(_, v)| v.clone())
@@ -8062,7 +8062,7 @@ fn collection_operation(
 
                 Position::Last => {
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             map.iter()
                                 .last()
                                 .map(|(_, v)| v.clone())
@@ -8106,7 +8106,7 @@ fn collection_operation(
                     })?;
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             map.get(&key)
                                 .cloned()
                                 .ok_or_else(|| {
@@ -8171,7 +8171,7 @@ fn collection_operation(
 
                     match &op {
                         // get_where / reap_where on a map → filter entries by *value* predicate
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             let mut out_map = BTreeMap::new();
                             for (k, v) in map {
                                 if matches_pred(v.clone())? {
@@ -8249,7 +8249,7 @@ fn collection_operation(
                     };
                     
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             // Return a new map with only the entries whose keys match the pattern
                             let mut result_map = BTreeMap::new();
                             
@@ -8422,7 +8422,7 @@ fn collection_operation(
                     }
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             let mut result_map = BTreeMap::new();
                             for key in &between_keys {
                                 result_map.insert(key.clone(), map.get(key).unwrap().clone());
@@ -8461,7 +8461,7 @@ fn collection_operation(
 
                 Position::All => {
                     match &op {
-                        Operation::Grab | Operation::Reap => Ok(Value::Map(map.clone())),
+                        Operation::Get | Operation::Reap => Ok(Value::Map(map.clone())),
                         Operation::Delete => Ok(Value::Map(BTreeMap::new())),
                         Operation::Update(v) | Operation::Put(v) => {
                             match v {
@@ -8532,7 +8532,7 @@ fn collection_operation(
                     let rand_char = s.chars().nth(rand_idx).unwrap();
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             Ok(Value::Char(rand_char))
                         }
                         Operation::Put(v) => {
@@ -8581,7 +8581,7 @@ fn collection_operation(
 
                 Position::First => {
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             if s.is_empty() {
                                 return Err(
                                     Diagnostic::new_with_code(
@@ -8669,7 +8669,7 @@ fn collection_operation(
 
                 Position::Last => {
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             if s.is_empty() {
                                 return Err(
                                     Diagnostic::new_with_code(
@@ -8774,7 +8774,7 @@ fn collection_operation(
                     };
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             if idx >= len {
                                 return Err(
                                     Diagnostic::new_with_code(
@@ -8908,7 +8908,7 @@ fn collection_operation(
 
                         // For now, we don’t support get/reap/put with string where;
                         // they can be added later if needed.
-                        Operation::Grab | Operation::Reap | Operation::Put(_) => {
+                        Operation::Get | Operation::Reap | Operation::Put(_) => {
                             return Err(
                                 Diagnostic::new_with_code(
                                     Severity::Error,
@@ -8944,7 +8944,7 @@ fn collection_operation(
                     };
                     
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             // Return all matched portions as an array
                             let matches: Vec<Value> = regex.find_iter(s)
                                 .map(|m| Value::Str(m.as_str().to_string()))
@@ -9097,7 +9097,7 @@ fn collection_operation(
                     }
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             let mut results = Vec::new();
                             // (You had a start_index var that was never used—just remove it.)
                             for start_match in &start_matches {
@@ -9210,7 +9210,7 @@ fn collection_operation(
 
                 Position::All => {
                     match &op {
-                        Operation::Grab | Operation::Reap => Ok(Value::Str(s.clone())),
+                        Operation::Get | Operation::Reap => Ok(Value::Str(s.clone())),
                         Operation::Delete => Ok(Value::Str(String::new())),
                         Operation::Update(v) | Operation::Put(v) => {
                             match v {
@@ -9278,7 +9278,7 @@ fn collection_operation(
                     let rand_idx = rng_index(sess, len);
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             Ok(xs[rand_idx].clone())
                         }
                         Operation::Put(v) => {
@@ -9305,7 +9305,7 @@ fn collection_operation(
 
                 Position::First => {
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             if xs.is_empty() {
                                 return Err(
                                     Diagnostic::new_with_code(
@@ -9366,7 +9366,7 @@ fn collection_operation(
 
                 Position::Last => {
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             if xs.is_empty() {
                                 return Err(
                                     Diagnostic::new_with_code(
@@ -9444,7 +9444,7 @@ fn collection_operation(
                     };
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             if idx >= xs.len() {
                                 return Err(
                                     Diagnostic::new_with_code(
@@ -9539,8 +9539,8 @@ fn collection_operation(
                     };
 
                     match &op {
-                        // Grab/Reap keep matches; Delete drops matches.
-                        Operation::Grab | Operation::Reap | Operation::Delete => {
+                        // Get/Reap keep matches; Delete drops matches.
+                        Operation::Get | Operation::Reap | Operation::Delete => {
                             let keep = !matches!(&op, Operation::Delete);
                             let mut out = Vec::new();
                             for v in xs {
@@ -9604,7 +9604,7 @@ fn collection_operation(
                     };
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             // Return an array of all matching elements
                             let matches: Vec<Value> = xs.iter()
                                 .filter(|item| matches_pattern(item))
@@ -9767,7 +9767,7 @@ fn collection_operation(
                     }
 
                     match &op {
-                        Operation::Grab | Operation::Reap => {
+                        Operation::Get | Operation::Reap => {
                             let mut result = Vec::new();
                             for (start, end) in ranges {
                                 for i in start..end {
@@ -9823,7 +9823,7 @@ fn collection_operation(
 
                 Position::All => {
                     match &op {
-                        Operation::Grab | Operation::Reap => Ok(Value::Array(xs.to_vec())),
+                        Operation::Get | Operation::Reap => Ok(Value::Array(xs.to_vec())),
                         Operation::Delete => Ok(Value::Array(vec![])),
                         Operation::Update(v) | Operation::Put(v) => {
                             match v {
@@ -13150,51 +13150,51 @@ fn call_action_by_name(
         // collections CRUD style
         "get" => {
             arity(1)?;
-            collection_operation(&args[0], Position::All, Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::All, Operation::Get, &sp, sess)?
         }
 
         "get_first" => {
             arity(1)?;
-            collection_operation(&args[0], Position::First, Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::First, Operation::Get, &sp, sess)?
         }
 
         "get_last" => {
             arity(1)?;
-            collection_operation(&args[0], Position::Last, Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::Last, Operation::Get, &sp, sess)?
         }
 
         "get_at" => {
             arity(2)?;
-            collection_operation(&args[0], Position::At(args[1].clone()), Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::At(args[1].clone()), Operation::Get, &sp, sess)?
         }
 
         "get_where" => {
             arity(2)?;
             let pred = want_str(&args[1], "get_where predicate")?;
-            collection_operation(&args[0], Position::Where(pred), Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::Where(pred), Operation::Get, &sp, sess)?
         }
 
         "get_all" => {
             arity(1)?;
-            collection_operation(&args[0], Position::All, Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::All, Operation::Get, &sp, sess)?
         }
 
         "get_matching" => {
             arity(2)?;
             let pattern = want_str(&args[1], "pattern")?;
-            collection_operation(&args[0], Position::Matching(pattern), Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::Matching(pattern), Operation::Get, &sp, sess)?
         }
 
         "get_between" => {
             arity(3)?;
             let start_pattern = want_str(&args[1], "start pattern")?;
             let end_pattern = want_str(&args[2], "end pattern")?;
-            collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::Between(start_pattern, end_pattern), Operation::Get, &sp, sess)?
         }
 
         "get_random" => {
             arity(1)?;
-            collection_operation(&args[0], Position::Random, Operation::Grab, &sp, sess)?
+            collection_operation(&args[0], Position::Random, Operation::Get, &sp, sess)?
         }
 
         "put" => {
