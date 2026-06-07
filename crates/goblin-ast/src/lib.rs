@@ -1,4 +1,4 @@
-// ---- version = "0.19.0"
+// ---- version = "0.19.1"
 //! Abstract Syntax Tree (AST) for Goblin — aligned to the current parser.
 use goblin_diagnostics::Span;
 

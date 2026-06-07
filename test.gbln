@@ -39,8 +39,8 @@ For multiple lines
     act trade(target)
         resources | ["gold", "food", "iron", "mana", "wood", "horses", "stone", "relics", "ships"]
 
-        self_resource | :grab_random(:grab_where(resources, self >> item > 140))
-        target_resource | :grab_random(:grab_where(resources, target >> item > 140))
+        self_resource | :get_random(:get_where(resources, self >> item > 140))
+        target_resource | :get_random(:get_where(resources, target >> item > 140))
 
         self_gives | ((self >> cooperation) + (self >> openness) + (self >> discipline)) * (pick 1 from 1...4)
         target_gives | ((target >> cooperation) + (target >> openness) + (target >> discipline)) * (pick 1 from 1...4)
@@ -123,7 +123,7 @@ For multiple lines
     act aid(target)
         resources | ["gold", "food", "wood", "stone", "mana"]
 
-        aid_resource | :grab_random(:grab_where(resources, self >> item > 120))
+        aid_resource | :get_random(:get_where(resources, self >> item > 120))
 
         aid_amount | ((self >> cooperation) + (self >> honor)) * (pick 1 from 3...10)
 
@@ -173,7 +173,7 @@ For multiple lines
     act raid(target)
         resources | ["gold", "food", "iron", "wood", "horses", "stone"]
 
-        stolen_resource | :grab_random(:grab_where(resources, target >> item > 50))
+        stolen_resource | :get_random(:get_where(resources, target >> item > 50))
 
         raid_power | (self >> aggression) + (self >> ambition) + (self >> discipline)
         defense_power | (target >> discipline) + (target >> cohesion) + (target >> stability)
@@ -281,7 +281,7 @@ For multiple lines
         wood_cost | pick 1 from 20...60
 
         if (self >> iron) > iron_cost and (self >> food) > food_cost and (self >> horses) > horse_cost and (self >> wood) > wood_cost
-            plunder_resource | :grab_random(:grab_where(["gold", "food", "iron", "wood", "stone"], target >> item > 100))
+            plunder_resource | :get_random(:get_where(["gold", "food", "iron", "wood", "stone"], target >> item > 100))
 
             plunder | (invasion_power - defense_power) * (pick 1 from 25...80)
             casualties | (invasion_power + defense_power) * (pick 1 from 400...1200)
@@ -1130,7 +1130,7 @@ act event(target)
         "WyrmHunger"
     ]
 
-    picked | :grab_random(events)
+    picked | :get_random(events)
     severity | (pick 1 from 5...25) * .01
 
     if picked == "Plague"
