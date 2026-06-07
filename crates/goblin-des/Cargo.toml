@@ -1,6 +1,6 @@
 [package]
 name = "goblin-des"
-version = "0.46.11"
+version = "0.1.0"
 edition = "2024"
 
 [dependencies]
