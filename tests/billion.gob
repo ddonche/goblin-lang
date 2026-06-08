@@ -1,0 +1,11 @@
+count | 0
+
+for x in 1...200
+    for y in 1...200
+        for z in 1...200
+            count += 1
+        xx
+    xx
+xx
+
+:say(count)
