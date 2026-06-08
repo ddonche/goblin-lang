@@ -4097,23 +4097,52 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 continue;
                             }
 
-                            if !trimmed.starts_with("import ") {
+                            if !trimmed.starts_with("import ") && !trimmed.starts_with("use ") {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
-                                        rtcode::IMPORT_IO, // reuse
+                                        rtcode::IMPORT_IO,
                                         "import-manifest-syntax",
                                         format!(
-                                            "only import statements are allowed in .imports files (offending line {}: '{}')",
+                                            "only import and use statements are allowed in .imports files (offending line {}: '{}')",
                                             idx + 1,
                                             trimmed
                                         ),
                                         import_stmt.span.clone(),
                                     )
                                     .with_help("Use lines like: import modules/markdown_core/markdown as markdown_core")
+                                    .with_help("Or: use myglam [as alias]")
                                     .with_help("Comments are allowed with //, ///, or #. Blank lines are ignored.")
                                     .with_link("https://goblinlang.org/docs/errors#R0501"),
                                 );
+                            }
+
+                            // Handle `use <namespace> [as alias]`
+                            if trimmed.starts_with("use ") {
+                                let rest = trimmed["use ".len()..].trim();
+                                if rest.is_empty() {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMPORT_IO,
+                                            "import-manifest-empty",
+                                            format!("missing GLAM name in .imports file (line {})", idx + 1),
+                                            import_stmt.span.clone(),
+                                        )
+                                        .with_help("Example: use prospector")
+                                        .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                    );
+                                }
+                                let mut parts = rest.split_whitespace();
+                                let namespace = parts.next().unwrap().to_string();
+                                let alias = if parts.next() == Some("as") { parts.next().map(|s| s.to_string()) } else { None };
+                                let use_stmt_inner = ast::UseStmt {
+                                    namespace,
+                                    alias,
+                                    span: import_stmt.span.clone(),
+                                };
+                                eval_stmt(&ast::Stmt::Use(use_stmt_inner), sess)?;
+                                continue;
                             }
 
                             let rest = trimmed["import ".len()..].trim();
@@ -4394,23 +4423,52 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                 continue;
                             }
 
-                            if !trimmed.starts_with("import ") {
+                            if !trimmed.starts_with("import ") && !trimmed.starts_with("use ") {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
-                                        rtcode::IMPORT_IO, // reuse
+                                        rtcode::IMPORT_IO,
                                         "import-manifest-syntax",
                                         format!(
-                                            "only import statements are allowed in .imports files (offending line {}: '{}')",
+                                            "only import and use statements are allowed in .imports files (offending line {}: '{}')",
                                             idx + 1,
                                             trimmed
                                         ),
                                         import_stmt.span.clone(),
                                     )
                                     .with_help("Use lines like: import modules/markdown_core/markdown as markdown_core")
+                                    .with_help("Or: use myglam [as alias]")
                                     .with_help("Comments are allowed with //, ///, or #. Blank lines are ignored.")
                                     .with_link("https://goblinlang.org/docs/errors#R0501"),
                                 );
+                            }
+
+                            // Handle `use <namespace> [as alias]`
+                            if trimmed.starts_with("use ") {
+                                let rest = trimmed["use ".len()..].trim();
+                                if rest.is_empty() {
+                                    return Err(
+                                        Diagnostic::new_with_code(
+                                            Severity::Error,
+                                            rtcode::IMPORT_IO,
+                                            "import-manifest-empty",
+                                            format!("missing GLAM name in .imports file (line {})", idx + 1),
+                                            import_stmt.span.clone(),
+                                        )
+                                        .with_help("Example: use prospector")
+                                        .with_link("https://goblinlang.org/docs/errors#R0501"),
+                                    );
+                                }
+                                let mut parts = rest.split_whitespace();
+                                let namespace = parts.next().unwrap().to_string();
+                                let alias = if parts.next() == Some("as") { parts.next().map(|s| s.to_string()) } else { None };
+                                let use_stmt_inner = ast::UseStmt {
+                                    namespace,
+                                    alias,
+                                    span: import_stmt.span.clone(),
+                                };
+                                eval_stmt(&ast::Stmt::Use(use_stmt_inner), sess)?;
+                                continue;
                             }
 
                             let rest = trimmed["import ".len()..].trim();
