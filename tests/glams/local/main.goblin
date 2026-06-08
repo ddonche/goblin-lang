@@ -1,0 +1,2 @@
+#local::glam_content | "glam-content-dir"
+#local::glam_output  | "glam-output-dir"

@@ -47,6 +47,7 @@ pub enum Stmt {
     TupleBind(TupleBindStmt),
     Enum(EnumDecl),
     Import(ImportStmt),
+    Use(UseStmt),
     Judge(JudgeStmt),
     JudgeAll(JudgeAllStmt),
     Sweep(SweepStmt),
@@ -350,6 +351,13 @@ pub enum RelationDef {
     Of { class_name: String, as_name: String },
     With { class_name: String },
     Re { class_name: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct UseStmt {
+    pub namespace: String,
+    pub alias: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

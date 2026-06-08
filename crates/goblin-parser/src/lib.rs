@@ -6008,6 +6008,11 @@ impl<'t> Parser<'t> {
             return self.parse_import();
         }
 
+        // Check for use (GLAM) statements
+        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Use)) {
+            return self.parse_use();
+        }
+
         if self.peek_ident() == Some("act") {
             let _ = self.eat_ident(); // 'act'
             return self.parse_free_action("act");
@@ -7946,6 +7951,38 @@ impl<'t> Parser<'t> {
 
         Ok(ast::Stmt::Import(ast::ImportStmt {
             items: ast::ImportItems::Path(path),
+            alias,
+            span: start_span,
+        }))
+    }
+
+    fn parse_use(&mut self) -> Result<ast::Stmt, String> {
+        let start_span = self
+            .peek()
+            .map(|t| t.span.clone())
+            .unwrap_or_else(|| goblin_diagnostics::Span::new("<unknown>", 0, 0, 0, 0, 0, 0));
+
+        // consume `use`
+        self.i += 1;
+        self.skip_newlines();
+
+        let Some(namespace) = self.eat_ident() else {
+            return Err(s_help_site!(
+                "P1020",
+                "Expected GLAM namespace after 'use'",
+                "use local"
+            ));
+        };
+
+        let alias = if self.peek_ident() == Some("as") {
+            self.i += 1;
+            self.eat_ident()
+        } else {
+            None
+        };
+
+        Ok(ast::Stmt::Use(ast::UseStmt {
+            namespace,
             alias,
             span: start_span,
         }))
