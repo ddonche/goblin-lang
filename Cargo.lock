@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.46.13"
+version = "0.46.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -1017,6 +1017,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tokio",
+ "toml",
  "windows",
 ]
 
@@ -1063,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-interpreter"
-version = "0.46.7"
+version = "0.46.8"
 dependencies = [
  "blake3",
  "comrak",
