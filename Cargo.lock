@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.46.10"
+version = "0.46.13"
 dependencies = [
  "anyhow",
  "clap",
@@ -1018,6 +1018,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "windows",
+]
+
+[[package]]
+name = "goblin-des"
+version = "0.1.1"
+dependencies = [
+ "indexmap",
+ "uuid",
 ]
 
 [[package]]
@@ -1055,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-interpreter"
-version = "0.46.6"
+version = "0.46.7"
 dependencies = [
  "blake3",
  "comrak",
@@ -1063,6 +1071,7 @@ dependencies = [
  "dunce",
  "getrandom 0.3.3",
  "goblin-ast",
+ "goblin-des",
  "goblin-diagnostics",
  "goblin-lexer",
  "goblin-parser",
