@@ -5352,8 +5352,26 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
 
             sess.box_namespace = Some(use_stmt.namespace.clone());
 
-            // Run glams/<namespace>/main.goblin
-            let entry = glam_dir.join("main.goblin");
+            // Determine entry file — glam.toml can declare `entry = "prospector.gbln"`
+            let entry_name = {
+                let mut name = String::new();
+                if glam_toml.exists() {
+                    if let Ok(src) = std::fs::read_to_string(&glam_toml) {
+                        if let Ok(t) = src.parse::<toml::Table>() {
+                            if let Some(toml::Value::String(s)) = t.get("entry") {
+                                name = s.clone();
+                            }
+                        }
+                    }
+                }
+                if name.is_empty() {
+                    format!("{}.gbln", use_stmt.namespace)
+                } else {
+                    name
+                }
+            };
+
+            let entry = glam_dir.join(&entry_name);
             if entry.exists() {
                 let src = std::fs::read_to_string(&entry).map_err(|e| {
                     Diagnostic::new_with_code(
