@@ -653,11 +653,13 @@ pub fn load_box_toml(sess: &mut Session, path: &std::path::Path) -> Result<(), S
         if !changed { break; }
     }
 
-    // Remove entries that still contain unresolved {#...} templates — they depend on
-    // runtime values not yet available at load time and must not be pre-populated.
-    sess.box_store.retain(|_, v| {
+    // Drop self-referential entries (e.g. portal = "{#local::portal}") — a key that
+    // references itself can never resolve and must not pre-populate the box.
+    sess.box_store.retain(|k, v| {
         if let Value::Str(s) = v {
-            !s.contains("{#")
+            let self_ref = format!("{{#{}}}", k);
+            let self_ref_ann = format!("{{#{}@", k);
+            !(s.contains(&self_ref) || s.contains(&self_ref_ann))
         } else {
             true
         }
@@ -710,6 +712,13 @@ pub fn load_glam_box_toml(
 
             match sess.box_store.get(&key).cloned() {
                 Some(v) => {
+                    // Resolve any remaining templates (e.g. values that depend on
+                    // runtime box variables set before GLAMs are loaded)
+                    let v = if let Value::Str(s) = &v {
+                        Value::Str(resolve_box_template(s, &sess.box_store))
+                    } else {
+                        v
+                    };
                     if let Some(ns) = namespace {
                         sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
                     }
