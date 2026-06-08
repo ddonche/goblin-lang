@@ -17949,16 +17949,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
         ast::Expr::BoxVar { namespace, name, span } => {
             let key = format!("{}::{}", namespace, name);
-            sess.box_store.get(&key).cloned().ok_or_else(|| {
-                Diagnostic::new_with_code(
-                    Severity::Error,
-                    crate::diagnostics::rtcode::BOX_VALUE_NOT_FOUND,
-                    "box-value-not-found",
-                    &format!("Box variable '#{}::{}' does not exist", namespace, name),
-                    span.clone(),
-                )
-                .with_help("Publish this value into the Box before reading it, or check your box.toml.")
-            })
+            sess.box_store.get(&key).cloned()
+                .map(|v| if let Value::Str(s) = &v {
+                    if s.contains("{#") {
+                        Value::Str(resolve_box_template(s, &sess.box_store))
+                    } else { v }
+                } else { v })
+                .ok_or_else(|| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::BOX_VALUE_NOT_FOUND,
+                        "box-value-not-found",
+                        &format!("Box variable '#{}::{}' does not exist", namespace, name),
+                        span.clone(),
+                    )
+                    .with_help("Publish this value into the Box before reading it, or check your box.toml.")
+                })
         }
         ast::Expr::Char(c, _sp) => Ok(Value::Char(*c)),
         ast::Expr::Ident(name, sp) => {
