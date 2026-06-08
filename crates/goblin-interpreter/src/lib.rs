@@ -5441,41 +5441,29 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 }
             };
             if entry.exists() {
-                let src = std::fs::read_to_string(&entry).map_err(|e| {
-                    Diagnostic::new_with_code(
+                // Load via the module system so actions register under the namespace
+                let entry_str = entry.to_string_lossy().to_string();
+                let alias = use_stmt.alias.as_deref().unwrap_or(&use_stmt.namespace);
+                let (mod_namespace, maybe_ast) = sess
+                    .modules
+                    .load_module(&entry_str, Some(alias), &glam_dir)
+                    .map_err(|e| Diagnostic::new_with_code(
                         Severity::Error,
                         crate::diagnostics::rtcode::IMPORT_IO,
-                        "glam-read-error",
-                        &format!("Cannot read GLAM entry '{}': {}", entry.display(), e),
+                        "glam-load-error",
+                        &e,
                         use_stmt.span.clone(),
-                    )
-                })?;
+                    ))?;
 
-                let tokens = goblin_lexer::lex(&src, &entry.to_string_lossy())
-                    .map_err(|diags| {
-                        diags.into_iter().next().unwrap_or_else(|| Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::IMPORT_IO,
-                            "glam-lex-error",
-                            "GLAM lex failed",
-                            use_stmt.span.clone(),
-                        ))
-                    })?;
-
-                let module_ast = goblin_parser::Parser::new(&tokens)
-                    .parse_module()
-                    .map_err(|diags| {
-                        diags.into_iter().next().unwrap_or_else(|| Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::IMPORT_IO,
-                            "glam-parse-error",
-                            "GLAM parse failed",
-                            use_stmt.span.clone(),
-                        ))
-                    })?;
-
-                for stmt in &module_ast.items {
-                    eval_stmt(stmt, sess)?;
+                if let Some(module_ast) = maybe_ast {
+                    execute_module_wrapped(
+                        sess,
+                        mod_namespace,
+                        module_ast,
+                        &use_stmt.span,
+                        &entry_str,
+                        &glam_dir,
+                    )?;
                 }
             }
 
