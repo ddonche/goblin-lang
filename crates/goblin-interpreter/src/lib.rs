@@ -580,6 +580,38 @@ pub struct Session {
     pub grid_store: crate::actions::grid_store::GridStore,
 }
 
+fn resolve_box_template(s: &str, box_store: &HashMap<String, Value>) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '#' {
+            let start = i + 1;
+            let mut j = start;
+            while j < chars.len() && chars[j] != '}' { j += 1; }
+            if j < chars.len() {
+                let inner: String = chars[start..j].iter().collect();
+                let inner = inner.trim().trim_start_matches('#');
+                let key = if let Some(at) = inner.find('@') { &inner[..at] } else { inner };
+                if key.contains("::") {
+                    if let Some(Value::Str(v)) = box_store.get(key) {
+                        out.push_str(v);
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+            // not resolved — keep literal
+            out.push(chars[i]);
+            i += 1;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 pub fn load_box_toml(sess: &mut Session, path: &std::path::Path) -> Result<(), String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
@@ -601,6 +633,26 @@ pub fn load_box_toml(sess: &mut Session, path: &std::path::Path) -> Result<(), S
             }
         }
     }
+
+    // Second pass: resolve {#ns::key} and {#ns::key@source} templates
+    // Iterate to a fixed point so chained dependencies resolve in order
+    for _ in 0..10 {
+        let mut changed = false;
+        let keys: Vec<String> = sess.box_store.keys().cloned().collect();
+        for k in keys {
+            if let Some(Value::Str(s)) = sess.box_store.get(&k).cloned() {
+                if s.contains("{#") {
+                    let resolved = resolve_box_template(&s, &sess.box_store);
+                    if resolved != s {
+                        sess.box_store.insert(k, Value::Str(resolved));
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed { break; }
+    }
+
     Ok(())
 }
 
@@ -3089,6 +3141,34 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
 
                 let inner_raw: String = chars[start..j].iter().collect();
                 let inner_trim = inner_raw.trim();
+
+                // Box variable interpolation: {#ns::key} or {#ns::key@source}
+                // @source is a human annotation — strip it before lookup
+                if inner_trim.starts_with('#') {
+                    let key_part = inner_trim.trim_start_matches('#');
+                    let key_part = if let Some(at) = key_part.find('@') {
+                        &key_part[..at]
+                    } else {
+                        key_part
+                    };
+                    if key_part.contains("::") {
+                        match sess.box_store.get(key_part).cloned() {
+                            Some(v) => {
+                                out.push_str(&fmt_value_raw(&v));
+                                i = j + 1;
+                                continue;
+                            }
+                            None => {
+                                // Unresolved box variable — keep literal
+                                out.push('{');
+                                out.push_str(&inner_raw);
+                                out.push('}');
+                                i = j + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
 
                 // Only interpolate {ident}. Anything else is emitted literally.
                 if !is_ident(inner_trim) {
