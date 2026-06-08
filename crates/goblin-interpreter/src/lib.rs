@@ -653,6 +653,16 @@ pub fn load_box_toml(sess: &mut Session, path: &std::path::Path) -> Result<(), S
         if !changed { break; }
     }
 
+    // Remove entries that still contain unresolved {#...} templates — they depend on
+    // runtime values not yet available at load time and must not be pre-populated.
+    sess.box_store.retain(|_, v| {
+        if let Value::Str(s) = v {
+            !s.contains("{#")
+        } else {
+            true
+        }
+    });
+
     Ok(())
 }
 
