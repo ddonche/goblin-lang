@@ -244,15 +244,60 @@ fn main() {
         } else {
             env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         };
+
+        let mut lines: Vec<String> = Vec::new();
+
+        // 1) Static project box.toml
         let box_toml = dir.join("box.toml");
-        let mut sess = goblin_interpreter::Session::new();
         if box_toml.exists() {
+            let mut sess = goblin_interpreter::Session::new();
             if let Err(e) = goblin_interpreter::load_box_toml(&mut sess, &box_toml) {
                 eprintln!("box.toml error: {}", e);
                 std::process::exit(1);
             }
+            for (k, v) in &sess.box_store {
+                lines.push(format!("#{} = {}", k, v));
+            }
         }
-        println!("{}", goblin_interpreter::box_dump(&sess));
+
+        // 2) Walk glams/ — read each glam.toml and show declared provides
+        let glams_dir = dir.join("glams");
+        if glams_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&glams_dir) {
+                let mut glam_entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                glam_entries.sort_by_key(|e| e.file_name());
+                for entry in glam_entries {
+                    let glam_dir = entry.path();
+                    if !glam_dir.is_dir() { continue; }
+                    let namespace = glam_dir.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let glam_toml = glam_dir.join("glam.toml");
+                    if !glam_toml.exists() { continue; }
+                    if let Ok(src) = std::fs::read_to_string(&glam_toml) {
+                        if let Ok(table) = src.parse::<toml::Table>() {
+                            if let Some(toml::Value::Array(provides)) = table.get("provides") {
+                                for item in provides {
+                                    if let toml::Value::String(varname) = item {
+                                        lines.push(format!("#{}::{} = <provided by glam>", namespace, varname));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        lines.sort();
+        if lines.is_empty() {
+            println!("(box is empty)");
+        } else {
+            for line in lines {
+                println!("{}", line);
+            }
+        }
         std::process::exit(0);
     }
 
