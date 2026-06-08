@@ -3395,6 +3395,57 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             use crate::diagnostics::rtcode;
             use goblin_diagnostics::{Diagnostic, Severity};
 
+            // Helper: write a value to the box for a #ns::key target
+            let bind_box_target = |name: &str, val: Value, mode: &BindMode, span: &Span, sess: &mut Session| -> Result<(), Diag> {
+                let key = name.trim_start_matches('#');
+                if !key.contains("::") { return Ok(()); }
+                let mut parts = key.splitn(2, "::");
+                let namespace = parts.next().unwrap_or("").to_string();
+                let varname   = parts.next().unwrap_or("").to_string();
+
+                // Namespace violation check
+                if let Some(ref current_ns) = sess.box_namespace.clone() {
+                    if *current_ns != namespace {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::BOX_NAMESPACE_VIOLATION,
+                            "box-namespace-violation",
+                            &format!("GLAM '{}' cannot write into namespace '{}'", current_ns, namespace),
+                            span.clone(),
+                        ));
+                    }
+                    if let Some(ref provides) = sess.box_provides.clone() {
+                        if !provides.contains(&varname) {
+                            return Err(Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::BOX_UNDECLARED_PROVIDE,
+                                "box-undeclared-provide",
+                                &format!("GLAM '{}' cannot publish '#{}::{}' — '{}' is not declared in [provides]", current_ns, namespace, varname, varname),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+
+                let box_key = format!("{}::{}", namespace, varname);
+                match mode {
+                    BindMode::Tether => {
+                        if sess.box_store.contains_key(&box_key) {
+                            return Err(Diagnostic::new_with_code(
+                                Severity::Error,
+                                crate::diagnostics::rtcode::BOX_ALREADY_SET,
+                                "box-already-set",
+                                &format!("Box variable '#{}' is already set — use '|=' to reassign", box_key),
+                                span.clone(),
+                            ));
+                        }
+                        sess.box_store.insert(box_key, val);
+                    }
+                    _ => { sess.box_store.insert(box_key, val); }
+                }
+                Ok(())
+            };
+
             let rhs = eval_expr(&tb.expr, sess)?;
 
             match rhs {
@@ -3661,6 +3712,12 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     // Evaluate RHS once (already done), then tether/retether each name to it.
                     for (name, name_span) in tb.names.iter().cloned() {
                         let val = other.clone();
+
+                        // Box variable target: #ns::key
+                        if name.starts_with('#') && name.contains("::") {
+                            bind_box_target(&name, val, &tb.mode, &name_span, sess)?;
+                            continue;
+                        }
 
                         match tb.mode {
                             BindMode::Shadow => {

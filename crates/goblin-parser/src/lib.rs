@@ -2722,6 +2722,13 @@ impl<'t> Parser<'t> {
                     self.i += 1; // consume ident
                     names.push((text, sp));
                 }
+                TokenKind::HashIdent => {
+                    let text = t.value.clone().unwrap_or_default();
+                    let sp = t.span.clone();
+                    self.i += 1; // consume hash ident
+                    // Store with # prefix so interpreter knows it's a box target
+                    names.push((format!("#{}", text), sp));
+                }
                 _ => {
                     return Err(s_help_site!(
                         "P0404",
