@@ -212,6 +212,7 @@ pub mod rtcode {
     pub const BOX_NAMESPACE_VIOLATION:  &str = "B0102"; // GLAM writing outside its namespace
     pub const BOX_ALREADY_SET:          &str = "B0103"; // Tether to already-set Box variable
     pub const BOX_UNRESOLVED_NEED:      &str = "B0104"; // empty, invalid, or missing GLAM need
+    pub const BOX_UNDECLARED_PROVIDE:   &str = "B0105"; // GLAM writing a var not in [provides]
 
     // YALL
     pub const YALL_PARSE_FAILED:  &str = "YA0001"; // strict parse failure (syntax)

@@ -551,6 +551,7 @@ pub struct Session {
     // ==== BOX SYSTEM ====
     pub box_store: HashMap<String, Value>,
     pub box_namespace: Option<String>,
+    pub box_provides: Option<std::collections::HashSet<String>>,
 
     // ==== GRID SYSTEM ====
     pub grid_store: crate::actions::grid_store::GridStore,
@@ -648,6 +649,28 @@ pub fn load_glam_box_toml(
         }
     }
 
+    if let Some(provides_val) = table.get("provides") {
+        match provides_val {
+            toml::Value::Array(arr) => {
+                let mut set = std::collections::HashSet::new();
+                for item in arr {
+                    match item {
+                        toml::Value::String(s) => { set.insert(s.clone()); }
+                        other => return Err(format!(
+                            "B0105: provides entries must be strings, got: {}",
+                            other
+                        )),
+                    }
+                }
+                sess.box_provides = Some(set);
+            }
+            other => return Err(format!(
+                "B0105: 'provides' must be an array of variable names, got: {}",
+                other
+            )),
+        }
+    }
+
     Ok(())
 }
 
@@ -724,6 +747,7 @@ impl Session {
             
             box_store: HashMap::new(),
             box_namespace: None,
+            box_provides: None,
 
             grid_store: crate::actions::grid_store::GridStore::new(),
 
@@ -5119,6 +5143,21 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         span.clone(),
                     ));
                 }
+
+                if let Some(provides) = sess.box_provides.as_ref() {
+                    if !provides.contains(name.as_str()) {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::BOX_UNDECLARED_PROVIDE,
+                            "box-undeclared-provide",
+                            &format!(
+                                "GLAM '{}' cannot publish '#{}::{}' — '{}' is not declared in [provides]",
+                                current_ns, namespace, name, name
+                            ),
+                            span.clone(),
+                        ));
+                    }
+                }
             }
 
             let value = eval_expr(expr, sess)?;
@@ -5144,6 +5183,95 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     sess.box_store.insert(key, value);
                 }
             }
+
+            Ok(None)
+        }
+
+        ast::Stmt::Use(use_stmt) => {
+            use goblin_diagnostics::{Diagnostic, Severity};
+
+            let glam_dir = sess.project_root
+                .join("glams")
+                .join(&use_stmt.namespace);
+
+            if !glam_dir.exists() {
+                return Err(Diagnostic::new_with_code(
+                    Severity::Error,
+                    crate::diagnostics::rtcode::IMPORT_IO,
+                    "glam-not-found",
+                    &format!(
+                        "GLAM '{}' not found — expected directory at '{}'",
+                        use_stmt.namespace,
+                        glam_dir.display()
+                    ),
+                    use_stmt.span.clone(),
+                ));
+            }
+
+            // Stash current namespace context
+            let prev_namespace = sess.box_namespace.take();
+            let prev_provides  = sess.box_provides.take();
+
+            // Load glam.toml (sets box_provides)
+            let glam_toml = glam_dir.join("glam.toml");
+            if glam_toml.exists() {
+                load_glam_box_toml(sess, &glam_toml).map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::BOX_UNRESOLVED_NEED,
+                        "glam-load-error",
+                        &e,
+                        use_stmt.span.clone(),
+                    )
+                })?;
+            }
+
+            sess.box_namespace = Some(use_stmt.namespace.clone());
+
+            // Run glams/<namespace>/main.goblin
+            let entry = glam_dir.join("main.goblin");
+            if entry.exists() {
+                let src = std::fs::read_to_string(&entry).map_err(|e| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::IMPORT_IO,
+                        "glam-read-error",
+                        &format!("Cannot read GLAM entry '{}': {}", entry.display(), e),
+                        use_stmt.span.clone(),
+                    )
+                })?;
+
+                let tokens = goblin_lexer::lex(&src, &entry.to_string_lossy())
+                    .map_err(|diags| {
+                        diags.into_iter().next().unwrap_or_else(|| Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::IMPORT_IO,
+                            "glam-lex-error",
+                            "GLAM lex failed",
+                            use_stmt.span.clone(),
+                        ))
+                    })?;
+
+                let module_ast = goblin_parser::Parser::new(&tokens)
+                    .parse_module()
+                    .map_err(|diags| {
+                        diags.into_iter().next().unwrap_or_else(|| Diagnostic::new_with_code(
+                            Severity::Error,
+                            crate::diagnostics::rtcode::IMPORT_IO,
+                            "glam-parse-error",
+                            "GLAM parse failed",
+                            use_stmt.span.clone(),
+                        ))
+                    })?;
+
+                for stmt in &module_ast.items {
+                    eval_stmt(stmt, sess)?;
+                }
+            }
+
+            // Restore namespace context
+            sess.box_namespace = prev_namespace;
+            sess.box_provides  = prev_provides;
 
             Ok(None)
         }

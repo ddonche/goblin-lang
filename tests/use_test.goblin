@@ -1,0 +1,4 @@
+use local
+
+:say(#local::glam_content)
+:say(#local::glam_output)

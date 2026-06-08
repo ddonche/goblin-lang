@@ -772,6 +772,7 @@ fn as_expect_form(tok: &goblin_lexer::Token) -> ExpectTok {
         TokenKind::Act => ExpectTok::Kind("ACT".into()),
         TokenKind::Action => ExpectTok::Kind("ACTION".into()),
         TokenKind::Import => ExpectTok::Kind("IMPORT".into()),
+        TokenKind::Use    => ExpectTok::Kind("USE".into()),
         TokenKind::Export => ExpectTok::Kind("EXPORT".into()),
         TokenKind::Vault => ExpectTok::Kind("VAULT".into()),
         TokenKind::Float => ExpectTok::Kind("FLOAT".into()),
