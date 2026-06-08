@@ -248,9 +248,9 @@ fn main() {
         let mut lines: Vec<String> = Vec::new();
 
         // 1) Static project box.toml
+        let mut sess = goblin_interpreter::Session::new();
         let box_toml = dir.join("box.toml");
         if box_toml.exists() {
-            let mut sess = goblin_interpreter::Session::new();
             if let Err(e) = goblin_interpreter::load_box_toml(&mut sess, &box_toml) {
                 eprintln!("box.toml error: {}", e);
                 std::process::exit(1);
@@ -275,15 +275,17 @@ fn main() {
                         .to_string();
                     let glam_toml = glam_dir.join("glam.toml");
                     if !glam_toml.exists() { continue; }
-                    if let Ok(src) = std::fs::read_to_string(&glam_toml) {
-                        if let Ok(table) = src.parse::<toml::Table>() {
-                            if let Some(toml::Value::Array(provides)) = table.get("provides") {
-                                for item in provides {
-                                    if let toml::Value::String(varname) = item {
-                                        lines.push(format!("#{}::{} = <provided by glam>", namespace, varname));
-                                    }
-                                }
-                            }
+                    let mut glam_sess = goblin_interpreter::Session::new();
+                    // copy box_store so [needs] can resolve from project box
+                    glam_sess.box_store = sess.box_store.clone();
+                    if let Err(e) = goblin_interpreter::load_glam_box_toml(
+                        &mut glam_sess, &glam_toml, Some(&namespace)
+                    ) {
+                        eprintln!("warning: {}: {}", glam_toml.display(), e);
+                    }
+                    for (k, v) in &glam_sess.box_store {
+                        if k.starts_with(&format!("{}::", namespace)) {
+                            lines.push(format!("#{} = {}", k, v));
                         }
                     }
                 }

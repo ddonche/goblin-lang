@@ -607,6 +607,7 @@ pub fn load_box_toml(sess: &mut Session, path: &std::path::Path) -> Result<(), S
 pub fn load_glam_box_toml(
     sess: &mut Session,
     path: &std::path::Path,
+    namespace: Option<&str>,
 ) -> Result<(), String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
@@ -641,12 +642,17 @@ pub fn load_glam_box_toml(
 
             let trimmed = &ref_str[1..];
             let pos = trimmed.find("::").unwrap();
-            let namespace = &trimmed[..pos];
+            let ref_ns = &trimmed[..pos];
             let varname = &trimmed[pos + 2..];
-            let key = format!("{}::{}", namespace, varname);
+            let key = format!("{}::{}", ref_ns, varname);
 
             match sess.box_store.get(&key).cloned() {
-                Some(v) => { sess.define_local(local_name.clone(), v, false); }
+                Some(v) => {
+                    if let Some(ns) = namespace {
+                        sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+                    }
+                    sess.define_local(local_name.clone(), v, false);
+                }
                 None => {
                     return Err(format!(
                         "B0104: unresolved-glam-need — '{}' references '#{}' \
@@ -668,6 +674,9 @@ pub fn load_glam_box_toml(
                 toml::Value::Boolean(b) => Value::Bool(*b),
                 other                   => Value::Str(other.to_string()),
             };
+            if let Some(ns) = namespace {
+                sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+            }
             sess.define_local(local_name.clone(), v, false);
         }
     }
@@ -5397,7 +5406,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             // Load glam.toml (sets box_provides)
             let glam_toml = glam_dir.join("glam.toml");
             if glam_toml.exists() {
-                load_glam_box_toml(sess, &glam_toml).map_err(|e| {
+                load_glam_box_toml(sess, &glam_toml, Some(&use_stmt.namespace.clone())).map_err(|e| {
                     Diagnostic::new_with_code(
                         Severity::Error,
                         crate::diagnostics::rtcode::BOX_UNRESOLVED_NEED,
