@@ -256,7 +256,16 @@ fn main() {
                 std::process::exit(1);
             }
             for (k, v) in &sess.box_store {
-                lines.push(format!("#{} = {}", k, v));
+                let display = if let goblin_interpreter::Value::Str(s) = v {
+                    if s.contains("{#") {
+                        format!("#{} = {} (contains runtime variable)", k, s)
+                    } else {
+                        format!("#{} = {}", k, v)
+                    }
+                } else {
+                    format!("#{} = {}", k, v)
+                };
+                lines.push(display);
             }
         }
 
@@ -285,7 +294,16 @@ fn main() {
                     }
                     for (k, v) in &glam_sess.box_store {
                         if k.starts_with(&format!("{}::", namespace)) {
-                            lines.push(format!("#{} = {}", k, v));
+                            let display = if let goblin_interpreter::Value::Str(s) = v {
+                                if s.contains("{#") {
+                                    format!("#{} = {} (contains runtime variable)", k, s)
+                                } else {
+                                    format!("#{} = {}", k, v)
+                                }
+                            } else {
+                                format!("#{} = {}", k, v)
+                            };
+                            lines.push(display);
                         }
                     }
                 }
