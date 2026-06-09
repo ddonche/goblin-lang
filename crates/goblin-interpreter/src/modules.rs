@@ -131,11 +131,22 @@ impl ModuleCache {
             return Ok((namespace, None));
         }
 
-        let mut file_path = base_dir.to_path_buf();
-        for part in import_path.split('/') {
-            file_path.push(part);
-        }
-        file_path.set_extension("gbln");
+        let file_path = {
+            let p = std::path::Path::new(import_path);
+            let mut resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                let mut fp = base_dir.to_path_buf();
+                for part in import_path.split('/') {
+                    fp.push(part);
+                }
+                fp
+            };
+            if resolved.extension().is_none() {
+                resolved.set_extension("gbln");
+            }
+            resolved
+        };
 
         if !file_path.exists() {
             return Err(format!("Module file not found: {}", file_path.display()));
