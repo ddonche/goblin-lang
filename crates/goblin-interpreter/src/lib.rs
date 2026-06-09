@@ -10912,7 +10912,7 @@ fn call_action_by_name(
         }
 
         sess.push_frame();
-        for (k, v) in bound { sess.set_var(k, v); }
+        for (k, v) in bound { sess.define_local(k, v, false); }
 
         let ret = {
             match &decl.body {
@@ -11362,7 +11362,7 @@ fn call_action_by_name(
 
                     // Bind params
                     for (name, value) in bound {
-                        sess.set_var(name, value);
+                        sess.define_local(name, value, false);
                     }
 
                     // Execute body
@@ -21865,10 +21865,10 @@ fn call_object_method_with_values(
     // Bind parameters
     for (i, param) in action.params.iter().enumerate() {
         if i < arg_vals.len() {
-            sess.set_var(param.name.clone(), arg_vals[i].clone());
+            sess.define_local(param.name.clone(), arg_vals[i].clone(), false);
         } else if let Some(def_expr) = &param.default {
             let def_val = eval_expr(def_expr, sess)?;
-            sess.set_var(param.name.clone(), def_val);
+            sess.define_local(param.name.clone(), def_val, false);
         } else {
             // Should be unreachable due to the check above; emit the same standardized error.
             sess.pop_frame();
@@ -21990,10 +21990,10 @@ fn call_object_method(
     // Bind parameters
     for (i, param) in action.params.iter().enumerate() {
         if i < arg_vals.len() {
-            sess.set_var(param.name.clone(), arg_vals[i].clone());
+            sess.define_local(param.name.clone(), arg_vals[i].clone(), false);
         } else if let Some(def_expr) = &param.default {
             let def_val = eval_expr(def_expr, sess)?;
-            sess.set_var(param.name.clone(), def_val);
+            sess.define_local(param.name.clone(), def_val, false);
         } else {
             sess.pop_frame();
             return Err(
