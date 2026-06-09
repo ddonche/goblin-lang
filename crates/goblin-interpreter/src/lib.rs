@@ -3296,16 +3296,54 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
             return Ok(Value::Array(results));
         }
         Value::Map(map) => {
+            // kv lock "str:int" → lock keys to str, values to int
+            // single lock "int" → lock values only (keys always strings)
+            let (key_lock, val_lock) = if let Some((k, v)) = lock.split_once(':') {
+                (Some(k), v)
+            } else {
+                (None, lock)
+            };
             let mut results = BTreeMap::new();
             for (k, val) in map {
-                results.insert(k, cast_value_to_lock(val, lock, at)?);
+                if let Some(kl) = key_lock {
+                    if kl != "str" && kl != "string" {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            "R0216",
+                            "type-lock-key",
+                            &format!("map key type lock '{}' is not valid — map keys are always strings", kl),
+                            at.clone(),
+                        )
+                        .with_help("Use 'str' as the key type, e.g. scores.str:int")
+                        .with_link("https://goblinlang.org/docs/errors#R0216"));
+                    }
+                }
+                results.insert(k, cast_value_to_lock(val, val_lock, at)?);
             }
             return Ok(Value::Map(results));
         }
         Value::MapOrd(map) => {
+            let (key_lock, val_lock) = if let Some((k, v)) = lock.split_once(':') {
+                (Some(k), v)
+            } else {
+                (None, lock)
+            };
             let mut results = indexmap::IndexMap::new();
             for (k, val) in map {
-                results.insert(k, cast_value_to_lock(val, lock, at)?);
+                if let Some(kl) = key_lock {
+                    if kl != "str" && kl != "string" {
+                        return Err(Diagnostic::new_with_code(
+                            Severity::Error,
+                            "R0216",
+                            "type-lock-key",
+                            &format!("map key type lock '{}' is not valid — map keys are always strings", kl),
+                            at.clone(),
+                        )
+                        .with_help("Use 'str' as the key type, e.g. scores.str:int")
+                        .with_link("https://goblinlang.org/docs/errors#R0216"));
+                    }
+                }
+                results.insert(k, cast_value_to_lock(val, val_lock, at)?);
             }
             return Ok(Value::MapOrd(results));
         }

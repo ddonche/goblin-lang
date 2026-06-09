@@ -2667,6 +2667,7 @@ impl<'t> Parser<'t> {
                     self.i += 1; // consume ident
 
                     // Lookahead: name.TYPE | value  →  typed tether
+                    // Also: name.TYPE:TYPE | value  →  kv-typed tether (map key:value lock)
                     // Only peel if: next is '.', then a type keyword, then '|' (not '|=').
                     if self.peek_op(".") {
                         let save = self.i;
@@ -2677,8 +2678,39 @@ impl<'t> Parser<'t> {
                         if let Some(ref tw) = type_word {
                             if TYPE_LOCK_KEYWORDS.contains(&tw.as_str()) {
                                 self.i += 1; // consume the type keyword
-                                // Next must be '|' (plain tether) — typed retether is not supported.
-                                if self.peek_op("|") {
+
+                                // Check for kv lock: TYPE:TYPE
+                                if self.peek_op(":") {
+                                    let kv_save = self.i;
+                                    self.i += 1; // tentatively consume ':'
+                                    let val_type_word = self.peek()
+                                        .filter(|t| matches!(t.kind, TokenKind::Ident))
+                                        .and_then(|t| t.value.clone());
+                                    if let Some(ref vt) = val_type_word {
+                                        if TYPE_LOCK_KEYWORDS.contains(&vt.as_str()) {
+                                            self.i += 1; // consume value type keyword
+                                            if self.peek_op("|") {
+                                                pending_lock_type = Some(format!("{}:{}", tw, vt));
+                                            } else {
+                                                self.i = save; // rewind fully
+                                            }
+                                        } else {
+                                            self.i = kv_save; // rewind to before ':'
+                                            if self.peek_op("|") {
+                                                pending_lock_type = Some(tw.clone());
+                                            } else {
+                                                self.i = save;
+                                            }
+                                        }
+                                    } else {
+                                        self.i = kv_save; // rewind to before ':'
+                                        if self.peek_op("|") {
+                                            pending_lock_type = Some(tw.clone());
+                                        } else {
+                                            self.i = save;
+                                        }
+                                    }
+                                } else if self.peek_op("|") {
                                     pending_lock_type = Some(tw.clone());
                                     // Leave '|' for the mode-detection step below.
                                 } else {
@@ -5758,6 +5790,7 @@ impl<'t> Parser<'t> {
                         return self.parse_bind_stmt();
                     }
                     // Check for typed tether: IDENT . TYPE_KEYWORD |
+                    // Also: IDENT . TYPE_KEYWORD : TYPE_KEYWORD |  (kv lock)
                     if matches!(t1.kind, TokenKind::Op(ref s) if s == ".") {
                         if let Some(t2) = self.toks.get(self.i + 2) {
                             let is_type_kw = matches!(&t2.kind, TokenKind::Ident)
@@ -5766,6 +5799,20 @@ impl<'t> Parser<'t> {
                                 if let Some(t3) = self.toks.get(self.i + 3) {
                                     if matches!(t3.kind, TokenKind::Op(ref s) if s == "|") {
                                         return self.parse_bind_stmt();
+                                    }
+                                    // kv lock: .TYPE:TYPE |
+                                    if matches!(t3.kind, TokenKind::Op(ref s) if s == ":") {
+                                        if let Some(t4) = self.toks.get(self.i + 4) {
+                                            let is_val_type_kw = matches!(&t4.kind, TokenKind::Ident)
+                                                && t4.value.as_deref().map(|w| TYPE_LOCK_KEYWORDS.contains(&w)).unwrap_or(false);
+                                            if is_val_type_kw {
+                                                if let Some(t5) = self.toks.get(self.i + 5) {
+                                                    if matches!(t5.kind, TokenKind::Op(ref s) if s == "|") {
+                                                        return self.parse_bind_stmt();
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
