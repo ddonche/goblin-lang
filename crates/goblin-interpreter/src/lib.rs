@@ -19573,25 +19573,37 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                 "repeat" => {
 
-                    // Support old 2-arg form during transition
-                    let (expr_arg, body_arg, as_arg) = match args.len() {
-                        2 => (&args[0], &args[1], None),
-                        3 => (&args[0], &args[1], Some(&args[2])),
+                    // Support old 2-arg form during transition; 4-arg for map destructuring
+                    let (expr_arg, body_arg, as_arg, val_arg) = match args.len() {
+                        2 => (&args[0], &args[1], None, None),
+                        3 => (&args[0], &args[1], Some(&args[2]), None),
+                        4 => (&args[0], &args[1], Some(&args[2]), Some(&args[3])),
                         n => {
                             return Err(Diagnostic::new_with_code(
                                 Severity::Error,
                                 crate::diagnostics::rtcode::WRONG_ARITY,
                                 "wrong-arity",
-                                &format!("Wrong number of arguments to repeat (expected 2 or 3, got {}).", n),
+                                &format!("Wrong number of arguments to repeat (expected 2-4, got {}).", n),
                                 sp.clone(),
                             )
-                            .with_help("Usage: repeat(expr, body) or repeat(expr, body, as_name)")
+                            .with_help("Usage: repeat(expr, body) or repeat(expr, body, as_name) or repeat(map, body, key_name, val_name)")
                             .with_link("https://goblinlang.org/docs/errors#R0301"));
                         }
                     };
 
                     // Extract optional `as` binding name
                     let as_name: Option<String> = match as_arg {
+                        Some(expr) => {
+                            match eval_expr(expr, sess)? {
+                                Value::Str(s) if !s.is_empty() => Some(s),
+                                _ => None,
+                            }
+                        }
+                        None => None,
+                    };
+
+                    // Extract optional val binding name (map destructuring: as k, v)
+                    let val_name: Option<String> = match val_arg {
                         Some(expr) => {
                             match eval_expr(expr, sess)? {
                                 Value::Str(s) if !s.is_empty() => Some(s),
@@ -19930,14 +19942,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                         // ---- MAP LOOP: key/value pairs ----
                         Value::Map(m) => {
-                            let (key_binding, val_binding) = match &as_name {
-                                Some(s) => {
-                                    // `as (k, v)` — for now just use "key"/"val" defaults
-                                    // TODO: parse tuple binding from as_name
-                                    ("key".to_string(), "val".to_string())
-                                }
-                                None => ("key".to_string(), "val".to_string()),
-                            };
+                            let key_binding = as_name.unwrap_or_else(|| "key".to_string());
+                            let val_binding = val_name.unwrap_or_else(|| "val".to_string());
                             'map: for (idx, (k, v)) in m.iter().enumerate() {
                                 let v2 = Session::with_block(sess, |sess| {
                                     sess.set_var(key_binding.clone(), Value::Str(k.clone()));

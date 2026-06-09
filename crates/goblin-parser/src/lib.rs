@@ -5169,32 +5169,62 @@ impl<'t> Parser<'t> {
         };
 
         // Bare repeat (infinite loop) — nothing before newline / closer
-        let (count, as_name) = if self.peek_newline_or_eof()
+        let (count, as_name, val_name) = if self.peek_newline_or_eof()
             || self.peek_op("xx")
             || matches!(self.peek(), Some(t) if is_word(t, "end"))
         {
-            (None, None)
+            (None, None, None)
         } else {
             // Parse the repeat target/count/condition
             let expr_pe = self.parse_assign()?;
 
-            // Optional: `as name`
-            let alias = match self.peek() {
+            // Optional: `as name` or `as k, v` or `as (k, v)`
+            let (alias, val_alias) = match self.peek() {
                 Some(t) if is_word(t, "as") => {
                     let _ = self.eat_ident(); // consume 'as'
+
+                    // Check for optional opening paren
+                    let parens = self.eat_op("(");
+
                     let Some(name) = self.eat_ident() else {
                         return Err(s_help_site!(
                             "P0324",
                             "Expected a name after 'as' in repeat",
-                            "Write: repeat items as item"
+                            "Write: repeat items as item  or  repeat map as k, v"
                         ));
                     };
-                    Some(name)
+
+                    // Check for `, val_name` (map destructuring)
+                    let val_name = if self.eat_op(",") {
+                        self.skip_layout_inline();
+                        let Some(vname) = self.eat_ident() else {
+                            return Err(s_help_site!(
+                                "P0325",
+                                "Expected a value name after ',' in repeat destructuring",
+                                "Write: repeat map as k, v"
+                            ));
+                        };
+                        Some(vname)
+                    } else {
+                        None
+                    };
+
+                    if parens {
+                        if !self.eat_op(")") {
+                            return Err(s_help_site!(
+                                "P0326",
+                                "Expected ')' to close destructuring pattern in repeat",
+                                "Write: repeat map as (k, v)"
+                            ));
+                        }
+                    }
+
+                    (Some(name), val_name)
                 }
-                _ => None,
+                _ => (None, None),
             };
 
-            (Some(self.lower_expr(expr_pe)), alias)
+            (Some(self.lower_expr(expr_pe)), alias, val_alias)
         };
 
         // Skip newline/indent after header
@@ -5255,9 +5285,14 @@ impl<'t> Parser<'t> {
             None => ast::Expr::Nil(span.clone()),
         };
 
+        let mut call_args = vec![expr_arg, body_block, as_arg];
+        if let Some(vname) = val_name {
+            call_args.push(ast::Expr::Str(vname, span.clone()));
+        }
+
         Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
             "repeat".to_string(),
-            vec![expr_arg, body_block, as_arg],
+            call_args,
             span,
         )))
     }
