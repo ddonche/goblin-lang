@@ -668,30 +668,52 @@ pub fn load_box_toml(sess: &mut Session, path: &std::path::Path) -> Result<(), S
     Ok(())
 }
 
+/// Returned by load_glam_box_toml so callers can use glam identity without re-parsing.
+pub struct GlamMeta {
+    pub entry: Option<String>,
+}
+
 pub fn load_glam_box_toml(
     sess: &mut Session,
     path: &std::path::Path,
     namespace: Option<&str>,
-) -> Result<(), String> {
+) -> Result<GlamMeta, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
 
     let table: toml::Table = content.parse()
         .map_err(|e| format!("Invalid TOML in {}: {}", path.display(), e))?;
 
+    // [glam] identity — entry file lives here
+    let entry = if let Some(toml::Value::Table(glam)) = table.get("glam") {
+        if let Some(toml::Value::String(e)) = glam.get("entry") {
+            Some(e.clone())
+        } else {
+            None
+        }
+    } else {
+        // Legacy: top-level entry key
+        if let Some(toml::Value::String(e)) = table.get("entry") {
+            Some(e.clone())
+        } else {
+            None
+        }
+    };
+
+    // [needs] — each value is a Box reference string like "#site::content_dir"
     if let Some(toml::Value::Table(needs)) = table.get("needs") {
         for (local_name, box_ref) in needs {
             let ref_str = match box_ref {
                 toml::Value::String(s) if s.is_empty() => {
                     return Err(format!(
                         "B0104: unresolved-glam-need — '{}' has no value assigned\n\
-                         Fill it in your GLAM's .box.toml: {} = \"#namespace::varname\"",
+                         Assign it in your glam.toml [needs]: {} = \"#namespace::varname\"",
                         local_name, local_name
                     ));
                 }
                 toml::Value::String(s) => s,
                 _ => return Err(format!(
-                    "B0104: unresolved-glam-need — '{}' must be a Box variable string like \"#local::content_dir\"",
+                    "B0104: unresolved-glam-need — '{}' must be a Box reference like \"#site::content_dir\"",
                     local_name
                 )),
             };
@@ -712,8 +734,6 @@ pub fn load_glam_box_toml(
 
             match sess.box_store.get(&key).cloned() {
                 Some(v) => {
-                    // Resolve any remaining templates (e.g. values that depend on
-                    // runtime box variables set before GLAMs are loaded)
                     let v = if let Value::Str(s) = &v {
                         Value::Str(resolve_box_template(s, &sess.box_store))
                     } else {
@@ -726,7 +746,7 @@ pub fn load_glam_box_toml(
                 }
                 None => {
                     return Err(format!(
-                        "B0104: unresolved-glam-need — '{}' references '#{}' \
+                        "B0104: unresolved-glam-need — '{}' references '#{}'  \
                          but that Box variable does not exist\n\
                          Run 'goblin box dump' to see what is currently in the Box.",
                         local_name, key
@@ -736,6 +756,7 @@ pub fn load_glam_box_toml(
         }
     }
 
+    // [values] — defaults owned by this glam, written to its namespace
     if let Some(toml::Value::Table(values)) = table.get("values") {
         for (local_name, val) in values {
             let v = match val {
@@ -752,29 +773,39 @@ pub fn load_glam_box_toml(
         }
     }
 
-    if let Some(provides_val) = table.get("provides") {
-        match provides_val {
-            toml::Value::Array(arr) => {
-                let mut set = std::collections::HashSet::new();
-                for item in arr {
-                    match item {
-                        toml::Value::String(s) => { set.insert(s.clone()); }
-                        other => return Err(format!(
-                            "B0105: provides entries must be strings, got: {}",
-                            other
-                        )),
+    // [provides] — public contract; values sub-array drives box_provides enforcement
+    if let Some(toml::Value::Table(provides)) = table.get("provides") {
+        if let Some(toml::Value::Array(vals)) = provides.get("values") {
+            let mut set = std::collections::HashSet::new();
+            for item in vals {
+                match item {
+                    toml::Value::String(s) => {
+                        // Strip leading # if present
+                        let key = s.trim_start_matches('#').to_string();
+                        set.insert(key);
                     }
+                    other => return Err(format!(
+                        "B0105: [provides] values entries must be strings, got: {}", other
+                    )),
                 }
-                sess.box_provides = Some(set);
             }
-            other => return Err(format!(
-                "B0105: 'provides' must be an array of variable names, got: {}",
-                other
-            )),
+            sess.box_provides = Some(set);
         }
+    } else if let Some(toml::Value::Array(arr)) = table.get("provides") {
+        // Legacy flat array
+        let mut set = std::collections::HashSet::new();
+        for item in arr {
+            match item {
+                toml::Value::String(s) => { set.insert(s.clone()); }
+                other => return Err(format!(
+                    "B0105: provides entries must be strings, got: {}", other
+                )),
+            }
+        }
+        sess.box_provides = Some(set);
     }
 
-    Ok(())
+    Ok(GlamMeta { entry })
 }
 
 pub fn box_dump(sess: &Session) -> String {
@@ -5559,9 +5590,9 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             let prev_namespace = sess.box_namespace.take();
             let prev_provides  = sess.box_provides.take();
 
-            // Load glam.toml (sets box_provides)
+            // Load glam.toml — sets [needs], [values], [provides]; returns entry filename
             let glam_toml = glam_dir.join("glam.toml");
-            if glam_toml.exists() {
+            let glam_meta = if glam_toml.exists() {
                 load_glam_box_toml(sess, &glam_toml, Some(&use_stmt.namespace.clone())).map_err(|e| {
                     Diagnostic::new_with_code(
                         Severity::Error,
@@ -5570,25 +5601,16 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         &e,
                         use_stmt.span.clone(),
                     )
-                })?;
-            }
+                })?
+            } else {
+                GlamMeta { entry: None }
+            };
 
             sess.box_namespace = Some(use_stmt.namespace.clone());
 
-            // Determine entry file — glam.toml can declare `entry = "prospector.gbln"`
-            // If not declared, try <namespace>.gbln then <namespace>.gob
+            // Determine entry file from [glam] entry key, or fall back to convention
             let entry = {
-                let mut declared: Option<String> = None;
-                if glam_toml.exists() {
-                    if let Ok(src) = std::fs::read_to_string(&glam_toml) {
-                        if let Ok(t) = src.parse::<toml::Table>() {
-                            if let Some(toml::Value::String(s)) = t.get("entry") {
-                                declared = Some(s.clone());
-                            }
-                        }
-                    }
-                }
-                if let Some(name) = declared {
+                if let Some(name) = glam_meta.entry {
                     glam_dir.join(name)
                 } else {
                     let gbln = glam_dir.join(format!("{}.gbln", use_stmt.namespace));
