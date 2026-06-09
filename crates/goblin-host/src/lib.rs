@@ -516,6 +516,91 @@ impl Host {
                                 if want_close { break 'conn; } else { continue 'conn; }
                             }
 
+                            // === REPL endpoint ===
+                            if path == "/_repl" && method.eq_ignore_ascii_case("POST") {
+                                use tokio::process::Command;
+                                use tokio::time::{timeout, Duration};
+                                use std::process::Stdio;
+
+                                // Parse { "input": "..." } from body
+                                let input: String = serde_json::from_str::<serde_json::Value>(&body_text)
+                                    .ok()
+                                    .and_then(|v| v.get("input").and_then(|s| s.as_str()).map(|s| s.to_string()))
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string();
+
+                                let body = if input.is_empty() {
+                                    r#"{"ok":false,"stdout":"","stderr":"no input"}"#.to_string()
+                                } else {
+                                    // goblin --version (or any bare flag — no script file needed)
+                                    let is_bare_flag = input.starts_with("goblin ")
+                                        && !input.contains('\n')
+                                        && input.split_whitespace().count() <= 3
+                                        && input.split_whitespace().skip(1).all(|t| t.starts_with('-'));
+
+                                    if is_bare_flag {
+                                        let args: Vec<&str> = input.split_whitespace().skip(1).collect();
+                                        let body = match Command::new("goblin")
+                                            .args(&args)
+                                            .stdout(Stdio::piped())
+                                            .stderr(Stdio::piped())
+                                            .spawn()
+                                        {
+                                            Err(e) => format!(r#"{{"ok":false,"stdout":"","stderr":"spawn error: {e}"}}"#),
+                                            Ok(child) => {
+                                                match timeout(Duration::from_millis(5000), child.wait_with_output()).await {
+                                                    Err(_) => r#"{"ok":false,"stdout":"","stderr":"timeout"}"#.to_string(),
+                                                    Ok(Err(e)) => format!(r#"{{"ok":false,"stdout":"","stderr":"wait error: {e}"}}"#),
+                                                    Ok(Ok(out)) => {
+                                                        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                                                        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                                                        let ok = out.status.success();
+                                                        let stdout_j = serde_json::to_string(&stdout).unwrap_or_default();
+                                                        let stderr_j = serde_json::to_string(&stderr).unwrap_or_default();
+                                                        format!(r#"{{"ok":{ok},"stdout":{stdout_j},"stderr":{stderr_j}}}"#)
+                                                    }
+                                                }
+                                            }
+                                        };
+                                        body
+                                    } else {
+                                        // Write input to a temp file and run it
+                                        let tmp_path = std::env::temp_dir().join(format!("goblin_repl_{}.gbln", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+                                        match tokio::fs::write(&tmp_path, input.as_bytes()).await {
+                                            Err(e) => format!(r#"{{"ok":false,"stdout":"","stderr":"could not write temp file: {e}"}}"#),
+                                            Ok(_) => {
+                                                let result = exec_goblin_script_via_cli_timeout(
+                                                    &tmp_path, 5000, "", "REPL", "/_repl", "", "", "", "{}", "", "", "", "{}",
+                                                ).await;
+                                                let _ = tokio::fs::remove_file(&tmp_path).await;
+                                                match result {
+                                                    Ok(out) => {
+                                                        let out_j = serde_json::to_string(out.trim()).unwrap_or_default();
+                                                        format!(r#"{{"ok":true,"stdout":{out_j},"stderr":""}}"#)
+                                                    }
+                                                    Err(ExecErr::Timeout) => r#"{"ok":false,"stdout":"","stderr":"timeout (5s)"}"#.to_string(),
+                                                    Err(ExecErr::NonZero(e)) | Err(ExecErr::Spawn(e)) => {
+                                                        let e_j = serde_json::to_string(e.trim()).unwrap_or_default();
+                                                        format!(r#"{{"ok":false,"stdout":"","stderr":{e_j}}}"#)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+
+                                let headers = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nAccess-Control-Allow-Origin: *\r\nx-goblin-web-contract: {}\r\n\r\n",
+                                    body.len(), crate::CONTRACT_VERSION
+                                );
+                                if socket.write_all(headers.as_bytes()).await.is_ok() {
+                                    let _ = socket.write_all(body.as_bytes()).await;
+                                }
+                                log.done(200, body.len());
+                                if want_close { break 'conn; } else { continue 'conn; }
+                            }
+
                             // === Image upload — handled directly in Rust ===
                             if path == "/api/upload_image" && method.eq_ignore_ascii_case("POST") {
                                 use tokio::io::AsyncWriteExt;
