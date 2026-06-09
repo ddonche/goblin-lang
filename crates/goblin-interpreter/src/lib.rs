@@ -19842,10 +19842,33 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
                         // ---- ITEM LOOP: expr is an array ----
                         Value::Array(items) => {
-                            let binding = as_name.unwrap_or_else(|| "it".to_string());
+                            let binding = as_name.clone().unwrap_or_else(|| "it".to_string());
                             'arr: for (idx, item) in items.iter().enumerate() {
                                 let v = Session::with_block(sess, |sess| {
-                                    sess.set_var(binding.clone(), item.clone());
+                                    if let (Some(key_name), Some(val_name2)) = (&as_name, &val_name) {
+                                        // Destructure fields by name: `repeat list as field1, field2`
+                                        match item {
+                                            Value::Map(fields) => {
+                                                if let Some(kv) = fields.get(key_name.as_str()) {
+                                                    sess.set_var(key_name.clone(), kv.clone());
+                                                }
+                                                if let Some(vv) = fields.get(val_name2.as_str()) {
+                                                    sess.set_var(val_name2.clone(), vv.clone());
+                                                }
+                                            }
+                                            Value::Object { fields, .. } => {
+                                                if let Some(kv) = fields.get(key_name.as_str()) {
+                                                    sess.set_var(key_name.clone(), kv.clone());
+                                                }
+                                                if let Some(vv) = fields.get(val_name2.as_str()) {
+                                                    sess.set_var(val_name2.clone(), vv.clone());
+                                                }
+                                            }
+                                            _ => { sess.set_var(binding.clone(), item.clone()); }
+                                        }
+                                    } else {
+                                        sess.set_var(binding.clone(), item.clone());
+                                    }
                                     sess.set_var("idx".to_string(), Value::Int(idx as i64));
                                     eval_expr(body_arg, sess)
                                 })?;

@@ -27,10 +27,10 @@ act int_to_roman(num)
 
     result | ..
 
-    repeat int_to_roman_rules as rule
-        repeat num >= rule{"value"}
-            result |= result + rule{"symbol"}
-            num |= num - rule{"value"}
+    repeat int_to_roman_rules as value, symbol
+        repeat num >= value
+            result |= result + symbol
+            num |= num - value
         xx
     xx
 
