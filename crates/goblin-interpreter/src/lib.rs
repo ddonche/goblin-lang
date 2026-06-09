@@ -5611,7 +5611,8 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             // Determine entry file from [glam] entry key, or fall back to convention
             let entry = {
                 if let Some(name) = glam_meta.entry {
-                    glam_dir.join(name)
+                    let p = std::path::PathBuf::from(&name);
+                    if p.is_absolute() { p } else { glam_dir.join(name) }
                 } else {
                     let gbln = glam_dir.join(format!("{}.gbln", use_stmt.namespace));
                     let gob  = glam_dir.join(format!("{}.gob",  use_stmt.namespace));
