@@ -1048,7 +1048,7 @@ version = "0.1.0"
 
 [[package]]
 name = "goblin-host"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "chrono",
  "goblin-diagnostics",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-interpreter"
-version = "0.46.18"
+version = "0.46.19"
 dependencies = [
  "blake3",
  "comrak",
