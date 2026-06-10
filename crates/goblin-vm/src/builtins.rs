@@ -659,11 +659,17 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between open")) };
             let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between close")) };
             let mut include_delims = true;
+            let mut allow_nested = false;
             let mut allow_eof_close = true;
             if args.len() == 4 {
-                if let Value::Map(m) = read(3)? {
-                    if let Some(Value::Bool(b)) = m.get("include_delims") { include_delims = *b; }
-                    if let Some(Value::Bool(b)) = m.get("allow_eof_close") { allow_eof_close = *b; }
+                match read(3)? {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("include_delims") { include_delims = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_nested") { allow_nested = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_eof_close") { allow_eof_close = *b; }
+                    }
+                    other => return Err(GoblinError::type_error("map or nil", other.type_name(), "ignore_between opts")),
                 }
             }
             if open.is_empty() || close.is_empty() { return Ok(Value::Str(text)); }
@@ -673,19 +679,33 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 if let Some(rel) = text[i..].find(open.as_str()) {
                     let start = i + rel;
                     out.push_str(&text[i..start]);
-                    let k = start + open.len();
-                    let close_pos = match text[k..].find(close.as_str()) {
-                        Some(r) => Some(k + r),
-                        None => if allow_eof_close { Some(text.len()) } else { None },
-                    };
+                    let mut k = start + open.len();
+                    let mut depth = 1usize;
+                    let mut close_pos: Option<usize> = None;
+                    while k <= text.len() {
+                        let next_open  = text[k..].find(open.as_str()).map(|r| k + r);
+                        let next_close = text[k..].find(close.as_str()).map(|r| k + r);
+                        match (next_open, next_close) {
+                            (_, None) => { if allow_eof_close { close_pos = Some(text.len()); } break; }
+                            (None, Some(c)) => { close_pos = Some(c); break; }
+                            (Some(o), Some(c)) => {
+                                if allow_nested && o < c { depth += 1; k = o + open.len(); }
+                                else { close_pos = Some(c); break; }
+                            }
+                        }
+                        if close_pos.is_some() && allow_nested && depth > 1 {
+                            depth -= 1;
+                            k = close_pos.unwrap() + close.len();
+                            close_pos = None;
+                        }
+                    }
                     if let Some(cpos) = close_pos {
                         if include_delims {
-                            i = if cpos < text.len() { cpos + close.len() } else { text.len() };
+                            i = cpos + close.len();
                         } else {
                             out.push_str(&text[start..start + open.len()]);
-                            let end = if cpos < text.len() { cpos + close.len() } else { text.len() };
-                            if cpos < text.len() { out.push_str(&text[cpos..end]); }
-                            i = end;
+                            out.push_str(&text[cpos..cpos + close.len()]);
+                            i = cpos + close.len();
                         }
                     } else {
                         out.push_str(&text[start..]);
@@ -2432,6 +2452,35 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         // ── Higher-order (stub — need VM callback) ────────────────────────────
         BuiltinId::MapFn | BuiltinId::FilterFn | BuiltinId::ReduceFn | BuiltinId::ForEachFn => {
             Err(GoblinError::NotImplemented { feature: "higher-order map/filter/reduce require VM callback support" })
+        }
+
+        BuiltinId::IsType => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "is_type".into() }); }
+            let recv = read(0)?;
+            let type_name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_type")) };
+            let ok = match (&recv, type_name.as_str()) {
+                (Value::Int(_), "int") => true,
+                (Value::Float(_), "float") => true,
+                (Value::Bool(_), "bool") => true,
+                (Value::Str(_), "str") => true,
+                (Value::Big(_), "big") => true,
+                (Value::Pct(_), "pct") => true,
+                (Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_), "int" | "float" | "big" | "pct") => true,
+                (Value::Str(s), "int") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<i64>().is_ok() }
+                (Value::Str(s), "float") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<f64>().is_ok() }
+                _ => false,
+            };
+            Ok(Value::Bool(ok))
+        }
+
+        BuiltinId::IsBoundName => {
+            // In the VM there's no dynamic scope lookup by name string; return false
+            expect_n(1)?;
+            Ok(Value::Bool(false))
+        }
+
+        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke => {
+            Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
     }
 }

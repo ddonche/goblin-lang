@@ -1439,6 +1439,11 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "write_text"   | "write_text!"   => BuiltinId::WriteText,
         "append_file"  | "append_file!"  => BuiltinId::AppendFile,
         "write_json"   | "write_json!"   => BuiltinId::WriteJson,
+        "is_type"                        => BuiltinId::IsType,
+        "is_bound_name"                  => BuiltinId::IsBoundName,
+        "invoke"                         => BuiltinId::Invoke,
+        "summon"                         => BuiltinId::Summon,
+        "provoke"                        => BuiltinId::Provoke,
         _ => return None,
     })
 }

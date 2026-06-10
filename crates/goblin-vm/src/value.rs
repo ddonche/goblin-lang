@@ -579,6 +579,11 @@ pub enum BuiltinId {
     AppendFile,
     WriteJson,
     ReapSample,
+    IsType,
+    IsBoundName,
+    Invoke,
+    Summon,
+    Provoke,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
