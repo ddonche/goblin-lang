@@ -896,7 +896,21 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "min"              => Some(BuiltinId::Min),
         "max"              => Some(BuiltinId::Max),
         "range"            => Some(BuiltinId::Range),
-        "abs"              => Some(BuiltinId::Abs),
+        "freq"             => Some(BuiltinId::Freq),
+        "mode"             => Some(BuiltinId::Mode),
+        "big"              => Some(BuiltinId::ToBig),
+        "to_map"           => Some(BuiltinId::ToMap),
+        "valtype" | "vt"   => Some(BuiltinId::TypeOf),
+        "find_all"         => Some(BuiltinId::FindAll),
+        "json_parse"       => Some(BuiltinId::JsonParse),
+        "yall_write"       => Some(BuiltinId::YallWrite),
+        "yall_pretty"      => Some(BuiltinId::YallPretty),
+        "yall_minify"      => Some(BuiltinId::YallMinify),
+        "is_control"       => Some(BuiltinId::IsControl),
+        "is_multiple_of"   => None,  // needs arg
+        "is_type"          => None,  // needs arg
+        "is_bound_name"    => None,  // needs arg
+        "is_matching"      => None,  // needs arg; handled below
         _ => None,
     };
 

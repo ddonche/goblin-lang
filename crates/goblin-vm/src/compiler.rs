@@ -1455,6 +1455,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "delete_path"  | "delete_path!"  => BuiltinId::DeletePath,
         "md_to_html"                     => BuiltinId::MdToHtml,
         "highlight_code"                 => BuiltinId::HighlightCode,
+        "big"  | "b"                     => BuiltinId::ToBig,
+        "to_map" | "m"                   => BuiltinId::ToMap,
         _ => return None,
     })
 }

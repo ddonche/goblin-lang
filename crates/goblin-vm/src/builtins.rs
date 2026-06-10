@@ -2566,6 +2566,50 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::HighlightCode => {
             Err(GoblinError::NotImplemented { feature: "highlight_code: requires syntect dependency (not included in VM)" })
         }
+
+        BuiltinId::ToBig => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Big(d)   => Ok(Value::Big(d)),
+                Value::Int(i)   => Ok(Value::Big(rust_decimal::Decimal::from(i))),
+                Value::Float(f) | Value::Pct(f) => {
+                    use rust_decimal::prelude::FromPrimitive;
+                    rust_decimal::Decimal::from_f64(f)
+                        .map(Value::Big)
+                        .ok_or_else(|| GoblinError::Runtime("big: cannot represent float as decimal".into()))
+                }
+                Value::Str(s) => {
+                    let trimmed = s.trim();
+                    let cleaned: String = trimmed.chars().filter(|&c| c != '_').collect();
+                    use std::str::FromStr;
+                    rust_decimal::Decimal::from_str(&cleaned)
+                        .map(Value::Big)
+                        .map_err(|_| GoblinError::Runtime(format!("big: cannot parse '{}'", s)))
+                }
+                other => Err(GoblinError::type_error("number or str", other.type_name(), "big")),
+            }
+        }
+
+        BuiltinId::ToMap => {
+            expect_n(1)?;
+            let v = read(0)?;
+            let s = match v {
+                Value::Str(s) => s,
+                Value::Map(m) => return Ok(Value::Map(m)),
+                Value::MapOrd(m) => return Ok(Value::MapOrd(m)),
+                other => fmt_value_raw(&other),
+            };
+            let mut map = std::collections::BTreeMap::new();
+            for line in s.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || !trimmed.contains(':') { continue; }
+                let mut parts = trimmed.splitn(2, ':');
+                if let (Some(k), Some(vv)) = (parts.next(), parts.next()) {
+                    map.insert(k.trim().to_string(), Value::Str(vv.trim().to_string()));
+                }
+            }
+            Ok(Value::Map(map))
+        }
     }
 }
 

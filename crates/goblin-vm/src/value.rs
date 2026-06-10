@@ -595,6 +595,8 @@ pub enum BuiltinId {
     DeletePath,
     MdToHtml,
     HighlightCode,
+    ToBig,
+    ToMap,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
