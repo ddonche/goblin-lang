@@ -228,24 +228,9 @@ impl Session {
     /// For now this is shallow for collections; we’ll expand it when
     /// CollectionValue + tethers-inside-collections are fully wired.
     pub fn clone_value_into_session(&mut self, value: &Value) -> Tether {
-        match value {
-            Value::Nil
-            | Value::Bool(_)
-            | Value::Int(_)
-            | Value::Float(_)
-            | Value::Str(_) => {
-                self.alloc_value(value.clone())
-            }
-
-            Value::Collection(coll_rc) => {
-                // TEMP: shallow clone of collection payload.
-                // Later: walk internal tethers and deep-copy their targets.
-                let cloned = Value::Collection(coll_rc.clone());
-                self.alloc_value(cloned)
-            }
-
-            // Add other Value variants as they appear.
-        }
+        // Most values are cheap to clone; Collection uses Rc so still cheap.
+        // Deep-copy semantics for collections come later (Level 5).
+        self.alloc_value(value.clone())
     }
 }
 

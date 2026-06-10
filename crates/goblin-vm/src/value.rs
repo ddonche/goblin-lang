@@ -1,5 +1,6 @@
-use std::collections::HashMap;
 use std::rc::Rc;
+use rust_decimal::Decimal;
+use indexmap::IndexMap;
 
 /// Logical address of a stash in the arena.
 /// `slot` is index into Session.arena.
@@ -20,32 +21,84 @@ pub struct Tether {
     pub addr: Address,
 }
 
+/// Format spec for the `Formatted` value variant.
+/// Controls how numeric values are displayed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormatSpec {
+    pub decimals: u32,
+    pub sep_thousands: Option<char>,
+    pub sep_decimal: char,
+}
+
 /// The actual user-facing value that lives *inside* a stash.
 /// This is what you mean when you say "the value of x is 10".
+///
+/// Mirrors the interpreter's Value enum exactly, except:
+/// - Array, Map, MapOrd, Seq are unified into Collection(CollectionValue)
 #[derive(Debug, Clone)]
 pub enum Value {
     Nil,
+    Unit,
     Bool(bool),
     Int(i64),
     Float(f64),
+    Big(Decimal),
+    Pct(f64),
+    Char(char),
     Str(String),
 
-    /// Unified collections (arrays, maps, stacks, queues, sets, etc.).
-    ///
-    /// Semantically: "a collection value" stored in this stash.
-    /// Physically: an adaptive backend chosen by the VM.
+    /// Formatted display wrapper.
+    Formatted(Box<Value>, FormatSpec),
+
+    /// Pair of two values — produced by the >< (divmod) operator.
+    Pair(Box<Value>, Box<Value>),
+
+    /// Unified collection value (arrays, maps, stacks, queues, sets, etc.).
+    /// Replaces interpreter's Array, Map, MapOrd, Seq.
     Collection(Rc<CollectionValue>),
 
-    // Later:
-    // Function(FunctionId),
-    // Builtin(BuiltinId),
+    // ----- Control flow values -----
+    CtrlSkip,
+    CtrlStop,
+    CtrlReturn(Box<Value>),
+
+    // ----- Object system -----
+    /// A class instance. Fields stored by name.
+    Object {
+        class_name: String,
+        fields: IndexMap<String, Value>,
+        readonly_fields: std::collections::BTreeSet<String>,
+        trait_fields: std::collections::BTreeSet<String>,
+        uuid: String,
+    },
+
+    /// Handle into Session::object_store.
+    Ref(String),
+
+    /// Grid coordinate reference into a named GridWorld.
+    GridRef {
+        grid_id: String,
+        x: i32,
+        y: i32,
+    },
+
+    /// An enum variant value.
+    Enum {
+        enum_name: String,
+        variant_name: String,
+        fields: Option<IndexMap<String, Value>>,
+    },
+
+    /// A class descriptor (the class itself, not an instance).
+    Class {
+        name: String,
+    },
 }
 
 /// One arena cell: stores a Value plus metadata.
-/// Stashes are immutable except via `overwrite!` (to be implemented later).
 #[derive(Debug)]
 pub struct Stash {
-    pub value: Rc<Value>, // actual data
+    pub value: Rc<Value>,
     pub tether_count: usize,
     pub generation: u32,
 }
@@ -66,24 +119,22 @@ pub struct CollectionValue {
 #[derive(Debug, Clone)]
 pub enum CollectionLayout {
     /// Default for small/mid-sized sequential data.
-    /// Backed by a contiguous Vec of Values.
     FlatArray(Rc<Vec<Value>>),
 
-    /// Queue/stack/deque-optimized layout (front/back ops).
+    /// Queue/stack/deque-optimized layout.
     RingBuf(Rc<RingBuf>),
 
     /// Chunked / rope-style layout for large, edit-heavy sequences.
     ChunkedSeq(Rc<ChunkedSeq>),
 
-    /// Tiny maps stored as a small Vec of (key, value) pairs.
-    SmallMap(Rc<Vec<(Value, Value)>>),
+    /// Tiny maps stored as a Vec of (key, value) pairs.
+    SmallMap(Rc<Vec<(String, Value)>>),
 
-    /// General-purpose hash-map backend for larger maps / heavy lookups.
-    HashMapBackend(Rc<HashMap<Value, Value>>),
+    /// General-purpose IndexMap backend for larger maps.
+    IndexMapBackend(Rc<IndexMap<String, Value>>),
 }
 
 /// Ring buffer for queue/stack semantics.
-/// Minimal for now; can evolve later without changing the public model.
 #[derive(Debug, Clone)]
 pub struct RingBuf {
     pub buf: Vec<Value>,
@@ -92,7 +143,6 @@ pub struct RingBuf {
 }
 
 /// Very simple chunked sequence placeholder.
-/// v1 can be a Vec of chunks; later this can become a real rope/tree.
 #[derive(Debug, Clone)]
 pub struct ChunkedSeq {
     pub chunks: Vec<Vec<Value>>,
@@ -100,46 +150,57 @@ pub struct ChunkedSeq {
 }
 
 /// Lightweight usage metadata to drive adaptive layout decisions.
-///
-/// All the CRUD + suffix ops (`*_first`, `*_last`, `*_at`, `*_random`,
-/// `*_where`, `*_all`) will eventually bump these counters, but we don't
-/// need the ops layer yet for this to compile and stay consistent.
 #[derive(Debug, Clone, Default)]
 pub struct CollectionMeta {
-    /// Logical length of the collection (number of elements or entries).
     pub len: usize,
-
-    /// How often this collection is hit at the front/back/middle positionally.
-    /// All verbs (put/update/delete/reap) with *_first/_last/_at suffixes
-    /// will eventually roll into these counters.
-    pub front_hits: u32,   // *_first
-    pub back_hits: u32,    // *_last
-    pub mid_hits: u32,     // *_at
-
-    /// Random and scan-y operations:
-    /// - *_random
-    /// - *_where, *_all
-    pub random_hits: u32,  // *_random
-    pub scan_hits: u32,    // *_where, *_all
-
-    /// Optional hint when a layout has effectively "stabilized".
+    pub front_hits: u32,
+    pub back_hits: u32,
+    pub mid_hits: u32,
+    pub random_hits: u32,
+    pub scan_hits: u32,
     pub backend_hint: BackendHint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendHint {
-    /// Let the planner decide based purely on meta.
     Auto,
-    /// Manual override / lock (debug/optimization escape hatches).
     FlatArray,
     RingBuf,
     ChunkedSeq,
     SmallMap,
-    HashMapBackend,
+    IndexMapBackend,
 }
 
 impl Default for BackendHint {
     fn default() -> Self {
         BackendHint::Auto
+    }
+}
+
+impl Value {
+    /// Return a short string describing the kind of value.
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Value::Nil              => "nil",
+            Value::Unit             => "unit",
+            Value::Bool(_)          => "bool",
+            Value::Int(_)           => "int",
+            Value::Float(_)         => "float",
+            Value::Big(_)           => "big",
+            Value::Pct(_)           => "pct",
+            Value::Char(_)          => "char",
+            Value::Str(_)           => "str",
+            Value::Formatted(_, _)  => "formatted",
+            Value::Pair(_, _)       => "pair",
+            Value::Collection(_)    => "collection",
+            Value::CtrlSkip         => "ctrl:skip",
+            Value::CtrlStop         => "ctrl:stop",
+            Value::CtrlReturn(_)    => "ctrl:return",
+            Value::Object { .. }    => "object",
+            Value::Ref(_)           => "ref",
+            Value::GridRef { .. }   => "gridref",
+            Value::Enum { .. }      => "enum",
+            Value::Class { .. }     => "class",
+        }
     }
 }
