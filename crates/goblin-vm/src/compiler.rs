@@ -1173,6 +1173,150 @@ impl Compiler {
                 Ok(true)
             }
 
+            // collect(count, body) — evaluate body N times, collect results into array
+            "collect" => {
+                if args.len() < 2 {
+                    self.emit(Opcode::LoadNil);
+                    return Ok(true);
+                }
+                // Compile count, store in __collect_n__
+                self.compile_expr(&args[0])?;
+                let n_slot = self.scope_mut().declare_local("__collect_n__");
+                self.emit(Opcode::StoreLocal(n_slot));
+                // __collect_i__ = 0
+                let zero_idx = self.scope_mut().add_constant(Value::Int(0));
+                self.emit(Opcode::LoadConst(zero_idx));
+                let i_slot = self.scope_mut().declare_local("__collect_i__");
+                self.emit(Opcode::StoreLocal(i_slot));
+                // __collect_arr__ = []
+                self.emit(Opcode::MakeArray(0));
+                let arr_slot = self.scope_mut().declare_local("__collect_arr__");
+                self.emit(Opcode::StoreLocal(arr_slot));
+                // loop_start:
+                let loop_start = self.scope_mut().bytecode.len();
+                // if i >= n, exit
+                self.emit(Opcode::LoadLocal(i_slot));
+                self.emit(Opcode::LoadLocal(n_slot));
+                self.emit(Opcode::Lt);
+                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                // evaluate body, then arr = array_push(arr, value)
+                self.emit(Opcode::LoadLocal(arr_slot));
+                self.compile_expr(&args[1])?;
+                self.emit(Opcode::CallBuiltin(BuiltinId::ArrayPush, 2));
+                self.emit(Opcode::StoreLocal(arr_slot));
+                // i++
+                let one_idx = self.scope_mut().add_constant(Value::Int(1));
+                self.emit(Opcode::LoadLocal(i_slot));
+                self.emit(Opcode::LoadConst(one_idx));
+                self.emit(Opcode::Add);
+                self.emit(Opcode::StoreLocal(i_slot));
+                // back-jump
+                let cur = self.scope_mut().bytecode.len();
+                let offset = -(((cur - loop_start) as i16) + 1);
+                self.emit(Opcode::Jump(offset));
+                self.scope_mut().patch_jump(exit_jump);
+                // push result array
+                self.emit(Opcode::LoadLocal(arr_slot));
+                Ok(true)
+            }
+
+            // attempt(try_block, rescues, [ensure_block]) — try/catch/ensure
+            "attempt" => {
+                if args.is_empty() {
+                    self.emit(Opcode::LoadNil);
+                    return Ok(true);
+                }
+                // Extract first rescue block info if present
+                let first_rescue: Option<(Option<String>, usize)> = if args.len() > 1 {
+                    if let Expr::Array(rescue_pairs, _) = &args[1] {
+                        if let Some(Expr::Array(pair, _)) = rescue_pairs.first() {
+                            if pair.len() >= 2 {
+                                let var_name = match &pair[0] {
+                                    Expr::Str(s, _) => Some(s.clone()),
+                                    Expr::Ident(s, _) if s != "nil" => Some(s.clone()),
+                                    _ => None,
+                                };
+                                Some((var_name, 0))
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                } else { None };
+
+                // Declare result slot
+                let nil_idx = self.scope_mut().add_constant(Value::Nil);
+                self.emit(Opcode::LoadConst(nil_idx));
+                let result_slot = self.scope_mut().declare_local("__attempt_result__");
+                self.emit(Opcode::StoreLocal(result_slot));
+
+                // TryBegin → patch later
+                let try_begin_pos = self.scope_mut().bytecode.len();
+                self.emit(Opcode::TryBegin(0)); // placeholder
+
+                // Compile try body
+                self.compile_expr(&args[0])?;
+                self.emit(Opcode::StoreLocal(result_slot));
+
+                // TryEnd (normal completion)
+                self.emit(Opcode::TryEnd);
+
+                // Jump to end (skip catch block)
+                let skip_catch = self.scope_mut().emit_jump(Opcode::Jump);
+
+                // Catch block starts here — patch TryBegin offset
+                let catch_ip = self.scope_mut().bytecode.len();
+                {
+                    // patch TryBegin: offset = catch_ip - (try_begin_pos + 1)
+                    let offset = (catch_ip as i64 - (try_begin_pos as i64 + 1)) as i16;
+                    self.scope_mut().bytecode[try_begin_pos] = Opcode::TryBegin(offset);
+                }
+
+                // TOS is error string — bind or pop
+                if let Some((var_name_opt, rescue_pair_idx)) = first_rescue {
+                    if let Expr::Array(rescue_pairs, _) = &args[1] {
+                        if let Some(Expr::Array(pair, _)) = rescue_pairs.get(rescue_pair_idx) {
+                            if pair.len() >= 2 {
+                                if let Some(var_name) = var_name_opt {
+                                    let err_slot = self.scope_mut().declare_local(&var_name);
+                                    self.emit(Opcode::StoreLocal(err_slot));
+                                    // We need to compile pair[1] but can't borrow args while compiling
+                                    // Clone the rescue body index
+                                    let rescue_body = pair[1].clone();
+                                    self.compile_expr(&rescue_body)?;
+                                    self.emit(Opcode::StoreLocal(result_slot));
+                                } else {
+                                    self.emit(Opcode::Pop); // discard error
+                                    let rescue_body = pair[1].clone();
+                                    self.compile_expr(&rescue_body)?;
+                                    self.emit(Opcode::StoreLocal(result_slot));
+                                }
+                            } else {
+                                self.emit(Opcode::Pop);
+                            }
+                        } else {
+                            self.emit(Opcode::Pop);
+                        }
+                    } else {
+                        self.emit(Opcode::Pop);
+                    }
+                } else {
+                    self.emit(Opcode::Pop); // no rescue block, discard error
+                }
+
+                // end label
+                self.scope_mut().patch_jump(skip_catch);
+
+                // Ensure block (always runs, result discarded)
+                if args.len() > 2 {
+                    let ensure_body = args[2].clone();
+                    self.compile_expr(&ensure_body)?;
+                    self.emit(Opcode::Pop);
+                }
+
+                // Result
+                self.emit(Opcode::LoadLocal(result_slot));
+                Ok(true)
+            }
+
             _ => Ok(false),
         }
     }
@@ -1458,6 +1602,17 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "big"  | "b"                     => BuiltinId::ToBig,
         "to_map" | "m"                   => BuiltinId::ToMap,
         "read_text"                      => BuiltinId::ReadText,
+        "array_push"                     => BuiltinId::ArrayPush,
+        "i8"                             => BuiltinId::CastI8,
+        "i16"                            => BuiltinId::CastI16,
+        "i32"                            => BuiltinId::CastI32,
+        "i64"                            => BuiltinId::CastI64,
+        "u8"                             => BuiltinId::CastU8,
+        "u16"                            => BuiltinId::CastU16,
+        "u32"                            => BuiltinId::CastU32,
+        "u64"                            => BuiltinId::CastU64,
+        "f32"                            => BuiltinId::CastF32,
+        "f64"                            => BuiltinId::CastF64,
         _ => return None,
     })
 }

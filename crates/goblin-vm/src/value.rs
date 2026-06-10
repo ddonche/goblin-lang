@@ -598,6 +598,18 @@ pub enum BuiltinId {
     ToBig,
     ToMap,
     ReadText,
+
+    ArrayPush,
+    CastI8,
+    CastI16,
+    CastI32,
+    CastI64,
+    CastU8,
+    CastU16,
+    CastU32,
+    CastU64,
+    CastF32,
+    CastF64,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -142,6 +142,13 @@ pub enum Opcode {
     /// Unused at parse time; inserted by the quickening pass.
     /// Represents an inlined type-specialised dispatch.
     Quick(u8),
+
+    /// Push a catch frame. If any error occurs between TryBegin and TryEnd,
+    /// unwind to this frame, push error as string, jump to catch_ip.
+    /// offset is relative to the instruction AFTER TryBegin.
+    TryBegin(i16),
+    /// Normal completion of a try block — pop the catch frame.
+    TryEnd,
 }
 
 impl Opcode {
@@ -203,6 +210,8 @@ impl Opcode {
             Opcode::MakeRange       => "MakeRange",
             Opcode::MakeRangeInclusive => "MakeRangeInclusive",
             Opcode::Quick(_)        => "Quick",
+            Opcode::TryBegin(_)     => "TryBegin",
+            Opcode::TryEnd          => "TryEnd",
         }
     }
 }

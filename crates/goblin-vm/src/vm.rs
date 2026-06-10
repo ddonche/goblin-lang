@@ -54,6 +54,14 @@ impl CallFrame {
     }
 }
 
+struct CatchFrame {
+    call_depth: usize,
+    stack_depth: usize,
+    catch_ip: usize,
+    #[allow(dead_code)]
+    frame_ip_index: usize, // which frame's ip to set
+}
+
 // ── Vm ───────────────────────────────────────────────────────────────────────
 
 /// The Goblin VM: executes bytecode against a Session.
@@ -65,11 +73,12 @@ pub struct Vm {
     pub session: Session,
     pub stack: Vec<Tether>,
     pub call_stack: Vec<CallFrame>,
+    catch_stack: Vec<CatchFrame>,
 }
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -113,7 +122,29 @@ impl Vm {
                 op
             };
 
-            self.execute_op(op)?;
+            match self.execute_op(op) {
+                Ok(()) => {}
+                Err(e) => {
+                    if let Some(handler) = self.catch_stack.pop() {
+                        // Unwind call stack to catch frame's depth
+                        while self.call_stack.len() > handler.call_depth {
+                            self.call_stack.pop();
+                        }
+                        // Restore operand stack
+                        self.stack.truncate(handler.stack_depth);
+                        // Push error message as a string
+                        let err_str = e.to_string();
+                        let t = self.session.alloc_value(Value::Str(err_str));
+                        self.stack.push(t);
+                        // Jump to catch block
+                        if let Some(frame) = self.call_stack.last_mut() {
+                            frame.ip = handler.catch_ip;
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
 
             if self.call_stack.is_empty() {
                 break;
@@ -689,6 +720,22 @@ impl Vm {
                 // Placeholder; the quickening pass fills this in at runtime.
                 // For now, treat as no-op (quickening is layered on later).
             }
+
+            Opcode::TryBegin(offset) => {
+                let frame = self.call_stack.last().unwrap();
+                let catch_ip = (frame.ip as i64 + offset as i64) as usize;
+                let call_depth = self.call_stack.len();
+                let stack_depth = self.stack.len();
+                self.catch_stack.push(CatchFrame {
+                    call_depth,
+                    stack_depth,
+                    catch_ip,
+                    frame_ip_index: call_depth - 1,
+                });
+            }
+            Opcode::TryEnd => {
+                self.catch_stack.pop();
+            }
         }
         Ok(())
     }
@@ -911,6 +958,16 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "is_type"          => None,  // needs arg
         "is_bound_name"    => None,  // needs arg
         "is_matching"      => None,  // needs arg; handled below
+        "i8"  => Some(BuiltinId::CastI8),
+        "i16" => Some(BuiltinId::CastI16),
+        "i32" => Some(BuiltinId::CastI32),
+        "i64" => Some(BuiltinId::CastI64),
+        "u8"  => Some(BuiltinId::CastU8),
+        "u16" => Some(BuiltinId::CastU16),
+        "u32" => Some(BuiltinId::CastU32),
+        "u64" => Some(BuiltinId::CastU64),
+        "f32" => Some(BuiltinId::CastF32),
+        "f64" => Some(BuiltinId::CastF64),
         _ => None,
     };
 

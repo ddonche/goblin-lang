@@ -2617,7 +2617,136 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
             Ok(Value::Map(map))
         }
+
+        BuiltinId::ArrayPush => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "array_push".into() }); }
+            let arr = read(0)?;
+            let val = read(1)?;
+            match arr {
+                Value::Array(mut v) => { v.push(val); Ok(Value::Array(v)) }
+                other => Err(GoblinError::type_error("array", other.type_name(), "array_push")),
+            }
+        }
+
+        BuiltinId::CastI8 => {
+            expect_n(1)?;
+            match cast_to_int_builtin(read(0)?)? {
+                Value::Int(i) if i >= i8::MIN as i64 && i <= i8::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(GoblinError::Runtime(format!("{} overflows i8 ({}..{})", i, i8::MIN, i8::MAX))),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::CastI16 => {
+            expect_n(1)?;
+            match cast_to_int_builtin(read(0)?)? {
+                Value::Int(i) if i >= i16::MIN as i64 && i <= i16::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(GoblinError::Runtime(format!("{} overflows i16 ({}..{})", i, i16::MIN, i16::MAX))),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::CastI32 => {
+            expect_n(1)?;
+            match cast_to_int_builtin(read(0)?)? {
+                Value::Int(i) if i >= i32::MIN as i64 && i <= i32::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(GoblinError::Runtime(format!("{} overflows i32 ({}..{})", i, i32::MIN, i32::MAX))),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::CastI64 => {
+            expect_n(1)?;
+            cast_to_int_builtin(read(0)?)
+        }
+        BuiltinId::CastU8 => {
+            expect_n(1)?;
+            match cast_to_int_builtin(read(0)?)? {
+                Value::Int(i) if i >= 0 && i <= u8::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(GoblinError::Runtime(format!("{} overflows u8 (0..{})", i, u8::MAX))),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::CastU16 => {
+            expect_n(1)?;
+            match cast_to_int_builtin(read(0)?)? {
+                Value::Int(i) if i >= 0 && i <= u16::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(GoblinError::Runtime(format!("{} overflows u16 (0..{})", i, u16::MAX))),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::CastU32 => {
+            expect_n(1)?;
+            match cast_to_int_builtin(read(0)?)? {
+                Value::Int(i) if i >= 0 && i <= u32::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(GoblinError::Runtime(format!("{} overflows u32 (0..{})", i, u32::MAX))),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::CastU64 => {
+            expect_n(1)?;
+            match cast_to_int_builtin(read(0)?)? {
+                Value::Int(i) if i >= 0 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(GoblinError::Runtime(format!("{} underflows u64 (must be >= 0)", i))),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::CastF32 => {
+            expect_n(1)?;
+            let v = read(0)?;
+            let n = match &v {
+                Value::Int(i) => *i as f64,
+                Value::Float(f) => *f,
+                Value::Pct(f) => *f,
+                Value::Bool(b) => *b as i64 as f64,
+                Value::Str(s) => {
+                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+                    cleaned.parse::<f64>()
+                        .map_err(|_| GoblinError::Runtime(format!("cannot cast {:?} to f32", s)))?
+                }
+                Value::Nil => return Ok(Value::Nil),
+                other => return Err(GoblinError::type_error("number", other.type_name(), "f32")),
+            };
+            let f32_val = n as f32;
+            if f32_val.is_infinite() && n.is_finite() {
+                return Err(GoblinError::Runtime(format!("{} overflows f32", n)));
+            }
+            Ok(Value::Float(f32_val as f64))
+        }
+        BuiltinId::CastF64 => {
+            expect_n(1)?;
+            let v = read(0)?;
+            match v {
+                Value::Float(f) => Ok(Value::Float(f)),
+                Value::Pct(f) => Ok(Value::Float(f)),
+                Value::Int(i) => Ok(Value::Float(i as f64)),
+                Value::Bool(b) => Ok(Value::Float(b as i64 as f64)),
+                Value::Str(s) => {
+                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+                    Ok(Value::Float(cleaned.parse::<f64>()
+                        .map_err(|_| GoblinError::Runtime(format!("cannot cast {:?} to f64", s)))?))
+                }
+                Value::Nil => Ok(Value::Nil),
+                other => Err(GoblinError::type_error("number", other.type_name(), "f64")),
+            }
+        }
     }
+}
+
+fn cast_to_int_builtin(v: Value) -> Result<Value, GoblinError> {
+    Ok(match v {
+        Value::Int(n)   => Value::Int(n),
+        Value::Float(f) | Value::Pct(f) => Value::Int(f.trunc() as i64),
+        Value::Bool(b)  => Value::Int(b as i64),
+        Value::Char(c)  => Value::Int(c as u32 as i64),
+        Value::Str(s)   => {
+            let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+            cleaned.parse::<i64>()
+                .map(Value::Int)
+                .unwrap_or_else(|_| cleaned.parse::<f64>()
+                    .map(|f| Value::Int(f.trunc() as i64))
+                    .unwrap_or(Value::Nil))
+        }
+        Value::Nil => Value::Nil,
+        other => return Err(GoblinError::type_error("number or str", other.type_name(), "int cast")),
+    })
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
