@@ -248,6 +248,13 @@ impl Compiler {
         }
         match &action.body {
             ActionBody::Block(stmts) => {
+                let mut hoisted: Vec<String> = Vec::new();
+                collect_bind_names(stmts, &mut hoisted);
+                for name in hoisted.iter().filter(|n| !param_names.contains(n)) {
+                    let slot = self.scope_mut().declare_local(name);
+                    self.emit(Opcode::LoadNil);
+                    self.emit(Opcode::StoreLocal(slot));
+                }
                 for s in stmts {
                     self.compile_stmt(s)?;
                 }
@@ -1232,6 +1239,15 @@ impl Compiler {
 
         match &action.body {
             ActionBody::Block(stmts) => {
+                // Pre-hoist all bind names in this function body so forward
+                // references within the function resolve (same as module-level).
+                let mut hoisted: Vec<String> = Vec::new();
+                collect_bind_names(stmts, &mut hoisted);
+                for name in hoisted.iter().filter(|n| !param_names.contains(n)) {
+                    let slot = self.scope_mut().declare_local(name);
+                    self.emit(Opcode::LoadNil);
+                    self.emit(Opcode::StoreLocal(slot));
+                }
                 for s in stmts { self.compile_stmt(s)?; }
                 let scope = self.scopes.last_mut().unwrap();
                 scope.emit(Opcode::LoadNil);
