@@ -953,6 +953,13 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
         }
 
+        BuiltinId::ReadText => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "read_text path")) };
+            let s = std::fs::read_to_string(&path).map_err(|e| GoblinError::Runtime(format!("read_text: {e}")))?;
+            Ok(Value::Str(s))
+        }
+
         BuiltinId::ReadJson => {
             expect_n(1)?;
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "read_json path")) };

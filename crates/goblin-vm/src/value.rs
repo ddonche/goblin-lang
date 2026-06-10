@@ -597,6 +597,7 @@ pub enum BuiltinId {
     HighlightCode,
     ToBig,
     ToMap,
+    ReadText,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

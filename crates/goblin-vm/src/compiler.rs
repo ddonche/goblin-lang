@@ -1457,6 +1457,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "highlight_code"                 => BuiltinId::HighlightCode,
         "big"  | "b"                     => BuiltinId::ToBig,
         "to_map" | "m"                   => BuiltinId::ToMap,
+        "read_text"                      => BuiltinId::ReadText,
         _ => return None,
     })
 }
