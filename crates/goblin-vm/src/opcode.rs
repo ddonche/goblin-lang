@@ -129,6 +129,15 @@ pub enum Opcode {
     /// "forward upvalue N from the current closure".
     MakeClosure(u16),
 
+    /// Pop top → push Value::Pct(v as f64 / 100.0)  (postfix %)
+    ToPct,
+    /// Pop two values → push Value::Pair(a, b)  (>< divmod operator)
+    MakePair,
+    /// Pop two Int values → push Value::Array of range  (.. / ... operators)
+    MakeRange,
+    /// Pop two Int values → push Value::Array of inclusive range  (... operator)
+    MakeRangeInclusive,
+
     // ── Quickening placeholder ─────────────────────────────────────────────────
     /// Unused at parse time; inserted by the quickening pass.
     /// Represents an inlined type-specialised dispatch.
@@ -189,6 +198,10 @@ impl Opcode {
             Opcode::Return          => "Return",
             Opcode::CallBuiltin(..) => "CallBuiltin",
             Opcode::MakeClosure(_)  => "MakeClosure",
+            Opcode::ToPct           => "ToPct",
+            Opcode::MakePair        => "MakePair",
+            Opcode::MakeRange       => "MakeRange",
+            Opcode::MakeRangeInclusive => "MakeRangeInclusive",
             Opcode::Quick(_)        => "Quick",
         }
     }

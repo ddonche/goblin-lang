@@ -598,6 +598,70 @@ impl Vm {
                 self.stack.push(t);
             }
 
+            Opcode::ToPct => {
+                let v = self.pop_value()?;
+                let f = match v {
+                    Value::Int(n)   => n as f64,
+                    Value::Float(f) => f,
+                    Value::Pct(p)   => p,
+                    other => return Err(GoblinError::type_error("number", other.type_name(), "%")),
+                };
+                let t = self.session.alloc_value(Value::Pct(f / 100.0));
+                self.stack.push(t);
+            }
+
+            Opcode::MakePair => {
+                // >< divmod operator: Pair(floor(a/b), a mod b)
+                let b = self.pop_value()?;
+                let a = self.pop_value()?;
+                let pair = match (&a, &b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        if *y == 0 { return Err(GoblinError::DivisionByZero); }
+                        let q = x.div_euclid(*y);
+                        let r = x.rem_euclid(*y);
+                        Value::Pair(Box::new(Value::Int(q)), Box::new(Value::Int(r)))
+                    }
+                    (Value::Float(x), Value::Float(y)) => {
+                        let q = (x / y).floor();
+                        let r = x - q * y;
+                        Value::Pair(Box::new(Value::Float(q)), Box::new(Value::Float(r)))
+                    }
+                    (Value::Big(x), Value::Big(y)) => {
+                        if y.is_zero() { return Err(GoblinError::DivisionByZero); }
+                        let q = (x / y).floor();
+                        let r = x - q * y;
+                        Value::Pair(Box::new(Value::Big(q)), Box::new(Value::Big(r)))
+                    }
+                    _ => return Err(GoblinError::type_error("number", b.type_name(), "><")),
+                };
+                let t = self.session.alloc_value(pair);
+                self.stack.push(t);
+            }
+
+            Opcode::MakeRange => {
+                let end = self.pop_value()?;
+                let start = self.pop_value()?;
+                let (s, e) = match (&start, &end) {
+                    (Value::Int(s), Value::Int(e)) => (*s, *e),
+                    _ => return Err(GoblinError::type_error("int", end.type_name(), "..")),
+                };
+                let v: Vec<Value> = (s..e).map(Value::Int).collect();
+                let t = self.session.alloc_value(Value::Array(v));
+                self.stack.push(t);
+            }
+
+            Opcode::MakeRangeInclusive => {
+                let end = self.pop_value()?;
+                let start = self.pop_value()?;
+                let (s, e) = match (&start, &end) {
+                    (Value::Int(s), Value::Int(e)) => (*s, *e),
+                    _ => return Err(GoblinError::type_error("int", end.type_name(), "...")),
+                };
+                let v: Vec<Value> = (s..=e).map(Value::Int).collect();
+                let t = self.session.alloc_value(Value::Array(v));
+                self.stack.push(t);
+            }
+
             Opcode::Quick(_) => {
                 // Placeholder; the quickening pass fills this in at runtime.
                 // For now, treat as no-op (quickening is layered on later).

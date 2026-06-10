@@ -680,10 +680,25 @@ impl Compiler {
                 self.compile_binary(lhs, op, rhs)?;
             }
 
-            Expr::Postfix(inner, _op, _) => {
-                // Compile inner expression; mutation semantics (!) are deferred
+            Expr::Postfix(inner, op, _) => {
                 self.compile_expr(inner)?;
-                // TODO: implement ! mutation semantics fully
+                match op.as_str() {
+                    "%" => { self.emit(Opcode::ToPct); }
+                    "**" => {
+                        // x ** postfix = x^2 → Pow(x, 2)
+                        let two = self.scope_mut().add_constant(Value::Int(2));
+                        self.emit(Opcode::LoadConst(two));
+                        self.emit(Opcode::CallBuiltin(BuiltinId::Pow, 2));
+                    }
+                    "//" => { self.emit(Opcode::CallBuiltin(BuiltinId::Sqrt, 1)); }
+                    "++" | "--" => {
+                        // x++ compiles to x + 1 (non-mutating form; mutation via |! is separate)
+                        let one = self.scope_mut().add_constant(Value::Int(1));
+                        self.emit(Opcode::LoadConst(one));
+                        if op == "++" { self.emit(Opcode::Add); } else { self.emit(Opcode::Sub); }
+                    }
+                    _ => { /* ! and other postfix ops: compile inner value, no transform */ }
+                }
             }
 
             // ── judge expression ──────────────────────────────────────────────
@@ -733,6 +748,58 @@ impl Compiler {
     }
 
     fn compile_binary(&mut self, lhs: &Expr, op: &str, rhs: &Expr) -> Result<(), GoblinError> {
+        // Pipeline operator: lhs >> rhs_call(args) → rhs_call(lhs, args)
+        if op == ">>" {
+            match rhs {
+                Expr::FreeCall(name, args, _) => {
+                    let argc = (args.len() + 1) as u8;
+                    if let Some(id) = builtin_by_name(name) {
+                        // Builtins: push lhs first, then rest of args
+                        self.compile_expr(lhs)?;
+                        for arg in args { self.compile_expr(arg)?; }
+                        self.emit(Opcode::CallBuiltin(id, argc));
+                    } else {
+                        // User function: stack layout must be [func, lhs, args...]
+                        self.resolve_load(name)?;
+                        self.compile_expr(lhs)?;
+                        for arg in args { self.compile_expr(arg)?; }
+                        self.emit(Opcode::Call(argc));
+                    }
+                }
+                Expr::Call(recv, method, args, _) => {
+                    self.compile_expr(recv)?;
+                    self.compile_expr(lhs)?;
+                    for arg in args { self.compile_expr(arg)?; }
+                    let method_idx = self.scope_mut().add_constant(Value::Str(method.clone()));
+                    // Emit as member call: recv.method(lhs, args...)
+                    let argc = (args.len() + 1) as u8;
+                    self.emit(Opcode::GetMember(method_idx));
+                    self.emit(Opcode::Call(argc));
+                }
+                _ => {
+                    // Generic pipeline: evaluate rhs as callable, call with lhs
+                    self.compile_expr(rhs)?;
+                    self.compile_expr(lhs)?;
+                    self.emit(Opcode::Call(1));
+                }
+            }
+            return Ok(());
+        }
+
+        // Range operators
+        if op == ".." {
+            self.compile_expr(lhs)?;
+            self.compile_expr(rhs)?;
+            self.emit(Opcode::MakeRange);
+            return Ok(());
+        }
+        if op == "..." {
+            self.compile_expr(lhs)?;
+            self.compile_expr(rhs)?;
+            self.emit(Opcode::MakeRangeInclusive);
+            return Ok(());
+        }
+
         // Short-circuit operators.
         if op == "&&" || op == "and" {
             self.compile_expr(lhs)?;
@@ -769,6 +836,16 @@ impl Compiler {
             ">"          => Opcode::Gt,
             ">="         => Opcode::Ge,
             "<>"         => Opcode::Concat,
+            "><" => {
+                // divmod: produces Pair(quotient, remainder) using MakePair
+                // lhs and rhs are already on the stack at this point; MakePair just
+                // wraps them — the actual quotient/remainder calc is done in the vm
+                // via a dedicated opcode that pops a and b, pushes Pair(a/b, a%b).
+                // For now emit Dup+Dup+Div+Rem manually isn't clean; use MakePair as
+                // a signal that the VM should do divmod.
+                self.emit(Opcode::MakePair);
+                return Ok(());
+            }
             _ => return Err(GoblinError::NotImplemented { feature: "unknown binary operator" }),
         };
         self.emit(instr);
