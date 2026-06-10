@@ -736,6 +736,66 @@ impl Vm {
             Opcode::TryEnd => {
                 self.catch_stack.pop();
             }
+
+            Opcode::ImportFile(path_idx) => {
+                let path_str = {
+                    let frame = self.call_stack.last().ok_or_else(|| GoblinError::Runtime("no call frame".into()))?;
+                    match &frame.func.constants[path_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("ImportFile: path must be a string constant".into())),
+                    }
+                };
+
+                // Resolve path against base_dir
+                let full_path = if std::path::Path::new(&path_str).is_absolute() {
+                    std::path::PathBuf::from(&path_str)
+                } else {
+                    self.session.base_dir.join(&path_str)
+                };
+
+                // Skip if already imported
+                let canonical = full_path.to_string_lossy().to_string();
+                if self.session.imported.contains(&canonical) {
+                    // already imported — skip
+                } else {
+                    self.session.imported.insert(canonical.clone());
+
+                    // Try .gbln fallback if not found
+                    let actual_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+                        let p = full_path.with_extension("gbln");
+                        if p.exists() { p } else { full_path.clone() }
+                    } else {
+                        full_path.clone()
+                    };
+
+                    let source = std::fs::read_to_string(&actual_path)
+                        .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", actual_path.display(), e)))?;
+
+                    let tokens = goblin_lexer::lex(&source, &actual_path.to_string_lossy())
+                        .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
+
+                    let module = goblin_parser::Parser::new(&tokens).parse_module()
+                        .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
+
+                    let compiled = crate::compiler::Compiler::new().compile_module(&module)
+                        .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
+
+                    // Pre-register classes/enums from the imported module
+                    for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
+                    for decl in compiled.enums   { self.session.enums.insert(decl.name.clone(), decl); }
+
+                    // Update base_dir to imported file's directory during its execution
+                    let prev_base_dir = self.session.base_dir.clone();
+                    if let Some(parent) = actual_path.parent() {
+                        self.session.base_dir = parent.to_path_buf();
+                    }
+
+                    self.execute(compiled.entry)?;
+
+                    // Restore base_dir
+                    self.session.base_dir = prev_base_dir;
+                }
+            }
         }
         Ok(())
     }

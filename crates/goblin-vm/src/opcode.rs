@@ -149,6 +149,11 @@ pub enum Opcode {
     TryBegin(i16),
     /// Normal completion of a try block — pop the catch frame.
     TryEnd,
+
+    /// Import a file: constants[path_idx] is the path string.
+    /// Resolves against session.base_dir, lexes/parses/compiles/runs the file.
+    /// Pushes nothing (import is for side effects / populating globals).
+    ImportFile(u16),
 }
 
 impl Opcode {
@@ -212,6 +217,7 @@ impl Opcode {
             Opcode::Quick(_)        => "Quick",
             Opcode::TryBegin(_)     => "TryBegin",
             Opcode::TryEnd          => "TryEnd",
+            Opcode::ImportFile(_)   => "ImportFile",
         }
     }
 }

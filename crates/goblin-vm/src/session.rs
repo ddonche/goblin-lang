@@ -84,6 +84,12 @@ pub struct Session {
 
     /// Enum definitions registered at runtime.
     pub enums: HashMap<String, EnumDecl>,
+
+    /// Base directory for resolving import paths.
+    pub base_dir: std::path::PathBuf,
+
+    /// Set of already-imported paths (to avoid re-importing).
+    pub imported: std::collections::HashSet<String>,
 }
 
 impl Session {
@@ -110,6 +116,8 @@ impl Session {
             grid_store: GridStore::new(),
             classes: HashMap::new(),
             enums: HashMap::new(),
+            base_dir: std::env::current_dir().unwrap_or_default(),
+            imported: std::collections::HashSet::new(),
         }
     }
 

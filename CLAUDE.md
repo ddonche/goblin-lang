@@ -177,11 +177,17 @@
 
 ## TODO / NOT YET DONE
 
+### Compiler — import/use
+- [x] `Stmt::Import` (path/named) — emits `ImportFile` opcode; VM reads/compiles/runs the file
+- [x] `Stmt::Use` — resolves `glams/<ns>/<ns>.gbln` and emits `ImportFile`
+- [x] `ImportFile` opcode — lex+parse+compile+execute sub-file, pre-register its classes/enums, guard against re-import
+
+## TODO / NOT YET DONE
+
 ### Compiler — unimplemented AST nodes (return NotImplemented error)
-- [ ] `Stmt::Import` / `Stmt::Use` — module loading system (requires filesystem + re-parse + re-compile)
-- [ ] `Stmt::OverlayDef` / `Stmt::OverlayApply` / `Stmt::OverlayDetach` — overlay system
-- [ ] `Stmt::LinkDef` / `Stmt::ObjectLinkDef` / `Stmt::LinkOffset` / `Stmt::ClearLink` — link system
-- [ ] `Stmt::ObjectDecision` / `Stmt::UnitDecl` — DES decisions, unit declarations
+- [ ] `Stmt::OverlayDef` / `Stmt::OverlayApply` / `Stmt::OverlayDetach` — overlay system (needs DES engine)
+- [ ] `Stmt::LinkDef` / `Stmt::ObjectLinkDef` / `Stmt::LinkOffset` / `Stmt::ClearLink` — link system (needs DES engine)
+- [ ] `Stmt::ObjectDecision` / `Stmt::UnitDecl` — DES decisions, unit declarations (needs DES engine)
 
 ### Builtins — not implemented
 - [ ] `invoke` / `summon` / `provoke` — dynamic action dispatch (needs VM action call infrastructure)

@@ -402,9 +402,43 @@ impl Compiler {
                 self.collected_enums.push(decl.clone());
             }
 
+            // ── Import / Use ──────────────────────────────────────────────────
+            Stmt::Import(import_stmt) => {
+                use goblin_ast::ImportItems;
+                match &import_stmt.items {
+                    ImportItems::Path(path) => {
+                        // Resolve extension: try .gbln then .gob
+                        let resolved = if path.ends_with(".gbln") || path.ends_with(".gob") || path.ends_with(".imports") {
+                            path.replace('/', std::path::MAIN_SEPARATOR_STR)
+                        } else {
+                            format!("{}.gbln", path.replace('/', std::path::MAIN_SEPARATOR_STR))
+                        };
+                        let idx = self.add_constant(Value::Str(resolved));
+                        self.emit(Opcode::ImportFile(idx));
+                    }
+                    ImportItems::Named { items, source } => {
+                        // import { a, b } from source — import the source file
+                        let resolved = format!("{}.gbln", source.replace('/', std::path::MAIN_SEPARATOR_STR));
+                        let idx = self.add_constant(Value::Str(resolved));
+                        self.emit(Opcode::ImportFile(idx));
+                        let _ = items; // named imports — globals are populated by running the file
+                    }
+                    ImportItems::Expr(_) => {
+                        return Err(GoblinError::NotImplemented { feature: "dynamic import paths" });
+                    }
+                }
+            }
+            Stmt::Use(use_stmt) => {
+                // use namespace [as alias] — load glams/<namespace>/<namespace>.gbln
+                let path = format!("glams{sep}{ns}{sep}{ns}.gbln",
+                    sep = std::path::MAIN_SEPARATOR_STR,
+                    ns = use_stmt.namespace);
+                let idx = self.add_constant(Value::Str(path));
+                self.emit(Opcode::ImportFile(idx));
+            }
+
             // ── Unhandled in the VM compiler (DES / object system) ────────────
-            Stmt::Import(_) | Stmt::Use(_)
-            | Stmt::OverlayDef(_) | Stmt::OverlayApply(_) | Stmt::OverlayDetach(_)
+            Stmt::OverlayDef(_) | Stmt::OverlayApply(_) | Stmt::OverlayDetach(_)
             | Stmt::LinkDef(_) | Stmt::ObjectLinkDef(_) | Stmt::LinkOffset(_)
             | Stmt::ClearLink(_) | Stmt::ObjectDecision(..) | Stmt::UnitDecl(_)
             | Stmt::BoxBind { .. } => {
