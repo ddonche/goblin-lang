@@ -964,29 +964,37 @@ impl Compiler {
             return Ok(());
         }
 
-        // Field assignment: (obj >> field) |= rhs
+        // Field assignment: (obj >> field) |= rhs  OR  obj.field |= rhs
         if op == "|=" {
-            if let Expr::Binary(obj_expr, inner_op, field_expr, _) = lhs {
-                if inner_op == ">>" {
-                    let field_name = match field_expr.as_ref() {
+            // Extract (obj_expr, field_name) from either Expr::Member or Expr::Binary(_, ">>", _)
+            let field_target: Option<(&Expr, String)> = match lhs {
+                Expr::Member(obj_expr, field_name, _) => Some((obj_expr.as_ref(), field_name.clone())),
+                Expr::Binary(obj_expr, inner_op, field_expr, _) if inner_op == ">>" => {
+                    let fname = match field_expr.as_ref() {
                         Expr::Ident(n, _) => n.clone(),
                         other => return Err(GoblinError::Runtime(format!(">> field must be identifier, got {:?}", other))),
                     };
-                    self.compile_expr(rhs)?;
-                    self.compile_expr(obj_expr)?;
-                    let idx = self.add_constant(Value::Str(field_name));
-                    self.emit(Opcode::SetField(idx));
-                    let var_name = match obj_expr.as_ref() {
-                        Expr::Ident(n, _) => n.clone(),
-                        _ => return Err(GoblinError::Runtime("field assignment: object must be a simple variable".into())),
-                    };
-                    let store_op = self.resolve_store(&var_name)
-                        .ok_or_else(|| GoblinError::UndefinedVariable { name: var_name.clone() })?;
-                    self.emit(Opcode::Dup);
-                    self.emit(store_op);
-                    return Ok(());
+                    Some((obj_expr.as_ref(), fname))
                 }
+                _ => None,
+            };
+
+            if let Some((obj_expr, field_name)) = field_target {
+                self.compile_expr(rhs)?;
+                self.compile_expr(obj_expr)?;
+                let idx = self.add_constant(Value::Str(field_name));
+                self.emit(Opcode::SetField(idx));
+                let var_name = match obj_expr {
+                    Expr::Ident(n, _) => n.clone(),
+                    _ => return Err(GoblinError::Runtime("field assignment: object must be a simple variable".into())),
+                };
+                let store_op = self.resolve_store(&var_name)
+                    .ok_or_else(|| GoblinError::UndefinedVariable { name: var_name.clone() })?;
+                self.emit(Opcode::Dup);
+                self.emit(store_op);
+                return Ok(());
             }
+
             // Simple variable retether as expression
             let var_name = match lhs {
                 Expr::Ident(n, _) => n.clone(),
