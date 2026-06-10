@@ -327,10 +327,13 @@ pub enum BuiltinId {
     Abs,
     Min,
     Max,
+    Avg,
+    Sum,
     Floor,
     Ceil,
     Round,
     Sqrt,
+    Clamp,
     Pow,
 
     // String builtins (new interpreter-aligned)
@@ -432,6 +435,9 @@ pub enum BuiltinId {
     Pairs,
     IsEmpty,
     Reverse,
+    ReverseChars,
+    Minimize,
+    ParseBool,
     SortBy,
     Filter,
     Reduce,
@@ -458,6 +464,23 @@ pub enum BuiltinId {
     IsMap,
     IsCollection,
     IsFunction,
+    IsBig,
+    IsPct,
+    IsNum,
+    IsChar,
+    IsPair,
+    IsSeq,
+    IsUnit,
+    IsAlnum,
+    IsAlpha,
+    IsDigit,
+    IsWhitespace,
+    IsEven,
+    IsOdd,
+    IsMultipleOf,
+    IsPositive,
+    IsNegative,
+    IsNix,
 
     // Conversions
     ToInt,
@@ -481,6 +504,9 @@ pub enum BuiltinId {
 
     // Process
     RunCmd,
+    Roll,
+    RollDetail,
+    RandSeed,
 
     // Request (HTTP context)
     ReqMethod,
@@ -497,6 +523,7 @@ pub enum BuiltinId {
 
     // CSPRNG
     SecurePick,
+    SecureRandom,
     SecureShuffle,
 
     // Pack/unpack

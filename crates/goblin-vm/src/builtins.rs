@@ -70,16 +70,55 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
         }
         BuiltinId::Min => {
-            if args.len() < 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "min".into() });
-            }
-            Ok(numeric_min(read(0)?, read(1)?)?)
+            if args.is_empty() { return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "min".into() }); }
+            let vals: Vec<Value> = if args.len() == 1 {
+                match read(0)? {
+                    Value::Array(xs) => { if xs.is_empty() { return Err(GoblinError::Runtime("min: empty array".into())); } xs }
+                    other => return Err(GoblinError::type_error("array", other.type_name(), "min")),
+                }
+            } else {
+                (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
+            };
+            let mut m = to_f64_val(&vals[0])?;
+            for v in &vals[1..] { let f = to_f64_val(v)?; if f < m { m = f; } }
+            Ok(Value::Float(m))
         }
         BuiltinId::Max => {
-            if args.len() < 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "max".into() });
+            if args.is_empty() { return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "max".into() }); }
+            let vals: Vec<Value> = if args.len() == 1 {
+                match read(0)? {
+                    Value::Array(xs) => { if xs.is_empty() { return Err(GoblinError::Runtime("max: empty array".into())); } xs }
+                    other => return Err(GoblinError::type_error("array", other.type_name(), "max")),
+                }
+            } else {
+                (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
+            };
+            let mut m = to_f64_val(&vals[0])?;
+            for v in &vals[1..] { let f = to_f64_val(v)?; if f > m { m = f; } }
+            Ok(Value::Float(m))
+        }
+        BuiltinId::Avg => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Array(xs) => {
+                    if xs.is_empty() { return Ok(Value::Float(0.0)); }
+                    let mut acc = 0.0f64;
+                    for v in &xs { acc += to_f64_val(v)?; }
+                    Ok(Value::Float(acc / xs.len() as f64))
+                }
+                other => Err(GoblinError::type_error("array", other.type_name(), "avg")),
             }
-            Ok(numeric_max(read(0)?, read(1)?)?)
+        }
+        BuiltinId::Sum => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Array(xs) => {
+                    let mut acc = 0.0f64;
+                    for v in &xs { acc += to_f64_val(v)?; }
+                    Ok(Value::Float(acc))
+                }
+                other => Err(GoblinError::type_error("array", other.type_name(), "sum")),
+            }
         }
         BuiltinId::Floor => {
             expect_n(1)?;
@@ -112,6 +151,17 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 Value::Float(f) => Value::Float(f.sqrt()),
                 other => return Err(GoblinError::type_error("number", other.type_name(), "sqrt")),
             })
+        }
+        BuiltinId::Clamp => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "clamp".into() }); }
+            let (x_val, lo_val, hi_val) = (read(0)?, read(1)?, read(2)?);
+            let x  = to_f64_val(&x_val)?;
+            let lo = to_f64_val(&lo_val)?;
+            let hi = to_f64_val(&hi_val)?;
+            if lo > hi { return Err(GoblinError::Runtime("clamp: lo must be <= hi".into())); }
+            let y = if x < lo { lo } else if x > hi { hi } else { x };
+            let all_int = matches!(x_val, Value::Int(_)) && matches!(lo_val, Value::Int(_)) && matches!(hi_val, Value::Int(_));
+            Ok(if all_int { Value::Int(y as i64) } else { Value::Float(y) })
         }
         BuiltinId::Pow => {
             if args.len() != 2 {
@@ -157,22 +207,18 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Slug => {
             expect_n(1)?;
             map_str_1(&read(0)?, &|s: &str| {
-                let lower = s.to_lowercase();
-                let slug: String = lower.chars().map(|c| {
-                    if c.is_alphanumeric() { c } else { '-' }
-                }).collect();
-                let mut result = String::new();
-                let mut prev_hyphen = false;
-                for c in slug.chars() {
-                    if c == '-' {
-                        if !prev_hyphen { result.push('-'); }
-                        prev_hyphen = true;
-                    } else {
-                        result.push(c);
-                        prev_hyphen = false;
+                let mut out = String::with_capacity(s.len());
+                let mut last_dash = false;
+                for ch in s.chars() {
+                    if ch.is_ascii_alphanumeric() {
+                        out.push(ch.to_ascii_lowercase());
+                        last_dash = false;
+                    } else if !last_dash {
+                        out.push('-');
+                        last_dash = true;
                     }
                 }
-                result.trim_matches('-').to_string()
+                out.trim_matches('-').to_string()
             })
         }
         BuiltinId::Mixed => {
@@ -183,34 +229,47 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         }
         BuiltinId::Raw => {
             expect_n(1)?;
-            Ok(read(0)?)
+            // raw: identity — returns value unchanged (interpreter just returns the string as-is)
+            let v = read(0)?;
+            match &v {
+                Value::Str(_) | Value::Char(_) => Ok(v),
+                Value::Array(xs) => {
+                    // array of str/char: return as-is
+                    if xs.iter().all(|x| matches!(x, Value::Str(_) | Value::Char(_))) {
+                        Ok(v)
+                    } else {
+                        Ok(v)
+                    }
+                }
+                _ => Ok(v),
+            }
         }
         BuiltinId::Trim => {
             expect_n(1)?;
-            let trim_chars: &[char] = &[
-                ' ', '\t', '\n', '\r',
-                '\u{00A0}', '\u{FEFF}', '\u{200B}',
-                '\u{200C}', '\u{200D}', '\u{2060}', '\u{180E}',
-            ];
-            map_str_1(&read(0)?, &|s: &str| s.trim_matches(trim_chars).to_string())
+            map_str_1(&read(0)?, &|s: &str| s.trim_matches(|c: char|
+                c.is_whitespace()
+                || c == '\u{00A0}' || c == '\u{FEFF}' || c == '\u{200B}'
+                || c == '\u{200C}' || c == '\u{200D}' || c == '\u{2060}'
+                || c == '\u{180E}'
+            ).to_string())
         }
         BuiltinId::TrimLead => {
             expect_n(1)?;
-            let trim_chars: &[char] = &[
-                ' ', '\t', '\n', '\r',
-                '\u{00A0}', '\u{FEFF}', '\u{200B}',
-                '\u{200C}', '\u{200D}', '\u{2060}', '\u{180E}',
-            ];
-            map_str_1(&read(0)?, &|s: &str| s.trim_start_matches(trim_chars).to_string())
+            map_str_1(&read(0)?, &|s: &str| s.trim_start_matches(|c: char|
+                c.is_whitespace()
+                || c == '\u{00A0}' || c == '\u{FEFF}' || c == '\u{200B}'
+                || c == '\u{200C}' || c == '\u{200D}' || c == '\u{2060}'
+                || c == '\u{180E}'
+            ).to_string())
         }
         BuiltinId::TrimTrail => {
             expect_n(1)?;
-            let trim_chars: &[char] = &[
-                ' ', '\t', '\n', '\r',
-                '\u{00A0}', '\u{FEFF}', '\u{200B}',
-                '\u{200C}', '\u{200D}', '\u{2060}', '\u{180E}',
-            ];
-            map_str_1(&read(0)?, &|s: &str| s.trim_end_matches(trim_chars).to_string())
+            map_str_1(&read(0)?, &|s: &str| s.trim_end_matches(|c: char|
+                c.is_whitespace()
+                || c == '\u{00A0}' || c == '\u{FEFF}' || c == '\u{200B}'
+                || c == '\u{200C}' || c == '\u{200D}' || c == '\u{2060}'
+                || c == '\u{180E}'
+            ).to_string())
         }
         BuiltinId::Find => {
             if args.len() != 2 {
@@ -219,7 +278,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             match (read(0)?, read(1)?) {
                 (Value::Str(s), Value::Str(sub)) => {
                     Ok(match s.find(sub.as_str()) {
-                        Some(byte_idx) => Value::Int(s[..byte_idx].chars().count() as i64),
+                        Some(i) => Value::Int(i as i64),
                         None => Value::Nil,
                     })
                 }
@@ -238,17 +297,17 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
             match (read(0)?, read(1)?) {
                 (Value::Str(s), Value::Str(sub)) => {
-                    let mut results = Vec::new();
-                    let mut search_start = 0usize;
-                    while search_start < s.len() {
-                        if let Some(idx) = s[search_start..].find(sub.as_str()) {
-                            let abs_byte = search_start + idx;
-                            let char_idx = s[..abs_byte].chars().count();
-                            results.push(Value::Int(char_idx as i64));
-                            search_start = abs_byte + sub.len().max(1);
-                        } else { break; }
+                    if sub.is_empty() {
+                        return Ok(Value::Array(vec![]));
                     }
-                    Ok(Value::Array(results))
+                    let mut out = Vec::new();
+                    let mut start = 0usize;
+                    while let Some(pos) = s[start..].find(sub.as_str()) {
+                        let idx = start + pos;
+                        out.push(Value::Int(idx as i64));
+                        start = idx + sub.len();
+                    }
+                    Ok(Value::Array(out))
                 }
                 (other, _) => Err(GoblinError::type_error("str", other.type_name(), "find_all")),
             }
@@ -311,7 +370,11 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 Value::Str(s) => s,
                 other => return Err(GoblinError::type_error("str", other.type_name(), "split separator")),
             };
-            let parts: Vec<Value> = s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect();
+            let parts: Vec<Value> = if sep.is_empty() {
+                s.chars().map(|c| Value::Str(c.to_string())).collect()
+            } else {
+                s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
+            };
             Ok(Value::Array(parts))
         }
         BuiltinId::Join => {
@@ -323,15 +386,29 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 other => return Err(GoblinError::type_error("str", other.type_name(), "join separator")),
             };
             match read(0)? {
+                Value::Str(s) => {
+                    let out: String = s.chars().enumerate().map(|(i, c)| {
+                        if i > 0 { format!("{}{}", sep, c) } else { c.to_string() }
+                    }).collect();
+                    Ok(Value::Str(out))
+                }
                 Value::Array(items) => {
-                    let parts: Vec<String> = items.iter().map(value_to_str).collect();
-                    Ok(Value::Str(parts.join(&sep)))
+                    let mut out = String::new();
+                    for (i, v) in items.iter().enumerate() {
+                        if i > 0 { out.push_str(&sep); }
+                        match v {
+                            Value::Str(s)  => out.push_str(s),
+                            Value::Char(c) => out.push(*c),
+                            other => out.push_str(&value_to_str(other)),
+                        }
+                    }
+                    Ok(Value::Str(out))
                 }
                 Value::Collection(c) => {
                     let parts: Vec<String> = collections::to_vec(&c).iter().map(value_to_str).collect();
                     Ok(Value::Str(parts.join(&sep)))
                 }
-                other => Err(GoblinError::type_error("array or collection", other.type_name(), "join")),
+                other => Err(GoblinError::type_error("str, array or collection", other.type_name(), "join")),
             }
         }
         BuiltinId::Contains => {
@@ -419,16 +496,27 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
             let container = read(0)?;
             let needle = read(1)?;
-            Ok(Value::Bool(match (&container, &needle) {
-                (Value::Str(s), Value::Str(sub)) => s.contains(sub.as_str()),
-                (Value::Array(arr), v)           => arr.iter().any(|x| x == v),
-                (Value::Map(m), Value::Str(k))   => m.contains_key(k),
-                (Value::MapOrd(m), Value::Str(k))=> m.contains_key(k),
-                (Value::Seq(s), v)               => s.items.iter().any(|x| x == v),
-                (Value::Collection(c), v)        => collections::has(c, v),
-                (Value::Nil, _) | (Value::Unit, _) => false,
-                _ => false,
-            }))
+            let result = match &container {
+                Value::Str(s) => match &needle {
+                    Value::Str(sub) => s.contains(sub.as_str()),
+                    Value::Char(c)  => s.contains(*c),
+                    _ => return Err(GoblinError::type_error("str or char", needle.type_name(), "has needle for string")),
+                },
+                Value::Array(arr) => arr.iter().any(|x| x == &needle),
+                Value::Seq(s)     => s.items.iter().any(|x| x == &needle),
+                Value::Map(m) => {
+                    let k = value_to_map_key(&needle);
+                    m.contains_key(&k)
+                }
+                Value::MapOrd(m) => {
+                    let k = value_to_map_key(&needle);
+                    m.contains_key(&k)
+                }
+                Value::Collection(c) => collections::has(c, &needle),
+                Value::Nil | Value::Unit => false,
+                _ => return Err(GoblinError::type_error("string, array, or map", container.type_name(), "has")),
+            };
+            Ok(Value::Bool(result))
         }
         BuiltinId::Count => {
             match args.len() {
@@ -462,127 +550,175 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Shuffle => {
             expect_n(1)?;
             match read(0)? {
+                Value::Str(s) => {
+                    let mut v: Vec<char> = s.chars().collect();
+                    let n = v.len();
+                    for i in 0..n {
+                        let j = i + rng_bounded(session, (n - i) as u64) as usize;
+                        v.swap(i, j);
+                    }
+                    Ok(Value::Str(v.into_iter().collect()))
+                }
+                Value::Int(n) => {
+                    // interpreter: explode digits, Fisher-Yates, repack with overflow check, preserve sign
+                    let neg = n < 0;
+                    let mut m = if neg { -(n as i128) } else { n as i128 };
+                    let mut digs: Vec<i64> = if m == 0 { vec![0] } else {
+                        let mut tmp = Vec::new();
+                        while m > 0 { tmp.push((m % 10) as i64); m /= 10; }
+                        tmp.reverse();
+                        tmp
+                    };
+                    let nd = digs.len();
+                    for i in 0..nd {
+                        let j = i + rng_bounded(session, (nd - i) as u64) as usize;
+                        digs.swap(i, j);
+                    }
+                    let mut acc: i128 = 0;
+                    for d in digs {
+                        match acc.checked_mul(10).and_then(|a| a.checked_add(d as i128)) {
+                            Some(v) => acc = v,
+                            None => return Ok(Value::Nil),
+                        }
+                    }
+                    if neg { acc = -acc; }
+                    Ok(Value::Int(acc as i64))
+                }
                 Value::Array(mut items) => {
                     fisher_yates_shuffle(&mut items, session);
                     Ok(Value::Array(items))
                 }
-                Value::Str(s) => {
-                    let mut chars: Vec<char> = s.chars().collect();
-                    let n = chars.len();
-                    for i in (1..n).rev() {
-                        let j = rng_bounded(session, (i + 1) as u64) as usize;
-                        chars.swap(i, j);
-                    }
-                    Ok(Value::Str(chars.iter().collect()))
+                other => {
+                    // Seq/Collection: treat as array-like
+                    Err(GoblinError::type_error("string, int, or array", other.type_name(), "shuffle"))
                 }
-                Value::Int(n) => {
-                    let s = n.to_string();
-                    let mut chars: Vec<char> = s.chars().collect();
-                    let len = chars.len();
-                    for i in (1..len).rev() {
-                        let j = rng_bounded(session, (i + 1) as u64) as usize;
-                        chars.swap(i, j);
-                    }
-                    let result: String = chars.iter().collect();
-                    Ok(Value::Int(result.parse::<i64>().unwrap_or(n)))
-                }
-                other => Err(GoblinError::type_error("array, str, or int", other.type_name(), "shuffle")),
             }
         }
         BuiltinId::Sort => {
             expect_n(1)?;
             match read(0)? {
+                Value::Str(s) => {
+                    let mut v: Vec<char> = s.chars().collect();
+                    v.sort_unstable();
+                    Ok(Value::Str(v.into_iter().collect()))
+                }
+                Value::Int(n) => {
+                    // interpreter: sort digits ascending, preserve sign, repack with overflow check
+                    let neg = n < 0;
+                    let mut m = if neg { -(n as i128) } else { n as i128 };
+                    let mut digs: Vec<i64> = if m == 0 { vec![0] } else {
+                        let mut tmp = Vec::new();
+                        while m > 0 { tmp.push((m % 10) as i64); m /= 10; }
+                        tmp.reverse();
+                        tmp
+                    };
+                    digs.sort_unstable();
+                    let mut acc: i128 = 0;
+                    for d in digs {
+                        match acc.checked_mul(10).and_then(|a| a.checked_add(d as i128)) {
+                            Some(v) => acc = v,
+                            None => return Ok(Value::Nil),
+                        }
+                    }
+                    if neg { acc = -acc; }
+                    Ok(Value::Int(acc as i64))
+                }
                 Value::Array(mut items) => {
                     items.sort_by(|a, b| fmt_value_raw(a).cmp(&fmt_value_raw(b)));
                     Ok(Value::Array(items))
                 }
-                Value::Str(s) => {
-                    let mut chars: Vec<char> = s.chars().collect();
-                    chars.sort();
-                    Ok(Value::Str(chars.iter().collect()))
-                }
                 Value::Collection(c) => Ok(collections::sort_values(&c)),
-                other => Err(GoblinError::type_error("array or str", other.type_name(), "sort")),
+                other => Err(GoblinError::type_error("str, int, or array", other.type_name(), "sort")),
             }
         }
         BuiltinId::Freq => {
             expect_n(1)?;
             match read(0)? {
-                Value::Array(items) => {
-                    let mut freq: indexmap::IndexMap<String, Value> = indexmap::IndexMap::new();
-                    for item in &items {
-                        let key = fmt_value_raw(item);
-                        let count = freq.get(&key).and_then(|v| {
-                            if let Value::Int(n) = v { Some(*n) } else { None }
-                        }).unwrap_or(0);
-                        freq.insert(key, Value::Int(count + 1));
-                    }
-                    Ok(Value::MapOrd(freq))
+                Value::Str(s) => {
+                    let mut cnt = std::collections::BTreeMap::<char, i64>::new();
+                    for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
+                    let mut m = std::collections::BTreeMap::<String, Value>::new();
+                    for (c, n) in cnt { m.insert(c.to_string(), Value::Int(n)); }
+                    Ok(Value::Map(m))
                 }
-                other => Err(GoblinError::type_error("array", other.type_name(), "freq")),
+                Value::Array(items) => {
+                    let mut tally = std::collections::BTreeMap::<String, i64>::new();
+                    for item in &items { *tally.entry(fmt_value_raw(item)).or_insert(0) += 1; }
+                    let mut m = std::collections::BTreeMap::<String, Value>::new();
+                    for (k, n) in tally { m.insert(k, Value::Int(n)); }
+                    Ok(Value::Map(m))
+                }
+                other => Err(GoblinError::type_error("string or array", other.type_name(), "freq")),
             }
         }
         BuiltinId::Mode => {
             expect_n(1)?;
             match read(0)? {
                 Value::Array(items) => {
-                    if items.is_empty() { return Ok(Value::Nil); }
-                    let mut freq: std::collections::HashMap<String, (i64, Value)> = std::collections::HashMap::new();
-                    let mut order: Vec<String> = Vec::new();
-                    for item in &items {
-                        let key = fmt_value_raw(item);
-                        let entry = freq.entry(key.clone()).or_insert_with(|| {
-                            order.push(key.clone());
-                            (0, item.clone())
-                        });
-                        entry.0 += 1;
+                    if items.is_empty() {
+                        return Err(GoblinError::Runtime("mode: empty array".into()));
                     }
-                    let max_count = freq.values().map(|(c, _)| *c).max().unwrap_or(0);
-                    for key in &order {
-                        if let Some((count, val)) = freq.get(key) {
-                            if *count == max_count {
-                                return Ok(val.clone());
-                            }
-                        }
-                    }
-                    Ok(Value::Nil)
+                    let mut counts = std::collections::BTreeMap::<String, i64>::new();
+                    for v in &items { *counts.entry(fmt_value_raw(v)).or_insert(0) += 1; }
+                    let mut best_k = String::new();
+                    let mut best_n = -1i64;
+                    for (k, n) in &counts { if *n > best_n { best_n = *n; best_k = k.clone(); } }
+                    let mut m = std::collections::BTreeMap::<String, Value>::new();
+                    m.insert(best_k, Value::Int(best_n));
+                    Ok(Value::Map(m))
                 }
                 other => Err(GoblinError::type_error("array", other.type_name(), "mode")),
             }
         }
         BuiltinId::SampleWeighted => {
-            if args.len() != 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "sample_weighted".into() });
-            }
-            let items = match read(0)? {
+            expect_n(1)?;
+            let cfg = match read(0)? {
+                Value::Map(m) => m,
+                other => return Err(GoblinError::type_error("map config", other.type_name(), "sample_weighted")),
+            };
+            let src_val = cfg.get("src").cloned().ok_or_else(|| GoblinError::Runtime("sample_weighted: missing 'src'".into()))?;
+            let xs: Vec<Value> = match src_val {
                 Value::Array(a) => a,
-                other => return Err(GoblinError::type_error("array", other.type_name(), "sample_weighted")),
+                other => return Err(GoblinError::type_error("array", other.type_name(), "sample_weighted src")),
             };
-            let weights_vec: Vec<(String, Value)> = match read(1)? {
-                Value::Map(m)    => m.into_iter().collect(),
-                Value::MapOrd(m) => m.into_iter().collect(),
-                other => return Err(GoblinError::type_error("map", other.type_name(), "sample_weighted weights")),
+            let wt_val = cfg.get("weights").cloned().ok_or_else(|| GoblinError::Runtime("sample_weighted: missing 'weights'".into()))?;
+            let ws: Vec<Value> = match wt_val {
+                Value::Array(a) => a,
+                other => return Err(GoblinError::type_error("array", other.type_name(), "sample_weighted weights")),
             };
-            if items.is_empty() { return Ok(Value::Nil); }
-            let mut cumulative: Vec<f64> = Vec::new();
-            let mut total = 0.0f64;
-            for item in &items {
-                let key = fmt_value_raw(item);
-                let w = weights_vec.iter().find(|(k, _)| k == &key)
-                    .and_then(|(_, v)| match v {
-                        Value::Float(f) => Some(*f),
-                        Value::Int(n) => Some(*n as f64),
-                        _ => None,
-                    })
-                    .unwrap_or(1.0);
-                total += w;
-                cumulative.push(total);
+            if xs.is_empty() { return Err(GoblinError::Runtime("sample_weighted: src is empty".into())); }
+            if xs.len() != ws.len() { return Err(GoblinError::Runtime(format!("sample_weighted: src len {} != weights len {}", xs.len(), ws.len()))); }
+            let n_out: usize = match cfg.get("count") {
+                None => 1,
+                Some(Value::Int(i)) if *i > 0 => *i as usize,
+                Some(Value::Float(f)) if *f > 0.0 && f.fract() == 0.0 => *f as usize,
+                _ => return Err(GoblinError::Runtime("sample_weighted: count must be positive int".into())),
+            };
+            let mut cum: Vec<f64> = Vec::with_capacity(ws.len());
+            let mut sum = 0.0f64;
+            for w in &ws {
+                let wf = match w {
+                    Value::Float(f) => *f,
+                    Value::Int(i) => *i as f64,
+                    other => return Err(GoblinError::type_error("number", other.type_name(), "sample_weighted weight")),
+                };
+                if wf < 0.0 { return Err(GoblinError::Runtime("sample_weighted: weights must be >= 0".into())); }
+                sum += wf;
+                cum.push(sum);
             }
-            let r = (rng_bounded(session, 1_000_000) as f64 / 1_000_000.0) * total;
-            for (i, &cum) in cumulative.iter().enumerate() {
-                if r <= cum { return Ok(items[i].clone()); }
+            if sum == 0.0 { return Err(GoblinError::Runtime("sample_weighted: all weights are zero".into())); }
+            let mut out = Vec::with_capacity(n_out);
+            for _ in 0..n_out {
+                let r = rng_u01(session) * sum;
+                let mut lo = 0usize;
+                let mut hi = cum.len();
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if r < cum[mid] { hi = mid; } else { lo = mid + 1; }
+                }
+                out.push(xs[lo].clone());
             }
-            Ok(items.last().cloned().unwrap_or(Value::Nil))
+            Ok(Value::Array(out))
         }
         BuiltinId::Map => {
             Err(GoblinError::NotImplemented { feature: "map builtin requires VM callback support" })
@@ -590,31 +726,42 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Unique => {
             expect_n(1)?;
             match read(0)? {
+                Value::Str(s) => {
+                    let mut seen = std::collections::BTreeSet::new();
+                    let mut out = String::new();
+                    for c in s.chars() { if seen.insert(c) { out.push(c); } }
+                    Ok(Value::Str(out))
+                }
                 Value::Array(items) => {
                     let mut seen = std::collections::BTreeSet::new();
                     let result: Vec<Value> = items.into_iter().filter(|item| seen.insert(fmt_value_raw(item))).collect();
                     Ok(Value::Array(result))
                 }
                 Value::Collection(c) => Ok(collections::unique(&c)),
-                other => Err(GoblinError::type_error("array", other.type_name(), "unique")),
+                other => Err(GoblinError::type_error("string or array", other.type_name(), "unique")),
             }
         }
         BuiltinId::Dups => {
             expect_n(1)?;
             match read(0)? {
-                Value::Array(items) => {
-                    let mut freq: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-                    for item in &items {
-                        *freq.entry(fmt_value_raw(item)).or_insert(0) += 1;
-                    }
-                    let mut seen = std::collections::BTreeSet::new();
-                    let result: Vec<Value> = items.into_iter().filter(|item| {
-                        let k = fmt_value_raw(item);
-                        freq.get(&k).copied().unwrap_or(0) > 1 && seen.insert(k)
-                    }).collect();
-                    Ok(Value::Array(result))
+                Value::Str(s) => {
+                    let mut cnt = std::collections::BTreeMap::<char, usize>::new();
+                    for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
+                    let mut out = String::new();
+                    for (c, n) in cnt { if n >= 2 { out.push(c); } }
+                    Ok(Value::Str(out))
                 }
-                other => Err(GoblinError::type_error("array", other.type_name(), "dups")),
+                Value::Array(items) => {
+                    let mut cnt = std::collections::BTreeMap::<String, (usize, Value)>::new();
+                    for item in &items {
+                        let k = fmt_value_raw(item);
+                        cnt.entry(k).and_modify(|e| e.0 += 1).or_insert((1, item.clone()));
+                    }
+                    let mut out = Vec::new();
+                    for (_, (n, exemplar)) in cnt { if n >= 2 { out.push(exemplar); } }
+                    Ok(Value::Array(out))
+                }
+                other => Err(GoblinError::type_error("string or array", other.type_name(), "dups")),
             }
         }
 
@@ -987,8 +1134,36 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             expect_n(1)?;
             match read(0)? {
                 Value::Array(mut items) => { items.reverse(); Ok(Value::Array(items)) }
-                Value::Str(s) => Ok(Value::Str(s.chars().rev().collect())),
                 other => { let c = require_collection(other, "reverse")?; Ok(collections::reverse(&*c)) }
+            }
+        }
+        BuiltinId::ReverseChars => {
+            expect_n(1)?;
+            map_str_1(&read(0)?, &|s: &str| s.chars().rev().collect())
+        }
+        BuiltinId::Minimize => {
+            expect_n(1)?;
+            map_str_1(&read(0)?, &|s: &str| {
+                let mut out = String::new();
+                let mut in_ws = false;
+                for ch in s.chars() {
+                    if ch.is_whitespace() {
+                        if !in_ws { out.push(' '); in_ws = true; }
+                    } else { in_ws = false; out.push(ch); }
+                }
+                out.trim().to_string()
+            })
+        }
+        BuiltinId::ParseBool => {
+            expect_n(1)?;
+            let s = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "parse_bool")),
+            };
+            match s.to_ascii_lowercase().as_str() {
+                "true"  => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                _ => Err(GoblinError::Runtime(format!("parse_bool: expected \"true\" or \"false\", got \"{}\"", s))),
             }
         }
         BuiltinId::SortBy | BuiltinId::Filter | BuiltinId::Reduce
@@ -1079,16 +1254,121 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::IsMap        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Map(_) | Value::MapOrd(_)))) }
         BuiltinId::IsCollection => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Collection(_) | Value::Array(_) | Value::Map(_) | Value::MapOrd(_) | Value::Seq(_)))) }
         BuiltinId::IsFunction   => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Function(_) | Value::Closure(_)))) }
+        BuiltinId::IsBig        => { expect_n(1)?; Ok(Value::Bool(false)) } // no Big in VM
+        BuiltinId::IsPct        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Pct(_)))) }
+        BuiltinId::IsNum        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Int(_) | Value::Float(_) | Value::Pct(_)))) }
+        BuiltinId::IsChar       => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Char(_)))) }
+        BuiltinId::IsPair       => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Pair(_, _)))) }
+        BuiltinId::IsSeq        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Seq(_)))) }
+        BuiltinId::IsUnit       => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Unit))) }
+        BuiltinId::IsAlnum      => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Char(c) => c.is_ascii_alphanumeric(),
+                Value::Str(s)  => !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()),
+                _ => false,
+            }))
+        }
+        BuiltinId::IsAlpha      => {
+            expect_n(1)?;
+            let is_ascii_alpha = |c: char| (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+            Ok(Value::Bool(match read(0)? {
+                Value::Char(c) => is_ascii_alpha(c),
+                Value::Str(s)  => !s.is_empty() && s.chars().all(is_ascii_alpha),
+                _ => false,
+            }))
+        }
+        BuiltinId::IsDigit      => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Char(c) => c >= '0' && c <= '9',
+                Value::Str(s)  => !s.is_empty() && s.chars().all(|c| c >= '0' && c <= '9'),
+                _ => false,
+            }))
+        }
+        BuiltinId::IsWhitespace => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Char(c) => c.is_ascii_whitespace(),
+                Value::Str(s)  => !s.is_empty() && s.chars().all(|c| c.is_ascii_whitespace()),
+                _ => false,
+            }))
+        }
+        BuiltinId::IsEven => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Int(n) => n % 2 == 0,
+                Value::Float(f) if f.is_finite() && f.fract() == 0.0 => (f as i64) % 2 == 0,
+                _ => false,
+            }))
+        }
+        BuiltinId::IsOdd => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Int(n) => n % 2 != 0,
+                Value::Float(f) if f.is_finite() && f.fract() == 0.0 => (f as i64) % 2 != 0,
+                _ => false,
+            }))
+        }
+        BuiltinId::IsMultipleOf => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "is_multiple_of".into() }); }
+            Ok(Value::Bool(match (read(0)?, read(1)?) {
+                (Value::Int(x), Value::Int(k)) => k != 0 && x % k == 0,
+                (Value::Float(xf), Value::Float(kf)) if xf.fract() == 0.0 && kf.fract() == 0.0 => {
+                    let k = kf as i64; k != 0 && (xf as i64) % k == 0
+                }
+                (Value::Float(xf), Value::Int(k)) if xf.fract() == 0.0 => k != 0 && (xf as i64) % k == 0,
+                (Value::Int(x), Value::Float(kf)) if kf.fract() == 0.0 => { let k = kf as i64; k != 0 && x % k == 0 }
+                _ => false,
+            }))
+        }
+        BuiltinId::IsPositive => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Int(n)   => n > 0,
+                Value::Float(f) => f.is_finite() && f > 0.0,
+                Value::Pct(p)   => p > 0.0,
+                _ => false,
+            }))
+        }
+        BuiltinId::IsNegative => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Int(n)   => n < 0,
+                Value::Float(f) => f.is_finite() && f < 0.0,
+                Value::Pct(p)   => p < 0.0,
+                _ => false,
+            }))
+        }
+        BuiltinId::IsNix => {
+            expect_n(1)?;
+            Ok(Value::Bool(match read(0)? {
+                Value::Nil => true,
+                Value::Str(s) => s.is_empty() || s.chars().all(|c| c.is_whitespace()),
+                Value::Array(a) => a.is_empty(),
+                Value::Map(m) => m.is_empty(),
+                Value::MapOrd(m) => m.is_empty(),
+                _ => false,
+            }))
+        }
 
         // ── Conversions ───────────────────────────────────────────────────────
         BuiltinId::ToInt => {
             expect_n(1)?;
             Ok(match read(0)? {
                 Value::Int(n)   => Value::Int(n),
-                Value::Float(f) => Value::Int(f as i64),
+                Value::Float(f) | Value::Pct(f) => Value::Int(f.trunc() as i64),
                 Value::Bool(b)  => Value::Int(b as i64),
-                Value::Str(s)   => Value::Int(s.trim().parse::<i64>()
-                    .map_err(|_| GoblinError::Runtime(format!("cannot convert {:?} to int", s)))?),
+                Value::Char(c)  => Value::Int(c as u32 as i64),
+                Value::Str(s)   => {
+                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+                    cleaned.parse::<i64>()
+                        .map(Value::Int)
+                        .unwrap_or_else(|_| cleaned.parse::<f64>()
+                            .map(|f| Value::Int(f.trunc() as i64))
+                            .unwrap_or(Value::Nil))
+                }
+                Value::Nil => Value::Nil,
                 other => return Err(GoblinError::type_error("number or str", other.type_name(), "to_int")),
             })
         }
@@ -1096,10 +1376,15 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             expect_n(1)?;
             Ok(match read(0)? {
                 Value::Float(f) => Value::Float(f),
+                Value::Pct(f)   => Value::Float(f),
                 Value::Int(n)   => Value::Float(n as f64),
                 Value::Bool(b)  => Value::Float(b as i64 as f64),
-                Value::Str(s)   => Value::Float(s.trim().parse::<f64>()
-                    .map_err(|_| GoblinError::Runtime(format!("cannot convert {:?} to float", s)))?),
+                Value::Str(s)   => {
+                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+                    Value::Float(cleaned.parse::<f64>()
+                        .map_err(|_| GoblinError::Runtime(format!("cannot convert {:?} to float", s)))?)
+                }
+                Value::Nil => Value::Nil,
                 other => return Err(GoblinError::type_error("number or str", other.type_name(), "to_float")),
             })
         }
@@ -1139,6 +1424,66 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::RunCmd => {
             Err(GoblinError::NotImplemented { feature: "run_cmd: process execution not yet implemented in VM" })
         }
+        BuiltinId::RandSeed => {
+            expect_n(1)?;
+            // interpreter just seeds the RNG — in VM we ignore since session handles it
+            Ok(Value::Nil)
+        }
+        BuiltinId::Roll => {
+            expect_n(1)?;
+            let cfg = match read(0)? {
+                Value::Map(m) => m,
+                other => return Err(GoblinError::type_error("map config", other.type_name(), "roll")),
+            };
+            let cast_i64 = |v: &Value| -> Option<i64> {
+                match v { Value::Int(i) => Some(*i), Value::Float(f) => Some(f.trunc() as i64), _ => None }
+            };
+            let count  = cast_i64(cfg.get("count").ok_or_else(|| GoblinError::Runtime("roll: missing 'count'".into()))?)
+                .ok_or_else(|| GoblinError::Runtime("roll: 'count' must be integer-like".into()))?;
+            let sides  = cast_i64(cfg.get("sides").ok_or_else(|| GoblinError::Runtime("roll: missing 'sides'".into()))?)
+                .ok_or_else(|| GoblinError::Runtime("roll: 'sides' must be integer-like".into()))?;
+            let modifier   = cfg.get("modifier").or_else(|| cfg.get("mod")).and_then(|v| cast_i64(v)).unwrap_or(0);
+            let keep_high  = cfg.get("keep_high").and_then(|v| cast_i64(v)).unwrap_or(0);
+            let drop_low   = cfg.get("drop_low").and_then(|v| cast_i64(v)).unwrap_or(0);
+            let reroll_eq  = cfg.get("reroll_eq").and_then(|v| cast_i64(v));
+            let explode    = cfg.get("explode").map(|v| matches!(v, Value::Bool(true))).unwrap_or(false);
+            let adv        = cfg.get("adv").map(|v| matches!(v, Value::Bool(true))).unwrap_or(false);
+            let dis        = cfg.get("dis").map(|v| matches!(v, Value::Bool(true))).unwrap_or(false);
+            let clamp_lo   = cfg.get("clamp_min").and_then(|v| cast_i64(v));
+            let clamp_hi   = cfg.get("clamp_max").and_then(|v| cast_i64(v));
+            if sides < 1 { return Err(GoblinError::Runtime("roll: sides must be >= 1".into())); }
+            let mut roll_one = |s: i64| -> i64 {
+                let mut r = rng_bounded(session, s as u64) as i64 + 1;
+                if let Some(face) = reroll_eq { if r == face { r = rng_bounded(session, s as u64) as i64 + 1; } }
+                if explode {
+                    let mut total = r; let mut last = r; let mut guard = 0usize;
+                    while last == s && guard < 1024 { let e = rng_bounded(session, s as u64) as i64 + 1; total += e; last = e; guard += 1; }
+                    total
+                } else { r }
+            };
+            let result_num: i64 = if adv || dis {
+                let a = roll_one(sides); let b = roll_one(sides);
+                let mut total = if adv { a.max(b) } else { a.min(b) } + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) { let (lo, hi) = if lo <= hi { (lo,hi) } else { (hi,lo) }; if total < lo { total = lo; } if total > hi { total = hi; } }
+                total
+            } else {
+                let mut vals: Vec<i64> = (0..count).map(|_| roll_one(sides)).collect();
+                let kept_sum: i64 = if keep_high > 0 {
+                    let mut xs = vals.clone(); xs.sort_unstable_by(|a,b| b.cmp(a));
+                    xs.into_iter().take(keep_high.max(0) as usize).sum()
+                } else if drop_low > 0 {
+                    let mut xs = vals.clone(); xs.sort_unstable();
+                    xs.into_iter().skip(drop_low.max(0) as usize).sum()
+                } else { vals.iter().sum() };
+                let mut total = kept_sum + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) { let (lo, hi) = if lo <= hi { (lo,hi) } else { (hi,lo) }; if total < lo { total = lo; } if total > hi { total = hi; } }
+                total
+            };
+            Ok(Value::Int(result_num))
+        }
+        BuiltinId::RollDetail => {
+            Err(GoblinError::NotImplemented { feature: "roll_detail not yet implemented" })
+        }
 
         // ── Request/Response (stub) ───────────────────────────────────────────
         BuiltinId::ReqMethod | BuiltinId::ReqPath | BuiltinId::ReqQuery
@@ -1157,9 +1502,17 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             if args.is_empty() { return Ok(Value::Nil); }
             let v = session.read_value(&args[0])?;
             Ok(match v {
-                Value::Int(n) => Value::Array(n.to_string().chars().map(|c| Value::Str(c.to_string())).collect()),
-                Value::Str(s) => Value::Array(s.chars().map(Value::Char).collect()),
-                other => other,
+                Value::Int(n) if n < 0 => Value::Nil,
+                Value::Int(0) => Value::Array(vec![Value::Int(0)]),
+                Value::Int(n) => {
+                    let mut val = n as i128;
+                    let mut out = Vec::new();
+                    while val > 0 { out.push(Value::Int((val % 10) as i64)); val /= 10; }
+                    out.reverse();
+                    Value::Array(out)
+                }
+                Value::Str(s) => Value::Array(s.chars().map(|c| Value::Str(c.to_string())).collect()),
+                _ => Value::Nil,
             })
         }
 
@@ -1171,40 +1524,94 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 Value::Map(ref m) => m.clone(),
                 _ => return Err(GoblinError::type_error("map", cfg.type_name(), "secure_pick")),
             };
-            let count = map_get_int(&m, "count_expr")
-                .or_else(|| map_get_int(&m, "count"))
-                .unwrap_or(1) as usize;
-            if count == 0 { return Ok(Value::Array(vec![])); }
-            let allow_dups = map_get_bool(&m, "allow_dups").unwrap_or(false);
+            // count: prefer count_expr (dynamic), then count (static), default 1
+            let count_f = map_get_f64(&m, "count_expr").or_else(|| map_get_f64(&m, "count")).unwrap_or(1.0);
+            let n_out = count_f as usize;
+            if n_out == 0 { return Ok(Value::Array(vec![])); }
+            let finish = |mut items: Vec<Value>| -> Value {
+                if n_out == 1 { items.pop().unwrap_or(Value::Nil) } else { Value::Array(items) }
+            };
+            // src collection (Array or Str-as-char-array)
+            let allow_dups_default = !m.contains_key("src"); // dups default true for ranges
+            let allow_dups = map_get_bool(&m, "allow_dups").unwrap_or(allow_dups_default);
             if let Some(src) = m.get("src") {
                 let items: Vec<Value> = match src {
                     Value::Array(a) => a.clone(),
-                    Value::Str(s)   => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                    Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                    Value::Map(sm) => sm.iter().map(|(k, v)| {
+                        let mut pair = std::collections::BTreeMap::new();
+                        pair.insert(k.clone(), v.clone());
+                        Value::Map(pair)
+                    }).collect(),
                     _ => return Err(GoblinError::Runtime("secure_pick: unsupported src type".into())),
                 };
                 if items.is_empty() {
                     return Err(GoblinError::Runtime("secure_pick: cannot pick from empty collection".into()));
                 }
-                let out = csprng_pick_from_slice(&items, count, allow_dups, session);
-                return Ok(if count == 1 { out.into_iter().next().unwrap_or(Value::Nil) } else { Value::Array(out) });
+                let out = csprng_pick_from_slice(&items, n_out, allow_dups, session);
+                return Ok(finish(out));
             }
+            // range form
             if m.contains_key("range_start") && m.contains_key("range_end") {
-                let start  = map_get_int(&m, "range_start").unwrap_or(0);
-                let end_v  = map_get_int(&m, "range_end").unwrap_or(0);
-                let incl   = map_get_bool(&m, "range_inclusive").unwrap_or(false);
-                let end_i  = if incl { end_v + 1 } else { end_v };
-                let range_size = (end_i - start).max(0) as usize;
-                if range_size == 0 {
-                    return Err(GoblinError::Runtime("secure_pick: empty range".into()));
+                let incl = map_get_bool(&m, "range_inclusive").unwrap_or(false);
+                // char range: both sides are single-char strings
+                let a_str = m.get("range_start").and_then(|v| if let Value::Str(s) = v { Some(s.clone()) } else { None });
+                let b_str = m.get("range_end").and_then(|v| if let Value::Str(s) = v { Some(s.clone()) } else { None });
+                if let (Some(a_s), Some(b_s)) = (a_str, b_str) {
+                    if a_s.len() == 1 && b_s.len() == 1 {
+                        let sc = a_s.chars().next().unwrap();
+                        let ec = b_s.chars().next().unwrap();
+                        let mut pool: Vec<char> = if incl { (sc..=ec).collect() } else { (sc..ec).collect() };
+                        if pool.is_empty() { return Err(GoblinError::Runtime("secure_pick: empty char range".into())); }
+                        let picked: Vec<char> = if allow_dups {
+                            (0..n_out).map(|_| pool[rng_bounded(session, pool.len() as u64) as usize]).collect()
+                        } else {
+                            for i in 0..n_out.min(pool.len()) {
+                                let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize;
+                                pool.swap(i, j);
+                            }
+                            pool[..n_out.min(pool.len())].to_vec()
+                        };
+                        // interpreter: n_out==1 → Str of 1 char; else → Str of all chars
+                        return Ok(if n_out == 1 {
+                            Value::Str(picked[0].to_string())
+                        } else {
+                            Value::Str(picked.iter().collect())
+                        });
+                    }
                 }
-                let out: Vec<Value> = (0..count)
-                    .map(|_| Value::Int(start + rng_bounded(session, range_size as u64) as i64))
-                    .collect();
-                return Ok(if count == 1 { out.into_iter().next().unwrap_or(Value::Nil) } else { Value::Array(out) });
+                // numeric range
+                let a = map_get_f64(&m, "range_start").unwrap_or(0.0) as i64;
+                let b = map_get_f64(&m, "range_end").unwrap_or(0.0) as i64;
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                let pool: Vec<i64> = if incl { (lo..=hi).collect() } else { (lo..hi).collect() };
+                if pool.is_empty() { return Err(GoblinError::Runtime("secure_pick: empty range".into())); }
+                let out_vals: Vec<Value> = if allow_dups {
+                    (0..n_out).map(|_| Value::Int(pool[rng_bounded(session, pool.len() as u64) as usize])).collect()
+                } else {
+                    let mut p = pool.clone();
+                    for i in 0..n_out.min(p.len()) {
+                        let j = i + rng_bounded(session, (p.len() - i) as u64) as usize;
+                        p.swap(i, j);
+                    }
+                    p[..n_out.min(p.len())].iter().map(|&v| Value::Int(v)).collect()
+                };
+                return Ok(finish(out_vals));
             }
-            Err(GoblinError::Runtime("secure_pick: needs 'src' or range_start/range_end".into()))
+            Err(GoblinError::Runtime("secure_pick: needs 'src' or range".into()))
         }
 
+        BuiltinId::SecureRandom => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "secure_random".into() }); }
+            let (min, max) = match (read(0)?, read(1)?) {
+                (Value::Int(a), Value::Int(b)) => (a, b),
+                (a, b) => return Err(GoblinError::Runtime(format!("secure_random: expected Int, Int, got {}, {}", a.type_name(), b.type_name()))),
+            };
+            if min > max { return Err(GoblinError::Runtime(format!("secure_random: min ({min}) > max ({max})"))); }
+            let range = (max as i128 - min as i128 + 1) as u64;
+            let offset = rng_bounded(session, range);
+            Ok(Value::Int(min + offset as i64))
+        }
         BuiltinId::SecureShuffle => {
             if args.is_empty() { return Ok(Value::Nil); }
             let v = session.read_value(&args[0])?;
@@ -1231,7 +1638,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             if args.is_empty() { return Ok(Value::Nil); }
             let v = session.read_value(&args[0])?;
             match v {
-                Value::Str(s) => Ok(Value::Array(s.lines().map(|l| Value::Str(l.to_string())).collect())),
+                Value::Str(s) => Ok(Value::Array(s.split('\n').map(|l| Value::Str(l.to_string())).collect())),
                 _ => Err(GoblinError::type_error("string", v.type_name(), "lines")),
             }
         }
@@ -1302,6 +1709,14 @@ fn require_int(v: Value, op: &'static str) -> Result<i64, GoblinError> {
     }
 }
 
+fn to_f64_val(v: &Value) -> Result<f64, GoblinError> {
+    match v {
+        Value::Int(n) => Ok(*n as f64),
+        Value::Float(f) => Ok(*f),
+        other => Err(GoblinError::type_error("number", other.type_name(), "numeric op")),
+    }
+}
+
 fn numeric_min(a: Value, b: Value) -> Result<Value, GoblinError> {
     Ok(match (&a, &b) {
         (Value::Int(x), Value::Int(y))     => Value::Int(*x.min(y)),
@@ -1322,17 +1737,26 @@ fn numeric_max(a: Value, b: Value) -> Result<Value, GoblinError> {
     })
 }
 
+fn fmt_num_trim(f: f64) -> String {
+    if f.is_finite() && f.fract() == 0.0 {
+        format!("{}", f as i64)
+    } else {
+        let s = format!("{}", f);
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
 pub fn value_to_str(v: &Value) -> String {
     match v {
-        Value::Nil           => "nil".to_string(),
-        Value::Unit          => "()".to_string(),
-        Value::Bool(b)       => b.to_string(),
-        Value::Int(n)        => n.to_string(),
-        Value::Float(f)      => f.to_string(),
-        Value::Big(d)        => d.to_string(),
-        Value::Pct(p)        => format!("{}%", p),
-        Value::Char(c)       => c.to_string(),
-        Value::Str(s)        => s.clone(),
+        Value::Nil             => "nil".to_string(),
+        Value::Unit            => "()".to_string(),
+        Value::Bool(b)         => b.to_string(),
+        Value::Int(n)          => n.to_string(),
+        Value::Float(f)        => fmt_num_trim(*f),
+        Value::Pct(p)          => fmt_num_trim(*p),
+        Value::Big(d)          => d.to_string(),
+        Value::Char(c)         => c.to_string(),
+        Value::Str(s)          => s.clone(),
         Value::Formatted(v, _) => value_to_str(v),
         Value::Array(items) => {
             let parts: Vec<String> = items.iter().map(value_to_str).collect();
@@ -1394,27 +1818,68 @@ fn map_str_1(v: &Value, f: &dyn Fn(&str) -> String) -> Result<Value, GoblinError
 
 /// Mixed case: flip case of each character using PRNG seed.
 fn mixed_case(v: &Value, seed: u128) -> Result<Value, GoblinError> {
-    fn splitmix(x: u128, i: usize) -> bool {
-        let mut h = x.wrapping_add(i as u128).wrapping_mul(0x9e3779b97f4a7c15);
-        h ^= h >> 30;
-        h = h.wrapping_mul(0xbf58476d1ce4e5b9);
-        h ^= h >> 27;
-        (h >> 63) & 1 == 1
+    // Exact match to interpreter: SplitMix-style stateless mixing from (seed ^ i*constant)
+    fn is_upper(seed: u128, i: usize) -> bool {
+        let mut x = seed ^ ((i as u128).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^= x >> 31;
+        (x & 1) == 1
     }
-    match v {
-        Value::Str(s) => {
-            let result: String = s.chars().enumerate().map(|(i, c)| {
-                if splitmix(seed, i) { c.to_uppercase().next().unwrap_or(c) }
-                else { c.to_lowercase().next().unwrap_or(c) }
-            }).collect();
-            Ok(Value::Str(result))
+    let to_mixed = |s: &str, seed: u128| -> String {
+        let mut out = String::with_capacity(s.len());
+        for (i, ch) in s.chars().enumerate() {
+            if ch.is_alphabetic() {
+                if is_upper(seed, i) { out.extend(ch.to_uppercase()); }
+                else { out.extend(ch.to_lowercase()); }
+            } else {
+                out.push(ch);
+            }
         }
+        out
+    };
+    match v {
+        Value::Str(s) => Ok(Value::Str(to_mixed(s, seed))),
         Value::Char(ch) => {
-            let c = if splitmix(seed, 0) { ch.to_uppercase().next().unwrap_or(*ch) }
-                    else { ch.to_lowercase().next().unwrap_or(*ch) };
-            Ok(Value::Char(c))
+            let s = to_mixed(&ch.to_string(), seed);
+            let mut iter = s.chars();
+            Ok(match (iter.next(), iter.next()) {
+                (Some(c), None) => Value::Char(c),
+                _ => Value::Str(s),
+            })
+        }
+        Value::Array(xs) => {
+            let mut out = Vec::with_capacity(xs.len());
+            for item in xs {
+                out.push(match item {
+                    Value::Str(s)  => Value::Str(to_mixed(s, seed)),
+                    Value::Char(c) => {
+                        let s = to_mixed(&c.to_string(), seed);
+                        let mut iter = s.chars();
+                        match (iter.next(), iter.next()) {
+                            (Some(ch), None) => Value::Char(ch),
+                            _ => Value::Str(s),
+                        }
+                    }
+                    other => return Err(GoblinError::type_error("string/char", other.type_name(), "mixed")),
+                });
+            }
+            Ok(Value::Array(out))
         }
         other => Err(GoblinError::type_error("string/char", other.type_name(), "mixed")),
+    }
+}
+
+fn value_to_map_key(v: &Value) -> String {
+    match v {
+        Value::Str(s)   => s.clone(),
+        Value::Char(c)  => c.to_string(),
+        Value::Int(n)   => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b)  => b.to_string(),
+        other           => fmt_value_raw(other),
     }
 }
 
@@ -1447,6 +1912,11 @@ fn rng_bounded(session: &mut Session, bound: u64) -> u64 {
         let t = bound.wrapping_neg() % bound;
         if l >= t { return (m >> 64) as u64; }
     }
+}
+
+fn rng_u01(session: &mut Session) -> f64 {
+    let x = (session.next_u128() >> 64) as u64;
+    (x as f64) / (u64::MAX as f64)
 }
 
 fn pack_value(v: Value) -> Value {
@@ -1510,6 +1980,14 @@ fn map_get_int(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Opti
 fn map_get_bool(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<bool> {
     match m.get(key)? {
         Value::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+fn map_get_f64(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<f64> {
+    match m.get(key)? {
+        Value::Int(n)   => Some(*n as f64),
+        Value::Float(f) => Some(*f),
         _ => None,
     }
 }

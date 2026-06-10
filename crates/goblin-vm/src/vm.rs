@@ -521,6 +521,15 @@ impl Vm {
                 let func_tether = self.stack[func_idx].clone();
                 let func_val = self.session.read_value(&func_tether)?;
 
+                // If it's a Builtin value, dispatch directly without a call frame.
+                if let Value::Builtin(bid) = &func_val {
+                    let bid = *bid;
+                    let arg_tethers: Vec<_> = self.stack.drain(func_idx + 1..).collect();
+                    self.stack.pop(); // pop the func tether
+                    let result = crate::builtins::call_builtin(bid, arg_tethers, &mut self.session)?;
+                    self.stack.push(result);
+                } else {
+
                 let (func_rc, upvalues) = match func_val {
                     Value::Function(f) => (f, Vec::new()),
                     Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
@@ -547,6 +556,7 @@ impl Vm {
                 self.stack.pop();
 
                 self.call_stack.push(new_frame);
+                } // end else (not a Builtin)
             }
 
             Opcode::Return => {
