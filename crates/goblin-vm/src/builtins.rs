@@ -656,6 +656,60 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Str(serde_json::to_string_pretty(&jv).unwrap_or_default()))
         }
 
+        BuiltinId::IgnoreBetween => {
+            if args.len() < 3 || args.len() > 4 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "ignore_between".into() }); }
+            let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between")) };
+            let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between open")) };
+            let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between close")) };
+            let mut include_delims = true;
+            let mut allow_eof_close = true;
+            if args.len() == 4 {
+                if let Value::Map(m) = read(3)? {
+                    if let Some(Value::Bool(b)) = m.get("include_delims") { include_delims = *b; }
+                    if let Some(Value::Bool(b)) = m.get("allow_eof_close") { allow_eof_close = *b; }
+                }
+            }
+            if open.is_empty() || close.is_empty() { return Ok(Value::Str(text)); }
+            let mut out = String::with_capacity(text.len());
+            let mut i = 0usize;
+            while i < text.len() {
+                if let Some(rel) = text[i..].find(open.as_str()) {
+                    let start = i + rel;
+                    out.push_str(&text[i..start]);
+                    let k = start + open.len();
+                    let close_pos = match text[k..].find(close.as_str()) {
+                        Some(r) => Some(k + r),
+                        None => if allow_eof_close { Some(text.len()) } else { None },
+                    };
+                    if let Some(cpos) = close_pos {
+                        if include_delims {
+                            i = if cpos < text.len() { cpos + close.len() } else { text.len() };
+                        } else {
+                            out.push_str(&text[start..start + open.len()]);
+                            let end = if cpos < text.len() { cpos + close.len() } else { text.len() };
+                            if cpos < text.len() { out.push_str(&text[cpos..end]); }
+                            i = end;
+                        }
+                    } else {
+                        out.push_str(&text[start..]);
+                        break;
+                    }
+                } else {
+                    out.push_str(&text[i..]);
+                    break;
+                }
+            }
+            Ok(Value::Str(out))
+        }
+        BuiltinId::IgnoreBlocks => {
+            Err(GoblinError::NotImplemented { feature: "ignore_blocks: complex line-fenced span removal" })
+        }
+        BuiltinId::Env => {
+            expect_n(1)?;
+            let name = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "env")) };
+            Ok(Value::Str(std::env::var(&name).unwrap_or_default()))
+        }
+
         // ── Maps ──────────────────────────────────────────────────────────────
         BuiltinId::Keys => {
             expect_n(1)?;
@@ -1954,7 +2008,7 @@ fn fmt_num_trim(f: f64) -> String {
 pub fn value_to_str(v: &Value) -> String {
     match v {
         Value::Nil             => "nil".to_string(),
-        Value::Unit            => "()".to_string(),
+        Value::Unit            => String::new(),
         Value::Bool(b)         => b.to_string(),
         Value::Int(n)          => n.to_string(),
         Value::Float(f)        => fmt_num_trim(*f),
@@ -2102,7 +2156,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
         Value::Pct(p)   => fmt_num_trim(*p),
         Value::Bool(b)  => if *b { "true".into() } else { "false".into() },
         Value::Nil      => "nil".into(),
-        Value::Unit     => "unit".into(),
+        Value::Unit     => String::new(),
         Value::Array(xs) => {
             let mut s = String::from("[");
             for (i, val) in xs.iter().enumerate() {

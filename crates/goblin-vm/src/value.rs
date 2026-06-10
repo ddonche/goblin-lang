@@ -380,6 +380,9 @@ pub enum BuiltinId {
     JsonParse,
     JsonStringify,
     JsonStringifyPretty,
+    IgnoreBetween,
+    IgnoreBlocks,
+    Env,
 
     // Maps
     Keys,
