@@ -7,7 +7,7 @@
 /// - Unsupported AST nodes (ClassDecl, OverlayDef, etc.) produce CompileError.
 ///   These belong to the DES/object layer and will be handled separately.
 use goblin_ast::{
-    ActionBody, ActionDecl, BindMode, ClassDecl, EnumDecl, Expr, JudgeArm, Module, ReturnStmt, Stmt,
+    ActionBody, ActionDecl, BindMode, ClassDecl, EnumDecl, Expr, JudgeArm, JudgeArmBody, Module, ReturnStmt, Stmt,
 };
 use rust_decimal::Decimal;
 
@@ -144,6 +144,49 @@ impl FunctionScope {
     }
 }
 
+/// Recursively collect all variable names declared with `bind`/`|` (Tether) or
+/// action names at module level so they can be pre-declared before the main
+/// compilation pass. Does NOT recurse into Action/Class bodies (own scope).
+fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Bind(b) if matches!(b.mode, BindMode::Tether | BindMode::Shadow) => {
+                let name = b.name.0.clone();
+                if !out.contains(&name) { out.push(name); }
+            }
+            Stmt::TupleBind(tb) if matches!(tb.mode, BindMode::Tether | BindMode::Shadow) => {
+                for (name, _) in &tb.names {
+                    if !out.contains(name) { out.push(name.clone()); }
+                }
+            }
+            Stmt::Action(a) => {
+                if !out.contains(&a.name) { out.push(a.name.clone()); }
+            }
+            Stmt::Block { stmts, .. } => collect_bind_names(stmts, out),
+            Stmt::Judge(j) => {
+                for arm in &j.arms {
+                    if let JudgeArmBody::Stmts(stmts) = &arm.body {
+                        collect_bind_names(stmts, out);
+                    }
+                }
+            }
+            Stmt::JudgeAll(j) => {
+                for arm in &j.arms {
+                    if let JudgeArmBody::Stmts(stmts) = &arm.body {
+                        collect_bind_names(stmts, out);
+                    }
+                }
+            }
+            Stmt::Sweep(s) => {
+                for arm in &s.arms {
+                    collect_bind_names(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 // ── Compiler ─────────────────────────────────────────────────────────────────
 
 /// The stateful bytecode compiler.
@@ -171,6 +214,15 @@ impl Compiler {
     /// Compile a top-level module into a FunctionObject (the module's "main").
     pub fn compile_module(mut self, module: &Module) -> Result<CompiledModule, GoblinError> {
         self.push_scope("__main__", 0);
+        // Pre-declare all module-level variable and action names so forward
+        // references resolve correctly (interpreter resolves names at runtime).
+        let mut hoisted: Vec<String> = Vec::new();
+        collect_bind_names(&module.items, &mut hoisted);
+        for name in &hoisted {
+            let slot = self.scope_mut().declare_local(name);
+            self.emit(Opcode::LoadNil);
+            self.emit(Opcode::StoreLocal(slot));
+        }
         for stmt in &module.items {
             self.compile_stmt(stmt)?;
         }
@@ -334,8 +386,10 @@ impl Compiler {
                 let name = &bind.name.0;
                 match bind.mode {
                     BindMode::Tether => {
-                        // x | expr — initial binding; declare new local slot.
-                        let slot = self.scope_mut().declare_local(name);
+                        // x | expr — initial binding. Reuse pre-declared slot if
+                        // present (hoisted from module pre-pass), else declare new.
+                        let slot = self.scope_mut().find_local(name)
+                            .unwrap_or_else(|| self.scopes.last_mut().unwrap().declare_local(name));
                         self.emit(Opcode::StoreLocal(slot));
                     }
                     BindMode::Retether => {
