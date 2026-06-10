@@ -7,5 +7,7 @@ edition = "2021"
 slab = "0.4"
 goblin-ast = { path = "../goblin-ast" }
 goblin-diagnostics = { path = "../goblin-diagnostics" }
+goblin-parser = { path = "../goblin-parser" }
+goblin-lexer = { path = "../goblin-lexer" }
 rust_decimal = "1"
 indexmap = "2"

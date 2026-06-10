@@ -9,6 +9,7 @@
 use goblin_ast::{
     ActionBody, ActionDecl, BindMode, Expr, JudgeArm, Module, ReturnStmt, Stmt,
 };
+use rust_decimal::Decimal;
 
 use crate::error::GoblinError;
 use crate::opcode::Opcode;
@@ -367,12 +368,29 @@ impl Compiler {
                 self.compile_sweep(sweep)?;
             }
 
+            Stmt::TupleBind(tb) => {
+                self.compile_expr(&tb.expr)?;
+                let n = tb.names.len();
+                for (i, name) in tb.names.iter().enumerate() {
+                    if i < n - 1 {
+                        self.emit(Opcode::Dup);
+                    }
+                    let idx_val = Value::Int(i as i64);
+                    let cidx = self.add_constant(idx_val);
+                    self.emit(Opcode::LoadConst(cidx));
+                    self.emit(Opcode::GetIndex);
+                    let name_str = &name.0;
+                    let slot = self.scope_mut().declare_local(name_str);
+                    self.emit(Opcode::StoreLocal(slot));
+                }
+            }
+
             // ── Unhandled in the VM compiler (DES / object system) ────────────
             Stmt::Class(_) | Stmt::Enum(_) | Stmt::Import(_) | Stmt::Use(_)
             | Stmt::OverlayDef(_) | Stmt::OverlayApply(_) | Stmt::OverlayDetach(_)
             | Stmt::LinkDef(_) | Stmt::ObjectLinkDef(_) | Stmt::LinkOffset(_)
             | Stmt::ClearLink(_) | Stmt::ObjectDecision(..) | Stmt::UnitDecl(_)
-            | Stmt::BoxBind { .. } | Stmt::TupleBind(_) => {
+            | Stmt::BoxBind { .. } => {
                 return Err(GoblinError::NotImplemented {
                     feature: "DES/object system statements are not compiled by the VM compiler yet",
                 });
@@ -479,7 +497,41 @@ impl Compiler {
             Expr::Bool(false, _) => { self.emit(Opcode::LoadFalse); }
 
             Expr::Number(raw, _) => {
-                let v = parse_number(raw)?;
+                let raw_str = raw.as_str();
+                let is_integer_like = !raw_str.contains('.') && !raw_str.contains('e') && !raw_str.contains('E');
+                let v = if is_integer_like {
+                    let cleaned: String = raw_str.chars().filter(|&c| c != '_').collect();
+                    if let Ok(i) = cleaned.parse::<i64>() {
+                        let mag: i128 = if i >= 0 { i as i128 } else { -(i as i128) };
+                        if mag <= 9_007_199_254_740_992i128 {
+                            Value::Int(i)
+                        } else {
+                            let d = rust_decimal::Decimal::from_str_exact(&cleaned)
+                                .map_err(|_| GoblinError::CompileError {
+                                    message: format!("invalid number: {}", raw_str),
+                                    span_debug: "(unknown)".into(),
+                                })?;
+                            Value::Big(d)
+                        }
+                    } else {
+                        // Too large for i64 — parse as Decimal
+                        let d = rust_decimal::Decimal::from_str_exact(&cleaned)
+                            .map_err(|_| GoblinError::CompileError {
+                                message: format!("invalid number: {}", raw_str),
+                                span_debug: "(unknown)".into(),
+                            })?;
+                        Value::Big(d)
+                    }
+                } else {
+                    // float
+                    let cleaned: String = raw_str.chars().filter(|&c| c != '_').collect();
+                    let f: f64 = cleaned.parse()
+                        .map_err(|_| GoblinError::CompileError {
+                            message: format!("invalid float: {}", raw_str),
+                            span_debug: "(unknown)".into(),
+                        })?;
+                    Value::Float(f)
+                };
                 let idx = self.add_constant(v);
                 self.emit(Opcode::LoadConst(idx));
             }
@@ -490,7 +542,7 @@ impl Compiler {
             }
 
             Expr::Char(c, _) => {
-                let idx = self.add_constant(Value::Str(c.to_string()));
+                let idx = self.add_constant(Value::Char(*c));
                 self.emit(Opcode::LoadConst(idx));
             }
 
@@ -628,8 +680,10 @@ impl Compiler {
                 self.compile_binary(lhs, op, rhs)?;
             }
 
-            Expr::Postfix(_, _op, _) => {
-                return Err(GoblinError::NotImplemented { feature: "postfix operators" });
+            Expr::Postfix(inner, _op, _) => {
+                // Compile inner expression; mutation semantics (!) are deferred
+                self.compile_expr(inner)?;
+                // TODO: implement ! mutation semantics fully
             }
 
             // ── judge expression ──────────────────────────────────────────────

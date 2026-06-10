@@ -8,3 +8,4 @@ pub mod builtins;
 pub mod compiler;
 pub mod worker;
 pub mod debug;
+pub mod exec;

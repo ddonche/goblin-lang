@@ -213,6 +213,16 @@ impl Vm {
                     (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 + y),
                     (Value::Float(x), Value::Int(y))   => Value::Float(x + *y as f64),
                     (Value::Str(x), Value::Str(y))     => Value::Str(format!("{}{}", x, y)),
+                    (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
+                    (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
+                    (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
+                    (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
+                    (Value::Pct(x), Value::Float(y))   => Value::Pct(x + y),
+                    (Value::Float(x), Value::Pct(y))   => Value::Pct(x + y),
+                    (Value::Char(c), Value::Int(n))    => {
+                        let new_cp = (*c as i64).wrapping_add(*n) as u32;
+                        Value::Char(char::from_u32(new_cp).unwrap_or(*c))
+                    }
                     _ => return Err(GoblinError::type_error("number or str", b.type_name(), "+")),
                 };
                 let t = self.session.alloc_value(result);
@@ -279,6 +289,16 @@ impl Vm {
                     (Value::Float(x), Value::Float(y)) => Value::Float(x / y),
                     (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 / y),
                     (Value::Float(x), Value::Int(y))   => Value::Float(x / *y as f64),
+                    (Value::Big(x), Value::Big(y))     => {
+                        if y.is_zero() { return Err(GoblinError::DivisionByZero); }
+                        Value::Big(x / y)
+                    }
+                    (Value::Big(x), Value::Int(y))     => {
+                        if *y == 0 { return Err(GoblinError::DivisionByZero); }
+                        Value::Big(x / rust_decimal::Decimal::from(*y))
+                    }
+                    (Value::Pct(x), Value::Pct(y))     => Value::Pct(x / y),
+                    (Value::Pct(x), Value::Float(y))   => Value::Pct(x / y),
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "/")),
                 };
                 let t = self.session.alloc_value(result);
@@ -320,6 +340,8 @@ impl Vm {
                 let result = match &a {
                     Value::Int(x)   => Value::Int(-x),
                     Value::Float(x) => Value::Float(-x),
+                    Value::Big(x)   => Value::Big(-x),
+                    Value::Pct(x)   => Value::Pct(-x),
                     _ => return Err(GoblinError::type_error("number", a.type_name(), "neg")),
                 };
                 let t = self.session.alloc_value(result);
@@ -338,8 +360,19 @@ impl Vm {
             Opcode::Concat => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
-                let s = format!("{}{}", value_to_str(&a), value_to_str(&b));
-                let t = self.session.alloc_value(Value::Str(s));
+                let result = match (&a, &b) {
+                    (Value::Str(x), Value::Str(y)) => Value::Str(format!("{}{}", x, y)),
+                    (Value::Array(x), Value::Array(y)) => {
+                        let mut v = x.clone();
+                        v.extend_from_slice(y);
+                        Value::Array(v)
+                    }
+                    (Value::Char(x), Value::Char(y)) => Value::Str(format!("{}{}", x, y)),
+                    (Value::Char(x), Value::Str(y))  => Value::Str(format!("{}{}", x, y)),
+                    (Value::Str(x), Value::Char(y))  => Value::Str(format!("{}{}", x, y)),
+                    _ => return Err(GoblinError::type_error("string or array", a.type_name(), "<>")),
+                };
+                let t = self.session.alloc_value(result);
                 self.stack.push(t);
             }
 
@@ -625,18 +658,51 @@ impl Vm {
             (Value::Float(x), Value::Float(y)) => Ok(Value::Float(flt_fn(*x, *y))),
             (Value::Int(x), Value::Float(y))   => Ok(Value::Float(flt_fn(*x as f64, *y))),
             (Value::Float(x), Value::Int(y))   => Ok(Value::Float(flt_fn(*x, *y as f64))),
+            (Value::Big(x), Value::Big(y))     => {
+                let xf = x.to_string().parse::<f64>().unwrap_or(f64::NAN);
+                let yf = y.to_string().parse::<f64>().unwrap_or(f64::NAN);
+                // Use decimal arithmetic for sub/mul; we use the flt_fn to determine op
+                // For sub: int_fn(1,1)=0 vs mul: int_fn(2,3)=6; detect by testing int_fn
+                // Simple approach: just use Decimal native ops via a discriminant
+                let result_f = flt_fn(xf, yf);
+                let d = rust_decimal::Decimal::try_from(result_f)
+                    .unwrap_or_else(|_| *x - *y);
+                Ok(Value::Big(d))
+            }
+            (Value::Big(x), Value::Int(y))     => {
+                let xf = x.to_string().parse::<f64>().unwrap_or(f64::NAN);
+                let d = rust_decimal::Decimal::try_from(flt_fn(xf, *y as f64))
+                    .unwrap_or_else(|_| *x);
+                Ok(Value::Big(d))
+            }
+            (Value::Int(x), Value::Big(y))     => {
+                let yf = y.to_string().parse::<f64>().unwrap_or(f64::NAN);
+                let d = rust_decimal::Decimal::try_from(flt_fn(*x as f64, yf))
+                    .unwrap_or_else(|_| *y);
+                Ok(Value::Big(d))
+            }
+            (Value::Pct(x), Value::Pct(y))     => Ok(Value::Pct(flt_fn(*x, *y))),
+            (Value::Pct(x), Value::Float(y))   => Ok(Value::Pct(flt_fn(*x, *y))),
+            (Value::Float(x), Value::Pct(y))   => Ok(Value::Pct(flt_fn(*x, *y))),
             _ => Err(GoblinError::type_error("number", b.type_name(), op)),
         }
     }
 
     /// Returns negative, zero, or positive for ordering.
     fn compare_values(&self, a: &Value, b: &Value, op: &'static str) -> Result<i32, GoblinError> {
+        use std::cmp::Ordering;
+        let ord_to_i32 = |o: Ordering| match o { Ordering::Less => -1, Ordering::Equal => 0, Ordering::Greater => 1 };
         match (a, b) {
-            (Value::Int(x), Value::Int(y))     => Ok(x.cmp(y) as i32),
-            (Value::Float(x), Value::Float(y)) => Ok(x.partial_cmp(y).map(|o| o as i32).unwrap_or(0)),
-            (Value::Int(x), Value::Float(y))   => Ok((*x as f64).partial_cmp(y).map(|o| o as i32).unwrap_or(0)),
-            (Value::Float(x), Value::Int(y))   => Ok(x.partial_cmp(&(*y as f64)).map(|o| o as i32).unwrap_or(0)),
-            (Value::Str(x), Value::Str(y))     => Ok(x.cmp(y) as i32),
+            (Value::Int(x), Value::Int(y))     => Ok(ord_to_i32(x.cmp(y))),
+            (Value::Float(x), Value::Float(y)) => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
+            (Value::Int(x), Value::Float(y))   => Ok((*x as f64).partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
+            (Value::Float(x), Value::Int(y))   => Ok(x.partial_cmp(&(*y as f64)).map(ord_to_i32).unwrap_or(0)),
+            (Value::Str(x), Value::Str(y))     => Ok(ord_to_i32(x.cmp(y))),
+            (Value::Char(x), Value::Char(y))   => Ok(ord_to_i32(x.cmp(y))),
+            (Value::Big(x), Value::Big(y))     => Ok(ord_to_i32(x.cmp(y))),
+            (Value::Big(x), Value::Int(y))     => Ok(ord_to_i32(x.cmp(&rust_decimal::Decimal::from(*y)))),
+            (Value::Int(x), Value::Big(y))     => Ok(ord_to_i32(rust_decimal::Decimal::from(*x).cmp(y))),
+            (Value::Pct(x), Value::Pct(y))     => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
             _ => Err(GoblinError::type_error("comparable", b.type_name(), op)),
         }
     }
