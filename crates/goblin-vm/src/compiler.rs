@@ -1329,7 +1329,7 @@ fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "delete_at"                     => BuiltinId::DeleteAt,
         "delete_where"                  => BuiltinId::DeleteWhere,
         "delete_all"                    => BuiltinId::DeleteAll,
-        "reap"                          => BuiltinId::Reap,
+        "reap"                          => BuiltinId::ReapSample,
         "reap_first"                    => BuiltinId::ReapFirst,
         "reap_last"                     => BuiltinId::ReapLast,
         "reap_at"                       => BuiltinId::ReapAt,

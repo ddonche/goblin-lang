@@ -578,6 +578,7 @@ pub enum BuiltinId {
     WriteText,
     AppendFile,
     WriteJson,
+    ReapSample,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

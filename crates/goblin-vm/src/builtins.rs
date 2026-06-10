@@ -1373,6 +1373,32 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Err(GoblinError::NotImplemented { feature: "reap_where / reap_all require VM predicate callback" })
         }
 
+        BuiltinId::ReapSample => {
+            expect_n(1)?;
+            let cfg = match read(0)? { Value::Map(m) => m, other => return Err(GoblinError::type_error("map", other.type_name(), "reap")) };
+            let n_out: usize = match cfg.get("count") { None => 1, Some(Value::Int(n)) if *n > 0 => *n as usize, _ => return Err(GoblinError::Runtime("reap: count must be a positive integer".into())) };
+            match cfg.get("src") {
+                Some(Value::Array(arr)) => {
+                    if arr.is_empty() { return Err(GoblinError::Runtime("reap: empty src".into())); }
+                    if n_out > arr.len() { return Err(GoblinError::Runtime(format!("reap: requested {} but only {} available", n_out, arr.len()))); }
+                    let mut idxs: Vec<usize> = (0..arr.len()).collect();
+                    let mut items = Vec::with_capacity(n_out);
+                    for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); items.push(arr[idxs[i]].clone()); }
+                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(items)) }
+                }
+                Some(Value::Map(map)) => {
+                    let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    if entries.is_empty() { return Err(GoblinError::Runtime("reap: empty src map".into())); }
+                    if n_out > entries.len() { return Err(GoblinError::Runtime(format!("reap: requested {} but only {} available", n_out, entries.len()))); }
+                    let mut idxs: Vec<usize> = (0..entries.len()).collect();
+                    let mut items = Vec::with_capacity(n_out);
+                    for i in 0..n_out { let j = i + rng_bounded(session, (entries.len() - i) as u64) as usize; idxs.swap(i, j); let (k, v) = &entries[idxs[i]]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); items.push(Value::Map(m)); }
+                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(items)) }
+                }
+                _ => Err(GoblinError::Runtime("reap: src must be an array or map".into())),
+            }
+        }
+
         // ── Collections — new Position×Operation matrix ───────────────────────
         // Get family
         BuiltinId::GetFirst => {
