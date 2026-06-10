@@ -1012,6 +1012,7 @@ dependencies = [
  "goblin-interpreter",
  "goblin-lexer",
  "goblin-parser",
+ "goblin-vm",
  "serde",
  "serde_json",
  "serde_yaml",
