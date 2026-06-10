@@ -142,7 +142,15 @@ impl Vm {
                             frame.ip = handler.catch_ip;
                         }
                     } else {
-                        return Err(e);
+                        let line = self.call_stack.last()
+                            .and_then(|f| f.func.line_numbers.get(f.ip.saturating_sub(1)).copied())
+                            .unwrap_or(0);
+                        let located = if matches!(e, GoblinError::WithLocation { .. }) {
+                            e
+                        } else {
+                            GoblinError::WithLocation { inner: Box::new(e), line }
+                        };
+                        return Err(located);
                     }
                 }
             }
@@ -1542,6 +1550,7 @@ mod tests {
             params: 0,
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
+            line_numbers: Vec::new(),
         }
     }
 
@@ -1580,6 +1589,7 @@ mod tests {
             params: 0,
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
+            line_numbers: Vec::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -1604,6 +1614,7 @@ mod tests {
             params: 0,
             name: "if_else".into(),
             upvalue_descriptors: Vec::new(),
+            line_numbers: Vec::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -1626,6 +1637,7 @@ mod tests {
             params: 1,
             name: "add1".into(),
             upvalue_descriptors: Vec::new(),
+            line_numbers: Vec::new(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -1641,6 +1653,7 @@ mod tests {
             params: 0,
             name: "outer".into(),
             upvalue_descriptors: Vec::new(),
+            line_numbers: Vec::new(),
         };
 
         let result = vm.execute(outer).unwrap();

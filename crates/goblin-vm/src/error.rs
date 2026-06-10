@@ -47,6 +47,9 @@ pub enum GoblinError {
 
     /// A generic runtime error with a message.
     Runtime(String),
+
+    /// An error annotated with a source location.
+    WithLocation { inner: Box<GoblinError>, line: u32 },
 }
 
 impl GoblinError {
@@ -88,6 +91,8 @@ impl fmt::Display for GoblinError {
                 write!(f, "not yet implemented: {feature}"),
             GoblinError::Runtime(msg) =>
                 write!(f, "runtime error: {msg}"),
+            GoblinError::WithLocation { inner, line } =>
+                write!(f, "[line {line}] {inner}"),
         }
     }
 }

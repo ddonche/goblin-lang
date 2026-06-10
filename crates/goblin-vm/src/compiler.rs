@@ -40,6 +40,10 @@ struct FunctionScope {
     continue_patches: Vec<usize>,
     #[allow(dead_code)]
     loop_start: Option<usize>,
+    /// Source line number for each emitted opcode (parallel to bytecode).
+    line_numbers: Vec<u32>,
+    /// Current source line to attach to emitted opcodes.
+    current_line: u32,
 }
 
 impl FunctionScope {
@@ -55,6 +59,8 @@ impl FunctionScope {
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
             loop_start: None,
+            line_numbers: Vec::new(),
+            current_line: 0,
         }
     }
 
@@ -103,6 +109,7 @@ impl FunctionScope {
     fn emit(&mut self, op: Opcode) -> usize {
         let pos = self.bytecode.len();
         self.bytecode.push(op);
+        self.line_numbers.push(self.current_line);
         pos
     }
 
@@ -132,6 +139,7 @@ impl FunctionScope {
             params: self.params,
             name: self.name,
             upvalue_descriptors,
+            line_numbers: self.line_numbers,
         }
     }
 }
@@ -149,11 +157,13 @@ pub struct Compiler {
     pub collected_classes: Vec<ClassDecl>,
     /// Enum declarations collected during compilation.
     pub collected_enums: Vec<EnumDecl>,
+    /// Current source line (updated before compiling each AST node).
+    current_line: u32,
 }
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0 }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -222,6 +232,13 @@ impl Compiler {
 
     fn emit(&mut self, op: Opcode) -> usize {
         self.scope_mut().emit(op)
+    }
+
+    fn set_current_line(&mut self, line: u32) {
+        self.current_line = line;
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.current_line = line;
+        }
     }
 
     fn add_constant(&mut self, v: Value) -> u16 {
@@ -591,6 +608,7 @@ impl Compiler {
     // ── Expression compiler ───────────────────────────────────────────────────
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), GoblinError> {
+        self.set_current_line(expr.span().line_start);
         match expr {
             // ── Literals ──────────────────────────────────────────────────────
             Expr::Nil(_) => { self.emit(Opcode::LoadNil); }
