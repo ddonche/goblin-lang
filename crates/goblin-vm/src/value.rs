@@ -275,6 +275,8 @@ pub struct FunctionObject {
     pub name: String,
     /// How to populate upvalues when this function is wrapped in a Closure.
     pub upvalue_descriptors: Vec<UpvalueDescriptor>,
+    /// Source line number for each bytecode instruction (parallel to bytecode).
+    pub line_numbers: Vec<u32>,
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected
