@@ -1055,6 +1055,46 @@ fn repl_banner() -> &'static str {
 
 // ── VM execution entry points ────────────────────────────────────────────────
 
+fn vm_error_to_diagnostic(
+    e: &goblin_vm::error::GoblinError,
+    filepath: &str,
+    src: &str,
+) -> goblin_diagnostics::Diagnostic {
+    use goblin_diagnostics::{Diagnostic, Severity, Span};
+    use goblin_vm::error::GoblinError;
+
+    // Peel off WithLocation wrappers to get the line number and inner message.
+    fn peel(e: &GoblinError) -> (&GoblinError, u32) {
+        match e {
+            GoblinError::WithLocation { inner, line } => {
+                let (inner2, inner_line) = peel(inner);
+                (inner2, if inner_line > 0 { inner_line } else { *line })
+            }
+            other => (other, 0),
+        }
+    }
+    let (inner, line) = peel(e);
+    let message = inner.to_string();
+
+    // Find byte offset of the start of the given 1-based line.
+    let (start_byte, end_byte) = {
+        let mut off = 0usize;
+        let mut found = (0usize, 0usize);
+        for (i, ln) in src.split('\n').enumerate() {
+            if i + 1 == line as usize {
+                found = (off, off + ln.len());
+                break;
+            }
+            off += ln.len() + 1;
+        }
+        found
+    };
+
+    let lineno = line.max(1);
+    let span = Span::new(filepath, start_byte, end_byte, lineno, 1, lineno, 1);
+    Diagnostic::new_with_code(Severity::Error, "VM", "runtime-error", &message, span)
+}
+
 fn run_run_vm(path: &std::path::Path) -> i32 {
     use std::time::Instant;
 
@@ -1066,6 +1106,7 @@ fn run_run_vm(path: &std::path::Path) -> i32 {
         }
     };
 
+    let filepath = path.display().to_string();
     let start = Instant::now();
     let result = goblin_vm::exec::execute_source(&src);
     let elapsed = start.elapsed();
@@ -1073,7 +1114,8 @@ fn run_run_vm(path: &std::path::Path) -> i32 {
     let code = match result {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("{}", e);
+            let diag = vm_error_to_diagnostic(&e, &filepath, &src);
+            eprintln!("{}", diag);
             1
         }
     };
