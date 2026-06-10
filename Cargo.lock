@@ -1128,6 +1128,8 @@ dependencies = [
  "serde_json",
  "slab",
  "uuid",
+ "walkdir",
+ "zip",
 ]
 
 [[package]]

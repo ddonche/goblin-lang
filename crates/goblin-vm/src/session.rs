@@ -1,8 +1,26 @@
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use slab::Slab;
 
 use crate::error::GoblinError;
+use crate::grid::GridStore;
 use crate::value::{Stash, Address, Tether, Value};
+
+/// HTTP response state accumulated during a request.
+#[derive(Debug, Clone, Default)]
+pub struct ResponseState {
+    pub status: Option<i64>,
+    pub headers: indexmap::IndexMap<String, String>,
+    pub cookies: Vec<String>,
+}
+
+/// An overlay instance applied to a host variable.
+#[derive(Debug, Clone)]
+pub struct OverlayInstance {
+    pub overlay_name: String,
+    pub host_var: String,
+    pub strength: f64,
+}
 
 /// GC modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +61,21 @@ pub struct Session {
 
     /// PRNG state for builtins like shuffle/mixed. LCG/MCG.
     pub rng_state: u128,
+
+    /// Token store: namespace → key → value.
+    pub token_store: BTreeMap<String, BTreeMap<String, Value>>,
+
+    /// Object store: uuid → Value (for DES/overlay system).
+    pub object_store: HashMap<String, Value>,
+
+    /// Active overlay instances.
+    pub overlay_instances: Vec<OverlayInstance>,
+
+    /// HTTP response state.
+    pub response: ResponseState,
+
+    /// Grid worlds.
+    pub grid_store: GridStore,
 }
 
 impl Session {
@@ -62,6 +95,11 @@ impl Session {
             alloc_since_last_gc: 0,
             gc_watermark: 10_000,
             rng_state: seed,
+            token_store: BTreeMap::new(),
+            object_store: HashMap::new(),
+            overlay_instances: Vec::new(),
+            response: ResponseState::default(),
+            grid_store: GridStore::new(),
         }
     }
 

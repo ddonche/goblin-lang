@@ -1640,6 +1640,59 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         // Dice string
         "roll_str"                       => BuiltinId::RollStr,
         "roll_detail_str"                => BuiltinId::RollDetailStr,
+
+        // Type/format
+        "valtype" | "vt"                 => BuiltinId::ValType,
+        "format_info"                    => BuiltinId::FormatInfo,
+        "clear_format"                   => BuiltinId::ClearFormat,
+        "backend"                        => BuiltinId::Backend,
+        "metrics"                        => BuiltinId::Metrics,
+
+        // Process
+        "zip_dir"                        => BuiltinId::ZipDir,
+
+        // Token store
+        "register_token"                 => BuiltinId::RegisterToken,
+        "resolve_token"                  => BuiltinId::ResolveToken,
+        "clear_token"                    => BuiltinId::ClearToken,
+        "clear_tokens"                   => BuiltinId::ClearTokens,
+        "clear_all_tokens"               => BuiltinId::ClearAllTokens,
+        "list_tokens"                    => BuiltinId::ListTokens,
+
+        // DES / overlay
+        "decision_debug"                 => BuiltinId::DecisionDebug,
+        "overlays_of"                    => BuiltinId::OverlaysOf,
+        "overlay_strength"               => BuiltinId::OverlayStrength,
+        "link_score"                     => BuiltinId::LinkScore,
+        "owned_by"                       => BuiltinId::OwnedBy,
+        "owns_tree"                      => BuiltinId::OwnsTree,
+        "clone_object"                   => BuiltinId::CloneObject,
+        "delete_object"                  => BuiltinId::DeleteObject,
+        "delete_overlays_on"             => BuiltinId::DeleteOverlaysOn,
+
+        // Grid
+        "grid"                           => BuiltinId::Grid,
+        "grid_get"                       => BuiltinId::GridGet,
+        "grid_set"                       => BuiltinId::GridSet,
+        "grid_void"                      => BuiltinId::GridVoid,
+        "grid_tile_get"                  => BuiltinId::GridTileGet,
+        "grid_tile_set"                  => BuiltinId::GridTileSet,
+        "grid_region_get"                => BuiltinId::GridRegionGet,
+        "grid_region_set"                => BuiltinId::GridRegionSet,
+        "grid_default_get"               => BuiltinId::GridDefaultGet,
+        "grid_default_set"               => BuiltinId::GridDefaultSet,
+        "grid_neighbors"                 => BuiltinId::GridNeighbors,
+        "grid_occupied"                  => BuiltinId::GridOccupied,
+        "grid_unoccupied"                => BuiltinId::GridUnoccupied,
+        "grid_occupied_count"            => BuiltinId::GridOccupiedCount,
+        "grid_unoccupied_count"          => BuiltinId::GridUnoccupiedCount,
+        "grid_count"                     => BuiltinId::GridCount,
+        "grid_occupied_by"               => BuiltinId::GridOccupiedBy,
+        "grid_has"                       => BuiltinId::GridHas,
+        "grid_info"                      => BuiltinId::GridInfo,
+        "grid_tile_info"                 => BuiltinId::GridTileInfo,
+        "grid_region_info"               => BuiltinId::GridRegionInfo,
+
         _ => return None,
     })
 }

@@ -2,6 +2,7 @@ pub mod error;
 pub mod opcode;
 pub mod value;
 pub mod session;
+pub mod grid;
 pub mod vm;
 pub mod collections;
 pub mod builtins;

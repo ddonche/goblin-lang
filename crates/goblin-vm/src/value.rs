@@ -636,6 +636,58 @@ pub enum BuiltinId {
     // Dice string parsing
     RollStr,
     RollDetailStr,
+
+    // Type/format builtins
+    ValType,
+    FormatInfo,
+    ClearFormat,
+    Backend,
+    Metrics,
+
+    // Process
+    ZipDir,
+
+    // Token store
+    RegisterToken,
+    ResolveToken,
+    ClearToken,
+    ClearTokens,
+    ClearAllTokens,
+    ListTokens,
+
+    // DES / overlay builtins
+    DecisionDebug,
+    OverlaysOf,
+    OverlayStrength,
+    LinkScore,
+    OwnedBy,
+    OwnsTree,
+    CloneObject,
+    DeleteObject,
+    DeleteOverlaysOn,
+
+    // Grid
+    Grid,
+    GridGet,
+    GridSet,
+    GridVoid,
+    GridTileGet,
+    GridTileSet,
+    GridRegionGet,
+    GridRegionSet,
+    GridDefaultGet,
+    GridDefaultSet,
+    GridNeighbors,
+    GridOccupied,
+    GridUnoccupied,
+    GridOccupiedCount,
+    GridUnoccupiedCount,
+    GridCount,
+    GridOccupiedBy,
+    GridHas,
+    GridInfo,
+    GridTileInfo,
+    GridRegionInfo,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

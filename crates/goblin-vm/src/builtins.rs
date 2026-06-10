@@ -2095,9 +2095,59 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Str("Lorem ipsum dolor sit amet.".into()))
         }
 
-        // ── Process (stub) ────────────────────────────────────────────────────
+        // ── Process ───────────────────────────────────────────────────────────
         BuiltinId::RunCmd => {
-            Err(GoblinError::NotImplemented { feature: "run_cmd: process execution not yet implemented in VM" })
+            if args.is_empty() || args.len() > 3 {
+                return Err(GoblinError::Runtime(format!("run_cmd: expected 1-3 args, got {}", args.len())));
+            }
+            let command = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "run_cmd")),
+            };
+            let cwd: Option<String> = if args.len() >= 2 {
+                match read(1)? {
+                    Value::Str(s) if !s.trim().is_empty() => Some(s),
+                    _ => None,
+                }
+            } else { None };
+            let env_vars: Vec<(String, String)> = if args.len() == 3 {
+                match read(2)? {
+                    Value::Map(map) => map.into_iter().map(|(k, v)| (k, match v {
+                        Value::Str(s) => s, other => format!("{:?}", other),
+                    })).collect(),
+                    Value::MapOrd(map) => map.into_iter().map(|(k, v)| (k, match v {
+                        Value::Str(s) => s, other => format!("{:?}", other),
+                    })).collect(),
+                    _ => return Err(GoblinError::Runtime("run_cmd: env argument must be a map".into())),
+                }
+            } else { vec![] };
+            let mut cmd = if cfg!(target_os = "windows") {
+                let mut c = std::process::Command::new("cmd");
+                c.arg("/C").arg(&command);
+                c
+            } else {
+                let mut c = std::process::Command::new("sh");
+                c.arg("-lc").arg(&command);
+                c
+            };
+            if let Some(dir) = cwd { cmd.current_dir(dir); }
+            for (k, v) in env_vars { cmd.env(k, v); }
+            match cmd.output() {
+                Ok(output) => {
+                    let ok = output.status.success();
+                    let code = output.status.code();
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let payload = serde_json::json!({
+                        "ok": ok,
+                        "code": code,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                    });
+                    Ok(Value::Str(payload.to_string()))
+                }
+                Err(e) => Err(GoblinError::Runtime(format!("run_cmd: failed to run command: {e}"))),
+            }
         }
         BuiltinId::RandSeed => {
             expect_n(1)?;
@@ -2255,11 +2305,136 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(detail)
         }
 
-        // ── Request/Response (stub) ───────────────────────────────────────────
-        BuiltinId::ReqMethod | BuiltinId::ReqPath | BuiltinId::ReqQuery
-        | BuiltinId::ReqBody | BuiltinId::ReqHeader | BuiltinId::Cookie
-        | BuiltinId::SetStatus | BuiltinId::SetHeader | BuiltinId::SetCookie => {
-            Err(GoblinError::NotImplemented { feature: "HTTP request/response builtins require HTTP context" })
+        // ── Request ───────────────────────────────────────────────────────────
+        BuiltinId::ReqMethod => {
+            Ok(Value::Str(std::env::var("GOBLIN_METHOD").unwrap_or_default()))
+        }
+        BuiltinId::ReqPath => {
+            Ok(Value::Str(std::env::var("GOBLIN_PATH").unwrap_or_default()))
+        }
+        BuiltinId::ReqQuery => {
+            Ok(Value::Str(std::env::var("GOBLIN_QUERY_STRING").unwrap_or_default()))
+        }
+        BuiltinId::ReqBody => {
+            Ok(Value::Str(std::env::var("GOBLIN_BODY").unwrap_or_default()))
+        }
+        BuiltinId::ReqHeader => {
+            if args.len() != 1 {
+                return Err(GoblinError::Runtime(format!("req_header: expected 1 arg, got {}", args.len())));
+            }
+            let name = match read(0)? {
+                Value::Str(s) => s.to_lowercase(),
+                other => return Err(GoblinError::type_error("str", other.type_name(), "req_header")),
+            };
+            let headers_json = std::env::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
+            let parsed: serde_json::Value = serde_json::from_str(&headers_json).unwrap_or(serde_json::Value::Null);
+            if let serde_json::Value::Object(map) = parsed {
+                for (k, v) in map {
+                    if k.to_lowercase() == name {
+                        return Ok(Value::Str(v.as_str().unwrap_or("").to_string()));
+                    }
+                }
+            }
+            Ok(Value::Nil)
+        }
+        BuiltinId::Cookie => {
+            if args.len() != 1 {
+                return Err(GoblinError::Runtime(format!("cookie: expected 1 arg, got {}", args.len())));
+            }
+            let name = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "cookie")),
+            };
+            let headers_json = std::env::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
+            let parsed: serde_json::Value = serde_json::from_str(&headers_json).unwrap_or(serde_json::Value::Null);
+            if let serde_json::Value::Object(map) = parsed {
+                for (k, v) in map {
+                    if k.eq_ignore_ascii_case("cookie") {
+                        if let Some(cookie_str) = v.as_str() {
+                            for pair in cookie_str.split(';') {
+                                let mut parts = pair.trim().splitn(2, '=');
+                                let key = parts.next().unwrap_or("").trim();
+                                let val = parts.next().unwrap_or("").trim();
+                                if key == name {
+                                    return Ok(Value::Str(val.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Value::Nil)
+        }
+
+        // ── Response ──────────────────────────────────────────────────────────
+        BuiltinId::SetStatus => {
+            if args.len() != 1 {
+                return Err(GoblinError::Runtime(format!("set_status: expected 1 arg, got {}", args.len())));
+            }
+            match read(0)? {
+                Value::Int(n) => { session.response.status = Some(n); Ok(Value::Nil) }
+                other => Err(GoblinError::type_error("int", other.type_name(), "set_status")),
+            }
+        }
+        BuiltinId::SetHeader => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("set_header: expected 2 args, got {}", args.len())));
+            }
+            let key = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "set_header key")),
+            };
+            let value = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "set_header value")),
+            };
+            session.response.headers.insert(key, value);
+            Ok(Value::Nil)
+        }
+        BuiltinId::SetCookie => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(GoblinError::Runtime(format!("set_cookie: expected 2-3 args, got {}", args.len())));
+            }
+            let name = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "set_cookie name")),
+            };
+            let value = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "set_cookie value")),
+            };
+            let mut cookie = format!("{name}={value}");
+            if args.len() == 3 {
+                match read(2)? {
+                    Value::Map(map) => {
+                        for (k, v) in &map {
+                            match (k.as_str(), v) {
+                                ("path", Value::Str(s)) => cookie.push_str(&format!("; Path={s}")),
+                                ("domain", Value::Str(s)) => cookie.push_str(&format!("; Domain={s}")),
+                                ("http_only", Value::Bool(true)) => cookie.push_str("; HttpOnly"),
+                                ("secure", Value::Bool(true)) => cookie.push_str("; Secure"),
+                                ("max_age", Value::Int(n)) => cookie.push_str(&format!("; Max-Age={n}")),
+                                _ => {}
+                            }
+                        }
+                    }
+                    Value::MapOrd(map) => {
+                        for (k, v) in &map {
+                            match (k.as_str(), v) {
+                                ("path", Value::Str(s)) => cookie.push_str(&format!("; Path={s}")),
+                                ("domain", Value::Str(s)) => cookie.push_str(&format!("; Domain={s}")),
+                                ("http_only", Value::Bool(true)) => cookie.push_str("; HttpOnly"),
+                                ("secure", Value::Bool(true)) => cookie.push_str("; Secure"),
+                                ("max_age", Value::Int(n)) => cookie.push_str(&format!("; Max-Age={n}")),
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => return Err(GoblinError::Runtime("set_cookie: options must be a map".into())),
+                }
+            }
+            session.response.cookies.push(cookie);
+            Ok(Value::Nil)
         }
 
         // ── pack / unpack ─────────────────────────────────────────────────────
@@ -2954,7 +3129,596 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let t = session.alloc_value(Value::Map(cfg));
             dispatch(BuiltinId::RollDetail, vec![t], session)
         }
+
+        // ── Type / format builtins ─────────────────────────────────────────────
+        BuiltinId::ValType => {
+            expect_n(1)?;
+            Ok(Value::Str(read(0)?.type_name().to_string()))
+        }
+        BuiltinId::ClearFormat => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Formatted(inner, _) => Ok(*inner),
+                other => Ok(other),
+            }
+        }
+        BuiltinId::FormatInfo => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Formatted(_, spec) => {
+                    let mut map = std::collections::BTreeMap::new();
+                    map.insert("dec".into(), Value::Int(spec.decimals as i64));
+                    map.insert("th".into(), match spec.sep_thousands {
+                        Some(c) => Value::Str(c.to_string()),
+                        None => Value::Nil,
+                    });
+                    map.insert("decmark".into(), Value::Str(spec.sep_decimal.to_string()));
+                    Ok(Value::Map(map))
+                }
+                _ => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::Backend => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Seq(_) => Ok(Value::Str("seq".into())),
+                Value::Array(_) => Ok(Value::Str("array".into())),
+                Value::Collection(c) => {
+                    let name = match &c.layout {
+                        crate::value::CollectionLayout::FlatArray(_) => "flat_array",
+                        crate::value::CollectionLayout::RingBuf(_) => "ring_buf",
+                        crate::value::CollectionLayout::ChunkedSeq(_) => "chunked_seq",
+                        crate::value::CollectionLayout::SmallMap(_) => "small_map",
+                        crate::value::CollectionLayout::HashMapBackend(_) => "hash_map",
+                    };
+                    Ok(Value::Str(name.into()))
+                }
+                _ => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::Metrics => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Collection(c) => {
+                    let mut map = std::collections::BTreeMap::new();
+                    map.insert("len".into(), Value::Int(c.meta.len as i64));
+                    map.insert("front_hits".into(), Value::Int(c.meta.front_hits as i64));
+                    map.insert("back_hits".into(), Value::Int(c.meta.back_hits as i64));
+                    map.insert("mid_hits".into(), Value::Int(c.meta.mid_hits as i64));
+                    Ok(Value::Map(map))
+                }
+                Value::Array(a) => {
+                    let mut map = std::collections::BTreeMap::new();
+                    map.insert("len".into(), Value::Int(a.len() as i64));
+                    Ok(Value::Map(map))
+                }
+                Value::Seq(s) => {
+                    let mut map = std::collections::BTreeMap::new();
+                    map.insert("len".into(), Value::Int(s.len() as i64));
+                    Ok(Value::Map(map))
+                }
+                _ => Ok(Value::Nil),
+            }
+        }
+
+        // ── ZipDir ────────────────────────────────────────────────────────────
+        BuiltinId::ZipDir => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("zip_dir: expected 2 args, got {}", args.len())));
+            }
+            let src = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "zip_dir src")),
+            };
+            let dest = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "zip_dir dest")),
+            };
+            zip_directory(&src, &dest)?;
+            Ok(Value::Nil)
+        }
+
+        // ── Token store ───────────────────────────────────────────────────────
+        BuiltinId::RegisterToken => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("register_token: expected 3 args, got {}", args.len())));
+            }
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token ns")) };
+            let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token key")) };
+            let value = read(2)?;
+            session.token_store.entry(ns).or_default().insert(key, value);
+            Ok(Value::Nil)
+        }
+        BuiltinId::ResolveToken => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("resolve_token: expected 2 args, got {}", args.len())));
+            }
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) };
+            let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token key")) };
+            match session.token_store.get(&ns).and_then(|m| m.get(&key)) {
+                Some(v) => Ok(v.clone()),
+                None => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::ClearToken => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("clear_token: expected 2 args, got {}", args.len())));
+            }
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token ns")) };
+            let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token key")) };
+            if let Some(m) = session.token_store.get_mut(&ns) { m.remove(&key); }
+            Ok(Value::Nil)
+        }
+        BuiltinId::ClearTokens => {
+            if args.len() != 1 {
+                return Err(GoblinError::Runtime(format!("clear_tokens: expected 1 arg, got {}", args.len())));
+            }
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_tokens ns")) };
+            session.token_store.remove(&ns);
+            Ok(Value::Nil)
+        }
+        BuiltinId::ClearAllTokens => {
+            session.token_store.clear();
+            Ok(Value::Nil)
+        }
+        BuiltinId::ListTokens => {
+            if args.is_empty() {
+                let names: Vec<Value> = session.token_store.keys().cloned().map(Value::Str).collect();
+                Ok(Value::Array(names))
+            } else {
+                let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "list_tokens ns")) };
+                match session.token_store.get(&ns) {
+                    Some(m) => Ok(Value::Array(m.keys().cloned().map(Value::Str).collect())),
+                    None => Ok(Value::Array(vec![])),
+                }
+            }
+        }
+
+        // ── DES / Overlay builtins ─────────────────────────────────────────────
+        BuiltinId::OwnedBy => {
+            expect_n(1)?;
+            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "owned_by")) };
+            let owned: Vec<Value> = session.object_store.iter()
+                .filter_map(|(k, v)| {
+                    if let Value::Object { fields, .. } = v {
+                        if fields.get("owner").map(|o| matches!(o, Value::Str(u) if u == &uuid)).unwrap_or(false) {
+                            return Some(Value::Str(k.clone()));
+                        }
+                    }
+                    None
+                })
+                .collect();
+            Ok(Value::Array(owned))
+        }
+        BuiltinId::OwnsTree => {
+            expect_n(1)?;
+            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "owns_tree")) };
+            Ok(Value::Str(format!("owns_tree({})", uuid)))
+        }
+        BuiltinId::CloneObject => {
+            expect_n(1)?;
+            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clone_object")) };
+            if let Some(obj) = session.object_store.get(&uuid).cloned() {
+                let new_uuid = uuid::Uuid::new_v4().to_string();
+                if let Value::Object { class_name, fields, readonly_fields, trait_fields, .. } = obj {
+                    let cloned = Value::Object { class_name, fields, readonly_fields, trait_fields, uuid: new_uuid.clone() };
+                    session.object_store.insert(new_uuid.clone(), cloned);
+                    Ok(Value::Str(new_uuid))
+                } else {
+                    Ok(Value::Nil)
+                }
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+        BuiltinId::DeleteObject => {
+            expect_n(1)?;
+            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
+            session.object_store.remove(&uuid);
+            Ok(Value::Nil)
+        }
+        BuiltinId::DeleteOverlaysOn => {
+            expect_n(1)?;
+            let host_var = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_overlays_on")) };
+            session.overlay_instances.retain(|oi| oi.host_var != host_var);
+            Ok(Value::Nil)
+        }
+        BuiltinId::DecisionDebug => {
+            expect_n(1)?;
+            let v = read(0)?;
+            Ok(Value::Str(format!("decision_debug: {:?}", v.type_name())))
+        }
+        BuiltinId::OverlaysOf => {
+            expect_n(1)?;
+            let host_var = match read(0)? { Value::Str(s) => s, _ => return Ok(Value::Array(vec![])) };
+            let overlays: Vec<Value> = session.overlay_instances.iter()
+                .filter(|oi| oi.host_var == host_var)
+                .map(|oi| Value::Str(oi.overlay_name.clone()))
+                .collect();
+            Ok(Value::Array(overlays))
+        }
+        BuiltinId::OverlayStrength => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("overlay_strength: expected 2 args, got {}", args.len())));
+            }
+            let host_var = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
+            let overlay = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
+            match session.overlay_instances.iter().find(|oi| oi.host_var == host_var && oi.overlay_name == overlay) {
+                Some(oi) => Ok(Value::Float(oi.strength)),
+                None => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::LinkScore => {
+            // Stub: not fully specified
+            Ok(Value::Nil)
+        }
+
+        // ── Grid builtins ─────────────────────────────────────────────────────
+        BuiltinId::Grid => {
+            if args.len() < 3 || (args.len() > 4 && args.len() != 7) {
+                return Err(GoblinError::Runtime(format!("grid: expected 3, 4, or 7 args, got {}", args.len())));
+            }
+            let name = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid name")) };
+            let width = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid width")) };
+            let height = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid height")) };
+            if width <= 0 || height <= 0 {
+                return Err(GoblinError::Runtime(format!("grid: dimensions must be positive, got {}x{}", width, height)));
+            }
+            let mode = if args.len() >= 4 {
+                match read(3)? {
+                    Value::Int(-1) => crate::grid::NeighborMode::Eight,
+                    Value::Int(4) => crate::grid::NeighborMode::Four,
+                    Value::Int(8) => crate::grid::NeighborMode::Eight,
+                    Value::Str(s) => crate::grid::NeighborMode::from_str(&s).ok_or_else(|| GoblinError::Runtime(format!("grid: unknown mode '{}'", s)))?,
+                    _ => crate::grid::NeighborMode::Eight,
+                }
+            } else { crate::grid::NeighborMode::Eight };
+            if session.grid_store.contains(&name) {
+                return Err(GoblinError::Runtime(format!("grid: a grid named '{}' already exists", name)));
+            }
+            let hierarchy = if args.len() == 7 {
+                let tile_w = match read(4)? { Value::Int(n) => n as i32, _ => 32 };
+                let tile_h = match read(5)? { Value::Int(n) => n as i32, _ => 32 };
+                let regions = match read(6)? { Value::Int(n) => n as i32, _ => 16 };
+                let (tw, th, rc) = (
+                    if tile_w == -1 { 32 } else { tile_w },
+                    if tile_h == -1 { 32 } else { tile_h },
+                    if regions == -1 { 16 } else { regions },
+                );
+                match crate::grid::HierarchyConfig::try_new(width, height, tw, th, rc) {
+                    Ok(h) => Some(h),
+                    Err(msg) => return Err(GoblinError::Runtime(format!("grid: invalid hierarchy: {}", msg))),
+                }
+            } else {
+                crate::grid::HierarchyConfig::try_default(width, height)
+            };
+            let world = crate::grid::GridWorld::new(&name, width, height, mode, hierarchy);
+            session.grid_store.insert(world);
+            Ok(Value::Str(name))
+        }
+        BuiltinId::GridGet => {
+            if args.len() != 4 {
+                return Err(GoblinError::Runtime(format!("grid_get: expected 4 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let x = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_get x")) };
+            let y = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_get y")) };
+            let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_get layer")) };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_get: no grid named '{}'", grid_id)))?;
+            if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_get: ({},{}) out of bounds", x, y))); }
+            if world.is_void(x, y) { return Err(GoblinError::Runtime(format!("grid_get: ({},{}) is void", x, y))); }
+            match world.resolve(x, y, &layer) {
+                Some(v) => Ok(v.clone()),
+                None => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::GridSet => {
+            if args.len() != 5 {
+                return Err(GoblinError::Runtime(format!("grid_set: expected 5 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let x = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_set x")) };
+            let y = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_set y")) };
+            let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_set layer")) };
+            let value = read(4)?;
+            let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_set: no grid named '{}'", grid_id)))?;
+            if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_set: ({},{}) out of bounds", x, y))); }
+            if world.is_void(x, y) { return Err(GoblinError::Runtime(format!("grid_set: ({},{}) is void", x, y))); }
+            let state = match value { Value::Nil => crate::grid::CellState::Unoccupied, v => crate::grid::CellState::Occupied(v) };
+            world.set(x, y, &layer, state);
+            Ok(Value::Unit)
+        }
+        BuiltinId::GridVoid => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("grid_void: expected 3 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let x = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_void x")) };
+            let y = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_void y")) };
+            let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_void: no grid named '{}'", grid_id)))?;
+            if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_void: ({},{}) out of bounds", x, y))); }
+            world.void_cell(x, y);
+            Ok(Value::Unit)
+        }
+        BuiltinId::GridTileGet => {
+            if args.len() != 4 {
+                return Err(GoblinError::Runtime(format!("grid_tile_get: expected 4 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let tx = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_tile_get tx")) };
+            let ty = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_tile_get ty")) };
+            let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_tile_get layer")) };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_get: no grid named '{}'", grid_id)))?;
+            match world.tile_at(tx, ty).and_then(|t| t.get(&layer)) {
+                Some(v) => Ok(v.clone()),
+                None => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::GridTileSet => {
+            if args.len() != 5 {
+                return Err(GoblinError::Runtime(format!("grid_tile_set: expected 5 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let tx = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_tile_set tx")) };
+            let ty = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_tile_set ty")) };
+            let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_tile_set layer")) };
+            let value = read(4)?;
+            let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: no grid named '{}'", grid_id)))?;
+            world.tile_at_mut(tx, ty).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: tile ({},{}) out of bounds", tx, ty)))?.set(&layer, value);
+            Ok(Value::Unit)
+        }
+        BuiltinId::GridRegionGet => {
+            if args.len() != 4 {
+                return Err(GoblinError::Runtime(format!("grid_region_get: expected 4 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let rx = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_region_get rx")) };
+            let ry = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_region_get ry")) };
+            let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_region_get layer")) };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_region_get: no grid named '{}'", grid_id)))?;
+            match world.region_at(rx, ry).and_then(|r| r.get(&layer)) {
+                Some(v) => Ok(v.clone()),
+                None => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::GridRegionSet => {
+            if args.len() != 5 {
+                return Err(GoblinError::Runtime(format!("grid_region_set: expected 5 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let rx = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_region_set rx")) };
+            let ry = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_region_set ry")) };
+            let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_region_set layer")) };
+            let value = read(4)?;
+            let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: no grid named '{}'", grid_id)))?;
+            world.region_at_mut(rx, ry).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: region ({},{}) out of bounds", rx, ry)))?.set(&layer, value);
+            Ok(Value::Unit)
+        }
+        BuiltinId::GridDefaultGet => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("grid_default_get: expected 2 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let layer = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_default_get layer")) };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_default_get: no grid named '{}'", grid_id)))?;
+            match world.get_world_default(&layer) {
+                Some(v) => Ok(v.clone()),
+                None => Ok(Value::Nil),
+            }
+        }
+        BuiltinId::GridDefaultSet => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("grid_default_set: expected 3 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let layer = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_default_set layer")) };
+            let value = read(2)?;
+            let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_default_set: no grid named '{}'", grid_id)))?;
+            world.set_world_default(&layer, value);
+            Ok(Value::Unit)
+        }
+        BuiltinId::GridNeighbors => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("grid_neighbors: expected 3 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let x = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_neighbors x")) };
+            let y = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_neighbors y")) };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_neighbors: no grid named '{}'", grid_id)))?;
+            if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_neighbors: ({},{}) out of bounds", x, y))); }
+            let refs: Vec<Value> = world.neighbors(x, y).into_iter()
+                .map(|(nx, ny)| Value::GridRef { grid_id: grid_id.clone(), x: nx, y: ny })
+                .collect();
+            Ok(Value::Array(refs))
+        }
+        BuiltinId::GridOccupied => {
+            expect_n(1)?;
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied: no grid named '{}'", grid_id)))?;
+            let refs: Vec<Value> = world.occupied("owner").into_iter()
+                .map(|(x, y)| Value::GridRef { grid_id: grid_id.clone(), x, y })
+                .collect();
+            Ok(Value::Array(refs))
+        }
+        BuiltinId::GridUnoccupied => {
+            expect_n(1)?;
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_unoccupied: no grid named '{}'", grid_id)))?;
+            let refs: Vec<Value> = world.unoccupied_cells().into_iter()
+                .map(|(x, y)| Value::GridRef { grid_id: grid_id.clone(), x, y })
+                .collect();
+            Ok(Value::Array(refs))
+        }
+        BuiltinId::GridOccupiedCount => {
+            expect_n(1)?;
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied_count: no grid named '{}'", grid_id)))?;
+            Ok(Value::Int(world.occupied("owner").len() as i64))
+        }
+        BuiltinId::GridUnoccupiedCount => {
+            expect_n(1)?;
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_unoccupied_count: no grid named '{}'", grid_id)))?;
+            Ok(Value::Int(world.unoccupied_cells().len() as i64))
+        }
+        BuiltinId::GridCount => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("grid_count: expected 2 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let target = read(1)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_count: no grid named '{}'", grid_id)))?;
+            Ok(Value::Int(world.count_value("owner", &target) as i64))
+        }
+        BuiltinId::GridOccupiedBy => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("grid_occupied_by: expected 2 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let target = read(1)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied_by: no grid named '{}'", grid_id)))?;
+            let refs: Vec<Value> = world.cells_with_value("owner", &target).into_iter()
+                .map(|(x, y)| Value::GridRef { grid_id: grid_id.clone(), x, y })
+                .collect();
+            Ok(Value::Array(refs))
+        }
+        BuiltinId::GridHas => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("grid_has: expected 2 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let target = read(1)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_has: no grid named '{}'", grid_id)))?;
+            Ok(Value::Bool(world.count_value("owner", &target) > 0))
+        }
+        BuiltinId::GridInfo => {
+            expect_n(1)?;
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_info: no grid named '{}'", grid_id)))?;
+            let mode_str = match world.neighbor_mode {
+                crate::grid::NeighborMode::Four    => "4",
+                crate::grid::NeighborMode::Eight   => "8",
+                crate::grid::NeighborMode::Hex     => "hex",
+                crate::grid::NeighborMode::Wrapped => "wrapped",
+            };
+            let layer_arr = Value::Array(world.layer_names().into_iter().map(Value::Str).collect());
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("name".into(),         Value::Str(world.name.clone()));
+            map.insert("width".into(),        Value::Int(world.width as i64));
+            map.insert("height".into(),       Value::Int(world.height as i64));
+            map.insert("mode".into(),         Value::Str(mode_str.into()));
+            map.insert("layers".into(),       layer_arr);
+            map.insert("has_snapshot".into(), Value::Bool(world.has_snapshot()));
+            if let Some(ref h) = world.hierarchy {
+                map.insert("has_hierarchy".into(), Value::Bool(true));
+                map.insert("tile_w".into(),        Value::Int(h.tile_w as i64));
+                map.insert("tile_h".into(),        Value::Int(h.tile_h as i64));
+                map.insert("tile_cols".into(),     Value::Int(h.tile_cols as i64));
+                map.insert("tile_rows".into(),     Value::Int(h.tile_rows as i64));
+                map.insert("tile_count".into(),    Value::Int(h.tile_count as i64));
+                map.insert("region_count".into(),  Value::Int(h.region_count as i64));
+                map.insert("region_dim".into(),    Value::Int(h.region_dim as i64));
+            } else {
+                map.insert("has_hierarchy".into(), Value::Bool(false));
+            }
+            Ok(Value::Map(map))
+        }
+        BuiltinId::GridTileInfo => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("grid_tile_info: expected 3 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let tx = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_tile_info tx")) };
+            let ty = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_tile_info ty")) };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_info: no grid named '{}'", grid_id)))?;
+            let h = world.hierarchy.as_ref().ok_or_else(|| GoblinError::Runtime(format!("grid_tile_info: grid '{}' has no hierarchy", grid_id)))?;
+            let tile = world.tile_at(tx, ty).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_info: tile ({},{}) out of bounds", tx, ty)))?;
+            let (rx, ry) = h.tile_to_region(tx, ty);
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("tx".into(),       Value::Int(tx as i64));
+            map.insert("ty".into(),       Value::Int(ty as i64));
+            map.insert("cell_x".into(),   Value::Int((tx * h.tile_w) as i64));
+            map.insert("cell_y".into(),   Value::Int((ty * h.tile_h) as i64));
+            map.insert("region_x".into(), Value::Int(rx as i64));
+            map.insert("region_y".into(), Value::Int(ry as i64));
+            map.insert("layers".into(),   Value::Array(tile.layer_names().into_iter().map(Value::Str).collect()));
+            Ok(Value::Map(map))
+        }
+        BuiltinId::GridRegionInfo => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("grid_region_info: expected 3 args, got {}", args.len())));
+            }
+            let grid_id = grid_world_name_from(read(0)?)?;
+            let rx = match read(1)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_region_info rx")) };
+            let ry = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_region_info ry")) };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_region_info: no grid named '{}'", grid_id)))?;
+            let h = world.hierarchy.as_ref().ok_or_else(|| GoblinError::Runtime(format!("grid_region_info: grid '{}' has no hierarchy", grid_id)))?;
+            let region = world.region_at(rx, ry).ok_or_else(|| GoblinError::Runtime(format!("grid_region_info: region ({},{}) out of bounds", rx, ry)))?;
+            let tile_x = rx * h.tiles_per_region_edge;
+            let tile_y = ry * h.tiles_per_region_edge;
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("rx".into(),             Value::Int(rx as i64));
+            map.insert("ry".into(),             Value::Int(ry as i64));
+            map.insert("cell_x".into(),         Value::Int((tile_x * h.tile_w) as i64));
+            map.insert("cell_y".into(),         Value::Int((tile_y * h.tile_h) as i64));
+            map.insert("tile_x".into(),         Value::Int(tile_x as i64));
+            map.insert("tile_y".into(),         Value::Int(tile_y as i64));
+            map.insert("tiles_per_edge".into(), Value::Int(h.tiles_per_region_edge as i64));
+            map.insert("layers".into(),         Value::Array(region.layer_names().into_iter().map(Value::Str).collect()));
+            Ok(Value::Map(map))
+        }
     }
+}
+
+fn grid_world_name_from(v: Value) -> Result<String, GoblinError> {
+    match v {
+        Value::Str(s) => Ok(s),
+        Value::GridRef { grid_id, .. } => Ok(grid_id),
+        other => Err(GoblinError::type_error("str or grid_ref", other.type_name(), "grid world name")),
+    }
+}
+
+fn zip_directory(src: &str, dest: &str) -> Result<(), GoblinError> {
+    use std::fs::File;
+    use std::io::{Read, Write, BufWriter};
+    use zip::write::FileOptions;
+
+    let src_path = std::path::Path::new(src);
+    if !src_path.exists() {
+        return Err(GoblinError::Runtime(format!("zip_dir: source '{}' does not exist", src)));
+    }
+
+    let dest_file = File::create(dest)
+        .map_err(|e| GoblinError::Runtime(format!("zip_dir: cannot create '{}': {}", dest, e)))?;
+    let mut zip = zip::ZipWriter::new(BufWriter::new(dest_file));
+    let options = FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let walkdir = walkdir::WalkDir::new(src_path);
+    for entry in walkdir.into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let name = path.strip_prefix(src_path)
+            .map_err(|e| GoblinError::Runtime(format!("zip_dir: strip prefix error: {}", e)))?;
+        if path.is_file() {
+            let name_str = name.to_string_lossy();
+            zip.start_file(name_str.as_ref(), options.clone())
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: {}", e)))?;
+            let mut f = File::open(path)
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: open '{}': {}", path.display(), e)))?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: read '{}': {}", path.display(), e)))?;
+            zip.write_all(&buf)
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: write: {}", e)))?;
+        } else if path.is_dir() && !name.as_os_str().is_empty() {
+            let name_str = format!("{}/", name.to_string_lossy());
+            zip.add_directory(&name_str, options.clone())
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: {}", e)))?;
+        }
+    }
+
+    zip.finish().map_err(|e| GoblinError::Runtime(format!("zip_dir: finish: {}", e)))?;
+    Ok(())
 }
 
 fn cast_to_int_builtin(v: Value) -> Result<Value, GoblinError> {
