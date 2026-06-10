@@ -1453,6 +1453,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "create_dir"   | "create_dir!"   => BuiltinId::CreateDir,
         "copy_file"    | "copy_file!"    => BuiltinId::CopyFile,
         "delete_path"  | "delete_path!"  => BuiltinId::DeletePath,
+        "md_to_html"                     => BuiltinId::MdToHtml,
+        "highlight_code"                 => BuiltinId::HighlightCode,
         _ => return None,
     })
 }

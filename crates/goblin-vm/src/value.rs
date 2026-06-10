@@ -593,6 +593,8 @@ pub enum BuiltinId {
     CreateDir,
     CopyFile,
     DeletePath,
+    MdToHtml,
+    HighlightCode,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

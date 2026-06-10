@@ -2558,6 +2558,14 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
             Ok(Value::Unit)
         }
+
+        BuiltinId::MdToHtml => {
+            Err(GoblinError::NotImplemented { feature: "md_to_html: requires comrak dependency (not included in VM)" })
+        }
+
+        BuiltinId::HighlightCode => {
+            Err(GoblinError::NotImplemented { feature: "highlight_code: requires syntect dependency (not included in VM)" })
+        }
     }
 }
 
