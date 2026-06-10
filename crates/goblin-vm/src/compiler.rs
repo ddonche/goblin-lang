@@ -1450,6 +1450,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "yall_write_file"                => BuiltinId::YallWriteFile,
         "yall_pretty"                    => BuiltinId::YallPretty,
         "yall_minify"                    => BuiltinId::YallMinify,
+        "create_dir"   | "create_dir!"   => BuiltinId::CreateDir,
+        "copy_file"    | "copy_file!"    => BuiltinId::CopyFile,
+        "delete_path"  | "delete_path!"  => BuiltinId::DeletePath,
         _ => return None,
     })
 }

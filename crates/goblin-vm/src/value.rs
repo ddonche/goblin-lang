@@ -590,6 +590,9 @@ pub enum BuiltinId {
     YallWriteFile,
     YallPretty,
     YallMinify,
+    CreateDir,
+    CopyFile,
+    DeletePath,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

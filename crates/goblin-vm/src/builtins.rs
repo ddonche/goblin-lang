@@ -2525,6 +2525,39 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let yv = value_to_yall(&v);
             Ok(Value::Str(goblin_yall::yall_minify(&yv)))
         }
+
+        BuiltinId::CreateDir => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "create_dir")) };
+            std::fs::create_dir_all(&path).map_err(|e| GoblinError::Runtime(format!("create_dir failed: {e}")))?;
+            Ok(Value::Unit)
+        }
+
+        BuiltinId::CopyFile => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "copy_file".into() }); }
+            let src = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "copy_file src")) };
+            let dst = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "copy_file dst")) };
+            if let Some(parent) = std::path::Path::new(&dst).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| GoblinError::Runtime(format!("copy_file: failed to create parent dirs: {e}")))?;
+                }
+            }
+            std::fs::copy(&src, &dst).map_err(|e| GoblinError::Runtime(format!("copy_file failed: {e}")))?;
+            Ok(Value::Unit)
+        }
+
+        BuiltinId::DeletePath => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_path")) };
+            let p = std::path::Path::new(&path);
+            if !p.exists() { return Err(GoblinError::Runtime(format!("delete_path: path does not exist: {}", path))); }
+            if p.is_dir() {
+                std::fs::remove_dir_all(&path).map_err(|e| GoblinError::Runtime(format!("delete_path failed: {e}")))?;
+            } else {
+                std::fs::remove_file(&path).map_err(|e| GoblinError::Runtime(format!("delete_path failed: {e}")))?;
+            }
+            Ok(Value::Unit)
+        }
     }
 }
 
