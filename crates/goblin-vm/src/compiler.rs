@@ -1447,6 +1447,20 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "ipsum_paragraphs"              => BuiltinId::IpsumParagraphs,
         "ipsum_full"                    => BuiltinId::IpsumFull,
         "run_cmd"                       => BuiltinId::RunCmd,
+
+        // Request (HTTP context)
+        "req_method"                    => BuiltinId::ReqMethod,
+        "req_path"                      => BuiltinId::ReqPath,
+        "req_query"                     => BuiltinId::ReqQuery,
+        "req_body"                      => BuiltinId::ReqBody,
+        "req_header"                    => BuiltinId::ReqHeader,
+        "cookie"                        => BuiltinId::Cookie,
+
+        // Response
+        "set_status"                    => BuiltinId::SetStatus,
+        "set_header"                    => BuiltinId::SetHeader,
+        "set_cookie"                    => BuiltinId::SetCookie,
+
         "roll"                          => BuiltinId::Roll,
         "roll_detail"                   => BuiltinId::RollDetail,
         "rand_seed"                     => BuiltinId::RandSeed,
