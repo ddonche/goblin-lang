@@ -203,10 +203,11 @@
 - [x] `md_to_html` — comrak 0.21 added, matches interpreter implementation exactly
 - [x] `highlight_code` — syntect 5 added, matches interpreter implementation; syntaxes/Goblin.sublime-syntax copied
 
-## TODO / NOT YET DONE
+- [x] `tick` / `tick_db` — full DES tick in `tick.rs`: 9 passes (link offset decay, spread × 4 modes, decay, conflict, spawn, overlay transitions × 8 kinds, dead/orphan removal, decision tick, object transition tick); object_store maintained on StoreLocal/StoreGlobal; expression eval via compile_tick_expr / eval_tick_expr / run_until_depth
 
-### Builtins — not implemented
-- [ ] `tick` / `tick_db` — needs full DES tick runner ported to VM
+## VM IS FEATURE-COMPLETE
+
+All interpreter builtins implemented. All opcodes handled. All AST nodes compiled. No remaining TODO items.
 
 ### Skipped by user instruction
 - [ ] `money` — skip

@@ -10,3 +10,4 @@ pub mod compiler;
 pub mod worker;
 pub mod debug;
 pub mod exec;
+pub mod tick;

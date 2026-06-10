@@ -184,6 +184,11 @@ impl Vm {
             }
             Opcode::StoreLocal(slot) => {
                 let t = self.stack_pop()?;
+                if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                    let uuid = uuid.clone();
+                    let val = self.session.read_value(&t).unwrap();
+                    self.session.object_store.insert(uuid, val);
+                }
                 self.call_stack.last_mut().unwrap().store_local(slot, t);
             }
 
@@ -198,6 +203,11 @@ impl Vm {
             }
             Opcode::StoreGlobal(idx) => {
                 let t = self.stack_pop()?;
+                if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                    let uuid = uuid.clone();
+                    let val = self.session.read_value(&t).unwrap();
+                    self.session.object_store.insert(uuid, val);
+                }
                 self.session.set_global(idx as usize, t);
             }
 
@@ -629,6 +639,12 @@ impl Vm {
                         self.stack.push(result);
                         return Ok(());
                     }
+                    BuiltinId::Tick => {
+                        self.vm_tick()?;
+                        let nil = self.session.alloc_value(Value::Nil);
+                        self.stack.push(nil);
+                        return Ok(());
+                    }
                     _ => {}
                 }
 
@@ -834,6 +850,7 @@ impl Vm {
                     modifiers: def.modifiers.iter().map(|(k, e)| (k.clone(), e.clone())).collect(),
                     conflict_rules: def.conflict_rules.iter().map(|r| (r.opponent.clone(), r.suppress_rate)).collect(),
                     spread_rules: def.spread_rules.clone(),
+                    spawn_rules: def.spawn_rules.clone(),
                     transitions: def.transitions.clone(),
                     extra_fields: indexmap::IndexMap::new(),
                 };
@@ -1002,7 +1019,7 @@ impl Vm {
     // ── invoke / summon / provoke ────────────────────────────────────────────
 
     /// Execute instructions until call_stack depth drops back to `target_depth`.
-    fn run_until_depth(&mut self, target_depth: usize) -> Result<(), GoblinError> {
+    pub(crate) fn run_until_depth(&mut self, target_depth: usize) -> Result<(), GoblinError> {
         while self.call_stack.len() > target_depth {
             let op = {
                 let frame = match self.call_stack.last_mut() {
@@ -1033,7 +1050,7 @@ impl Vm {
     }
 
     /// Call a named function from session.named_values and return its result.
-    fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
+    pub(crate) fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
         let func_val = self.session.named_values.get(name).cloned()
             .ok_or_else(|| GoblinError::Runtime(format!("invoke: unknown action '{name}'")))?;
         let (func_rc, upvalues) = match func_val {
@@ -1129,6 +1146,93 @@ impl Vm {
             return Err(GoblinError::Runtime(msg));
         }
         Ok(self.session.alloc_value(Value::Bool(true)))
+    }
+
+    // ── Tick (DES simulation step) ────────────────────────────────────────────
+
+    /// Compile a single Expr into a callable FunctionObject with the given parameter names.
+    fn compile_tick_expr(
+        &self,
+        expr: &goblin_ast::Expr,
+        param_names: &[&str],
+    ) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
+        use crate::compiler::Compiler;
+        // Wrap the expression in a tiny module: `action __tick_expr(params...) | expr end`
+        // We compile it as a module and extract the entry function, which is a
+        // wrapper that returns the expression result.
+        let span = goblin_diagnostics::Span::new("__tick", 0, 0, 0, 0, 0, 0);
+        let param_list: Vec<goblin_ast::Param> = param_names.iter().map(|name| {
+            goblin_ast::Param { name: name.to_string(), type_name: None, default: None, span: span.clone() }
+        }).collect();
+        let action_decl = goblin_ast::ActionDecl {
+            name: "__tick_expr".to_string(),
+            params: param_list,
+            body: goblin_ast::ActionBody::Expr(expr.clone()),
+            span: span.clone(),
+            ret: None,
+        };
+        let module = goblin_ast::Module {
+            items: vec![goblin_ast::Stmt::Action(action_decl)],
+        };
+        let compiled = Compiler::new().compile_module(&module)?;
+        // The entry function just declares the action as a local; we need the inner FunctionObject.
+        // It should be in constants[0] or similar. Let's find it.
+        for c in &compiled.entry.constants {
+            if let Value::Function(f) = c {
+                if f.name == "__tick_expr" {
+                    return Ok(f.clone());
+                }
+            }
+        }
+        Err(GoblinError::Runtime("compile_tick_expr: could not find compiled function".into()))
+    }
+
+    /// Evaluate a tick expression with the given locals, returning the result.
+    pub(crate) fn eval_tick_expr(
+        &mut self,
+        expr: &goblin_ast::Expr,
+        locals: Vec<(&str, Value)>,
+    ) -> Result<Value, GoblinError> {
+        let param_names: Vec<&str> = locals.iter().map(|(n, _)| *n).collect();
+        let func_rc = self.compile_tick_expr(expr, &param_names)?;
+        let args: Vec<Value> = locals.into_iter().map(|(_, v)| v).collect();
+        if args.len() != func_rc.params {
+            return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
+        }
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+        let stack_base = self.stack.len();
+        let dummy = self.session.alloc_value(Value::Nil);
+        self.stack.push(dummy);
+        let mut new_frame = CallFrame::new(func_rc, Vec::new(), stack_base);
+        for (i, a) in args.into_iter().enumerate() {
+            let t = self.session.alloc_value(a);
+            new_frame.locals[i] = Some(t);
+        }
+        self.call_stack.push(new_frame);
+        let depth_before = self.call_stack.len() - 1;
+        self.run_until_depth(depth_before)?;
+        let result_tether = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
+        self.session.read_value(&result_tether)
+    }
+
+    pub(crate) fn eval_tick_expr_bool(
+        &mut self,
+        expr: &goblin_ast::Expr,
+        locals: Vec<(&str, Value)>,
+    ) -> bool {
+        match self.eval_tick_expr(expr, locals) {
+            Ok(Value::Bool(b)) => b,
+            Ok(Value::Int(i)) => i != 0,
+            Ok(Value::Float(f)) => f != 0.0,
+            _ => false,
+        }
+    }
+
+    fn vm_tick(&mut self) -> Result<(), GoblinError> {
+        crate::tick::run_tick(self)
     }
 
     fn arith_op(

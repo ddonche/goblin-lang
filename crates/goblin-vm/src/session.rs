@@ -23,6 +23,7 @@ pub struct OverlayDef {
     pub modifiers: Vec<(String, goblin_ast::Expr)>,
     pub conflict_rules: Vec<(String, f64)>,     // (opponent, suppress_rate)
     pub spread_rules: Vec<goblin_ast::SpreadRule>,
+    pub spawn_rules: Vec<goblin_ast::OverlaySpawnRule>,
     pub transitions: Vec<goblin_ast::TransitionDef>,
     pub extra_fields: indexmap::IndexMap<String, Value>,
 }
