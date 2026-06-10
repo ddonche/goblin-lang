@@ -1,4 +1,10 @@
-/// lib.rs (for VM)
+pub mod error;
+pub mod opcode;
 pub mod value;
 pub mod session;
 pub mod vm;
+pub mod collections;
+pub mod builtins;
+pub mod compiler;
+pub mod worker;
+pub mod debug;

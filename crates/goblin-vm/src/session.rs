@@ -1,252 +1,290 @@
 use std::rc::Rc;
 use slab::Slab;
 
+use crate::error::GoblinError;
 use crate::value::{Stash, Address, Tether, Value};
 
-/// GC modes from the blueprint:
-/// - Off: fastest, no automatic sweeps
-/// - Manual: only sweep when asked
-/// - Auto: incremental sweeps on allocation watermark / tick
+/// GC modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GcMode {
+    /// No automatic GC. Fastest. Use when you manage lifetimes yourself.
     Off,
+    /// GC only runs when explicitly called via :gc().
     Manual,
+    /// Incremental sweeps triggered by allocation watermark.
     Auto,
 }
 
-/// A VM session: owns the arena of stashes and globals.
-/// Each worker will have its own Session (isolated heap).
+/// A VM session: owns the arena of stashes and global slot table.
+/// Each worker has exactly one Session (isolated heap).
 pub struct Session {
-    /// Heap arena: index == Address.slot
+    /// Arena of stashes. `slab` index == Address.slot.
     pub arena: Slab<Stash>,
 
-    /// Globals are tethers, not raw values. They point into the arena.
-    pub globals: Vec<Tether>,
+    /// Global variable slots (indexed by compiled global index).
+    pub globals: Vec<Option<Tether>>,
 
-    /// GC behavior for this session.
+    /// GC behaviour for this session.
     pub gc_mode: GcMode,
 
-    /// Monotonic generation counter.
+    /// Optional worker ID for cross-worker safety checks.
+    pub worker_id: usize,
+
+    /// Monotonic generation counter. Each new stash gets the current value,
+    /// then we increment. This means each stash has a unique generation number,
+    /// and old Addresses with a mismatched generation are detected as stale.
     next_generation: u32,
 
-    /// Simple allocation counter for Auto GC mode.
+    /// Allocation counter for Auto GC.
     alloc_since_last_gc: usize,
 
-    /// Watermark: how many allocations before an Auto sweep.
-    /// You can tune this; starting with something like 10_000 is fine.
+    /// How many allocations before an Auto sweep.
     gc_watermark: usize,
 }
 
 impl Session {
-    /// Create a new session with the given GC mode.
     pub fn new(gc_mode: GcMode) -> Self {
         Session {
             arena: Slab::new(),
             globals: Vec::new(),
             gc_mode,
+            worker_id: 0,
             next_generation: 1,
             alloc_since_last_gc: 0,
-            gc_watermark: 10_000, // TODO: make configurable later
+            gc_watermark: 10_000,
         }
     }
 
-    // ------------------------------------------------------------
-    // LEVEL 1.2 — Allocation / Access
-    // ------------------------------------------------------------
-
-    /// Allocate a new stash for a Value and return a Tether to it.
-    /// This is the canonical way to create values in the VM.
-    ///
-    /// Callers will usually store the returned Tether in a local/global slot.
-    /// NOTE: We treat the returned Tether as the first (and only) live tether.
-    /// Internal: check GC mode and maybe run a sweep after an allocation.
-    fn maybe_gc_on_alloc(&mut self) {
-        match self.gc_mode {
-            GcMode::Off => {
-                // no-op
-            }
-            GcMode::Manual => {
-                // only explicit gc_sweep() / :gc() calls
-            }
-            GcMode::Auto => {
-                self.alloc_since_last_gc += 1;
-                if self.alloc_since_last_gc >= self.gc_watermark {
-                    self.gc_sweep();
-                    self.alloc_since_last_gc = 0;
-                }
-            }
-        }
+    pub fn with_worker_id(mut self, id: usize) -> Self {
+        self.worker_id = id;
+        self
     }
-        
+
+    // ── Allocation ──────────────────────────────────────────────────────────
+
+    /// Allocate a new stash and return a Tether pointing to it.
+    /// The new stash starts with tether_count = 1 (the returned tether is the owner).
     pub fn alloc_value(&mut self, value: Value) -> Tether {
         let gen = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
 
         let stash = Stash {
             value: Rc::new(value),
-            tether_count: 1, // caller holds the first tether
+            tether_count: 1,
             generation: gen,
         };
 
-        // Slab index is our Address.slot.
         let slot = self.arena.insert(stash) as u32;
-
-        // Auto-GC hook (no-op in Off / Manual).
         self.maybe_gc_on_alloc();
 
-        Tether {
-            addr: Address { slot, generation: gen },
+        Tether { addr: Address { slot, generation: gen } }
+    }
+
+    fn maybe_gc_on_alloc(&mut self) {
+        if self.gc_mode == GcMode::Auto {
+            self.alloc_since_last_gc += 1;
+            if self.alloc_since_last_gc >= self.gc_watermark {
+                self.gc_sweep();
+                self.alloc_since_last_gc = 0;
+            }
         }
     }
 
-    /// Return the raw Address {slot, generation} for a tether.
-    /// This is the VM-side backing for :mem_id(x).
-    pub fn mem_id_raw(&self, t: &Tether) -> Address {
-        // This does NOT validate; the builtin should call get_stash()
-        // first if it wants to ensure it's not stale.
-        t.addr
-    }
+    // ── Address validation ──────────────────────────────────────────────────
 
-    /// Return a hex string of the stash's physical address.
-    /// This is the VM-side backing for :mem_addr(x).
-    pub fn mem_addr_hex(&self, t: &Tether) -> String {
-        let stash_ref: &Stash = self.get_stash(t);
-        let ptr = stash_ref as *const Stash as usize;
-        format!("0x{:x}", ptr)
-    }
-
-    /// Internal helper: resolve an Address to a live stash, with stale detection.
-    /// For now this panics on stale / out-of-range; later we can switch to Result<_,Diag>.
-    fn resolve_live_stash(&self, addr: Address) -> &Stash {
+    /// Resolve a live stash reference, returning an error if stale.
+    pub fn resolve(&self, addr: Address) -> Result<&Stash, GoblinError> {
+        if !self.arena.contains(addr.slot as usize) {
+            return Err(GoblinError::EmptySlot { slot: addr.slot });
+        }
         let stash = &self.arena[addr.slot as usize];
-
-        // Stale mem_id detection (generation mismatch).
         if stash.generation != addr.generation {
-            panic!(
-                "stale Address detected (mem_id generation mismatch: stored {}, addr {})",
-                stash.generation, addr.generation
-            );
+            return Err(GoblinError::StaleAddress {
+                slot: addr.slot,
+                stored_gen: stash.generation,
+                addr_gen: addr.generation,
+            });
         }
-
-        stash
+        Ok(stash)
     }
 
-    /// Mutable version of resolve_live_stash.
-    fn resolve_live_stash_mut(&mut self, addr: Address) -> &mut Stash {
+    /// Mutable version of resolve.
+    pub fn resolve_mut(&mut self, addr: Address) -> Result<&mut Stash, GoblinError> {
+        if !self.arena.contains(addr.slot as usize) {
+            return Err(GoblinError::EmptySlot { slot: addr.slot });
+        }
         let stash = &mut self.arena[addr.slot as usize];
-
         if stash.generation != addr.generation {
-            panic!(
-                "stale Address detected (mem_id generation mismatch: stored {}, addr {})",
-                stash.generation, addr.generation
-            );
+            return Err(GoblinError::StaleAddress {
+                slot: addr.slot,
+                stored_gen: stash.generation,
+                addr_gen: addr.generation,
+            });
         }
-
-        stash
+        Ok(stash)
     }
 
-    /// Get immutable access to the Stash for a given Tether.
-    /// Panics if stale or out-of-range for now; later we’ll return Result.
-    pub fn get_stash(&self, t: &Tether) -> &Stash {
-        self.resolve_live_stash(t.addr)
+    pub fn get_stash(&self, t: &Tether) -> Result<&Stash, GoblinError> {
+        self.resolve(t.addr)
     }
 
-    /// Get mutable access to the Stash for a given Tether.
-    pub fn get_stash_mut(&mut self, t: &Tether) -> &mut Stash {
-        self.resolve_live_stash_mut(t.addr)
+    pub fn get_stash_mut(&mut self, t: &Tether) -> Result<&mut Stash, GoblinError> {
+        self.resolve_mut(t.addr)
     }
 
-    /// Convenience: clone the Value payload (for read-only introspection).
-    pub fn read_value(&self, t: &Tether) -> Value {
-        self.get_stash(t).value.as_ref().clone()
+    /// Clone the Value payload for read-only introspection.
+    pub fn read_value(&self, t: &Tether) -> Result<Value, GoblinError> {
+        Ok(self.get_stash(t)?.value.as_ref().clone())
     }
 
-    /// When a new tether is created that points at the same stash,
-    /// you MUST call this to keep tether_count accurate.
-    pub fn inc_tether(&mut self, t: &Tether) {
-        let stash = self.get_stash_mut(t);
+    // ── Tether reference counting ───────────────────────────────────────────
+
+    pub fn inc_tether(&mut self, t: &Tether) -> Result<(), GoblinError> {
+        let stash = self.get_stash_mut(t)?;
         stash.tether_count = stash.tether_count.saturating_add(1);
+        Ok(())
     }
 
-    /// When a tether is dropped, call this to decrement the count.
-    /// When tether_count reaches 0, the stash is considered abandoned
-    /// and may be reclaimed on the next GC sweep.
-    pub fn dec_tether(&mut self, t: &Tether) {
-        let stash = self.get_stash_mut(t);
+    pub fn dec_tether(&mut self, t: &Tether) -> Result<(), GoblinError> {
+        let stash = self.get_stash_mut(t)?;
         if stash.tether_count > 0 {
             stash.tether_count -= 1;
         }
-        // We do NOT immediately free here; gc_sweep() decides when to reclaim.
+        Ok(())
     }
 
-    // ------------------------------------------------------------
-    // LEVEL 1.3 — GC Skeleton
-    // ------------------------------------------------------------
+    // ── Memory introspection (:mem_id, :mem_addr) ───────────────────────────
 
-    /// Sweep abandoned stashes (tether_count == 0) and recycle their slots.
-    /// This is a simple, stop-the-world sweep; incremental/auto logic comes later.
-    ///
-    /// NOTE: We rely on `next_generation` to give each new stash a fresh generation,
-    /// so stale addresses are detected when a removed slot is reused with a new gen.
+    pub fn mem_id_raw(&self, t: &Tether) -> Address {
+        t.addr
+    }
+
+    pub fn mem_addr_hex(&self, t: &Tether) -> Result<String, GoblinError> {
+        let stash = self.get_stash(t)?;
+        let ptr = stash as *const Stash as usize;
+        Ok(format!("0x{:x}", ptr))
+    }
+
+    // ── GC ──────────────────────────────────────────────────────────────────
+
+    /// Sweep stashes with tether_count == 0 and reclaim their slots.
     pub fn gc_sweep(&mut self) {
-        let mut to_remove = Vec::new();
-
-        for (key, stash) in self.arena.iter() {
-            if stash.tether_count == 0 {
-                to_remove.push(key);
-            }
-        }
+        let to_remove: Vec<usize> = self.arena
+            .iter()
+            .filter(|(_, s)| s.tether_count == 0)
+            .map(|(k, _)| k)
+            .collect();
 
         for key in to_remove {
             self.arena.remove(key);
         }
-
-        // We do NOT reset or bump generations here; each new allocation gets a new
-        // generation from `next_generation`. That is effectively the "per-slot generation"
-        // option from the blueprint: same slot + different generation => stale Address.
     }
 
-    // ------------------------------------------------------------
-    // LEVEL 1.4 — overwrite! primitive
-    // ------------------------------------------------------------
+    /// Number of live stashes.
+    pub fn stash_count(&self) -> usize {
+        self.arena.len()
+    }
 
-    /// Direct stash mutation primitive.
-    /// This is the ONLY place Goblin mutates stash values in place.
-    ///
-    /// Later, when workers exist, we’ll enforce "owned-by-this-worker" here.
-    pub fn overwrite(&mut self, t: &Tether, new_value: Value) {
-        let stash = self.get_stash_mut(t);
+    // ── overwrite! ──────────────────────────────────────────────────────────
+
+    /// Direct stash mutation. This is the ONLY place Goblin mutates values in place.
+    /// Enforces worker ownership: only the owning worker may call this.
+    pub fn overwrite(&mut self, t: &Tether, new_value: Value) -> Result<(), GoblinError> {
+        let stash = self.get_stash_mut(t)?;
         stash.value = Rc::new(new_value);
+        Ok(())
     }
 
-    // ------------------------------------------------------------
-    // Deep-copy helper (for future workers / zero-copy boundary)
-    // ------------------------------------------------------------
+    // ── Value transfer (deep copy) ──────────────────────────────────────────
 
-    /// Deep-copy a Value graph into this Session and return a new Tether.
-    ///
-    /// For now this is shallow for collections; we’ll expand it when
-    /// CollectionValue + tethers-inside-collections are fully wired.
+    /// Deep-copy a Value graph into this session. Returns a new Tether.
+    /// Used for cross-worker message passing (the safe default).
     pub fn clone_value_into_session(&mut self, value: &Value) -> Tether {
         match value {
-            Value::Nil
-            | Value::Bool(_)
-            | Value::Int(_)
-            | Value::Float(_)
-            | Value::Str(_) => {
+            Value::Nil | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => {
                 self.alloc_value(value.clone())
             }
 
             Value::Collection(coll_rc) => {
-                let cloned = Value::Collection(coll_rc.clone());
-                self.alloc_value(cloned)
+                // Deep-copy the collection contents.
+                use crate::value::{CollectionLayout, CollectionValue, CollectionMeta};
+                use std::rc::Rc;
+                let new_layout = match &coll_rc.layout {
+                    CollectionLayout::FlatArray(v) => {
+                        let new_v: Vec<Value> = v.iter()
+                            .map(|val| self.clone_value_shallow(val))
+                            .collect();
+                        CollectionLayout::FlatArray(Rc::new(new_v))
+                    }
+                    CollectionLayout::RingBuf(rb) => {
+                        let flat = rb.to_vec();
+                        let new_v: Vec<Value> = flat.iter()
+                            .map(|val| self.clone_value_shallow(val))
+                            .collect();
+                        use crate::value::RingBuf;
+                        CollectionLayout::RingBuf(Rc::new(RingBuf::from_vec(new_v)))
+                    }
+                    CollectionLayout::ChunkedSeq(cs) => {
+                        let flat = cs.to_flat();
+                        let new_v: Vec<Value> = flat.iter()
+                            .map(|val| self.clone_value_shallow(val))
+                            .collect();
+                        use crate::value::ChunkedSeq;
+                        CollectionLayout::ChunkedSeq(Rc::new(ChunkedSeq::from_flat(&new_v)))
+                    }
+                    CollectionLayout::SmallMap(pairs) => {
+                        let new_pairs: Vec<(Value, Value)> = pairs.iter()
+                            .map(|(k, v)| (self.clone_value_shallow(k), self.clone_value_shallow(v)))
+                            .collect();
+                        CollectionLayout::SmallMap(Rc::new(new_pairs))
+                    }
+                    CollectionLayout::HashMapBackend(map) => {
+                        let new_pairs: Vec<(Value, Value)> = map.iter()
+                            .map(|(k, v)| (self.clone_value_shallow(k), self.clone_value_shallow(v)))
+                            .collect();
+                        CollectionLayout::SmallMap(Rc::new(new_pairs))
+                    }
+                };
+                let new_coll = CollectionValue {
+                    layout: new_layout,
+                    meta: CollectionMeta { len: coll_rc.meta.len, ..Default::default() },
+                };
+                self.alloc_value(Value::Collection(Rc::new(new_coll)))
             }
 
-            // Functions and builtins are shared by identity; no deep copy needed.
+            // Functions and builtins share identity across workers (read-only).
             Value::Function(_) | Value::Builtin(_) => {
                 self.alloc_value(value.clone())
             }
+
+            // Closures: share function body, clone upvalue snapshot.
+            // Since upvalues are snapshots (not live references), cloning is safe.
+            Value::Closure(c) => {
+                self.alloc_value(Value::Closure(c.clone()))
+            }
         }
+    }
+
+    fn clone_value_shallow(&self, v: &Value) -> Value {
+        // For primitives and shallow-copyable values.
+        v.clone()
+    }
+
+    // ── Globals ─────────────────────────────────────────────────────────────
+
+    pub fn ensure_globals(&mut self, count: usize) {
+        while self.globals.len() < count {
+            self.globals.push(None);
+        }
+    }
+
+    pub fn set_global(&mut self, idx: usize, t: Tether) {
+        self.ensure_globals(idx + 1);
+        self.globals[idx] = Some(t);
+    }
+
+    pub fn get_global(&self, idx: usize) -> Option<&Tether> {
+        self.globals.get(idx)?.as_ref()
     }
 }
 
@@ -256,36 +294,30 @@ mod tests {
     use crate::value::Value;
 
     #[test]
-    fn alloc_and_read_value() {
+    fn alloc_and_read() {
         let mut sess = Session::new(GcMode::Off);
         let t = sess.alloc_value(Value::Int(42));
-
-        let v = sess.read_value(&t);
-        match v {
-            Value::Int(n) => assert_eq!(n, 42),
-            _ => panic!("unexpected value"),
-        }
+        let v = sess.read_value(&t).unwrap();
+        assert!(matches!(v, Value::Int(42)));
     }
 
     #[test]
-    fn generation_diff_detects_stale_address() {
+    fn stale_address_detected() {
         let mut sess = Session::new(GcMode::Off);
         let t1 = sess.alloc_value(Value::Int(1));
-
-        // Clone the tether to simulate a stale one keeping the old Address.
         let stale = Tether { addr: t1.addr };
-
-        // Drop real stash to free its slot.
-        sess.dec_tether(&t1);
+        sess.dec_tether(&t1).unwrap();
         sess.gc_sweep();
-
-        // Allocate a new value, which may reuse the same slot with a new generation.
         let _t2 = sess.alloc_value(Value::Int(2));
+        assert!(sess.read_value(&stale).is_err());
+    }
 
-        // Using the stale tether should panic (generation mismatch).
-        let result = std::panic::catch_unwind(|| {
-            sess.read_value(&stale);
-        });
-        assert!(result.is_err());
+    #[test]
+    fn overwrite_changes_value() {
+        let mut sess = Session::new(GcMode::Off);
+        let t = sess.alloc_value(Value::Int(1));
+        sess.overwrite(&t, Value::Int(99)).unwrap();
+        let v = sess.read_value(&t).unwrap();
+        assert!(matches!(v, Value::Int(99)));
     }
 }

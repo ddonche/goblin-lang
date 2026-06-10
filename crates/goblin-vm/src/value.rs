@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::cell::RefCell;
 
 /// Logical address of a stash in the arena.
-/// `slot` is index into Session.arena; `generation` detects stale addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Address {
     pub slot: u32,
     pub generation: u32,
 }
 
-/// A runtime tether: lives in a VM slot (local / global).
+/// A runtime tether: lives in a VM slot (local / global / upvalue).
 /// Points to a stash via its Address.
 ///
 /// name → (slot) → Tether → Stash → Value
@@ -18,7 +18,7 @@ pub struct Tether {
     pub addr: Address,
 }
 
-/// The user-facing value that lives inside a stash.
+/// The user-facing value stored inside a stash.
 #[derive(Debug, Clone)]
 pub enum Value {
     Nil,
@@ -30,16 +30,45 @@ pub enum Value {
     /// Unified collections (arrays, maps, stacks, queues).
     Collection(Rc<CollectionValue>),
 
-    /// A compiled Goblin function.
+    /// A compiled Goblin function (no captured upvalues).
     Function(Rc<FunctionObject>),
+
+    /// A compiled Goblin function with captured upvalues.
+    Closure(Rc<Closure>),
 
     /// A built-in native function.
     Builtin(BuiltinId),
 }
 
-// Value::Float contains f64 which does not implement Eq/Hash, but we still need
-// Value as a HashMap key for SmallMap / HashMapBackend.  We provide a manual
-// implementation that panics on NaN and treats -0.0 == +0.0.
+impl Value {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Nil          => "nil",
+            Value::Bool(_)      => "bool",
+            Value::Int(_)       => "int",
+            Value::Float(_)     => "float",
+            Value::Str(_)       => "str",
+            Value::Collection(_)=> "collection",
+            Value::Function(_)  => "function",
+            Value::Closure(_)   => "closure",
+            Value::Builtin(_)   => "builtin",
+        }
+    }
+
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Value::Nil        => false,
+            Value::Bool(b)    => *b,
+            Value::Int(n)     => *n != 0,
+            Value::Float(f)   => *f != 0.0,
+            Value::Str(s)     => !s.is_empty(),
+            Value::Collection(c) => c.meta.len > 0,
+            _                 => true,
+        }
+    }
+}
+
+// Value needs PartialEq + Eq + Hash for use as map keys in SmallMap / HashMapBackend.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -50,12 +79,12 @@ impl PartialEq for Value {
             (Value::Str(a),         Value::Str(b))         => a == b,
             (Value::Collection(a),  Value::Collection(b))  => Rc::ptr_eq(a, b),
             (Value::Function(a),    Value::Function(b))    => Rc::ptr_eq(a, b),
+            (Value::Closure(a),     Value::Closure(b))     => Rc::ptr_eq(a, b),
             (Value::Builtin(a),     Value::Builtin(b))     => a == b,
             _ => false,
         }
     }
 }
-
 impl Eq for Value {}
 
 impl std::hash::Hash for Value {
@@ -69,10 +98,86 @@ impl std::hash::Hash for Value {
             Value::Str(s)        => s.hash(state),
             Value::Collection(c) => (Rc::as_ptr(c) as usize).hash(state),
             Value::Function(f)   => (Rc::as_ptr(f) as usize).hash(state),
+            Value::Closure(c)    => (Rc::as_ptr(c) as usize).hash(state),
             Value::Builtin(b)    => b.hash(state),
         }
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Stash
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// One arena cell: stores a Value plus metadata.
+#[derive(Debug)]
+pub struct Stash {
+    pub value: Rc<Value>,
+    pub tether_count: usize,
+    pub generation: u32,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// FunctionObject and Closure
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Describes how one upvalue is sourced when a closure is created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpvalueDescriptor {
+    /// Capture the Tether currently in the enclosing frame's locals[slot].
+    Local(u8),
+    /// Forward upvalue[idx] from the enclosing closure.
+    Upvalue(u8),
+}
+
+/// A compiled Goblin function produced by the bytecode compiler.
+#[derive(Debug, Clone)]
+pub struct FunctionObject {
+    pub bytecode: Vec<crate::opcode::Opcode>,
+    pub constants: Vec<Value>,
+    /// Total number of local slots (parameters + other locals).
+    pub locals: usize,
+    /// Number of parameter slots (always the first `params` locals).
+    pub params: usize,
+    pub name: String,
+    /// How to populate upvalues when this function is wrapped in a Closure.
+    pub upvalue_descriptors: Vec<UpvalueDescriptor>,
+}
+
+/// An upvalue cell: a shared, heap-allocated slot that can be closed over.
+///
+/// - While the enclosing frame is alive: `Open` — points to a stack slot
+///   (we snapshot the Tether at closure creation time for v1 simplicity).
+/// - After closure creation: `Closed` — holds the captured Tether directly.
+///
+/// v1 Note: We use snapshot semantics (each closure gets its own copy of the
+/// captured tether at the time of MakeClosure). Shared mutable upvalues
+/// (where inner and outer both see mutations) require full open/close upvalue
+/// cells; that is a planned future improvement.
+#[derive(Debug, Clone)]
+pub struct UpvalueCell(pub Rc<RefCell<Tether>>);
+
+impl UpvalueCell {
+    pub fn new(t: Tether) -> Self {
+        UpvalueCell(Rc::new(RefCell::new(t)))
+    }
+    pub fn get(&self) -> Tether {
+        self.0.borrow().clone()
+    }
+    pub fn set(&self, t: Tether) {
+        *self.0.borrow_mut() = t;
+    }
+}
+
+/// A function together with its captured upvalue cells.
+#[derive(Debug, Clone)]
+pub struct Closure {
+    pub func: Rc<FunctionObject>,
+    pub upvalues: Vec<UpvalueCell>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// BuiltinId
+// ──────────────────────────────────────────────────────────────────────────────
 
 /// Numeric IDs for all built-in functions dispatched by CallBuiltin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,16 +187,30 @@ pub enum BuiltinId {
     MemAddr,
     Gc,
 
-    // Arithmetic helpers (called as functions, not inlined ops)
+    // Arithmetic helpers (called as functions)
     Abs,
     Min,
     Max,
+    Floor,
+    Ceil,
+    Round,
+    Sqrt,
+    Pow,
 
     // String
     Len,
     ToString,
+    ToUpperCase,
+    ToLowerCase,
+    Trim,
+    Split,
+    Join,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Replace,
 
-    // Collections
+    // Collections — grab family
     Grab,
     GrabFirst,
     GrabLast,
@@ -102,16 +221,19 @@ pub enum BuiltinId {
     GrabBetween,
     GrabMatching,
 
+    // Collections — put family
     Put,
     PutFirst,
     PutLast,
     PutAt,
 
+    // Collections — update family
     Update,
     UpdateFirst,
     UpdateLast,
     UpdateAt,
 
+    // Collections — delete family
     Delete,
     DeleteFirst,
     DeleteLast,
@@ -119,6 +241,7 @@ pub enum BuiltinId {
     DeleteWhere,
     DeleteAll,
 
+    // Collections — reap family (remove + return)
     Reap,
     ReapFirst,
     ReapLast,
@@ -127,16 +250,33 @@ pub enum BuiltinId {
     ReapWhere,
     ReapAll,
 
+    // Collections — query
     Has,
     Keys,
     Values,
     Pairs,
     Count,
+    IsEmpty,
+    Reverse,
+    Sort,
+    SortBy,
+    Map,
+    Filter,
+    Reduce,
+    Any,
+    All,
+    Find,
+    FindIndex,
+    Zip,
+    Flatten,
+    Unique,
+    Slice,
 
-    // I/O (stubs for now)
+    // I/O
     Print,
     Println,
     Eprint,
+    Eprintln,
 
     // Type checks
     IsNil,
@@ -152,14 +292,11 @@ pub enum BuiltinId {
     ToFloat,
     ToStr,
     ToBool,
-}
 
-/// One arena cell: stores a Value plus metadata.
-#[derive(Debug)]
-pub struct Stash {
-    pub value: Rc<Value>,
-    pub tether_count: usize,
-    pub generation: u32,
+    // Meta
+    TypeOf,
+    Assert,
+    Panic,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -173,22 +310,47 @@ pub struct CollectionValue {
     pub meta: CollectionMeta,
 }
 
+impl CollectionValue {
+    pub fn empty_array() -> Self {
+        CollectionValue {
+            layout: CollectionLayout::FlatArray(Rc::new(Vec::new())),
+            meta: CollectionMeta::default(),
+        }
+    }
+
+    pub fn from_flat(items: Vec<Value>) -> Self {
+        let len = items.len();
+        CollectionValue {
+            layout: CollectionLayout::FlatArray(Rc::new(items)),
+            meta: CollectionMeta { len, ..Default::default() },
+        }
+    }
+
+    pub fn from_map(pairs: Vec<(Value, Value)>) -> Self {
+        let len = pairs.len();
+        CollectionValue {
+            layout: CollectionLayout::SmallMap(Rc::new(pairs)),
+            meta: CollectionMeta { len, ..Default::default() },
+        }
+    }
+
+    /// Logical length of this collection.
+    pub fn len(&self) -> usize {
+        self.meta.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.meta.len == 0
+    }
+}
+
 /// The concrete backend layout Goblin uses for this collection.
 #[derive(Debug, Clone)]
 pub enum CollectionLayout {
-    /// Default: contiguous Vec of Values.
     FlatArray(Rc<Vec<Value>>),
-
-    /// Queue/stack/deque-optimised ring buffer.
     RingBuf(Rc<RingBuf>),
-
-    /// Rope-style layout for large, edit-heavy sequences.
     ChunkedSeq(Rc<ChunkedSeq>),
-
-    /// Tiny maps as a Vec of (key, value) pairs (< 16 entries).
     SmallMap(Rc<Vec<(Value, Value)>>),
-
-    /// General-purpose hash-map backend.
     HashMapBackend(Rc<HashMap<Value, Value>>),
 }
 
@@ -205,13 +367,18 @@ impl RingBuf {
         RingBuf { buf: Vec::new(), head: 0, len: 0 }
     }
 
+    pub fn from_vec(v: Vec<Value>) -> Self {
+        let len = v.len();
+        RingBuf { buf: v, head: 0, len }
+    }
+
     pub fn push_back(&mut self, v: Value) {
         if self.len == self.buf.len() {
-            // Grow: copy into a new contiguous buffer.
             let new_cap = (self.buf.len() * 2).max(4);
-            let mut new_buf = Vec::with_capacity(new_cap);
+            let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
             for i in 0..self.len {
-                new_buf.push(self.buf[(self.head + i) % self.buf.len()].clone());
+                let src = (self.head + i) % self.buf.len().max(1);
+                new_buf.push(self.buf[src].clone());
             }
             new_buf.push(v);
             self.buf = new_buf;
@@ -219,7 +386,11 @@ impl RingBuf {
             self.len += 1;
         } else {
             let tail = (self.head + self.len) % self.buf.len();
-            self.buf[tail] = v;
+            if tail < self.buf.len() {
+                self.buf[tail] = v;
+            } else {
+                self.buf.push(v);
+            }
             self.len += 1;
         }
     }
@@ -227,10 +398,11 @@ impl RingBuf {
     pub fn push_front(&mut self, v: Value) {
         if self.len == self.buf.len() {
             let new_cap = (self.buf.len() * 2).max(4);
-            let mut new_buf = Vec::with_capacity(new_cap);
+            let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
             new_buf.push(v);
             for i in 0..self.len {
-                new_buf.push(self.buf[(self.head + i) % self.buf.len()].clone());
+                let src = (self.head + i) % self.buf.len().max(1);
+                new_buf.push(self.buf[src].clone());
             }
             self.buf = new_buf;
             self.head = 0;
@@ -242,14 +414,33 @@ impl RingBuf {
         }
     }
 
+    pub fn pop_front(&mut self) -> Option<Value> {
+        if self.len == 0 { return None; }
+        let v = self.buf[self.head].clone();
+        self.head = (self.head + 1) % self.buf.len().max(1);
+        self.len -= 1;
+        Some(v)
+    }
+
+    pub fn pop_back(&mut self) -> Option<Value> {
+        if self.len == 0 { return None; }
+        self.len -= 1;
+        let tail = (self.head + self.len) % self.buf.len().max(1);
+        Some(self.buf[tail].clone())
+    }
+
     pub fn get(&self, i: usize) -> Option<&Value> {
-        if i >= self.len { return None; }
+        if i >= self.len || self.buf.is_empty() { return None; }
         Some(&self.buf[(self.head + i) % self.buf.len()])
     }
 
     pub fn to_vec(&self) -> Vec<Value> {
-        (0..self.len).map(|i| self.buf[(self.head + i) % self.buf.len()].clone()).collect()
+        (0..self.len).filter_map(|i| self.get(i).cloned()).collect()
     }
+}
+
+impl Default for RingBuf {
+    fn default() -> Self { RingBuf::new() }
 }
 
 /// Chunked / rope-style layout for large, edit-heavy sequences.
@@ -272,12 +463,25 @@ impl ChunkedSeq {
     }
 
     pub fn get(&self, idx: usize) -> Option<&Value> {
-        let mut remaining = idx;
+        let mut rem = idx;
         for chunk in &self.chunks {
-            if remaining < chunk.len() {
-                return Some(&chunk[remaining]);
+            if rem < chunk.len() {
+                return Some(&chunk[rem]);
             }
-            remaining -= chunk.len();
+            rem -= chunk.len();
+        }
+        None
+    }
+
+    pub fn set(&self, idx: usize, val: Value) -> Option<Self> {
+        let mut new_chunks = self.chunks.clone();
+        let mut rem = idx;
+        for chunk in &mut new_chunks {
+            if rem < chunk.len() {
+                chunk[rem] = val;
+                return Some(ChunkedSeq { chunks: new_chunks, len: self.len });
+            }
+            rem -= chunk.len();
         }
         None
     }
@@ -301,21 +505,15 @@ impl CollectionMeta {
         if self.backend_hint != BackendHint::Auto {
             return self.backend_hint;
         }
-
         let front_back = self.front_hits + self.back_hits;
         let mid = self.mid_hits;
-
-        // Large + mid-heavy → ChunkedSeq
         if self.len > 256 && mid > front_back {
             return BackendHint::ChunkedSeq;
         }
-
-        // Queue/stack dominates → RingBuf
         if front_back > mid && front_back > 4 {
             return BackendHint::RingBuf;
         }
-
-        BackendHint::Auto // stays FlatArray
+        BackendHint::Auto
     }
 }
 
@@ -331,18 +529,4 @@ pub enum BackendHint {
 
 impl Default for BackendHint {
     fn default() -> Self { BackendHint::Auto }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// FunctionObject — compiled Goblin function
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// A compiled Goblin function produced by the bytecode compiler.
-#[derive(Debug, Clone)]
-pub struct FunctionObject {
-    pub bytecode: Vec<crate::vm::Opcode>,
-    pub constants: Vec<Value>,
-    pub locals: usize,
-    pub params: usize,
-    pub name: String,
 }

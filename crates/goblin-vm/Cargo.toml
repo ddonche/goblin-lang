@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-slab = "0.4"         # generational-ish arena; we’ll wrap it
+slab = "0.4"
+goblin-ast = { path = "../goblin-ast" }
+goblin-diagnostics = { path = "../goblin-diagnostics" }
