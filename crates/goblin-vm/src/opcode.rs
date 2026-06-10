@@ -174,6 +174,10 @@ pub enum Opcode {
     ObjectDecision { var_name: String, def: Box<goblin_ast::DecisionDef> },
     /// Register a unit declaration.
     UnitDecl(Box<goblin_ast::UnitDecl>),
+
+    /// Peek at top-of-stack and register it into session.named_values[constants[name_idx]].
+    /// Does NOT pop — the value stays on stack for the subsequent StoreLocal.
+    RegisterAction(u16),
 }
 
 impl Opcode {
@@ -247,6 +251,7 @@ impl Opcode {
             Opcode::ClearLink(_)      => "ClearLink",
             Opcode::ObjectDecision {..} => "ObjectDecision",
             Opcode::UnitDecl(_)       => "UnitDecl",
+            Opcode::RegisterAction(_) => "RegisterAction",
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::error::GoblinError;
 use crate::opcode::Opcode;
 use crate::session::Session;
 use crate::value::{
-    Closure, CollectionValue, FunctionObject, Tether, UpvalueCell,
+    BuiltinId, Closure, CollectionValue, FunctionObject, Tether, UpvalueCell,
     UpvalueDescriptor, Value,
 };
 
@@ -611,6 +611,27 @@ impl Vm {
                 }
                 let start = self.stack.len() - arg_count;
                 let arg_tethers: Vec<Tether> = self.stack.drain(start..).collect();
+
+                // Special handling for invoke/summon/provoke — these need VM call capability.
+                match id {
+                    BuiltinId::Invoke => {
+                        let result = self.vm_invoke(arg_tethers)?;
+                        self.stack.push(result);
+                        return Ok(());
+                    }
+                    BuiltinId::Summon => {
+                        let result = self.vm_summon(arg_tethers)?;
+                        self.stack.push(result);
+                        return Ok(());
+                    }
+                    BuiltinId::Provoke => {
+                        let result = self.vm_provoke(arg_tethers)?;
+                        self.stack.push(result);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+
                 let result = crate::builtins::call_builtin(id, arg_tethers, &mut self.session)?;
                 self.stack.push(result);
             }
@@ -917,6 +938,24 @@ impl Vm {
             Opcode::UnitDecl(decl) => {
                 self.session.unit_registry.insert(decl.name.clone(), *decl.clone());
             }
+
+            Opcode::RegisterAction(name_idx) => {
+                let name_val = {
+                    let frame = self.call_stack.last().unwrap();
+                    frame.func.constants.get(name_idx as usize).cloned()
+                        .ok_or_else(|| GoblinError::Runtime(format!("RegisterAction: constant {name_idx} out of range")))?
+                };
+                let name = match name_val {
+                    Value::Str(s) => s,
+                    other => return Err(GoblinError::Runtime(format!("RegisterAction: expected str, got {:?}", other.type_name()))),
+                };
+                // Peek at the top of stack without popping.
+                let top_tether = self.stack.last()
+                    .ok_or_else(|| GoblinError::Runtime("RegisterAction: empty stack".into()))?
+                    .clone();
+                let value = self.session.read_value(&top_tether)?;
+                self.session.named_values.insert(name, value);
+            }
         }
         Ok(())
     }
@@ -958,6 +997,138 @@ impl Vm {
             Value::Int(n)   => Ok(n as f64),
             other => Err(GoblinError::type_error("float", other.type_name(), "arithmetic")),
         }
+    }
+
+    // ── invoke / summon / provoke ────────────────────────────────────────────
+
+    /// Execute instructions until call_stack depth drops back to `target_depth`.
+    fn run_until_depth(&mut self, target_depth: usize) -> Result<(), GoblinError> {
+        while self.call_stack.len() > target_depth {
+            let op = {
+                let frame = match self.call_stack.last_mut() {
+                    Some(f) => f,
+                    None => break,
+                };
+                if frame.ip >= frame.func.bytecode.len() {
+                    let nil_t = self.session.alloc_value(Value::Nil);
+                    let stack_base = frame.stack_base;
+                    self.call_stack.pop();
+                    self.stack.truncate(stack_base);
+                    self.stack.push(nil_t);
+                    continue;
+                }
+                let op = frame.func.bytecode[frame.ip].clone();
+                frame.ip += 1;
+                op
+            };
+            self.execute_op(op).map_err(|e| {
+                // Unwind to target depth on error
+                while self.call_stack.len() > target_depth {
+                    self.call_stack.pop();
+                }
+                e
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Call a named function from session.named_values and return its result.
+    fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
+        let func_val = self.session.named_values.get(name).cloned()
+            .ok_or_else(|| GoblinError::Runtime(format!("invoke: unknown action '{name}'")))?;
+        let (func_rc, upvalues) = match func_val {
+            Value::Function(f) => (f, Vec::new()),
+            Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
+            other => return Err(GoblinError::NotCallable { got: other.type_name() }),
+        };
+        if args.len() != func_rc.params {
+            return Err(GoblinError::ArityMismatch { expected: func_rc.params, got: args.len(), name: func_rc.name.clone() });
+        }
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+        let stack_base = self.stack.len();
+        // The result will be pushed at stack_base by Return, so use stack_base as the "func slot".
+        // We push a dummy nil for the func slot position, then bind params directly.
+        let dummy = self.session.alloc_value(Value::Nil);
+        self.stack.push(dummy); // placeholder for func tether position
+        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+        for (i, a) in args.into_iter().enumerate() {
+            let t = self.session.alloc_value(a);
+            new_frame.locals[i] = Some(t);
+        }
+        // The dummy func tether is at stack_base; Return will truncate to stack_base and push result.
+        self.call_stack.push(new_frame);
+        let depth_before = self.call_stack.len() - 1;
+        self.run_until_depth(depth_before)?;
+        // Result is on top of stack (Return pushed it at stack_base).
+        let result_tether = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("invoke: no return value on stack".into()))?;
+        Ok(self.session.read_value(&result_tether)?)
+    }
+
+    fn vm_invoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
+        if arg_tethers.len() < 2 {
+            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "invoke".into() });
+        }
+        let name = match self.session.read_value(&arg_tethers[0])? {
+            Value::Str(s) => s,
+            other => return Err(GoblinError::type_error("str", other.type_name(), "invoke")),
+        };
+        if name.is_empty() {
+            return Err(GoblinError::Runtime("invoke: empty action name".into()));
+        }
+        // Form 1: invoke("name", [a, b, c]) — second arg is array
+        // Form 2: invoke("name", a, b, c)
+        let forwarded: Vec<Value> = if arg_tethers.len() == 2 {
+            match self.session.read_value(&arg_tethers[1])? {
+                Value::Array(arr) => arr.iter().cloned().collect(),
+                other => vec![other],
+            }
+        } else {
+            arg_tethers[1..].iter().map(|t| self.session.read_value(t)).collect::<Result<Vec<_>, _>>()?
+        };
+        let result = self.call_named(&name, forwarded)?;
+        Ok(self.session.alloc_value(result))
+    }
+
+    fn vm_summon(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
+        if arg_tethers.len() != 2 {
+            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "summon".into() });
+        }
+        let mut acc = self.session.read_value(&arg_tethers[0])?;
+        let events_val = self.session.read_value(&arg_tethers[1])?;
+        let events: Vec<Value> = match &events_val {
+            Value::Array(a) => a.iter().cloned().collect(),
+            _ => return Err(GoblinError::type_error("array", events_val.type_name(), "summon events")),
+        };
+        for ev in events {
+            let name = match ev {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "summon event name")),
+            };
+            acc = self.call_named(&name, vec![acc])?;
+        }
+        Ok(self.session.alloc_value(acc))
+    }
+
+    fn vm_provoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
+        if arg_tethers.is_empty() || arg_tethers.len() > 2 {
+            return Err(GoblinError::ArityMismatch { expected: 1, got: arg_tethers.len(), name: "provoke".into() });
+        }
+        let condition = match self.session.read_value(&arg_tethers[0])? {
+            Value::Bool(b) => b,
+            other => return Err(GoblinError::type_error("bool", other.type_name(), "provoke")),
+        };
+        if !condition {
+            let msg = if arg_tethers.len() == 2 {
+                crate::builtins::fmt_value_raw(&self.session.read_value(&arg_tethers[1])?)
+            } else {
+                "Provoked constraint violated".to_string()
+            };
+            return Err(GoblinError::Runtime(msg));
+        }
+        Ok(self.session.alloc_value(Value::Bool(true)))
     }
 
     fn arith_op(

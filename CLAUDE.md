@@ -198,12 +198,14 @@
 - [x] `des_store`, `des_index`, `des_tick_runner`, `des_overlay_id_counter`, `des_link_id_counter`, `des_link_ids`
 - [x] `goblin-des` added as dependency
 
+### Builtins — newly implemented
+- [x] `invoke` / `summon` / `provoke` — implemented via `RegisterAction` opcode + `session.named_values` + `call_named` / `run_until_depth` in vm.rs
+- [x] `md_to_html` — comrak 0.21 added, matches interpreter implementation exactly
+- [x] `highlight_code` — syntect 5 added, matches interpreter implementation; syntaxes/Goblin.sublime-syntax copied
+
 ## TODO / NOT YET DONE
 
 ### Builtins — not implemented
-- [ ] `invoke` / `summon` / `provoke` — dynamic action dispatch (needs VM action call infrastructure)
-- [ ] `md_to_html` — needs comrak crate
-- [ ] `highlight_code` — needs syntect crate
 - [ ] `tick` / `tick_db` — needs full DES tick runner ported to VM
 
 ### Skipped by user instruction

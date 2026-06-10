@@ -151,6 +151,10 @@ pub struct Session {
     pub des_overlay_id_counter: u32,
     pub des_link_id_counter: u32,
     pub des_link_ids: HashMap<(String, String, String), LinkId>,
+
+    /// Named function registry for `invoke`/`summon`/`provoke`.
+    /// Top-level action declarations are registered here by name.
+    pub named_values: HashMap<String, Value>,
 }
 
 impl Session {
@@ -191,6 +195,7 @@ impl Session {
             des_overlay_id_counter: 0,
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
+            named_values: HashMap::new(),
         }
     }
 

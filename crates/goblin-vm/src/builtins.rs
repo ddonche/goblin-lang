@@ -2742,11 +2742,18 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         }
 
         BuiltinId::MdToHtml => {
-            Err(GoblinError::NotImplemented { feature: "md_to_html: requires comrak dependency (not included in VM)" })
+            expect_n(1)?;
+            let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "md_to_html")) };
+            Ok(Value::Str(md_to_html_impl(&s)))
         }
 
         BuiltinId::HighlightCode => {
-            Err(GoblinError::NotImplemented { feature: "highlight_code: requires syntect dependency (not included in VM)" })
+            if args.len() != 4 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "highlight_code".into() }); }
+            let code  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code code")) };
+            let lang  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code lang")) };
+            let dark  = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code dark_theme")) };
+            let light = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code light_theme")) };
+            Ok(Value::Str(highlight_code_impl(&code, &lang, &dark, &light)))
         }
 
         BuiltinId::ToBig => {
@@ -4178,7 +4185,7 @@ fn value_to_map_key(v: &Value) -> String {
     }
 }
 
-fn fmt_value_raw(v: &Value) -> String {
+pub fn fmt_value_raw(v: &Value) -> String {
     fmt_value_depth(v, 0)
 }
 
@@ -4431,4 +4438,71 @@ fn value_to_yall(v: &Value) -> goblin_yall::YallValue {
         }
         _ => goblin_yall::YallValue::Str(fmt_value_raw(v)),
     }
+}
+
+fn md_to_html_impl(md: &str) -> String {
+    use comrak::{markdown_to_html, ComrakOptions};
+    let mut options = ComrakOptions::default();
+    options.extension.table = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
+    options.extension.strikethrough = true;
+    options.extension.superscript = true;
+    options.extension.footnotes = true;
+    options.extension.header_ids = Some(String::new());
+    options.parse.smart = false;
+    options.render.unsafe_ = true;
+    options.render.hardbreaks = false;
+    options.render.github_pre_lang = true;
+    markdown_to_html(md, &options)
+}
+
+fn highlight_code_impl(code: &str, lang: &str, dark_theme: &str, light_theme: &str) -> String {
+    use std::sync::OnceLock;
+    use syntect::highlighting::ThemeSet;
+    use syntect::html::highlighted_html_for_string;
+    use syntect::parsing::{SyntaxSet, SyntaxDefinition};
+
+    const GOBLIN_SYNTAX: &str = include_str!("../syntaxes/Goblin.sublime-syntax");
+
+    static SS: OnceLock<SyntaxSet> = OnceLock::new();
+    static TS: OnceLock<ThemeSet> = OnceLock::new();
+
+    let ss = SS.get_or_init(|| {
+        let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+        match SyntaxDefinition::load_from_str(GOBLIN_SYNTAX, true, None) {
+            Ok(goblin) => { builder.add(goblin); }
+            Err(e) => { eprintln!("Warning: failed to load Goblin syntax: {}", e); }
+        }
+        builder.build()
+    });
+    let ts = TS.get_or_init(ThemeSet::load_defaults);
+
+    let syntax = ss
+        .find_syntax_by_token(lang)
+        .or_else(|| ss.find_syntax_by_extension(lang))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+
+    let render = |theme_name: &str| {
+        let theme = ts.themes.get(theme_name)
+            .unwrap_or_else(|| ts.themes.values().next().unwrap());
+        match highlighted_html_for_string(code, ss, syntax, theme) {
+            Ok(html) => {
+                let start = html.find("background-color:");
+                if let Some(s) = start {
+                    let end = html[s..].find(';').map(|e| s + e + 1).unwrap_or(s);
+                    format!("{}{}", &html[..s], &html[end..])
+                } else {
+                    html
+                }
+            }
+            Err(_) => format!("<pre><code>{}</code></pre>", code),
+        }
+    };
+
+    format!(
+        "<div class=\"hl-dark\">{}</div><div class=\"hl-light\">{}</div>",
+        render(dark_theme),
+        render(light_theme)
+    )
 }

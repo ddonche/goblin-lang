@@ -346,6 +346,11 @@ impl Compiler {
             Stmt::Action(action) => {
                 // Nested action declaration: compile into a FunctionObject constant.
                 self.compile_action_decl(action)?;
+                // At top-level scope, also register by name for invoke().
+                if self.scopes.len() == 1 {
+                    let name_idx = self.add_constant(Value::Str(action.name.clone()));
+                    self.emit(Opcode::RegisterAction(name_idx));
+                }
                 // Store the resulting function/closure in a local slot.
                 let slot = self.scope_mut().declare_local(&action.name);
                 self.emit(Opcode::StoreLocal(slot));
