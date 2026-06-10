@@ -2482,6 +2482,49 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke => {
             Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
+
+        BuiltinId::YallParse => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "yall_parse".into() }); }
+            let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "yall_parse")) };
+            let label = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "yall_parse label")) };
+            let parsed = goblin_yall::yall_parse(&text, &label)
+                .map_err(|e| GoblinError::Runtime(format!("yall_parse failed: {e}")))?;
+            Ok(yall_to_value(&parsed))
+        }
+        BuiltinId::YallParseFile => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "yall_parse_file")) };
+            let parsed = goblin_yall::yall_parse_file(&path)
+                .map_err(|e| GoblinError::Runtime(format!("yall_parse_file failed: {e}")))?;
+            Ok(yall_to_value(&parsed))
+        }
+        BuiltinId::YallWrite => {
+            expect_n(1)?;
+            let v = read(0)?;
+            let yv = value_to_yall(&v);
+            Ok(Value::Str(goblin_yall::yall_write(&yv)))
+        }
+        BuiltinId::YallWriteFile => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "yall_write_file".into() }); }
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "yall_write_file path")) };
+            let v = read(1)?;
+            let yv = value_to_yall(&v);
+            goblin_yall::yall_write_file(&path, &yv)
+                .map_err(|e| GoblinError::Runtime(format!("yall_write_file failed: {e}")))?;
+            Ok(Value::Nil)
+        }
+        BuiltinId::YallPretty => {
+            expect_n(1)?;
+            let v = read(0)?;
+            let yv = value_to_yall(&v);
+            Ok(Value::Str(goblin_yall::yall_stringify(&yv)))
+        }
+        BuiltinId::YallMinify => {
+            expect_n(1)?;
+            let v = read(0)?;
+            let yv = value_to_yall(&v);
+            Ok(Value::Str(goblin_yall::yall_minify(&yv)))
+        }
     }
 }
 
@@ -2889,5 +2932,43 @@ fn map_get_f64(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Opti
         Value::Int(n)   => Some(*n as f64),
         Value::Float(f) => Some(*f),
         _ => None,
+    }
+}
+
+fn yall_to_value(v: &goblin_yall::YallValue) -> Value {
+    match v {
+        goblin_yall::YallValue::Null     => Value::Nil,
+        goblin_yall::YallValue::Bool(b)  => Value::Bool(*b),
+        goblin_yall::YallValue::Int(i)   => Value::Int(*i),
+        goblin_yall::YallValue::Float(f) => Value::Float(*f),
+        goblin_yall::YallValue::Str(s)   => Value::Str(s.clone()),
+        goblin_yall::YallValue::Array(items) => Value::Array(items.iter().map(yall_to_value).collect()),
+        goblin_yall::YallValue::Map(map) => {
+            let mut out = indexmap::IndexMap::new();
+            for (k, v2) in map.iter() { out.insert(k.clone(), yall_to_value(v2)); }
+            Value::MapOrd(out)
+        }
+    }
+}
+
+fn value_to_yall(v: &Value) -> goblin_yall::YallValue {
+    match v {
+        Value::Nil          => goblin_yall::YallValue::Null,
+        Value::Bool(b)      => goblin_yall::YallValue::Bool(*b),
+        Value::Int(i)       => goblin_yall::YallValue::Int(*i),
+        Value::Float(f)     => goblin_yall::YallValue::Float(*f),
+        Value::Str(s)       => goblin_yall::YallValue::Str(s.clone()),
+        Value::Array(arr)   => goblin_yall::YallValue::Array(arr.iter().map(value_to_yall).collect()),
+        Value::Map(map) => {
+            let mut out = indexmap::IndexMap::new();
+            for (k, v2) in map.iter() { out.insert(k.clone(), value_to_yall(v2)); }
+            goblin_yall::YallValue::Map(out)
+        }
+        Value::MapOrd(map) => {
+            let mut out = indexmap::IndexMap::new();
+            for (k, v2) in map.iter() { out.insert(k.clone(), value_to_yall(v2)); }
+            goblin_yall::YallValue::Map(out)
+        }
+        _ => goblin_yall::YallValue::Str(fmt_value_raw(v)),
     }
 }

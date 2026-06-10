@@ -1444,6 +1444,12 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "invoke"                         => BuiltinId::Invoke,
         "summon"                         => BuiltinId::Summon,
         "provoke"                        => BuiltinId::Provoke,
+        "yall_parse"                     => BuiltinId::YallParse,
+        "yall_parse_file"                => BuiltinId::YallParseFile,
+        "yall_write"                     => BuiltinId::YallWrite,
+        "yall_write_file"                => BuiltinId::YallWriteFile,
+        "yall_pretty"                    => BuiltinId::YallPretty,
+        "yall_minify"                    => BuiltinId::YallMinify,
         _ => return None,
     })
 }

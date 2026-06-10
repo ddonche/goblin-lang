@@ -584,6 +584,12 @@ pub enum BuiltinId {
     Invoke,
     Summon,
     Provoke,
+    YallParse,
+    YallParseFile,
+    YallWrite,
+    YallWriteFile,
+    YallPretty,
+    YallMinify,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

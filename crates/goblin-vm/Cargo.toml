@@ -13,3 +13,4 @@ rust_decimal = "1"
 indexmap = "2"
 regex = "1"
 serde_json = "1"
+goblin-yall = { path = "../goblin-yall" }
