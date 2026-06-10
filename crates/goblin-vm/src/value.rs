@@ -416,6 +416,18 @@ pub enum BuiltinId {
     ReapWhere,
     ReapAll,
 
+    // Collections — new Position×Operation matrix (interpreter-aligned)
+    // Get family
+    GetFirst, GetLast, GetAt, GetWhere, GetAll, GetMatching, GetBetween, GetRandom,
+    // Put family (new)
+    PutWhere, PutMatching, PutBetween, PutRandom, PutAll,
+    // Update family (new)
+    UpdateAll, UpdateWhere, UpdateMatching, UpdateBetween, UpdateRandom,
+    // Delete family (new)
+    DeleteMatching, DeleteBetween, DeleteRandom,
+    // Reap family (new — avoid name collision with legacy ReapFirst etc.)
+    ReapFirst2, ReapLast2, ReapAt2, ReapWhere2, ReapMatching, ReapBetween, ReapRandom2,
+
     // Collections — query (legacy)
     Pairs,
     IsEmpty,

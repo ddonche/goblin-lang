@@ -777,6 +777,194 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Err(GoblinError::NotImplemented { feature: "reap_where / reap_all require VM predicate callback" })
         }
 
+        // ── Collections — new Position×Operation matrix ───────────────────────
+        // Get family
+        BuiltinId::GetFirst => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::First, collections::Operation::Get, session)
+        }
+        BuiltinId::GetLast => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Last, collections::Operation::Get, session)
+        }
+        BuiltinId::GetAt => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "get_at".into() }); }
+            let coll = read(0)?;
+            let key = read(1)?;
+            collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Get, session)
+        }
+        BuiltinId::GetWhere => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "get_where".into() }); }
+            let coll = read(0)?;
+            let pred = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("string", other.type_name(), "get_where predicate")),
+            };
+            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Get, session)
+        }
+        BuiltinId::GetAll => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Get, session)
+        }
+        BuiltinId::GetMatching => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "get_matching".into() }); }
+            let coll = read(0)?;
+            let pat = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("string", other.type_name(), "get_matching pattern")),
+            };
+            collections::collection_operation(&coll, collections::Position::Matching(pat), collections::Operation::Get, session)
+        }
+        BuiltinId::GetBetween => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "get_between".into() }); }
+            let coll = read(0)?;
+            let start = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "get_between start")) };
+            let end   = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "get_between end")) };
+            collections::collection_operation(&coll, collections::Position::Between(start, end), collections::Operation::Get, session)
+        }
+        BuiltinId::GetRandom => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Get, session)
+        }
+
+        // Put family (new)
+        BuiltinId::PutWhere => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "put_where".into() }); }
+            let coll = read(0)?;
+            let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "put_where predicate")) };
+            let val = read(2)?;
+            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Put(val), session)
+        }
+        BuiltinId::PutMatching => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "put_matching".into() }); }
+            let coll = read(0)?;
+            let pat = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "put_matching pattern")) };
+            let val = read(2)?;
+            collections::collection_operation(&coll, collections::Position::Matching(pat), collections::Operation::Put(val), session)
+        }
+        BuiltinId::PutBetween => {
+            if args.len() != 4 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "put_between".into() }); }
+            let coll = read(0)?;
+            let start = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "put_between start")) };
+            let end   = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "put_between end")) };
+            let val = read(3)?;
+            collections::collection_operation(&coll, collections::Position::Between(start, end), collections::Operation::Put(val), session)
+        }
+        BuiltinId::PutRandom => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "put_random".into() }); }
+            let coll = read(0)?;
+            let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Put(val), session)
+        }
+        BuiltinId::PutAll => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "put_all".into() }); }
+            let coll = read(0)?;
+            let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Put(val), session)
+        }
+
+        // Update family (new)
+        BuiltinId::UpdateAll => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "update_all".into() }); }
+            let coll = read(0)?;
+            let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Update(val), session)
+        }
+        BuiltinId::UpdateWhere => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "update_where".into() }); }
+            let coll = read(0)?;
+            let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "update_where predicate")) };
+            let val = read(2)?;
+            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Update(val), session)
+        }
+        BuiltinId::UpdateMatching => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "update_matching".into() }); }
+            let coll = read(0)?;
+            let pat = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "update_matching pattern")) };
+            let val = read(2)?;
+            collections::collection_operation(&coll, collections::Position::Matching(pat), collections::Operation::Update(val), session)
+        }
+        BuiltinId::UpdateBetween => {
+            if args.len() != 4 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "update_between".into() }); }
+            let coll = read(0)?;
+            let start = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "update_between start")) };
+            let end   = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "update_between end")) };
+            let val = read(3)?;
+            collections::collection_operation(&coll, collections::Position::Between(start, end), collections::Operation::Update(val), session)
+        }
+        BuiltinId::UpdateRandom => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "update_random".into() }); }
+            let coll = read(0)?;
+            let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Update(val), session)
+        }
+
+        // Delete family (new)
+        BuiltinId::DeleteMatching => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "delete_matching".into() }); }
+            let coll = read(0)?;
+            let pat = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "delete_matching pattern")) };
+            collections::collection_operation(&coll, collections::Position::Matching(pat), collections::Operation::Delete, session)
+        }
+        BuiltinId::DeleteBetween => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "delete_between".into() }); }
+            let coll = read(0)?;
+            let start = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "delete_between start")) };
+            let end   = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "delete_between end")) };
+            collections::collection_operation(&coll, collections::Position::Between(start, end), collections::Operation::Delete, session)
+        }
+        BuiltinId::DeleteRandom => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Delete, session)
+        }
+
+        // Reap family (new)
+        BuiltinId::ReapFirst2 => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::First, collections::Operation::Reap, session)
+        }
+        BuiltinId::ReapLast2 => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Last, collections::Operation::Reap, session)
+        }
+        BuiltinId::ReapAt2 => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_at2".into() }); }
+            let coll = read(0)?;
+            let key = read(1)?;
+            collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Reap, session)
+        }
+        BuiltinId::ReapWhere2 => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_where".into() }); }
+            let coll = read(0)?;
+            let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "reap_where predicate")) };
+            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Reap, session)
+        }
+        BuiltinId::ReapMatching => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_matching".into() }); }
+            let coll = read(0)?;
+            let pat = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "reap_matching pattern")) };
+            collections::collection_operation(&coll, collections::Position::Matching(pat), collections::Operation::Reap, session)
+        }
+        BuiltinId::ReapBetween => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "reap_between".into() }); }
+            let coll = read(0)?;
+            let start = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "reap_between start")) };
+            let end   = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "reap_between end")) };
+            collections::collection_operation(&coll, collections::Position::Between(start, end), collections::Operation::Reap, session)
+        }
+        BuiltinId::ReapRandom2 => {
+            expect_n(1)?;
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Reap, session)
+        }
+
         // ── Collections query (legacy) ─────────────────────────────────────────
         BuiltinId::Pairs => {
             expect_n(1)?;
