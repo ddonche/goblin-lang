@@ -1117,6 +1117,8 @@ version = "0.1.0"
 name = "goblin-vm"
 version = "0.1.0"
 dependencies = [
+ "goblin-ast",
+ "goblin-diagnostics",
  "slab",
 ]
 
