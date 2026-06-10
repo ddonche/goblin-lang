@@ -336,9 +336,19 @@ impl Compiler {
                 } else if values.len() == 1 {
                     self.compile_expr(&values[0])?;
                 } else {
-                    // Multiple return values → wrap in an array.
-                    for v in values { self.compile_expr(v)?; }
-                    self.emit(Opcode::MakeArray(values.len() as u16));
+                    // Multiple return values → named map (matches interpreter behaviour).
+                    // Each identifier keeps its name as the key; non-ident exprs get "_1", "_2".
+                    let mut pos = 1usize;
+                    for v in values.iter() {
+                        let key = match v {
+                            Expr::Ident(name, _) => name.clone(),
+                            _ => { let k = format!("_{}", pos); pos += 1; k }
+                        };
+                        let key_idx = self.add_constant(Value::Str(key));
+                        self.emit(Opcode::LoadConst(key_idx));
+                        self.compile_expr(v)?;
+                    }
+                    self.emit(Opcode::MakeMap(values.len() as u16));
                 }
                 self.emit(Opcode::Return);
             }
