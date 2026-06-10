@@ -238,13 +238,14 @@ impl Session {
             }
 
             Value::Collection(coll_rc) => {
-                // TEMP: shallow clone of collection payload.
-                // Later: walk internal tethers and deep-copy their targets.
                 let cloned = Value::Collection(coll_rc.clone());
                 self.alloc_value(cloned)
             }
 
-            // Add other Value variants as they appear.
+            // Functions and builtins are shared by identity; no deep copy needed.
+            Value::Function(_) | Value::Builtin(_) => {
+                self.alloc_value(value.clone())
+            }
         }
     }
 }
