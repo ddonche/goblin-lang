@@ -206,13 +206,21 @@ fn main() {
         std::process::exit(run_devserver_with_proxies(host, port, proxies));
     }
 
+    // Detect --vm flag or GOBLIN_ENGINE=vm env var anywhere in args.
+    let use_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "vm"
+        || args.iter().any(|a| a == "--vm");
+    // Strip --vm from args so subcommand parsers don't see it.
+    args.retain(|a| a != "--vm");
+
     // REPL when no args
     if args.is_empty() {
+        if use_vm { std::process::exit(run_repl_vm()); }
         std::process::exit(run_repl());
     }
 
     // `goblin-cli repl`
     if args.len() == 1 && args[0] == "repl" {
+        if use_vm { std::process::exit(run_repl_vm()); }
         std::process::exit(run_repl());
     }
 
@@ -343,11 +351,17 @@ fn main() {
 
         // Capture anything after the filename as extra args
         let extra_args: Vec<String> = args.iter().skip(1).cloned().collect();
+        if use_vm {
+            std::process::exit(run_run_vm(target.as_path()));
+        }
         std::process::exit(run_run_with_args(target.as_path(), extra_args));
     }
 
     // Run script file if a single path argument is provided
     if args.len() == 1 && is_probable_file(&args[0]) {
+        if use_vm {
+            std::process::exit(run_run_vm(Path::new(&args[0])));
+        }
         std::process::exit(run_run(Path::new(&args[0])));
     }
 
@@ -1037,6 +1051,137 @@ fn repl_banner() -> &'static str {
             " — type 'exit'/'quit' or press Ctrl+D (Unix) to exit"
         )
     }
+}
+
+// ── VM execution entry points ────────────────────────────────────────────────
+
+fn run_run_vm(path: &std::path::Path) -> i32 {
+    use std::time::Instant;
+
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("C0101: could not read script '{}': {}", path.display(), e);
+            return 1;
+        }
+    };
+
+    let start = Instant::now();
+    let result = goblin_vm::exec::execute_source(&src);
+    let elapsed = start.elapsed();
+
+    let code = match result {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("{}", e);
+            1
+        }
+    };
+
+    eprintln!(
+        "goblin run --vm {} → exit {} in {}ms ({}.{:03}s)",
+        path.display(), code,
+        elapsed.as_millis(), elapsed.as_secs(), elapsed.subsec_millis(),
+    );
+    code
+}
+
+fn run_repl_vm() -> i32 {
+    use std::io::{self, Write};
+
+    println!("{}", repl_banner());
+    println!("  [VM mode — engine: goblin-vm]");
+    println!();
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            // Accumulate all successfully-committed source so state persists
+            // across REPL entries by replaying the full history on each run.
+            let mut history = String::new();
+            let mut form_no: usize = 1;
+            let mut buf = String::new();
+            let mut depth: i32 = 0;
+
+            loop {
+                if buf.is_empty() {
+                    print!("gbln-vm({}): ", form_no);
+                } else {
+                    print!("...          ");
+                }
+                if io::stdout().flush().is_err() {
+                    return 1;
+                }
+
+                let mut line = String::new();
+                let read = io::stdin().read_line(&mut line).unwrap_or(0);
+                if read == 0 {
+                    println!();
+                    break;
+                }
+
+                let trimmed = line.trim_end();
+
+                if buf.is_empty()
+                    && (trimmed.eq_ignore_ascii_case("exit")
+                        || trimmed.eq_ignore_ascii_case("quit"))
+                {
+                    break;
+                }
+
+                buf.push_str(&line);
+
+                // Track block depth (same heuristic as the interpreter REPL).
+                for tok in trimmed.split_whitespace() {
+                    match tok {
+                        "do" | "then" | "else" | "act" | "each" | "while"
+                        | "loop" | "attempt" | "ensure" | "catch" | "rescue"
+                        | "fn" | "if" | "match" => depth += 1,
+                        "end" | "xx" => depth -= 1,
+                        _ => {}
+                    }
+                }
+
+                if depth > 0 {
+                    continue;
+                }
+
+                depth = 0;
+                let snippet = buf.trim_end().to_string();
+                buf.clear();
+
+                if snippet.is_empty() {
+                    form_no += 1;
+                    continue;
+                }
+
+                // Run history + new snippet together; only the new snippet
+                // produces visible output this round because history has already
+                // been printed in prior rounds.
+                let full_src = if history.is_empty() {
+                    snippet.clone()
+                } else {
+                    format!("{}\n{}", history, snippet)
+                };
+
+                match goblin_vm::exec::execute_source(&full_src) {
+                    Ok(_) => {
+                        // Commit snippet to history on success.
+                        if !history.is_empty() { history.push('\n'); }
+                        history.push_str(&snippet);
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                    }
+                }
+
+                form_no += 1;
+            }
+            0
+        })
+        .unwrap()
+        .join()
+        .unwrap()
 }
 
 fn run_repl() -> i32 {

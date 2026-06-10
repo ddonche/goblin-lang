@@ -9,6 +9,7 @@ goblin-diagnostics = { path = "../goblin-diagnostics" }
 goblin-parser = { path = "../goblin-parser" } 
 goblin-gql = { path = "../goblin-gql" }
 goblin-interpreter = { path = "../goblin-interpreter" }
+goblin-vm = { path = "../goblin-vm" }
 goblin-ast = { path = "../goblin-ast" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
