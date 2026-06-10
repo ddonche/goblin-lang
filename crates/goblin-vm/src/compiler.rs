@@ -241,6 +241,11 @@ impl Compiler {
         }
     }
 
+    fn locate_err(&self, e: GoblinError) -> GoblinError {
+        if matches!(e, GoblinError::WithLocation { .. }) { return e; }
+        GoblinError::WithLocation { inner: Box::new(e), line: self.current_line }
+    }
+
     fn add_constant(&mut self, v: Value) -> u16 {
         self.scope_mut().add_constant(v)
     }
@@ -336,7 +341,7 @@ impl Compiler {
                     BindMode::Retether => {
                         // x |= expr — rebind existing slot.
                         let op = self.resolve_store(name)
-                            .ok_or_else(|| GoblinError::UndefinedVariable { name: name.clone() })?;
+                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name.clone() }))?;
                         self.emit(op);
                     }
                     BindMode::Shadow => {
@@ -667,7 +672,7 @@ impl Compiler {
 
             // ── Variables ─────────────────────────────────────────────────────
             Expr::Ident(name, _) => {
-                let op = self.resolve_load(name)?;
+                let op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
                 self.emit(op);
             }
 
@@ -1007,7 +1012,7 @@ impl Compiler {
                     _ => return Err(GoblinError::Runtime("field assignment: object must be a simple variable".into())),
                 };
                 let store_op = self.resolve_store(&var_name)
-                    .ok_or_else(|| GoblinError::UndefinedVariable { name: var_name.clone() })?;
+                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
                 self.emit(Opcode::Dup);
                 self.emit(store_op);
                 return Ok(());
@@ -1020,7 +1025,7 @@ impl Compiler {
             };
             self.compile_expr(rhs)?;
             let store_op = self.resolve_store(&var_name)
-                .ok_or_else(|| GoblinError::UndefinedVariable { name: var_name.clone() })?;
+                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
             self.emit(Opcode::Dup);
             self.emit(store_op);
             return Ok(());
