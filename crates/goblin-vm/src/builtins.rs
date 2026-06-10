@@ -424,22 +424,22 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             })
         }
         BuiltinId::StartsWith => {
-            if args.len() != 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "starts_with".into() });
-            }
-            match (read(0)?, read(1)?) {
-                (Value::Str(s), Value::Str(p)) => Ok(Value::Bool(s.starts_with(p.as_str()))),
-                _ => Ok(Value::Bool(false)),
-            }
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "starts_with".into() }); }
+            let text = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "starts_with")) };
+            Ok(Value::Bool(match read(1)? {
+                Value::Array(needles) => needles.iter().any(|n| if let Value::Str(ns) = n { text.starts_with(ns.as_str()) } else { false }),
+                Value::Str(p) => text.starts_with(p.as_str()),
+                _ => false,
+            }))
         }
         BuiltinId::EndsWith => {
-            if args.len() != 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ends_with".into() });
-            }
-            match (read(0)?, read(1)?) {
-                (Value::Str(s), Value::Str(p)) => Ok(Value::Bool(s.ends_with(p.as_str()))),
-                _ => Ok(Value::Bool(false)),
-            }
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ends_with".into() }); }
+            let text = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ends_with")) };
+            Ok(Value::Bool(match read(1)? {
+                Value::Array(needles) => needles.iter().any(|n| if let Value::Str(ns) = n { text.ends_with(ns.as_str()) } else { false }),
+                Value::Str(p) => text.ends_with(p.as_str()),
+                _ => false,
+            }))
         }
         BuiltinId::Replace => {
             if args.len() != 3 {
@@ -449,6 +449,211 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 (Value::Str(s), Value::Str(from), Value::Str(to)) => Ok(Value::Str(s.replace(from.as_str(), &to))),
                 _ => Err(GoblinError::type_error("str", "mixed", "replace")),
             }
+        }
+
+        BuiltinId::Before => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "before".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(s), Value::Str(sep)) => Ok(Value::Str(match s.find(sep.as_str()) {
+                    Some(i) => s[..i].to_string(),
+                    None    => s,
+                })),
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "before")),
+            }
+        }
+        BuiltinId::After => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "after".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(s), Value::Str(sep)) => Ok(Value::Str(match s.find(sep.as_str()) {
+                    Some(i) => s[i + sep.len()..].to_string(),
+                    None    => String::new(),
+                })),
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "after")),
+            }
+        }
+        BuiltinId::BeforeLast => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "before_last".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(s), Value::Str(sep)) => Ok(Value::Str(match s.rfind(sep.as_str()) {
+                    Some(i) => s[..i].to_string(),
+                    None    => s,
+                })),
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "before_last")),
+            }
+        }
+        BuiltinId::AfterLast => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "after_last".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(s), Value::Str(sep)) => Ok(Value::Str(match s.rfind(sep.as_str()) {
+                    Some(i) => s[i + sep.len()..].to_string(),
+                    None    => String::new(),
+                })),
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "after_last")),
+            }
+        }
+        BuiltinId::KeepBefore => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "keep_before".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(text), Value::Str(delim)) => {
+                    if delim.is_empty() { return Ok(Value::Str(text)); }
+                    Ok(Value::Str(match text.find(delim.as_str()) {
+                        Some(pos) => text[..pos].to_string(),
+                        None => text,
+                    }))
+                }
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "keep_before")),
+            }
+        }
+        BuiltinId::KeepAfter => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "keep_after".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(text), Value::Str(delim)) => {
+                    if delim.is_empty() { return Ok(Value::Str(String::new())); }
+                    Ok(Value::Str(match text.find(delim.as_str()) {
+                        Some(pos) => { let start = pos + delim.len(); if start <= text.len() { text[start..].to_string() } else { String::new() } }
+                        None => String::new(),
+                    }))
+                }
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "keep_after")),
+            }
+        }
+        BuiltinId::KeepBetween => {
+            if args.len() < 3 || args.len() > 4 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "keep_between".into() }); }
+            let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between")) };
+            let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between open")) };
+            let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between close")) };
+            let mut include_delims = false;
+            let mut allow_eof_close = true;
+            if args.len() == 4 {
+                if let Value::Map(m) = read(3)? {
+                    if let Some(Value::Bool(b)) = m.get("include_delims") { include_delims = *b; }
+                    if let Some(Value::Bool(b)) = m.get("allow_eof_close") { allow_eof_close = *b; }
+                }
+            }
+            if open.is_empty() || close.is_empty() { return Ok(Value::Str(String::new())); }
+            let open_pos = match text.find(open.as_str()) {
+                Some(p) => p,
+                None => return Ok(Value::Str(String::new())),
+            };
+            let search_start = open_pos + open.len();
+            let close_pos = match text[search_start..].find(close.as_str()) {
+                Some(p) => search_start + p,
+                None => if allow_eof_close { text.len() } else { return Ok(Value::Str(String::new())); }
+            };
+            let out = if include_delims {
+                let end = if close_pos < text.len() { close_pos + close.len() } else { text.len() };
+                text.get(open_pos..end).unwrap_or("").to_string()
+            } else {
+                text.get(search_start..close_pos).unwrap_or("").to_string()
+            };
+            Ok(Value::Str(out))
+        }
+        BuiltinId::SanitizeBom => {
+            expect_n(1)?;
+            let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "sanitize_bom")) };
+            let out = if s.starts_with('\u{FEFF}') {
+                s.trim_start_matches('\u{FEFF}').to_string()
+            } else {
+                let bytes = s.as_bytes();
+                if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+                    s[3..].to_string()
+                } else { s }
+            };
+            Ok(Value::Str(out))
+        }
+        BuiltinId::NormalizeNewlines => {
+            expect_n(1)?;
+            let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "normalize_newlines")) };
+            Ok(Value::Str(s.replace("\r\n", "\n").replace("\r", "\n")))
+        }
+        BuiltinId::IgnoreWhere => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ignore_where".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(text), Value::Str(needle)) => {
+                    Ok(Value::Str(if needle.is_empty() { text } else { text.replace(needle.as_str(), "") }))
+                }
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "ignore_where")),
+            }
+        }
+        BuiltinId::IgnoreLinesWhere => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ignore_lines_where".into() }); }
+            match (read(0)?, read(1)?) {
+                (Value::Str(text), Value::Str(prefix)) => {
+                    if prefix.is_empty() { return Ok(Value::Str(text)); }
+                    let mut out = String::with_capacity(text.len());
+                    for line in text.split_inclusive('\n') {
+                        let no_nl = line.strip_suffix('\n').unwrap_or(line);
+                        if !no_nl.starts_with(prefix.as_str()) { out.push_str(line); }
+                    }
+                    Ok(Value::Str(out))
+                }
+                (a, _) => Err(GoblinError::type_error("str", a.type_name(), "ignore_lines_where")),
+            }
+        }
+
+        BuiltinId::IsMatching => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "is_matching".into() }); }
+            let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_matching")) };
+            let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_matching pattern")) };
+            let re = regex::Regex::new(&pattern).map_err(|e| GoblinError::Runtime(format!("is_matching: invalid regex: {e}")))?;
+            Ok(Value::Bool(re.is_match(&text)))
+        }
+        BuiltinId::CountMatching => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "count_matching".into() }); }
+            let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "count_matching")) };
+            let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "count_matching pattern")) };
+            let re = regex::Regex::new(&pattern).map_err(|e| GoblinError::Runtime(format!("count_matching: invalid regex: {e}")))?;
+            Ok(Value::Int(re.find_iter(&text).count() as i64))
+        }
+        BuiltinId::IgnoreMatching => {
+            if args.len() < 2 || args.len() > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ignore_matching".into() }); }
+            let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching")) };
+            let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching pattern")) };
+            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
+            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_matching: invalid regex: {e}")))?;
+            Ok(Value::Str(re.replace_all(&text, "").to_string()))
+        }
+        BuiltinId::IgnoreLinesMatching => {
+            if args.len() < 2 || args.len() > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ignore_lines_matching".into() }); }
+            let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching")) };
+            let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching pattern")) };
+            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
+            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_lines_matching: invalid regex: {e}")))?;
+            let mut out = String::with_capacity(text.len());
+            for line in text.split_inclusive('\n') {
+                let no_nl = line.strip_suffix('\n').unwrap_or(line);
+                if !re.is_match(no_nl) { out.push_str(line); }
+            }
+            Ok(Value::Str(out))
+        }
+        BuiltinId::KeepMatching => {
+            if args.len() < 2 || args.len() > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "keep_matching".into() }); }
+            let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching")) };
+            let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching pattern")) };
+            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
+            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("keep_matching: invalid regex: {e}")))?;
+            let mut out = String::new();
+            for m in re.find_iter(&text) { out.push_str(m.as_str()); }
+            Ok(Value::Str(out))
+        }
+
+        BuiltinId::JsonParse => {
+            expect_n(1)?;
+            let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "json_parse")) };
+            let jv: serde_json::Value = serde_json::from_str(&s).map_err(|e| GoblinError::Runtime(format!("json_parse failed: {e}")))?;
+            Ok(json_to_value(&jv))
+        }
+        BuiltinId::JsonStringify => {
+            expect_n(1)?;
+            let v = read(0)?;
+            let jv = value_to_json(&v);
+            Ok(Value::Str(serde_json::to_string(&jv).unwrap_or_default()))
+        }
+        BuiltinId::JsonStringifyPretty => {
+            expect_n(1)?;
+            let v = read(0)?;
+            let jv = value_to_json(&v);
+            Ok(Value::Str(serde_json::to_string_pretty(&jv).unwrap_or_default()))
         }
 
         // ── Maps ──────────────────────────────────────────────────────────────
@@ -1884,14 +2089,67 @@ fn value_to_map_key(v: &Value) -> String {
 }
 
 fn fmt_value_raw(v: &Value) -> String {
+    fmt_value_depth(v, 0)
+}
+
+fn fmt_value_depth(v: &Value, depth: usize) -> String {
+    if depth > 20 { return "[too deep]".to_string(); }
     match v {
         Value::Str(s)   => s.clone(),
-        Value::Int(n)   => n.to_string(),
-        Value::Float(f) => f.to_string(),
         Value::Char(c)  => c.to_string(),
-        Value::Bool(b)  => b.to_string(),
+        Value::Int(n)   => n.to_string(),
+        Value::Float(f) => fmt_num_trim(*f),
+        Value::Pct(p)   => fmt_num_trim(*p),
+        Value::Bool(b)  => if *b { "true".into() } else { "false".into() },
         Value::Nil      => "nil".into(),
-        _               => v.type_name().to_string(),
+        Value::Unit     => "unit".into(),
+        Value::Array(xs) => {
+            let mut s = String::from("[");
+            for (i, val) in xs.iter().enumerate() {
+                if i > 0 { s.push_str(", "); }
+                s.push_str(&fmt_value_depth(val, depth + 1));
+            }
+            s.push(']');
+            s
+        }
+        Value::Map(m) => {
+            let mut s = String::from("{");
+            let mut first = true;
+            for (k, val) in m.iter() {
+                if !first { s.push_str(", "); }
+                first = false;
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value_depth(val, depth + 1));
+            }
+            s.push('}');
+            s
+        }
+        Value::MapOrd(m) => {
+            let mut s = String::from("{");
+            let mut first = true;
+            for (k, val) in m.iter() {
+                if !first { s.push_str(", "); }
+                first = false;
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value_depth(val, depth + 1));
+            }
+            s.push('}');
+            s
+        }
+        Value::Pair(a, b) => format!("({}, {})", fmt_value_depth(a, depth + 1), fmt_value_depth(b, depth + 1)),
+        Value::Collection(c) => {
+            let items = collections::to_vec(c);
+            let mut s = String::from("[");
+            for (i, val) in items.iter().enumerate() {
+                if i > 0 { s.push_str(", "); }
+                s.push_str(&fmt_value_depth(val, depth + 1));
+            }
+            s.push(']');
+            s
+        }
+        _ => v.type_name().to_string(),
     }
 }
 
@@ -1917,6 +2175,61 @@ fn rng_bounded(session: &mut Session, bound: u64) -> u64 {
 fn rng_u01(session: &mut Session) -> f64 {
     let x = (session.next_u128() >> 64) as u64;
     (x as f64) / (u64::MAX as f64)
+}
+
+fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null        => Value::Nil,
+        serde_json::Value::Bool(b)     => Value::Bool(*b),
+        serde_json::Value::Number(n)   => {
+            if let Some(i) = n.as_i64() { Value::Int(i) }
+            else if let Some(f) = n.as_f64() { Value::Float(f) }
+            else { Value::Float(0.0) }
+        }
+        serde_json::Value::String(s)   => Value::Str(s.clone()),
+        serde_json::Value::Array(xs)   => Value::Array(xs.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(obj) => {
+            let m: std::collections::BTreeMap<String, Value> = obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect();
+            Value::Map(m)
+        }
+    }
+}
+
+fn value_to_json(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Int(i)    => serde_json::Value::Number(serde_json::Number::from(*i)),
+        Value::Float(f)  => serde_json::Value::Number(serde_json::Number::from_f64(*f).unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap())),
+        Value::Pct(p)    => serde_json::Value::Number(serde_json::Number::from_f64(*p).unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap())),
+        Value::Str(s)    => serde_json::Value::String(s.clone()),
+        Value::Char(c)   => serde_json::Value::String(c.to_string()),
+        Value::Bool(b)   => serde_json::Value::Bool(*b),
+        Value::Array(xs) => serde_json::Value::Array(xs.iter().map(value_to_json).collect()),
+        Value::Map(m)    => {
+            let mut obj = serde_json::Map::new();
+            for (k, val) in m { obj.insert(k.clone(), value_to_json(val)); }
+            serde_json::Value::Object(obj)
+        }
+        Value::MapOrd(m) => {
+            let mut obj = serde_json::Map::new();
+            for (k, val) in m.iter() { obj.insert(k.clone(), value_to_json(val)); }
+            serde_json::Value::Object(obj)
+        }
+        Value::Pair(a, b) => serde_json::Value::Array(vec![value_to_json(a), value_to_json(b)]),
+        Value::Nil | Value::Unit => serde_json::Value::Null,
+        _ => serde_json::Value::String(fmt_value_raw(v)),
+    }
+}
+
+fn regex_with_flags(pattern: &str, flags_val: &Value) -> String {
+    let mut f_i = false; let mut f_m = false; let mut f_s = false;
+    if let Value::Map(m) = flags_val {
+        if let Some(Value::Bool(b)) = m.get("i") { f_i = *b; }
+        if let Some(Value::Bool(b)) = m.get("m") { f_m = *b; }
+        if let Some(Value::Bool(b)) = m.get("s") { f_s = *b; }
+    }
+    let mut f = String::new();
+    if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
+    if f.is_empty() { pattern.to_string() } else { format!("(?{}){}", f, pattern) }
 }
 
 fn pack_value(v: Value) -> Value {

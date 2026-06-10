@@ -11,3 +11,5 @@ goblin-parser = { path = "../goblin-parser" }
 goblin-lexer = { path = "../goblin-lexer" }
 rust_decimal = "1"
 indexmap = "2"
+regex = "1"
+serde_json = "1"

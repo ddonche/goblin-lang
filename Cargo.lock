@@ -1122,7 +1122,9 @@ dependencies = [
  "goblin-lexer",
  "goblin-parser",
  "indexmap",
+ "regex",
  "rust_decimal",
+ "serde_json",
  "slab",
 ]
 
