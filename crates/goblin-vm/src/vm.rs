@@ -82,7 +82,8 @@ impl Vm {
     }
 
     /// Run a top-level function. Returns the final return value.
-    pub fn execute(&mut self, func: FunctionObject) -> Result<Value, GoblinError> {
+    pub fn execute(&mut self, mut func: FunctionObject) -> Result<Value, GoblinError> {
+        self.quicken(&mut func);
         let func_rc = Rc::new(func);
         let frame = CallFrame::new(func_rc, Vec::new(), 0);
         self.call_stack.push(frame);
@@ -984,10 +985,62 @@ impl Vm {
     ///
     /// Called after hot paths are identified; mutates the bytecode in place.
     /// This is safe because each worker has its own private bytecode copy.
-    pub fn quicken(&self, _func: &mut FunctionObject) {
-        // TODO: implement full quickening pass.
-        // Inspect each generic op (Add, Sub, …) and check the constant or
-        // local type to decide if it can be replaced with AddInt/AddFloat/Concat.
+    /// Peephole quickening pass: scan bytecode for generic arithmetic ops preceded
+    /// by two LoadConst instructions whose constants are both Int or both Float,
+    /// and replace the generic op with the specialized variant.
+    /// Also quickens nested functions found in the constants table.
+    pub fn quicken(&self, func: &mut FunctionObject) {
+        use crate::opcode::Opcode;
+        use crate::value::Value;
+
+        let len = func.bytecode.len();
+        for i in 2..len {
+            // We need the two preceding instructions to be LoadConst.
+            let (a_idx, b_idx) = match (&func.bytecode[i - 2], &func.bytecode[i - 1]) {
+                (Opcode::LoadConst(a), Opcode::LoadConst(b)) => (*a as usize, *b as usize),
+                _ => continue,
+            };
+            let a_val = func.constants.get(a_idx);
+            let b_val = func.constants.get(b_idx);
+            let (a_is_int, a_is_float, a_is_str) = match a_val {
+                Some(Value::Int(_))   => (true,  false, false),
+                Some(Value::Float(_)) => (false, true,  false),
+                Some(Value::Str(_))   => (false, false, true),
+                _ => continue,
+            };
+            let (b_is_int, b_is_float, b_is_str) = match b_val {
+                Some(Value::Int(_))   => (true,  false, false),
+                Some(Value::Float(_)) => (false, true,  false),
+                Some(Value::Str(_))   => (false, false, true),
+                _ => continue,
+            };
+
+            func.bytecode[i] = match &func.bytecode[i] {
+                Opcode::Add if a_is_int   && b_is_int   => Opcode::AddInt,
+                Opcode::Add if a_is_float && b_is_float => Opcode::AddFloat,
+                Opcode::Add if a_is_str   && b_is_str   => Opcode::Concat,
+                Opcode::Sub if a_is_int   && b_is_int   => Opcode::SubInt,
+                Opcode::Sub if a_is_float && b_is_float => Opcode::SubFloat,
+                Opcode::Mul if a_is_int   && b_is_int   => Opcode::MulInt,
+                Opcode::Mul if a_is_float && b_is_float => Opcode::MulFloat,
+                Opcode::Div if a_is_int   && b_is_int   => Opcode::DivInt,
+                Opcode::Div if a_is_float && b_is_float => Opcode::DivFloat,
+                Opcode::Rem if a_is_int   && b_is_int   => Opcode::RemInt,
+                _ => continue,
+            };
+        }
+
+        // Recurse into nested functions stored as constants.
+        for c in &mut func.constants {
+            if let Value::Function(f) = c {
+                // FunctionObject is behind Rc; we need to get a mutable copy.
+                // Because each worker owns its own bytecode copy, we can clone
+                // the Rc content, quicken it, and replace the Rc.
+                let mut owned = (**f).clone();
+                self.quicken(&mut owned);
+                *f = std::rc::Rc::new(owned);
+            }
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
