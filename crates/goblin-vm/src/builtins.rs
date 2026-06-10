@@ -710,6 +710,196 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Str(std::env::var(&name).unwrap_or_default()))
         }
 
+        BuiltinId::Pct => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Pct(p)   => Ok(Value::Pct(p)),
+                Value::Int(n)   => Ok(Value::Pct(n as f64)),
+                Value::Float(f) => Ok(Value::Pct(f)),
+                Value::Str(s) => {
+                    let trimmed = s.trim();
+                    let cleaned: String = trimmed.chars().filter(|&c| c != '_').collect();
+                    if cleaned.ends_with('%') {
+                        let num = cleaned[..cleaned.len()-1].trim();
+                        if let Ok(f) = num.parse::<f64>() {
+                            return Ok(Value::Pct(f / 100.0));
+                        }
+                    } else if let Ok(f) = cleaned.parse::<f64>() {
+                        return Ok(Value::Pct(f));
+                    }
+                    Err(GoblinError::Runtime(format!("pct: invalid string '{}'", s)))
+                }
+                other => Err(GoblinError::type_error("number or str", other.type_name(), "pct")),
+            }
+        }
+
+        BuiltinId::Between => {
+            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "between".into() }); }
+            let s     = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "between")) };
+            let left  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "between left")) };
+            let right = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "between right")) };
+            if let Some(i) = s.find(&*left) {
+                let jstart = i + left.len();
+                if let Some(jrel) = s[jstart..].find(&*right) {
+                    return Ok(Value::Str(s[jstart..jstart+jrel].to_string()));
+                }
+            }
+            Ok(Value::Str(String::new()))
+        }
+
+        BuiltinId::IsControl => {
+            expect_n(1)?;
+            let v = read(0)?;
+            Ok(Value::Bool(matches!(v, Value::Nil)))
+        }
+
+        BuiltinId::IgnoreBlocksFirst => {
+            let n = args.len();
+            if n < 3 || n > 4 { return Err(GoblinError::ArityMismatch { expected: 3, got: n, name: "ignore_blocks_first".into() }); }
+            let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks_first")) };
+            let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks_first open")) };
+            let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks_first close")) };
+            let mut include_delims  = true;
+            let mut require_bol     = true;
+            let mut leading_blanks  = true;
+            let mut allow_eof_close = true;
+            if n == 4 {
+                if let Value::Map(m) = read(3)? {
+                    if let Some(Value::Bool(b)) = m.get("include_delims")    { include_delims  = *b; }
+                    if let Some(Value::Bool(b)) = m.get("require_bol")       { require_bol     = *b; }
+                    if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { leading_blanks  = *b; }
+                    if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { allow_eof_close = *b; }
+                }
+            }
+            if open.is_empty() || close.is_empty() { return Ok(Value::Str(text)); }
+            let bytes = text.as_bytes();
+            let mut i = 0usize;
+            let mut open_pos: Option<usize> = None;
+            while i < text.len() {
+                if let Some(rel) = text[i..].find(&*open) {
+                    let abs = i + rel;
+                    let at_bol = if abs == 0 { true } else {
+                        let mut k = abs;
+                        if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
+                        k == 0 || bytes[k-1] == b'\n'
+                    };
+                    if !require_bol || at_bol { open_pos = Some(abs); break; } else { i = abs + 1; }
+                } else { break; }
+            }
+            let abs = match open_pos { Some(v) => v, None => return Ok(Value::Str(text)) };
+            let mut j = abs + open.len();
+            let mut close_pos: Option<usize> = None;
+            while j <= text.len() {
+                if let Some(relc) = text[j..].find(&*close) {
+                    let cabs = j + relc;
+                    let c_at_bol = if cabs == 0 { true } else {
+                        let mut k = cabs;
+                        if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
+                        k == 0 || bytes[k-1] == b'\n'
+                    };
+                    if !require_bol || c_at_bol { close_pos = Some(cabs); break; } else { j = cabs + 1; }
+                } else { if allow_eof_close { close_pos = Some(text.len()); } break; }
+            }
+            let cpos = match close_pos { Some(v) => v, None => return Ok(Value::Str(text)) };
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..abs]);
+            if include_delims {
+                out.push_str(&text[cpos + close.len()..]);
+            } else {
+                out.push_str(&text[abs..abs+open.len()]);
+                out.push_str(&text[cpos..cpos+close.len()]);
+                out.push_str(&text[cpos+close.len()..]);
+            }
+            Ok(Value::Str(out))
+        }
+
+        BuiltinId::Pick => {
+            expect_n(1)?;
+            let cfg = match read(0)? { Value::Map(m) => m, other => return Err(GoblinError::type_error("map", other.type_name(), "pick")) };
+            let get_num = |k: &str| -> Option<f64> { match cfg.get(k)? { Value::Float(n) => Some(*n), Value::Int(i) => Some(*i as f64), Value::Str(s) => s.parse::<f64>().ok(), _ => None } };
+            let count_f = get_num("count_expr").or_else(|| get_num("count")).unwrap_or(1.0);
+            let n_out = count_f as usize;
+            let allow_dups = match cfg.get("allow_dups") { Some(Value::Bool(b)) => *b, _ => false };
+            // collection source
+            let src = cfg.get("src");
+            match src {
+                Some(Value::Array(arr)) => {
+                    if arr.is_empty() { return Err(GoblinError::Runtime("pick: empty src array".into())); }
+                    if !allow_dups && n_out > arr.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, arr.len()))); }
+                    let out: Vec<Value> = if allow_dups {
+                        (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
+                    } else {
+                        let mut idxs: Vec<usize> = (0..arr.len()).collect();
+                        let mut result = Vec::with_capacity(n_out);
+                        for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); result.push(arr[idxs[i]].clone()); }
+                        result
+                    };
+                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+                }
+                Some(Value::Map(map)) => {
+                    let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    if entries.is_empty() { return Err(GoblinError::Runtime("pick: empty src map".into())); }
+                    if !allow_dups && n_out > entries.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, entries.len()))); }
+                    let out: Vec<Value> = if allow_dups {
+                        (0..n_out).map(|_| { let (k, v) = &entries[rng_bounded(session, entries.len() as u64) as usize]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); Value::Map(m) }).collect()
+                    } else {
+                        let mut idxs: Vec<usize> = (0..entries.len()).collect();
+                        let mut result = Vec::with_capacity(n_out);
+                        for i in 0..n_out { let j = i + rng_bounded(session, (entries.len() - i) as u64) as usize; idxs.swap(i, j); let (k, v) = &entries[idxs[i]]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
+                        result
+                    };
+                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+                }
+                // numeric range
+                _ => {
+                    let range_start = get_num("range_start").unwrap_or(1.0) as i64;
+                    let range_end   = get_num("range_end").unwrap_or(100.0) as i64;
+                    if range_end <= range_start { return Err(GoblinError::Runtime("pick: range_end must be > range_start".into())); }
+                    let range = (range_end - range_start) as u64;
+                    let out: Vec<Value> = (0..n_out).map(|_| Value::Int(range_start + rng_bounded(session, range) as i64)).collect();
+                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+                }
+            }
+        }
+
+        BuiltinId::ReadJson => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "read_json path")) };
+            let txt = std::fs::read_to_string(&path).map_err(|e| GoblinError::Runtime(format!("read_json: {}", e)))?;
+            let jv: serde_json::Value = serde_json::from_str(&txt).map_err(|e| GoblinError::Runtime(format!("read_json parse: {}", e)))?;
+            Ok(json_to_value(&jv))
+        }
+
+        BuiltinId::WriteText => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "write_text".into() }); }
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_text path")) };
+            let text = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_text text")) };
+            std::fs::write(&path, text).map_err(|e| GoblinError::Runtime(format!("write_text: {}", e)))?;
+            Ok(Value::Nil)
+        }
+
+        BuiltinId::AppendFile => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "append_file".into() }); }
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "append_file path")) };
+            let text = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "append_file text")) };
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| GoblinError::Runtime(format!("append_file: {}", e)))?;
+            file.write_all(text.as_bytes()).map_err(|e| GoblinError::Runtime(format!("append_file write: {}", e)))?;
+            Ok(Value::Nil)
+        }
+
+        BuiltinId::WriteJson => {
+            let n = args.len();
+            if n < 2 || n > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: n, name: "write_json".into() }); }
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_json path")) };
+            let val  = read(1)?;
+            let pretty = if n == 3 { matches!(read(2)?, Value::Bool(true)) } else { false };
+            let jv = value_to_json(&val);
+            let text = if pretty { serde_json::to_string_pretty(&jv) } else { serde_json::to_string(&jv) }.map_err(|e| GoblinError::Runtime(format!("write_json: {}", e)))?;
+            std::fs::write(&path, text).map_err(|e| GoblinError::Runtime(format!("write_json write: {}", e)))?;
+            Ok(Value::Nil)
+        }
+
         // ── Maps ──────────────────────────────────────────────────────────────
         BuiltinId::Keys => {
             expect_n(1)?;

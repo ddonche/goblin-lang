@@ -20,6 +20,10 @@ use crate::value::{
     BackendHint, ChunkedSeq, CollectionLayout, CollectionMeta, CollectionValue, RingBuf, Value,
 };
 
+fn compile_regex(pat: &str) -> Result<regex::Regex, GoblinError> {
+    regex::Regex::new(pat).map_err(|e| GoblinError::Runtime(format!("invalid regex: {}", e)))
+}
+
 // ── Position and Operation enums ──────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -163,20 +167,34 @@ fn array_op(
             Ok(Value::Array(result))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
+            let re = compile_regex(&pat)?;
             let result: Vec<Value> = xs.iter()
-                .filter(|v| fmt_value_raw(v).contains(&pat))
+                .filter(|v| {
+                    match v {
+                        Value::Str(s) => re.is_match(s),
+                        Value::Char(c) => re.is_match(&c.to_string()),
+                        _ => false,
+                    }
+                })
                 .cloned()
                 .collect();
             Ok(Value::Array(result))
         }
-        (Position::Between(start_marker, end_marker), Operation::Get) |
-        (Position::Between(start_marker, end_marker), Operation::Reap) => {
-            let start_idx = xs.iter().position(|v| fmt_value_raw(v) == start_marker);
-            let end_idx   = xs.iter().position(|v| fmt_value_raw(v) == end_marker);
-            match (start_idx, end_idx) {
-                (Some(s), Some(e)) if e > s => Ok(Value::Array(xs[s+1..e].to_vec())),
-                _ => Ok(Value::Array(Vec::new())),
+        (Position::Between(start_pat, end_pat), Operation::Get) |
+        (Position::Between(start_pat, end_pat), Operation::Reap) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let matches_start = |v: &Value| match v { Value::Str(s) => start_re.is_match(s), Value::Char(c) => start_re.is_match(&c.to_string()), _ => false };
+            let matches_end   = |v: &Value| match v { Value::Str(s) => end_re.is_match(s),   Value::Char(c) => end_re.is_match(&c.to_string()),   _ => false };
+            let start_indices: Vec<usize> = xs.iter().enumerate().filter(|(_, v)| matches_start(v)).map(|(i, _)| i).collect();
+            let end_indices:   Vec<usize> = xs.iter().enumerate().filter(|(_, v)| matches_end(v)).map(|(i, _)| i).collect();
+            let mut result = Vec::new();
+            for &si in &start_indices {
+                if let Some(&ei) = end_indices.iter().find(|&&e| e > si) {
+                    for i in si+1..ei { result.push(xs[i].clone()); }
+                }
             }
+            Ok(Value::Array(result))
         }
 
         // ── Put ─────────────────────────────────────────────────────────────
@@ -222,27 +240,35 @@ fn array_op(
             Ok(Value::Array(new_xs))
         }
         (Position::Matching(pat), Operation::Put(v)) => {
+            let re = compile_regex(&pat)?;
+            let elem_matches = |elem: &Value| match elem { Value::Str(s) => re.is_match(s), Value::Char(c) => re.is_match(&c.to_string()), _ => false };
             let mut new_xs = Vec::new();
             for elem in xs {
-                if fmt_value_raw(elem).contains(&pat) {
-                    new_xs.push(v.clone());
-                }
                 new_xs.push(elem.clone());
+                if elem_matches(elem) { new_xs.push(v.clone()); }
             }
             Ok(Value::Array(new_xs))
         }
-        (Position::Between(start_marker, end_marker), Operation::Put(v)) => {
-            let start_idx = xs.iter().position(|e| fmt_value_raw(e) == start_marker);
-            let end_idx   = xs.iter().position(|e| fmt_value_raw(e) == end_marker);
-            match (start_idx, end_idx) {
-                (Some(s), Some(e)) if e > s => {
-                    let mut new_xs = xs[..=s].to_vec();
-                    new_xs.push(v);
-                    new_xs.extend_from_slice(&xs[e..]);
-                    Ok(Value::Array(new_xs))
-                }
-                _ => Ok(Value::Array(xs.clone())),
+        (Position::Between(start_pat, end_pat), Operation::Put(v)) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let matches_start = |e: &Value| match e { Value::Str(s) => start_re.is_match(s), Value::Char(c) => start_re.is_match(&c.to_string()), _ => false };
+            let matches_end   = |e: &Value| match e { Value::Str(s) => end_re.is_match(s),   Value::Char(c) => end_re.is_match(&c.to_string()),   _ => false };
+            let start_indices: Vec<usize> = xs.iter().enumerate().filter(|(_, e)| matches_start(e)).map(|(i, _)| i).collect();
+            let end_indices:   Vec<usize> = xs.iter().enumerate().filter(|(_, e)| matches_end(e)).map(|(i, _)| i).collect();
+            let mut ranges = Vec::new();
+            for &si in &start_indices {
+                if let Some(&ei) = end_indices.iter().find(|&&e| e > si) { ranges.push((si, ei)); }
             }
+            let mut result = Vec::with_capacity(xs.len() + ranges.len());
+            let mut last_end = 0;
+            for (_, ei) in &ranges {
+                for i in last_end..=*ei { result.push(xs[i].clone()); }
+                result.push(v.clone());
+                last_end = ei + 1;
+            }
+            for i in last_end..xs.len() { result.push(xs[i].clone()); }
+            Ok(Value::Array(result))
         }
 
         // ── Update ──────────────────────────────────────────────────────────
@@ -287,23 +313,25 @@ fn array_op(
             Ok(Value::Array(new_xs))
         }
         (Position::Matching(pat), Operation::Update(v)) => {
-            let new_xs = xs.iter().map(|e| {
-                if fmt_value_raw(e).contains(&pat) { v.clone() } else { e.clone() }
-            }).collect();
+            let re = compile_regex(&pat)?;
+            let elem_matches = |e: &Value| match e { Value::Str(s) => re.is_match(s), Value::Char(c) => re.is_match(&c.to_string()), _ => false };
+            let new_xs = xs.iter().map(|e| if elem_matches(e) { v.clone() } else { e.clone() }).collect();
             Ok(Value::Array(new_xs))
         }
-        (Position::Between(start_marker, end_marker), Operation::Update(v)) => {
-            let start_idx = xs.iter().position(|e| fmt_value_raw(e) == start_marker);
-            let end_idx   = xs.iter().position(|e| fmt_value_raw(e) == end_marker);
-            match (start_idx, end_idx) {
-                (Some(s), Some(e)) if e > s => {
-                    let mut new_xs = xs[..=s].to_vec();
-                    new_xs.push(v);
-                    new_xs.extend_from_slice(&xs[e..]);
-                    Ok(Value::Array(new_xs))
+        (Position::Between(start_pat, end_pat), Operation::Update(v)) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let matches_start = |e: &Value| match e { Value::Str(s) => start_re.is_match(s), Value::Char(c) => start_re.is_match(&c.to_string()), _ => false };
+            let matches_end   = |e: &Value| match e { Value::Str(s) => end_re.is_match(s),   Value::Char(c) => end_re.is_match(&c.to_string()),   _ => false };
+            let start_indices: Vec<usize> = xs.iter().enumerate().filter(|(_, e)| matches_start(e)).map(|(i, _)| i).collect();
+            let end_indices:   Vec<usize> = xs.iter().enumerate().filter(|(_, e)| matches_end(e)).map(|(i, _)| i).collect();
+            let mut result = xs.to_vec();
+            for &si in &start_indices {
+                if let Some(&ei) = end_indices.iter().find(|&&e| e > si) {
+                    for i in si+1..ei { result[i] = v.clone(); }
                 }
-                _ => Ok(Value::Array(xs.clone())),
             }
+            Ok(Value::Array(result))
         }
 
         // ── Delete ──────────────────────────────────────────────────────────
@@ -343,23 +371,26 @@ fn array_op(
             Ok(Value::Array(new_xs))
         }
         (Position::Matching(pat), Operation::Delete) => {
-            let new_xs = xs.iter()
-                .filter(|e| !fmt_value_raw(e).contains(&pat))
-                .cloned()
-                .collect();
+            let re = compile_regex(&pat)?;
+            let elem_matches = |e: &Value| match e { Value::Str(s) => re.is_match(s), Value::Char(c) => re.is_match(&c.to_string()), _ => false };
+            let new_xs = xs.iter().filter(|e| !elem_matches(e)).cloned().collect();
             Ok(Value::Array(new_xs))
         }
-        (Position::Between(start_marker, end_marker), Operation::Delete) => {
-            let start_idx = xs.iter().position(|e| fmt_value_raw(e) == start_marker);
-            let end_idx   = xs.iter().position(|e| fmt_value_raw(e) == end_marker);
-            match (start_idx, end_idx) {
-                (Some(s), Some(e)) if e > s => {
-                    let mut new_xs = xs[..=s].to_vec();
-                    new_xs.extend_from_slice(&xs[e..]);
-                    Ok(Value::Array(new_xs))
+        (Position::Between(start_pat, end_pat), Operation::Delete) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let matches_start = |e: &Value| match e { Value::Str(s) => start_re.is_match(s), Value::Char(c) => start_re.is_match(&c.to_string()), _ => false };
+            let matches_end   = |e: &Value| match e { Value::Str(s) => end_re.is_match(s),   Value::Char(c) => end_re.is_match(&c.to_string()),   _ => false };
+            let start_indices: Vec<usize> = xs.iter().enumerate().filter(|(_, e)| matches_start(e)).map(|(i, _)| i).collect();
+            let end_indices:   Vec<usize> = xs.iter().enumerate().filter(|(_, e)| matches_end(e)).map(|(i, _)| i).collect();
+            let mut exclude = std::collections::HashSet::new();
+            for &si in &start_indices {
+                if let Some(&ei) = end_indices.iter().find(|&&e| e > si) {
+                    for i in si+1..ei { exclude.insert(i); }
                 }
-                _ => Ok(Value::Array(xs.clone())),
             }
+            let new_xs = xs.iter().enumerate().filter(|(i, _)| !exclude.contains(i)).map(|(_, e)| e.clone()).collect();
+            Ok(Value::Array(new_xs))
         }
     }
 }
@@ -403,11 +434,12 @@ fn map_op_btree(
             Ok(Value::Array(result))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
-            let result: Vec<Value> = m.values()
-                .filter(|v| fmt_value_raw(v).contains(&pat))
-                .cloned()
+            let re = compile_regex(&pat)?;
+            let result: std::collections::BTreeMap<String, Value> = m.iter()
+                .filter(|(k, _)| re.is_match(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            Ok(Value::Array(result))
+            Ok(Value::Map(result))
         }
         // Put
         (Position::At(key_val), Operation::Put(v)) => {
@@ -421,12 +453,37 @@ fn map_op_btree(
             Err(GoblinError::Runtime("put_first/put_last not meaningful for maps".into()))
         }
         // Update
+        (Position::First, Operation::Update(v)) => {
+            let first_key = m.iter().next().ok_or(GoblinError::IndexOutOfBounds { index: 0, len: 0 })?.0.clone();
+            let mut new_m = m.clone();
+            new_m.insert(first_key, v);
+            Ok(Value::Map(new_m))
+        }
         (Position::At(key_val), Operation::Update(v)) => {
             let key = value_to_map_key(&key_val)
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             if !m.contains_key(&key) { return Err(GoblinError::KeyNotFound); }
             let mut new_m = m.clone();
             new_m.insert(key, v);
+            Ok(Value::Map(new_m))
+        }
+        (Position::Random, Operation::Update(v)) => {
+            if m.is_empty() { return Ok(Value::Map(m.clone())); }
+            let i = rng_bounded(session, m.len());
+            let key = m.keys().nth(i).cloned().unwrap();
+            let mut new_m = m.clone();
+            new_m.insert(key, v);
+            Ok(Value::Map(new_m))
+        }
+        (Position::Where(pred), Operation::Update(v)) => {
+            let mut new_m = m.clone();
+            for (k, val) in m { if fmt_value_raw(val) == pred { new_m.insert(k.clone(), v.clone()); } }
+            Ok(Value::Map(new_m))
+        }
+        (Position::Matching(pat), Operation::Update(v)) => {
+            let re = compile_regex(&pat)?;
+            let mut new_m = m.clone();
+            for k in m.keys() { if re.is_match(k) { new_m.insert(k.clone(), v.clone()); } }
             Ok(Value::Map(new_m))
         }
         // Delete
@@ -459,6 +516,11 @@ fn map_op_btree(
                 .filter(|(_, v)| fmt_value_raw(v) != pred)
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            Ok(Value::Map(new_m))
+        }
+        (Position::Matching(pat), Operation::Delete) => {
+            let re = compile_regex(&pat)?;
+            let new_m = m.iter().filter(|(k, _)| !re.is_match(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
             Ok(Value::Map(new_m))
         }
         _ => Err(GoblinError::Runtime("unsupported map operation".into())),
@@ -503,11 +565,12 @@ fn map_op_indexed(
             Ok(Value::Array(result))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
-            let result: Vec<Value> = m.values()
-                .filter(|v| fmt_value_raw(v).contains(&pat))
-                .cloned()
+            let re = compile_regex(&pat)?;
+            let result: indexmap::IndexMap<String, Value> = m.iter()
+                .filter(|(k, _)| re.is_match(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            Ok(Value::Array(result))
+            Ok(Value::MapOrd(result))
         }
         (Position::At(key_val), Operation::Put(v)) => {
             let key = value_to_map_key(&key_val)
@@ -519,12 +582,37 @@ fn map_op_indexed(
         (Position::First, Operation::Put(_)) | (Position::Last, Operation::Put(_)) => {
             Err(GoblinError::Runtime("put_first/put_last not meaningful for maps".into()))
         }
+        (Position::First, Operation::Update(v)) => {
+            let first_key = m.iter().next().ok_or(GoblinError::IndexOutOfBounds { index: 0, len: 0 })?.0.clone();
+            let mut new_m = m.clone();
+            new_m.insert(first_key, v);
+            Ok(Value::MapOrd(new_m))
+        }
         (Position::At(key_val), Operation::Update(v)) => {
             let key = value_to_map_key(&key_val)
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             if !m.contains_key(&key) { return Err(GoblinError::KeyNotFound); }
             let mut new_m = m.clone();
             new_m.insert(key, v);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Random, Operation::Update(v)) => {
+            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            let i = rng_bounded(session, m.len());
+            let key = m.keys().nth(i).cloned().unwrap();
+            let mut new_m = m.clone();
+            new_m.insert(key, v);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Where(pred), Operation::Update(v)) => {
+            let mut new_m = m.clone();
+            for (k, val) in m { if fmt_value_raw(val) == pred { new_m.insert(k.clone(), v.clone()); } }
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Matching(pat), Operation::Update(v)) => {
+            let re = compile_regex(&pat)?;
+            let mut new_m = m.clone();
+            for k in m.keys() { if re.is_match(k) { new_m.insert(k.clone(), v.clone()); } }
             Ok(Value::MapOrd(new_m))
         }
         (Position::First, Operation::Delete) => {
@@ -556,6 +644,11 @@ fn map_op_indexed(
                 .filter(|(_, v)| fmt_value_raw(v) != pred)
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Matching(pat), Operation::Delete) => {
+            let re = compile_regex(&pat)?;
+            let new_m: indexmap::IndexMap<String, Value> = m.iter().filter(|(k, _)| !re.is_match(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
             Ok(Value::MapOrd(new_m))
         }
         _ => Err(GoblinError::Runtime("unsupported map operation".into())),
@@ -605,23 +698,23 @@ fn str_op(
             Ok(Value::Array(result))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
-            let result: Vec<Value> = chars.iter()
-                .filter(|&&c| c.to_string().contains(&pat))
-                .map(|&c| Value::Char(c))
-                .collect();
+            let re = compile_regex(&pat)?;
+            let result: Vec<Value> = re.find_iter(s).map(|m| Value::Str(m.as_str().to_string())).collect();
             Ok(Value::Array(result))
         }
-        (Position::Between(start, end), Operation::Get) |
-        (Position::Between(start, end), Operation::Reap) => {
-            let start_pos = s.find(&start);
-            let end_pos   = s.rfind(&end);
-            match (start_pos, end_pos) {
-                (Some(sp), Some(ep)) if ep > sp + start.len() => {
-                    let sub = &s[sp + start.len()..ep];
-                    Ok(Value::Str(sub.to_string()))
+        (Position::Between(start_pat, end_pat), Operation::Get) |
+        (Position::Between(start_pat, end_pat), Operation::Reap) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let start_matches: Vec<_> = start_re.find_iter(s).collect();
+            let end_matches:   Vec<_> = end_re.find_iter(s).collect();
+            let mut results = Vec::new();
+            for sm in &start_matches {
+                if let Some(em) = end_matches.iter().find(|e| e.start() > sm.end()) {
+                    results.push(Value::Str(s[sm.end()..em.start()].to_string()));
                 }
-                _ => Ok(Value::Str(String::new())),
             }
+            Ok(Value::Array(results))
         }
 
         // Put
@@ -700,16 +793,79 @@ fn str_op(
         (Position::Where(needle), Operation::Delete) => {
             Ok(Value::Str(s.replace(&needle, "")))
         }
-        (Position::Between(start, end), Operation::Delete) => {
-            let start_pos = s.find(&start);
-            let end_pos   = s.rfind(&end);
-            match (start_pos, end_pos) {
-                (Some(sp), Some(ep)) if ep > sp + start.len() => {
-                    let result = s[..sp + start.len()].to_string() + &s[ep..];
-                    Ok(Value::Str(result))
-                }
-                _ => Ok(Value::Str(s.clone())),
+        (Position::Matching(pat), Operation::Delete) => {
+            let re = compile_regex(&pat)?;
+            Ok(Value::Str(re.replace_all(s, "").to_string()))
+        }
+        (Position::Matching(pat), Operation::Update(v)) => {
+            let re = compile_regex(&pat)?;
+            let repl = value_to_str_for_concat(&v);
+            Ok(Value::Str(re.replace_all(s, repl.as_str()).to_string()))
+        }
+        (Position::Matching(pat), Operation::Put(v)) => {
+            let re = compile_regex(&pat)?;
+            let ins = value_to_str_for_concat(&v);
+            let mut result = String::new();
+            let mut last_end = 0;
+            for m in re.find_iter(s) {
+                result.push_str(&s[last_end..m.end()]);
+                result.push_str(&ins);
+                last_end = m.end();
             }
+            result.push_str(&s[last_end..]);
+            Ok(Value::Str(result))
+        }
+        (Position::Between(start_pat, end_pat), Operation::Delete) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let start_matches: Vec<_> = start_re.find_iter(s).collect();
+            let end_matches:   Vec<_> = end_re.find_iter(s).collect();
+            let mut result = String::new();
+            let mut last_pos = 0;
+            for sm in &start_matches {
+                if let Some(em) = end_matches.iter().find(|e| e.start() > sm.end()) {
+                    result.push_str(&s[last_pos..sm.start()]);
+                    last_pos = em.end();
+                }
+            }
+            result.push_str(&s[last_pos..]);
+            Ok(Value::Str(result))
+        }
+        (Position::Between(start_pat, end_pat), Operation::Update(v)) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let repl = value_to_str_for_concat(&v);
+            let start_matches: Vec<_> = start_re.find_iter(s).collect();
+            let end_matches:   Vec<_> = end_re.find_iter(s).collect();
+            let mut result = String::new();
+            let mut last_pos = 0;
+            for sm in &start_matches {
+                if let Some(em) = end_matches.iter().find(|e| e.start() > sm.end()) {
+                    result.push_str(&s[last_pos..sm.end()]);
+                    result.push_str(&repl);
+                    last_pos = em.start();
+                }
+            }
+            result.push_str(&s[last_pos..]);
+            Ok(Value::Str(result))
+        }
+        (Position::Between(start_pat, end_pat), Operation::Put(v)) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let ins = value_to_str_for_concat(&v);
+            let start_matches: Vec<_> = start_re.find_iter(s).collect();
+            let end_matches:   Vec<_> = end_re.find_iter(s).collect();
+            let mut result = String::new();
+            let mut last_pos = 0;
+            for sm in &start_matches {
+                if let Some(em) = end_matches.iter().find(|e| e.start() > sm.end()) {
+                    result.push_str(&s[last_pos..em.end()]);
+                    result.push_str(&ins);
+                    last_pos = em.end();
+                }
+            }
+            result.push_str(&s[last_pos..]);
+            Ok(Value::Str(result))
         }
         _ => Err(GoblinError::Runtime("unsupported string operation".into())),
     }

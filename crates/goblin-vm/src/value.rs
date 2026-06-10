@@ -567,6 +567,17 @@ pub enum BuiltinId {
     PadLeft,
     PadRight,
     Repeat,
+
+    // Missing builtins
+    Pct,
+    Between,
+    IsControl,
+    IgnoreBlocksFirst,
+    Pick,
+    ReadJson,
+    WriteText,
+    AppendFile,
+    WriteJson,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
