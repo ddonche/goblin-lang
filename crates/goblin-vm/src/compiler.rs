@@ -588,6 +588,10 @@ impl Compiler {
 
             // ── Calls ─────────────────────────────────────────────────────────
             Expr::FreeCall(name, args, _) => {
+                // Special forms (look like calls but compile to control flow).
+                if self.try_compile_special_form(name, args)? {
+                    return Ok(());
+                }
                 // Check if it's a known builtin call pattern.
                 if let Some(op) = self.try_compile_builtin_call(name, args)? {
                     let _ = op; // op already emitted
@@ -955,6 +959,224 @@ impl Compiler {
 
     /// Try to compile a free call as a direct CallBuiltin opcode.
     /// Returns Ok(Some(())) if emitted, Ok(None) if caller should emit a regular Call.
+    /// Compile special-form "function calls" that are actually control flow.
+    /// Returns true if handled, false if the name is not a special form.
+    fn try_compile_special_form(&mut self, name: &str, args: &[Expr]) -> Result<bool, GoblinError> {
+        let bare = name.trim_start_matches(':');
+        match bare {
+            // if(cond, then [, else])
+            "if" | "unless" => {
+                let invert = bare == "unless";
+                if args.is_empty() {
+                    return Err(GoblinError::CompileError {
+                        message: format!("'{bare}' requires at least a condition argument"),
+                        span_debug: String::new(),
+                    });
+                }
+                self.compile_expr(&args[0])?;
+                if invert { self.emit(Opcode::Not); }
+                let else_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                // then branch
+                if args.len() > 1 {
+                    self.compile_expr(&args[1])?;
+                } else {
+                    self.emit(Opcode::LoadNil);
+                }
+                let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
+                self.scope_mut().patch_jump(else_jump);
+                // else branch
+                if args.len() > 2 {
+                    self.compile_expr(&args[2])?;
+                } else {
+                    self.emit(Opcode::LoadNil);
+                }
+                self.scope_mut().patch_jump(end_jump);
+                Ok(true)
+            }
+
+            // while(cond, body)
+            "while" => {
+                let loop_start = self.scope_mut().bytecode.len();
+                if args.len() < 2 {
+                    self.emit(Opcode::LoadNil);
+                    return Ok(true);
+                }
+                self.compile_expr(&args[0])?;
+                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.compile_expr(&args[1])?;
+                self.emit(Opcode::Pop); // discard body result
+                // Jump back to loop start
+                let cur = self.scope_mut().bytecode.len();
+                let offset = -(((cur - loop_start) as i16) + 1);
+                self.emit(Opcode::Jump(offset));
+                self.scope_mut().patch_jump(exit_jump);
+                self.emit(Opcode::LoadNil);
+                Ok(true)
+            }
+
+            // repeat(n, body [, as_name])
+            "repeat" => {
+                if args.len() < 2 {
+                    self.emit(Opcode::LoadNil);
+                    return Ok(true);
+                }
+                // Compile limit, store in hidden local
+                self.compile_expr(&args[0])?;
+                let limit_slot = self.scope_mut().declare_local("__repeat_n__");
+                self.emit(Opcode::StoreLocal(limit_slot));
+                // counter = 0
+                let zero = self.scope_mut().add_constant(Value::Int(0));
+                self.emit(Opcode::LoadConst(zero));
+                let counter_slot = self.scope_mut().declare_local("__repeat_i__");
+                self.emit(Opcode::StoreLocal(counter_slot));
+                // optional as_name binding
+                let as_slot = if args.len() >= 3 {
+                    let as_name = match &args[2] {
+                        Expr::Str(s, _) => s.clone(),
+                        Expr::Ident(s, _) => s.clone(),
+                        _ => "__repeat_as__".into(),
+                    };
+                    let s = self.scope_mut().declare_local(&as_name);
+                    self.emit(Opcode::LoadConst(zero));
+                    self.emit(Opcode::StoreLocal(s));
+                    Some(s)
+                } else { None };
+                // loop_start: if counter >= limit, exit
+                let loop_start = self.scope_mut().bytecode.len();
+                self.emit(Opcode::LoadLocal(counter_slot));
+                self.emit(Opcode::LoadLocal(limit_slot));
+                self.emit(Opcode::Lt);
+                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                // update as_name if present
+                if let Some(s) = as_slot {
+                    self.emit(Opcode::LoadLocal(counter_slot));
+                    self.emit(Opcode::StoreLocal(s));
+                }
+                // body
+                self.compile_expr(&args[1])?;
+                self.emit(Opcode::Pop);
+                // counter++
+                let one = self.scope_mut().add_constant(Value::Int(1));
+                self.emit(Opcode::LoadLocal(counter_slot));
+                self.emit(Opcode::LoadConst(one));
+                self.emit(Opcode::Add);
+                self.emit(Opcode::StoreLocal(counter_slot));
+                // back-jump
+                let cur = self.scope_mut().bytecode.len();
+                let offset = -(((cur - loop_start) as i16) + 1);
+                self.emit(Opcode::Jump(offset));
+                self.scope_mut().patch_jump(exit_jump);
+                self.emit(Opcode::LoadNil);
+                Ok(true)
+            }
+
+            // for(var_name, iterable, body)
+            "for" => {
+                if args.len() < 3 {
+                    self.emit(Opcode::LoadNil);
+                    return Ok(true);
+                }
+                let var_name = match &args[0] {
+                    Expr::Str(s, _) => s.clone(),
+                    Expr::Ident(s, _) => s.clone(),
+                    _ => return Err(GoblinError::CompileError {
+                        message: "for: first arg must be a variable name".into(),
+                        span_debug: String::new(),
+                    }),
+                };
+                // Compile iterable, store in hidden local
+                self.compile_expr(&args[1])?;
+                let iter_slot = self.scope_mut().declare_local("__for_iter__");
+                self.emit(Opcode::StoreLocal(iter_slot));
+                // index = 0
+                let zero = self.scope_mut().add_constant(Value::Int(0));
+                self.emit(Opcode::LoadConst(zero));
+                let idx_slot = self.scope_mut().declare_local("__for_i__");
+                self.emit(Opcode::StoreLocal(idx_slot));
+                // loop variable slot
+                let var_slot = self.scope_mut().declare_local(&var_name);
+                self.emit(Opcode::LoadConst(zero));
+                self.emit(Opcode::StoreLocal(var_slot));
+                // loop_start: idx < count(iter)?
+                let loop_start = self.scope_mut().bytecode.len();
+                self.emit(Opcode::LoadLocal(idx_slot));
+                self.emit(Opcode::LoadLocal(iter_slot));
+                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
+                self.emit(Opcode::Lt);
+                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                // elem = iter[idx]
+                self.emit(Opcode::LoadLocal(iter_slot));
+                self.emit(Opcode::LoadLocal(idx_slot));
+                self.emit(Opcode::GetIndex);
+                self.emit(Opcode::StoreLocal(var_slot));
+                // body
+                self.compile_expr(&args[2])?;
+                self.emit(Opcode::Pop);
+                // idx++
+                let one = self.scope_mut().add_constant(Value::Int(1));
+                self.emit(Opcode::LoadLocal(idx_slot));
+                self.emit(Opcode::LoadConst(one));
+                self.emit(Opcode::Add);
+                self.emit(Opcode::StoreLocal(idx_slot));
+                // back-jump
+                let cur = self.scope_mut().bytecode.len();
+                let offset = -(((cur - loop_start) as i16) + 1);
+                self.emit(Opcode::Jump(offset));
+                self.scope_mut().patch_jump(exit_jump);
+                self.emit(Opcode::LoadNil);
+                Ok(true)
+            }
+
+            // say(val) — print to stdout
+            "say" => {
+                if args.is_empty() {
+                    self.emit(Opcode::CallBuiltin(BuiltinId::Println, 0));
+                } else {
+                    self.compile_expr(&args[0])?;
+                    self.emit(Opcode::CallBuiltin(BuiltinId::Println, 1));
+                }
+                Ok(true)
+            }
+
+            // print(val) — no newline
+            "print" => {
+                for arg in args { self.compile_expr(arg)?; }
+                self.emit(Opcode::CallBuiltin(BuiltinId::Print, args.len() as u8));
+                Ok(true)
+            }
+
+            // skip / stop — loop control (emit CtrlSkip/CtrlStop)
+            "skip" => {
+                let idx = self.scope_mut().add_constant(Value::CtrlSkip);
+                self.emit(Opcode::LoadConst(idx));
+                self.emit(Opcode::Return);
+                Ok(true)
+            }
+            "stop" => {
+                let idx = self.scope_mut().add_constant(Value::CtrlStop);
+                self.emit(Opcode::LoadConst(idx));
+                self.emit(Opcode::Return);
+                Ok(true)
+            }
+
+            // return(val) — explicit return
+            "return" => {
+                if args.is_empty() {
+                    self.emit(Opcode::LoadNil);
+                } else if args.len() == 1 {
+                    self.compile_expr(&args[0])?;
+                } else {
+                    for arg in args { self.compile_expr(arg)?; }
+                    self.emit(Opcode::MakeArray(args.len() as u16));
+                }
+                self.emit(Opcode::Return);
+                Ok(true)
+            }
+
+            _ => Ok(false),
+        }
+    }
+
     fn try_compile_builtin_call(
         &mut self,
         name: &str,
@@ -1147,6 +1369,18 @@ fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "type_of"                       => BuiltinId::TypeOf,
         "assert"                        => BuiltinId::Assert,
         "panic"                         => BuiltinId::Panic,
+        "secure_pick"  | ":secure_pick"   => BuiltinId::SecurePick,
+        "secure_shuffle" | ":secure_shuffle" => BuiltinId::SecureShuffle,
+        "pack"         | ":pack"          => BuiltinId::Pack,
+        "unpack"       | ":unpack"        => BuiltinId::Unpack,
+        "lines"        | ":lines"         => BuiltinId::Lines,
+        "words"        | ":words"         => BuiltinId::Words,
+        "chars"        | ":chars"         => BuiltinId::Chars,
+        "format"       | ":format"        => BuiltinId::Format,
+        "pad"          | ":pad"           => BuiltinId::Pad,
+        "pad_left"     | ":pad_left"      => BuiltinId::PadLeft,
+        "pad_right"    | ":pad_right"     => BuiltinId::PadRight,
+        "repeat_str"   | ":repeat_str"    => BuiltinId::Repeat,
         _ => return None,
     })
 }

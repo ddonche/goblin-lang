@@ -1146,6 +1146,143 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         | BuiltinId::SetStatus | BuiltinId::SetHeader | BuiltinId::SetCookie => {
             Err(GoblinError::NotImplemented { feature: "HTTP request/response builtins require HTTP context" })
         }
+
+        // ── pack / unpack ─────────────────────────────────────────────────────
+        BuiltinId::Pack => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let v = session.read_value(&args[0])?;
+            Ok(pack_value(v))
+        }
+        BuiltinId::Unpack => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let v = session.read_value(&args[0])?;
+            Ok(match v {
+                Value::Int(n) => Value::Array(n.to_string().chars().map(|c| Value::Str(c.to_string())).collect()),
+                Value::Str(s) => Value::Array(s.chars().map(Value::Char).collect()),
+                other => other,
+            })
+        }
+
+        // ── secure_pick / secure_shuffle ──────────────────────────────────────
+        BuiltinId::SecurePick => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let cfg = session.read_value(&args[0])?;
+            let m = match cfg {
+                Value::Map(ref m) => m.clone(),
+                _ => return Err(GoblinError::type_error("map", cfg.type_name(), "secure_pick")),
+            };
+            let count = map_get_int(&m, "count_expr")
+                .or_else(|| map_get_int(&m, "count"))
+                .unwrap_or(1) as usize;
+            if count == 0 { return Ok(Value::Array(vec![])); }
+            let allow_dups = map_get_bool(&m, "allow_dups").unwrap_or(false);
+            if let Some(src) = m.get("src") {
+                let items: Vec<Value> = match src {
+                    Value::Array(a) => a.clone(),
+                    Value::Str(s)   => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                    _ => return Err(GoblinError::Runtime("secure_pick: unsupported src type".into())),
+                };
+                if items.is_empty() {
+                    return Err(GoblinError::Runtime("secure_pick: cannot pick from empty collection".into()));
+                }
+                let out = csprng_pick_from_slice(&items, count, allow_dups, session);
+                return Ok(if count == 1 { out.into_iter().next().unwrap_or(Value::Nil) } else { Value::Array(out) });
+            }
+            if m.contains_key("range_start") && m.contains_key("range_end") {
+                let start  = map_get_int(&m, "range_start").unwrap_or(0);
+                let end_v  = map_get_int(&m, "range_end").unwrap_or(0);
+                let incl   = map_get_bool(&m, "range_inclusive").unwrap_or(false);
+                let end_i  = if incl { end_v + 1 } else { end_v };
+                let range_size = (end_i - start).max(0) as usize;
+                if range_size == 0 {
+                    return Err(GoblinError::Runtime("secure_pick: empty range".into()));
+                }
+                let out: Vec<Value> = (0..count)
+                    .map(|_| Value::Int(start + rng_bounded(session, range_size as u64) as i64))
+                    .collect();
+                return Ok(if count == 1 { out.into_iter().next().unwrap_or(Value::Nil) } else { Value::Array(out) });
+            }
+            Err(GoblinError::Runtime("secure_pick: needs 'src' or range_start/range_end".into()))
+        }
+
+        BuiltinId::SecureShuffle => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let v = session.read_value(&args[0])?;
+            match v {
+                Value::Array(mut items) => {
+                    fisher_yates_shuffle(&mut items, session);
+                    Ok(Value::Array(items))
+                }
+                Value::Str(s) => {
+                    let mut chars: Vec<char> = s.chars().collect();
+                    let n = chars.len();
+                    for i in (1..n).rev() {
+                        let j = rng_bounded(session, (i + 1) as u64) as usize;
+                        chars.swap(i, j);
+                    }
+                    Ok(Value::Str(chars.into_iter().collect()))
+                }
+                _ => Err(GoblinError::type_error("array or string", v.type_name(), "secure_shuffle")),
+            }
+        }
+
+        // ── String extras ─────────────────────────────────────────────────────
+        BuiltinId::Lines => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let v = session.read_value(&args[0])?;
+            match v {
+                Value::Str(s) => Ok(Value::Array(s.lines().map(|l| Value::Str(l.to_string())).collect())),
+                _ => Err(GoblinError::type_error("string", v.type_name(), "lines")),
+            }
+        }
+        BuiltinId::Words => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let v = session.read_value(&args[0])?;
+            match v {
+                Value::Str(s) => Ok(Value::Array(s.split_whitespace().map(|w| Value::Str(w.to_string())).collect())),
+                _ => Err(GoblinError::type_error("string", v.type_name(), "words")),
+            }
+        }
+        BuiltinId::Chars => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let v = session.read_value(&args[0])?;
+            match v {
+                Value::Str(s) => Ok(Value::Array(s.chars().map(Value::Char).collect())),
+                _ => Err(GoblinError::type_error("string", v.type_name(), "chars")),
+            }
+        }
+        BuiltinId::Format => {
+            if args.is_empty() { return Ok(Value::Nil); }
+            let v = session.read_value(&args[0])?;
+            let decimals = if args.len() > 1 {
+                match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 2 }
+            } else { 2 };
+            let n = match v { Value::Float(f) => f, Value::Int(i) => i as f64, _ => return Ok(Value::Nil) };
+            Ok(Value::Str(format!("{:.prec$}", n, prec = decimals)))
+        }
+        BuiltinId::Pad | BuiltinId::PadLeft => {
+            if args.len() < 2 { return Ok(Value::Nil); }
+            let s = match session.read_value(&args[0])? { Value::Str(s) => s, v => fmt_value_raw(&v) };
+            let width = match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 0 };
+            Ok(Value::Str(format!("{:>width$}", s)))
+        }
+        BuiltinId::PadRight => {
+            if args.len() < 2 { return Ok(Value::Nil); }
+            let s = match session.read_value(&args[0])? { Value::Str(s) => s, v => fmt_value_raw(&v) };
+            let width = match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 0 };
+            Ok(Value::Str(format!("{:<width$}", s)))
+        }
+        BuiltinId::Repeat => {
+            if args.len() < 2 { return Ok(Value::Nil); }
+            let s = match session.read_value(&args[0])? { Value::Str(s) => s, v => fmt_value_raw(&v) };
+            let n = match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 0 };
+            Ok(Value::Str(s.repeat(n)))
+        }
+
+        // ── Higher-order (stub — need VM callback) ────────────────────────────
+        BuiltinId::MapFn | BuiltinId::FilterFn | BuiltinId::ReduceFn | BuiltinId::ForEachFn => {
+            Err(GoblinError::NotImplemented { feature: "higher-order map/filter/reduce require VM callback support" })
+        }
     }
 }
 
@@ -1309,5 +1446,70 @@ fn rng_bounded(session: &mut Session, bound: u64) -> u64 {
         let l = m as u64;
         let t = bound.wrapping_neg() % bound;
         if l >= t { return (m >> 64) as u64; }
+    }
+}
+
+fn pack_value(v: Value) -> Value {
+    match v {
+        Value::Array(xs) if xs.is_empty() => Value::Int(0),
+        Value::Array(xs) => {
+            let all_digits = xs.iter().all(|e| matches!(e, Value::Int(n) if *n >= 0 && *n <= 9));
+            if all_digits {
+                let mut acc: i128 = 0;
+                for e in &xs {
+                    let d = match e { Value::Int(n) => *n as i128, _ => unreachable!() };
+                    match acc.checked_mul(10).and_then(|a| a.checked_add(d)) {
+                        Some(v) => acc = v,
+                        None => return Value::Nil,
+                    }
+                }
+                Value::Int(acc as i64)
+            } else {
+                let mut out = String::new();
+                for e in &xs {
+                    match e {
+                        Value::Str(s)   => out.push_str(s),
+                        Value::Char(c)  => out.push(*c),
+                        Value::Int(n)   => out.push_str(&n.to_string()),
+                        Value::Float(f) => out.push_str(&f.to_string()),
+                        Value::Bool(b)  => out.push_str(if *b { "true" } else { "false" }),
+                        _ => return Value::Nil,
+                    }
+                }
+                Value::Str(out)
+            }
+        }
+        Value::Int(_) | Value::Str(_) | Value::Char(_) => v,
+        _ => Value::Nil,
+    }
+}
+
+fn csprng_pick_from_slice(items: &[Value], count: usize, allow_dups: bool, session: &mut Session) -> Vec<Value> {
+    if allow_dups {
+        (0..count).map(|_| items[rng_bounded(session, items.len() as u64) as usize].clone()).collect()
+    } else {
+        let mut idxs: Vec<usize> = (0..items.len()).collect();
+        let mut out = Vec::with_capacity(count.min(items.len()));
+        for i in 0..count.min(items.len()) {
+            let j = i + rng_bounded(session, (items.len() - i) as u64) as usize;
+            idxs.swap(i, j);
+            out.push(items[idxs[i]].clone());
+        }
+        out
+    }
+}
+
+fn map_get_int(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<i64> {
+    match m.get(key)? {
+        Value::Int(n) => Some(*n),
+        Value::Float(f) => Some(*f as i64),
+        _ => None,
+    }
+}
+
+fn map_get_bool(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<bool> {
+    match m.get(key)? {
+        Value::Bool(b) => Some(*b),
+        _ => None,
     }
 }

@@ -494,6 +494,30 @@ pub enum BuiltinId {
     SetStatus,
     SetHeader,
     SetCookie,
+
+    // CSPRNG
+    SecurePick,
+    SecureShuffle,
+
+    // Pack/unpack
+    Pack,
+    Unpack,
+
+    // Map higher-order
+    MapFn,
+    FilterFn,
+    ReduceFn,
+    ForEachFn,
+
+    // String extras
+    Lines,
+    Words,
+    Chars,
+    Format,
+    Pad,
+    PadLeft,
+    PadRight,
+    Repeat,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

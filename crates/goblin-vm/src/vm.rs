@@ -455,16 +455,25 @@ impl Vm {
                 let pair_count = n as usize;
                 let start = self.stack.len().saturating_sub(pair_count * 2);
                 let mut pairs = Vec::with_capacity(pair_count);
+                let mut all_str_keys = true;
                 for i in (start..self.stack.len()).step_by(2) {
                     if i + 1 < self.stack.len() {
                         let k = self.session.read_value(&self.stack[i])?;
                         let v = self.session.read_value(&self.stack[i + 1])?;
+                        if !matches!(k, Value::Str(_)) { all_str_keys = false; }
                         pairs.push((k, v));
                     }
                 }
                 self.stack.truncate(start);
-                let coll = CollectionValue::from_map(pairs);
-                let t = self.session.alloc_value(Value::Collection(Rc::new(coll)));
+                let result = if all_str_keys {
+                    let m: std::collections::BTreeMap<String, Value> = pairs.into_iter()
+                        .map(|(k, v)| (match k { Value::Str(s) => s, _ => unreachable!() }, v))
+                        .collect();
+                    Value::Map(m)
+                } else {
+                    Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
+                };
+                let t = self.session.alloc_value(result);
                 self.stack.push(t);
             }
             Opcode::GetIndex => {
@@ -488,7 +497,11 @@ impl Vm {
                     frame.func.constants[idx as usize].clone()
                 };
                 let coll_val = self.pop_value()?;
-                let result = crate::collections::get_index(&coll_val, &key)?;
+                let result = if let Value::Str(ref name) = key {
+                    member_dispatch(&coll_val, name, &mut self.session)?
+                } else {
+                    crate::collections::get_index(&coll_val, &key)?
+                };
                 let t = self.session.alloc_value(result);
                 self.stack.push(t);
             }
@@ -776,6 +789,59 @@ impl Vm {
 
 fn value_to_str(v: &Value) -> String {
     crate::builtins::value_to_str(v)
+}
+
+/// Handle `.method` postfix member accesses that dispatch to builtins.
+fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
+    use crate::value::BuiltinId;
+    use crate::builtins::call_builtin;
+
+    // Try builtin method dispatch first
+    let bid = match name {
+        "str" | "string"   => Some(BuiltinId::ToStr),
+        "int"              => Some(BuiltinId::ToInt),
+        "float"            => Some(BuiltinId::ToFloat),
+        "bool"             => Some(BuiltinId::ToBool),
+        "count" | "len" | "length" => Some(BuiltinId::Count),
+        "lower"            => Some(BuiltinId::Lower),
+        "upper"            => Some(BuiltinId::Upper),
+        "title"            => Some(BuiltinId::Title),
+        "slug"             => Some(BuiltinId::Slug),
+        "mixed"            => Some(BuiltinId::Mixed),
+        "raw"              => Some(BuiltinId::Raw),
+        "trim"             => Some(BuiltinId::Trim),
+        "trim_lead"        => Some(BuiltinId::TrimLead),
+        "trim_trail"       => Some(BuiltinId::TrimTrail),
+        "reverse"          => Some(BuiltinId::Reverse),
+        "shuffle"          => Some(BuiltinId::Shuffle),
+        "sort"             => Some(BuiltinId::Sort),
+        "unique"           => Some(BuiltinId::Unique),
+        "dups"             => Some(BuiltinId::Dups),
+        "pack"             => Some(BuiltinId::Pack),
+        "unpack"           => Some(BuiltinId::Unpack),
+        "keys"             => Some(BuiltinId::Keys),
+        "values"           => Some(BuiltinId::Values),
+        "items"            => Some(BuiltinId::Items),
+        "lines"            => Some(BuiltinId::Lines),
+        "words"            => Some(BuiltinId::Words),
+        "chars"            => Some(BuiltinId::Chars),
+        "abs"              => Some(BuiltinId::Abs),
+        "sqrt"             => Some(BuiltinId::Sqrt),
+        "floor"            => Some(BuiltinId::Floor),
+        "ceil"             => Some(BuiltinId::Ceil),
+        "round"            => Some(BuiltinId::Round),
+        "type_of"          => Some(BuiltinId::TypeOf),
+        _ => None,
+    };
+
+    if let Some(id) = bid {
+        let tether = session.alloc_value(v.clone());
+        let result_tether = call_builtin(id, vec![tether], session)?;
+        return session.read_value(&result_tether);
+    }
+
+    // Fall through to map/collection field lookup
+    crate::collections::get_index(v, &Value::Str(name.to_string()))
 }
 
 
