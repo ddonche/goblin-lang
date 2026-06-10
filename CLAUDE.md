@@ -182,12 +182,23 @@
 - [x] `Stmt::Use` — resolves `glams/<ns>/<ns>.gbln` and emits `ImportFile`
 - [x] `ImportFile` opcode — lex+parse+compile+execute sub-file, pre-register its classes/enums, guard against re-import
 
-## TODO / NOT YET DONE
+### Compiler — DES statement support
+- [x] `Stmt::OverlayDef` — emits `OverlayDef` opcode; VM registers in `session.overlay_defs`
+- [x] `Stmt::OverlayApply` — emits `OverlayApply` opcode; VM pushes `OverlayInstance`
+- [x] `Stmt::OverlayDetach` — emits `OverlayDetach` opcode; VM removes matching instances
+- [x] `Stmt::LinkDef` — emits `LinkDef` opcode; VM registers in `session.link_defs`
+- [x] `Stmt::ObjectLinkDef` — emits `ObjectLinkDef` opcode; VM registers in `session.object_link_defs`
+- [x] `Stmt::LinkOffset` — emits `LinkOffset` opcode; VM updates `session.link_offsets`
+- [x] `Stmt::ClearLink` — emits `ClearLink` opcode; VM removes from `session.link_offsets`
+- [x] `Stmt::ObjectDecision` — emits `ObjectDecision` opcode; VM registers in `session.object_decisions`
+- [x] `Stmt::UnitDecl` — emits `UnitDecl` opcode; VM registers in `session.unit_registry`
 
-### Compiler — unimplemented AST nodes (return NotImplemented error)
-- [ ] `Stmt::OverlayDef` / `Stmt::OverlayApply` / `Stmt::OverlayDetach` — overlay system (needs DES engine)
-- [ ] `Stmt::LinkDef` / `Stmt::ObjectLinkDef` / `Stmt::LinkOffset` / `Stmt::ClearLink` — link system (needs DES engine)
-- [ ] `Stmt::ObjectDecision` / `Stmt::UnitDecl` — DES decisions, unit declarations (needs DES engine)
+### Session additions
+- [x] `overlay_defs`, `link_defs`, `object_link_defs`, `link_offsets`, `object_decisions`, `unit_registry`
+- [x] `des_store`, `des_index`, `des_tick_runner`, `des_overlay_id_counter`, `des_link_id_counter`, `des_link_ids`
+- [x] `goblin-des` added as dependency
+
+## TODO / NOT YET DONE
 
 ### Builtins — not implemented
 - [ ] `invoke` / `summon` / `provoke` — dynamic action dispatch (needs VM action call infrastructure)

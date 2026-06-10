@@ -7,6 +7,61 @@ use crate::grid::GridStore;
 use crate::value::{Stash, Address, Tether, Value};
 
 pub use goblin_ast::{ClassDecl, EnumDecl};
+pub use goblin_des::store::EntityStore;
+pub use goblin_des::index::{EntityIndex, LinkId, OverlayInstanceId};
+pub use goblin_des::tick::TickRunner;
+
+// ── Overlay runtime types ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct OverlayDef {
+    pub name: String,
+    pub host_types: Vec<String>,
+    pub decay_rate: f64,
+    pub default_duration: Option<u32>,
+    pub apply_behavior: OverlayApplyBehavior,
+    pub modifiers: Vec<(String, goblin_ast::Expr)>,
+    pub conflict_rules: Vec<(String, f64)>,     // (opponent, suppress_rate)
+    pub spread_rules: Vec<goblin_ast::SpreadRule>,
+    pub transitions: Vec<goblin_ast::TransitionDef>,
+    pub extra_fields: indexmap::IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverlayApplyBehavior { Caps, Replaces, Stacks { label: Option<String> } }
+
+impl Default for OverlayApplyBehavior { fn default() -> Self { OverlayApplyBehavior::Caps } }
+
+#[derive(Debug, Clone)]
+pub struct OverlayInstance {
+    pub overlay_name: String,
+    pub host_var: String,
+    pub host_uuid: String,
+    pub strength: f64,
+    pub age: u32,
+    pub ticks_remaining: Option<u32>,
+    pub count: u64,
+    pub original_values: Vec<(String, Value)>,
+    pub extra_fields: indexmap::IndexMap<String, Value>,
+    pub des_id: OverlayInstanceId,
+}
+
+// ── Link runtime types ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct LinkDef {
+    pub class_name: String,
+    pub channel: String,
+    pub formula: goblin_ast::Expr,
+    pub formula_min: f64,
+    pub formula_max: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkOffset {
+    pub value: f64,
+    pub ticks_remaining: Option<u32>,
+}
 
 /// HTTP response state accumulated during a request.
 #[derive(Debug, Clone, Default)]
@@ -14,14 +69,6 @@ pub struct ResponseState {
     pub status: Option<i64>,
     pub headers: indexmap::IndexMap<String, String>,
     pub cookies: Vec<String>,
-}
-
-/// An overlay instance applied to a host variable.
-#[derive(Debug, Clone)]
-pub struct OverlayInstance {
-    pub overlay_name: String,
-    pub host_var: String,
-    pub strength: f64,
 }
 
 /// GC modes.
@@ -90,6 +137,20 @@ pub struct Session {
 
     /// Set of already-imported paths (to avoid re-importing).
     pub imported: std::collections::HashSet<String>,
+
+    // ── DES / Overlay / Link state ───────────────────────────────────────────
+    pub overlay_defs: HashMap<String, OverlayDef>,
+    pub link_defs: HashMap<(String, String), LinkDef>,
+    pub object_link_defs: HashMap<(String, String), LinkDef>,
+    pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>>,
+    pub object_decisions: HashMap<String, goblin_ast::DecisionDef>,
+    pub unit_registry: HashMap<String, goblin_ast::UnitDecl>,
+    pub des_store: EntityStore,
+    pub des_index: EntityIndex,
+    pub des_tick_runner: TickRunner,
+    pub des_overlay_id_counter: u32,
+    pub des_link_id_counter: u32,
+    pub des_link_ids: HashMap<(String, String, String), LinkId>,
 }
 
 impl Session {
@@ -118,6 +179,18 @@ impl Session {
             enums: HashMap::new(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             imported: std::collections::HashSet::new(),
+            overlay_defs: HashMap::new(),
+            link_defs: HashMap::new(),
+            object_link_defs: HashMap::new(),
+            link_offsets: HashMap::new(),
+            object_decisions: HashMap::new(),
+            unit_registry: HashMap::new(),
+            des_store: EntityStore::new(),
+            des_index: EntityIndex::default(),
+            des_tick_runner: TickRunner::new(),
+            des_overlay_id_counter: 0,
+            des_link_id_counter: 0,
+            des_link_ids: HashMap::new(),
         }
     }
 

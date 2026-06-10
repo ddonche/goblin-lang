@@ -14,6 +14,7 @@ indexmap = "2"
 regex = "1"
 serde_json = "1"
 goblin-yall = { path = "../goblin-yall" }
+goblin-des = { path = "../goblin-des" }
 uuid = { version = "1", features = ["v4", "v7"] }
 zip = "2"
 walkdir = "2"

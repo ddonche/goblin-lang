@@ -7,7 +7,7 @@ use crate::value::BuiltinId;
 ///
 /// Quickening: generic ops (Add, Sub, …) are replaced at runtime with
 /// specialised forms (AddInt, AddFloat, Concat) once operand types are known.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Opcode {
     // ── Literals ───────────────────────────────────────────────────────────────
     /// Push constants[idx] onto the stack (allocates a new stash).
@@ -154,6 +154,26 @@ pub enum Opcode {
     /// Resolves against session.base_dir, lexes/parses/compiles/runs the file.
     /// Pushes nothing (import is for side effects / populating globals).
     ImportFile(u16),
+
+    // ── DES statement opcodes (carry AST data inline) ──────────────────────
+    /// Register an overlay definition in session.overlay_defs.
+    OverlayDef(Box<goblin_ast::OverlayDefStmt>),
+    /// Apply an overlay to a host (host value must be on stack).
+    OverlayApply { overlay_name: String, strength: f64, duration_override: Option<u32> },
+    /// Detach an overlay from a host (host variable name on stack).
+    OverlayDetach { overlay_name: String },
+    /// Register a class-level link definition.
+    LinkDef(Box<goblin_ast::LinkDefStmt>),
+    /// Register an object-level link definition override.
+    ObjectLinkDef(Box<goblin_ast::ObjectLinkDefStmt>),
+    /// Apply a link offset (from_var, to_var, channel, offset, ticks on stack as consts).
+    LinkOffset(Box<goblin_ast::LinkOffsetStmt>),
+    /// Clear link offsets.
+    ClearLink(Box<goblin_ast::ClearLinkStmt>),
+    /// Register an object decision formula.
+    ObjectDecision { var_name: String, def: Box<goblin_ast::DecisionDef> },
+    /// Register a unit declaration.
+    UnitDecl(Box<goblin_ast::UnitDecl>),
 }
 
 impl Opcode {
@@ -215,9 +235,18 @@ impl Opcode {
             Opcode::MakeRange       => "MakeRange",
             Opcode::MakeRangeInclusive => "MakeRangeInclusive",
             Opcode::Quick(_)        => "Quick",
-            Opcode::TryBegin(_)     => "TryBegin",
-            Opcode::TryEnd          => "TryEnd",
-            Opcode::ImportFile(_)   => "ImportFile",
+            Opcode::TryBegin(_)       => "TryBegin",
+            Opcode::TryEnd            => "TryEnd",
+            Opcode::ImportFile(_)     => "ImportFile",
+            Opcode::OverlayDef(_)     => "OverlayDef",
+            Opcode::OverlayApply {..} => "OverlayApply",
+            Opcode::OverlayDetach {..} => "OverlayDetach",
+            Opcode::LinkDef(_)        => "LinkDef",
+            Opcode::ObjectLinkDef(_)  => "ObjectLinkDef",
+            Opcode::LinkOffset(_)     => "LinkOffset",
+            Opcode::ClearLink(_)      => "ClearLink",
+            Opcode::ObjectDecision {..} => "ObjectDecision",
+            Opcode::UnitDecl(_)       => "UnitDecl",
         }
     }
 }

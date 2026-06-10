@@ -796,6 +796,127 @@ impl Vm {
                     self.session.base_dir = prev_base_dir;
                 }
             }
+
+            // ── DES / Overlay / Link opcodes ─────────────────────────────────
+            Opcode::OverlayDef(def) => {
+                use crate::session::{OverlayDef, OverlayApplyBehavior};
+                let vm_def = OverlayDef {
+                    name: def.name.clone(),
+                    host_types: def.host_types.clone(),
+                    decay_rate: def.decay_rate,
+                    default_duration: def.default_duration,
+                    apply_behavior: match &def.apply_behavior {
+                        goblin_ast::OverlayApplyBehavior::Caps => OverlayApplyBehavior::Caps,
+                        goblin_ast::OverlayApplyBehavior::Replaces => OverlayApplyBehavior::Replaces,
+                        goblin_ast::OverlayApplyBehavior::Stacks { label } => OverlayApplyBehavior::Stacks { label: label.clone() },
+                    },
+                    modifiers: def.modifiers.iter().map(|(k, e)| (k.clone(), e.clone())).collect(),
+                    conflict_rules: def.conflict_rules.iter().map(|r| (r.opponent.clone(), r.suppress_rate)).collect(),
+                    spread_rules: def.spread_rules.clone(),
+                    transitions: def.transitions.clone(),
+                    extra_fields: indexmap::IndexMap::new(),
+                };
+                self.session.overlay_defs.insert(vm_def.name.clone(), vm_def);
+            }
+
+            Opcode::OverlayApply { overlay_name, strength, duration_override } => {
+                use crate::session::{OverlayInstance, OverlayInstanceId};
+                let host_val = self.pop_value()?;
+                let (host_var, host_uuid) = match &host_val {
+                    Value::Object { uuid, .. } => {
+                        // We need the var name — use uuid as proxy since we don't track var names here
+                        (uuid.clone(), uuid.clone())
+                    }
+                    Value::Str(s) => (s.clone(), s.clone()),
+                    _ => return Err(GoblinError::Runtime("overlay apply: host must be an object or string".into())),
+                };
+                let _def = self.session.overlay_defs.get(overlay_name.as_str())
+                    .ok_or_else(|| GoblinError::Runtime(format!("unknown overlay '{}'", overlay_name)))?;
+                let des_id = OverlayInstanceId(self.session.des_overlay_id_counter);
+                self.session.des_overlay_id_counter += 1;
+                let inst = OverlayInstance {
+                    overlay_name: overlay_name.clone(),
+                    host_var,
+                    host_uuid,
+                    strength,
+                    age: 0,
+                    ticks_remaining: duration_override,
+                    count: 1,
+                    original_values: Vec::new(),
+                    extra_fields: indexmap::IndexMap::new(),
+                    des_id,
+                };
+                self.session.overlay_instances.push(inst);
+            }
+
+            Opcode::OverlayDetach { overlay_name } => {
+                let host_val = self.pop_value()?;
+                let host_var = match &host_val {
+                    Value::Object { uuid, .. } => uuid.clone(),
+                    Value::Str(s) => s.clone(),
+                    _ => return Err(GoblinError::Runtime("overlay detach: host must be an object or string".into())),
+                };
+                self.session.overlay_instances.retain(|inst| {
+                    !(inst.overlay_name == *overlay_name && inst.host_var == host_var)
+                });
+            }
+
+            Opcode::LinkDef(def) => {
+                use crate::session::LinkDef;
+                let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
+                let link_def = LinkDef {
+                    class_name: def.class_name.clone(),
+                    channel: channel.clone(),
+                    formula: def.formula.clone(),
+                    formula_min: 0.0,
+                    formula_max: 1.0,
+                };
+                self.session.link_defs.insert((def.class_name.clone(), channel), link_def);
+            }
+
+            Opcode::ObjectLinkDef(def) => {
+                use crate::session::LinkDef;
+                let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
+                let link_def = LinkDef {
+                    class_name: def.object_var.clone(),
+                    channel: channel.clone(),
+                    formula: def.formula.clone(),
+                    formula_min: 0.0,
+                    formula_max: 1.0,
+                };
+                self.session.object_link_defs.insert((def.object_var.clone(), channel), link_def);
+            }
+
+            Opcode::LinkOffset(s) => {
+                use crate::session::LinkOffset;
+                let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
+                let new_offset = LinkOffset { value: s.offset, ticks_remaining: s.ticks };
+                let offsets = self.session.link_offsets.entry(key).or_default();
+                let existing = offsets.iter_mut().find(|o| o.ticks_remaining == new_offset.ticks_remaining);
+                if let Some(existing) = existing {
+                    if new_offset.value.abs() >= existing.value.abs() {
+                        *existing = new_offset;
+                    } else {
+                        existing.ticks_remaining = new_offset.ticks_remaining;
+                    }
+                } else {
+                    offsets.push(new_offset);
+                }
+            }
+
+            Opcode::ClearLink(s) => {
+                let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
+                self.session.link_offsets.remove(&key);
+                self.session.des_link_ids.remove(&key);
+            }
+
+            Opcode::ObjectDecision { var_name, def } => {
+                self.session.object_decisions.insert(var_name.clone(), *def.clone());
+            }
+
+            Opcode::UnitDecl(decl) => {
+                self.session.unit_registry.insert(decl.name.clone(), *decl.clone());
+            }
         }
         Ok(())
     }

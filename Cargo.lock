@@ -1118,6 +1118,7 @@ name = "goblin-vm"
 version = "0.1.0"
 dependencies = [
  "goblin-ast",
+ "goblin-des",
  "goblin-diagnostics",
  "goblin-lexer",
  "goblin-parser",

@@ -437,13 +437,48 @@ impl Compiler {
                 self.emit(Opcode::ImportFile(idx));
             }
 
-            // ── Unhandled in the VM compiler (DES / object system) ────────────
-            Stmt::OverlayDef(_) | Stmt::OverlayApply(_) | Stmt::OverlayDetach(_)
-            | Stmt::LinkDef(_) | Stmt::ObjectLinkDef(_) | Stmt::LinkOffset(_)
-            | Stmt::ClearLink(_) | Stmt::ObjectDecision(..) | Stmt::UnitDecl(_)
-            | Stmt::BoxBind { .. } => {
+            // ── DES / Overlay / Link statements ──────────────────────────────
+            Stmt::OverlayDef(def) => {
+                self.emit(Opcode::OverlayDef(Box::new(def.clone())));
+            }
+            Stmt::OverlayApply(apply) => {
+                self.compile_expr(&apply.host_expr)?;
+                self.emit(Opcode::OverlayApply {
+                    overlay_name: apply.overlay_name.clone(),
+                    strength: apply.strength,
+                    duration_override: apply.duration_override,
+                });
+            }
+            Stmt::OverlayDetach(detach) => {
+                self.compile_expr(&detach.host_expr)?;
+                self.emit(Opcode::OverlayDetach { overlay_name: detach.overlay_name.clone() });
+            }
+            Stmt::LinkDef(def) => {
+                self.emit(Opcode::LinkDef(Box::new(def.clone())));
+            }
+            Stmt::ObjectLinkDef(def) => {
+                self.emit(Opcode::ObjectLinkDef(Box::new(def.clone())));
+            }
+            Stmt::LinkOffset(s) => {
+                self.emit(Opcode::LinkOffset(Box::new(s.clone())));
+            }
+            Stmt::ClearLink(s) => {
+                self.emit(Opcode::ClearLink(Box::new(s.clone())));
+            }
+            Stmt::ObjectDecision(var_name, def) => {
+                self.emit(Opcode::ObjectDecision {
+                    var_name: var_name.clone(),
+                    def: Box::new(def.clone()),
+                });
+            }
+            Stmt::UnitDecl(decl) => {
+                self.emit(Opcode::UnitDecl(Box::new(decl.clone())));
+            }
+
+            // ── Unhandled ─────────────────────────────────────────────────────
+            Stmt::BoxBind { .. } => {
                 return Err(GoblinError::NotImplemented {
-                    feature: "DES/object system statements are not compiled by the VM compiler yet",
+                    feature: "box bind statements are not supported in the VM",
                 });
             }
         }
