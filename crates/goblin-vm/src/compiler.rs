@@ -1613,6 +1613,33 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "u64"                            => BuiltinId::CastU64,
         "f32"                            => BuiltinId::CastF32,
         "f64"                            => BuiltinId::CastF64,
+        // Type casts as free calls
+        "int"  | "i"                     => BuiltinId::ToInt,
+        "float" | "f"                    => BuiltinId::ToFloat,
+        "bool"                           => BuiltinId::ToBool,
+        // Filesystem / path
+        "file_exists"                    => BuiltinId::FileExists,
+        "is_file"                        => BuiltinId::IsFile,
+        "is_dir"                         => BuiltinId::IsDir,
+        "basename"                       => BuiltinId::Basename,
+        "dirname"                        => BuiltinId::Dirname,
+        "stem"                           => BuiltinId::Stem,
+        "ext"                            => BuiltinId::Ext,
+        "path_join"                      => BuiltinId::PathJoin,
+        "path_split"                     => BuiltinId::PathSplit,
+        "path_normalize"                 => BuiltinId::PathNormalize,
+        "path_relative_to"               => BuiltinId::PathRelativeTo,
+        "walk"                           => BuiltinId::Walk,
+        "list_dirs"                      => BuiltinId::ListDirs,
+        "escape_html"                    => BuiltinId::EscapeHtml,
+        "uuid_v4"                        => BuiltinId::UuidV4,
+        "uuid_v7"                        => BuiltinId::UuidV7,
+        "pathfind"                       => BuiltinId::Pathfind,
+        // Interactive input
+        "ask" | "input"                  => BuiltinId::AskInput,
+        // Dice string
+        "roll_str"                       => BuiltinId::RollStr,
+        "roll_detail_str"                => BuiltinId::RollDetailStr,
         _ => return None,
     })
 }

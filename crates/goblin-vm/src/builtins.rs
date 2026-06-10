@@ -2727,6 +2727,233 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 other => Err(GoblinError::type_error("number", other.type_name(), "f64")),
             }
         }
+
+        // ── Filesystem / path ─────────────────────────────────────────────────
+
+        BuiltinId::FileExists => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "file_exists")) };
+            Ok(Value::Bool(std::path::Path::new(&path).exists()))
+        }
+        BuiltinId::IsFile => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_file")) };
+            Ok(Value::Bool(std::path::Path::new(&path).is_file()))
+        }
+        BuiltinId::IsDir => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_dir")) };
+            Ok(Value::Bool(std::path::Path::new(&path).is_dir()))
+        }
+        BuiltinId::Basename => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "basename")) };
+            let base = std::path::Path::new(&path).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            Ok(Value::Str(base))
+        }
+        BuiltinId::Dirname => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "dirname")) };
+            let dir = std::path::Path::new(&path).parent().and_then(|s| s.to_str()).unwrap_or("").replace('\\', "/");
+            Ok(Value::Str(dir))
+        }
+        BuiltinId::Stem => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "stem")) };
+            let stem = std::path::Path::new(&path).file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            Ok(Value::Str(stem))
+        }
+        BuiltinId::Ext => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ext")) };
+            let extension = std::path::Path::new(&path).extension().and_then(|s| s.to_str())
+                .map(|s| format!(".{}", s)).unwrap_or_default();
+            Ok(Value::Str(extension))
+        }
+        BuiltinId::PathJoin => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "path_join".into() }); }
+            let a = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_join")) };
+            let b = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_join")) };
+            let mut joined = std::path::PathBuf::from(&a);
+            joined.push(&b);
+            Ok(Value::Str(joined.to_string_lossy().replace('\\', "/")))
+        }
+        BuiltinId::PathSplit => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_split")) };
+            let comps: Vec<Value> = std::path::Path::new(&path).components()
+                .map(|c| Value::Str(c.as_os_str().to_string_lossy().into_owned()))
+                .collect();
+            Ok(Value::Array(comps))
+        }
+        BuiltinId::PathNormalize => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_normalize")) };
+            // Lexical normalization: resolve . and .. without FS access
+            let mut out: Vec<&str> = Vec::new();
+            let normalized = path.replace('\\', "/");
+            for seg in normalized.split('/') {
+                match seg {
+                    "" | "." => {}
+                    ".." => { out.pop(); }
+                    s => out.push(s),
+                }
+            }
+            Ok(Value::Str(out.join("/")))
+        }
+        BuiltinId::PathRelativeTo => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "path_relative_to".into() }); }
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_relative_to")) };
+            let base = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_relative_to")) };
+            let rel = std::path::Path::new(&path).strip_prefix(&base).unwrap_or(std::path::Path::new(&path));
+            Ok(Value::Str(rel.to_string_lossy().replace('\\', "/")))
+        }
+        BuiltinId::Walk => {
+            if args.is_empty() || args.len() > 2 { return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "walk".into() }); }
+            let root = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "walk")) };
+            let pattern = if args.len() > 1 {
+                match read(1)? { Value::Str(s) => s, _ => "**/*.md".to_string() }
+            } else { "**/*.md".to_string() };
+            let mut results = Vec::new();
+            fn walk_dir(dir: &std::path::Path, pattern: &str, results: &mut Vec<Value>) {
+                let Ok(entries) = std::fs::read_dir(dir) else { return };
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        walk_dir(&p, pattern, results);
+                    } else if p.is_file() {
+                        let ok = match p.extension().and_then(|e| e.to_str()) {
+                            Some(ext) => match pattern {
+                                "**/*.md"   => ext.eq_ignore_ascii_case("md"),
+                                "**/*.gbln" => ext.eq_ignore_ascii_case("gbln"),
+                                _ => true,
+                            },
+                            None => !matches!(pattern, "**/*.md" | "**/*.gbln"),
+                        };
+                        if ok {
+                            results.push(Value::Str(p.to_string_lossy().replace('\\', "/")));
+                        }
+                    }
+                }
+            }
+            walk_dir(std::path::Path::new(&root), &pattern, &mut results);
+            Ok(Value::Array(results))
+        }
+        BuiltinId::ListDirs => {
+            expect_n(1)?;
+            let root = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "list_dirs")) };
+            let root_path = std::path::Path::new(&root);
+            if !root_path.exists() || !root_path.is_dir() { return Ok(Value::Array(vec![])); }
+            let mut out = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(root_path) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                            out.push(Value::Str(name.to_string()));
+                        }
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        BuiltinId::EscapeHtml => {
+            expect_n(1)?;
+            let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "escape_html")) };
+            let mut out = String::with_capacity(s.len());
+            for ch in s.chars() {
+                match ch {
+                    '&'  => out.push_str("&amp;"),
+                    '<'  => out.push_str("&lt;"),
+                    '>'  => out.push_str("&gt;"),
+                    '"'  => out.push_str("&quot;"),
+                    '\'' => out.push_str("&#39;"),
+                    _    => out.push(ch),
+                }
+            }
+            Ok(Value::Str(out))
+        }
+        BuiltinId::UuidV4 => {
+            Ok(Value::Str(uuid::Uuid::new_v4().to_string()))
+        }
+        BuiltinId::UuidV7 => {
+            Ok(Value::Str(uuid::Uuid::now_v7().to_string()))
+        }
+        BuiltinId::Pathfind => {
+            if args.len() < 2 || args.len() > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "pathfind".into() }); }
+            let from = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "pathfind from")) };
+            let to   = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "pathfind to")) };
+            let mode = if args.len() == 3 { match read(2)? { Value::Str(s) => s, _ => "relative".to_string() } } else { "relative".to_string() };
+            fn norm(path: &str) -> String {
+                let normalized = path.replace('\\', "/");
+                let mut out: Vec<&str> = Vec::new();
+                for seg in normalized.split('/') {
+                    match seg { "" | "." => {} ".." => { out.pop(); } s => out.push(s) }
+                }
+                out.join("/")
+            }
+            let from_norm = norm(&from);
+            let to_norm   = norm(&to);
+            let result = match mode.as_str() {
+                "relative" => {
+                    // from_dir = dirname of from
+                    let from_dir: Vec<&str> = if from.ends_with('/') {
+                        from_norm.split('/').filter(|s| !s.is_empty()).collect()
+                    } else {
+                        let segs: Vec<&str> = from_norm.split('/').filter(|s| !s.is_empty()).collect();
+                        segs[..segs.len().saturating_sub(1)].to_vec()
+                    };
+                    let to_segs: Vec<&str> = to_norm.split('/').filter(|s| !s.is_empty()).collect();
+                    let common = from_dir.iter().zip(to_segs.iter()).take_while(|(a, b)| a == b).count();
+                    let mut rel: Vec<String> = Vec::new();
+                    for _ in common..from_dir.len() { rel.push("..".to_string()); }
+                    for seg in &to_segs[common..] { rel.push(seg.to_string()); }
+                    if rel.is_empty() { to_segs.last().unwrap_or(&"").to_string() } else { rel.join("/") }
+                }
+                "href" => {
+                    let href = format!("/{}", to_norm).replace("//", "/");
+                    href
+                }
+                other => return Err(GoblinError::Runtime(format!("pathfind: invalid mode '{}' (use 'relative' or 'href')", other))),
+            };
+            Ok(Value::Str(result))
+        }
+
+        // ── Interactive input ─────────────────────────────────────────────────
+
+        BuiltinId::AskInput => {
+            let prompt = if args.is_empty() {
+                String::new()
+            } else {
+                match read(0)? { Value::Str(s) => s, _ => String::new() }
+            };
+            if !prompt.is_empty() {
+                use std::io::Write;
+                print!("{}", prompt);
+                std::io::stdout().flush().ok();
+            }
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf)
+                .map_err(|e| GoblinError::Runtime(format!("failed to read stdin: {e}")))?;
+            Ok(Value::Str(buf.trim_end().to_string()))
+        }
+
+        // ── Dice string forms ─────────────────────────────────────────────────
+
+        BuiltinId::RollStr => {
+            expect_n(1)?;
+            let dice_str = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "roll_str")) };
+            let cfg = parse_dice_string_to_map(&dice_str)?;
+            let t = session.alloc_value(Value::Map(cfg));
+            dispatch(BuiltinId::Roll, vec![t], session)
+        }
+        BuiltinId::RollDetailStr => {
+            expect_n(1)?;
+            let dice_str = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "roll_detail_str")) };
+            let cfg = parse_dice_string_to_map(&dice_str)?;
+            let t = session.alloc_value(Value::Map(cfg));
+            dispatch(BuiltinId::RollDetail, vec![t], session)
+        }
     }
 }
 
@@ -2747,6 +2974,60 @@ fn cast_to_int_builtin(v: Value) -> Result<Value, GoblinError> {
         Value::Nil => Value::Nil,
         other => return Err(GoblinError::type_error("number or str", other.type_name(), "int cast")),
     })
+}
+
+fn parse_dice_string_to_map(s: &str) -> Result<std::collections::BTreeMap<String, Value>, GoblinError> {
+    let s = s.trim();
+    let mut cfg = std::collections::BTreeMap::new();
+    let d_pos = s.find('d').ok_or_else(|| GoblinError::Runtime(format!("invalid dice notation '{}': missing 'd'", s)))?;
+    let count: i64 = s[..d_pos].parse().map_err(|_| GoblinError::Runtime(format!("invalid dice count in '{}'", s)))?;
+    let rest = &s[d_pos + 1..];
+    let sides_end = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if sides_end == 0 { return Err(GoblinError::Runtime(format!("missing sides in dice notation '{}'", s))); }
+    let sides: i64 = rest[..sides_end].parse().map_err(|_| GoblinError::Runtime("invalid sides".into()))?;
+    let mut rest = &rest[sides_end..];
+    cfg.insert("count".into(), Value::Int(count));
+    cfg.insert("sides".into(), Value::Int(sides));
+    cfg.insert("modifier".into(), Value::Int(0));
+    let chars: Vec<char> = rest.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '+' | '-' => {
+                let sign: i64 = if chars[i] == '-' { -1 } else { 1 };
+                i += 1;
+                if i < chars.len() && chars[i].is_alphabetic() {
+                    let start = i;
+                    while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                    let word: String = chars[start..i].iter().collect();
+                    match word.as_str() {
+                        "adv" => { cfg.insert("adv".into(), Value::Bool(true)); }
+                        "dis" => { cfg.insert("dis".into(), Value::Bool(true)); }
+                        w => return Err(GoblinError::Runtime(format!("unknown modifier '{}'", w))),
+                    }
+                } else {
+                    let start = i;
+                    while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+                    if i == start { return Err(GoblinError::Runtime("expected number after +/-".into())); }
+                    let n: i64 = chars[start..i].iter().collect::<String>().parse().map_err(|_| GoblinError::Runtime("invalid modifier".into()))?;
+                    cfg.insert("modifier".into(), Value::Int(sign * n));
+                }
+            }
+            'k' => {
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+                if i == start { return Err(GoblinError::Runtime("expected number after 'k'".into())); }
+                let n: i64 = chars[start..i].iter().collect::<String>().parse().map_err(|_| GoblinError::Runtime("invalid keep_high".into()))?;
+                cfg.insert("keep_high".into(), Value::Int(n));
+            }
+            '!' => { cfg.insert("explode".into(), Value::Bool(true)); i += 1; }
+            ' ' => i += 1,
+            c => return Err(GoblinError::Runtime(format!("unexpected character '{}' in dice notation", c))),
+        }
+    }
+    let _ = rest; // suppress unused warning
+    Ok(cfg)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

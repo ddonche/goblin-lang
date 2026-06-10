@@ -968,6 +968,17 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "u64" => Some(BuiltinId::CastU64),
         "f32" => Some(BuiltinId::CastF32),
         "f64" => Some(BuiltinId::CastF64),
+        // path/filesystem postfix methods
+        "basename"         => Some(BuiltinId::Basename),
+        "dirname"          => Some(BuiltinId::Dirname),
+        "stem"             => Some(BuiltinId::Stem),
+        "ext"              => Some(BuiltinId::Ext),
+        "path_split"       => Some(BuiltinId::PathSplit),
+        "path_normalize"   => Some(BuiltinId::PathNormalize),
+        "file_exists"      => Some(BuiltinId::FileExists),
+        "is_file"          => Some(BuiltinId::IsFile),
+        "is_dir"           => Some(BuiltinId::IsDir),
+        "escape_html"      => Some(BuiltinId::EscapeHtml),
         _ => None,
     };
 

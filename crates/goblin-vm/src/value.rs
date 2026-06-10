@@ -610,6 +610,32 @@ pub enum BuiltinId {
     CastU64,
     CastF32,
     CastF64,
+
+    // Filesystem / path
+    FileExists,
+    IsFile,
+    IsDir,
+    Basename,
+    Dirname,
+    Stem,
+    Ext,
+    PathJoin,
+    PathSplit,
+    PathNormalize,
+    PathRelativeTo,
+    Walk,
+    ListDirs,
+    EscapeHtml,
+    UuidV4,
+    UuidV7,
+    Pathfind,
+
+    // Interactive input
+    AskInput,
+
+    // Dice string parsing
+    RollStr,
+    RollDetailStr,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
