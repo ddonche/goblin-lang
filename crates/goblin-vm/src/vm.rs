@@ -775,11 +775,14 @@ impl Vm {
             Opcode::MakeRange => {
                 let end = self.pop_value()?;
                 let start = self.pop_value()?;
-                let (s, e) = match (&start, &end) {
-                    (Value::Int(s), Value::Int(e)) => (*s, *e),
-                    _ => return Err(GoblinError::type_error("int", end.type_name(), "..")),
+                let v: Vec<Value> = match (&start, &end) {
+                    (Value::Int(s), Value::Int(e)) => (*s..*e).map(Value::Int).collect(),
+                    (Value::Char(s), Value::Char(e)) => {
+                        let sc = *s as u32; let ec = *e as u32;
+                        (sc..ec).filter_map(|cp| char::from_u32(cp).map(Value::Char)).collect()
+                    }
+                    _ => return Err(GoblinError::type_error("int or char", end.type_name(), "..")),
                 };
-                let v: Vec<Value> = (s..e).map(Value::Int).collect();
                 let t = self.session.alloc_value(Value::Array(v));
                 self.stack.push(t);
             }
@@ -787,11 +790,14 @@ impl Vm {
             Opcode::MakeRangeInclusive => {
                 let end = self.pop_value()?;
                 let start = self.pop_value()?;
-                let (s, e) = match (&start, &end) {
-                    (Value::Int(s), Value::Int(e)) => (*s, *e),
-                    _ => return Err(GoblinError::type_error("int", end.type_name(), "...")),
+                let v: Vec<Value> = match (&start, &end) {
+                    (Value::Int(s), Value::Int(e)) => (*s..=*e).map(Value::Int).collect(),
+                    (Value::Char(s), Value::Char(e)) => {
+                        let sc = *s as u32; let ec = *e as u32;
+                        (sc..=ec).filter_map(|cp| char::from_u32(cp).map(Value::Char)).collect()
+                    }
+                    _ => return Err(GoblinError::type_error("int or char", end.type_name(), "...")),
                 };
-                let v: Vec<Value> = (s..=e).map(Value::Int).collect();
                 let t = self.session.alloc_value(Value::Array(v));
                 self.stack.push(t);
             }

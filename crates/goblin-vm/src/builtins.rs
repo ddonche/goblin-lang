@@ -941,13 +941,45 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
                 }
-                // numeric range
+                // numeric or char range
                 _ => {
+                    let get_char = |k: &str| -> Option<char> {
+                        match cfg.get(k)? {
+                            Value::Char(c) => Some(*c),
+                            Value::Str(s) if s.len() == 1 => s.chars().next(),
+                            _ => None,
+                        }
+                    };
+                    let inclusive = match cfg.get("range_inclusive") { Some(Value::Bool(b)) => *b, _ => false };
+                    // char range
+                    if let (Some(sc), Some(ec)) = (get_char("range_start"), get_char("range_end")) {
+                        let pool: Vec<char> = if inclusive { (sc..=ec).collect() } else { (sc..ec).collect() };
+                        if pool.is_empty() { return Err(GoblinError::Runtime("pick: empty char range".into())); }
+                        let out: Vec<Value> = if allow_dups {
+                            (0..n_out).map(|_| Value::Char(pool[rng_bounded(session, pool.len() as u64) as usize])).collect()
+                        } else {
+                            if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique chars", n_out, pool.len()))); }
+                            let mut idxs: Vec<usize> = (0..pool.len()).collect();
+                            let mut result = Vec::with_capacity(n_out);
+                            for i in 0..n_out { let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize; idxs.swap(i, j); result.push(Value::Char(pool[idxs[i]])); }
+                            result
+                        };
+                        return if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) };
+                    }
                     let range_start = get_num("range_start").unwrap_or(1.0) as i64;
                     let range_end   = get_num("range_end").unwrap_or(100.0) as i64;
                     if range_end <= range_start { return Err(GoblinError::Runtime("pick: range_end must be > range_start".into())); }
                     let range = (range_end - range_start) as u64;
-                    let out: Vec<Value> = (0..n_out).map(|_| Value::Int(range_start + rng_bounded(session, range) as i64)).collect();
+                    let out: Vec<Value> = if allow_dups {
+                        (0..n_out).map(|_| Value::Int(range_start + rng_bounded(session, range) as i64)).collect()
+                    } else {
+                        let pool: Vec<i64> = (range_start..range_end).collect();
+                        if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique ints", n_out, pool.len()))); }
+                        let mut idxs: Vec<usize> = (0..pool.len()).collect();
+                        let mut result = Vec::with_capacity(n_out);
+                        for i in 0..n_out { let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize; idxs.swap(i, j); result.push(Value::Int(pool[idxs[i]])); }
+                        result
+                    };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
                 }
             }
