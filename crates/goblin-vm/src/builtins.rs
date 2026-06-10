@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::collections;
 use crate::error::GoblinError;
 use crate::session::Session;
-use crate::value::{BuiltinId, CollectionValue, Tether, Value};
+use crate::value::{BuiltinId, CollectionValue, FormatSpec, Tether, Value};
 
 pub fn call_builtin(
     id: BuiltinId,
@@ -2606,11 +2606,43 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Format => {
             if args.is_empty() { return Ok(Value::Nil); }
             let v = session.read_value(&args[0])?;
-            let decimals = if args.len() > 1 {
-                match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 2 }
+            // strip existing format wrapper to get the raw numeric value
+            let inner_v = match &v {
+                Value::Formatted(inner, _) => *inner.clone(),
+                other => other.clone(),
+            };
+            let decimals: u32 = if args.len() > 1 {
+                match session.read_value(&args[1])? {
+                    Value::Int(n) if n >= 0 => n as u32,
+                    _ => 2,
+                }
             } else { 2 };
-            let n = match v { Value::Float(f) => f, Value::Int(i) => i as f64, _ => return Ok(Value::Nil) };
-            Ok(Value::Str(format!("{:.prec$}", n, prec = decimals)))
+            let mut spec = FormatSpec { decimals, sep_thousands: None, sep_decimal: '.' };
+            if args.len() == 4 {
+                spec.sep_thousands = match session.read_value(&args[2])? {
+                    Value::Str(s) => match s.as_str() {
+                        "," => Some(','), "." => Some('.'), "_" => Some('_'), "'" => Some('\''), "none" => None,
+                        _ => return Err(GoblinError::Runtime("unknown thousands separator".into())),
+                    },
+                    Value::Char(c) => match c {
+                        ',' => Some(','), '.' => Some('.'), '_' => Some('_'), '\'' => Some('\''),
+                        _ => return Err(GoblinError::Runtime("unknown thousands separator char".into())),
+                    },
+                    _ => return Err(GoblinError::type_error("string or char", "other", "format")),
+                };
+                spec.sep_decimal = match session.read_value(&args[3])? {
+                    Value::Str(s) => match s.as_str() {
+                        "." => '.', "," => ',',
+                        _ => return Err(GoblinError::Runtime("unknown decimal marker".into())),
+                    },
+                    Value::Char(c) => match c {
+                        '.' => '.', ',' => ',',
+                        _ => return Err(GoblinError::Runtime("unknown decimal marker char".into())),
+                    },
+                    _ => return Err(GoblinError::type_error("string or char", "other", "format")),
+                };
+            }
+            Ok(Value::Formatted(Box::new(inner_v), spec))
         }
         BuiltinId::Pad | BuiltinId::PadLeft => {
             if args.len() < 2 { return Ok(Value::Nil); }
@@ -4059,7 +4091,7 @@ pub fn value_to_str(v: &Value) -> String {
         Value::Big(d)          => d.to_string(),
         Value::Char(c)         => c.to_string(),
         Value::Str(s)          => s.clone(),
-        Value::Formatted(v, _) => value_to_str(v),
+        Value::Formatted(inner, spec) => fmt_formatted_value(inner, spec),
         Value::Array(items) => {
             let parts: Vec<String> = items.iter().map(value_to_str).collect();
             format!("[{}]", parts.join(", "))
@@ -4189,6 +4221,60 @@ pub fn fmt_value_raw(v: &Value) -> String {
     fmt_value_depth(v, 0)
 }
 
+pub fn fmt_formatted_display(inner: &Value, spec: &FormatSpec) -> String {
+    fmt_formatted_value(inner, spec)
+}
+
+fn render_with_spec(canon: &str, spec: &FormatSpec) -> String {
+    let (sign, digits) = if canon.starts_with('-') { ("-", &canon[1..]) } else { ("", canon) };
+    let mut parts = digits.split('.');
+    let int_part = parts.next().unwrap_or("");
+    let mut frac = parts.next().unwrap_or("").to_string();
+    let need = spec.decimals as usize;
+    if need == 0 {
+        frac.clear();
+    } else {
+        while frac.len() < need { frac.push('0'); }
+        if frac.len() > need { frac.truncate(need); }
+    }
+    let grouped = if let Some(sep) = spec.sep_thousands {
+        let mut out = String::with_capacity(int_part.len() + int_part.len() / 3 + 1);
+        let bytes = int_part.as_bytes();
+        let len = bytes.len();
+        for i in 0..len {
+            out.push(bytes[i] as char);
+            let left = len - 1 - i;
+            if left > 0 && left % 3 == 0 { out.push(sep); }
+        }
+        out
+    } else {
+        int_part.to_string()
+    };
+    if need == 0 { format!("{sign}{grouped}") } else { format!("{sign}{grouped}{}{}", spec.sep_decimal, frac) }
+}
+
+fn round_to(n: f64, decimals: u32) -> f64 {
+    let f = 10f64.powi(decimals as i32);
+    (n * f).round() / f
+}
+
+fn fmt_formatted_value(inner: &Value, spec: &FormatSpec) -> String {
+    match inner {
+        Value::Int(x) => render_with_spec(&x.to_string(), spec),
+        Value::Float(x) => {
+            if !x.is_finite() { return x.to_string(); }
+            let rounded = round_to(*x, spec.decimals);
+            render_with_spec(&fmt_num_trim(rounded), spec)
+        }
+        Value::Pct(p) => {
+            if !p.is_finite() { return p.to_string(); }
+            let rounded = round_to(*p, spec.decimals);
+            render_with_spec(&fmt_num_trim(rounded), spec)
+        }
+        other => fmt_value_raw(other),
+    }
+}
+
 fn fmt_value_depth(v: &Value, depth: usize) -> String {
     if depth > 20 { return "[too deep]".to_string(); }
     match v {
@@ -4200,6 +4286,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
         Value::Bool(b)  => if *b { "true".into() } else { "false".into() },
         Value::Nil      => "nil".into(),
         Value::Unit     => String::new(),
+        Value::Formatted(inner, spec) => fmt_formatted_value(inner, spec),
         Value::Array(xs) => {
             let mut s = String::from("[");
             for (i, val) in xs.iter().enumerate() {

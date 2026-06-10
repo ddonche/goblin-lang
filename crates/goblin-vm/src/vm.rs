@@ -257,7 +257,10 @@ impl Vm {
             Opcode::Add => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
-                let result = match (&a, &b) {
+                // unwrap Formatted for arithmetic, carry spec forward
+                let (a_inner, a_spec) = match a { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
+                let (b_inner, b_spec) = match b { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
+                let raw = match (&a_inner, &b_inner) {
                     (Value::Int(x), Value::Int(y))     => Value::Int(x.wrapping_add(*y)),
                     (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
                     (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 + y),
@@ -273,8 +276,14 @@ impl Vm {
                         let new_cp = (*c as i64).wrapping_add(*n) as u32;
                         Value::Char(char::from_u32(new_cp).unwrap_or(*c))
                     }
-                    _ => return Err(GoblinError::type_error("number or str", b.type_name(), "+")),
+                    // Formatted + Str / Str + Formatted → string concat
+                    (a2, Value::Str(y)) => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
+                    (Value::Str(x), b2) => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2))),
+                    _ => return Err(GoblinError::type_error("number or str", b_inner.type_name(), "+")),
                 };
+                let result = if let Some(spec) = a_spec.or(b_spec) {
+                    match &raw { Value::Str(_) => raw, _ => Value::Formatted(Box::new(raw), spec) }
+                } else { raw };
                 let t = self.session.alloc_value(result);
                 self.stack.push(t);
             }
@@ -410,6 +419,8 @@ impl Vm {
             Opcode::Concat => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
+                let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let result = match (&a, &b) {
                     (Value::Str(x), Value::Str(y)) => Value::Str(format!("{}{}", x, y)),
                     (Value::Array(x), Value::Array(y)) => {
@@ -420,6 +431,8 @@ impl Vm {
                     (Value::Char(x), Value::Char(y)) => Value::Str(format!("{}{}", x, y)),
                     (Value::Char(x), Value::Str(y))  => Value::Str(format!("{}{}", x, y)),
                     (Value::Str(x), Value::Char(y))  => Value::Str(format!("{}{}", x, y)),
+                    // if either side is Formatted, treat as string concat
+                    (Value::Formatted(..), _) | (_, Value::Formatted(..)) => Value::Str(format!("{}{}", a_str, b_str)),
                     _ => return Err(GoblinError::type_error("string or array", a.type_name(), "<>")),
                 };
                 let t = self.session.alloc_value(result);
