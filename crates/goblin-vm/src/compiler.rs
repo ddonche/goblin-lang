@@ -1659,6 +1659,15 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "clear_all_tokens"               => BuiltinId::ClearAllTokens,
         "list_tokens"                    => BuiltinId::ListTokens,
 
+        // Date/time type locks (not yet implemented)
+        "date"                           => BuiltinId::CastDate,
+        "time"                           => BuiltinId::CastTime,
+        "datetime"                       => BuiltinId::CastDatetime,
+        "duration"                       => BuiltinId::CastDuration,
+
+        // DES tick
+        "tick" | "tick_db"               => BuiltinId::Tick,
+
         // DES / overlay
         "decision_debug"                 => BuiltinId::DecisionDebug,
         "overlays_of"                    => BuiltinId::OverlaysOf,

@@ -3218,6 +3218,28 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Nil)
         }
 
+        // ── Date/time type locks (not yet implemented — match interpreter error) ──
+        BuiltinId::CastDate | BuiltinId::CastTime | BuiltinId::CastDatetime | BuiltinId::CastDuration => {
+            let lock = match id {
+                BuiltinId::CastDate     => "date",
+                BuiltinId::CastTime     => "time",
+                BuiltinId::CastDatetime => "datetime",
+                BuiltinId::CastDuration => "duration",
+                _ => unreachable!(),
+            };
+            Err(GoblinError::Runtime(format!(
+                "type lock '{}' is not yet implemented — omit the type suffix for now",
+                lock
+            )))
+        }
+
+        // ── Tick (DES tick runner — not yet implemented in VM) ────────────────
+        BuiltinId::Tick => {
+            Err(GoblinError::Runtime(
+                "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()
+            ))
+        }
+
         // ── Token store ───────────────────────────────────────────────────────
         BuiltinId::RegisterToken => {
             if args.len() != 3 {

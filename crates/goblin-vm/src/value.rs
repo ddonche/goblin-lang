@@ -666,6 +666,15 @@ pub enum BuiltinId {
     DeleteObject,
     DeleteOverlaysOn,
 
+    // Date/time type locks (not yet implemented — match interpreter error)
+    CastDate,
+    CastTime,
+    CastDatetime,
+    CastDuration,
+
+    // DES tick
+    Tick,
+
     // Grid
     Grid,
     GridGet,
