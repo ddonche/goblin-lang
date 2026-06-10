@@ -732,20 +732,67 @@ impl Compiler {
                 }
             }
 
-            Expr::Slice(_, _, _, _) | Expr::Slice3(_, _, _, _, _) => {
-                return Err(GoblinError::NotImplemented { feature: "slice expressions" });
+            // arr[start:end] — push recv, start_or_nil, end_or_nil → SliceExpr
+            Expr::Slice(recv, start_opt, end_opt, _) => {
+                self.compile_expr(recv)?;
+                if let Some(e) = start_opt { self.compile_expr(e)?; } else { self.emit(Opcode::LoadNil); }
+                if let Some(e) = end_opt   { self.compile_expr(e)?; } else { self.emit(Opcode::LoadNil); }
+                self.emit(Opcode::CallBuiltin(BuiltinId::SliceExpr, 3));
             }
 
-            Expr::Index2(_, _, _, _) => {
-                return Err(GoblinError::NotImplemented { feature: "2D index (grid)" });
+            // arr[start:end:step] — push recv, start_or_nil, end_or_nil, step_or_nil → Slice3Expr
+            Expr::Slice3(recv, start_opt, end_opt, step_opt, _) => {
+                self.compile_expr(recv)?;
+                if let Some(e) = start_opt { self.compile_expr(e)?; } else { self.emit(Opcode::LoadNil); }
+                if let Some(e) = end_opt   { self.compile_expr(e)?; } else { self.emit(Opcode::LoadNil); }
+                if let Some(e) = step_opt  { self.compile_expr(e)?; } else { self.emit(Opcode::LoadNil); }
+                self.emit(Opcode::CallBuiltin(BuiltinId::Slice3Expr, 4));
             }
 
-            Expr::EnumVariant { .. } => {
-                return Err(GoblinError::NotImplemented { feature: "enum variant expressions" });
+            // grid[x, y] — push grid, x, y → Index2Expr → GridRef
+            Expr::Index2(base, x_expr, y_expr, _) => {
+                self.compile_expr(base)?;
+                self.compile_expr(x_expr)?;
+                self.compile_expr(y_expr)?;
+                self.emit(Opcode::CallBuiltin(BuiltinId::Index2Expr, 3));
             }
 
-            Expr::LiteralToken { .. } | Expr::BoxVar { .. } => {
-                return Err(GoblinError::NotImplemented { feature: "literal tokens / box vars" });
+            // EnumName::Variant { fields } — push name_str, variant_str, fields_map_or_nil
+            Expr::EnumVariant { enum_name, variant_name, fields, .. } => {
+                let en_idx = self.add_constant(Value::Str(enum_name.clone()));
+                let vn_idx = self.add_constant(Value::Str(variant_name.clone()));
+                self.emit(Opcode::LoadConst(en_idx));
+                self.emit(Opcode::LoadConst(vn_idx));
+                if let Some(field_exprs) = fields {
+                    let n = field_exprs.len() as u16;
+                    for (k, v) in field_exprs {
+                        let kidx = self.add_constant(Value::Str(k.clone()));
+                        self.emit(Opcode::LoadConst(kidx));
+                        self.compile_expr(v)?;
+                    }
+                    self.emit(Opcode::MakeMap(n));
+                } else {
+                    self.emit(Opcode::LoadNil);
+                }
+                self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
+            }
+
+            // Module::Token — push module_str, ident_str → LiteralTokenExpr
+            Expr::LiteralToken { module, ident, .. } => {
+                let midx = self.add_constant(Value::Str(module.clone()));
+                let iidx = self.add_constant(Value::Str(ident.clone()));
+                self.emit(Opcode::LoadConst(midx));
+                self.emit(Opcode::LoadConst(iidx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::LiteralTokenExpr, 2));
+            }
+
+            // #namespace::name box var — push ns_str, name_str → BoxVarExpr
+            Expr::BoxVar { namespace, name, .. } => {
+                let nidx = self.add_constant(Value::Str(namespace.clone()));
+                let aidx = self.add_constant(Value::Str(name.clone()));
+                self.emit(Opcode::LoadConst(nidx));
+                self.emit(Opcode::LoadConst(aidx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::BoxVarExpr, 2));
             }
         }
         Ok(())

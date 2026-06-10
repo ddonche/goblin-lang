@@ -3689,6 +3689,168 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             map.insert("layers".into(),         Value::Array(region.layer_names().into_iter().map(Value::Str).collect()));
             Ok(Value::Map(map))
         }
+
+        // ── Compiler-synthesized builtins ─────────────────────────────────────
+
+        // SliceExpr(recv, start_or_nil, end_or_nil)
+        BuiltinId::SliceExpr => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("slice: expected 3 args, got {}", args.len())));
+            }
+            let recv = read(0)?;
+            let start_v = read(1)?;
+            let end_v = read(2)?;
+            slice_expr_impl(recv, start_v, end_v, 1)
+        }
+
+        // Slice3Expr(recv, start_or_nil, end_or_nil, step_or_nil)
+        BuiltinId::Slice3Expr => {
+            if args.len() != 4 {
+                return Err(GoblinError::Runtime(format!("slice3: expected 4 args, got {}", args.len())));
+            }
+            let recv = read(0)?;
+            let start_v = read(1)?;
+            let end_v = read(2)?;
+            let step_v = read(3)?;
+            let step: usize = match step_v {
+                Value::Nil => 1,
+                Value::Int(n) if n > 0 => n as usize,
+                Value::Int(_) => return Err(GoblinError::Runtime("slice step must be a positive integer".into())),
+                other => return Err(GoblinError::type_error("int", other.type_name(), "slice step")),
+            };
+            slice_expr_impl(recv, start_v, end_v, step)
+        }
+
+        // Index2Expr(grid_str_or_ref, x, y) → GridRef
+        BuiltinId::Index2Expr => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("grid[x,y]: expected 3 args, got {}", args.len())));
+            }
+            let grid_id = match read(0)? {
+                Value::Str(s) => s,
+                Value::GridRef { grid_id, .. } => grid_id,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "grid[x,y] grid name")),
+            };
+            let x = match read(1)? {
+                Value::Int(n) => i32::try_from(n).map_err(|_| GoblinError::Runtime("grid x coordinate out of range".into()))?,
+                other => return Err(GoblinError::type_error("int", other.type_name(), "grid x")),
+            };
+            let y = match read(2)? {
+                Value::Int(n) => i32::try_from(n).map_err(|_| GoblinError::Runtime("grid y coordinate out of range".into()))?,
+                other => return Err(GoblinError::type_error("int", other.type_name(), "grid y")),
+            };
+            let world = session.grid_store.get(&grid_id)
+                .ok_or_else(|| GoblinError::Runtime(format!("no grid named '{}'", grid_id)))?;
+            if !world.in_bounds(x, y) {
+                return Err(GoblinError::Runtime(format!(
+                    "coordinate ({}, {}) is out of bounds for grid '{}' ({}x{})",
+                    x, y, grid_id, world.width, world.height
+                )));
+            }
+            Ok(Value::GridRef { grid_id, x, y })
+        }
+
+        // EnumVariantExpr(enum_name_str, variant_name_str, fields_map_or_nil) → Enum
+        BuiltinId::EnumVariantExpr => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("EnumVariant: expected 3 args, got {}", args.len())));
+            }
+            let enum_name = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "enum name")),
+            };
+            let variant_name = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "variant name")),
+            };
+            let fields = match read(2)? {
+                Value::Nil => None,
+                Value::MapOrd(m) => Some(m),
+                Value::Map(m) => {
+                    let mut out = indexmap::IndexMap::new();
+                    for (k, v) in m { out.insert(k, v); }
+                    Some(out)
+                }
+                other => return Err(GoblinError::type_error("map or nil", other.type_name(), "enum fields")),
+            };
+            Ok(Value::Enum { enum_name, variant_name, fields })
+        }
+
+        // LiteralTokenExpr(module_str, ident_str) → Value from token_store
+        BuiltinId::LiteralTokenExpr => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("LiteralToken: expected 2 args, got {}", args.len())));
+            }
+            let module = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token module")) };
+            let ident  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token ident")) };
+            match session.token_store.get(&module).and_then(|m| m.get(&ident)) {
+                Some(v) => Ok(v.clone()),
+                None => Err(GoblinError::Runtime(format!("unknown token '{}::{}'", module, ident))),
+            }
+        }
+
+        // BoxVarExpr(namespace_str, name_str) → Value from box_store (VM has no box_store — error)
+        BuiltinId::BoxVarExpr => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("BoxVar: expected 2 args, got {}", args.len())));
+            }
+            let ns   = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box namespace")) };
+            let name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box name")) };
+            Err(GoblinError::Runtime(format!("box var '{}::{}' — box_store not available in VM", ns, name)))
+        }
+    }
+}
+
+fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Result<Value, GoblinError> {
+    fn want_idx(v: Value, label: &str) -> Result<isize, GoblinError> {
+        match v {
+            Value::Nil => Ok(-1), // sentinel: use default
+            Value::Int(n) if n >= 0 => Ok(n as isize),
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 && f >= 0.0 => Ok(f as isize),
+            _ => Err(GoblinError::Runtime(format!("{} must be a non-negative integer index", label))),
+        }
+    }
+    fn clamp(mut s: isize, mut e: isize, len: usize) -> (usize, usize) {
+        let l = len as isize;
+        if s < 0 { s = 0; }
+        if e < 0 { e = l; } // -1 sentinel → default to len
+        if s > l { s = l; }
+        if e > l { e = l; }
+        (s as usize, e as usize)
+    }
+
+    let start_raw = want_idx(start_v, "slice start")?;
+    let end_raw   = want_idx(end_v,   "slice end")?;
+
+    match recv {
+        Value::Array(xs) => {
+            let len = xs.len();
+            let (s, e) = clamp(start_raw, end_raw, len);
+            if s >= e { return Ok(Value::Array(vec![])); }
+            if step == 1 {
+                Ok(Value::Array(xs[s..e].to_vec()))
+            } else {
+                let mut out = Vec::new();
+                let mut i = s;
+                while i < e { out.push(xs[i].clone()); i = i.saturating_add(step); }
+                Ok(Value::Array(out))
+            }
+        }
+        Value::Str(ref s) => {
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len();
+            let (si, ei) = clamp(start_raw, end_raw, len);
+            if si >= ei { return Ok(Value::Str(String::new())); }
+            if step == 1 {
+                Ok(Value::Str(chars[si..ei].iter().collect()))
+            } else {
+                let mut out = String::new();
+                let mut i = si;
+                while i < ei { out.push(chars[i]); i = i.saturating_add(step); }
+                Ok(Value::Str(out))
+            }
+        }
+        other => Err(GoblinError::Runtime(format!("slice expects array or string, got {}", other.type_name()))),
     }
 }
 

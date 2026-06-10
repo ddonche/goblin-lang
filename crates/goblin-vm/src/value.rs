@@ -697,6 +697,20 @@ pub enum BuiltinId {
     GridInfo,
     GridTileInfo,
     GridRegionInfo,
+
+    // Compiler-synthesized builtins for AST nodes
+    // slice expr: (recv, start_or_nil, end_or_nil) → array/str
+    SliceExpr,
+    // slice3 expr: (recv, start_or_nil, end_or_nil, step_or_nil) → array/str
+    Slice3Expr,
+    // grid[x,y] expr: (grid_str_or_ref, x, y) → GridRef
+    Index2Expr,
+    // EnumVariant expr: (enum_name_str, variant_name_str, fields_map_or_nil) → Enum
+    EnumVariantExpr,
+    // LiteralToken expr: (module_str, ident_str) → Value from token store
+    LiteralTokenExpr,
+    // BoxVar expr: (namespace_str, name_str) → Value from box_store (no-op stub for VM)
+    BoxVarExpr,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

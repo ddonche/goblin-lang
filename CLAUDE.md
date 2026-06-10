@@ -160,14 +160,17 @@
 - [x] grid_occupied_count, grid_unoccupied_count, grid_count
 - [x] grid_occupied_by, grid_has, grid_info, grid_tile_info, grid_region_info
 
+### Compiler — synthesized builtins for expr nodes
+- [x] `Expr::Slice` — compiles to `CallBuiltin(SliceExpr, 3)` with nil defaults
+- [x] `Expr::Slice3` — compiles to `CallBuiltin(Slice3Expr, 4)` with nil defaults
+- [x] `Expr::Index2` — compiles to `CallBuiltin(Index2Expr, 3)` → `Value::GridRef`
+- [x] `Expr::EnumVariant` — compiles to `CallBuiltin(EnumVariantExpr, 3)` → `Value::Enum`
+- [x] `Expr::LiteralToken` — compiles to `CallBuiltin(LiteralTokenExpr, 2)` → resolves from token_store
+- [x] `Expr::BoxVar` — compiles to `CallBuiltin(BoxVarExpr, 2)` → error (no box_store in VM)
+
 ## TODO / NOT YET DONE
 
 ### Compiler — unimplemented AST nodes (return NotImplemented error)
-- [ ] `Expr::Slice` — slice expressions (e.g. `arr[1:3]`)
-- [ ] `Expr::Slice3` — 3-arg slice (e.g. `arr[1:3:2]`)
-- [ ] `Expr::Index2` — 2D index for grid (`grid[x, y]`)
-- [ ] `Expr::EnumVariant` — enum variant construction expressions
-- [ ] `Expr::LiteralToken` — literal token expressions
 - [ ] `Stmt::Class` / `Stmt::Enum` / `Stmt::Import` / `Stmt::Use` — class/enum/import system
 - [ ] `Stmt::OverlayDef` / `Stmt::OverlayApply` / `Stmt::OverlayDetach` — overlay system
 - [ ] `Stmt::LinkDef` / `Stmt::ObjectLinkDef` / `Stmt::LinkOffset` / `Stmt::ClearLink` — link system
