@@ -804,14 +804,26 @@ impl Compiler {
             }
 
             Expr::NsCall(ns, name, args, _) => {
-                // Namespace call: compile as free call for now.
-                let full_name = format!("{}::{}", ns, name);
-                let load_op = self.resolve_load(&full_name)
-                    .or_else(|_| self.resolve_load(name))
-                    .map_err(|e| self.locate_err(e))?;
-                self.emit(load_op);
-                for arg in args { self.compile_expr(arg)?; }
-                self.emit(Opcode::Call(args.len() as u8));
+                // If the namespace starts with uppercase and there are no args,
+                // treat as an enum variant: Status::idle → EnumVariantExpr("Status", "idle")
+                let ns_is_enum = ns.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                if ns_is_enum && args.is_empty() {
+                    let en_idx = self.add_constant(Value::Str(ns.clone()));
+                    let vn_idx = self.add_constant(Value::Str(name.clone()));
+                    self.emit(Opcode::LoadConst(en_idx));
+                    self.emit(Opcode::LoadConst(vn_idx));
+                    self.emit(Opcode::LoadNil);
+                    self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
+                } else {
+                    // Namespace call: try full_name then bare name as a function.
+                    let full_name = format!("{}::{}", ns, name);
+                    let load_op = self.resolve_load(&full_name)
+                        .or_else(|_| self.resolve_load(name))
+                        .map_err(|e| self.locate_err(e))?;
+                    self.emit(load_op);
+                    for arg in args { self.compile_expr(arg)?; }
+                    self.emit(Opcode::Call(args.len() as u8));
+                }
             }
 
             // Optional calls: compile guard + call.
