@@ -6,6 +6,8 @@ use crate::error::GoblinError;
 use crate::grid::GridStore;
 use crate::value::{Stash, Address, Tether, Value};
 
+pub use goblin_ast::{ClassDecl, EnumDecl};
+
 /// HTTP response state accumulated during a request.
 #[derive(Debug, Clone, Default)]
 pub struct ResponseState {
@@ -76,6 +78,12 @@ pub struct Session {
 
     /// Grid worlds.
     pub grid_store: GridStore,
+
+    /// Class definitions registered at runtime.
+    pub classes: HashMap<String, ClassDecl>,
+
+    /// Enum definitions registered at runtime.
+    pub enums: HashMap<String, EnumDecl>,
 }
 
 impl Session {
@@ -100,6 +108,8 @@ impl Session {
             overlay_instances: Vec::new(),
             response: ResponseState::default(),
             grid_store: GridStore::new(),
+            classes: HashMap::new(),
+            enums: HashMap::new(),
         }
     }
 

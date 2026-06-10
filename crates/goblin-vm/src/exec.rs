@@ -22,13 +22,14 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
         })?;
 
     // Compile
-    let mut compiler = Compiler::new();
-    let func = compiler.compile_module(&module)?;
+    let compiled = Compiler::new().compile_module(&module)?;
 
     // Execute
-    let session = Session::new(GcMode::Auto);
+    let mut session = Session::new(GcMode::Auto);
+    for decl in compiled.classes { session.classes.insert(decl.name.clone(), decl); }
+    for decl in compiled.enums   { session.enums.insert(decl.name.clone(), decl); }
     let mut vm = Vm::new(session);
-    vm.execute(func)
+    vm.execute(compiled.entry)
 }
 
 #[cfg(test)]

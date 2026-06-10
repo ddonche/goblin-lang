@@ -277,6 +277,14 @@ pub struct FunctionObject {
     pub upvalue_descriptors: Vec<UpvalueDescriptor>,
 }
 
+/// A compiled module: the entry function plus class/enum metadata collected
+/// at compile time so the VM can pre-register them before execution.
+pub struct CompiledModule {
+    pub entry: FunctionObject,
+    pub classes: Vec<goblin_ast::ClassDecl>,
+    pub enums: Vec<goblin_ast::EnumDecl>,
+}
+
 /// An upvalue cell: a shared, heap-allocated slot that can be closed over.
 ///
 /// - While the enclosing frame is alive: `Open` — points to a stack slot

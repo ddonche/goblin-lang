@@ -7,13 +7,13 @@
 /// - Unsupported AST nodes (ClassDecl, OverlayDef, etc.) produce CompileError.
 ///   These belong to the DES/object layer and will be handled separately.
 use goblin_ast::{
-    ActionBody, ActionDecl, BindMode, Expr, JudgeArm, Module, ReturnStmt, Stmt,
+    ActionBody, ActionDecl, BindMode, ClassDecl, EnumDecl, Expr, JudgeArm, Module, ReturnStmt, Stmt,
 };
 use rust_decimal::Decimal;
 
 use crate::error::GoblinError;
 use crate::opcode::Opcode;
-use crate::value::{BuiltinId, FunctionObject, UpvalueDescriptor, Value};
+use crate::value::{BuiltinId, CompiledModule, FunctionObject, UpvalueDescriptor, Value};
 
 // ── Scope ─────────────────────────────────────────────────────────────────────
 
@@ -145,17 +145,21 @@ pub struct Compiler {
     scopes: Vec<FunctionScope>,
     /// Registered global names (name → global slot index).
     globals: Vec<String>,
+    /// Class declarations collected during compilation.
+    pub collected_classes: Vec<ClassDecl>,
+    /// Enum declarations collected during compilation.
+    pub collected_enums: Vec<EnumDecl>,
 }
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new() }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     /// Compile a top-level module into a FunctionObject (the module's "main").
-    pub fn compile_module(mut self, module: &Module) -> Result<FunctionObject, GoblinError> {
+    pub fn compile_module(mut self, module: &Module) -> Result<CompiledModule, GoblinError> {
         self.push_scope("__main__", 0);
         for stmt in &module.items {
             self.compile_stmt(stmt)?;
@@ -164,7 +168,12 @@ impl Compiler {
         let scope = self.scopes.last_mut().unwrap();
         scope.emit(Opcode::LoadNil);
         scope.emit(Opcode::Return);
-        Ok(self.pop_scope())
+        let entry = self.pop_scope();
+        Ok(CompiledModule {
+            entry,
+            classes: self.collected_classes,
+            enums: self.collected_enums,
+        })
     }
 
     /// Compile a single action/function declaration into a FunctionObject.
@@ -385,8 +394,16 @@ impl Compiler {
                 }
             }
 
+            // ── Class/Enum: collect at compile time, pre-registered before run ─
+            Stmt::Class(decl) => {
+                self.collected_classes.push(decl.clone());
+            }
+            Stmt::Enum(decl) => {
+                self.collected_enums.push(decl.clone());
+            }
+
             // ── Unhandled in the VM compiler (DES / object system) ────────────
-            Stmt::Class(_) | Stmt::Enum(_) | Stmt::Import(_) | Stmt::Use(_)
+            Stmt::Import(_) | Stmt::Use(_)
             | Stmt::OverlayDef(_) | Stmt::OverlayApply(_) | Stmt::OverlayDetach(_)
             | Stmt::LinkDef(_) | Stmt::ObjectLinkDef(_) | Stmt::LinkOffset(_)
             | Stmt::ClearLink(_) | Stmt::ObjectDecision(..) | Stmt::UnitDecl(_)
@@ -1770,7 +1787,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
 // ── Convenience entry points ──────────────────────────────────────────────────
 
 /// Compile a Module to a top-level FunctionObject.
-pub fn compile_module(module: &Module) -> Result<FunctionObject, GoblinError> {
+pub fn compile_module(module: &Module) -> Result<CompiledModule, GoblinError> {
     Compiler::new().compile_module(module)
 }
 

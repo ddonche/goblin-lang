@@ -3773,6 +3773,16 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 }
                 other => return Err(GoblinError::type_error("map or nil", other.type_name(), "enum fields")),
             };
+            // Validate against registered enum if known
+            if let Some(enum_decl) = session.enums.get(&enum_name) {
+                if !enum_decl.variants.iter().any(|v| v.name == variant_name) {
+                    return Err(GoblinError::Runtime(format!(
+                        "unknown variant '{}' for enum '{}'", variant_name, enum_name
+                    )));
+                }
+            } else {
+                return Err(GoblinError::Runtime(format!("unknown enum '{}'", enum_name)));
+            }
             Ok(Value::Enum { enum_name, variant_name, fields })
         }
 

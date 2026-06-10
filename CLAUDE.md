@@ -168,10 +168,17 @@
 - [x] `Expr::LiteralToken` — compiles to `CallBuiltin(LiteralTokenExpr, 2)` → resolves from token_store
 - [x] `Expr::BoxVar` — compiles to `CallBuiltin(BoxVarExpr, 2)` → error (no box_store in VM)
 
+### Compiler — class/enum support
+- [x] `Stmt::Class` — collected at compile time into `CompiledModule.classes`, pre-registered in session before run
+- [x] `Stmt::Enum` — collected at compile time into `CompiledModule.enums`, pre-registered in session before run
+- [x] `CompiledModule` wrapper — carries `entry: FunctionObject` + `classes` + `enums`
+- [x] `session.classes: HashMap<String, ClassDecl>` and `session.enums: HashMap<String, EnumDecl>` added
+- [x] `EnumVariantExpr` validates against `session.enums` at runtime
+
 ## TODO / NOT YET DONE
 
 ### Compiler — unimplemented AST nodes (return NotImplemented error)
-- [ ] `Stmt::Class` / `Stmt::Enum` / `Stmt::Import` / `Stmt::Use` — class/enum/import system
+- [ ] `Stmt::Import` / `Stmt::Use` — module loading system (requires filesystem + re-parse + re-compile)
 - [ ] `Stmt::OverlayDef` / `Stmt::OverlayApply` / `Stmt::OverlayDetach` — overlay system
 - [ ] `Stmt::LinkDef` / `Stmt::ObjectLinkDef` / `Stmt::LinkOffset` / `Stmt::ClearLink` — link system
 - [ ] `Stmt::ObjectDecision` / `Stmt::UnitDecl` — DES decisions, unit declarations
