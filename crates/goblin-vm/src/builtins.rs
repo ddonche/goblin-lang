@@ -229,20 +229,13 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         }
         BuiltinId::Raw => {
             expect_n(1)?;
-            // raw: identity — returns value unchanged (interpreter just returns the string as-is)
-            let v = read(0)?;
-            match &v {
-                Value::Str(_) | Value::Char(_) => Ok(v),
-                Value::Array(xs) => {
-                    // array of str/char: return as-is
-                    if xs.iter().all(|x| matches!(x, Value::Str(_) | Value::Char(_))) {
-                        Ok(v)
-                    } else {
-                        Ok(v)
-                    }
+            map_str_1(&read(0)?, &|s: &str| {
+                let mut out = String::with_capacity(s.len());
+                for ch in s.chars() {
+                    match ch { '{' => { out.push('{'); out.push('{'); } '}' => { out.push('}'); out.push('}'); } _ => out.push(ch) }
                 }
-                _ => Ok(v),
-            }
+                out
+            })
         }
         BuiltinId::Trim => {
             expect_n(1)?;
@@ -372,6 +365,10 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             };
             let parts: Vec<Value> = if sep.is_empty() {
                 s.chars().map(|c| Value::Str(c.to_string())).collect()
+            } else if sep.starts_with("r/") && sep.len() > 2 {
+                let pattern = &sep[2..];
+                let re = regex::Regex::new(pattern).map_err(|e| GoblinError::Runtime(format!("split: invalid regex: {}", e)))?;
+                re.split(&s).map(|t| Value::Str(t.to_string())).collect()
             } else {
                 s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
             };
@@ -702,7 +699,81 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Str(out))
         }
         BuiltinId::IgnoreBlocks => {
-            Err(GoblinError::NotImplemented { feature: "ignore_blocks: complex line-fenced span removal" })
+            let n = args.len();
+            if n < 3 || n > 4 { return Err(GoblinError::ArityMismatch { expected: 3, got: n, name: "ignore_blocks".into() }); }
+            let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks")) };
+            let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks open")) };
+            let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks close")) };
+            let mut include_delims  = true;
+            let mut require_bol     = true;
+            let mut leading_blanks  = true;
+            let mut allow_eof_close = true;
+            if n == 4 {
+                match read(3)? {
+                    Value::Nil => {}
+                    Value::Map(m) => {
+                        if let Some(Value::Bool(b)) = m.get("include_delims")    { include_delims  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("require_bol")       { require_bol     = *b; }
+                        if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { leading_blanks  = *b; }
+                        if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { allow_eof_close = *b; }
+                    }
+                    other => return Err(GoblinError::type_error("map or nil", other.type_name(), "ignore_blocks opts")),
+                }
+            }
+            if open.is_empty() || close.is_empty() { return Ok(Value::Str(text)); }
+            let bytes = text.as_bytes();
+            let mut out = String::with_capacity(text.len());
+            let mut i: usize = 0;
+            while i < text.len() {
+                if let Some(rel) = text[i..].find(&*open) {
+                    let abs = i + rel;
+                    let at_bol = if abs == 0 { true } else {
+                        let mut k = abs;
+                        if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
+                        k == 0 || bytes[k-1] == b'\n'
+                    };
+                    if !require_bol || at_bol {
+                        let mut j = abs + open.len();
+                        let mut close_pos: Option<usize> = None;
+                        while j <= text.len() {
+                            if let Some(relc) = text[j..].find(&*close) {
+                                let cabs = j + relc;
+                                let c_at_bol = if cabs == 0 { true } else {
+                                    let mut k = cabs;
+                                    if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
+                                    k == 0 || bytes[k-1] == b'\n'
+                                };
+                                if !require_bol || c_at_bol { close_pos = Some(cabs); break; } else { j = cabs + 1; }
+                            } else {
+                                if allow_eof_close { close_pos = Some(text.len()); }
+                                break;
+                            }
+                        }
+                        out.push_str(&text[i..abs]);
+                        if let Some(cpos) = close_pos {
+                            if include_delims {
+                                i = cpos + close.len();
+                            } else {
+                                out.push_str(&text[abs..abs+open.len()]);
+                                out.push_str(&text[cpos..cpos+close.len()]);
+                                i = cpos + close.len();
+                            }
+                        } else {
+                            out.push_str(&text[abs..]);
+                            break;
+                        }
+                        continue;
+                    } else {
+                        out.push_str(&text[i..abs]);
+                        i = abs + 1;
+                        continue;
+                    }
+                } else {
+                    out.push_str(&text[i..]);
+                    break;
+                }
+            }
+            Ok(Value::Str(out))
         }
         BuiltinId::Env => {
             expect_n(1)?;
@@ -1170,7 +1241,40 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Array(out))
         }
         BuiltinId::Map => {
-            Err(GoblinError::NotImplemented { feature: "map builtin requires VM callback support" })
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "map".into() }); }
+            let action = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str (action name)", other.type_name(), "map")) };
+            let bid = crate::compiler::builtin_by_name(&action)
+                .ok_or_else(|| GoblinError::Runtime(format!("map: unknown action '{}'", action)))?;
+            match read(0)? {
+                Value::Str(s) => {
+                    let mut out = String::new();
+                    let mut any_non_text = false;
+                    let mut results = vec![];
+                    for c in s.chars() {
+                        let t = session.alloc_value(Value::Char(c));
+                        let rt = call_builtin(bid, vec![t], session)?;
+                        let v = session.read_value(&rt)?;
+                        match &v { Value::Char(_) | Value::Str(_) => {} _ => { any_non_text = true; } }
+                        results.push(v);
+                    }
+                    if !any_non_text {
+                        for r in results { match r { Value::Char(c) => out.push(c), Value::Str(ts) => out.push_str(&ts), _ => {} } }
+                        Ok(Value::Str(out))
+                    } else {
+                        Ok(Value::Array(results))
+                    }
+                }
+                Value::Array(xs) => {
+                    let mut out = vec![];
+                    for v in xs {
+                        let t = session.alloc_value(v);
+                        let rt = call_builtin(bid, vec![t], session)?;
+                        out.push(session.read_value(&rt)?);
+                    }
+                    Ok(Value::Array(out))
+                }
+                other => Err(GoblinError::type_error("str or array", other.type_name(), "map")),
+            }
         }
         BuiltinId::Unique => {
             expect_n(1)?;
@@ -1328,8 +1432,50 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let idx = require_int(read(1)?, "delete_at index")?;
             collections::delete_at(&coll, idx)
         }
-        BuiltinId::DeleteWhere | BuiltinId::DeleteAll => {
-            Err(GoblinError::NotImplemented { feature: "delete_where / delete_all require VM predicate callback" })
+        BuiltinId::DeleteWhere => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "delete_where".into() }); }
+            let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_where pred")) };
+            let is_ident = pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+            match read(0)? {
+                Value::Array(mut xs) => {
+                    xs.retain(|v| {
+                        if !is_ident {
+                            fmt_value_raw(v) != pred
+                        } else if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
+                            let t = session.alloc_value(v.clone());
+                            match call_builtin(bid, vec![t], session) {
+                                Ok(rt) => !matches!(session.read_value(&rt), Ok(Value::Bool(true))),
+                                _ => true,
+                            }
+                        } else { true }
+                    });
+                    Ok(Value::Array(xs))
+                }
+                Value::Map(mut m) => {
+                    m.retain(|_, v| {
+                        if !is_ident {
+                            fmt_value_raw(v) != pred
+                        } else if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
+                            let t = session.alloc_value(v.clone());
+                            match call_builtin(bid, vec![t], session) {
+                                Ok(rt) => !matches!(session.read_value(&rt), Ok(Value::Bool(true))),
+                                _ => true,
+                            }
+                        } else { true }
+                    });
+                    Ok(Value::Map(m))
+                }
+                other => Err(GoblinError::type_error("array or map", other.type_name(), "delete_where")),
+            }
+        }
+        BuiltinId::DeleteAll => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Array(_) => Ok(Value::Array(vec![])),
+                Value::Map(_) => Ok(Value::Map(std::collections::BTreeMap::new())),
+                Value::MapOrd(_) => Ok(Value::MapOrd(indexmap::IndexMap::new())),
+                other => Err(GoblinError::type_error("array or map", other.type_name(), "delete_all")),
+            }
         }
 
         // ── Collections reap (legacy) ─────────────────────────────────────────
@@ -1369,8 +1515,35 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let (elem, new_coll) = collections::reap_at(&coll, idx as i64)?;
             Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![elem, new_coll]))))
         }
-        BuiltinId::ReapWhere | BuiltinId::ReapAll => {
-            Err(GoblinError::NotImplemented { feature: "reap_where / reap_all require VM predicate callback" })
+        BuiltinId::ReapWhere => {
+            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_where".into() }); }
+            let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where pred")) };
+            let is_ident = pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+            let matches_pred = |v: &Value, session: &mut Session| -> bool {
+                if !is_ident { return fmt_value_raw(v) == pred; }
+                if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
+                    let t = session.alloc_value(v.clone());
+                    match call_builtin(bid, vec![t], session) {
+                        Ok(rt) => matches!(session.read_value(&rt), Ok(Value::Bool(true))),
+                        _ => false,
+                    }
+                } else { false }
+            };
+            match read(0)? {
+                Value::Array(mut xs) => {
+                    let mut reaped = vec![];
+                    xs.retain(|v| { if matches_pred(v, session) { reaped.push(v.clone()); false } else { true } });
+                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![Value::Array(reaped), Value::Array(xs)]))))
+                }
+                other => Err(GoblinError::type_error("array", other.type_name(), "reap_where")),
+            }
+        }
+        BuiltinId::ReapAll => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::Array(xs) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![Value::Array(xs), Value::Array(vec![])])))),
+                other => Err(GoblinError::type_error("array", other.type_name(), "reap_all")),
+            }
         }
 
         BuiltinId::ReapSample => {
@@ -1957,7 +2130,102 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Int(result_num))
         }
         BuiltinId::RollDetail => {
-            Err(GoblinError::NotImplemented { feature: "roll_detail not yet implemented" })
+            expect_n(1)?;
+            let cfg = match read(0)? {
+                Value::Map(m) => m,
+                other => return Err(GoblinError::type_error("map config", other.type_name(), "roll_detail")),
+            };
+            let cast_i64 = |v: &Value| -> Option<i64> {
+                match v { Value::Int(i) => Some(*i), Value::Float(f) => Some(f.trunc() as i64), _ => None }
+            };
+            let count    = cast_i64(cfg.get("count").ok_or_else(|| GoblinError::Runtime("roll_detail: missing 'count'".into()))?)
+                .ok_or_else(|| GoblinError::Runtime("roll_detail: 'count' must be integer-like".into()))?;
+            let sides    = cast_i64(cfg.get("sides").ok_or_else(|| GoblinError::Runtime("roll_detail: missing 'sides'".into()))?)
+                .ok_or_else(|| GoblinError::Runtime("roll_detail: 'sides' must be integer-like".into()))?;
+            let modifier   = cfg.get("modifier").or_else(|| cfg.get("mod")).and_then(|v| cast_i64(v)).unwrap_or(0);
+            let keep_high  = cfg.get("keep_high").and_then(|v| cast_i64(v)).unwrap_or(0);
+            let drop_low   = cfg.get("drop_low").and_then(|v| cast_i64(v)).unwrap_or(0);
+            let reroll_eq  = cfg.get("reroll_eq").and_then(|v| cast_i64(v));
+            let explode    = cfg.get("explode").map(|v| matches!(v, Value::Bool(true))).unwrap_or(false);
+            let adv        = cfg.get("adv").map(|v| matches!(v, Value::Bool(true))).unwrap_or(false);
+            let dis        = cfg.get("dis").map(|v| matches!(v, Value::Bool(true))).unwrap_or(false);
+            let clamp_lo   = cfg.get("clamp_min").and_then(|v| cast_i64(v));
+            let clamp_hi   = cfg.get("clamp_max").and_then(|v| cast_i64(v));
+            if sides < 1 { return Err(GoblinError::Runtime("roll_detail: sides must be >= 1".into())); }
+            if (adv || dis) && count != 1 { return Err(GoblinError::Runtime("roll_detail: adv/dis requires count=1".into())); }
+            if keep_high > 0 && drop_low > 0 { return Err(GoblinError::Runtime("roll_detail: cannot combine keep_high and drop_low".into())); }
+            let mut roll_one = |s: i64| -> i64 {
+                let mut r = rng_bounded(session, s as u64) as i64 + 1;
+                if let Some(face) = reroll_eq { if r == face { r = rng_bounded(session, s as u64) as i64 + 1; } }
+                if explode {
+                    let mut total = r; let mut last = r; let mut guard = 0usize;
+                    while last == s && guard < 1024 { let e = rng_bounded(session, s as u64) as i64 + 1; total += e; last = e; guard += 1; }
+                    total
+                } else { r }
+            };
+            use std::collections::BTreeMap as BM;
+            let detail: Value = if adv || dis {
+                let a = roll_one(sides); let b = roll_one(sides);
+                let chosen = if adv { a.max(b) } else { a.min(b) };
+                let dropped_val = if adv { a.min(b) } else { a.max(b) };
+                let mut total = chosen + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) { let (lo,hi) = if lo<=hi{(lo,hi)}else{(hi,lo)}; if total<lo{total=lo;} if total>hi{total=hi;} }
+                let mut out = BM::<String,Value>::new();
+                out.insert("count".into(), Value::Int(1));
+                out.insert("sides".into(), Value::Int(sides));
+                out.insert("modifier".into(), Value::Int(modifier));
+                out.insert("values".into(), Value::Array(vec![Value::Int(a), Value::Int(b)]));
+                out.insert("kept".into(), Value::Array(vec![Value::Int(chosen)]));
+                out.insert("dropped".into(), Value::Array(vec![Value::Int(dropped_val)]));
+                out.insert("sum".into(), Value::Int(chosen));
+                out.insert("total".into(), Value::Int(total));
+                out.insert("adv".into(), Value::Bool(adv));
+                out.insert("dis".into(), Value::Bool(dis));
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x)); }
+                if explode { out.insert("explode".into(), Value::Bool(true)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi)); }
+                Value::Map(out)
+            } else {
+                let vals: Vec<i64> = (0..count).map(|_| roll_one(sides)).collect();
+                let mut keep_mask = vec![true; vals.len()];
+                if keep_high > 0 {
+                    let k = keep_high as usize;
+                    let mut idxs: Vec<usize> = (0..vals.len()).collect();
+                    idxs.sort_unstable_by(|&i,&j| vals[j].cmp(&vals[i]));
+                    for &i in idxs.iter().skip(k.min(vals.len())) { keep_mask[i] = false; }
+                } else if drop_low > 0 {
+                    let d = drop_low as usize;
+                    let mut idxs: Vec<usize> = (0..vals.len()).collect();
+                    idxs.sort_unstable_by(|&i,&j| vals[i].cmp(&vals[j]));
+                    for &i in idxs.iter().take(d.min(vals.len())) { keep_mask[i] = false; }
+                }
+                let mut kept_vals: Vec<i64> = Vec::new();
+                let mut dropped_vals: Vec<i64> = Vec::new();
+                for (i, &v) in vals.iter().enumerate() {
+                    if keep_mask[i] { kept_vals.push(v); } else { dropped_vals.push(v); }
+                }
+                let kept_sum: i64 = kept_vals.iter().sum();
+                let mut total = kept_sum + modifier;
+                if let (Some(lo), Some(hi)) = (clamp_lo, clamp_hi) { let (lo,hi) = if lo<=hi{(lo,hi)}else{(hi,lo)}; if total<lo{total=lo;} if total>hi{total=hi;} }
+                let mut out = BM::<String,Value>::new();
+                out.insert("count".into(), Value::Int(count));
+                out.insert("sides".into(), Value::Int(sides));
+                out.insert("modifier".into(), Value::Int(modifier));
+                out.insert("values".into(), Value::Array(vals.into_iter().map(Value::Int).collect()));
+                out.insert("kept".into(), Value::Array(kept_vals.into_iter().map(Value::Int).collect()));
+                out.insert("dropped".into(), Value::Array(dropped_vals.into_iter().map(Value::Int).collect()));
+                out.insert("sum".into(), Value::Int(kept_sum));
+                out.insert("total".into(), Value::Int(total));
+                if keep_high > 0 { out.insert("keep_high".into(), Value::Int(keep_high)); }
+                if drop_low  > 0 { out.insert("drop_low".into(),  Value::Int(drop_low)); }
+                if let Some(x) = reroll_eq { out.insert("reroll_eq".into(), Value::Int(x)); }
+                if explode { out.insert("explode".into(), Value::Bool(true)); }
+                if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo)); }
+                if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi)); }
+                Value::Map(out)
+            };
+            Ok(detail)
         }
 
         // ── Request/Response (stub) ───────────────────────────────────────────

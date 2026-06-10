@@ -1228,7 +1228,7 @@ fn simple_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-fn builtin_by_name(name: &str) -> Option<BuiltinId> {
+pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
     Some(match name {
         ":mem_id"      | "mem_id"       => BuiltinId::MemId,
         ":mem_addr"    | "mem_addr"     => BuiltinId::MemAddr,
