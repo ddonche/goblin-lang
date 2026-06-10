@@ -781,7 +781,7 @@ impl Compiler {
                 if let Some(op) = self.try_compile_builtin_call(name, args)? {
                     let _ = op; // op already emitted
                 } else {
-                    let load_op = self.resolve_load(name)?;
+                    let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call(args.len() as u8));
@@ -807,7 +807,8 @@ impl Compiler {
                 // Namespace call: compile as free call for now.
                 let full_name = format!("{}::{}", ns, name);
                 let load_op = self.resolve_load(&full_name)
-                    .or_else(|_| self.resolve_load(name))?;
+                    .or_else(|_| self.resolve_load(name))
+                    .map_err(|e| self.locate_err(e))?;
                 self.emit(load_op);
                 for arg in args { self.compile_expr(arg)?; }
                 self.emit(Opcode::Call(args.len() as u8));
@@ -996,7 +997,7 @@ impl Compiler {
                         self.emit(Opcode::CallBuiltin(id, argc));
                     } else {
                         // User function: stack layout must be [func, lhs, args...]
-                        self.resolve_load(name)?;
+                        self.resolve_load(name).map_err(|e| self.locate_err(e))?;
                         self.compile_expr(lhs)?;
                         for arg in args { self.compile_expr(arg)?; }
                         self.emit(Opcode::Call(argc));
