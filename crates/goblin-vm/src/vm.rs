@@ -645,17 +645,7 @@ impl Vm {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn value_to_str(v: &Value) -> String {
-    match v {
-        Value::Nil        => "nil".to_string(),
-        Value::Bool(b)    => b.to_string(),
-        Value::Int(n)     => n.to_string(),
-        Value::Float(f)   => f.to_string(),
-        Value::Str(s)     => s.clone(),
-        Value::Collection(_) => "[collection]".to_string(),
-        Value::Function(f) => format!("<fn {}>", f.name),
-        Value::Closure(c)  => format!("<closure {}>", c.func.name),
-        Value::Builtin(b)  => format!("<builtin {:?}>", b),
-    }
+    crate::builtins::value_to_str(v)
 }
 
 

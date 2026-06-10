@@ -180,11 +180,33 @@ fn format_value(v: &Value) -> String {
 fn format_value_depth(v: &Value, depth: usize) -> String {
     if depth > 2 { return "...".into(); }
     match v {
-        Value::Nil        => "nil".into(),
-        Value::Bool(b)    => b.to_string(),
-        Value::Int(n)     => n.to_string(),
-        Value::Float(f)   => f.to_string(),
-        Value::Str(s)     => format!("{:?}", s),
+        Value::Nil           => "nil".into(),
+        Value::Unit          => "()".into(),
+        Value::Bool(b)       => b.to_string(),
+        Value::Int(n)        => n.to_string(),
+        Value::Float(f)      => f.to_string(),
+        Value::Big(d)        => d.to_string(),
+        Value::Pct(p)        => format!("{}%", p),
+        Value::Char(c)       => format!("'{}'", c),
+        Value::Str(s)        => format!("{:?}", s),
+        Value::Formatted(v, _) => format_value_depth(v, depth),
+        Value::Array(items) if items.len() <= 6 => {
+            let parts: Vec<String> = items.iter().map(|x| format_value_depth(x, depth + 1)).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Array(items) => format!("[array len={}]", items.len()),
+        Value::Map(m)        => format!("{{map len={}}}", m.len()),
+        Value::MapOrd(m)     => format!("{{map_ord len={}}}", m.len()),
+        Value::Pair(k, v)    => format!("({}, {})", format_value_depth(k, depth+1), format_value_depth(v, depth+1)),
+        Value::Seq(s)        => format!("[seq len={}]", s.len()),
+        Value::CtrlSkip      => "<skip>".into(),
+        Value::CtrlStop      => "<stop>".into(),
+        Value::CtrlReturn(v) => format!("<return {}>", format_value_depth(v, depth+1)),
+        Value::Object { class_name, .. } => format!("<{}>", class_name),
+        Value::Ref(s)        => format!("<ref {}>", s),
+        Value::GridRef { grid_id, x, y } => format!("<gridref {}[{},{}]>", grid_id, x, y),
+        Value::Enum { enum_name, variant_name, .. } => format!("{}.{}", enum_name, variant_name),
+        Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) => {
             #[allow(unused_imports)] use crate::collections;
             use crate::value::CollectionLayout;

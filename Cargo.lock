@@ -1119,6 +1119,8 @@ version = "0.1.0"
 dependencies = [
  "goblin-ast",
  "goblin-diagnostics",
+ "indexmap",
+ "rust_decimal",
  "slab",
 ]
 

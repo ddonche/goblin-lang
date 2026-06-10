@@ -67,6 +67,51 @@ impl TransferValue {
                     feature: "functions/closures cannot be transferred between workers in v1"
                 })
             }
+            // New interpreter-aligned variants: transfer as primitive or array/map where possible
+            Value::Unit => Ok(TransferValue::Nil),
+            Value::Char(c) => Ok(TransferValue::Str(c.to_string())),
+            Value::Big(d) => Ok(TransferValue::Str(d.to_string())),
+            Value::Pct(p) => Ok(TransferValue::Float(*p)),
+            Value::Array(items) => {
+                let mut tv_items = Vec::with_capacity(items.len());
+                for item in items {
+                    tv_items.push(TransferValue::from_value(item)?);
+                }
+                Ok(TransferValue::Array(tv_items))
+            }
+            Value::Map(m) => {
+                let pairs: Vec<(TransferValue, TransferValue)> = m.iter()
+                    .map(|(k, v)| Ok((TransferValue::Str(k.clone()), TransferValue::from_value(v)?)))
+                    .collect::<Result<_, GoblinError>>()?;
+                Ok(TransferValue::Map(pairs))
+            }
+            Value::MapOrd(m) => {
+                let pairs: Vec<(TransferValue, TransferValue)> = m.iter()
+                    .map(|(k, v)| Ok((TransferValue::Str(k.clone()), TransferValue::from_value(v)?)))
+                    .collect::<Result<_, GoblinError>>()?;
+                Ok(TransferValue::Map(pairs))
+            }
+            Value::Pair(k, v) => {
+                let tk = TransferValue::from_value(k)?;
+                let tv = TransferValue::from_value(v)?;
+                Ok(TransferValue::Array(vec![tk, tv]))
+            }
+            Value::Seq(s) => {
+                let mut tv_items = Vec::with_capacity(s.items.len());
+                for item in &s.items {
+                    tv_items.push(TransferValue::from_value(item)?);
+                }
+                Ok(TransferValue::Array(tv_items))
+            }
+            Value::Formatted(v, _) => TransferValue::from_value(v),
+            // Control flow and object values cannot be transferred
+            Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_)
+            | Value::Object { .. } | Value::Ref(_) | Value::GridRef { .. }
+            | Value::Enum { .. } | Value::Class { .. } => {
+                Err(GoblinError::NotImplemented {
+                    feature: "complex values cannot be transferred between workers in v1"
+                })
+            }
         }
     }
 

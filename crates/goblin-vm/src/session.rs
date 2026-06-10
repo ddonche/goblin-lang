@@ -40,10 +40,19 @@ pub struct Session {
 
     /// How many allocations before an Auto sweep.
     gc_watermark: usize,
+
+    /// PRNG state for builtins like shuffle/mixed. LCG/MCG.
+    pub rng_state: u128,
 }
 
 impl Session {
     pub fn new(gc_mode: GcMode) -> Self {
+        // Seed from system time if available, else use a fixed constant.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u128 | ((d.as_secs() as u128) << 32))
+            .unwrap_or(0x123456789abcdef0u128)
+            | 1; // MCG requires odd seed
         Session {
             arena: Slab::new(),
             globals: Vec::new(),
@@ -52,7 +61,15 @@ impl Session {
             next_generation: 1,
             alloc_since_last_gc: 0,
             gc_watermark: 10_000,
+            rng_state: seed,
         }
+    }
+
+    /// LCG/MCG PRNG — returns next pseudo-random u128.
+    pub fn next_u128(&mut self) -> u128 {
+        self.rng_state = self.rng_state
+            .wrapping_mul(0x2360ED051FC65DA44385DF649FCCF645);
+        self.rng_state
     }
 
     pub fn with_worker_id(mut self, id: usize) -> Self {
@@ -201,8 +218,89 @@ impl Session {
     /// Used for cross-worker message passing (the safe default).
     pub fn clone_value_into_session(&mut self, value: &Value) -> Tether {
         match value {
-            Value::Nil | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => {
+            // Primitives and simple values — clone directly
+            Value::Nil | Value::Unit | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+            | Value::Big(_) | Value::Pct(_) | Value::Char(_) | Value::Str(_)
+            | Value::CtrlSkip | Value::CtrlStop
+            | Value::Ref(_) | Value::GridRef { .. } | Value::Class { .. } => {
                 self.alloc_value(value.clone())
+            }
+
+            // CtrlReturn: deep clone the inner value
+            Value::CtrlReturn(inner) => {
+                let inner_cloned = self.clone_value_shallow(inner);
+                self.alloc_value(Value::CtrlReturn(Box::new(inner_cloned)))
+            }
+
+            // Formatted: deep clone inner
+            Value::Formatted(inner, spec) => {
+                let inner_cloned = self.clone_value_shallow(inner);
+                self.alloc_value(Value::Formatted(Box::new(inner_cloned), spec.clone()))
+            }
+
+            // Array: deep clone elements
+            Value::Array(items) => {
+                let new_items: Vec<Value> = items.iter()
+                    .map(|v| self.clone_value_shallow(v))
+                    .collect();
+                self.alloc_value(Value::Array(new_items))
+            }
+
+            // Map: deep clone values
+            Value::Map(m) => {
+                let new_m: std::collections::BTreeMap<String, Value> = m.iter()
+                    .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
+                    .collect();
+                self.alloc_value(Value::Map(new_m))
+            }
+
+            // MapOrd: deep clone values
+            Value::MapOrd(m) => {
+                let new_m: indexmap::IndexMap<String, Value> = m.iter()
+                    .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
+                    .collect();
+                self.alloc_value(Value::MapOrd(new_m))
+            }
+
+            // Pair: deep clone both
+            Value::Pair(k, v) => {
+                let k2 = self.clone_value_shallow(k);
+                let v2 = self.clone_value_shallow(v);
+                self.alloc_value(Value::Pair(Box::new(k2), Box::new(v2)))
+            }
+
+            // Seq: deep clone items
+            Value::Seq(seq) => {
+                let new_items: Vec<Value> = seq.items.iter()
+                    .map(|v| self.clone_value_shallow(v))
+                    .collect();
+                self.alloc_value(Value::Seq(crate::value::Seq::from_vec(new_items)))
+            }
+
+            // Object: deep clone fields
+            Value::Object { class_name, fields, readonly_fields, trait_fields, uuid } => {
+                let new_fields: indexmap::IndexMap<String, Value> = fields.iter()
+                    .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
+                    .collect();
+                self.alloc_value(Value::Object {
+                    class_name: class_name.clone(),
+                    fields: new_fields,
+                    readonly_fields: readonly_fields.clone(),
+                    trait_fields: trait_fields.clone(),
+                    uuid: uuid.clone(),
+                })
+            }
+
+            // Enum: deep clone fields
+            Value::Enum { enum_name, variant_name, fields } => {
+                let new_fields = fields.as_ref().map(|f| {
+                    f.iter().map(|(k, v)| (k.clone(), self.clone_value_shallow(v))).collect()
+                });
+                self.alloc_value(Value::Enum {
+                    enum_name: enum_name.clone(),
+                    variant_name: variant_name.clone(),
+                    fields: new_fields,
+                })
             }
 
             Value::Collection(coll_rc) => {

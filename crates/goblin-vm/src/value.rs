@@ -18,18 +18,80 @@ pub struct Tether {
     pub addr: Address,
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Format spec and Seq (interpreter-compatible)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormatSpec {
+    pub decimals: u32,
+    pub sep_thousands: Option<char>,
+    pub sep_decimal: char,
+}
+
+/// A simple seq type for the VM (wraps Vec<Value>).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seq {
+    pub items: Vec<Value>,
+}
+
+impl Seq {
+    pub fn from_vec(v: Vec<Value>) -> Self { Seq { items: v } }
+    pub fn len(&self) -> usize { self.items.len() }
+    pub fn as_slice(&self) -> Option<&[Value]> { Some(self.items.as_slice()) }
+    pub fn to_vec(&self) -> Vec<Value> { self.items.clone() }
+    pub fn is_empty(&self) -> bool { self.items.is_empty() }
+}
+
 /// The user-facing value stored inside a stash.
 #[derive(Debug, Clone)]
 pub enum Value {
+    // ── Primitives ──────────────────────────────────────────────────────────
     Nil,
+    Unit,
     Bool(bool),
     Int(i64),
     Float(f64),
+    Big(rust_decimal::Decimal),
+    Pct(f64),
+    Char(char),
     Str(String),
 
+    // ── Structured ──────────────────────────────────────────────────────────
+    Formatted(Box<Value>, FormatSpec),
+    Array(Vec<Value>),
+    Map(std::collections::BTreeMap<String, Value>),
+    MapOrd(indexmap::IndexMap<String, Value>),
+    Pair(Box<Value>, Box<Value>),
+    Seq(Seq),
+
+    // ── Control flow values ─────────────────────────────────────────────────
+    CtrlSkip,
+    CtrlStop,
+    CtrlReturn(Box<Value>),
+
+    // ── Object/type system ───────────────────────────────────────────────────
+    Object {
+        class_name: String,
+        fields: indexmap::IndexMap<String, Value>,
+        readonly_fields: std::collections::BTreeSet<String>,
+        trait_fields: std::collections::BTreeSet<String>,
+        uuid: String,
+    },
+    Ref(String),
+    GridRef { grid_id: String, x: i32, y: i32 },
+    Enum {
+        enum_name: String,
+        variant_name: String,
+        fields: Option<indexmap::IndexMap<String, Value>>,
+    },
+    Class { name: String },
+
+    // ── Legacy VM collection type (kept for backward compat) ─────────────────
     /// Unified collections (arrays, maps, stacks, queues).
     Collection(Rc<CollectionValue>),
 
+    // ── VM-only ──────────────────────────────────────────────────────────────
     /// A compiled Goblin function (no captured upvalues).
     Function(Rc<FunctionObject>),
 
@@ -43,27 +105,65 @@ pub enum Value {
 impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Nil          => "nil",
-            Value::Bool(_)      => "bool",
-            Value::Int(_)       => "int",
-            Value::Float(_)     => "float",
-            Value::Str(_)       => "str",
-            Value::Collection(_)=> "collection",
-            Value::Function(_)  => "function",
-            Value::Closure(_)   => "closure",
-            Value::Builtin(_)   => "builtin",
+            Value::Nil           => "nil",
+            Value::Unit          => "unit",
+            Value::Bool(_)       => "bool",
+            Value::Int(_)        => "int",
+            Value::Float(_)      => "float",
+            Value::Big(_)        => "big",
+            Value::Pct(_)        => "pct",
+            Value::Char(_)       => "char",
+            Value::Str(_)        => "str",
+            Value::Formatted(..) => "formatted",
+            Value::Array(_)      => "array",
+            Value::Map(_)        => "map",
+            Value::MapOrd(_)     => "map",
+            Value::Pair(..)      => "pair",
+            Value::Seq(_)        => "seq",
+            Value::CtrlSkip      => "ctrl_skip",
+            Value::CtrlStop      => "ctrl_stop",
+            Value::CtrlReturn(_) => "ctrl_return",
+            Value::Object { .. } => "object",
+            Value::Ref(_)        => "ref",
+            Value::GridRef { .. } => "grid_ref",
+            Value::Enum { .. }   => "enum",
+            Value::Class { .. }  => "class",
+            Value::Collection(_) => "collection",
+            Value::Function(_)   => "function",
+            Value::Closure(_)    => "closure",
+            Value::Builtin(_)    => "builtin",
         }
     }
 
     pub fn is_truthy(&self) -> bool {
         match self {
-            Value::Nil        => false,
-            Value::Bool(b)    => *b,
-            Value::Int(n)     => *n != 0,
-            Value::Float(f)   => *f != 0.0,
-            Value::Str(s)     => !s.is_empty(),
+            Value::Nil           => false,
+            Value::Unit          => false,
+            Value::Bool(b)       => *b,
+            Value::Int(n)        => *n != 0,
+            Value::Float(f)      => *f != 0.0,
+            Value::Big(d)        => !d.is_zero(),
+            Value::Pct(p)        => *p != 0.0,
+            Value::Char(c)       => *c != '\0',
+            Value::Str(s)        => !s.is_empty(),
+            Value::Formatted(v, _) => v.is_truthy(),
+            Value::Array(a)      => !a.is_empty(),
+            Value::Map(m)        => !m.is_empty(),
+            Value::MapOrd(m)     => !m.is_empty(),
+            Value::Pair(..)      => true,
+            Value::Seq(s)        => !s.is_empty(),
+            Value::CtrlSkip      => false,
+            Value::CtrlStop      => false,
+            Value::CtrlReturn(_) => false,
+            Value::Object { .. } => true,
+            Value::Ref(_)        => true,
+            Value::GridRef { .. } => true,
+            Value::Enum { .. }   => true,
+            Value::Class { .. }  => true,
             Value::Collection(c) => c.meta.len > 0,
-            _                 => true,
+            Value::Function(_)   => true,
+            Value::Closure(_)    => true,
+            Value::Builtin(_)    => true,
         }
     }
 }
@@ -72,15 +172,28 @@ impl Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Value::Nil,            Value::Nil)            => true,
-            (Value::Bool(a),        Value::Bool(b))        => a == b,
-            (Value::Int(a),         Value::Int(b))         => a == b,
-            (Value::Float(a),       Value::Float(b))       => a.to_bits() == b.to_bits(),
-            (Value::Str(a),         Value::Str(b))         => a == b,
-            (Value::Collection(a),  Value::Collection(b))  => Rc::ptr_eq(a, b),
-            (Value::Function(a),    Value::Function(b))    => Rc::ptr_eq(a, b),
-            (Value::Closure(a),     Value::Closure(b))     => Rc::ptr_eq(a, b),
-            (Value::Builtin(a),     Value::Builtin(b))     => a == b,
+            (Value::Nil,              Value::Nil)              => true,
+            (Value::Unit,             Value::Unit)             => true,
+            (Value::Bool(a),          Value::Bool(b))          => a == b,
+            (Value::Int(a),           Value::Int(b))           => a == b,
+            (Value::Float(a),         Value::Float(b))         => a.to_bits() == b.to_bits(),
+            (Value::Big(a),           Value::Big(b))           => a == b,
+            (Value::Pct(a),           Value::Pct(b))           => a.to_bits() == b.to_bits(),
+            (Value::Char(a),          Value::Char(b))          => a == b,
+            (Value::Str(a),           Value::Str(b))           => a == b,
+            (Value::Array(a),         Value::Array(b))         => a == b,
+            (Value::Map(a),           Value::Map(b))           => a == b,
+            (Value::MapOrd(a),        Value::MapOrd(b))        => a == b,
+            (Value::Pair(ak, av),     Value::Pair(bk, bv))     => ak == bk && av == bv,
+            (Value::Seq(a),           Value::Seq(b))           => a == b,
+            (Value::CtrlSkip,         Value::CtrlSkip)         => true,
+            (Value::CtrlStop,         Value::CtrlStop)         => true,
+            (Value::CtrlReturn(a),    Value::CtrlReturn(b))    => a == b,
+            (Value::Ref(a),           Value::Ref(b))           => a == b,
+            (Value::Collection(a),    Value::Collection(b))    => Rc::ptr_eq(a, b),
+            (Value::Function(a),      Value::Function(b))      => Rc::ptr_eq(a, b),
+            (Value::Closure(a),       Value::Closure(b))       => Rc::ptr_eq(a, b),
+            (Value::Builtin(a),       Value::Builtin(b))       => a == b,
             _ => false,
         }
     }
@@ -92,10 +205,31 @@ impl std::hash::Hash for Value {
         std::mem::discriminant(self).hash(state);
         match self {
             Value::Nil           => {}
+            Value::Unit          => {}
             Value::Bool(b)       => b.hash(state),
             Value::Int(n)        => n.hash(state),
             Value::Float(f)      => f.to_bits().hash(state),
+            Value::Big(d)        => d.hash(state),
+            Value::Pct(p)        => p.to_bits().hash(state),
+            Value::Char(c)       => c.hash(state),
             Value::Str(s)        => s.hash(state),
+            Value::Formatted(v, _) => v.hash(state),
+            Value::Array(a)      => { for x in a { x.hash(state); } }
+            Value::Map(m)        => { for (k, v) in m { k.hash(state); v.hash(state); } }
+            Value::MapOrd(m)     => { for (k, v) in m { k.hash(state); v.hash(state); } }
+            Value::Pair(k, v)    => { k.hash(state); v.hash(state); }
+            Value::Seq(s)        => { for x in &s.items { x.hash(state); } }
+            Value::CtrlSkip      => {}
+            Value::CtrlStop      => {}
+            Value::CtrlReturn(v) => v.hash(state),
+            Value::Object { uuid, .. } => uuid.hash(state),
+            Value::Ref(s)        => s.hash(state),
+            Value::GridRef { grid_id, x, y } => { grid_id.hash(state); x.hash(state); y.hash(state); }
+            Value::Enum { enum_name, variant_name, .. } => {
+                enum_name.hash(state);
+                variant_name.hash(state);
+            }
+            Value::Class { name } => name.hash(state),
             Value::Collection(c) => (Rc::as_ptr(c) as usize).hash(state),
             Value::Function(f)   => (Rc::as_ptr(f) as usize).hash(state),
             Value::Closure(c)    => (Rc::as_ptr(c) as usize).hash(state),
@@ -185,6 +319,8 @@ pub enum BuiltinId {
     // Memory introspection
     MemId,
     MemAddr,
+    MemTotal,
+    MemHuman,
     Gc,
 
     // Arithmetic helpers (called as functions)
@@ -197,12 +333,25 @@ pub enum BuiltinId {
     Sqrt,
     Pow,
 
-    // String
+    // String builtins (new interpreter-aligned)
+    Lower,
+    Upper,
+    Title,
+    Slug,
+    Mixed,
+    Raw,
+    Trim,
+    TrimLead,
+    TrimTrail,
+    Find,
+    FindAll,
+    Ord,
+
+    // String ops
     Len,
     ToString,
     ToUpperCase,
     ToLowerCase,
-    Trim,
     Split,
     Join,
     Contains,
@@ -210,7 +359,24 @@ pub enum BuiltinId {
     EndsWith,
     Replace,
 
-    // Collections — grab family
+    // Maps
+    Keys,
+    Values,
+    Items,
+
+    // Collections (new interpreter-aligned)
+    Has,
+    Count,
+    Shuffle,
+    Sort,
+    Freq,
+    Mode,
+    SampleWeighted,
+    Map,
+    Unique,
+    Dups,
+
+    // Collections — grab family (legacy)
     Grab,
     GrabFirst,
     GrabLast,
@@ -221,19 +387,19 @@ pub enum BuiltinId {
     GrabBetween,
     GrabMatching,
 
-    // Collections — put family
+    // Collections — put family (legacy)
     Put,
     PutFirst,
     PutLast,
     PutAt,
 
-    // Collections — update family
+    // Collections — update family (legacy)
     Update,
     UpdateFirst,
     UpdateLast,
     UpdateAt,
 
-    // Collections — delete family
+    // Collections — delete family (legacy)
     Delete,
     DeleteFirst,
     DeleteLast,
@@ -241,7 +407,7 @@ pub enum BuiltinId {
     DeleteWhere,
     DeleteAll,
 
-    // Collections — reap family (remove + return)
+    // Collections — reap family (legacy)
     Reap,
     ReapFirst,
     ReapLast,
@@ -250,26 +416,18 @@ pub enum BuiltinId {
     ReapWhere,
     ReapAll,
 
-    // Collections — query
-    Has,
-    Keys,
-    Values,
+    // Collections — query (legacy)
     Pairs,
-    Count,
     IsEmpty,
     Reverse,
-    Sort,
     SortBy,
-    Map,
     Filter,
     Reduce,
     Any,
     All,
-    Find,
     FindIndex,
     Zip,
     Flatten,
-    Unique,
     Slice,
 
     // I/O
@@ -284,6 +442,8 @@ pub enum BuiltinId {
     IsInt,
     IsFloat,
     IsStr,
+    IsArray,
+    IsMap,
     IsCollection,
     IsFunction,
 
@@ -297,6 +457,31 @@ pub enum BuiltinId {
     TypeOf,
     Assert,
     Panic,
+
+    // Range
+    Range,
+
+    // Lorem ipsum
+    Ipsum,
+    IpsumSentences,
+    IpsumParagraphs,
+    IpsumFull,
+
+    // Process
+    RunCmd,
+
+    // Request (HTTP context)
+    ReqMethod,
+    ReqPath,
+    ReqQuery,
+    ReqBody,
+    ReqHeader,
+    Cookie,
+
+    // Response
+    SetStatus,
+    SetHeader,
+    SetCookie,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
