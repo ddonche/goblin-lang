@@ -106,6 +106,8 @@ pub enum Opcode {
 
     /// Like GetIndex but key is constants[idx] (string member access).
     GetMember(u16),
+    /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
+    SetField(u16),
 
     // ── Function calls ─────────────────────────────────────────────────────────
     /// Call with argc positional args.
@@ -230,6 +232,7 @@ impl Opcode {
             Opcode::GetIndex        => "GetIndex",
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
+            Opcode::SetField(_)     => "SetField",
             Opcode::Call(_)         => "Call",
             Opcode::Return          => "Return",
             Opcode::CallBuiltin(..) => "CallBuiltin",

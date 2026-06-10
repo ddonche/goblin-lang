@@ -533,6 +533,27 @@ impl Vm {
                 let t = self.session.alloc_value(updated);
                 self.stack.push(t);
             }
+            Opcode::SetField(idx) => {
+                let new_val = self.pop_value()?;
+                let key = {
+                    let frame = self.call_stack.last().unwrap();
+                    frame.func.constants[idx as usize].clone()
+                };
+                let field_name = match &key {
+                    Value::Str(s) => s.clone(),
+                    other => return Err(GoblinError::Runtime(format!("SetField: key must be str, got {}", other.type_name()))),
+                };
+                let obj_val = self.pop_value()?;
+                let updated = match obj_val {
+                    Value::Object { class_name, mut fields, readonly_fields, trait_fields, uuid } => {
+                        fields.insert(field_name, new_val);
+                        Value::Object { class_name, fields, readonly_fields, trait_fields, uuid }
+                    }
+                    other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
+                };
+                let t = self.session.alloc_value(updated);
+                self.stack.push(t);
+            }
             Opcode::GetMember(idx) => {
                 let key = {
                     let frame = self.call_stack.last().unwrap();

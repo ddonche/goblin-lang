@@ -942,6 +942,54 @@ impl Compiler {
             return Ok(());
         }
 
+        // Field read: obj >> field
+        if op == ">>" {
+            self.compile_expr(lhs)?;
+            let field_name = match rhs {
+                Expr::Ident(name, _) => name.clone(),
+                other => return Err(GoblinError::Runtime(format!(">> rhs must be identifier, got {:?}", other))),
+            };
+            let idx = self.add_constant(Value::Str(field_name));
+            self.emit(Opcode::GetMember(idx));
+            return Ok(());
+        }
+
+        // Field assignment: (obj >> field) |= rhs
+        if op == "|=" {
+            if let Expr::Binary(obj_expr, inner_op, field_expr, _) = lhs {
+                if inner_op == ">>" {
+                    let field_name = match field_expr.as_ref() {
+                        Expr::Ident(n, _) => n.clone(),
+                        other => return Err(GoblinError::Runtime(format!(">> field must be identifier, got {:?}", other))),
+                    };
+                    self.compile_expr(rhs)?;
+                    self.compile_expr(obj_expr)?;
+                    let idx = self.add_constant(Value::Str(field_name));
+                    self.emit(Opcode::SetField(idx));
+                    let var_name = match obj_expr.as_ref() {
+                        Expr::Ident(n, _) => n.clone(),
+                        _ => return Err(GoblinError::Runtime("field assignment: object must be a simple variable".into())),
+                    };
+                    let store_op = self.resolve_store(&var_name)
+                        .ok_or_else(|| GoblinError::UndefinedVariable { name: var_name.clone() })?;
+                    self.emit(Opcode::Dup);
+                    self.emit(store_op);
+                    return Ok(());
+                }
+            }
+            // Simple variable retether as expression
+            let var_name = match lhs {
+                Expr::Ident(n, _) => n.clone(),
+                _ => return Err(GoblinError::Runtime(format!("unsupported |= lhs: {:?}", lhs))),
+            };
+            self.compile_expr(rhs)?;
+            let store_op = self.resolve_store(&var_name)
+                .ok_or_else(|| GoblinError::UndefinedVariable { name: var_name.clone() })?;
+            self.emit(Opcode::Dup);
+            self.emit(store_op);
+            return Ok(());
+        }
+
         // Short-circuit operators.
         if op == "&&" || op == "and" {
             self.compile_expr(lhs)?;
@@ -962,6 +1010,17 @@ impl Compiler {
             return Ok(());
         }
 
+        // Null coalescing must be handled before we compile operands.
+        if op == "??" {
+            self.compile_expr(lhs)?;
+            self.emit(Opcode::Dup);
+            let skip = self.scope_mut().emit_jump(Opcode::JumpIfTrue);
+            self.emit(Opcode::Pop);
+            self.compile_expr(rhs)?;
+            self.scope_mut().patch_jump(skip);
+            return Ok(());
+        }
+
         self.compile_expr(lhs)?;
         self.compile_expr(rhs)?;
 
@@ -971,20 +1030,29 @@ impl Compiler {
             "*"          => Opcode::Mul,
             "/"          => Opcode::Div,
             "%"          => Opcode::Rem,
-            "=="         => Opcode::Eq,
-            "!=" | "/=" => Opcode::Ne,
+            "=="  | "===" => Opcode::Eq,
+            "!=" | "/=" | "!==" => Opcode::Ne,
             "<"          => Opcode::Lt,
             "<="         => Opcode::Le,
             ">"          => Opcode::Gt,
             ">="         => Opcode::Ge,
             "<>"         => Opcode::Concat,
+            // Floor division: operands already on stack, emit Div then Floor builtin
+            "//" => {
+                self.emit(Opcode::Div);
+                let floor_id = crate::value::BuiltinId::Floor;
+                self.emit(Opcode::CallBuiltin(floor_id, 1));
+                return Ok(());
+            }
+            // Exponentiation: operands already on stack, call Pow(2)
+            "**" => {
+                let pow_id = crate::value::BuiltinId::Pow;
+                self.emit(Opcode::CallBuiltin(pow_id, 2));
+                return Ok(());
+            }
+            // percent-of: pct of value  →  pct * value
+            "of" | "%o" => Opcode::Mul,
             "><" => {
-                // divmod: produces Pair(quotient, remainder) using MakePair
-                // lhs and rhs are already on the stack at this point; MakePair just
-                // wraps them — the actual quotient/remainder calc is done in the vm
-                // via a dedicated opcode that pops a and b, pushes Pair(a/b, a%b).
-                // For now emit Dup+Dup+Div+Rem manually isn't clean; use MakePair as
-                // a signal that the VM should do divmod.
                 self.emit(Opcode::MakePair);
                 return Ok(());
             }
