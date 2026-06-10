@@ -1121,6 +1121,7 @@ dependencies = [
  "goblin-diagnostics",
  "goblin-lexer",
  "goblin-parser",
+ "goblin-yall",
  "indexmap",
  "regex",
  "rust_decimal",
