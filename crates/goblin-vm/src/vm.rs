@@ -77,11 +77,12 @@ pub struct Vm {
     pub stack: Vec<Tether>,
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
+    gc_op_counter: u32,
 }
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0 }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -103,6 +104,13 @@ impl Vm {
 
     fn run_loop(&mut self) -> Result<(), GoblinError> {
         loop {
+            // Periodic mark-sweep GC: every 5000 ops, free unreachable stashes.
+            self.gc_op_counter += 1;
+            if self.gc_op_counter >= 5000 {
+                self.gc_op_counter = 0;
+                self.vm_gc();
+            }
+
             // Fetch next opcode (avoid holding a mutable borrow across the match).
             let op = {
                 let frame = match self.call_stack.last_mut() {
@@ -199,7 +207,21 @@ impl Vm {
                 if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
                     let uuid = uuid.clone();
                     let val = self.session.read_value(&t).unwrap();
-                    self.session.object_store.insert(uuid, val);
+                    let frame = self.call_stack.last().unwrap();
+                    let var_name = frame.func.local_names.get(slot as usize)
+                        .map(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !var_name.is_empty() && !var_name.starts_with("__") {
+                        // Only insert if: this var is already tracked OR the object's UUID
+                        // isn't tracked under any other name yet (first declaration).
+                        let already_tracked = self.session.object_store.contains_key(&var_name);
+                        let uuid_known = self.session.object_store.values()
+                            .any(|v| matches!(v, Value::Object { uuid: u, .. } if *u == uuid));
+                        if already_tracked || !uuid_known {
+                            self.session.object_store.insert(var_name, val);
+                        }
+                    }
                 }
                 self.call_stack.last_mut().unwrap().store_local(slot, t);
             }
@@ -218,7 +240,18 @@ impl Vm {
                 if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
                     let uuid = uuid.clone();
                     let val = self.session.read_value(&t).unwrap();
-                    self.session.object_store.insert(uuid, val);
+                    let var_name = self.session.global_names.get(idx as usize)
+                        .map(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !var_name.is_empty() && !var_name.starts_with("__") {
+                        let already_tracked = self.session.object_store.contains_key(&var_name);
+                        let uuid_known = self.session.object_store.values()
+                            .any(|v| matches!(v, Value::Object { uuid: u, .. } if *u == uuid));
+                        if already_tracked || !uuid_known {
+                            self.session.object_store.insert(var_name, val);
+                        }
+                    }
                 }
                 self.session.set_global(idx as usize, t);
             }
@@ -563,6 +596,18 @@ impl Vm {
                     }
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
+                // Sync mutation to object_store so other bindings see the update.
+                if let Value::Object { ref uuid, .. } = updated {
+                    let uuid = uuid.clone();
+                    for v in self.session.object_store.values_mut() {
+                        if let Value::Object { uuid: u, .. } = v {
+                            if *u == uuid {
+                                *v = updated.clone();
+                                break;
+                            }
+                        }
+                    }
+                }
                 let t = self.session.alloc_value(updated);
                 self.stack.push(t);
             }
@@ -787,6 +832,36 @@ impl Vm {
                         self.vm_tick()?;
                         let nil = self.session.alloc_value(Value::Nil);
                         self.stack.push(nil);
+                        return Ok(());
+                    }
+                    BuiltinId::QueryByIdent => {
+                        let name_val = self.session.read_value(&arg_tethers[0])?;
+                        let name = match name_val {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "QueryByIdent")),
+                        };
+                        let result = self.vm_query_by_ident(&name)?;
+                        self.stack.push(result);
+                        return Ok(());
+                    }
+                    BuiltinId::Objects => {
+                        let pred = if arg_tethers.is_empty() {
+                            None
+                        } else {
+                            Some(self.session.read_value(&arg_tethers[0])?)
+                        };
+                        let result = self.vm_objects_query(pred)?;
+                        self.stack.push(result);
+                        return Ok(());
+                    }
+                    BuiltinId::Overlays => {
+                        let pred = if arg_tethers.is_empty() {
+                            None
+                        } else {
+                            Some(self.session.read_value(&arg_tethers[0])?)
+                        };
+                        let result = self.vm_overlays_query(pred)?;
+                        self.stack.push(result);
                         return Ok(());
                     }
                     _ => {}
@@ -1307,6 +1382,34 @@ impl Vm {
         }
     }
 
+    // ── GC ────────────────────────────────────────────────────────────────────
+
+    /// Collect all live tether slots reachable from the VM's roots:
+    /// stack, all call frame locals, and upvalue cells.
+    fn collect_live_slots(&self) -> std::collections::HashSet<u32> {
+        let mut live = std::collections::HashSet::new();
+        for t in &self.stack {
+            live.insert(t.addr.slot);
+        }
+        for frame in &self.call_stack {
+            for maybe_t in &frame.locals {
+                if let Some(t) = maybe_t {
+                    live.insert(t.addr.slot);
+                }
+            }
+            for cell in &frame.upvalues {
+                live.insert(cell.0.borrow().addr.slot);
+            }
+        }
+        live
+    }
+
+    /// Mark-sweep GC: free all arena stashes not reachable from live roots.
+    pub fn vm_gc(&mut self) {
+        let live = self.collect_live_slots();
+        self.session.gc_mark_sweep(&live);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn stack_pop(&mut self) -> Result<Tether, GoblinError> {
@@ -1548,6 +1651,175 @@ impl Vm {
         }
     }
 
+    /// Call a Value::Function or Value::Closure with the given args, returning the result.
+    fn call_func_value(&mut self, func_val: Value, args: Vec<Value>) -> Result<Value, GoblinError> {
+        let (func_rc, upvalues) = match func_val {
+            Value::Function(f) => (f, Vec::new()),
+            Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
+            other => return Err(GoblinError::NotCallable { got: other.type_name() }),
+        };
+        if args.len() != func_rc.params {
+            return Err(GoblinError::ArityMismatch { expected: func_rc.params, got: args.len(), name: func_rc.name.clone() });
+        }
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+        let stack_base = self.stack.len();
+        let dummy = self.session.alloc_value(Value::Nil);
+        self.stack.push(dummy);
+        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+        for (i, a) in args.into_iter().enumerate() {
+            let t = self.session.alloc_value(a);
+            new_frame.locals[i] = Some(t);
+        }
+        self.call_stack.push(new_frame);
+        let depth_before = self.call_stack.len() - 1;
+        self.run_until_depth(depth_before)?;
+        let result_tether = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call_func_value: no return value".into()))?;
+        self.session.read_value(&result_tether)
+    }
+
+    fn vm_query_by_ident(&mut self, name: &str) -> Result<Tether, GoblinError> {
+        // Try normalized class/overlay name variants (mirrors interpreter logic)
+        let lower = name.to_lowercase();
+        let singular = if lower.ends_with('s') { lower[..lower.len()-1].to_string() } else { lower.clone() };
+        let cap_singular = {
+            let mut c = singular.chars();
+            match c.next() { None => String::new(), Some(f) => f.to_uppercase().to_string() + c.as_str() }
+        };
+        let cap_full = {
+            let mut c = lower.chars();
+            match c.next() { None => String::new(), Some(f) => f.to_uppercase().to_string() + c.as_str() }
+        };
+        let candidates = [
+            name.to_string(),
+            lower.clone(),
+            singular.clone(),
+            cap_singular.clone(),
+            cap_full,
+        ];
+
+        // Check if it's an overlay def name
+        let is_all_overlays = matches!(lower.as_str(), "overlay" | "overlays");
+        if is_all_overlays {
+            return self.vm_overlays_query(None);
+        }
+        for candidate in &candidates {
+            if !candidate.is_empty() && self.session.overlay_defs.contains_key(candidate.as_str()) {
+                // Iterate overlay instances of this overlay
+                let cand = candidate.clone();
+                let pred_fn: Option<Value> = None;
+                // filter to this overlay name
+                let instances = self.session.overlay_instances.clone();
+                use indexmap::IndexMap;
+                use std::collections::BTreeSet;
+                let mut results: Vec<Value> = Vec::new();
+                for inst in instances.iter().filter(|i| i.overlay_name == cand) {
+                    let mut fields: IndexMap<String, Value> = IndexMap::new();
+                    fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
+                    fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
+                    fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+                    fields.insert("strength".to_string(), Value::Float(inst.strength));
+                    fields.insert("age".to_string(), Value::Int(inst.age as i64));
+                    fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
+                        Some(t) => Value::Int(t as i64),
+                        None => Value::Nil,
+                    });
+                    use crate::session::OverlayApplyBehavior;
+                    let count_key = self.session.overlay_defs.get(&inst.overlay_name)
+                        .and_then(|d| if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None })
+                        .unwrap_or_else(|| "count".to_string());
+                    fields.insert(count_key, Value::Int(inst.count as i64));
+                    for (k, v) in &inst.extra_fields {
+                        fields.insert(k.clone(), v.clone());
+                    }
+                    results.push(Value::Object {
+                        class_name: inst.overlay_name.clone(),
+                        fields,
+                        readonly_fields: BTreeSet::new(),
+                        trait_fields: BTreeSet::new(),
+                        uuid: inst.host_uuid.clone(),
+                    });
+                }
+                let _ = pred_fn;
+                return Ok(self.session.alloc_value(Value::Array(results)));
+            }
+        }
+        // Check object_store for objects with matching class_name
+        for candidate in &candidates {
+            if !candidate.is_empty() && self.session.classes.contains_key(candidate.as_str()) {
+                let cand = candidate.clone();
+                let results: Vec<Value> = self.session.object_store.values()
+                    .filter(|v| matches!(v, Value::Object { class_name, .. } if class_name == &cand))
+                    .cloned()
+                    .collect();
+                return Ok(self.session.alloc_value(Value::Array(results)));
+            }
+        }
+        // Not a class/overlay — return empty array (or could error, but interpreter silently returns empty)
+        Ok(self.session.alloc_value(Value::Array(vec![])))
+    }
+
+    fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Tether, GoblinError> {
+        let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
+        let mut results: Vec<Value> = Vec::new();
+        for obj in all_values {
+            let include = if let Some(ref pred_fn) = pred {
+                let result = self.call_func_value(pred_fn.clone(), vec![obj.clone()])?;
+                matches!(result, Value::Bool(true))
+            } else {
+                true
+            };
+            if include { results.push(obj); }
+        }
+        Ok(self.session.alloc_value(Value::Array(results)))
+    }
+
+    fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Tether, GoblinError> {
+        use indexmap::IndexMap;
+        use std::collections::BTreeSet;
+        let instances = self.session.overlay_instances.clone();
+        let mut results: Vec<Value> = Vec::new();
+        for inst in &instances {
+            let mut fields: IndexMap<String, Value> = IndexMap::new();
+            fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
+            fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
+            fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+            fields.insert("strength".to_string(), Value::Float(inst.strength));
+            fields.insert("age".to_string(), Value::Int(inst.age as i64));
+            fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
+                Some(t) => Value::Int(t as i64),
+                None => Value::Nil,
+            });
+            let count_key = self.session.overlay_defs.get(&inst.overlay_name)
+                .and_then(|d| {
+                    use crate::session::OverlayApplyBehavior;
+                    if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None }
+                })
+                .unwrap_or_else(|| "count".to_string());
+            fields.insert(count_key, Value::Int(inst.count as i64));
+            for (k, v) in &inst.extra_fields {
+                fields.insert(k.clone(), v.clone());
+            }
+            let obj = Value::Object {
+                class_name: inst.overlay_name.clone(),
+                fields,
+                readonly_fields: BTreeSet::new(),
+                trait_fields: BTreeSet::new(),
+                uuid: inst.host_uuid.clone(),
+            };
+            let include = if let Some(ref pred_fn) = pred {
+                let result = self.call_func_value(pred_fn.clone(), vec![obj.clone()])?;
+                matches!(result, Value::Bool(true))
+            } else {
+                true
+            };
+            if include { results.push(obj); }
+        }
+        Ok(self.session.alloc_value(Value::Array(results)))
+    }
+
     fn vm_tick(&mut self) -> Result<(), GoblinError> {
         crate::tick::run_tick(self)
     }
@@ -1776,12 +2048,9 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         return session.read_value(&result_tether);
     }
 
-    // Fall through to map/collection field lookup
-    // For Object, look in fields first
+    // For Object, look in fields (missing fields return nil, matching interpreter behavior)
     if let Value::Object { fields, .. } = v {
-        if let Some(val) = fields.get(name) {
-            return Ok(val.clone());
-        }
+        return Ok(fields.get(name).cloned().unwrap_or(Value::Nil));
     }
     crate::collections::get_index(v, &Value::Str(name.to_string()))
 }

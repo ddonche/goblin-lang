@@ -1476,44 +1476,90 @@ impl Compiler {
                 Ok(true)
             }
 
-            // repeat(n, body [, as_name])
+            // repeat(n_or_array, body [, as_name])
+            // Supports: count loop (Int), array iteration (Array), infinite loop (Nil), cond loop (Bool)
             "repeat" => {
                 if args.len() < 2 {
                     self.emit(Opcode::LoadNil);
                     return Ok(true);
                 }
-                // Compile limit, store in hidden local
-                self.compile_expr(&args[0])?;
-                let limit_slot = self.scope_mut().declare_local("__repeat_n__");
-                self.emit(Opcode::StoreLocal(limit_slot));
+                // Compile limit/collection, store in hidden local.
+                // Special case: bare Ident may be a class name — use QueryByIdent to handle both.
+                if let Expr::Ident(name, _) = &args[0] {
+                    // Check if name resolves as a local/global variable
+                    let has_local = self.scope().find_local(name).is_some()
+                        || self.globals.iter().any(|g| g == name.as_str());
+                    if !has_local {
+                        // Emit as class/overlay query by name string
+                        let name_str = Value::Str(name.clone());
+                        let cidx = self.add_constant(name_str);
+                        self.emit(Opcode::LoadConst(cidx));
+                        self.emit(Opcode::CallBuiltin(BuiltinId::QueryByIdent, 1));
+                    } else {
+                        self.compile_expr(&args[0])?;
+                    }
+                } else {
+                    self.compile_expr(&args[0])?;
+                }
+                let n_slot = self.scope_mut().declare_local("__repeat_n__");
+                self.emit(Opcode::StoreLocal(n_slot));
+                // Determine at runtime if it's an array (for element iteration)
+                self.emit(Opcode::LoadLocal(n_slot));
+                self.emit(Opcode::CallBuiltin(BuiltinId::IsArray, 1));
+                let is_arr_slot = self.scope_mut().declare_local("__repeat_is_arr__");
+                self.emit(Opcode::StoreLocal(is_arr_slot));
                 // counter = 0
                 let zero = self.scope_mut().add_constant(Value::Int(0));
                 self.emit(Opcode::LoadConst(zero));
                 let counter_slot = self.scope_mut().declare_local("__repeat_i__");
                 self.emit(Opcode::StoreLocal(counter_slot));
-                // optional as_name binding
-                let as_slot = if args.len() >= 3 {
-                    let as_name = match &args[2] {
+                // optional as_name binding (or 'it' for array mode)
+                let as_name = if args.len() >= 3 {
+                    match &args[2] {
                         Expr::Str(s, _) => s.clone(),
                         Expr::Ident(s, _) => s.clone(),
-                        _ => "__repeat_as__".into(),
-                    };
-                    let s = self.scope_mut().declare_local(&as_name);
-                    self.emit(Opcode::LoadConst(zero));
-                    self.emit(Opcode::StoreLocal(s));
-                    Some(s)
-                } else { None };
-                // loop_start: if counter >= limit, exit
+                        _ => "it".into(),
+                    }
+                } else { "it".into() };
+                let it_slot = self.scope_mut().declare_local(&as_name);
+                self.emit(Opcode::LoadConst(zero));
+                self.emit(Opcode::StoreLocal(it_slot));
+                // idx slot (separate from 'it' for int mode, same semantics as counter)
+                let idx_slot = self.scope_mut().declare_local("idx");
+                self.emit(Opcode::LoadConst(zero));
+                self.emit(Opcode::StoreLocal(idx_slot));
+
+                // LOOP START: check exit condition (dispatch on type)
                 let loop_start = self.scope_mut().bytecode.len();
+                // push counter
                 self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::LoadLocal(limit_slot));
+                // push limit depending on is_arr
+                self.emit(Opcode::LoadLocal(is_arr_slot));
+                let not_arr_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                // array: limit = count(arr)
+                self.emit(Opcode::LoadLocal(n_slot));
+                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
+                let skip_int_jump = self.scope_mut().emit_jump(Opcode::Jump);
+                // int: limit = n (or handle nil/bool below)
+                self.scope_mut().patch_jump(not_arr_jump);
+                self.emit(Opcode::LoadLocal(n_slot));
+                self.scope_mut().patch_jump(skip_int_jump);
+                // compare: counter < limit
                 self.emit(Opcode::Lt);
                 let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // update as_name if present
-                if let Some(s) = as_slot {
-                    self.emit(Opcode::LoadLocal(counter_slot));
-                    self.emit(Opcode::StoreLocal(s));
-                }
+
+                // If array mode: bind it_slot = arr[counter], idx = counter
+                self.emit(Opcode::LoadLocal(is_arr_slot));
+                let skip_bind_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.emit(Opcode::LoadLocal(n_slot));
+                self.emit(Opcode::LoadLocal(counter_slot));
+                self.emit(Opcode::GetIndex);
+                self.emit(Opcode::StoreLocal(it_slot));
+                self.scope_mut().patch_jump(skip_bind_jump);
+                // always update idx = counter
+                self.emit(Opcode::LoadLocal(counter_slot));
+                self.emit(Opcode::StoreLocal(idx_slot));
+
                 // push loop context for stop/skip
                 self.loop_stack.push(LoopCtx::default());
                 // body
@@ -1821,9 +1867,34 @@ impl Compiler {
             Some(b) => b,
             None    => return Ok(None),
         };
+        // :objects/:overlays with a predicate — auto-wrap predicate in lambda(it)
+        let bare = name.trim_start_matches(':');
+        if (bare == "objects" || bare == "overlays") && args.len() == 1 {
+            self.compile_predicate_lambda(&args[0])?;
+            self.emit(Opcode::CallBuiltin(bid, 1));
+            return Ok(Some(()));
+        }
         for arg in args { self.compile_expr(arg)?; }
         self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
         Ok(Some(()))
+    }
+
+    /// Compile `expr` as an implicit `fn(it) { expr }` closure on the stack.
+    fn compile_predicate_lambda(&mut self, expr: &Expr) -> Result<(), GoblinError> {
+        self.push_scope("__pred__", 1);
+        self.scope_mut().declare_params(&["it".to_string()]);
+        self.compile_expr(expr)?;
+        self.scope_mut().emit(Opcode::Return);
+        let func_obj = self.pop_scope();
+        let has_upvalues = !func_obj.upvalue_descriptors.is_empty();
+        let v = Value::Function(std::rc::Rc::new(func_obj));
+        let cidx = self.add_constant(v);
+        if has_upvalues {
+            self.emit(Opcode::MakeClosure(cidx));
+        } else {
+            self.emit(Opcode::LoadConst(cidx));
+        }
+        Ok(())
     }
 }
 
@@ -2183,6 +2254,10 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "clone_object"                   => BuiltinId::CloneObject,
         "delete_object"                  => BuiltinId::DeleteObject,
         "delete_overlays_on"             => BuiltinId::DeleteOverlaysOn,
+
+        // Object/overlay query
+        "objects"  | ":objects"          => BuiltinId::Objects,
+        "overlays" | ":overlays"         => BuiltinId::Overlays,
 
         // Grid
         "grid"                           => BuiltinId::Grid,

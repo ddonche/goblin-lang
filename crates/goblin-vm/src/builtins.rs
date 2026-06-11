@@ -3343,6 +3343,10 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()
             ))
         }
+        // Objects/Overlays/QueryByIdent are handled in vm.rs before builtins::call_builtin is called.
+        BuiltinId::Objects | BuiltinId::Overlays | BuiltinId::QueryByIdent => {
+            Err(GoblinError::Runtime("objects/overlays/query_by_ident: must be called through VM dispatch".to_string()))
+        }
 
         // ── Token store ───────────────────────────────────────────────────────
         BuiltinId::RegisterToken => {
@@ -4206,7 +4210,20 @@ pub fn value_to_str(v: &Value) -> String {
         Value::CtrlSkip      => "<skip>".to_string(),
         Value::CtrlStop      => "<stop>".to_string(),
         Value::CtrlReturn(v) => format!("<return {}>", value_to_str(v)),
-        Value::Object { class_name, .. } => format!("<{}>", class_name),
+        Value::Object { class_name, fields, .. } => {
+            let mut s = format!("{}{{", class_name);
+            let mut first = true;
+            for (k, v) in fields.iter() {
+                if k == "uuid" { continue; }
+                if !first { s.push_str(", "); }
+                first = false;
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&value_to_str(v));
+            }
+            s.push('}');
+            s
+        }
         Value::Ref(s)        => format!("<ref {}>", s),
         Value::GridRef { grid_id, x, y } => format!("<gridref {}[{},{}]>", grid_id, x, y),
         Value::Enum { enum_name, variant_name, .. } => format!("{}.{}", enum_name, variant_name),

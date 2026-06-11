@@ -339,6 +339,19 @@ impl Session {
         }
     }
 
+    /// Mark-sweep GC: free all stashes whose slot is NOT in `live_slots`.
+    /// Called by the VM after collecting all reachable tether addresses.
+    pub fn gc_mark_sweep(&mut self, live_slots: &std::collections::HashSet<u32>) {
+        let to_remove: Vec<usize> = self.arena
+            .iter()
+            .filter(|(slot, _)| !live_slots.contains(&(*slot as u32)))
+            .map(|(k, _)| k)
+            .collect();
+        for key in to_remove {
+            self.arena.remove(key);
+        }
+    }
+
     /// Number of live stashes.
     pub fn stash_count(&self) -> usize {
         self.arena.len()

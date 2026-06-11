@@ -63,7 +63,30 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
     for decl in &compiled.classes {
         compile_class_methods(decl, &mut session);
     }
-    for decl in compiled.classes { session.classes.insert(decl.name.clone(), decl); }
+    for decl in compiled.classes {
+        // Merge logic: if incoming decl has no actions/decision/judge/transitions
+        // (i.e., it's a matrix-synthesized class), preserve those from the existing class
+        // and also preserve fields that the matrix didn't redefine — matching interpreter behavior.
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+            if let Some(existing) = session.classes.get(&decl.name) {
+                let mut merged = decl.clone();
+                merged.actions = existing.actions.clone();
+                merged.decision = existing.decision.clone();
+                merged.judge = existing.judge.clone();
+                merged.transitions = existing.transitions.clone();
+                if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                let matrix_field_names: std::collections::HashSet<String> =
+                    merged.fields.iter().map(|f| f.name.clone()).collect();
+                let extra_fields: Vec<_> = existing.fields.iter()
+                    .filter(|f| !matrix_field_names.contains(&f.name))
+                    .cloned()
+                    .collect();
+                merged.fields.extend(extra_fields);
+                merged
+            } else { decl }
+        } else { decl };
+        session.classes.insert(merged.name.clone(), merged);
+    }
     for decl in compiled.enums   { session.enums.insert(decl.name.clone(), decl); }
     let mut vm = Vm::new(session);
     vm.execute(compiled.entry)

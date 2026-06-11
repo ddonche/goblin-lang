@@ -116,6 +116,7 @@ pub fn collection_operation(
 ) -> Result<Value, GoblinError> {
     match coll {
         Value::Array(xs) => array_op(xs, pos, op, session),
+        Value::Collection(c) => { let xs = to_vec(c); array_op(&xs, pos, op, session) }
         Value::Map(m)    => map_op_btree(m, pos, op, session),
         Value::MapOrd(m) => map_op_indexed(m, pos, op, session),
         Value::Str(s)    => str_op(s, pos, op, session),

@@ -688,6 +688,12 @@ pub enum BuiltinId {
     CastDatetime,
     CastDuration,
 
+    // Object/overlay query builtins
+    Objects,
+    Overlays,
+    // Query all objects of a given class/overlay by name string (for `repeat ClassName`)
+    QueryByIdent,
+
     // DES tick
     Tick,
 
