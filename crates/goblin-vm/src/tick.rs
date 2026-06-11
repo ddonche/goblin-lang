@@ -58,7 +58,8 @@ fn des_flush_pending(vm: &mut Vm) {
                 .map(|e| e.interp_uuid.clone())
                 .unwrap_or_default();
             if let Some(obj) = vm.session.object_store.get_mut(&interp_uuid) {
-                if let Value::Object { fields, .. } = obj {
+                if let Value::Object { ref mut fields, .. } = obj {
+                    let fields = std::rc::Rc::make_mut(fields);
                     for (field, fv) in changes {
                         let val = match fv {
                             FieldValue::Float(f) => Value::Float(f),
@@ -479,7 +480,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         use std::collections::BTreeSet;
         let self_val = Value::Object {
             class_name: inst.overlay_name.clone(),
-            fields: self_fields,
+            fields: std::rc::Rc::new(self_fields),
             readonly_fields: BTreeSet::new(),
             trait_fields: BTreeSet::new(),
             uuid: inst.host_uuid.clone(),
@@ -877,7 +878,7 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                         use std::collections::BTreeSet;
                         let child_obj = Value::Object {
                             class_name: child_class.clone(),
-                            fields,
+                            fields: std::rc::Rc::new(fields),
                             readonly_fields: BTreeSet::new(),
                             trait_fields: BTreeSet::new(),
                             uuid: new_uuid.clone(),
@@ -958,7 +959,8 @@ fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
 }
 
 fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]) {
-    if let Some(Value::Object { fields, .. }) = vm.session.object_store.get_mut(host_uuid) {
+    if let Some(Value::Object { ref mut fields, .. }) = vm.session.object_store.get_mut(host_uuid) {
+        let fields = std::rc::Rc::make_mut(fields);
         for (fname, fval) in originals {
             fields.insert(fname.clone(), fval.clone());
         }

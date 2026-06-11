@@ -524,7 +524,7 @@ impl Vm {
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     if let Value::Object { ref mut fields, .. } = obj {
-                        fields.insert(field_name, new_val);
+                        std::rc::Rc::make_mut(fields).insert(field_name, new_val);
                     }
                 } else {
                     return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
@@ -573,7 +573,7 @@ impl Vm {
                     fields.insert(field.name.clone(), value);
                 }
 
-                let obj = Value::Object { class_name, fields, readonly_fields, trait_fields, uuid };
+                let obj = Value::Object { class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid };
                 self.stack.push(obj);
             }
 
@@ -1608,7 +1608,7 @@ impl Vm {
                     }
                     results.push(Value::Object {
                         class_name: inst.overlay_name.clone(),
-                        fields,
+                        fields: std::rc::Rc::new(fields),
                         readonly_fields: BTreeSet::new(),
                         trait_fields: BTreeSet::new(),
                         uuid: inst.host_uuid.clone(),
@@ -1676,7 +1676,7 @@ impl Vm {
             }
             let obj = Value::Object {
                 class_name: inst.overlay_name.clone(),
-                fields,
+                fields: std::rc::Rc::new(fields),
                 readonly_fields: BTreeSet::new(),
                 trait_fields: BTreeSet::new(),
                 uuid: inst.host_uuid.clone(),

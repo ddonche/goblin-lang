@@ -73,7 +73,7 @@ pub enum Value {
     // ── Object/type system ───────────────────────────────────────────────────
     Object {
         class_name: String,
-        fields: indexmap::IndexMap<String, Value>,
+        fields: Rc<indexmap::IndexMap<String, Value>>,
         readonly_fields: std::collections::BTreeSet<String>,
         trait_fields: std::collections::BTreeSet<String>,
         uuid: String,
