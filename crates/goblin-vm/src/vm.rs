@@ -646,14 +646,14 @@ impl Vm {
 
                 // Stack: [..., func, arg0, ..., arg_{argc-1}]
                 let func_idx = self.stack.len() - arg_count - 1;
-                let func_tether = self.stack[func_idx].clone();
-                let func_val = func_tether;
+                let func_val = self.stack[func_idx].clone();
 
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
                     let bid = *bid;
-                    let arg_tethers: Vec<_> = self.stack.drain(func_idx + 1..).collect();
-                    self.stack.pop(); // pop the func tether
+                    let raw_args: Vec<_> = self.stack.drain(func_idx + 1..).collect();
+                    let arg_tethers: Vec<_> = raw_args.into_iter().map(|v| Self::deref_val(&self.session.object_store, v)).collect();
+                    self.stack.pop(); // pop the func value
                     let result = crate::builtins::call_builtin(bid, arg_tethers, &mut self.session)?;
                     self.stack.push(result);
                 } else {
@@ -709,6 +709,9 @@ impl Vm {
                 }
                 let start = self.stack.len() - arg_count;
                 let arg_tethers: Vec<Value> = self.stack.drain(start..).collect();
+                let arg_tethers: Vec<Value> = arg_tethers.into_iter()
+                    .map(|v| Self::deref_val(&self.session.object_store, v))
+                    .collect();
 
                 // Special handling for invoke/summon/provoke — these need VM call capability.
                 match id {
@@ -1270,6 +1273,13 @@ impl Vm {
 
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn deref_val(object_store: &std::collections::HashMap<String, Value>, v: Value) -> Value {
+        match v {
+            Value::Ref(ref uuid) => object_store.get(uuid).cloned().unwrap_or(v),
+            other => other,
+        }
+    }
 
     fn deref_value(&self, v: Value) -> Value {
         match v {

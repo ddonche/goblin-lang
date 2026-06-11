@@ -4730,7 +4730,16 @@ fn process_memory_bytes() -> usize {
 }
 
 #[cfg(target_os = "windows")]
-fn process_memory_bytes() -> usize { 0 }
+fn process_memory_bytes() -> usize {
+    #[repr(C)]
+    struct PROCESS_MEMORY_COUNTERS { cb: u32, page_fault_count: u32, peak_working_set_size: usize, working_set_size: usize, quota_peak_paged_pool_usage: usize, quota_paged_pool_usage: usize, quota_peak_non_paged_pool_usage: usize, quota_non_paged_pool_usage: usize, pagefile_usage: usize, peak_pagefile_usage: usize }
+    extern "system" { fn GetCurrentProcess() -> *mut std::ffi::c_void; fn K32GetProcessMemoryInfo(h: *mut std::ffi::c_void, p: *mut PROCESS_MEMORY_COUNTERS, cb: u32) -> i32; }
+    unsafe {
+        let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 { pmc.working_set_size } else { 0 }
+    }
+}
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn process_memory_bytes() -> usize { 0 }
