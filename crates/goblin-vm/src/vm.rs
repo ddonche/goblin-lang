@@ -25,12 +25,15 @@ pub struct CallFrame {
     /// Index into Vm::stack where this frame's operands begin.
     /// On return, stack is truncated to this base.
     pub stack_base: usize,
+    /// If this is a method call, the tether for `self` in the caller's frame.
+    /// On return, if the result is an Object with same uuid, overwrite this tether.
+    pub self_tether: Option<Tether>,
 }
 
 impl CallFrame {
     fn new(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> Self {
         let locals = vec![None; func.locals];
-        CallFrame { locals, upvalues, ip: 0, func, stack_base }
+        CallFrame { locals, upvalues, ip: 0, func, stack_base, self_tether: None }
     }
 
     fn load_local(&self, slot: u8) -> Result<Tether, GoblinError> {
@@ -575,6 +578,101 @@ impl Vm {
                 let t = self.session.alloc_value(updated);
                 self.stack.push(t);
             }
+            Opcode::ClassInstantiate(idx) => {
+                let class_name = {
+                    let frame = self.call_stack.last().unwrap();
+                    match &frame.func.constants[idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        other => return Err(GoblinError::Runtime(format!("ClassInstantiate: expected str, got {}", other.type_name()))),
+                    }
+                };
+                let rhs = self.pop_value()?;
+                let class = self.session.classes.get(&class_name)
+                    .ok_or_else(|| GoblinError::Runtime(format!("unknown class '{}'", class_name)))?
+                    .clone();
+
+                let uuid = uuid::Uuid::new_v4().to_string();
+
+                let provided: indexmap::IndexMap<String, Value> = match rhs {
+                    Value::Map(m) => m.into_iter().collect(),
+                    Value::MapOrd(m) => m,
+                    other => return Err(GoblinError::Runtime(format!("class instantiation requires a map, got {}", other.type_name()))),
+                };
+
+                let mut fields = indexmap::IndexMap::new();
+                let mut readonly_fields = std::collections::BTreeSet::new();
+                let trait_fields = std::collections::BTreeSet::new();
+
+                // Auto-id (readonly)
+                fields.insert("id".to_string(), Value::Str(uuid.clone()));
+                readonly_fields.insert("id".to_string());
+
+                for field in &class.fields {
+                    if field.readonly { readonly_fields.insert(field.name.clone()); }
+                    let value = if let Some(v) = provided.get(&field.name) {
+                        v.clone()
+                    } else if let Some(default_expr) = &field.default {
+                        eval_default_expr(default_expr)
+                    } else {
+                        Value::Nil
+                    };
+                    fields.insert(field.name.clone(), value);
+                }
+
+                let obj = Value::Object { class_name, fields, readonly_fields, trait_fields, uuid };
+                let t = self.session.alloc_value(obj);
+                self.stack.push(t);
+            }
+
+            Opcode::CallMethod(name_idx, argc) => {
+                let method_name = {
+                    let frame = self.call_stack.last().unwrap();
+                    match &frame.func.constants[name_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        other => return Err(GoblinError::Runtime(format!("CallMethod: expected str method name, got {}", other.type_name()))),
+                    }
+                };
+                let arg_count = argc as usize;
+                // Stack: [recv, arg0, ..., arg_{argc-1}]
+                let recv_idx = self.stack.len() - arg_count - 1;
+                let recv_tether = self.stack[recv_idx].clone();
+                let recv_val = self.session.read_value(&recv_tether)?;
+
+                let class_name = match &recv_val {
+                    Value::Object { class_name, .. } => class_name.clone(),
+                    other => return Err(GoblinError::Runtime(format!("method call '{}' on non-object ({})", method_name, other.type_name()))),
+                };
+
+                // Look up pre-compiled method
+                let func_rc = self.session.compiled_methods
+                    .get(&(class_name.clone(), method_name.clone()))
+                    .cloned()
+                    .ok_or_else(|| GoblinError::Runtime(format!("unknown method '{}' on class '{}'", method_name, class_name)))?;
+
+                if self.call_stack.len() >= MAX_CALL_DEPTH {
+                    return Err(GoblinError::StackOverflow);
+                }
+
+                let stack_base = recv_idx;
+                let mut new_frame = CallFrame::new(func_rc, vec![], stack_base);
+
+                // Move args from stack into frame locals: slot 0 = self (recv), slot 1..n = args
+                for i in (0..=arg_count).rev() {
+                    let t = self.stack.pop().unwrap();
+                    new_frame.locals[i] = Some(t);
+                }
+                self.call_stack.push(new_frame);
+
+                // After the method returns (handled by Opcode::Return), the result is on stack.
+                // To propagate field mutations, we stash the recv_tether so Return can update it.
+                // We encode this by pushing a "self_writeback" marker — but that's complex.
+                // Instead, the method's Return handler will check if the result is an Object
+                // with the same uuid and overwrite the recv_tether.
+                // We store recv_tether in the frame's `self_tether` field for this purpose.
+                let frame = self.call_stack.last_mut().unwrap();
+                frame.self_tether = Some(recv_tether);
+            }
+
             Opcode::GetMember(idx) => {
                 let key = {
                     let frame = self.call_stack.last().unwrap();
@@ -652,6 +750,21 @@ impl Vm {
                 };
 
                 let frame = self.call_stack.pop().unwrap();
+
+                // If this was a method call, propagate any self mutations back to the caller.
+                if let Some(self_tether) = frame.self_tether {
+                    // Check if the method's `self` local was mutated.
+                    // The updated self is in locals[0] of the returned frame.
+                    if let Some(self_local) = frame.locals.get(0).and_then(|t| t.clone()) {
+                        if let Ok(updated_self) = self.session.read_value(&self_local) {
+                            if let Value::Object { .. } = &updated_self {
+                                // Overwrite the caller's receiver with the updated object.
+                                let _ = self.session.overwrite(&self_tether, updated_self);
+                            }
+                        }
+                    }
+                }
+
                 self.stack.truncate(frame.stack_base);
                 self.stack.push(ret_val);
             }
@@ -1406,6 +1519,21 @@ fn value_to_str(v: &Value) -> String {
 }
 
 /// Handle `.method` postfix member accesses that dispatch to builtins.
+fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
+    use goblin_ast::Expr;
+    match expr {
+        Expr::Nil(_)        => Value::Nil,
+        Expr::Bool(b, _)    => Value::Bool(*b),
+        Expr::Number(n, _)  => {
+            if n.contains('.') { n.parse::<f64>().map(Value::Float).unwrap_or(Value::Nil) }
+            else { n.parse::<i64>().map(Value::Int).unwrap_or(Value::Nil) }
+        }
+        Expr::Str(s, _)     => Value::Str(s.clone()),
+        Expr::Char(c, _)    => Value::Char(*c),
+        _                   => Value::Nil,
+    }
+}
+
 fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
     use crate::value::BuiltinId;
     use crate::builtins::call_builtin;
@@ -1546,6 +1674,12 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
     }
 
     // Fall through to map/collection field lookup
+    // For Object, look in fields first
+    if let Value::Object { fields, .. } = v {
+        if let Some(val) = fields.get(name) {
+            return Ok(val.clone());
+        }
+    }
     crate::collections::get_index(v, &Value::Str(name.to_string()))
 }
 

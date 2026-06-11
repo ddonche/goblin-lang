@@ -108,6 +108,11 @@ pub enum Opcode {
     GetMember(u16),
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
     SetField(u16),
+    /// Pop a map value, instantiate a class object from it. constants[idx] = class name string.
+    ClassInstantiate(u16),
+    /// Stack: [recv, arg0..arg_{argc-1}]. constants[name_idx] = method name. Pop all, push result.
+    /// After call, if result is Object with same uuid as recv, overwrite recv's storage.
+    CallMethod(u16, u8),
 
     // ── Function calls ─────────────────────────────────────────────────────────
     /// Call with argc positional args.
@@ -233,6 +238,8 @@ impl Opcode {
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",
+            Opcode::ClassInstantiate(_) => "ClassInstantiate",
+            Opcode::CallMethod(_, _)    => "CallMethod",
             Opcode::Call(_)         => "Call",
             Opcode::Return          => "Return",
             Opcode::CallBuiltin(..) => "CallBuiltin",

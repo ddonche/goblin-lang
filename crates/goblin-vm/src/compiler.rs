@@ -390,6 +390,12 @@ impl Compiler {
             Stmt::Bind(bind) => {
                 self.compile_expr(&bind.expr)?;
 
+                // If this is a typed bind (alice|Person = {...}), instantiate the class.
+                if let Some(ref cn) = bind.class_name {
+                    let idx = self.add_constant(Value::Str(cn.clone()));
+                    self.emit(Opcode::ClassInstantiate(idx));
+                }
+
                 let name = &bind.name.0;
                 match bind.mode {
                     BindMode::Tether => {
@@ -789,18 +795,21 @@ impl Compiler {
             }
 
             Expr::Call(recv, method, args, _) => {
-                // recv.method(args) — compile as a free call on the method with recv as first arg.
-                // For now: look up method as a global/local function.
-                // TODO: when object methods are supported, dispatch differently.
-                let load_op = self.resolve_load(method)
-                    .unwrap_or_else(|_| {
-                        // Emit a placeholder; will fail at runtime if name not found.
-                        Opcode::LoadNil
-                    });
-                self.emit(load_op);
-                self.compile_expr(recv)?;
-                for arg in args { self.compile_expr(arg)?; }
-                self.emit(Opcode::Call((args.len() + 1) as u8));
+                // recv.method(args) — try free function first, fall back to method dispatch.
+                // If method is a known local/global, call it directly with recv as first arg.
+                // Otherwise emit CallMethod so the VM can dispatch on the receiver's class.
+                if let Ok(load_op) = self.resolve_load(method) {
+                    self.emit(load_op);
+                    self.compile_expr(recv)?;
+                    for arg in args { self.compile_expr(arg)?; }
+                    self.emit(Opcode::Call((args.len() + 1) as u8));
+                } else {
+                    // Method call: stack will be [recv, arg0, ..., arg_{n-1}]
+                    self.compile_expr(recv)?;
+                    for arg in args { self.compile_expr(arg)?; }
+                    let method_idx = self.add_constant(Value::Str(method.clone()));
+                    self.emit(Opcode::CallMethod(method_idx, args.len() as u8));
+                }
             }
 
             Expr::NsCall(ns, name, args, _) => {

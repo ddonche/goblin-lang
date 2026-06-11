@@ -130,6 +130,9 @@ pub struct Session {
     /// Class definitions registered at runtime.
     pub classes: HashMap<String, ClassDecl>,
 
+    /// Pre-compiled class methods: (class_name, method_name) -> FunctionObject
+    pub compiled_methods: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
+
     /// Enum definitions registered at runtime.
     pub enums: HashMap<String, EnumDecl>,
 
@@ -181,6 +184,7 @@ impl Session {
             response: ResponseState::default(),
             grid_store: GridStore::new(),
             classes: HashMap::new(),
+            compiled_methods: HashMap::new(),
             enums: HashMap::new(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             imported: std::collections::HashSet::new(),

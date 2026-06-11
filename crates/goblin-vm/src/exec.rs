@@ -5,6 +5,37 @@ use crate::session::{GcMode, Session};
 use crate::value::Value;
 use crate::vm::Vm;
 
+fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session) {
+    use crate::compiler::Compiler;
+    for action in &class.actions {
+        // Build a pseudo-ActionDecl with 'self' prepended as the first parameter
+        let self_param = goblin_ast::Param {
+            name: "self".to_string(),
+            type_name: None,
+            default: None,
+            span: action.span.clone(),
+        };
+        let mut params = vec![self_param];
+        params.extend(action.params.clone());
+        let pseudo = goblin_ast::ActionDecl {
+            name: action.name.clone(),
+            params,
+            body: action.body.clone(),
+            span: action.span.clone(),
+            ret: action.ret.clone(),
+        };
+        match Compiler::new().compile_action(&pseudo) {
+            Ok(func) => {
+                session.compiled_methods.insert(
+                    (class.name.clone(), action.name.clone()),
+                    std::rc::Rc::new(func),
+                );
+            }
+            Err(_) => {}
+        }
+    }
+}
+
 pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
     // Lex
     let tokens = goblin_lexer::lex(source, "<source>")
@@ -26,6 +57,9 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
 
     // Execute
     let mut session = Session::new(GcMode::Auto);
+    for decl in &compiled.classes {
+        compile_class_methods(decl, &mut session);
+    }
     for decl in compiled.classes { session.classes.insert(decl.name.clone(), decl); }
     for decl in compiled.enums   { session.enums.insert(decl.name.clone(), decl); }
     let mut vm = Vm::new(session);
