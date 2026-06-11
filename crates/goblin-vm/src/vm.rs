@@ -204,25 +204,15 @@ impl Vm {
             }
             Opcode::StoreLocal(slot) => {
                 let t = self.stack_pop()?;
-                if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                    // Mirror interpreter: store object in object_store, put Ref in slot.
                     let uuid = uuid.clone();
                     let val = self.session.read_value(&t).unwrap();
-                    let frame = self.call_stack.last().unwrap();
-                    let var_name = frame.func.local_names.get(slot as usize)
-                        .map(|s| s.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !var_name.is_empty() && !var_name.starts_with("__") {
-                        // Only insert if: this var is already tracked OR the object's UUID
-                        // isn't tracked under any other name yet (first declaration).
-                        let already_tracked = self.session.object_store.contains_key(&var_name);
-                        let uuid_known = self.session.object_store.values()
-                            .any(|v| matches!(v, Value::Object { uuid: u, .. } if *u == uuid));
-                        if already_tracked || !uuid_known {
-                            self.session.object_store.insert(var_name, val);
-                        }
-                    }
-                }
+                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.alloc_value(Value::Ref(uuid))
+                } else {
+                    t
+                };
                 self.call_stack.last_mut().unwrap().store_local(slot, t);
             }
 
@@ -237,22 +227,14 @@ impl Vm {
             }
             Opcode::StoreGlobal(idx) => {
                 let t = self.stack_pop()?;
-                if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
                     let uuid = uuid.clone();
                     let val = self.session.read_value(&t).unwrap();
-                    let var_name = self.session.global_names.get(idx as usize)
-                        .map(|s| s.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !var_name.is_empty() && !var_name.starts_with("__") {
-                        let already_tracked = self.session.object_store.contains_key(&var_name);
-                        let uuid_known = self.session.object_store.values()
-                            .any(|v| matches!(v, Value::Object { uuid: u, .. } if *u == uuid));
-                        if already_tracked || !uuid_known {
-                            self.session.object_store.insert(var_name, val);
-                        }
-                    }
-                }
+                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.alloc_value(Value::Ref(uuid))
+                } else {
+                    t
+                };
                 self.session.set_global(idx as usize, t);
             }
 
@@ -266,6 +248,12 @@ impl Vm {
             }
             Opcode::StoreUpvalue(idx) => {
                 let t = self.stack_pop()?;
+                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                    let uuid = uuid.clone();
+                    let val = self.session.read_value(&t).unwrap();
+                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.alloc_value(Value::Ref(uuid))
+                } else { t };
                 self.call_stack.last_mut().unwrap()
                     .upvalues.get(idx as usize)
                     .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?
@@ -588,27 +576,23 @@ impl Vm {
                     Value::Str(s) => s.clone(),
                     other => return Err(GoblinError::Runtime(format!("SetField: key must be str, got {}", other.type_name()))),
                 };
-                let obj_val = self.pop_value()?;
-                let updated = match obj_val {
-                    Value::Object { class_name, mut fields, readonly_fields, trait_fields, uuid } => {
-                        fields.insert(field_name, new_val);
-                        Value::Object { class_name, fields, readonly_fields, trait_fields, uuid }
-                    }
+                // The object expression leaves a Ref or Object on the stack.
+                let obj_tether = self.stack_pop()?;
+                let uuid = match self.session.read_value(&obj_tether)? {
+                    Value::Ref(u) => u,
+                    Value::Object { uuid, .. } => uuid,
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
-                // Sync mutation to object_store so other bindings see the update.
-                if let Value::Object { ref uuid, .. } = updated {
-                    let uuid = uuid.clone();
-                    for v in self.session.object_store.values_mut() {
-                        if let Value::Object { uuid: u, .. } = v {
-                            if *u == uuid {
-                                *v = updated.clone();
-                                break;
-                            }
-                        }
+                // Mutate directly in object_store (shared reference semantics, like interpreter).
+                if let Some(obj) = self.session.object_store.get_mut(&uuid) {
+                    if let Value::Object { ref mut fields, .. } = obj {
+                        fields.insert(field_name, new_val);
                     }
+                } else {
+                    return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
                 }
-                let t = self.session.alloc_value(updated);
+                // Push ref back so caller can chain / store back.
+                let t = self.session.alloc_value(Value::Ref(uuid));
                 self.stack.push(t);
             }
             Opcode::ClassInstantiate(idx) => {
@@ -783,20 +767,9 @@ impl Vm {
                 };
 
                 let frame = self.call_stack.pop().unwrap();
-
-                // If this was a method call, propagate any self mutations back to the caller.
-                if let Some(self_tether) = frame.self_tether {
-                    // Check if the method's `self` local was mutated.
-                    // The updated self is in locals[0] of the returned frame.
-                    if let Some(self_local) = frame.locals.get(0).and_then(|t| t.clone()) {
-                        if let Ok(updated_self) = self.session.read_value(&self_local) {
-                            if let Value::Object { .. } = &updated_self {
-                                // Overwrite the caller's receiver with the updated object.
-                                let _ = self.session.overwrite(&self_tether, updated_self);
-                            }
-                        }
-                    }
-                }
+                // Object mutations propagate via object_store (shared Ref semantics).
+                // No explicit self-propagation needed.
+                let _ = frame.self_tether;
 
                 self.stack.truncate(frame.stack_base);
                 self.stack.push(ret_val);
@@ -1412,13 +1385,24 @@ impl Vm {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// Read a value, automatically dereferencing Value::Ref through object_store.
+    fn deref_value(&self, t: &Tether) -> Result<Value, GoblinError> {
+        let v = self.session.read_value(t)?;
+        match v {
+            Value::Ref(uuid) => self.session.object_store.get(&uuid)
+                .cloned()
+                .ok_or_else(|| GoblinError::Runtime(format!("dangling ref: uuid {} not in object_store", uuid))),
+            other => Ok(other),
+        }
+    }
+
     fn stack_pop(&mut self) -> Result<Tether, GoblinError> {
         self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))
     }
 
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
         let t = self.stack_pop()?;
-        self.session.read_value(&t)
+        self.deref_value(&t)
     }
 
     fn pop_int(&mut self) -> Result<i64, GoblinError> {
