@@ -78,9 +78,30 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             } else {
                 (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
             };
-            let mut m = to_f64_val(&vals[0])?;
-            for v in &vals[1..] { let f = to_f64_val(v)?; if f < m { m = f; } }
-            Ok(Value::Float(m))
+            let any_big = vals.iter().any(|v| matches!(v, Value::Big(_)));
+            if any_big {
+                use rust_decimal::prelude::FromStr;
+                let to_dec = |v: &Value| -> Result<rust_decimal::Decimal, GoblinError> {
+                    match v {
+                        Value::Big(d) => Ok(*d),
+                        Value::Int(n) => Ok(rust_decimal::Decimal::from(*n)),
+                        Value::Float(f) => rust_decimal::Decimal::from_str(&f.to_string()).map_err(|_| GoblinError::Runtime("min: bad float".into())),
+                        other => Err(GoblinError::type_error("number", other.type_name(), "min")),
+                    }
+                };
+                let mut m = to_dec(&vals[0])?;
+                for v in &vals[1..] { let d = to_dec(v)?; if d < m { m = d; } }
+                Ok(Value::Big(m))
+            } else {
+                let mut m = to_f64_val(&vals[0])?;
+                for v in &vals[1..] { let f = to_f64_val(v)?; if f < m { m = f; } }
+                // preserve Int type when all values are Int
+                if vals.iter().all(|v| matches!(v, Value::Int(_))) {
+                    Ok(Value::Int(m as i64))
+                } else {
+                    Ok(Value::Float(m))
+                }
+            }
         }
         BuiltinId::Max => {
             if args.is_empty() { return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "max".into() }); }
@@ -91,9 +112,29 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             } else {
                 (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
             };
-            let mut m = to_f64_val(&vals[0])?;
-            for v in &vals[1..] { let f = to_f64_val(v)?; if f > m { m = f; } }
-            Ok(Value::Float(m))
+            let any_big = vals.iter().any(|v| matches!(v, Value::Big(_)));
+            if any_big {
+                use rust_decimal::prelude::FromStr;
+                let to_dec = |v: &Value| -> Result<rust_decimal::Decimal, GoblinError> {
+                    match v {
+                        Value::Big(d) => Ok(*d),
+                        Value::Int(n) => Ok(rust_decimal::Decimal::from(*n)),
+                        Value::Float(f) => rust_decimal::Decimal::from_str(&f.to_string()).map_err(|_| GoblinError::Runtime("max: bad float".into())),
+                        other => Err(GoblinError::type_error("number", other.type_name(), "max")),
+                    }
+                };
+                let mut m = to_dec(&vals[0])?;
+                for v in &vals[1..] { let d = to_dec(v)?; if d > m { m = d; } }
+                Ok(Value::Big(m))
+            } else {
+                let mut m = to_f64_val(&vals[0])?;
+                for v in &vals[1..] { let f = to_f64_val(v)?; if f > m { m = f; } }
+                if vals.iter().all(|v| matches!(v, Value::Int(_))) {
+                    Ok(Value::Int(m as i64))
+                } else {
+                    Ok(Value::Float(m))
+                }
+            }
         }
         BuiltinId::Avg => {
             expect_n(1)?;
@@ -954,7 +995,9 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                             for i in 0..n_out { let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize; idxs.swap(i, j); result.push(Value::Char(pool[idxs[i]])); }
                             result
                         };
-                        return if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) };
+                        // char picks always join into a string (matching interpreter behaviour)
+                        let joined: String = out.iter().map(|v| match v { Value::Char(c) => *c, _ => '?' }).collect();
+                        return Ok(Value::Str(joined));
                     }
                     let range_start = get_num("range_start").unwrap_or(1.0) as i64;
                     let range_end   = get_num("range_end").unwrap_or(100.0) as i64;

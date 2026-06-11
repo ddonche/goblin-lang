@@ -1256,7 +1256,11 @@ impl Compiler {
             _ => None,
         });
 
-        // judge expression evaluates to the value of the matching arm.
+        if all {
+            return self.compile_judge_all_expr(using_name.as_deref(), header, arms);
+        }
+
+        // judge expression evaluates to the value of the first matching arm.
         let mut end_jumps: Vec<usize> = Vec::new();
 
         // If there's a header, compile it and store for comparison.
@@ -1269,14 +1273,10 @@ impl Compiler {
             None
         };
 
-        for (i, arm) in arms.iter().enumerate() {
-            let is_last = i == arms.len() - 1;
-
+        for arm in arms.iter() {
             if let Some(cond) = &arm.condition {
                 if let Some(hslot) = header_slot {
-                    // Pattern match: header == condition
                     self.emit(Opcode::LoadLocal(hslot));
-                    // If using an enum, qualify the condition: Status::idle
                     if let Some(ref en) = using_name {
                         if let Expr::Ident(variant, sp) = cond.as_ref() {
                             let qualified = Expr::NsCall(en.clone(), variant.clone(), vec![], sp.clone());
@@ -1292,31 +1292,81 @@ impl Compiler {
                     self.compile_expr(cond)?;
                 }
                 let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-
-                if let Some(v) = &arm.value {
-                    self.compile_expr(v)?;
-                } else {
-                    self.emit(Opcode::LoadNil);
-                }
-
-                if !is_last || !all {
-                    let end = self.scope_mut().emit_jump(Opcode::Jump);
-                    end_jumps.push(end);
-                }
+                if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
+                let end = self.scope_mut().emit_jump(Opcode::Jump);
+                end_jumps.push(end);
                 self.scope_mut().patch_jump(skip);
             } else {
                 // else arm
-                if let Some(v) = &arm.value {
-                    self.compile_expr(v)?;
-                } else {
-                    self.emit(Opcode::LoadNil);
-                }
+                if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
             }
         }
 
-        for j in end_jumps {
-            self.scope_mut().patch_jump(j);
+        for j in end_jumps { self.scope_mut().patch_jump(j); }
+        Ok(())
+    }
+
+    fn compile_judge_all_expr(
+        &mut self,
+        using_name: Option<&str>,
+        header: Option<&Expr>,
+        arms: &[JudgeArm],
+    ) -> Result<(), GoblinError> {
+        // Accumulator array in a hidden local.
+        self.emit(Opcode::MakeArray(0));
+        let acc_slot = self.scope_mut().declare_local("__judge_all_acc__");
+        self.emit(Opcode::StoreLocal(acc_slot));
+
+        // Separate else arm from non-else arms.
+        let (cond_arms, else_arms): (Vec<_>, Vec<_>) = arms.iter().partition(|a| a.condition.is_some());
+
+        let header_slot: Option<u8> = if let Some(h) = header {
+            self.compile_expr(h)?;
+            let s = self.scope_mut().declare_local("__judge_all_hdr__");
+            self.emit(Opcode::StoreLocal(s));
+            Some(s)
+        } else {
+            None
+        };
+
+        for arm in &cond_arms {
+            let cond = arm.condition.as_ref().unwrap();
+            if let Some(hslot) = header_slot {
+                self.emit(Opcode::LoadLocal(hslot));
+                if let Some(en) = using_name {
+                    if let Expr::Ident(variant, sp) = cond.as_ref() {
+                        let qualified = Expr::NsCall(en.to_string(), variant.clone(), vec![], sp.clone());
+                        self.compile_expr(&qualified)?;
+                    } else { self.compile_expr(cond)?; }
+                } else { self.compile_expr(cond)?; }
+                self.emit(Opcode::Eq);
+            } else {
+                self.compile_expr(cond)?;
+            }
+            let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+            // acc = acc.put_last(value)
+            self.emit(Opcode::LoadLocal(acc_slot));
+            if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
+            self.emit(Opcode::CallBuiltin(BuiltinId::PutLast, 2));
+            self.emit(Opcode::StoreLocal(acc_slot));
+            self.scope_mut().patch_jump(skip);
         }
+
+        // If accumulator is empty, evaluate else arm; otherwise push accumulator.
+        self.emit(Opcode::LoadLocal(acc_slot));
+        self.emit(Opcode::CallBuiltin(BuiltinId::IsEmpty, 1));
+        let not_empty_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+        // Empty: emit else value
+        if let Some(else_arm) = else_arms.first() {
+            if let Some(v) = &else_arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
+        } else {
+            self.emit(Opcode::LoadNil);
+        }
+        let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
+        self.scope_mut().patch_jump(not_empty_jump);
+        // Not empty: push accumulator
+        self.emit(Opcode::LoadLocal(acc_slot));
+        self.scope_mut().patch_jump(end_jump);
         Ok(())
     }
 
