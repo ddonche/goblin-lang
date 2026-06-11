@@ -166,9 +166,9 @@ pub enum Opcode {
     /// Register an overlay definition in session.overlay_defs.
     OverlayDef(Box<goblin_ast::OverlayDefStmt>),
     /// Apply an overlay to a host (host value must be on stack).
-    OverlayApply { overlay_name: String, strength: f64, duration_override: Option<u32> },
+    OverlayApply { overlay_name: String, host_var_name: String, strength: f64, duration_override: Option<u32> },
     /// Detach an overlay from a host (host variable name on stack).
-    OverlayDetach { overlay_name: String },
+    OverlayDetach { overlay_name: String, host_var_name: String },
     /// Register a class-level link definition.
     LinkDef(Box<goblin_ast::LinkDefStmt>),
     /// Register an object-level link definition override.

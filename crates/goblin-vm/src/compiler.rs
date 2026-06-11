@@ -599,15 +599,24 @@ impl Compiler {
             }
             Stmt::OverlayApply(apply) => {
                 self.compile_expr(&apply.host_expr)?;
+                let host_var_name = match &apply.host_expr {
+                    goblin_ast::Expr::Ident(name, _) => name.clone(),
+                    _ => String::new(),
+                };
                 self.emit(Opcode::OverlayApply {
                     overlay_name: apply.overlay_name.clone(),
+                    host_var_name,
                     strength: apply.strength,
                     duration_override: apply.duration_override,
                 });
             }
             Stmt::OverlayDetach(detach) => {
                 self.compile_expr(&detach.host_expr)?;
-                self.emit(Opcode::OverlayDetach { overlay_name: detach.overlay_name.clone() });
+                let host_var_name = match &detach.host_expr {
+                    goblin_ast::Expr::Ident(name, _) => name.clone(),
+                    _ => String::new(),
+                };
+                self.emit(Opcode::OverlayDetach { overlay_name: detach.overlay_name.clone(), host_var_name });
             }
             Stmt::LinkDef(def) => {
                 self.emit(Opcode::LinkDef(Box::new(def.clone())));

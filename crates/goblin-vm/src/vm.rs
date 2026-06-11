@@ -1055,15 +1055,12 @@ impl Vm {
                 self.session.overlay_defs.insert(vm_def.name.clone(), vm_def);
             }
 
-            Opcode::OverlayApply { overlay_name, strength, duration_override } => {
+            Opcode::OverlayApply { overlay_name, host_var_name, strength, duration_override } => {
                 use crate::session::{OverlayInstance, OverlayInstanceId};
                 let host_val = self.pop_value()?;
                 let (host_var, host_uuid) = match &host_val {
-                    Value::Object { uuid, .. } => {
-                        // We need the var name — use uuid as proxy since we don't track var names here
-                        (uuid.clone(), uuid.clone())
-                    }
-                    Value::Str(s) => (s.clone(), s.clone()),
+                    Value::Object { uuid, .. } => (host_var_name.clone(), uuid.clone()),
+                    Value::Str(s) => (host_var_name.clone(), s.clone()),
                     _ => return Err(GoblinError::Runtime("overlay apply: host must be an object or string".into())),
                 };
                 let _def = self.session.overlay_defs.get(overlay_name.as_str())
@@ -1085,15 +1082,10 @@ impl Vm {
                 self.session.overlay_instances.push(inst);
             }
 
-            Opcode::OverlayDetach { overlay_name } => {
-                let host_val = self.pop_value()?;
-                let host_var = match &host_val {
-                    Value::Object { uuid, .. } => uuid.clone(),
-                    Value::Str(s) => s.clone(),
-                    _ => return Err(GoblinError::Runtime("overlay detach: host must be an object or string".into())),
-                };
+            Opcode::OverlayDetach { overlay_name, host_var_name } => {
+                let _host_val = self.pop_value()?;
                 self.session.overlay_instances.retain(|inst| {
-                    !(inst.overlay_name == *overlay_name && inst.host_var == host_var)
+                    !(inst.overlay_name == *overlay_name && inst.host_var == *host_var_name)
                 });
             }
 

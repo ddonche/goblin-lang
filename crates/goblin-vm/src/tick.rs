@@ -182,7 +182,7 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             if *idx < vm.session.overlay_instances.len() {
                 let inst = vm.session.overlay_instances.remove(*idx);
                 if !inst.original_values.is_empty() {
-                    restore_originals(vm, &inst.host_var, &inst.original_values);
+                    restore_originals(vm, &inst.host_uuid, &inst.original_values);
                 }
                 if let Some(hh) = vm.session.des_store.handle_for_name(&inst.host_var) {
                     vm.session.des_index.remove_overlay(hh, &inst.overlay_name, inst.des_id);
@@ -195,7 +195,7 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     // ── Pass 7: Remove orphaned overlays ─────────────────────────────────────
     {
         let orphans: Vec<(String, String, OverlayInstanceId)> = vm.session.overlay_instances.iter()
-            .filter(|inst| !vm.session.object_store.contains_key(&inst.host_var))
+            .filter(|inst| !vm.session.object_store.contains_key(&inst.host_uuid))
             .map(|inst| (inst.host_var.clone(), inst.overlay_name.clone(), inst.des_id))
             .collect();
         for (host_var, overlay_name, des_id) in &orphans {
@@ -204,7 +204,7 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             }
         }
         let live: std::collections::HashSet<String> = vm.session.object_store.keys().cloned().collect();
-        vm.session.overlay_instances.retain(|inst| live.contains(&inst.host_var));
+        vm.session.overlay_instances.retain(|inst| live.contains(&inst.host_uuid));
     }
 
     // ── Pass 8: Decision tick ─────────────────────────────────────────────────
@@ -237,18 +237,18 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         for rule in &def.spread_rules {
             match rule {
                 SpreadRule::Channel { channel, rate } => {
-                    let host_class = match vm.session.object_store.get(&inst.host_var) {
+                    let host_class = match vm.session.object_store.get(&inst.host_uuid) {
                         Some(Value::Object { class_name, .. }) => class_name.clone(),
                         _ => continue,
                     };
                     let link_def = vm.session.link_defs.get(&(host_class.clone(), channel.clone())).cloned()
                         .or_else(|| vm.session.link_defs.get(&(host_class.clone(), "default".to_string())).cloned());
                     let link_def = match link_def { Some(d) => d, None => continue };
-                    let self_val = match vm.session.object_store.get(&inst.host_var).cloned() {
+                    let self_val = match vm.session.object_store.get(&inst.host_uuid).cloned() {
                         Some(v) => v, None => continue,
                     };
                     let candidates: Vec<(String, Value)> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_var && matches!(v, Value::Object { class_name, .. } if class_name == &host_class))
+                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object { class_name, .. } if class_name == &host_class))
                         .map(|(uuid, v)| (uuid.clone(), v.clone()))
                         .collect();
                     for (target_uuid, target_val) in candidates {
@@ -272,7 +272,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
                 SpreadRule::All { class_name, rate } => {
                     let candidates: Vec<String> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_var && matches!(v, Value::Object { class_name: cn, .. } if cn == class_name))
+                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object { class_name: cn, .. } if cn == class_name))
                         .map(|(uuid, _)| uuid.clone())
                         .collect();
                     for target_uuid in candidates {
@@ -293,12 +293,12 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
 
                 SpreadRule::Ownership { rate } => {
-                    let host_uuid = match vm.session.object_store.get(&inst.host_var) {
+                    let host_uuid = match vm.session.object_store.get(&inst.host_uuid) {
                         Some(Value::Object { uuid, .. }) => uuid.clone(),
                         _ => continue,
                     };
                     let candidates: Vec<String> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_var && matches!(v, Value::Object { fields, .. } if
+                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object { fields, .. } if
                             fields.get("owner_id").map(|o| matches!(o, Value::Str(s) if s == &host_uuid)).unwrap_or(false)
                         ))
                         .map(|(uuid, _)| uuid.clone())
@@ -321,11 +321,11 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
 
                 SpreadRule::Predicate { condition, rate } => {
-                    let self_val = match vm.session.object_store.get(&inst.host_var).cloned() {
+                    let self_val = match vm.session.object_store.get(&inst.host_uuid).cloned() {
                         Some(v) => v, None => continue,
                     };
                     let candidates: Vec<String> = vm.session.object_store.keys()
-                        .filter(|uuid| *uuid != &inst.host_var)
+                        .filter(|uuid| *uuid != &inst.host_uuid)
                         .cloned().collect();
                     for target_uuid in candidates {
                         let target_val = match vm.session.object_store.get(&target_uuid).cloned() {
@@ -400,7 +400,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     for inst in &instances_snap {
         let def = match defs.get(&inst.overlay_name) { Some(d) => d, None => continue };
         for rule in &def.spawn_rules {
-            let host_val = match vm.session.object_store.get(&inst.host_var).cloned() {
+            let host_val = match vm.session.object_store.get(&inst.host_uuid).cloned() {
                 Some(v) => v, None => continue,
             };
             let fires = vm.eval_tick_expr_bool(
@@ -412,10 +412,10 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             );
             if fires {
                 let already = vm.session.overlay_instances.iter().any(|i| {
-                    i.overlay_name == rule.spawn_overlay && i.host_var == inst.host_var
+                    i.overlay_name == rule.spawn_overlay && i.host_uuid == inst.host_uuid
                 });
                 if !already {
-                    to_spawn.push((rule.spawn_overlay.clone(), inst.host_var.clone(), rule.spawn_strength));
+                    to_spawn.push((rule.spawn_overlay.clone(), inst.host_uuid.clone(), rule.spawn_strength));
                 }
             }
         }
@@ -933,20 +933,20 @@ fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
     match behavior {
         OverlayApplyBehavior::Caps => {
             let exists = vm.session.overlay_instances.iter()
-                .any(|i| i.overlay_name == inst.overlay_name && i.host_var == inst.host_var);
+                .any(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid);
             if !exists {
                 vm.session.overlay_instances.push(inst);
             }
         }
         OverlayApplyBehavior::Replaces => {
             vm.session.overlay_instances.retain(|i| {
-                !(i.overlay_name == inst.overlay_name && i.host_var == inst.host_var)
+                !(i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid)
             });
             vm.session.overlay_instances.push(inst);
         }
         OverlayApplyBehavior::Stacks { .. } => {
             if let Some(existing) = vm.session.overlay_instances.iter_mut()
-                .find(|i| i.overlay_name == inst.overlay_name && i.host_var == inst.host_var)
+                .find(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid)
             {
                 existing.strength = (existing.strength + inst.strength).min(1.0);
                 existing.count += 1;
