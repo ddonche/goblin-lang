@@ -1,29 +1,29 @@
 /// format_basic.gbln
 say "=== testing formatting ==="
-treasure_hoard_amount | 1234567.89
+treasure_hoard_amount = 1234567.89
 
 /// Full spec (US style): (decimals, thousands, decimal)
-gbln_format_smoke_us | treasure_hoard_amount.format(2 , .)
+gbln_format_smoke_us = treasure_hoard_amount.format(2 , .)
 say gbln_format_smoke_us        /// expect: 1,234,567.89
 
 /// Short form: decimals only (no thousands separator)
-gbln_format_smoke_plain | treasure_hoard_amount.format(2)
+gbln_format_smoke_plain = treasure_hoard_amount.format(2)
 say gbln_format_smoke_plain     /// expect: 1234567.89
 
 /// format_rewrap_and_clear.gbln
 
-gbln_format_base_number | 10000
+gbln_format_base_number = 10000
 
 /// US grouping (thousands ',', decimal '.')
-gbln_format_us | gbln_format_base_number.format(0 , .)
+gbln_format_us = gbln_format_base_number.format(0 , .)
 say gbln_format_us              /// expect: 10,000
 
 /// Re-wrap: European style (thousands '.', decimal ',')
-gbln_format_eu | gbln_format_us.format(3 . ,)
+gbln_format_eu = gbln_format_us.format(3 . ,)
 say gbln_format_eu              /// expect: 10.000,000
 
 /// Clear back to raw number
-gbln_format_raw | clear_format(gbln_format_eu)
+gbln_format_raw = clear_format(gbln_format_eu)
 say gbln_format_raw + "\n"            /// expect: 10000
 
 
@@ -35,19 +35,19 @@ xx
 
 /// single return
 action calculate_tax(income, rate)
-    tax_amount | income * rate
+    tax_amount = income * rate
     return tax_amount
 xx
-total | calculate_tax(50000, 0.15)
+total = calculate_tax(50000, 0.15)
 say "tax=" ++ total
 
 /// multiple returns
 action divide_with_remainder(a, b)
-    q | a // b
-    r | a % b
+    q = a // b
+    r = a % b
     return q, r
 xx
-res | divide_with_remainder(17, 5)
+res = divide_with_remainder(17, 5)
 say "q=" ++ (res >> q) ++ " r=" ++ (res >> r)
 
 /// bare return (early exit)
@@ -55,33 +55,33 @@ action early_exit(flag)
     if flag
         return
     xx
-    x | 42
+    x = 42
     return x
 xx
-v1 | early_exit(true)
-v2 | early_exit(false)
+v1 = early_exit(true)
+v2 = early_exit(false)
 say "early_nil?=" ++ (v1 == nil)
 say "early_x=" ++ v2
 
 /// fallthrough = nil
 action falloff()
-    a | 10
-    b | 20
+    a = 10
+    b = 20
 xx
-f | falloff()
+f = falloff()
 say "falloff_nil?=" ++ (f == nil)
 
 /// bound method reference
-<>Player |
-    name: "{name}",
+@Player = 
+    name: "{name}", 
     health: 50
     act heal_by(amount)
-        self >> health |= min(100, health + amount)
+        health = min(100, health + amount)
         return health
     xx
 end
 
-player1 <> Player | { name: "Rook", health: 70 }
+player1|Player = { name: "Rook", health: 70 }
 
 action apply_heal(list, who)
     for v in list
@@ -96,59 +96,62 @@ say "Final health: "
 say (player1 >> health)
 
 /// field access via >>
-m | divide_with_remainder(10, 3)
+m = divide_with_remainder(10, 3)
 say "field_q=" ++ (m >> q)
 
 /// Test 1: Basic class with action
-<>User |
+@User = 
     id!: 0,
     name: "Default",
     email?: nil
-
+    
     act greet
         say "Hello, " ++ name
     end
 end
 
-user <> User | { id: 1, name: "Alice", email: "alice@example.com" }
+user|User = { id: 1, name: "Alice", email: "alice@example.com" }
 user.greet
 
-/// Test 2: Full nullable and readonly test
-<>User |
+/// Test 2: Full nullable and readonly test (final working version)
+@User = 
     id!: 0,
     name: "Default",
     email?: nil
     act greet
         say "Hello, " ++ name
     end
-
+    
     act show_email
         say email ?? "No email provided"
     end
 end
 
-user1 <> User | { 1, "Alice", "alice@example.com" }
+user1|User = { 1, "Alice", "alice@example.com" }
 user1.greet
 user1.show_email
 
-user2 <> User | { id: 2, name: "Bob", email: nil }
+user2|User = { id: 2, name: "Bob", email: nil }
 user2.greet
 user2.show_email
 
-////
+/// Test readonly - this should fail at runtime
+/// user1 >> id = 999
+
+//// 
 Other tests
 From another session
 ////
 
 /// Test 1: Basic class with string interpolation and actions
-<>Person | name: "{name}", age: 25
+@Person = name: "{name}", age: 25
     act greet()
         say "Hello, I'm {name} and I'm {age} years old"
     end
 end
 
 /// Test 2: Object instantiation with all values
-alice <> Person | { name: "Alice", age: 30 }
+alice|Person = { name: "Alice", age: 30 }
 
 /// Test 3: Field access
 alice >> name
@@ -157,26 +160,26 @@ alice >> name
 alice.greet()
 
 /// Test 5: Field assignment
-alice >> age |= 31
+alice >> age = 31
 alice.greet()
 
 /// Test 6: Using default values (skipping age)
-bob <> Person | { name: "Bob" }
+bob|Person = { name: "Bob" }
 bob.greet()
 
 /// Test 7: Class with numeric field and methods that access fields
-<>Counter | value: 0
+@Counter = value: 0
     act increment()
-        self >> value |= value + 1
+        value = value + 1
     end
-
+    
     act get()
-        self >> value
+        value
     end
 end
 
 /// Test 8: Object instantiation with single value
-c <> Counter | { value: 5 }
+c|Counter = { value: 5 }
 
 /// Test 9: Method that reads a field
 say c.get()
@@ -187,8 +190,8 @@ c.increment()
 /// Test 11: Verify field modification persisted
 say c.get()
 
-////
-Other tests
+//// 
+Other tests 
 From another session
 ////
 
@@ -208,7 +211,7 @@ enum Priority
 end
 
 say "=== testing judge with enum ==="
-status | Status::idle
+status = Status::idle
 judge status using Status
     idle:    say "System is idle"
     loading: say "Processing..."
@@ -216,7 +219,7 @@ judge status using Status
     error:   say "Error occurred"
 end
 
-priority | Priority::high
+priority = Priority::high
 judge priority using Priority
     low:      say "Low priority"
     medium:   say "Medium priority"
@@ -225,7 +228,7 @@ judge priority using Priority
 end
 
 say "=== testing judge ==="
-score | 95
+score = 95
 judge using score
     >= 90: say "A"
     >= 80: say "B"
@@ -233,7 +236,7 @@ judge using score
     else:  say "F"
 end
 
-x | 42
+x = 42
 judge
     x > 100: say "large"
     x > 50:  say "medium"
@@ -241,8 +244,8 @@ judge
     else:    say "invalid"
 end
 
-a | -1
-b | 2
+a = -1
+b = 2
 judge
     a < 0 <> b < 0: 1
     else: 0
@@ -250,12 +253,12 @@ end
 
 /// judge_all test
 say "=== testing judge_all ==="
-balance | 45
-trial_days | 5
-has_new_features | true
-maintenance_scheduled | false
+balance = 45
+trial_days = 5
+has_new_features = true
+maintenance_scheduled = false
 
-notifications |
+notifications = 
     judge_all
         balance < 50: "Low balance warning"
         trial_days < 7: "Trial expiring soon"
@@ -271,7 +274,7 @@ repeat 3
     say "Loading..."
 end
 
-enemy_count | 5
+enemy_count = 5
 repeat enemy_count
     say "Spawning enemy"
 end
@@ -290,9 +293,9 @@ end
 
 /// repeat with conditionals
 say "=== Testing skip with conditional ==="
-i | 0
+i = 0
 repeat 5
-    i |= i + 1
+    i = i + 1
     if i == 3
         say "Skipping iteration 3"
         skip
@@ -302,9 +305,9 @@ end
 
 say ""
 say "=== Testing stop with conditional ==="
-total | 0
+total = 0
 repeat 10
-    total |= total + 1
+    total = total + 1
     say "Iteration" ++ total
     if total == 4
         say "Stopping at iteration 4"
@@ -313,11 +316,13 @@ repeat 10
 end
 say "Final total:" ++ total
 
+///stop
+
 say ""
 say "=== Testing skip and stop together ==="
-n | 0
+n = 0
 repeat 10
-    n |= n + 1
+    n = n + 1
     if n == 3 or n == 5
         say "Skipping" ++ n
         skip
@@ -330,17 +335,17 @@ repeat 10
 end
 
 /// for loop tests
-names | ["Alice", "Bob", "Charlie"]
+names = ["Alice", "Bob", "Charlie"]
 for name in names
     say "Hello," ++ name
 end
 
-word | "Goblin"
+word = "Goblin"
 for char in word
     say char
 end
 
-numbers | [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 for num in numbers
     if num == 3 or num == 7
         skip
@@ -355,12 +360,12 @@ end
 
 /// UUID IN CLASS/OBJ
 
-<>User |
+@User =
     name: "{name}",
     age: 40
 end
 
-alice <> User | { name: "Alice", age: 41 }
+alice|User = { "Alice", 41 }
 
 alice *>>            /// { name: "Alice", age: 41 }
 alice *>> show_ids   /// { id: "uuid-...", name: "Alice", age: 41 }
@@ -379,13 +384,13 @@ say min([10, 3.5, 7])
 say max(3.5, 7, 2)
 
 say "big numbers"
-a2 | big(12345678901234567890)
-b2 | big(12345678901234567889)
-say min([a2, b2])
-say max(a2, b2)
+a = big(12345678901234567890)
+b = big(12345678901234567889)
+say min([a, b])
+say max(a, b)
 
 /// sneaky: will trigger T0205 (map index must be a string key)
-garbage | {"name": "Alice"}
+garbage = {"name": "Alice"}
 
 say "errors"
 ///say min([])          /// expect R0404: min of empty array
