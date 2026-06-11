@@ -420,24 +420,12 @@ impl Vm {
                 self.stack.push(t);
             }
             Opcode::Concat => {
+                // ++ operator: stringify both sides and join with a space
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
-                let result = match (&a, &b) {
-                    (Value::Str(x), Value::Str(y)) => Value::Str(format!("{}{}", x, y)),
-                    (Value::Array(x), Value::Array(y)) => {
-                        let mut v = x.clone();
-                        v.extend_from_slice(y);
-                        Value::Array(v)
-                    }
-                    (Value::Char(x), Value::Char(y)) => Value::Str(format!("{}{}", x, y)),
-                    (Value::Char(x), Value::Str(y))  => Value::Str(format!("{}{}", x, y)),
-                    (Value::Str(x), Value::Char(y))  => Value::Str(format!("{}{}", x, y)),
-                    // if either side is Formatted, treat as string concat
-                    (Value::Formatted(..), _) | (_, Value::Formatted(..)) => Value::Str(format!("{}{}", a_str, b_str)),
-                    _ => return Err(GoblinError::type_error("string or array", a.type_name(), "<>")),
-                };
+                let result = Value::Str(format!("{} {}", a_str, b_str));
                 let t = self.session.alloc_value(result);
                 self.stack.push(t);
             }

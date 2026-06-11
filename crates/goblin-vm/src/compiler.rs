@@ -1205,7 +1205,8 @@ impl Compiler {
         self.compile_expr(rhs)?;
 
         let instr = match op {
-            "+"  | "++"  => Opcode::Add,
+            "+"          => Opcode::Add,
+            "++"         => Opcode::Concat,
             "-"          => Opcode::Sub,
             "*"          => Opcode::Mul,
             "/"          => Opcode::Div,
