@@ -589,7 +589,7 @@ impl Vm {
                 // Stack: [recv, arg0, ..., arg_{argc-1}]
                 let recv_idx = self.stack.len() - arg_count - 1;
                 let recv_tether = self.stack[recv_idx].clone();
-                let recv_val = recv_tether;
+                let recv_val = Self::deref_val(&self.session.object_store, recv_tether);
 
                 let class_name = match &recv_val {
                     Value::Object { class_name, .. } => class_name.clone(),

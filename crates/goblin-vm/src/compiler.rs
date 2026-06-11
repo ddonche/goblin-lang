@@ -287,8 +287,8 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::StoreLocal(slot));
                 }
-                // For class methods, the last Stmt::Expr is an implicit return value.
-                if self.is_class_method && !stmts.is_empty() {
+                // The last statement's value is the implicit return (matches interpreter).
+                if !stmts.is_empty() {
                     let (body, last) = stmts.split_at(stmts.len() - 1);
                     for s in body { self.compile_stmt(s)?; }
                     match &last[0] {
@@ -296,13 +296,21 @@ impl Compiler {
                             self.compile_expr(e)?;
                             // Leave value on stack — don't Pop.
                         }
+                        Stmt::Bind(b) => {
+                            // Compile the full bind (stores into local), then reload the rhs value.
+                            self.compile_stmt(&last[0])?;
+                            self.compile_expr(&b.expr)?;
+                        }
+                        Stmt::TupleBind(b) => {
+                            self.compile_stmt(&last[0])?;
+                            self.compile_expr(&b.expr)?;
+                        }
                         other => {
                             self.compile_stmt(other)?;
                             self.emit(Opcode::LoadNil);
                         }
                     }
                 } else {
-                    for s in stmts { self.compile_stmt(s)?; }
                     self.emit(Opcode::LoadNil);
                 }
                 let scope = self.scopes.last_mut().unwrap();
