@@ -10,7 +10,7 @@
 use std::sync::mpsc;
 
 use crate::error::GoblinError;
-use crate::session::{GcMode, Session};
+use crate::session::Session;
 use crate::value::{FunctionObject, Value};
 use crate::vm::Vm;
 
@@ -171,7 +171,7 @@ impl Worker {
         inbox: mpsc::Receiver<Message>,
         outbox: mpsc::Sender<Message>,
     ) -> Self {
-        let session = Session::new(GcMode::Auto).with_worker_id(id);
+        let session = Session::new().with_worker_id(id);
         Worker { id, vm: Vm::new(session), inbox, outbox }
     }
 

@@ -304,17 +304,17 @@ pub struct CompiledModule {
 /// (where inner and outer both see mutations) require full open/close upvalue
 /// cells; that is a planned future improvement.
 #[derive(Debug, Clone)]
-pub struct UpvalueCell(pub Rc<RefCell<Tether>>);
+pub struct UpvalueCell(pub Rc<RefCell<Value>>);
 
 impl UpvalueCell {
-    pub fn new(t: Tether) -> Self {
-        UpvalueCell(Rc::new(RefCell::new(t)))
+    pub fn new(v: Value) -> Self {
+        UpvalueCell(Rc::new(RefCell::new(v)))
     }
-    pub fn get(&self) -> Tether {
+    pub fn get(&self) -> Value {
         self.0.borrow().clone()
     }
-    pub fn set(&self, t: Tether) {
-        *self.0.borrow_mut() = t;
+    pub fn set(&self, v: Value) {
+        *self.0.borrow_mut() = v;
     }
 }
 

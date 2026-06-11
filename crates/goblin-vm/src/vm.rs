@@ -4,7 +4,7 @@ use crate::error::GoblinError;
 use crate::opcode::Opcode;
 use crate::session::Session;
 use crate::value::{
-    BuiltinId, Closure, CollectionValue, FunctionObject, Tether, UpvalueCell,
+    BuiltinId, Closure, CollectionValue, FunctionObject, UpvalueCell,
     UpvalueDescriptor, Value,
 };
 
@@ -15,7 +15,7 @@ pub const MAX_CALL_DEPTH: usize = 512;
 /// One activation record on the call stack.
 pub struct CallFrame {
     /// Local variable slots (0..params are args, rest are locals).
-    pub locals: Vec<Option<Tether>>,
+    pub locals: Vec<Option<Value>>,
     /// Captured upvalues for the current closure (empty if plain function).
     pub upvalues: Vec<UpvalueCell>,
     /// Instruction pointer into func.bytecode.
@@ -25,35 +25,26 @@ pub struct CallFrame {
     /// Index into Vm::stack where this frame's operands begin.
     /// On return, stack is truncated to this base.
     pub stack_base: usize,
-    /// If this is a method call, the tether for `self` in the caller's frame.
-    /// On return, if the result is an Object with same uuid, overwrite this tether.
-    pub self_tether: Option<Tether>,
 }
 
 impl CallFrame {
     fn new(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> Self {
         let locals = vec![None; func.locals];
-        CallFrame { locals, upvalues, ip: 0, func, stack_base, self_tether: None }
+        CallFrame { locals, upvalues, ip: 0, func, stack_base }
     }
 
-    fn load_local(&self, slot: u8) -> Result<Tether, GoblinError> {
-        match self.locals.get(slot as usize) {
-            Some(Some(t)) => Ok(t.clone()),
-            Some(None) => Err(GoblinError::Runtime(
-                format!("local slot {slot} is uninitialized")
-            )),
-            None => Err(GoblinError::Runtime(
-                format!("local slot {slot} out of range (frame has {} slots)", self.locals.len())
-            )),
-        }
+    fn load_local(&self, slot: u8) -> Value {
+        self.locals.get(slot as usize)
+            .and_then(|v| v.clone())
+            .unwrap_or(Value::Nil)
     }
 
-    fn store_local(&mut self, slot: u8, t: Tether) {
+    fn store_local(&mut self, slot: u8, v: Value) {
         let idx = slot as usize;
         if idx >= self.locals.len() {
             self.locals.resize(idx + 1, None);
         }
-        self.locals[idx] = Some(t);
+        self.locals[idx] = Some(v);
     }
 }
 
@@ -69,20 +60,19 @@ struct CatchFrame {
 
 /// The Goblin VM: executes bytecode against a Session.
 ///
-/// - `session` owns the arena of stashes (isolated per worker).
-/// - `stack` is the operand stack (Tethers).
+/// - `session` owns all runtime state (globals, object_store, DES, etc).
+/// - `stack` is the operand stack (Values directly — no arena indirection).
 /// - `call_stack` is the function call stack (no Rust recursion).
 pub struct Vm {
     pub session: Session,
-    pub stack: Vec<Tether>,
+    pub stack: Vec<Value>,
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
-    gc_op_counter: u32,
 }
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0 }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -93,24 +83,13 @@ impl Vm {
         self.call_stack.push(frame);
         self.run_loop()?;
         // Return value is the top of the stack (or Nil).
-        if let Some(t) = self.stack.pop() {
-            self.session.read_value(&t)
-        } else {
-            Ok(Value::Nil)
-        }
+        Ok(self.stack.pop().unwrap_or(Value::Nil))
     }
 
     // ── Internal execution loop ──────────────────────────────────────────────
 
     fn run_loop(&mut self) -> Result<(), GoblinError> {
         loop {
-            // Periodic mark-sweep GC: every 5000 ops, free unreachable stashes.
-            self.gc_op_counter += 1;
-            if self.gc_op_counter >= 5000 {
-                self.gc_op_counter = 0;
-                self.vm_gc();
-            }
-
             // Fetch next opcode (avoid holding a mutable borrow across the match).
             let op = {
                 let frame = match self.call_stack.last_mut() {
@@ -119,11 +98,10 @@ impl Vm {
                 };
                 if frame.ip >= frame.func.bytecode.len() {
                     // Implicit return Nil at end of bytecode.
-                    let nil_t = self.session.alloc_value(Value::Nil);
                     let stack_base = frame.stack_base;
                     self.call_stack.pop();
                     self.stack.truncate(stack_base);
-                    self.stack.push(nil_t);
+                    self.stack.push(Value::Nil);
                     if self.call_stack.is_empty() {
                         break;
                     }
@@ -146,8 +124,7 @@ impl Vm {
                         self.stack.truncate(handler.stack_depth);
                         // Push error message as a string
                         let err_str = e.to_string();
-                        let t = self.session.alloc_value(Value::Str(err_str));
-                        self.stack.push(t);
+                        self.stack.push(Value::Str(err_str));
                         // Jump to catch block
                         if let Some(frame) = self.call_stack.last_mut() {
                             frame.ip = handler.catch_ip;
@@ -181,35 +158,29 @@ impl Vm {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone()
                 };
-                let t = self.session.alloc_value(val);
-                self.stack.push(t);
+                self.stack.push(val);
             }
             Opcode::LoadNil => {
-                let t = self.session.alloc_value(Value::Nil);
-                self.stack.push(t);
+                self.stack.push(Value::Nil);
             }
             Opcode::LoadTrue => {
-                let t = self.session.alloc_value(Value::Bool(true));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(true));
             }
             Opcode::LoadFalse => {
-                let t = self.session.alloc_value(Value::Bool(false));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(false));
             }
 
             // ── Locals ──────────────────────────────────────────────────────
             Opcode::LoadLocal(slot) => {
-                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                let t = self.call_stack.last().unwrap().load_local(slot);
                 self.stack.push(t);
             }
             Opcode::StoreLocal(slot) => {
                 let t = self.stack_pop()?;
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
-                    // Mirror interpreter: store object in object_store, put Ref in slot.
+                let t = if let Value::Object { ref uuid, .. } = t {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
-                    self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
+                    self.session.object_store.insert(uuid.clone(), t.clone());
+                    Value::Ref(uuid)
                 } else {
                     t
                 };
@@ -227,11 +198,10 @@ impl Vm {
             }
             Opcode::StoreGlobal(idx) => {
                 let t = self.stack_pop()?;
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let t = if let Value::Object { ref uuid, .. } = t {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
-                    self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
+                    self.session.object_store.insert(uuid.clone(), t.clone());
+                    Value::Ref(uuid)
                 } else {
                     t
                 };
@@ -248,11 +218,10 @@ impl Vm {
             }
             Opcode::StoreUpvalue(idx) => {
                 let t = self.stack_pop()?;
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let t = if let Value::Object { ref uuid, .. } = t {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
-                    self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
+                    self.session.object_store.insert(uuid.clone(), t.clone());
+                    Value::Ref(uuid)
                 } else { t };
                 self.call_stack.last_mut().unwrap()
                     .upvalues.get(idx as usize)
@@ -271,10 +240,9 @@ impl Vm {
 
             // ── overwrite! ───────────────────────────────────────────────────
             Opcode::Overwrite => {
-                let new_val_tether = self.stack_pop()?;
-                let target_tether = self.stack_pop()?;
-                let new_val = self.session.read_value(&new_val_tether)?;
-                self.session.overwrite(&target_tether, new_val)?;
+                let new_val = self.stack_pop()?;
+                let _target = self.stack_pop()?;
+                self.stack.push(new_val);
             }
 
             // ── Arithmetic ───────────────────────────────────────────────────
@@ -308,54 +276,45 @@ impl Vm {
                 let result = if let Some(spec) = a_spec.or(b_spec) {
                     match &raw { Value::Str(_) => raw, _ => Value::Formatted(Box::new(raw), spec) }
                 } else { raw };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::AddInt => {
                 let b = self.pop_int()?;
                 let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(a.wrapping_add(b)));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a.wrapping_add(b)));
             }
             Opcode::AddFloat => {
                 let b = self.pop_float()?;
                 let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a + b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a + b));
             }
             Opcode::Sub => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = self.arith_op(a, b, "sub", |x, y| x - y, |x, y| x - y)?;
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::SubInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(a.wrapping_sub(b)));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a.wrapping_sub(b)));
             }
             Opcode::SubFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a - b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a - b));
             }
             Opcode::Mul => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = self.arith_op(a, b, "mul", |x, y| x * y, |x, y| x * y)?;
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::MulInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(a.wrapping_mul(b)));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a.wrapping_mul(b)));
             }
             Opcode::MulFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a * b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a * b));
             }
             Opcode::Div => {
                 let b = self.pop_value()?;
@@ -384,19 +343,16 @@ impl Vm {
                     (Value::Pct(x), Value::Float(y))   => Value::Pct(x / y),
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "/")),
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::DivInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                let t = self.session.alloc_value(Value::Int(a / b));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a / b));
             }
             Opcode::DivFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a / b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a / b));
             }
             Opcode::Rem => {
                 let b = self.pop_value()?;
@@ -409,14 +365,12 @@ impl Vm {
                     (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "%")),
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::RemInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                let t = self.session.alloc_value(Value::Int(a % b));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a % b));
             }
             Opcode::Neg => {
                 let a = self.pop_value()?;
@@ -427,18 +381,15 @@ impl Vm {
                     Value::Pct(x)   => Value::Pct(-x),
                     _ => return Err(GoblinError::type_error("number", a.type_name(), "neg")),
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::NegInt => {
                 let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(-a));
-                self.stack.push(t);
+                self.stack.push(Value::Int(-a));
             }
             Opcode::NegFloat => {
                 let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(-a));
-                self.stack.push(t);
+                self.stack.push(Value::Float(-a));
             }
             Opcode::Concat => {
                 // ++ operator: stringify both sides and join with a space
@@ -447,49 +398,41 @@ impl Vm {
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let result = Value::Str(format!("{} {}", a_str, b_str));
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
 
             // ── Comparison ───────────────────────────────────────────────────
             Opcode::Eq => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                let t = self.session.alloc_value(Value::Bool(a == b));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(a == b));
             }
             Opcode::Ne => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                let t = self.session.alloc_value(Value::Bool(a != b));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(a != b));
             }
             Opcode::Lt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<")?;
-                let t = self.session.alloc_value(Value::Bool(result < 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result < 0));
             }
             Opcode::Le => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<=")?;
-                let t = self.session.alloc_value(Value::Bool(result <= 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result <= 0));
             }
             Opcode::Gt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">")?;
-                let t = self.session.alloc_value(Value::Bool(result > 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result > 0));
             }
             Opcode::Ge => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">=")?;
-                let t = self.session.alloc_value(Value::Bool(result >= 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result >= 0));
             }
             Opcode::Not => {
                 let a = self.pop_value()?;
-                let t = self.session.alloc_value(Value::Bool(!a.is_truthy()));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(!a.is_truthy()));
             }
 
             // ── Control flow ─────────────────────────────────────────────────
@@ -518,13 +461,11 @@ impl Vm {
                 let start = self.stack.len().saturating_sub(count);
                 let mut items = Vec::with_capacity(count);
                 for i in start..self.stack.len() {
-                    let v = self.session.read_value(&self.stack[i])?;
-                    items.push(v);
+                    items.push(self.stack[i].clone());
                 }
                 self.stack.truncate(start);
                 let coll = CollectionValue::from_flat(items);
-                let t = self.session.alloc_value(Value::Collection(Rc::new(coll)));
-                self.stack.push(t);
+                self.stack.push(Value::Collection(Rc::new(coll)));
             }
             Opcode::MakeMap(n) => {
                 let pair_count = n as usize;
@@ -533,8 +474,8 @@ impl Vm {
                 let mut all_str_keys = true;
                 for i in (start..self.stack.len()).step_by(2) {
                     if i + 1 < self.stack.len() {
-                        let k = self.session.read_value(&self.stack[i])?;
-                        let v = self.session.read_value(&self.stack[i + 1])?;
+                        let k = self.stack[i].clone();
+                        let v = self.stack[i + 1].clone();
                         if !matches!(k, Value::Str(_)) { all_str_keys = false; }
                         pairs.push((k, v));
                     }
@@ -548,23 +489,20 @@ impl Vm {
                 } else {
                     Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::GetIndex => {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::SetIndex => {
                 let new_val = self.pop_value()?;
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let updated = crate::collections::set_index(coll_val, &key, new_val)?;
-                let t = self.session.alloc_value(updated);
-                self.stack.push(t);
+                self.stack.push(updated);
             }
             Opcode::SetField(idx) => {
                 let new_val = self.pop_value()?;
@@ -578,7 +516,7 @@ impl Vm {
                 };
                 // The object expression leaves a Ref or Object on the stack.
                 let obj_tether = self.stack_pop()?;
-                let uuid = match self.session.read_value(&obj_tether)? {
+                let uuid = match obj_tether {
                     Value::Ref(u) => u,
                     Value::Object { uuid, .. } => uuid,
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
@@ -592,8 +530,7 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
                 }
                 // Push ref back so caller can chain / store back.
-                let t = self.session.alloc_value(Value::Ref(uuid));
-                self.stack.push(t);
+                self.stack.push(Value::Ref(uuid));
             }
             Opcode::ClassInstantiate(idx) => {
                 let class_name = {
@@ -637,8 +574,7 @@ impl Vm {
                 }
 
                 let obj = Value::Object { class_name, fields, readonly_fields, trait_fields, uuid };
-                let t = self.session.alloc_value(obj);
-                self.stack.push(t);
+                self.stack.push(obj);
             }
 
             Opcode::CallMethod(name_idx, argc) => {
@@ -653,7 +589,7 @@ impl Vm {
                 // Stack: [recv, arg0, ..., arg_{argc-1}]
                 let recv_idx = self.stack.len() - arg_count - 1;
                 let recv_tether = self.stack[recv_idx].clone();
-                let recv_val = self.session.read_value(&recv_tether)?;
+                let recv_val = recv_tether;
 
                 let class_name = match &recv_val {
                     Value::Object { class_name, .. } => class_name.clone(),
@@ -681,13 +617,7 @@ impl Vm {
                 self.call_stack.push(new_frame);
 
                 // After the method returns (handled by Opcode::Return), the result is on stack.
-                // To propagate field mutations, we stash the recv_tether so Return can update it.
-                // We encode this by pushing a "self_writeback" marker — but that's complex.
-                // Instead, the method's Return handler will check if the result is an Object
-                // with the same uuid and overwrite the recv_tether.
-                // We store recv_tether in the frame's `self_tether` field for this purpose.
-                let frame = self.call_stack.last_mut().unwrap();
-                frame.self_tether = Some(recv_tether);
+                // Field mutations propagate via object_store (shared Ref semantics).
             }
 
             Opcode::GetMember(idx) => {
@@ -701,8 +631,7 @@ impl Vm {
                 } else {
                     crate::collections::get_index(&coll_val, &key)?
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
 
             // ── Function calls ────────────────────────────────────────────────
@@ -718,7 +647,7 @@ impl Vm {
                 // Stack: [..., func, arg0, ..., arg_{argc-1}]
                 let func_idx = self.stack.len() - arg_count - 1;
                 let func_tether = self.stack[func_idx].clone();
-                let func_val = self.session.read_value(&func_tether)?;
+                let func_val = func_tether;
 
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
@@ -763,13 +692,10 @@ impl Vm {
                 let ret_val = if self.stack.len() > self.call_stack.last().unwrap().stack_base {
                     self.stack.pop().unwrap()
                 } else {
-                    self.session.alloc_value(Value::Nil)
+                    Value::Nil
                 };
 
                 let frame = self.call_stack.pop().unwrap();
-                // Object mutations propagate via object_store (shared Ref semantics).
-                // No explicit self-propagation needed.
-                let _ = frame.self_tether;
 
                 self.stack.truncate(frame.stack_base);
                 self.stack.push(ret_val);
@@ -782,7 +708,7 @@ impl Vm {
                     return Err(GoblinError::Runtime("stack underflow on CallBuiltin".into()));
                 }
                 let start = self.stack.len() - arg_count;
-                let arg_tethers: Vec<Tether> = self.stack.drain(start..).collect();
+                let arg_tethers: Vec<Value> = self.stack.drain(start..).collect();
 
                 // Special handling for invoke/summon/provoke — these need VM call capability.
                 match id {
@@ -803,13 +729,11 @@ impl Vm {
                     }
                     BuiltinId::Tick => {
                         self.vm_tick()?;
-                        let nil = self.session.alloc_value(Value::Nil);
-                        self.stack.push(nil);
+                        self.stack.push(Value::Nil);
                         return Ok(());
                     }
                     BuiltinId::QueryByIdent => {
-                        let name_val = self.session.read_value(&arg_tethers[0])?;
-                        let name = match name_val {
+                        let name = match arg_tethers[0].clone() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "QueryByIdent")),
                         };
@@ -821,7 +745,7 @@ impl Vm {
                         let pred = if arg_tethers.is_empty() {
                             None
                         } else {
-                            Some(self.session.read_value(&arg_tethers[0])?)
+                            Some(arg_tethers[0].clone())
                         };
                         let result = self.vm_objects_query(pred)?;
                         self.stack.push(result);
@@ -831,7 +755,7 @@ impl Vm {
                         let pred = if arg_tethers.is_empty() {
                             None
                         } else {
-                            Some(self.session.read_value(&arg_tethers[0])?)
+                            Some(arg_tethers[0].clone())
                         };
                         let result = self.vm_overlays_query(pred)?;
                         self.stack.push(result);
@@ -862,7 +786,7 @@ impl Vm {
                 for desc in &descriptors {
                     let tether = match desc {
                         UpvalueDescriptor::Local(slot) => {
-                            self.call_stack.last().unwrap().load_local(*slot)?
+                            self.call_stack.last().unwrap().load_local(*slot)
                         }
                         UpvalueDescriptor::Upvalue(uv_idx) => {
                             self.call_stack.last().unwrap()
@@ -877,8 +801,7 @@ impl Vm {
                 }
 
                 let closure = Closure { func: func_rc, upvalues };
-                let t = self.session.alloc_value(Value::Closure(Rc::new(closure)));
-                self.stack.push(t);
+                self.stack.push(Value::Closure(Rc::new(closure)));
             }
 
             Opcode::ToPct => {
@@ -889,8 +812,7 @@ impl Vm {
                     Value::Pct(p)   => p,
                     other => return Err(GoblinError::type_error("number", other.type_name(), "%")),
                 };
-                let t = self.session.alloc_value(Value::Pct(f / 100.0));
-                self.stack.push(t);
+                self.stack.push(Value::Pct(f / 100.0));
             }
 
             Opcode::MakePair => {
@@ -917,8 +839,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "><")),
                 };
-                let t = self.session.alloc_value(pair);
-                self.stack.push(t);
+                self.stack.push(pair);
             }
 
             Opcode::MakeRange => {
@@ -932,8 +853,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "..")),
                 };
-                let t = self.session.alloc_value(Value::Array(v));
-                self.stack.push(t);
+                self.stack.push(Value::Array(v));
             }
 
             Opcode::MakeRangeInclusive => {
@@ -947,8 +867,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "...")),
                 };
-                let t = self.session.alloc_value(Value::Array(v));
-                self.stack.push(t);
+                self.stack.push(Value::Array(v));
             }
 
             Opcode::Quick(_) => {
@@ -1160,7 +1079,7 @@ impl Vm {
                 let top_tether = self.stack.last()
                     .ok_or_else(|| GoblinError::Runtime("RegisterAction: empty stack".into()))?
                     .clone();
-                let value = self.session.read_value(&top_tether)?;
+                let value = top_tether;
                 self.session.named_values.insert(name, value);
             }
 
@@ -1173,8 +1092,7 @@ impl Vm {
                     }
                 };
                 let result = self.render_string_interp(&template)?;
-                let t = self.session.alloc_value(Value::Str(result));
-                self.stack.push(t);
+                self.stack.push(Value::Str(result));
             }
 
             Opcode::SelfField(idx) => {
@@ -1185,10 +1103,14 @@ impl Vm {
                         _ => return Err(GoblinError::Runtime("SelfField: bad constant".into())),
                     }
                 };
-                let self_tether = self.call_stack.last()
+                let self_val = self.call_stack.last()
                     .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
-                let result = if let Some(t) = self_tether {
-                    match self.session.read_value(&t)? {
+                let result = if let Some(t) = self_val {
+                    let t = match t {
+                        Value::Ref(ref uuid) => self.session.object_store.get(uuid).cloned().unwrap_or(Value::Nil),
+                        v => v,
+                    };
+                    match t {
                         Value::Object { ref fields, .. } => {
                             fields.get(&field_name).cloned().unwrap_or(Value::Nil)
                         }
@@ -1197,8 +1119,7 @@ impl Vm {
                 } else {
                     Value::Nil
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
         }
         Ok(())
@@ -1256,15 +1177,17 @@ impl Vm {
                 .and_then(|slot| frame.locals.get(slot).and_then(|opt| opt.clone()))
         });
         if let Some(t) = local_tether {
-            if let Ok(v) = self.session.read_value(&t) {
-                return crate::builtins::fmt_value_raw(&v);
-            }
+            return crate::builtins::fmt_value_raw(&t);
         }
         // 2. If self (locals[0]) is an Object, check its fields
         let self_tether = self.call_stack.last()
             .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
         if let Some(t) = self_tether {
-            if let Ok(Value::Object { ref fields, .. }) = self.session.read_value(&t) {
+            let t = match t {
+                Value::Ref(ref uuid) => self.session.object_store.get(uuid).cloned().unwrap_or(Value::Nil),
+                v => v,
+            };
+            if let Value::Object { ref fields, .. } = t {
                 if let Some(fv) = fields.get(name) {
                     return crate::builtins::fmt_value_raw(fv);
                 }
@@ -1274,9 +1197,7 @@ impl Vm {
         let global_tether = self.session.global_names.iter().position(|n| n == name)
             .and_then(|slot| self.session.globals.get(slot).cloned().flatten());
         if let Some(t) = global_tether {
-            if let Ok(v) = self.session.read_value(&t) {
-                return crate::builtins::fmt_value_raw(&v);
-            }
+            return crate::builtins::fmt_value_raw(&t);
         }
         // 4. Soft fail
         format!("{{{}}}", name)
@@ -1347,54 +1268,23 @@ impl Vm {
         }
     }
 
-    // ── GC ────────────────────────────────────────────────────────────────────
-
-    /// Collect all live tether slots reachable from the VM's roots:
-    /// stack, all call frame locals, and upvalue cells.
-    fn collect_live_slots(&self) -> std::collections::HashSet<u32> {
-        let mut live = std::collections::HashSet::new();
-        for t in &self.stack {
-            live.insert(t.addr.slot);
-        }
-        for frame in &self.call_stack {
-            for maybe_t in &frame.locals {
-                if let Some(t) = maybe_t {
-                    live.insert(t.addr.slot);
-                }
-            }
-            for cell in &frame.upvalues {
-                live.insert(cell.0.borrow().addr.slot);
-            }
-        }
-        live
-    }
-
-    /// Mark-sweep GC: free all arena stashes not reachable from live roots.
-    pub fn vm_gc(&mut self) {
-        let live = self.collect_live_slots();
-        self.session.gc_mark_sweep(&live);
-    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Read a value, automatically dereferencing Value::Ref through object_store.
-    fn deref_value(&self, t: &Tether) -> Result<Value, GoblinError> {
-        let v = self.session.read_value(t)?;
+    fn deref_value(&self, v: Value) -> Value {
         match v {
-            Value::Ref(uuid) => self.session.object_store.get(&uuid)
-                .cloned()
-                .ok_or_else(|| GoblinError::Runtime(format!("dangling ref: uuid {} not in object_store", uuid))),
-            other => Ok(other),
+            Value::Ref(ref uuid) => self.session.object_store.get(uuid).cloned().unwrap_or(v),
+            other => other,
         }
     }
 
-    fn stack_pop(&mut self) -> Result<Tether, GoblinError> {
+    fn stack_pop(&mut self) -> Result<Value, GoblinError> {
         self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))
     }
 
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
-        let t = self.stack_pop()?;
-        self.deref_value(&t)
+        let v = self.stack_pop()?;
+        Ok(self.deref_value(v))
     }
 
     fn pop_int(&mut self) -> Result<i64, GoblinError> {
@@ -1423,11 +1313,10 @@ impl Vm {
                     None => break,
                 };
                 if frame.ip >= frame.func.bytecode.len() {
-                    let nil_t = self.session.alloc_value(Value::Nil);
                     let stack_base = frame.stack_base;
                     self.call_stack.pop();
                     self.stack.truncate(stack_base);
-                    self.stack.push(nil_t);
+                    self.stack.push(Value::Nil);
                     continue;
                 }
                 let op = frame.func.bytecode[frame.ip].clone();
@@ -1463,11 +1352,10 @@ impl Vm {
         let stack_base = self.stack.len();
         // The result will be pushed at stack_base by Return, so use stack_base as the "func slot".
         // We push a dummy nil for the func slot position, then bind params directly.
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy); // placeholder for func tether position
+        self.stack.push(Value::Nil); // placeholder for func tether position
         let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
+            let t = a;
             new_frame.locals[i] = Some(t);
         }
         // The dummy func tether is at stack_base; Return will truncate to stack_base and push result.
@@ -1477,15 +1365,15 @@ impl Vm {
         // Result is on top of stack (Return pushed it at stack_base).
         let result_tether = self.stack.pop()
             .ok_or_else(|| GoblinError::Runtime("invoke: no return value on stack".into()))?;
-        Ok(self.session.read_value(&result_tether)?)
+        Ok(result_tether)
     }
 
-    fn vm_invoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
+    fn vm_invoke(&mut self, arg_tethers: Vec<Value>) -> Result<Value, GoblinError> {
         if arg_tethers.len() < 2 {
             return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "invoke".into() });
         }
-        let name = match self.session.read_value(&arg_tethers[0])? {
-            Value::Str(s) => s,
+        let name = match &arg_tethers[0] {
+            Value::Str(s) => s.clone(),
             other => return Err(GoblinError::type_error("str", other.type_name(), "invoke")),
         };
         if name.is_empty() {
@@ -1494,24 +1382,24 @@ impl Vm {
         // Form 1: invoke("name", [a, b, c]) — second arg is array
         // Form 2: invoke("name", a, b, c)
         let forwarded: Vec<Value> = if arg_tethers.len() == 2 {
-            match self.session.read_value(&arg_tethers[1])? {
+            match arg_tethers[1].clone() {
                 Value::Array(arr) => arr.iter().cloned().collect(),
                 other => vec![other],
             }
         } else {
-            arg_tethers[1..].iter().map(|t| self.session.read_value(t)).collect::<Result<Vec<_>, _>>()?
+            arg_tethers[1..].to_vec()
         };
         let result = self.call_named(&name, forwarded)?;
-        Ok(self.session.alloc_value(result))
+        Ok(result)
     }
 
-    fn vm_summon(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
+    fn vm_summon(&mut self, arg_tethers: Vec<Value>) -> Result<Value, GoblinError> {
         if arg_tethers.len() != 2 {
             return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "summon".into() });
         }
-        let mut acc = self.session.read_value(&arg_tethers[0])?;
-        let events_val = self.session.read_value(&arg_tethers[1])?;
-        let events: Vec<Value> = match &events_val {
+        let mut acc = arg_tethers[0].clone();
+        let events_val = &arg_tethers[1];
+        let events: Vec<Value> = match events_val {
             Value::Array(a) => a.iter().cloned().collect(),
             _ => return Err(GoblinError::type_error("array", events_val.type_name(), "summon events")),
         };
@@ -1522,26 +1410,26 @@ impl Vm {
             };
             acc = self.call_named(&name, vec![acc])?;
         }
-        Ok(self.session.alloc_value(acc))
+        Ok(acc)
     }
 
-    fn vm_provoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
+    fn vm_provoke(&mut self, arg_tethers: Vec<Value>) -> Result<Value, GoblinError> {
         if arg_tethers.is_empty() || arg_tethers.len() > 2 {
             return Err(GoblinError::ArityMismatch { expected: 1, got: arg_tethers.len(), name: "provoke".into() });
         }
-        let condition = match self.session.read_value(&arg_tethers[0])? {
+        let condition = match arg_tethers[0].clone() {
             Value::Bool(b) => b,
             other => return Err(GoblinError::type_error("bool", other.type_name(), "provoke")),
         };
         if !condition {
             let msg = if arg_tethers.len() == 2 {
-                crate::builtins::fmt_value_raw(&self.session.read_value(&arg_tethers[1])?)
+                crate::builtins::fmt_value_raw(&arg_tethers[1].clone())
             } else {
                 "Provoked constraint violated".to_string()
             };
             return Err(GoblinError::Runtime(msg));
         }
-        Ok(self.session.alloc_value(Value::Bool(true)))
+        Ok(Value::Bool(true))
     }
 
     // ── Tick (DES simulation step) ────────────────────────────────────────────
@@ -1599,11 +1487,10 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy);
+        self.stack.push(Value::Nil);
         let mut new_frame = CallFrame::new(func_rc, Vec::new(), stack_base);
         for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
+            let t = a;
             new_frame.locals[i] = Some(t);
         }
         self.call_stack.push(new_frame);
@@ -1611,7 +1498,7 @@ impl Vm {
         self.run_until_depth(depth_before)?;
         let result_tether = self.stack.pop()
             .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
-        self.session.read_value(&result_tether)
+        Ok(result_tether)
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -1641,11 +1528,10 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy);
+        self.stack.push(Value::Nil);
         let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
+            let t = a;
             new_frame.locals[i] = Some(t);
         }
         self.call_stack.push(new_frame);
@@ -1653,10 +1539,10 @@ impl Vm {
         self.run_until_depth(depth_before)?;
         let result_tether = self.stack.pop()
             .ok_or_else(|| GoblinError::Runtime("call_func_value: no return value".into()))?;
-        self.session.read_value(&result_tether)
+        Ok(result_tether)
     }
 
-    fn vm_query_by_ident(&mut self, name: &str) -> Result<Tether, GoblinError> {
+    fn vm_query_by_ident(&mut self, name: &str) -> Result<Value, GoblinError> {
         // Try normalized class/overlay name variants (mirrors interpreter logic)
         let lower = name.to_lowercase();
         let singular = if lower.ends_with('s') { lower[..lower.len()-1].to_string() } else { lower.clone() };
@@ -1719,7 +1605,7 @@ impl Vm {
                     });
                 }
                 let _ = pred_fn;
-                return Ok(self.session.alloc_value(Value::Array(results)));
+                return Ok(Value::Array(results));
             }
         }
         // Check object_store for objects with matching class_name
@@ -1730,14 +1616,14 @@ impl Vm {
                     .filter(|v| matches!(v, Value::Object { class_name, .. } if class_name == &cand))
                     .cloned()
                     .collect();
-                return Ok(self.session.alloc_value(Value::Array(results)));
+                return Ok(Value::Array(results));
             }
         }
         // Not a class/overlay — return empty array (or could error, but interpreter silently returns empty)
-        Ok(self.session.alloc_value(Value::Array(vec![])))
+        Ok(Value::Array(vec![]))
     }
 
-    fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Tether, GoblinError> {
+    fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
         let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
         let mut results: Vec<Value> = Vec::new();
         for obj in all_values {
@@ -1749,10 +1635,10 @@ impl Vm {
             };
             if include { results.push(obj); }
         }
-        Ok(self.session.alloc_value(Value::Array(results)))
+        Ok(Value::Array(results))
     }
 
-    fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Tether, GoblinError> {
+    fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
         use indexmap::IndexMap;
         use std::collections::BTreeSet;
         let instances = self.session.overlay_instances.clone();
@@ -1793,7 +1679,7 @@ impl Vm {
             };
             if include { results.push(obj); }
         }
-        Ok(self.session.alloc_value(Value::Array(results)))
+        Ok(Value::Array(results))
     }
 
     fn vm_tick(&mut self) -> Result<(), GoblinError> {
@@ -2019,9 +1905,7 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
     };
 
     if let Some(id) = bid {
-        let tether = session.alloc_value(v.clone());
-        let result_tether = call_builtin(id, vec![tether], session)?;
-        return session.read_value(&result_tether);
+        return call_builtin(id, vec![v.clone()], session);
     }
 
     // For Object, look in fields (missing fields return nil, matching interpreter behavior)
@@ -2037,10 +1921,8 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::GcMode;
-
     fn make_vm() -> Vm {
-        Vm::new(Session::new(GcMode::Off))
+        Vm::new(Session::new())
     }
 
     fn simple_func(bytecode: Vec<Opcode>, constants: Vec<Value>) -> FunctionObject {
