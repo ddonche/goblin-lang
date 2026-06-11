@@ -121,11 +121,19 @@ impl FunctionScope {
     /// Patch a previously emitted jump to the current position.
     fn patch_jump(&mut self, jump_idx: usize) {
         let current = self.bytecode.len();
-        // offset is relative to instruction AFTER the jump.
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
             Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o) => *o = offset,
             _ => panic!("patch_jump on non-jump opcode"),
+        }
+    }
+
+    /// Patch a previously emitted jump to a specific target IP.
+    fn patch_jump_to(&mut self, jump_idx: usize, target_ip: usize) {
+        let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
+        match &mut self.bytecode[jump_idx] {
+            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o) => *o = offset,
+            _ => panic!("patch_jump_to on non-jump opcode"),
         }
     }
 
@@ -212,11 +220,24 @@ pub struct Compiler {
     current_line: u32,
     /// When true, unknown identifiers are compiled as self-field loads (for class methods).
     pub is_class_method: bool,
+    /// Stack of loop contexts: (break_patch_indices, continue_ip).
+    /// Innermost loop is at the back.
+    loop_stack: Vec<LoopCtx>,
+}
+
+#[derive(Default)]
+struct LoopCtx {
+    /// Bytecode indices of Jump(0) placeholders emitted by `stop`.
+    break_patches: Vec<usize>,
+    /// Bytecode indices of Jump(0) placeholders emitted by `skip`.
+    continue_patches: Vec<usize>,
+    /// IP of the loop increment/condition check (for `skip`).
+    continue_ip: usize,
 }
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, loop_stack: Vec::new() }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -1223,11 +1244,17 @@ impl Compiler {
 
     fn compile_judge_expr(
         &mut self,
-        _using: Option<&Expr>,
+        using: Option<&Expr>,
         header: Option<&Expr>,
         arms: &[JudgeArm],
         all: bool,
     ) -> Result<(), GoblinError> {
+        // Extract enum name from `using` clause (e.g., `judge x using Status` → "Status")
+        let using_name: Option<String> = using.and_then(|e| match e {
+            Expr::Ident(n, _) => Some(n.clone()),
+            _ => None,
+        });
+
         // judge expression evaluates to the value of the matching arm.
         let mut end_jumps: Vec<usize> = Vec::new();
 
@@ -1248,7 +1275,17 @@ impl Compiler {
                 if let Some(hslot) = header_slot {
                     // Pattern match: header == condition
                     self.emit(Opcode::LoadLocal(hslot));
-                    self.compile_expr(cond)?;
+                    // If using an enum, qualify the condition: Status::idle
+                    if let Some(ref en) = using_name {
+                        if let Expr::Ident(variant, sp) = cond.as_ref() {
+                            let qualified = Expr::NsCall(en.clone(), variant.clone(), vec![], sp.clone());
+                            self.compile_expr(&qualified)?;
+                        } else {
+                            self.compile_expr(cond)?;
+                        }
+                    } else {
+                        self.compile_expr(cond)?;
+                    }
                     self.emit(Opcode::Eq);
                 } else {
                     self.compile_expr(cond)?;
@@ -1426,10 +1463,13 @@ impl Compiler {
                     self.emit(Opcode::LoadLocal(counter_slot));
                     self.emit(Opcode::StoreLocal(s));
                 }
+                // push loop context for stop/skip
+                self.loop_stack.push(LoopCtx::default());
                 // body
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::Pop);
-                // counter++
+                // increment position (skip jumps here)
+                let increment_ip = self.scope_mut().bytecode.len();
                 let one = self.scope_mut().add_constant(Value::Int(1));
                 self.emit(Opcode::LoadLocal(counter_slot));
                 self.emit(Opcode::LoadConst(one));
@@ -1439,7 +1479,17 @@ impl Compiler {
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
+                // exit position
+                let exit_ip = self.scope_mut().bytecode.len();
                 self.scope_mut().patch_jump(exit_jump);
+                // patch stop/skip jumps
+                let ctx = self.loop_stack.pop().unwrap();
+                for idx in ctx.break_patches {
+                    self.scope_mut().patch_jump_to(idx, exit_ip);
+                }
+                for idx in ctx.continue_patches {
+                    self.scope_mut().patch_jump_to(idx, increment_ip);
+                }
                 self.emit(Opcode::LoadNil);
                 Ok(true)
             }
@@ -1483,10 +1533,13 @@ impl Compiler {
                 self.emit(Opcode::LoadLocal(idx_slot));
                 self.emit(Opcode::GetIndex);
                 self.emit(Opcode::StoreLocal(var_slot));
+                // push loop context for stop/skip
+                self.loop_stack.push(LoopCtx::default());
                 // body
                 self.compile_expr(&args[2])?;
                 self.emit(Opcode::Pop);
-                // idx++
+                // increment position (skip jumps here)
+                let increment_ip = self.scope_mut().bytecode.len();
                 let one = self.scope_mut().add_constant(Value::Int(1));
                 self.emit(Opcode::LoadLocal(idx_slot));
                 self.emit(Opcode::LoadConst(one));
@@ -1496,7 +1549,16 @@ impl Compiler {
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
+                let exit_ip = self.scope_mut().bytecode.len();
                 self.scope_mut().patch_jump(exit_jump);
+                // patch stop/skip jumps
+                let ctx = self.loop_stack.pop().unwrap();
+                for idx in ctx.break_patches {
+                    self.scope_mut().patch_jump_to(idx, exit_ip);
+                }
+                for idx in ctx.continue_patches {
+                    self.scope_mut().patch_jump_to(idx, increment_ip);
+                }
                 self.emit(Opcode::LoadNil);
                 Ok(true)
             }
@@ -1519,17 +1581,21 @@ impl Compiler {
                 Ok(true)
             }
 
-            // skip / stop — loop control (emit CtrlSkip/CtrlStop)
+            // skip / stop — loop control
             "skip" => {
-                let idx = self.scope_mut().add_constant(Value::CtrlSkip);
-                self.emit(Opcode::LoadConst(idx));
-                self.emit(Opcode::Return);
+                let patch_idx = self.scope_mut().bytecode.len();
+                self.emit(Opcode::Jump(0)); // patched when loop compiles continue_ip
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.continue_patches.push(patch_idx);
+                }
                 Ok(true)
             }
             "stop" => {
-                let idx = self.scope_mut().add_constant(Value::CtrlStop);
-                self.emit(Opcode::LoadConst(idx));
-                self.emit(Opcode::Return);
+                let patch_idx = self.scope_mut().bytecode.len();
+                self.emit(Opcode::Jump(0)); // patched when loop compiles exit
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.break_patches.push(patch_idx);
+                }
                 Ok(true)
             }
 

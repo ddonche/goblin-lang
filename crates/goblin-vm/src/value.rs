@@ -194,6 +194,8 @@ impl PartialEq for Value {
             (Value::Function(a),      Value::Function(b))      => Rc::ptr_eq(a, b),
             (Value::Closure(a),       Value::Closure(b))       => Rc::ptr_eq(a, b),
             (Value::Builtin(a),       Value::Builtin(b))       => a == b,
+            (Value::Enum { enum_name: en_a, variant_name: vn_a, .. },
+             Value::Enum { enum_name: en_b, variant_name: vn_b, .. }) => en_a == en_b && vn_a == vn_b,
             _ => false,
         }
     }

@@ -72,10 +72,9 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Min => {
             if args.is_empty() { return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "min".into() }); }
             let vals: Vec<Value> = if args.len() == 1 {
-                match read(0)? {
-                    Value::Array(xs) => { if xs.is_empty() { return Err(GoblinError::Runtime("min: empty array".into())); } xs }
-                    other => return Err(GoblinError::type_error("array", other.type_name(), "min")),
-                }
+                let xs = value_to_items(read(0)?, "min")?;
+                if xs.is_empty() { return Err(GoblinError::Runtime("min: empty array".into())); }
+                xs
             } else {
                 (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
             };
@@ -86,10 +85,9 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Max => {
             if args.is_empty() { return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "max".into() }); }
             let vals: Vec<Value> = if args.len() == 1 {
-                match read(0)? {
-                    Value::Array(xs) => { if xs.is_empty() { return Err(GoblinError::Runtime("max: empty array".into())); } xs }
-                    other => return Err(GoblinError::type_error("array", other.type_name(), "max")),
-                }
+                let xs = value_to_items(read(0)?, "max")?;
+                if xs.is_empty() { return Err(GoblinError::Runtime("max: empty array".into())); }
+                xs
             } else {
                 (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
             };
@@ -99,26 +97,18 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         }
         BuiltinId::Avg => {
             expect_n(1)?;
-            match read(0)? {
-                Value::Array(xs) => {
-                    if xs.is_empty() { return Ok(Value::Float(0.0)); }
-                    let mut acc = 0.0f64;
-                    for v in &xs { acc += to_f64_val(v)?; }
-                    Ok(Value::Float(acc / xs.len() as f64))
-                }
-                other => Err(GoblinError::type_error("array", other.type_name(), "avg")),
-            }
+            let xs = value_to_items(read(0)?, "avg")?;
+            if xs.is_empty() { return Ok(Value::Float(0.0)); }
+            let mut acc = 0.0f64;
+            for v in &xs { acc += to_f64_val(v)?; }
+            Ok(Value::Float(acc / xs.len() as f64))
         }
         BuiltinId::Sum => {
             expect_n(1)?;
-            match read(0)? {
-                Value::Array(xs) => {
-                    let mut acc = 0.0f64;
-                    for v in &xs { acc += to_f64_val(v)?; }
-                    Ok(Value::Float(acc))
-                }
-                other => Err(GoblinError::type_error("array", other.type_name(), "sum")),
-            }
+            let xs = value_to_items(read(0)?, "sum")?;
+            let mut acc = 0.0f64;
+            for v in &xs { acc += to_f64_val(v)?; }
+            Ok(Value::Float(acc))
         }
         BuiltinId::Floor => {
             expect_n(1)?;
@@ -4068,6 +4058,34 @@ fn require_collection(v: Value, op: &'static str) -> Result<std::rc::Rc<Collecti
     }
 }
 
+/// Extract a Vec<Value> from either Value::Array or Value::Collection.
+fn value_to_items(v: Value, op: &'static str) -> Result<Vec<Value>, GoblinError> {
+    match v {
+        Value::Array(xs) => Ok(xs),
+        Value::Collection(c) => {
+            use crate::value::CollectionLayout;
+            Ok(match &c.layout {
+                CollectionLayout::FlatArray(v) => v.as_ref().clone(),
+                CollectionLayout::RingBuf(r) => r.to_vec(),
+                CollectionLayout::ChunkedSeq(cs) => cs.to_flat(),
+                CollectionLayout::SmallMap(pairs) => pairs.iter().map(|(k, v)| {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert("key".to_string(), k.clone());
+                    m.insert("value".to_string(), v.clone());
+                    Value::Map(m)
+                }).collect(),
+                CollectionLayout::HashMapBackend(hm) => hm.iter().map(|(k, v)| {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert("key".to_string(), k.clone());
+                    m.insert("value".to_string(), v.clone());
+                    Value::Map(m)
+                }).collect(),
+            })
+        }
+        other => Err(GoblinError::type_error("array", other.type_name(), op)),
+    }
+}
+
 fn require_int(v: Value, op: &'static str) -> Result<i64, GoblinError> {
     match v {
         Value::Int(n) => Ok(n),
@@ -4077,8 +4095,9 @@ fn require_int(v: Value, op: &'static str) -> Result<i64, GoblinError> {
 
 fn to_f64_val(v: &Value) -> Result<f64, GoblinError> {
     match v {
-        Value::Int(n) => Ok(*n as f64),
+        Value::Int(n)   => Ok(*n as f64),
         Value::Float(f) => Ok(*f),
+        Value::Big(d)   => Ok(d.to_string().parse::<f64>().unwrap_or(f64::NAN)),
         other => Err(GoblinError::type_error("number", other.type_name(), "numeric op")),
     }
 }

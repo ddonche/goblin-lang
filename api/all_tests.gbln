@@ -312,8 +312,8 @@ say "=== Testing stop with conditional ==="
 total2 | 0
 repeat 10
     total2 |= total2 + 1
-    say "Iteration" ++ total
-    if total == 4
+    say "Iteration" ++ total2
+    if total2 == 4
         say "Stopping at iteration 4"
         stop
     end
