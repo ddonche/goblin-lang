@@ -50,10 +50,10 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Str(s))
         }
         BuiltinId::MemTotal => {
-            Ok(Value::Int(session.stash_count() as i64))
+            Ok(Value::Int(process_memory_bytes() as i64))
         }
         BuiltinId::MemHuman => {
-            Ok(Value::Str(format!("{} stashes", session.stash_count())))
+            Ok(Value::Str(human_bytes(process_memory_bytes())))
         }
         BuiltinId::Gc => {
             session.gc_sweep();
@@ -4704,3 +4704,42 @@ fn highlight_code_impl(code: &str, lang: &str, dark_theme: &str, light_theme: &s
         render(light_theme)
     )
 }
+
+fn human_bytes(bytes: usize) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < units.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{} B", bytes) } else { format!("{:.2} {}", size, units[unit]) }
+}
+
+#[cfg(target_os = "linux")]
+fn process_memory_bytes() -> usize {
+    let contents = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    let pages = contents.split_whitespace().nth(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+    pages * unsafe {
+        extern "C" { fn sysconf(name: i32) -> isize; }
+        let s = sysconf(30); if s <= 0 { 4096 } else { s as usize }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_memory_bytes() -> usize {
+    use std::ffi::c_void;
+    #[repr(C)] struct Info { virtual_size: usize, resident_size: usize, resident_size_max: usize, user_time: [i32;2], system_time: [i32;2], policy: i32, suspend_count: i32 }
+    unsafe extern "C" { fn mach_task_self() -> u32; fn task_info(t: u32, f: i32, out: *mut c_void, cnt: *mut u32) -> i32; }
+    unsafe {
+        let mut info = std::mem::zeroed::<Info>();
+        let mut count = (std::mem::size_of::<Info>() / 4) as u32;
+        if task_info(mach_task_self(), 20, &mut info as *mut _ as *mut c_void, &mut count) != 0 { 0 } else { info.resident_size }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn process_memory_bytes() -> usize { 0 }
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn process_memory_bytes() -> usize { 0 }
