@@ -985,22 +985,32 @@ impl Vm {
                     Value::Str(s) => (host_var_name.clone(), s.clone()),
                     _ => return Err(GoblinError::Runtime("overlay apply: host must be an object or string".into())),
                 };
-                let _def = self.session.overlay_defs.get(overlay_name.as_str())
-                    .ok_or_else(|| GoblinError::Runtime(format!("unknown overlay '{}'", overlay_name)))?;
+                let def = self.session.overlay_defs.get(overlay_name.as_str())
+                    .ok_or_else(|| GoblinError::Runtime(format!("unknown overlay '{}'", overlay_name)))?
+                    .clone();
+                let is_temporary = def.default_duration.is_some() || duration_override.is_some();
+                let original_values: Vec<(String, Value)> = if is_temporary {
+                    if let Some(Value::Object { fields, .. }) = self.session.object_store.get(&host_uuid) {
+                        def.modifiers.iter().filter_map(|(fname, _)| {
+                            fields.get(fname).map(|v| (fname.clone(), v.clone()))
+                        }).collect()
+                    } else { Vec::new() }
+                } else { Vec::new() };
                 let des_id = OverlayInstanceId(self.session.des_overlay_id_counter);
                 self.session.des_overlay_id_counter += 1;
                 let inst = OverlayInstance {
                     overlay_name: overlay_name.clone(),
                     host_var,
-                    host_uuid,
+                    host_uuid: host_uuid.clone(),
                     strength,
                     age: 0,
                     ticks_remaining: duration_override,
                     count: 1,
-                    original_values: Vec::new(),
+                    original_values,
                     extra_fields: indexmap::IndexMap::new(),
                     des_id,
                 };
+                crate::tick::apply_overlay_modifiers(self, &host_uuid, &overlay_name, strength, 1, &indexmap::IndexMap::new());
                 self.session.overlay_instances.push(inst);
             }
 

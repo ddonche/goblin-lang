@@ -936,23 +936,107 @@ fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
             let exists = vm.session.overlay_instances.iter()
                 .any(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid);
             if !exists {
+                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, inst.count, &inst.extra_fields.clone());
                 vm.session.overlay_instances.push(inst);
             }
         }
         OverlayApplyBehavior::Replaces => {
-            vm.session.overlay_instances.retain(|i| {
-                !(i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid)
+            let existing_pos = vm.session.overlay_instances.iter().position(|i| {
+                i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid
             });
-            vm.session.overlay_instances.push(inst);
+            if let Some(pos) = existing_pos {
+                let old_originals = vm.session.overlay_instances[pos].original_values.clone();
+                let host_uuid = vm.session.overlay_instances[pos].host_uuid.clone();
+                if !old_originals.is_empty() {
+                    restore_originals(vm, &host_uuid, &old_originals);
+                }
+                vm.session.overlay_instances[pos].strength = inst.strength;
+                vm.session.overlay_instances[pos].age = inst.age;
+                vm.session.overlay_instances[pos].count = 1;
+                vm.session.overlay_instances[pos].ticks_remaining = inst.ticks_remaining;
+                vm.session.overlay_instances[pos].original_values = inst.original_values;
+                vm.session.overlay_instances[pos].extra_fields = inst.extra_fields.clone();
+                apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields);
+            } else {
+                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                vm.session.overlay_instances.push(inst);
+            }
         }
         OverlayApplyBehavior::Stacks { .. } => {
-            if let Some(existing) = vm.session.overlay_instances.iter_mut()
-                .find(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid)
-            {
-                existing.strength = (existing.strength + inst.strength).min(1.0);
-                existing.count += 1;
+            let existing_pos = vm.session.overlay_instances.iter().position(|i| {
+                i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid
+            });
+            if let Some(pos) = existing_pos {
+                vm.session.overlay_instances[pos].strength = (vm.session.overlay_instances[pos].strength + inst.strength).min(1.0);
+                vm.session.overlay_instances[pos].count += 1;
+                if inst.ticks_remaining.is_some() {
+                    vm.session.overlay_instances[pos].ticks_remaining = inst.ticks_remaining;
+                }
+                let host_uuid = vm.session.overlay_instances[pos].host_uuid.clone();
+                let extra = vm.session.overlay_instances[pos].extra_fields.clone();
+                apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &extra);
             } else {
+                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
                 vm.session.overlay_instances.push(inst);
+            }
+        }
+    }
+}
+
+pub fn apply_overlay_modifiers(
+    vm: &mut Vm,
+    host_uuid: &str,
+    overlay_name: &str,
+    strength: f64,
+    count: u64,
+    extra_fields: &indexmap::IndexMap<String, Value>,
+) {
+    let modifiers: Vec<(String, goblin_ast::Expr)> = match vm.session.overlay_defs.get(overlay_name) {
+        Some(d) if !d.modifiers.is_empty() => d.modifiers.clone(),
+        _ => return,
+    };
+
+    let mut deltas: Vec<(String, f64)> = Vec::new();
+    for (fname, expr) in &modifiers {
+        let mut bindings = vec![
+            ("strength", Value::Float(strength)),
+            ("count", Value::Int(count as i64)),
+        ];
+        for (k, v) in extra_fields {
+            bindings.push((k.as_str(), v.clone()));
+        }
+        // We need owned bindings for eval_tick_expr
+        let owned_bindings: Vec<(&str, Value)> = bindings;
+        let delta = match vm.eval_tick_expr(expr, owned_bindings) {
+            Ok(Value::Float(f)) => f,
+            Ok(Value::Int(i)) => i as f64,
+            _ => continue,
+        };
+        deltas.push((fname.clone(), delta));
+    }
+
+    if deltas.is_empty() { return; }
+
+    if let Some(obj) = vm.session.object_store.get_mut(host_uuid) {
+        if let Value::Object { ref mut fields, ref trait_fields, .. } = obj {
+            let trait_fields = trait_fields.clone();
+            let fields = std::rc::Rc::make_mut(fields);
+            for (field_name, delta) in deltas {
+                if let Some(field_val) = fields.get_mut(&field_name) {
+                    let current = match field_val {
+                        Value::Float(f) => *f,
+                        Value::Int(i) => *i as f64,
+                        _ => continue,
+                    };
+                    let new_val = current + delta;
+                    let new_val = if trait_fields.contains(&field_name) {
+                        let clamped = new_val.clamp(0.0, 1.0);
+                        if clamped < 1e-10 { 0.0 } else if clamped > 1.0 - 1e-10 { 1.0 } else { clamped }
+                    } else {
+                        new_val
+                    };
+                    *field_val = Value::Float(new_val);
+                }
             }
         }
     }
