@@ -6,6 +6,8 @@
 - ALL goblin blocks end with both `xx` AND `end` terminators
 - Working branch: `claude/quirky-mendel-4df8rm`
 - Commit and push after every batch of changes
+- Never say "sorry", "I apologize", or any variant — no emotion language
+- Never say "noted" or imply memory without actually writing it down
 
 ## What to skip (user instructions)
 - `money` builtins — skip
