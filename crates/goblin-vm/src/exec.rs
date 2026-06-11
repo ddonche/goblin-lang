@@ -24,7 +24,9 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session) {
             span: action.span.clone(),
             ret: action.ret.clone(),
         };
-        match Compiler::new().compile_action(&pseudo) {
+        let mut compiler = Compiler::new();
+        compiler.is_class_method = true;
+        match compiler.compile_action(&pseudo) {
             Ok(func) => {
                 session.compiled_methods.insert(
                     (class.name.clone(), action.name.clone()),
@@ -57,6 +59,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
 
     // Execute
     let mut session = Session::new(GcMode::Auto);
+    session.global_names = compiled.global_names;
     for decl in &compiled.classes {
         compile_class_methods(decl, &mut session);
     }

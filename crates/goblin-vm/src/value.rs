@@ -277,6 +277,8 @@ pub struct FunctionObject {
     pub upvalue_descriptors: Vec<UpvalueDescriptor>,
     /// Source line number for each bytecode instruction (parallel to bytecode).
     pub line_numbers: Vec<u32>,
+    /// Name for each local slot (slot index → name), for string interpolation.
+    pub local_names: Vec<String>,
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected
@@ -285,6 +287,8 @@ pub struct CompiledModule {
     pub entry: FunctionObject,
     pub classes: Vec<goblin_ast::ClassDecl>,
     pub enums: Vec<goblin_ast::EnumDecl>,
+    /// Names for each global slot (slot index → name), for string interpolation.
+    pub global_names: Vec<String>,
 }
 
 /// An upvalue cell: a shared, heap-allocated slot that can be closed over.

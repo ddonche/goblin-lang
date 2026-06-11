@@ -185,6 +185,14 @@ pub enum Opcode {
     /// Peek at top-of-stack and register it into session.named_values[constants[name_idx]].
     /// Does NOT pop — the value stays on stack for the subsequent StoreLocal.
     RegisterAction(u16),
+
+    /// Interpolate a string constant: constants[idx] is a raw template string.
+    /// Looks up {ident} placeholders in the current locals/globals scope at runtime.
+    StringInterp(u16),
+
+    /// Load a field from self (locals[0], which is the receiver object in a class method).
+    /// constants[idx] is the field name string. Pushes nil if self is not an Object or field absent.
+    SelfField(u16),
 }
 
 impl Opcode {
@@ -262,6 +270,8 @@ impl Opcode {
             Opcode::ObjectDecision {..} => "ObjectDecision",
             Opcode::UnitDecl(_)       => "UnitDecl",
             Opcode::RegisterAction(_) => "RegisterAction",
+            Opcode::StringInterp(_)   => "StringInterp",
+            Opcode::SelfField(_)      => "SelfField",
         }
     }
 }

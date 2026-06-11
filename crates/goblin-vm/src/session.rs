@@ -91,6 +91,8 @@ pub struct Session {
 
     /// Global variable slots (indexed by compiled global index).
     pub globals: Vec<Option<Tether>>,
+    /// Name for each global slot (slot index → name), for string interpolation.
+    pub global_names: Vec<String>,
 
     /// GC behaviour for this session.
     pub gc_mode: GcMode,
@@ -172,6 +174,7 @@ impl Session {
         Session {
             arena: Slab::new(),
             globals: Vec::new(),
+            global_names: Vec::new(),
             gc_mode,
             worker_id: 0,
             next_generation: 1,

@@ -1135,8 +1135,123 @@ impl Vm {
                 let value = self.session.read_value(&top_tether)?;
                 self.session.named_values.insert(name, value);
             }
+
+            Opcode::StringInterp(idx) => {
+                let template = {
+                    let frame = self.call_stack.last().unwrap();
+                    match frame.func.constants.get(idx as usize).cloned() {
+                        Some(Value::Str(s)) => s,
+                        _ => return Err(GoblinError::Runtime("StringInterp: bad constant".into())),
+                    }
+                };
+                let result = self.render_string_interp(&template)?;
+                let t = self.session.alloc_value(Value::Str(result));
+                self.stack.push(t);
+            }
+
+            Opcode::SelfField(idx) => {
+                let field_name = {
+                    let frame = self.call_stack.last().unwrap();
+                    match frame.func.constants.get(idx as usize).cloned() {
+                        Some(Value::Str(s)) => s,
+                        _ => return Err(GoblinError::Runtime("SelfField: bad constant".into())),
+                    }
+                };
+                let self_tether = self.call_stack.last()
+                    .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
+                let result = if let Some(t) = self_tether {
+                    match self.session.read_value(&t)? {
+                        Value::Object { ref fields, .. } => {
+                            fields.get(&field_name).cloned().unwrap_or(Value::Nil)
+                        }
+                        _ => Value::Nil,
+                    }
+                } else {
+                    Value::Nil
+                };
+                let t = self.session.alloc_value(result);
+                self.stack.push(t);
+            }
         }
         Ok(())
+    }
+
+    fn render_string_interp(&mut self, s: &str) -> Result<String, GoblinError> {
+        const RAW_SENTINEL: &str = "\u{001E}RAW:";
+        if let Some(rest) = s.strip_prefix(RAW_SENTINEL) {
+            return Ok(rest.to_string());
+        }
+        let chars: Vec<char> = s.chars().collect();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '\\' && i + 1 < chars.len() {
+                match chars[i + 1] {
+                    '{' => { out.push('{'); i += 2; continue; }
+                    '}' => { out.push('}'); i += 2; continue; }
+                    _ => { out.push('\\'); out.push(chars[i + 1]); i += 2; continue; }
+                }
+            }
+            if chars[i] == '{' {
+                let start = i + 1;
+                let mut j = start;
+                while j < chars.len() && chars[j] != '}' { j += 1; }
+                if j >= chars.len() {
+                    out.push('{');
+                    i += 1;
+                    continue;
+                }
+                let inner: String = chars[start..j].iter().collect();
+                let inner = inner.trim();
+                if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
+                    let val = self.lookup_interp_var(inner);
+                    out.push_str(&val);
+                } else {
+                    out.push('{');
+                    let raw: String = chars[start..j].iter().collect();
+                    out.push_str(&raw);
+                    out.push('}');
+                }
+                i = j + 1;
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+        Ok(out)
+    }
+
+    fn lookup_interp_var(&mut self, name: &str) -> String {
+        // 1. Check locals in current frame by name
+        let local_tether = self.call_stack.last().and_then(|frame| {
+            frame.func.local_names.iter().position(|n| n == name)
+                .and_then(|slot| frame.locals.get(slot).and_then(|opt| opt.clone()))
+        });
+        if let Some(t) = local_tether {
+            if let Ok(v) = self.session.read_value(&t) {
+                return crate::builtins::fmt_value_raw(&v);
+            }
+        }
+        // 2. If self (locals[0]) is an Object, check its fields
+        let self_tether = self.call_stack.last()
+            .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
+        if let Some(t) = self_tether {
+            if let Ok(Value::Object { ref fields, .. }) = self.session.read_value(&t) {
+                if let Some(fv) = fields.get(name) {
+                    return crate::builtins::fmt_value_raw(fv);
+                }
+            }
+        }
+        // 3. Check globals by name
+        let global_tether = self.session.global_names.iter().position(|n| n == name)
+            .and_then(|slot| self.session.globals.get(slot).cloned().flatten());
+        if let Some(t) = global_tether {
+            if let Ok(v) = self.session.read_value(&t) {
+                return crate::builtins::fmt_value_raw(&v);
+            }
+        }
+        // 4. Soft fail
+        format!("{{{}}}", name)
     }
 
     // ── Quickening ───────────────────────────────────────────────────────────

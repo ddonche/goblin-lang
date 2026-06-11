@@ -132,14 +132,22 @@ impl FunctionScope {
     fn finish(self) -> FunctionObject {
         let upvalue_descriptors: Vec<UpvalueDescriptor> =
             self.upvalues.into_iter().map(|(_, d)| d).collect();
+        let total_slots = self.next_slot as usize;
+        let mut local_names = vec![String::new(); total_slots];
+        for (name, slot) in &self.locals {
+            if (*slot as usize) < total_slots {
+                local_names[*slot as usize] = name.clone();
+            }
+        }
         FunctionObject {
             bytecode: self.bytecode,
             constants: self.constants,
-            locals: self.next_slot as usize,
+            locals: total_slots,
             params: self.params,
             name: self.name,
             upvalue_descriptors,
             line_numbers: self.line_numbers,
+            local_names,
         }
     }
 }
@@ -202,11 +210,13 @@ pub struct Compiler {
     pub collected_enums: Vec<EnumDecl>,
     /// Current source line (updated before compiling each AST node).
     current_line: u32,
+    /// When true, unknown identifiers are compiled as self-field loads (for class methods).
+    pub is_class_method: bool,
 }
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0 }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -235,6 +245,7 @@ impl Compiler {
             entry,
             classes: self.collected_classes,
             enums: self.collected_enums,
+            global_names: self.globals.clone(),
         })
     }
 
@@ -255,11 +266,25 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::StoreLocal(slot));
                 }
-                for s in stmts {
-                    self.compile_stmt(s)?;
+                // For class methods, the last Stmt::Expr is an implicit return value.
+                if self.is_class_method && !stmts.is_empty() {
+                    let (body, last) = stmts.split_at(stmts.len() - 1);
+                    for s in body { self.compile_stmt(s)?; }
+                    match &last[0] {
+                        Stmt::Expr(e) => {
+                            self.compile_expr(e)?;
+                            // Leave value on stack — don't Pop.
+                        }
+                        other => {
+                            self.compile_stmt(other)?;
+                            self.emit(Opcode::LoadNil);
+                        }
+                    }
+                } else {
+                    for s in stmts { self.compile_stmt(s)?; }
+                    self.emit(Opcode::LoadNil);
                 }
                 let scope = self.scopes.last_mut().unwrap();
-                scope.emit(Opcode::LoadNil);
                 scope.emit(Opcode::Return);
             }
             ActionBody::Expr(e) => {
@@ -330,7 +355,13 @@ impl Compiler {
             return Ok(Opcode::LoadGlobal(pos as u16));
         }
 
-        // 4. Check if it's a known builtin name.
+        // 4. In a class method, unknown names are self-field accesses (shadow builtins).
+        if self.is_class_method {
+            let field_idx = self.add_constant(Value::Str(name.to_string()));
+            return Ok(Opcode::SelfField(field_idx));
+        }
+
+        // 5. Check if it's a known builtin name.
         if let Some(bid) = builtin_by_name(name) {
             // Push a Builtin value as a constant.
             let idx = self.add_constant(Value::Builtin(bid));
@@ -729,7 +760,11 @@ impl Compiler {
 
             Expr::Str(s, _) => {
                 let idx = self.add_constant(Value::Str(s.clone()));
-                self.emit(Opcode::LoadConst(idx));
+                if s.as_bytes().contains(&b'{') && !s.starts_with('\u{001E}') {
+                    self.emit(Opcode::StringInterp(idx));
+                } else {
+                    self.emit(Opcode::LoadConst(idx));
+                }
             }
 
             Expr::Char(c, _) => {
@@ -1086,8 +1121,8 @@ impl Compiler {
             };
 
             if let Some((obj_expr, field_name)) = field_target {
-                self.compile_expr(rhs)?;
                 self.compile_expr(obj_expr)?;
+                self.compile_expr(rhs)?;
                 let idx = self.add_constant(Value::Str(field_name));
                 self.emit(Opcode::SetField(idx));
                 let var_name = match obj_expr {
@@ -1160,7 +1195,7 @@ impl Compiler {
             "<="         => Opcode::Le,
             ">"          => Opcode::Gt,
             ">="         => Opcode::Ge,
-            "<>"         => Opcode::Concat,
+            // <> is class declaration syntax only — not a binary operator
             // Floor division: operands already on stack, emit Div then Floor builtin
             "//" => {
                 self.emit(Opcode::Div);
