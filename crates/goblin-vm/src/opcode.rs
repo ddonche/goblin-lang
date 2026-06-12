@@ -14,6 +14,8 @@ pub enum Opcode {
     LoadConst(u16),
     /// Push Value::Nil.
     LoadNil,
+    /// Push Value::Unit (implicit return value — matches interpreter semantics).
+    LoadUnit,
     /// Push Value::Bool(true).
     LoadTrue,
     /// Push Value::Bool(false).
@@ -201,6 +203,7 @@ impl Opcode {
         match self {
             Opcode::LoadConst(_)    => "LoadConst",
             Opcode::LoadNil         => "LoadNil",
+            Opcode::LoadUnit        => "LoadUnit",
             Opcode::LoadTrue        => "LoadTrue",
             Opcode::LoadFalse       => "LoadFalse",
             Opcode::LoadLocal(_)    => "LoadLocal",

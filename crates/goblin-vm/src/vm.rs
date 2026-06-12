@@ -163,6 +163,9 @@ impl Vm {
             Opcode::LoadNil => {
                 self.stack.push(Value::Nil);
             }
+            Opcode::LoadUnit => {
+                self.stack.push(Value::Unit);
+            }
             Opcode::LoadTrue => {
                 self.stack.push(Value::Bool(true));
             }
@@ -591,16 +594,37 @@ impl Vm {
                 let recv_tether = self.stack[recv_idx].clone();
                 let recv_val = Self::deref_val(&self.session.object_store, recv_tether);
 
+                // If receiver is an Object with a compiled method, use it.
+                // Otherwise fall back to builtin dispatch (handles e.g. float.format(), str.split(), etc.)
                 let class_name = match &recv_val {
-                    Value::Object { class_name, .. } => class_name.clone(),
-                    other => return Err(GoblinError::Runtime(format!("method call '{}' on non-object ({})", method_name, other.type_name()))),
+                    Value::Object { class_name, .. } => Some(class_name.clone()),
+                    _ => None,
                 };
 
-                // Look up pre-compiled method
-                let func_rc = self.session.compiled_methods
-                    .get(&(class_name.clone(), method_name.clone()))
-                    .cloned()
-                    .ok_or_else(|| GoblinError::Runtime(format!("unknown method '{}' on class '{}'", method_name, class_name)))?;
+                let func_rc = if let Some(ref cn) = class_name {
+                    self.session.compiled_methods.get(&(cn.clone(), method_name.clone())).cloned()
+                } else {
+                    None
+                };
+
+                // If no compiled method found, try builtin dispatch with recv as first arg.
+                if func_rc.is_none() {
+                    if let Some(bid) = crate::compiler::builtin_by_name(&method_name) {
+                        let args: Vec<Value> = self.stack.drain(recv_idx..)
+                            .map(|v| Self::deref_val(&self.session.object_store, v))
+                            .collect();
+                        let result = crate::builtins::call_builtin(bid, args, &mut self.session)?;
+                        self.stack.push(result);
+                        return Ok(());
+                    }
+                    return Err(GoblinError::Runtime(format!(
+                        "method call '{}' on non-object ({})",
+                        method_name,
+                        recv_val.type_name()
+                    )));
+                }
+
+                let func_rc = func_rc.unwrap();
 
                 if self.call_stack.len() >= MAX_CALL_DEPTH {
                     return Err(GoblinError::StackOverflow);
@@ -688,7 +712,6 @@ impl Vm {
             }
 
             Opcode::Return => {
-                // Return value is top of stack (or Nil).
                 let ret_val = if self.stack.len() > self.call_stack.last().unwrap().stack_base {
                     self.stack.pop().unwrap()
                 } else {

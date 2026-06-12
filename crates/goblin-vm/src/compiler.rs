@@ -307,11 +307,11 @@ impl Compiler {
                         }
                         other => {
                             self.compile_stmt(other)?;
-                            self.emit(Opcode::LoadNil);
+                            self.emit(Opcode::LoadUnit);
                         }
                     }
                 } else {
-                    self.emit(Opcode::LoadNil);
+                    self.emit(Opcode::LoadUnit);
                 }
                 let scope = self.scopes.last_mut().unwrap();
                 scope.emit(Opcode::Return);
@@ -872,16 +872,25 @@ impl Compiler {
             }
 
             Expr::Call(recv, method, args, _) => {
-                // recv.method(args) — try free function first, fall back to method dispatch.
-                // If method is a known local/global, call it directly with recv as first arg.
-                // Otherwise emit CallMethod so the VM can dispatch on the receiver's class.
-                if let Ok(load_op) = self.resolve_load(method) {
+                // recv.method(args): only treat as a free-function call if the method
+                // name resolves to a local/global variable. Builtins must NOT shadow
+                // user-defined class methods; instead, let CallMethod fall back to
+                // builtins at runtime when the receiver is a non-object.
+                let is_var = self.scope().find_local(method).is_some()
+                    || (self.scopes.len() > 1 && {
+                        let idx = self.scopes.len() - 1;
+                        self.resolve_upvalue(idx, method).is_some()
+                    })
+                    || self.globals.iter().any(|g| g == method);
+                if is_var {
+                    let load_op = self.resolve_load(method).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
                     self.compile_expr(recv)?;
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call((args.len() + 1) as u8));
                 } else {
-                    // Method call: stack will be [recv, arg0, ..., arg_{n-1}]
+                    // Always emit CallMethod; vm.rs will fall back to builtins
+                    // for non-object receivers or missing class methods.
                     self.compile_expr(recv)?;
                     for arg in args { self.compile_expr(arg)?; }
                     let method_idx = self.add_constant(Value::Str(method.clone()));
@@ -1405,8 +1414,6 @@ impl Compiler {
 
         match &action.body {
             ActionBody::Block(stmts) => {
-                // Pre-hoist all bind names in this function body so forward
-                // references within the function resolve (same as module-level).
                 let mut hoisted: Vec<String> = Vec::new();
                 collect_bind_names(stmts, &mut hoisted);
                 for name in hoisted.iter().filter(|n| !param_names.contains(n)) {
@@ -1414,9 +1421,29 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::StoreLocal(slot));
                 }
-                for s in stmts { self.compile_stmt(s)?; }
+                // Last statement's value is the implicit return (matches interpreter).
+                if !stmts.is_empty() {
+                    let (body, last) = stmts.split_at(stmts.len() - 1);
+                    for s in body { self.compile_stmt(s)?; }
+                    match &last[0] {
+                        Stmt::Expr(e) => { self.compile_expr(e)?; }
+                        Stmt::Bind(b) => {
+                            self.compile_stmt(&last[0])?;
+                            self.compile_expr(&b.expr)?;
+                        }
+                        Stmt::TupleBind(b) => {
+                            self.compile_stmt(&last[0])?;
+                            self.compile_expr(&b.expr)?;
+                        }
+                        other => {
+                            self.compile_stmt(other)?;
+                            self.emit(Opcode::LoadUnit);
+                        }
+                    }
+                } else {
+                    self.emit(Opcode::LoadUnit);
+                }
                 let scope = self.scopes.last_mut().unwrap();
-                scope.emit(Opcode::LoadNil);
                 scope.emit(Opcode::Return);
             }
             ActionBody::Expr(e) => {
