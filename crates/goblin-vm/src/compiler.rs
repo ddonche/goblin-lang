@@ -2397,13 +2397,15 @@ pub fn compile_repl_snippet(
 }
 
 impl Compiler {
-    /// Like compile_module but all top-level binds go into globals (LoadGlobal/StoreGlobal)
-    /// instead of locals, so state persists across REPL entries.
+    /// Compile a single REPL statement into a FunctionObject.
+    /// Top-level binds use StoreGlobal/LoadGlobal so state persists across REPL entries.
+    /// If the statement is a bare Expr, its value is left on the stack (returned to caller).
+    /// All other statements execute and return Nil.
     pub fn compile_repl_module(mut self, module: &Module) -> Result<CompiledModule, GoblinError> {
         self.repl_mode = true;
         self.push_scope("__main__", 0);
 
-        // Register new names as globals (append to self.globals).
+        // Hoist bind names and action names as globals so they're addressable.
         let mut hoisted: Vec<String> = Vec::new();
         collect_bind_names(&module.items, &mut hoisted);
         for name in &hoisted {
@@ -2411,7 +2413,6 @@ impl Compiler {
                 self.globals.push(name.clone());
             }
         }
-        // Also register action names as globals.
         for stmt in &module.items {
             if let goblin_ast::Stmt::Action(a) = stmt {
                 if !self.globals.contains(&a.name) {
@@ -2420,21 +2421,19 @@ impl Compiler {
             }
         }
 
-        // Compile all but last stmt normally, then handle last specially.
         if module.items.is_empty() {
             let scope = self.scopes.last_mut().unwrap();
             scope.emit(Opcode::LoadNil);
             scope.emit(Opcode::Return);
         } else {
+            // All stmts before the last are side-effect only.
             let (body, last) = module.items.split_at(module.items.len() - 1);
             for stmt in body {
                 self.compile_stmt(stmt)?;
             }
-            // If last stmt is a bare expression, leave its value on the stack.
+            // Last stmt: if bare expr, leave value on stack; otherwise push Nil.
             match &last[0] {
-                goblin_ast::Stmt::Expr(e) => {
-                    self.compile_expr(e)?;
-                }
+                goblin_ast::Stmt::Expr(e) => { self.compile_expr(e)?; }
                 other => {
                     self.compile_stmt(other)?;
                     let scope = self.scopes.last_mut().unwrap();
@@ -2444,6 +2443,7 @@ impl Compiler {
             let scope = self.scopes.last_mut().unwrap();
             scope.emit(Opcode::Return);
         }
+
         let entry = self.pop_scope();
         Ok(CompiledModule {
             entry,

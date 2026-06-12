@@ -1223,50 +1223,63 @@ fn run_repl_vm() -> i32 {
                     }
                 };
 
-                // Compile with existing globals context
-                let compiled = match compile_repl_snippet(&module, &known_globals) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        form_no += 1;
-                        continue;
+                // Execute each statement individually — mirrors interpreter REPL exactly.
+                let mut had_error = false;
+                for stmt in &module.items {
+                    let is_expr = matches!(stmt, ast::Stmt::Expr(_));
+
+                    // Compile this single statement with current globals context.
+                    let single = goblin_ast::Module { items: vec![stmt.clone()] };
+                    let compiled = match compile_repl_snippet(&single, &known_globals) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            had_error = true;
+                            break;
+                        }
+                    };
+
+                    // Register new classes/enums into the VM session.
+                    for decl in &compiled.classes {
+                        compile_class_methods_pub(decl, &mut vm.session);
+                        vm.session.classes.insert(decl.name.clone(), decl.clone());
                     }
-                };
-
-                // Register new classes/enums into the VM session
-                for decl in &compiled.classes {
-                    compile_class_methods_pub(decl, &mut vm.session);
-                    vm.session.classes.insert(decl.name.clone(), decl.clone());
-                }
-                for decl in compiled.enums {
-                    vm.session.enums.insert(decl.name.clone(), decl);
-                }
-
-                // Update global names (extend, never shrink)
-                for name in &compiled.global_names {
-                    if !known_globals.contains(name) {
-                        known_globals.push(name.clone());
+                    for decl in compiled.enums {
+                        vm.session.enums.insert(decl.name.clone(), decl);
                     }
-                }
-                vm.session.global_names = known_globals.clone();
 
-                // Determine if last stmt is a bare expression (for auto-print)
-                let last_is_expr = module.items.last().map(|s| matches!(s, ast::Stmt::Expr(_))).unwrap_or(false);
-
-                // Execute
-                match vm.execute_repl(compiled.entry, known_globals.len()) {
-                    Ok(val) => {
-                        if last_is_expr {
-                            let s = goblin_vm::builtins::value_to_str(&val);
-                            if !s.is_empty() && !matches!(val, goblin_vm::value::Value::Nil | goblin_vm::value::Value::Unit) {
-                                println!("{s}");
-                            }
+                    // Extend known globals with any new names declared by this statement.
+                    for name in &compiled.global_names {
+                        if !known_globals.contains(name) {
+                            known_globals.push(name.clone());
                         }
                     }
-                    Err(e) => {
-                        eprintln!("error: {e}");
+                    vm.session.global_names = known_globals.clone();
+
+                    // Execute the single-statement function.
+                    match vm.execute_repl(compiled.entry, known_globals.len()) {
+                        Ok(val) => {
+                            if is_expr {
+                                use goblin_vm::value::Value;
+                                match &val {
+                                    Value::Nil | Value::Unit => {}
+                                    _ => {
+                                        let s = goblin_vm::builtins::value_to_str(&val);
+                                        if !s.is_empty() {
+                                            println!("{s}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            had_error = true;
+                            break;
+                        }
                     }
                 }
+                let _ = had_error;
 
                 form_no += 1;
             }
