@@ -648,11 +648,15 @@ impl Compiler {
                 self.emit(Opcode::UnitDecl(Box::new(decl.clone())));
             }
 
-            // ── Unhandled ─────────────────────────────────────────────────────
-            Stmt::BoxBind { .. } => {
-                return Err(GoblinError::NotImplemented {
-                    feature: "box bind statements are not supported in the VM",
-                });
+            // ── Box store bind: #namespace::name = expr ───────────────────────
+            Stmt::BoxBind { namespace, name, expr, .. } => {
+                // Push namespace string, name string, value → BoxBindExpr
+                let ns_idx = self.add_constant(Value::Str(namespace.clone()));
+                let nm_idx = self.add_constant(Value::Str(name.clone()));
+                self.emit(Opcode::LoadConst(ns_idx as u16));
+                self.emit(Opcode::LoadConst(nm_idx as u16));
+                self.compile_expr(expr)?;
+                self.emit(Opcode::CallBuiltin(BuiltinId::BoxBindExpr, 3));
             }
         }
         Ok(())
@@ -1968,7 +1972,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "clamp"                         => BuiltinId::Clamp,
         "pow"                           => BuiltinId::Pow,
         "len"          | "count"        => BuiltinId::Len,
-        "to_string"    | "str"          => BuiltinId::ToStr,
+        "to_string"    | "str" | "string" => BuiltinId::ToStr,
         "to_upper"                      => BuiltinId::ToUpperCase,
         "to_lower"                      => BuiltinId::ToLowerCase,
         "trim"                          => BuiltinId::Trim,
@@ -2167,7 +2171,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "pad_left"     | ":pad_left"      => BuiltinId::PadLeft,
         "pad_right"    | ":pad_right"     => BuiltinId::PadRight,
         "repeat_str"   | ":repeat_str"    => BuiltinId::Repeat,
-        "pct"                            => BuiltinId::Pct,
+        "pct"          | "percent"       => BuiltinId::Pct,
         "between"                        => BuiltinId::Between,
         "is_control"                     => BuiltinId::IsControl,
         "ignore_blocks_first"            => BuiltinId::IgnoreBlocksFirst,
@@ -2298,6 +2302,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "grid_info"                      => BuiltinId::GridInfo,
         "grid_tile_info"                 => BuiltinId::GridTileInfo,
         "grid_region_info"               => BuiltinId::GridRegionInfo,
+
+        "tokenize"                       => BuiltinId::Tokenize,
+        "get"                            => BuiltinId::Get,
 
         _ => return None,
     })

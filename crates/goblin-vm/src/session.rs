@@ -131,6 +131,9 @@ pub struct Session {
     /// Named function registry for `invoke`/`summon`/`provoke`.
     /// Top-level action declarations are registered here by name.
     pub named_values: HashMap<String, Value>,
+
+    /// Box store: namespace::name → Value (cross-module mutable state).
+    pub box_store: HashMap<String, Value>,
 }
 
 impl Session {
@@ -169,6 +172,7 @@ impl Session {
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
             named_values: HashMap::new(),
+            box_store: HashMap::new(),
         }
     }
 

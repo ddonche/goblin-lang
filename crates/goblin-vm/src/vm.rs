@@ -1954,6 +1954,7 @@ mod tests {
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
+            local_names: Vec::new(),
         }
     }
 
@@ -1993,6 +1994,7 @@ mod tests {
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
+            local_names: Vec::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -2018,6 +2020,7 @@ mod tests {
             name: "if_else".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
+            local_names: Vec::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -2041,6 +2044,7 @@ mod tests {
             name: "add1".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
+            local_names: Vec::new(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -2057,6 +2061,7 @@ mod tests {
             name: "outer".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
+            local_names: Vec::new(),
         };
 
         let result = vm.execute(outer).unwrap();

@@ -3898,14 +3898,81 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
-        // BoxVarExpr(namespace_str, name_str) → Value from box_store (VM has no box_store — error)
+        // BoxVarExpr(namespace_str, name_str) → Value from box_store
         BuiltinId::BoxVarExpr => {
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("BoxVar: expected 2 args, got {}", args.len())));
             }
             let ns   = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box namespace")) };
             let name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box name")) };
-            Err(GoblinError::Runtime(format!("box var '{}::{}' — box_store not available in VM", ns, name)))
+            let key = format!("{}::{}", ns, name);
+            Ok(session.box_store.get(&key).cloned().unwrap_or(Value::Nil))
+        }
+
+        // BoxBindExpr(namespace_str, name_str, value) → stores in box_store
+        BuiltinId::BoxBindExpr => {
+            if args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("BoxBind: expected 3 args, got {}", args.len())));
+            }
+            let ns   = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box namespace")) };
+            let name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box name")) };
+            let val  = read(2)?;
+            let key = format!("{}::{}", ns, name);
+            session.box_store.insert(key, val);
+            Ok(Value::Nil)
+        }
+
+        // tokenize(text, delimiters, [keep_delimiters]) → Array
+        BuiltinId::Tokenize => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(GoblinError::Runtime(format!("tokenize: expected 2-3 args, got {}", args.len())));
+            }
+            let text = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "tokenize text")),
+            };
+            let delims = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "tokenize delimiters")),
+            };
+            let keep_delims = if args.len() > 2 {
+                match read(2)? {
+                    Value::Bool(b) => b,
+                    other => return Err(GoblinError::type_error("bool", other.type_name(), "tokenize keep_delimiters")),
+                }
+            } else {
+                false
+            };
+            let escaped = regex::escape(&delims);
+            let pattern = if keep_delims {
+                format!("({})|([^{}]+)", escaped, escaped)
+            } else {
+                format!("[^{}]+", escaped)
+            };
+            match regex::Regex::new(&pattern) {
+                Ok(re) => {
+                    let tokens: Vec<Value> = re.find_iter(&text)
+                        .map(|m| Value::Str(m.as_str().to_string()))
+                        .collect();
+                    Ok(Value::Array(tokens))
+                }
+                Err(_) => Err(GoblinError::Runtime("tokenize: invalid delimiter pattern".to_string())),
+            }
+        }
+
+        // get(collection) → all items (alias for get_all; returns Array)
+        BuiltinId::Get => {
+            if args.len() != 1 {
+                return Err(GoblinError::Runtime(format!("get: expected 1 arg, got {}", args.len())));
+            }
+            match read(0)? {
+                Value::Array(v) => Ok(Value::Array(v)),
+                Value::Str(s) => Ok(Value::Array(s.chars().map(|c| Value::Char(c)).collect())),
+                Value::Map(m) => Ok(Value::Array(m.into_values().collect())),
+                Value::MapOrd(m) => Ok(Value::Array(m.into_values().collect())),
+                Value::Nil => Ok(Value::Array(vec![])),
+                other => Err(GoblinError::type_error("collection", other.type_name(), "get")),
+            }
         }
     }
 }

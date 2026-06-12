@@ -731,8 +731,14 @@ pub enum BuiltinId {
     EnumVariantExpr,
     // LiteralToken expr: (module_str, ident_str) → Value from token store
     LiteralTokenExpr,
-    // BoxVar expr: (namespace_str, name_str) → Value from box_store (no-op stub for VM)
+    // BoxVar expr: (namespace_str, name_str) → Value from box_store
     BoxVarExpr,
+    // BoxBind expr: (namespace_str, name_str, value) → stores in box_store, returns Nil
+    BoxBindExpr,
+
+    // Missing builtins
+    Tokenize,
+    Get,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
