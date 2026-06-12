@@ -71,7 +71,7 @@ xx
 f | falloff()
 say "falloff_nil?=" ++ (f == nil)
 
-/// bound method reference <-------- this fucking method doesn't work
+/// bound method reference 
 <>Player |
     name: "{name}",
     health: 50
@@ -80,7 +80,6 @@ say "falloff_nil?=" ++ (f == nil)
         return health
     xx
 end
-///
 
 ////
 
@@ -139,23 +138,16 @@ user2.greet
 user2.show_email
 ////
 
-/// Test readonly - this should fail at runtime
-/// user1 >> id = 999
-
-////
-Other tests
-From another session
-////
 
 /// Test 1: Basic class with string interpolation and actions
-<>Person | name: "{name}", age: 25
+<> Person | name: "{name}", age: 25
     act greet()
         say "Hello, I'm {name} and I'm {age} years old"
     end
 end
 
 /// Test 2: Object instantiation with all values
-alice<>Person | { name: "Alice", age: 30 }
+alice <> Person | { name: "Alice", age: 30 }
 
 /// Test 3: Field access
 alice >> name
@@ -168,11 +160,11 @@ alice >> age |= 31 /// I think you need the update operator here
 alice.greet()
 
 /// Test 6: Using default values (skipping age)
-bob<>Person | { name: "Bob" }
+bob <> Person | { name: "Bob" }
 bob.greet()
 
 /// Test 7: Class with numeric field and methods that access fields
-<>Counter | value: 0
+<> Counter | value: 0
     act increment()
         self >> value |= value + 1
     end
@@ -183,7 +175,7 @@ bob.greet()
 end
 
 /// Test 8: Object instantiation with single value
-c<>Counter | { value: 5 }
+c <> Counter | { value: 5 }
 
 /// Test 9: Method that reads a field
 say c.get()
