@@ -48,10 +48,13 @@ impl CallFrame {
         }
     }
 
-    fn store_local(&mut self, slot: u8, t: Tether) {
+    fn store_local(&mut self, slot: u8, t: Tether, session: &mut crate::session::Session) {
         let idx = slot as usize;
         if idx >= self.locals.len() {
             self.locals.resize(idx + 1, None);
+        }
+        if let Some(old) = self.locals[idx].clone() {
+            let _ = session.dec_tether(&old);
         }
         self.locals[idx] = Some(t);
     }
@@ -236,7 +239,7 @@ impl Vm {
                 } else {
                     t
                 };
-                self.call_stack.last_mut().unwrap().store_local(slot, t);
+                self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
             }
 
             // ── Globals ──────────────────────────────────────────────────────

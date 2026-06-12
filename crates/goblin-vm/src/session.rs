@@ -546,6 +546,9 @@ impl Session {
 
     pub fn set_global(&mut self, idx: usize, t: Tether) {
         self.ensure_globals(idx + 1);
+        if let Some(old) = self.globals[idx].clone() {
+            let _ = self.dec_tether(&old);
+        }
         self.globals[idx] = Some(t);
     }
 
