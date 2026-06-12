@@ -100,6 +100,26 @@ impl Vm {
         }
     }
 
+    /// Execute a compiled module in REPL mode: runs the bytecode against the
+    /// current session state, returns the last expression value if any.
+    /// Globals are extended (not reset) so state persists across calls.
+    pub fn execute_repl(&mut self, mut func: FunctionObject, n_globals: usize) -> Result<Value, GoblinError> {
+        // Extend globals vec so StoreGlobal(i) never goes out of bounds.
+        while self.session.globals.len() < n_globals {
+            self.session.globals.push(None);
+        }
+        self.quicken(&mut func);
+        let func_rc = Rc::new(func);
+        let frame = CallFrame::new(func_rc, Vec::new(), 0);
+        self.call_stack.push(frame);
+        self.run_loop()?;
+        if let Some(t) = self.stack.pop() {
+            self.session.read_value(&t)
+        } else {
+            Ok(Value::Nil)
+        }
+    }
+
     // ── Internal execution loop ──────────────────────────────────────────────
 
     fn run_loop(&mut self) -> Result<(), GoblinError> {

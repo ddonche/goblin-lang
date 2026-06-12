@@ -220,6 +220,10 @@ pub struct Compiler {
     current_line: u32,
     /// When true, unknown identifiers are compiled as self-field loads (for class methods).
     pub is_class_method: bool,
+    /// When true, top-level binds use StoreGlobal/LoadGlobal so state persists across REPL entries.
+    pub repl_mode: bool,
+    /// Number of globals that existed before this REPL snippet (for duplicate-bind detection).
+    repl_known_globals_count: usize,
     /// Stack of loop contexts: (break_patch_indices, continue_ip).
     /// Innermost loop is at the back.
     loop_stack: Vec<LoopCtx>,
@@ -237,7 +241,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, loop_stack: Vec::new() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new() }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -459,11 +463,29 @@ impl Compiler {
                 let name = &bind.name.0;
                 match bind.mode {
                     BindMode::Tether => {
-                        // x | expr — initial binding. Reuse pre-declared slot if
-                        // present (hoisted from module pre-pass), else declare new.
-                        let slot = self.scope_mut().find_local(name)
-                            .unwrap_or_else(|| self.scopes.last_mut().unwrap().declare_local(name));
-                        self.emit(Opcode::StoreLocal(slot));
+                        // In REPL mode at top scope: use globals so state persists.
+                        if self.repl_mode && self.scopes.len() == 1 {
+                            if let Some(pos) = self.globals.iter().position(|g| g == name) {
+                                if pos < self.repl_known_globals_count {
+                                    return Err(GoblinError::CompileError {
+                                        message: format!("duplicate-local: '{}' is already bound", name),
+                                        span_debug: format!("{:?}", bind.name.1),
+                                    });
+                                }
+                                // Same snippet re-declares it (shouldn't normally happen, but allow overwrite)
+                                self.emit(Opcode::StoreGlobal(pos as u16));
+                            } else {
+                                let pos = self.globals.len();
+                                self.globals.push(name.clone());
+                                self.emit(Opcode::StoreGlobal(pos as u16));
+                            }
+                        } else {
+                            // x | expr — initial binding. Reuse pre-declared slot if
+                            // present (hoisted from module pre-pass), else declare new.
+                            let slot = self.scope_mut().find_local(name)
+                                .unwrap_or_else(|| self.scopes.last_mut().unwrap().declare_local(name));
+                            self.emit(Opcode::StoreLocal(slot));
+                        }
                     }
                     BindMode::Retether => {
                         // x |= expr — rebind existing slot.
@@ -510,9 +532,20 @@ impl Compiler {
                     let name_idx = self.add_constant(Value::Str(action.name.clone()));
                     self.emit(Opcode::RegisterAction(name_idx));
                 }
-                // Store the resulting function/closure in a local slot.
-                let slot = self.scope_mut().declare_local(&action.name);
-                self.emit(Opcode::StoreLocal(slot));
+                // In REPL mode at top scope, store into global so it persists.
+                if self.repl_mode && self.scopes.len() == 1 {
+                    let pos = if let Some(p) = self.globals.iter().position(|g| g == &action.name) {
+                        p
+                    } else {
+                        let p = self.globals.len();
+                        self.globals.push(action.name.clone());
+                        p
+                    };
+                    self.emit(Opcode::StoreGlobal(pos as u16));
+                } else {
+                    let slot = self.scope_mut().declare_local(&action.name);
+                    self.emit(Opcode::StoreLocal(slot));
+                }
             }
 
             Stmt::Judge(judge) => {
@@ -2347,4 +2380,76 @@ pub fn compile_module(module: &Module) -> Result<CompiledModule, GoblinError> {
 /// Compile a single ActionDecl to a FunctionObject (for testing / embedding).
 pub fn compile_action(action: &ActionDecl) -> Result<FunctionObject, GoblinError> {
     Compiler::new().compile_action(action)
+}
+
+/// Compile a REPL snippet with knowledge of already-declared globals.
+/// `known_globals` is the list of variable names already in the session.
+/// New names get appended. Returns the compiled function and the updated globals list.
+pub fn compile_repl_snippet(
+    module: &Module,
+    known_globals: &[String],
+) -> Result<CompiledModule, GoblinError> {
+    let mut c = Compiler::new();
+    // Pre-populate globals with already-known names so the compiler can resolve them.
+    c.globals = known_globals.to_vec();
+    c.repl_known_globals_count = known_globals.len();
+    c.compile_repl_module(module)
+}
+
+impl Compiler {
+    /// Like compile_module but all top-level binds go into globals (LoadGlobal/StoreGlobal)
+    /// instead of locals, so state persists across REPL entries.
+    pub fn compile_repl_module(mut self, module: &Module) -> Result<CompiledModule, GoblinError> {
+        self.repl_mode = true;
+        self.push_scope("__main__", 0);
+
+        // Register new names as globals (append to self.globals).
+        let mut hoisted: Vec<String> = Vec::new();
+        collect_bind_names(&module.items, &mut hoisted);
+        for name in &hoisted {
+            if !self.globals.contains(name) {
+                self.globals.push(name.clone());
+            }
+        }
+        // Also register action names as globals.
+        for stmt in &module.items {
+            if let goblin_ast::Stmt::Action(a) = stmt {
+                if !self.globals.contains(&a.name) {
+                    self.globals.push(a.name.clone());
+                }
+            }
+        }
+
+        // Compile all but last stmt normally, then handle last specially.
+        if module.items.is_empty() {
+            let scope = self.scopes.last_mut().unwrap();
+            scope.emit(Opcode::LoadNil);
+            scope.emit(Opcode::Return);
+        } else {
+            let (body, last) = module.items.split_at(module.items.len() - 1);
+            for stmt in body {
+                self.compile_stmt(stmt)?;
+            }
+            // If last stmt is a bare expression, leave its value on the stack.
+            match &last[0] {
+                goblin_ast::Stmt::Expr(e) => {
+                    self.compile_expr(e)?;
+                }
+                other => {
+                    self.compile_stmt(other)?;
+                    let scope = self.scopes.last_mut().unwrap();
+                    scope.emit(Opcode::LoadNil);
+                }
+            }
+            let scope = self.scopes.last_mut().unwrap();
+            scope.emit(Opcode::Return);
+        }
+        let entry = self.pop_scope();
+        Ok(CompiledModule {
+            entry,
+            classes: self.collected_classes,
+            enums: self.collected_enums,
+            global_names: self.globals.clone(),
+        })
+    }
 }

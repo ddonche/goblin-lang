@@ -1130,6 +1130,13 @@ fn run_run_vm(path: &std::path::Path) -> i32 {
 
 fn run_repl_vm() -> i32 {
     use std::io::{self, Write};
+    use goblin_lexer::lex;
+    use goblin_parser::Parser;
+    use goblin_vm::session::{GcMode, Session};
+    use goblin_vm::vm::Vm;
+    use goblin_vm::compiler::compile_repl_snippet;
+    use goblin_vm::exec::compile_class_methods_pub;
+    use goblin_ast as ast;
 
     println!("{}", repl_banner());
     println!("  [VM mode — engine: goblin-vm]");
@@ -1138,9 +1145,9 @@ fn run_repl_vm() -> i32 {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
-            // Accumulate all successfully-committed source so state persists
-            // across REPL entries by replaying the full history on each run.
-            let mut history = String::new();
+            let session = Session::new(GcMode::Auto);
+            let mut vm = Vm::new(session);
+            let mut known_globals: Vec<String> = Vec::new();
             let mut form_no: usize = 1;
             let mut buf = String::new();
             let mut depth: i32 = 0;
@@ -1149,71 +1156,115 @@ fn run_repl_vm() -> i32 {
                 if buf.is_empty() {
                     print!("gbln-vm({}): ", form_no);
                 } else {
-                    print!("...          ");
+                    print!("...         ");
                 }
-                if io::stdout().flush().is_err() {
-                    return 1;
-                }
+                if io::stdout().flush().is_err() { return 1; }
 
                 let mut line = String::new();
                 let read = io::stdin().read_line(&mut line).unwrap_or(0);
-                if read == 0 {
-                    println!();
-                    break;
-                }
+                if read == 0 { println!(); break; }
 
                 let trimmed = line.trim_end();
 
                 if buf.is_empty()
-                    && (trimmed.eq_ignore_ascii_case("exit")
-                        || trimmed.eq_ignore_ascii_case("quit"))
+                    && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit"))
                 {
                     break;
                 }
 
-                buf.push_str(&line);
+                buf.push_str(trimmed);
+                buf.push('\n');
 
-                // Track block depth (same heuristic as the interpreter REPL).
-                for tok in trimmed.split_whitespace() {
-                    match tok {
-                        "do" | "then" | "else" | "act" | "each" | "while"
-                        | "loop" | "attempt" | "ensure" | "catch" | "rescue"
-                        | "fn" | "if" | "match" => depth += 1,
-                        "end" | "xx" => depth -= 1,
-                        _ => {}
+                // Track block depth
+                {
+                    let src_line = trimmed.trim_start();
+                    let starts_block = |kw: &str| -> bool {
+                        src_line == kw || (src_line.starts_with(kw) && src_line[kw.len()..].starts_with(char::is_whitespace))
+                    };
+                    if (starts_block("if") || starts_block("unless") || starts_block("while")
+                        || starts_block("for") || starts_block("repeat") || starts_block("attempt")
+                        || starts_block("judge") || starts_block("judge_all"))
+                        && !src_line.contains("=>")
+                    {
+                        depth += 1;
                     }
+                    if src_line.starts_with("act ") || src_line.starts_with("act(") {
+                        depth += 1;
+                    }
+                    if src_line == "end" || src_line == "xx" { depth -= 1; }
+                    if depth < 0 { depth = 0; }
                 }
 
-                if depth > 0 {
-                    continue;
-                }
+                if depth > 0 { continue; }
 
-                depth = 0;
                 let snippet = buf.trim_end().to_string();
                 buf.clear();
+                depth = 0;
 
-                if snippet.is_empty() {
-                    form_no += 1;
-                    continue;
-                }
+                if snippet.is_empty() { form_no += 1; continue; }
 
-                // Run history + new snippet together; only the new snippet
-                // produces visible output this round because history has already
-                // been printed in prior rounds.
-                let full_src = if history.is_empty() {
-                    snippet.clone()
-                } else {
-                    format!("{}\n{}", history, snippet)
+                // Lex
+                let tokens = match lex(&snippet, "<repl>") {
+                    Ok(t) => t,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() { eprintln!("{d}"); }
+                        form_no += 1;
+                        continue;
+                    }
                 };
 
-                match goblin_vm::exec::execute_source(&full_src) {
-                    Ok(_) => {
-                        // Commit snippet to history on success.
-                        if !history.is_empty() { history.push('\n'); }
-                        history.push_str(&snippet);
+                // Parse
+                let module = match Parser::new(&tokens).parse_module() {
+                    Ok(m) => m,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() { eprintln!("{d}"); }
+                        form_no += 1;
+                        continue;
+                    }
+                };
+
+                // Compile with existing globals context
+                let compiled = match compile_repl_snippet(&module, &known_globals) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        form_no += 1;
+                        continue;
+                    }
+                };
+
+                // Register new classes/enums into the VM session
+                for decl in &compiled.classes {
+                    compile_class_methods_pub(decl, &mut vm.session);
+                    vm.session.classes.insert(decl.name.clone(), decl.clone());
+                }
+                for decl in compiled.enums {
+                    vm.session.enums.insert(decl.name.clone(), decl);
+                }
+
+                // Update global names (extend, never shrink)
+                for name in &compiled.global_names {
+                    if !known_globals.contains(name) {
+                        known_globals.push(name.clone());
+                    }
+                }
+                vm.session.global_names = known_globals.clone();
+
+                // Determine if last stmt is a bare expression (for auto-print)
+                let last_is_expr = module.items.last().map(|s| matches!(s, ast::Stmt::Expr(_))).unwrap_or(false);
+
+                // Execute
+                match vm.execute_repl(compiled.entry, known_globals.len()) {
+                    Ok(val) => {
+                        if last_is_expr {
+                            let s = goblin_vm::builtins::value_to_str(&val);
+                            if !s.is_empty() && !matches!(val, goblin_vm::value::Value::Nil | goblin_vm::value::Value::Unit) {
+                                println!("{s}");
+                            }
+                        }
                     }
                     Err(e) => {
-                        eprintln!("{}", e);
+                        eprintln!("error: {e}");
                     }
                 }
 
@@ -1225,6 +1276,7 @@ fn run_repl_vm() -> i32 {
         .join()
         .unwrap()
 }
+
 
 fn run_repl() -> i32 {
     use std::io::{self, Write};

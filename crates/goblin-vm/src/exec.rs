@@ -5,6 +5,10 @@ use crate::session::{GcMode, Session};
 use crate::value::Value;
 use crate::vm::Vm;
 
+pub fn compile_class_methods_pub(class: &goblin_ast::ClassDecl, session: &mut Session) {
+    compile_class_methods(class, session);
+}
+
 fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session) {
     use crate::compiler::Compiler;
     for action in &class.actions {
