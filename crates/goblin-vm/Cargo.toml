@@ -3,5 +3,10 @@ name = "goblin-vm"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+maths = ["rust_decimal/maths"]
+
 [dependencies]
-slab = "0.4"         # generational-ish arena; we’ll wrap it
+slab       = "0.4"
+rust_decimal = { version = "1", features = ["serde"] }
+indexmap   = "2"
