@@ -59,6 +59,21 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             session.gc_sweep();
             Ok(Value::Nil)
         }
+        BuiltinId::GcMode => {
+            expect_n(1)?;
+            let val = session.read_value(&args[0])?;
+            match &val {
+                Value::Str(s) => match s.as_str() {
+                    "off"    => { session.gc_mode = crate::session::GcMode::Off;    Ok(Value::Nil) }
+                    "manual" => { session.gc_mode = crate::session::GcMode::Manual; Ok(Value::Nil) }
+                    "auto"   => { session.gc_mode = crate::session::GcMode::Auto;   Ok(Value::Nil) }
+                    other => Err(GoblinError::Runtime(format!(
+                        "gc_mode: unknown mode '{}' — use \"off\", \"manual\", or \"auto\"", other
+                    ))),
+                },
+                _ => Err(GoblinError::Runtime("gc_mode: expected a string".into())),
+            }
+        }
 
         // ── Math ──────────────────────────────────────────────────────────────
         BuiltinId::Abs => {

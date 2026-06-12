@@ -338,6 +338,7 @@ pub enum BuiltinId {
     MemTotal,
     MemHuman,
     Gc,
+    GcMode,
 
     // Arithmetic helpers (called as functions)
     Abs,

@@ -2019,6 +2019,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         ":mem_id"      | "mem_id"       => BuiltinId::MemId,
         ":mem_addr"    | "mem_addr"     => BuiltinId::MemAddr,
         ":gc"          | "gc"           => BuiltinId::Gc,
+        ":gc_mode"     | "gc_mode"      => BuiltinId::GcMode,
         "abs"                           => BuiltinId::Abs,
         "min"                           => BuiltinId::Min,
         "max"                           => BuiltinId::Max,
