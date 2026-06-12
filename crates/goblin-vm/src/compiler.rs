@@ -1944,12 +1944,11 @@ impl Compiler {
         name: &str,
         args: &[Expr],
     ) -> Result<Option<()>, GoblinError> {
-        let bid = match builtin_by_name(name) {
+        let bare = name.trim_start_matches(':');
+        let bid = match builtin_by_name(bare).or_else(|| builtin_by_name(name)) {
             Some(b) => b,
             None    => return Ok(None),
         };
-        // :objects/:overlays with a predicate — auto-wrap predicate in lambda(it)
-        let bare = name.trim_start_matches(':');
         if (bare == "objects" || bare == "overlays") && args.len() == 1 {
             self.compile_predicate_lambda(&args[0])?;
             self.emit(Opcode::CallBuiltin(bid, 1));
