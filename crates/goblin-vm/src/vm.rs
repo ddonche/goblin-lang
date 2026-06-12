@@ -879,6 +879,35 @@ impl Vm {
                         self.stack.push(result);
                         return Ok(());
                     }
+                    BuiltinId::Gc => {
+                        self.vm_gc();
+                        let nil = self.session.alloc_value(Value::Nil);
+                        self.stack.push(nil);
+                        return Ok(());
+                    }
+                    BuiltinId::StashCount => {
+                        let live_slots = self.collect_live_slots();
+                        let total = self.session.arena.len();
+                        let live = self.session.arena.iter()
+                            .filter(|(slot, _)| live_slots.contains(&(*slot as u32)))
+                            .count();
+                        let abandoned = total - live;
+                        let mut map = indexmap::IndexMap::new();
+                        map.insert("total".to_string(),     Value::Int(total     as i64));
+                        map.insert("live".to_string(),      Value::Int(live      as i64));
+                        map.insert("abandoned".to_string(), Value::Int(abandoned as i64));
+                        let result = self.session.alloc_value(Value::MapOrd(map));
+                        self.stack.push(result);
+                        return Ok(());
+                    }
+                    BuiltinId::TetherCount => {
+                        let slot = if arg_tethers.is_empty() { 0u32 } else { arg_tethers[0].addr.slot };
+                        let live_slots = self.collect_live_slots();
+                        let count = live_slots.iter().filter(|&&s| s == slot).count();
+                        let result = self.session.alloc_value(Value::Int(count as i64));
+                        self.stack.push(result);
+                        return Ok(());
+                    }
                     _ => {}
                 }
 

@@ -55,26 +55,9 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::MemHuman => {
             Ok(Value::Str(human_bytes(process_memory_bytes())))
         }
-        BuiltinId::Gc => {
-            session.gc_sweep();
+        BuiltinId::Gc | BuiltinId::StashCount | BuiltinId::TetherCount => {
+            // Handled in vm.rs where the full root set is accessible for mark-and-sweep.
             Ok(Value::Nil)
-        }
-        BuiltinId::StashCount => {
-            let total = session.arena.len();
-            let live = session.arena.iter().filter(|(_, s)| s.tether_count > 0).count();
-            let abandoned = total - live;
-            let mut map = indexmap::IndexMap::new();
-            map.insert("total".to_string(),     Value::Int(total     as i64));
-            map.insert("live".to_string(),      Value::Int(live      as i64));
-            map.insert("abandoned".to_string(), Value::Int(abandoned as i64));
-            Ok(Value::MapOrd(map))
-        }
-        BuiltinId::TetherCount => {
-            expect_n(1)?;
-            let tc = session.arena.get(args[0].addr.slot as usize)
-                .map(|s| s.tether_count as i64)
-                .unwrap_or(0);
-            Ok(Value::Int(tc))
         }
         BuiltinId::GcMode => {
             expect_n(1)?;
