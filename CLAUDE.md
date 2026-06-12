@@ -9,6 +9,26 @@
 - Never say "sorry", "I apologize", or any variant — no emotion language
 - Never say "noted" or imply memory without actually writing it down
 
+## Blueprint architecture (NEVER change without explicit user permission)
+The VM MUST implement the name → tether → stash → value chain exactly as specified in the blueprint.
+These are HARD CONSTRAINTS — violating any of them is forbidden regardless of perceived performance benefit:
+
+- `session.arena: Slab<Stash>` — ALL values live in the arena. No exceptions.
+- `Stash { value: Value, tether_count: usize, generation: u32 }` — exact shape, no changes
+- `Address { slot: u32, generation: u32 }` — exact shape, no changes
+- `Tether { addr: Address }` — the runtime link. VM stack holds Tethers, NOT Values.
+- `GcMode { Off, Manual, Auto }` — three modes, always present in Session
+- `session.alloc_value(v)` — the ONLY way to create a stash. Never bypass it.
+- `session.gc_sweep()` — called by `gc()` builtin and Auto mode. Never remove it.
+- `:mem_id(x)` returns `{ slot, generation }` from the REAL arena address — never fake this
+- `:mem_addr(x)` returns the REAL hex pointer to the stash value — never fake this
+- `overwrite!` is the ONLY mutation primitive — it mutates the stash in place
+- Worker isolation: each Worker has its own Session (its own arena). No shared arenas.
+- Do NOT replace the arena with Vec<Value> or any flat structure for "performance"
+- Do NOT change Tether to store Value directly
+- Do NOT make the stack hold Values instead of Tethers
+- Performance optimizations must work WITHIN the arena model, not by removing it
+
 ## What to skip (user instructions)
 - `money` builtins — skip
 - `db_query`, `db_exec`, `db_query_one` — skip (db crate unfinished)
