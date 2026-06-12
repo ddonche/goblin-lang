@@ -2020,6 +2020,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         ":mem_addr"    | "mem_addr"     => BuiltinId::MemAddr,
         ":gc"          | "gc"           => BuiltinId::Gc,
         ":gc_mode"     | "gc_mode"      => BuiltinId::GcMode,
+        ":stash_count" | "stash_count"  => BuiltinId::StashCount,
+        ":tether_count"| "tether_count" => BuiltinId::TetherCount,
         "abs"                           => BuiltinId::Abs,
         "min"                           => BuiltinId::Min,
         "max"                           => BuiltinId::Max,

@@ -339,6 +339,8 @@ pub enum BuiltinId {
     MemHuman,
     Gc,
     GcMode,
+    StashCount,
+    TetherCount,
 
     // Arithmetic helpers (called as functions)
     Abs,
