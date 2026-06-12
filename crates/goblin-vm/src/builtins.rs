@@ -1,24 +1,31 @@
 /// Builtin function dispatch for the Goblin VM.
+///
+/// All builtins follow the same calling convention:
+///   - receive a Vec<Tether> of arguments
+///   - receive &mut Session to allocate results
+///   - return a Tether pointing to the result stash
 use std::rc::Rc;
 
 use crate::collections;
 use crate::error::GoblinError;
 use crate::session::Session;
-use crate::value::{BuiltinId, CollectionValue, FormatSpec, Value};
+use crate::value::{BuiltinId, CollectionValue, FormatSpec, Tether, Value};
 
 pub fn call_builtin(
     id: BuiltinId,
-    args: Vec<Value>,
+    args: Vec<Tether>,
     session: &mut Session,
-) -> Result<Value, GoblinError> {
-    dispatch(id, args, session)
+) -> Result<Tether, GoblinError> {
+    let result = dispatch(id, args, session)?;
+    Ok(session.alloc_value(result))
 }
 
-fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<Value, GoblinError> {
     let read = |i: usize| -> Result<Value, GoblinError> {
-        args.get(i).cloned().ok_or_else(|| GoblinError::Runtime(
+        let t = args.get(i).ok_or_else(|| GoblinError::Runtime(
             format!("builtin {:?}: expected arg {i}", id)
-        ))
+        ))?;
+        session.read_value(t)
     };
     let expect_n = |n: usize| -> Result<(), GoblinError> {
         if args.len() != n {
@@ -30,15 +37,17 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── Memory ───────────────────────────────────────────────────────────
         BuiltinId::MemId => {
             expect_n(1)?;
+            let addr = session.mem_id_raw(&args[0]);
             let pairs = vec![
-                (Value::Str("slot".into()),       Value::Int(0)),
-                (Value::Str("generation".into()), Value::Int(0)),
+                (Value::Str("slot".into()),       Value::Int(addr.slot as i64)),
+                (Value::Str("generation".into()), Value::Int(addr.generation as i64)),
             ];
             Ok(Value::Collection(Rc::new(CollectionValue::from_map(pairs))))
         }
         BuiltinId::MemAddr => {
             expect_n(1)?;
-            Ok(Value::Str("0x0".to_string()))
+            let s = session.mem_addr_hex(&args[0])?;
+            Ok(Value::Str(s))
         }
         BuiltinId::MemTotal => {
             Ok(Value::Int(process_memory_bytes() as i64))
@@ -47,7 +56,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Str(human_bytes(process_memory_bytes())))
         }
         BuiltinId::Gc => {
-            // gc removed
+            session.gc_sweep();
             Ok(Value::Nil)
         }
 
@@ -67,7 +76,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 if xs.is_empty() { return Err(GoblinError::Runtime("min: empty array".into())); }
                 xs
             } else {
-                args.clone()
+                (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
             };
             let any_big = vals.iter().any(|v| matches!(v, Value::Big(_)));
             if any_big {
@@ -101,7 +110,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 if xs.is_empty() { return Err(GoblinError::Runtime("max: empty array".into())); }
                 xs
             } else {
-                args.clone()
+                (0..args.len()).map(|i| session.read_value(&args[i])).collect::<Result<Vec<_>, _>>()?
             };
             let any_big = vals.iter().any(|v| matches!(v, Value::Big(_)));
             if any_big {
@@ -1334,9 +1343,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let mut any_non_text = false;
                     let mut results = vec![];
                     for c in s.chars() {
-                        let t = Value::Char(c);
+                        let t = session.alloc_value(Value::Char(c));
                         let rt = call_builtin(bid, vec![t], session)?;
-                        let v = rt;
+                        let v = session.read_value(&rt)?;
                         match &v { Value::Char(_) | Value::Str(_) => {} _ => { any_non_text = true; } }
                         results.push(v);
                     }
@@ -1350,9 +1359,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Array(xs) => {
                     let mut out = vec![];
                     for v in xs {
-                        let t = v;
+                        let t = session.alloc_value(v);
                         let rt = call_builtin(bid, vec![t], session)?;
-                        out.push(rt);
+                        out.push(session.read_value(&rt)?);
                     }
                     Ok(Value::Array(out))
                 }
@@ -1525,9 +1534,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         if !is_ident {
                             fmt_value_raw(v) != pred
                         } else if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
-                            let t = v.clone();
+                            let t = session.alloc_value(v.clone());
                             match call_builtin(bid, vec![t], session) {
-                                Ok(rt) => !matches!(rt, Value::Bool(true)),
+                                Ok(rt) => !matches!(session.read_value(&rt), Ok(Value::Bool(true))),
                                 _ => true,
                             }
                         } else { true }
@@ -1539,9 +1548,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         if !is_ident {
                             fmt_value_raw(v) != pred
                         } else if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
-                            let t = v.clone();
+                            let t = session.alloc_value(v.clone());
                             match call_builtin(bid, vec![t], session) {
-                                Ok(rt) => !matches!(rt, Value::Bool(true)),
+                                Ok(rt) => !matches!(session.read_value(&rt), Ok(Value::Bool(true))),
                                 _ => true,
                             }
                         } else { true }
@@ -1605,9 +1614,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let matches_pred = |v: &Value, session: &mut Session| -> bool {
                 if !is_ident { return fmt_value_raw(v) == pred; }
                 if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
-                    let t = v.clone();
+                    let t = session.alloc_value(v.clone());
                     match call_builtin(bid, vec![t], session) {
-                        Ok(rt) => matches!(rt, Value::Bool(true)),
+                        Ok(rt) => matches!(session.read_value(&rt), Ok(Value::Bool(true))),
                         _ => false,
                     }
                 } else { false }
@@ -1955,22 +1964,22 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── I/O ───────────────────────────────────────────────────────────────
         BuiltinId::Print => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
+            let parts: Result<Vec<String>, _> = args.iter().map(|t| session.read_value(t).map(|v| value_to_str(&v))).collect();
             print!("{}", parts?.join(" "));
             Ok(Value::Nil)
         }
         BuiltinId::Println => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
+            let parts: Result<Vec<String>, _> = args.iter().map(|t| session.read_value(t).map(|v| value_to_str(&v))).collect();
             println!("{}", parts?.join(" "));
             Ok(Value::Nil)
         }
         BuiltinId::Eprint => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
+            let parts: Result<Vec<String>, _> = args.iter().map(|t| session.read_value(t).map(|v| value_to_str(&v))).collect();
             eprint!("{}", parts?.join(" "));
             Ok(Value::Nil)
         }
         BuiltinId::Eprintln => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
+            let parts: Result<Vec<String>, _> = args.iter().map(|t| session.read_value(t).map(|v| value_to_str(&v))).collect();
             eprintln!("{}", parts?.join(" "));
             Ok(Value::Nil)
         }
@@ -2141,7 +2150,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Panic => {
             let msg = if args.is_empty() { "panic!".to_string() } else {
-                match args[0].clone() { Value::Str(s) => s, v => value_to_str(&v) }
+                match session.read_value(&args[0])? { Value::Str(s) => s, v => value_to_str(&v) }
             };
             Err(GoblinError::Runtime(msg))
         }
@@ -2496,12 +2505,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── pack / unpack ─────────────────────────────────────────────────────
         BuiltinId::Pack => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let v = args[0].clone();
+            let v = session.read_value(&args[0])?;
             Ok(pack_value(v))
         }
         BuiltinId::Unpack => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let v = args[0].clone();
+            let v = session.read_value(&args[0])?;
             Ok(match v {
                 Value::Int(n) if n < 0 => Value::Nil,
                 Value::Int(0) => Value::Array(vec![Value::Int(0)]),
@@ -2520,7 +2529,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── secure_pick / secure_shuffle ──────────────────────────────────────
         BuiltinId::SecurePick => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let cfg = args[0].clone();
+            let cfg = session.read_value(&args[0])?;
             let m = match cfg {
                 Value::Map(ref m) => m.clone(),
                 _ => return Err(GoblinError::type_error("map", cfg.type_name(), "secure_pick")),
@@ -2615,7 +2624,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::SecureShuffle => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let v = args[0].clone();
+            let v = session.read_value(&args[0])?;
             match v {
                 Value::Array(mut items) => {
                     fisher_yates_shuffle(&mut items, session);
@@ -2637,7 +2646,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── String extras ─────────────────────────────────────────────────────
         BuiltinId::Lines => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let v = args[0].clone();
+            let v = session.read_value(&args[0])?;
             match v {
                 Value::Str(s) => Ok(Value::Array(s.split('\n').map(|l| Value::Str(l.to_string())).collect())),
                 _ => Err(GoblinError::type_error("string", v.type_name(), "lines")),
@@ -2645,7 +2654,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Words => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let v = args[0].clone();
+            let v = session.read_value(&args[0])?;
             match v {
                 Value::Str(s) => Ok(Value::Array(s.split_whitespace().map(|w| Value::Str(w.to_string())).collect())),
                 _ => Err(GoblinError::type_error("string", v.type_name(), "words")),
@@ -2653,7 +2662,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Chars => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let v = args[0].clone();
+            let v = session.read_value(&args[0])?;
             match v {
                 Value::Str(s) => Ok(Value::Array(s.chars().map(Value::Char).collect())),
                 _ => Err(GoblinError::type_error("string", v.type_name(), "chars")),
@@ -2661,21 +2670,21 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Format => {
             if args.is_empty() { return Ok(Value::Nil); }
-            let v = args[0].clone();
+            let v = session.read_value(&args[0])?;
             // strip existing format wrapper to get the raw numeric value
             let inner_v = match &v {
                 Value::Formatted(inner, _) => *inner.clone(),
                 other => other.clone(),
             };
             let decimals: u32 = if args.len() > 1 {
-                match args[1].clone() {
+                match session.read_value(&args[1])? {
                     Value::Int(n) if n >= 0 => n as u32,
                     _ => 2,
                 }
             } else { 2 };
             let mut spec = FormatSpec { decimals, sep_thousands: None, sep_decimal: '.' };
             if args.len() == 4 {
-                spec.sep_thousands = match args[2].clone() {
+                spec.sep_thousands = match session.read_value(&args[2])? {
                     Value::Str(s) => match s.as_str() {
                         "," => Some(','), "." => Some('.'), "_" => Some('_'), "'" => Some('\''), "none" => None,
                         _ => return Err(GoblinError::Runtime("unknown thousands separator".into())),
@@ -2686,7 +2695,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     },
                     _ => return Err(GoblinError::type_error("string or char", "other", "format")),
                 };
-                spec.sep_decimal = match args[3].clone() {
+                spec.sep_decimal = match session.read_value(&args[3])? {
                     Value::Str(s) => match s.as_str() {
                         "." => '.', "," => ',',
                         _ => return Err(GoblinError::Runtime("unknown decimal marker".into())),
@@ -2702,20 +2711,20 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Pad | BuiltinId::PadLeft => {
             if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let width = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
+            let s = match session.read_value(&args[0])? { Value::Str(s) => s, v => fmt_value_raw(&v) };
+            let width = match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 0 };
             Ok(Value::Str(format!("{:>width$}", s)))
         }
         BuiltinId::PadRight => {
             if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let width = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
+            let s = match session.read_value(&args[0])? { Value::Str(s) => s, v => fmt_value_raw(&v) };
+            let width = match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 0 };
             Ok(Value::Str(format!("{:<width$}", s)))
         }
         BuiltinId::Repeat => {
             if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let n = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
+            let s = match session.read_value(&args[0])? { Value::Str(s) => s, v => fmt_value_raw(&v) };
+            let n = match session.read_value(&args[1])? { Value::Int(n) => n as usize, _ => 0 };
             Ok(Value::Str(s.repeat(n)))
         }
 
@@ -3214,14 +3223,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let dice_str = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "roll_str")) };
             let cfg = parse_dice_string_to_map(&dice_str)?;
-            let t = Value::Map(cfg);
+            let t = session.alloc_value(Value::Map(cfg));
             dispatch(BuiltinId::Roll, vec![t], session)
         }
         BuiltinId::RollDetailStr => {
             expect_n(1)?;
             let dice_str = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "roll_detail_str")) };
             let cfg = parse_dice_string_to_map(&dice_str)?;
-            let t = Value::Map(cfg);
+            let t = session.alloc_value(Value::Map(cfg));
             dispatch(BuiltinId::RollDetail, vec![t], session)
         }
 

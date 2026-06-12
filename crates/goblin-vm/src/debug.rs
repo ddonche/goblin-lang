@@ -3,7 +3,7 @@
 /// All debug output goes to stderr. None of this affects execution.
 use crate::opcode::Opcode;
 use crate::session::Session;
-use crate::value::{FunctionObject, Value};
+use crate::value::{FunctionObject, Tether, Value};
 use crate::vm::Vm;
 
 // ── Disassembler ─────────────────────────────────────────────────────────────
@@ -72,13 +72,22 @@ pub fn format_op(op: &Opcode, func: &FunctionObject) -> String {
 
 // ── Session dump ─────────────────────────────────────────────────────────────
 
-/// Dump session globals to stderr.
+/// Dump all live stashes in the session to stderr.
 pub fn dump_session(session: &Session) {
     eprintln!("=== session dump (worker {}) ===", session.worker_id);
+    eprintln!("  live stashes: {}", session.stash_count());
+    for (slot, stash) in session.arena.iter() {
+        eprintln!(
+            "  [{slot:04}] gen={} count={} val={}",
+            stash.generation,
+            stash.tether_count,
+            format_value(&stash.value),
+        );
+    }
     eprintln!("  globals ({}):", session.globals.len());
     for (i, g) in session.globals.iter().enumerate() {
         match g {
-            Some(v) => eprintln!("    [{i}] = {}", format_value(v)),
+            Some(t) => eprintln!("    [{i}] → addr={:?}", t.addr),
             None    => eprintln!("    [{i}] (unset)"),
         }
     }
@@ -99,15 +108,17 @@ pub fn dump_vm(vm: &Vm) {
         );
         for (s, t) in frame.locals.iter().enumerate() {
             match t {
-                Some(v) => eprintln!("    local[{s}] = {}", format_value(v)),
-                None    => eprintln!("    local[{s}] (nil)"),
+                Some(tt) => eprintln!("    local[{s}] → {:?}", tt.addr),
+                None     => eprintln!("    local[{s}] (nil)"),
             }
         }
     }
     eprintln!("  operand stack ({} items):", vm.stack.len());
     for (i, t) in vm.stack.iter().enumerate().rev() {
-        let val = format_value(t);
-        eprintln!("    [{i}] = {val}");
+        let val = vm.session.read_value(t)
+            .map(|v| format_value(&v))
+            .unwrap_or_else(|e| format!("<err: {}>", e));
+        eprintln!("    [{i}] {:?} = {val}", t.addr);
     }
 }
 
@@ -135,7 +146,17 @@ pub fn describe_collection(v: &Value) -> String {
     }
 }
 
-// dump_tether removed (Tether type eliminated)
+/// Dump a Tether's pointed-to value with layout information.
+pub fn dump_tether(t: &Tether, session: &Session) {
+    match session.read_value(t) {
+        Ok(v) => eprintln!(
+            "  tether {:?} → {}",
+            t.addr,
+            describe_collection(&v)
+        ),
+        Err(e) => eprintln!("  tether {:?} → <err: {}>", t.addr, e),
+    }
+}
 
 // ── Trace mode ───────────────────────────────────────────────────────────────
 

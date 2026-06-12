@@ -1,7 +1,7 @@
 //! High-level entry point: parse source → compile → execute.
 use crate::compiler::Compiler;
 use crate::error::GoblinError;
-use crate::session::Session;
+use crate::session::{GcMode, Session};
 use crate::value::Value;
 use crate::vm::Vm;
 
@@ -58,7 +58,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
     let compiled = Compiler::new().compile_module(&module)?;
 
     // Execute
-    let mut session = Session::new();
+    let mut session = Session::new(GcMode::Auto);
     session.global_names = compiled.global_names;
     for decl in &compiled.classes {
         compile_class_methods(decl, &mut session);
