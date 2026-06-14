@@ -15,11 +15,17 @@ regex = "1"
 serde_json = "1"
 goblin-yall = { path = "../goblin-yall" }
 goblin-des = { path = "../goblin-des" }
-uuid = { version = "1", features = ["v4", "v7"] }
-zip = "2"
+uuid = { version = "1", features = ["v4", "v7", "js"] }
 walkdir = "2"
 comrak = "0.21"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zip = "2"
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "yaml-load"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html"] }
 
 [[bench]]
 name = "vm_bench"

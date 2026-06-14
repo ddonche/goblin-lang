@@ -164,6 +164,10 @@ pub struct Session {
 
     /// Box store: namespace::name → Value (cross-module mutable state).
     pub box_store: HashMap<String, Value>,
+
+    /// Output buffer — when Some, say/print write here instead of stdout.
+    /// Used by the WASM REPL to capture output.
+    pub output_buf: Option<String>,
 }
 
 impl Session {
@@ -208,6 +212,29 @@ impl Session {
             des_link_ids: HashMap::new(),
             named_values: HashMap::new(),
             box_store: HashMap::new(),
+            output_buf: None,
+        }
+    }
+
+    /// Enable output capture (used by WASM REPL).
+    pub fn enable_output_capture(&mut self) {
+        self.output_buf = Some(String::new());
+    }
+
+    /// Take the captured output, leaving the buffer empty.
+    pub fn take_output(&mut self) -> String {
+        self.output_buf.take().unwrap_or_default()
+    }
+
+    /// Write a line to the output buffer if capture is enabled, else to stdout.
+    pub fn write_output(&mut self, s: &str, newline: bool) {
+        if let Some(ref mut buf) = self.output_buf {
+            buf.push_str(s);
+            if newline { buf.push('\n'); }
+        } else if newline {
+            println!("{}", s);
+        } else {
+            print!("{}", s);
         }
     }
 

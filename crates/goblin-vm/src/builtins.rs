@@ -1980,12 +1980,12 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         // ── I/O ───────────────────────────────────────────────────────────────
         BuiltinId::Print => {
             let parts: Result<Vec<String>, _> = args.iter().map(|t| session.read_value(t).map(|v| value_to_str(&v))).collect();
-            print!("{}", parts?.join(" "));
+            session.write_output(&parts?.join(" "), false);
             Ok(Value::Nil)
         }
         BuiltinId::Println => {
             let parts: Result<Vec<String>, _> = args.iter().map(|t| session.read_value(t).map(|v| value_to_str(&v))).collect();
-            println!("{}", parts?.join(" "));
+            session.write_output(&parts?.join(" "), true);
             Ok(Value::Nil)
         }
         BuiltinId::Eprint => {

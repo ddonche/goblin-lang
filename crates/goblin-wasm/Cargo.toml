@@ -1,0 +1,15 @@
+[package]
+name = "goblin-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+goblin-vm = { path = "../goblin-vm" }
+goblin-lexer = { path = "../goblin-lexer" }
+goblin-parser = { path = "../goblin-parser" }
+goblin-ast = { path = "../goblin-ast" }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"

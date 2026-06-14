@@ -556,13 +556,9 @@ impl Host {
                                         .map(|(_, v)| v.clone())
                                         .unwrap_or_default();
 
-                                    let mut upload_path = String::new();
-
-                                    if method.eq_ignore_ascii_case("POST")
-                                        && (path == "/api/upload_image" || path == "/api/upload_file")
-                                    {
+                                    let request_file_path = if !body_buf.is_empty() {
                                         let tmp = std::env::temp_dir().join(format!(
-                                            "goblin-upload-{}",
+                                            "goblin-request-{}",
                                             SystemTime::now()
                                                 .duration_since(UNIX_EPOCH)
                                                 .unwrap()
@@ -570,7 +566,7 @@ impl Host {
                                         ));
 
                                         if let Err(e) = std::fs::write(&tmp, &body_buf) {
-                                            let body = format!("upload temp write failed: {e}");
+                                            let body = format!("request body temp write failed: {e}");
                                             let headers = format!(
                                                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
                                                 body.len(), crate::CONTRACT_VERSION
@@ -581,10 +577,12 @@ impl Host {
                                             if want_close { break 'conn; } else { continue 'conn; }
                                         }
 
-                                        upload_path = tmp.to_string_lossy().to_string();
-                                    }
+                                        tmp.to_string_lossy().to_string()
+                                    } else {
+                                        String::new()
+                                    };
 
-                                    let goblin_body = if upload_path.is_empty() {
+                                    let goblin_body = if request_file_path.is_empty() {
                                         body_text.as_str()
                                     } else {
                                         ""
@@ -598,7 +596,7 @@ impl Host {
                                         path,
                                         &host,
                                         goblin_body,
-                                        &upload_path,
+                                        &request_file_path,
                                         &authorization,
                                         &headers_json,
                                         &auth_user_id,
@@ -610,6 +608,24 @@ impl Host {
                                             let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
 
                                             if let Ok(v) = parsed {
+                                                let is_envelope =
+                                                    v.get("status").is_some()
+                                                    || v.get("body").is_some()
+                                                    || v.get("headers").is_some()
+                                                    || v.get("cookies").is_some();
+
+                                                if !is_envelope {
+                                                    let headers = format!(
+                                                        "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
+                                                        body.len(), crate::CONTRACT_VERSION
+                                                    );
+                                                    if socket.write_all(headers.as_bytes()).await.is_ok() {
+                                                        let _ = socket.write_all(body.as_bytes()).await;
+                                                    }
+                                                    log.done(200, body.len());
+                                                    if want_close { break 'conn; } else { continue 'conn; }
+                                                }
+
                                                 let status = v.get("status")
                                                     .and_then(|x| x.as_u64())
                                                     .unwrap_or(200) as u16;
@@ -912,7 +928,7 @@ async fn exec_goblin_script_via_cli_timeout(
     path: &str,
     host: &str,
     body: &str,
-    upload_path: &str,
+    request_file_path: &str,
     authorization: &str,
     headers_json: &str,
     auth_user_id: &str,
@@ -933,7 +949,7 @@ async fn exec_goblin_script_via_cli_timeout(
        .env("GOBLIN_PATH", path)
        .env("GOBLIN_HOST", host)
        .env("GOBLIN_BODY", body)
-       .env("GOBLIN_UPLOAD_PATH", upload_path)
+       .env("GOBLIN_REQUEST_FILE", request_file_path)
        .env("GOBLIN_AUTHORIZATION", authorization)
        .env("GOBLIN_HEADERS_JSON", headers_json)
        .env("AUTH_USER_ID", auth_user_id)
