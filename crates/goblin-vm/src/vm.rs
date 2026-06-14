@@ -16,6 +16,10 @@ pub const MAX_CALL_DEPTH: usize = 512;
 pub struct CallFrame {
     /// Local variable slots (0..params are args, rest are locals).
     pub locals: Vec<Option<Tether>>,
+    /// Current type lock per slot (updated by cast-bang and declaration).
+    pub type_locks: Vec<Option<String>>,
+    /// Hard type lock per slot (set only at declaration, never changes).
+    pub hard_type_locks: Vec<Option<String>>,
     /// Captured upvalues for the current closure (empty if plain function).
     pub upvalues: Vec<UpvalueCell>,
     /// Instruction pointer into func.bytecode.
@@ -32,8 +36,13 @@ pub struct CallFrame {
 
 impl CallFrame {
     fn new(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> Self {
-        let locals = vec![None; func.locals];
-        CallFrame { locals, upvalues, ip: 0, func, stack_base, self_tether: None }
+        let n = func.locals;
+        CallFrame {
+            locals: vec![None; n],
+            type_locks: vec![None; n],
+            hard_type_locks: vec![None; n],
+            upvalues, ip: 0, func, stack_base, self_tether: None,
+        }
     }
 
     fn load_local(&self, slot: u8) -> Result<Tether, GoblinError> {
@@ -52,8 +61,30 @@ impl CallFrame {
         let idx = slot as usize;
         if idx >= self.locals.len() {
             self.locals.resize(idx + 1, None);
+            self.type_locks.resize(idx + 1, None);
+            self.hard_type_locks.resize(idx + 1, None);
         }
         self.locals[idx] = Some(t);
+    }
+
+    fn get_type_lock(&self, slot: u8) -> Option<&str> {
+        self.type_locks.get(slot as usize).and_then(|o| o.as_deref())
+    }
+
+    fn get_hard_type_lock(&self, slot: u8) -> Option<&str> {
+        self.hard_type_locks.get(slot as usize).and_then(|o| o.as_deref())
+    }
+
+    fn set_type_lock(&mut self, slot: u8, lock: String) {
+        let idx = slot as usize;
+        if idx >= self.type_locks.len() { self.type_locks.resize(idx + 1, None); }
+        self.type_locks[idx] = Some(lock);
+    }
+
+    fn set_hard_type_lock(&mut self, slot: u8, lock: String) {
+        let idx = slot as usize;
+        if idx >= self.hard_type_locks.len() { self.hard_type_locks.resize(idx + 1, None); }
+        self.hard_type_locks[idx] = Some(lock);
     }
 }
 
@@ -227,6 +258,14 @@ impl Vm {
             }
             Opcode::StoreLocal(slot) => {
                 let t = self.stack_pop()?;
+                // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
+                let t = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    let val = self.session.read_value(&t)?;
+                    let cast = crate::builtins::cast_value_to_lock(val, &lock)?;
+                    self.session.alloc_value(cast)
+                } else {
+                    t
+                };
                 let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
                     // Mirror interpreter: store object in object_store, put Ref in slot.
                     let uuid = uuid.clone();
@@ -250,6 +289,16 @@ impl Vm {
             }
             Opcode::StoreGlobal(idx) => {
                 let t = self.stack_pop()?;
+                // Retether: if a hard type lock exists for this global, auto-cast the incoming value.
+                let t = if let Some(lock) = self.session.global_names.get(idx as usize)
+                    .and_then(|name| self.session.global_hard_type_locks.get(name).cloned())
+                {
+                    let val = self.session.read_value(&t)?;
+                    let cast = crate::builtins::cast_value_to_lock(val, &lock)?;
+                    self.session.alloc_value(cast)
+                } else {
+                    t
+                };
                 let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
                     let uuid = uuid.clone();
                     let val = self.session.read_value(&t).unwrap();
@@ -259,6 +308,178 @@ impl Vm {
                     t
                 };
                 self.session.set_global(idx as usize, t);
+            }
+
+            // ── Type-lock opcodes ─────────────────────────────────────────────
+            Opcode::StoreLockLocal(slot, ref lock_type) => {
+                let lock_type = lock_type.clone();
+                let t = self.stack_pop()?;
+                let val = self.session.read_value(&t)?;
+                let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
+                let t = self.session.alloc_value(cast);
+                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                    let uuid = uuid.clone();
+                    let val = self.session.read_value(&t).unwrap();
+                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.alloc_value(Value::Ref(uuid))
+                } else { t };
+                self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
+                let frame = self.call_stack.last_mut().unwrap();
+                frame.set_type_lock(slot, lock_type.clone());
+                frame.set_hard_type_lock(slot, lock_type);
+            }
+
+            Opcode::StoreLockGlobal(idx, ref lock_type) => {
+                let lock_type = lock_type.clone();
+                let t = self.stack_pop()?;
+                let val = self.session.read_value(&t)?;
+                let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
+                let t = self.session.alloc_value(cast);
+                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                    let uuid = uuid.clone();
+                    let val = self.session.read_value(&t).unwrap();
+                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.alloc_value(Value::Ref(uuid))
+                } else { t };
+                self.session.set_global(idx as usize, t);
+                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
+                    self.session.global_type_locks.insert(name.clone(), lock_type.clone());
+                    self.session.global_hard_type_locks.insert(name, lock_type);
+                }
+            }
+
+            Opcode::CastBangLocal(slot, ref cast_type) => {
+                let cast_type = cast_type.clone();
+                // Validate against hard type lock if one exists.
+                if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    if lock != cast_type {
+                        return Err(GoblinError::Runtime(format!(
+                            "R0215: type-lock-cast: cannot recast variable to '{}': variable is locked to '{}'",
+                            cast_type, lock
+                        )));
+                    }
+                }
+                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                let val = self.session.read_value(&t)?;
+                let new_val = crate::builtins::cast_value_to_lock(val, &cast_type)?;
+                let new_t = self.session.alloc_value(new_val);
+                self.call_stack.last_mut().unwrap().store_local(slot, new_t.clone(), &mut self.session);
+                self.call_stack.last_mut().unwrap().set_type_lock(slot, cast_type);
+                self.stack.push(new_t);
+            }
+
+            Opcode::CastBangGlobal(idx, ref cast_type) => {
+                let cast_type = cast_type.clone();
+                // Validate against hard type lock if one exists.
+                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
+                    if let Some(lock) = self.session.global_hard_type_locks.get(&name).cloned() {
+                        if lock != cast_type {
+                            return Err(GoblinError::Runtime(format!(
+                                "R0215: type-lock-cast: cannot recast variable to '{}': variable is locked to '{}'",
+                                cast_type, lock
+                            )));
+                        }
+                    }
+                }
+                let t = self.session.get_global(idx as usize)
+                    .cloned()
+                    .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
+                let val = self.session.read_value(&t)?;
+                let new_val = crate::builtins::cast_value_to_lock(val, &cast_type)?;
+                let new_t = self.session.alloc_value(new_val);
+                self.session.set_global(idx as usize, new_t.clone());
+                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
+                    self.session.global_type_locks.insert(name, cast_type);
+                }
+                self.stack.push(new_t);
+            }
+
+            Opcode::GetTypeLockLocal(slot) => {
+                let lock = self.call_stack.last().and_then(|f| f.get_type_lock(slot).map(|s| s.to_string()));
+                if let Some(lock) = lock {
+                    let t = self.call_stack.last().unwrap().load_local(slot)?;
+                    let val = self.session.read_value(&t)?;
+                    let label = match &val {
+                        Value::Array(_) => format!("array({})", lock),
+                        Value::Map(_) | Value::MapOrd(_) => format!("map({})", lock),
+                        _ => lock,
+                    };
+                    let result = self.session.alloc_value(Value::Str(label));
+                    self.stack.push(result);
+                } else {
+                    // No lock — fall through to normal type name of the value.
+                    let t = self.call_stack.last().unwrap().load_local(slot)?;
+                    let val = self.session.read_value(&t)?;
+                    let result = self.session.alloc_value(Value::Str(val.type_name().to_string()));
+                    self.stack.push(result);
+                }
+            }
+
+            Opcode::GetTypeLockGlobal(idx) => {
+                let lock = self.session.global_names.get(idx as usize)
+                    .and_then(|name| self.session.global_type_locks.get(name).cloned());
+                if let Some(lock) = lock {
+                    let t = self.session.get_global(idx as usize)
+                        .cloned()
+                        .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
+                    let val = self.session.read_value(&t)?;
+                    let label = match &val {
+                        Value::Array(_) => format!("array({})", lock),
+                        Value::Map(_) | Value::MapOrd(_) => format!("map({})", lock),
+                        _ => lock,
+                    };
+                    let result = self.session.alloc_value(Value::Str(label));
+                    self.stack.push(result);
+                } else {
+                    let t = self.session.get_global(idx as usize)
+                        .cloned()
+                        .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
+                    let val = self.session.read_value(&t)?;
+                    let result = self.session.alloc_value(Value::Str(val.type_name().to_string()));
+                    self.stack.push(result);
+                }
+            }
+
+            Opcode::CastMemberLocal(slot, ref cast_type) => {
+                let cast_type = cast_type.clone();
+                // If a hard type lock exists and mismatches the requested cast, error.
+                if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    let canonical = if cast_type == "string" { "str" } else { cast_type.as_str() };
+                    if lock != canonical {
+                        return Err(GoblinError::Runtime(format!(
+                            "R0215: type-lock-cast: cannot cast variable to '{}': variable is locked to '{}'",
+                            canonical, lock
+                        )));
+                    }
+                }
+                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                let val = self.session.read_value(&t)?;
+                let cast = crate::builtins::cast_value_to_lock(val, &cast_type)?;
+                let result = self.session.alloc_value(cast);
+                self.stack.push(result);
+            }
+
+            Opcode::CastMemberGlobal(idx, ref cast_type) => {
+                let cast_type = cast_type.clone();
+                // If a hard type lock exists and mismatches, error.
+                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
+                    if let Some(lock) = self.session.global_hard_type_locks.get(&name).cloned() {
+                        let canonical = if cast_type == "string" { "str" } else { cast_type.as_str() };
+                        if lock != canonical {
+                            return Err(GoblinError::Runtime(format!(
+                                "R0215: type-lock-cast: cannot cast variable to '{}': variable is locked to '{}'",
+                                canonical, lock
+                            )));
+                        }
+                    }
+                }
+                let t = self.session.get_global(idx as usize)
+                    .cloned()
+                    .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
+                let val = self.session.read_value(&t)?;
+                let cast = crate::builtins::cast_value_to_lock(val, &cast_type)?;
+                let result = self.session.alloc_value(cast);
+                self.stack.push(result);
             }
 
             // ── Upvalues ─────────────────────────────────────────────────────

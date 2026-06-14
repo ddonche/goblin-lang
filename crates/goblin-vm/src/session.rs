@@ -158,6 +158,11 @@ pub struct Session {
     pub des_link_id_counter: u32,
     pub des_link_ids: HashMap<(String, String, String), LinkId>,
 
+    /// Type lock: current cast type per global variable name (updated by cast-bang and declaration).
+    pub global_type_locks: HashMap<String, String>,
+    /// Hard type lock: declared lock type per global variable name (set only at declaration, never changes).
+    pub global_hard_type_locks: HashMap<String, String>,
+
     /// Named function registry for `invoke`/`summon`/`provoke`.
     /// Top-level action declarations are registered here by name.
     pub named_values: HashMap<String, Value>,
@@ -210,6 +215,8 @@ impl Session {
             des_overlay_id_counter: 0,
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
+            global_type_locks: HashMap::new(),
+            global_hard_type_locks: HashMap::new(),
             named_values: HashMap::new(),
             box_store: HashMap::new(),
             output_buf: None,
