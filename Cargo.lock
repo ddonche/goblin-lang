@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.47.32"
+version = "0.47.34"
 dependencies = [
  "anyhow",
  "clap",
@@ -1126,9 +1126,10 @@ version = "0.1.0"
 
 [[package]]
 name = "goblin-vm"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "comrak",
+ "getrandom 0.2.16",
  "goblin-ast",
  "goblin-des",
  "goblin-diagnostics",
@@ -1148,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-wasm"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "console_error_panic_hook",
  "goblin-ast",
@@ -1156,6 +1157,7 @@ dependencies = [
  "goblin-parser",
  "goblin-vm",
  "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

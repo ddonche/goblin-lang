@@ -1,7 +1,7 @@
 use wasm_bindgen::prelude::*;
 use goblin_vm::{
     session::{GcMode, Session},
-    compiler::Compiler,
+    compiler::compile_repl_snippet,
     vm::Vm,
     exec::compile_class_methods_pub,
 };
@@ -9,6 +9,13 @@ use goblin_vm::{
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
+    web_sys::console::log_1(&"[goblin-wasm] module loaded".into());
+}
+
+#[wasm_bindgen]
+pub fn ping() -> String {
+    web_sys::console::log_1(&"[goblin-wasm] ping called".into());
+    "pong".into()
 }
 
 #[wasm_bindgen]
@@ -21,12 +28,17 @@ pub struct GoblinRepl {
 impl GoblinRepl {
     #[wasm_bindgen(constructor)]
     pub fn new() -> GoblinRepl {
+        console_error_panic_hook::set_once();
+        web_sys::console::log_1(&"hook set".into());
+        
         let mut session = Session::new(GcMode::Auto);
+        web_sys::console::log_1(&"session created".into());
+        
         session.enable_output_capture();
-        GoblinRepl {
-            vm: Vm::new(session),
-            n_globals: 0,
-        }
+        let vm = Vm::new(session);
+        web_sys::console::log_1(&"vm created".into());
+        
+        GoblinRepl { vm, n_globals: 0 }
     }
 
     pub fn run(&mut self, code: &str) -> String {
@@ -48,7 +60,7 @@ impl GoblinRepl {
             }
         };
 
-        let compiled = match Compiler::new().compile_module(&module) {
+        let compiled = match compile_repl_snippet(&module, &self.vm.session.global_names) {
             Ok(c) => c,
             Err(e) => return format!("Compile error: {e}"),
         };
@@ -67,8 +79,19 @@ impl GoblinRepl {
 
         let n = self.n_globals;
         match self.vm.execute_repl(compiled.entry, n) {
-            Ok(_) => {
+            Ok(val) => {
                 self.n_globals = self.vm.session.globals.len();
+                let mut out = self.vm.session.take_output();
+                self.vm.session.enable_output_capture();
+                if out.trim().is_empty() {
+                    match &val {
+                        goblin_vm::value::Value::Nil => {}
+                        other => {
+                            out = goblin_vm::builtins::value_to_str(other);
+                        }
+                    }
+                }
+                return out;
             }
             Err(e) => {
                 let _ = self.vm.session.take_output();
@@ -76,10 +99,6 @@ impl GoblinRepl {
                 return format!("Runtime error: {e}");
             }
         }
-
-        let out = self.vm.session.take_output();
-        self.vm.session.enable_output_capture();
-        out
     }
 
     pub fn reset(&mut self) {

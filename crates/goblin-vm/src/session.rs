@@ -173,6 +173,10 @@ pub struct Session {
 impl Session {
     pub fn new(gc_mode: GcMode) -> Self {
         // Seed from system time if available, else use a fixed constant.
+        #[cfg(target_arch = "wasm32")]
+        let seed = 0x123456789abcdef0u128 | 1;
+
+        #[cfg(not(target_arch = "wasm32"))]
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos() as u128 | ((d.as_secs() as u128) << 32))

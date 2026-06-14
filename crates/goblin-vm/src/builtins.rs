@@ -2860,12 +2860,20 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         }
 
         BuiltinId::HighlightCode => {
+            #[cfg(target_arch = "wasm32")]
+            return Ok(Value::Str(format!("<pre><code>{}</code></pre>", {
+                let code = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code code")) };
+                code
+            })));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
             if args.len() != 4 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "highlight_code".into() }); }
             let code  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code code")) };
             let lang  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code lang")) };
             let dark  = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code dark_theme")) };
             let light = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "highlight_code light_theme")) };
             Ok(Value::Str(highlight_code_impl(&code, &lang, &dark, &light)))
+            }
         }
 
         BuiltinId::ToBig => {
@@ -4737,6 +4745,8 @@ fn md_to_html_impl(md: &str) -> String {
     markdown_to_html(md, &options)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 fn highlight_code_impl(code: &str, lang: &str, dark_theme: &str, light_theme: &str) -> String {
     use std::sync::OnceLock;
     use syntect::highlighting::ThemeSet;
