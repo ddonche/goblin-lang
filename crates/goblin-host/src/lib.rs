@@ -516,68 +516,6 @@ impl Host {
                                 if want_close { break 'conn; } else { continue 'conn; }
                             }
 
-                            // === Image upload — handled directly in Rust ===
-                            if path == "/api/upload_image" && method.eq_ignore_ascii_case("POST") {
-                                use tokio::io::AsyncWriteExt;
-
-                                // Parse portal and filename from query string
-                                let mut portal = String::new();
-                                let mut filename = String::new();
-                                for part in query_string.split('&') {
-                                    if let Some(v) = part.strip_prefix("portal=") {
-                                        portal = urldecode(v);
-                                    } else if let Some(v) = part.strip_prefix("filename=") {
-                                        filename = urldecode(v);
-                                    }
-                                }
-                                // Fall back to positional (portal&filename)
-                                if portal.is_empty() || filename.is_empty() {
-                                    let pos: Vec<&str> = query_string.splitn(2, '&').collect();
-                                    if pos.len() == 2 {
-                                        portal = urldecode(pos[0]);
-                                        filename = urldecode(pos[1]);
-                                    }
-                                }
-
-                                // Sanitize filename — no path traversal
-                                let filename = Path::new(&filename)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("")
-                                    .to_string();
-
-                                let (body, status) = if portal.is_empty() || filename.is_empty() {
-                                    (r#"{"ok":false,"stderr":"missing portal or filename"}"#.to_string(), 400u16)
-                                } else {
-                                    let sheriff_root = std::env::var("SHERIFF_ROOT").unwrap_or_else(|_| "..".to_string());
-                                    let images_dir = PathBuf::from(&sheriff_root)
-                                        .join("site/portals")
-                                        .join(&portal)
-                                        .join("public/images");
-
-                                    match std::fs::create_dir_all(&images_dir) {
-                                        Err(e) => (format!(r#"{{"ok":false,"stderr":"mkdir failed: {e}"}}"#), 500),
-                                        Ok(_) => {
-                                            let dest = images_dir.join(&filename);
-                                            match std::fs::write(&dest, &body_buf) {
-                                                Ok(_) => (format!(r#"{{"ok":true,"filename":"{filename}"}}"#), 200),
-                                                Err(e) => (format!(r#"{{"ok":false,"stderr":"write failed: {e}"}}"#), 500),
-                                            }
-                                        }
-                                    }
-                                };
-
-                                let headers = format!(
-                                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
-                                    body.len(), crate::CONTRACT_VERSION
-                                );
-                                if socket.write_all(headers.as_bytes()).await.is_ok() {
-                                    let _ = socket.write_all(body.as_bytes()).await;
-                                }
-                                log.done(status, body.len());
-                                if want_close { break 'conn; } else { continue 'conn; }
-                            }
-
                             // === Dynamic Goblin API Execution (via CLI) ===
                             if path.starts_with("/api/") {
                                 use tokio::io::AsyncWriteExt;
@@ -618,6 +556,40 @@ impl Host {
                                         .map(|(_, v)| v.clone())
                                         .unwrap_or_default();
 
+                                    let mut upload_path = String::new();
+
+                                    if method.eq_ignore_ascii_case("POST")
+                                        && (path == "/api/upload_image" || path == "/api/upload_file")
+                                    {
+                                        let tmp = std::env::temp_dir().join(format!(
+                                            "goblin-upload-{}",
+                                            SystemTime::now()
+                                                .duration_since(UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_nanos()
+                                        ));
+
+                                        if let Err(e) = std::fs::write(&tmp, &body_buf) {
+                                            let body = format!("upload temp write failed: {e}");
+                                            let headers = format!(
+                                                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
+                                                body.len(), crate::CONTRACT_VERSION
+                                            );
+                                            let _ = socket.write_all(headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(500, body.len());
+                                            if want_close { break 'conn; } else { continue 'conn; }
+                                        }
+
+                                        upload_path = tmp.to_string_lossy().to_string();
+                                    }
+
+                                    let goblin_body = if upload_path.is_empty() {
+                                        body_text.as_str()
+                                    } else {
+                                        ""
+                                    };
+
                                     match exec_goblin_script_via_cli_timeout(
                                         &script_path,
                                         30000,
@@ -625,7 +597,8 @@ impl Host {
                                         method,
                                         path,
                                         &host,
-                                        &body_text,
+                                        goblin_body,
+                                        &upload_path,
                                         &authorization,
                                         &headers_json,
                                         &auth_user_id,
@@ -939,6 +912,7 @@ async fn exec_goblin_script_via_cli_timeout(
     path: &str,
     host: &str,
     body: &str,
+    upload_path: &str,
     authorization: &str,
     headers_json: &str,
     auth_user_id: &str,
@@ -959,6 +933,7 @@ async fn exec_goblin_script_via_cli_timeout(
        .env("GOBLIN_PATH", path)
        .env("GOBLIN_HOST", host)
        .env("GOBLIN_BODY", body)
+       .env("GOBLIN_UPLOAD_PATH", upload_path)
        .env("GOBLIN_AUTHORIZATION", authorization)
        .env("GOBLIN_HEADERS_JSON", headers_json)
        .env("AUTH_USER_ID", auth_user_id)
