@@ -158,10 +158,10 @@ pub struct Session {
     pub des_link_id_counter: u32,
     pub des_link_ids: HashMap<(String, String, String), LinkId>,
 
-    /// Type lock: current cast type per global variable name (updated by cast-bang and declaration).
-    pub global_type_locks: HashMap<String, String>,
-    /// Hard type lock: declared lock type per global variable name (set only at declaration, never changes).
-    pub global_hard_type_locks: HashMap<String, String>,
+    /// Type lock: current cast type per global slot index (updated by cast-bang and declaration).
+    pub global_type_locks: HashMap<u32, String>,
+    /// Hard type lock: declared lock type per global slot index (set only at declaration, never changes).
+    pub global_hard_type_locks: HashMap<u32, String>,
 
     /// Named function registry for `invoke`/`summon`/`provoke`.
     /// Top-level action declarations are registered here by name.

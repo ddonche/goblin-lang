@@ -290,9 +290,7 @@ impl Vm {
             Opcode::StoreGlobal(idx) => {
                 let t = self.stack_pop()?;
                 // Retether: if a hard type lock exists for this global, auto-cast the incoming value.
-                let t = if let Some(lock) = self.session.global_names.get(idx as usize)
-                    .and_then(|name| self.session.global_hard_type_locks.get(name).cloned())
-                {
+                let t = if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
                     let val = self.session.read_value(&t)?;
                     let cast = crate::builtins::cast_value_to_lock(val, &lock)?;
                     self.session.alloc_value(cast)
@@ -342,10 +340,8 @@ impl Vm {
                     self.session.alloc_value(Value::Ref(uuid))
                 } else { t };
                 self.session.set_global(idx as usize, t);
-                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
-                    self.session.global_type_locks.insert(name.clone(), lock_type.clone());
-                    self.session.global_hard_type_locks.insert(name, lock_type);
-                }
+                self.session.global_type_locks.insert(idx as u32, lock_type.clone());
+                self.session.global_hard_type_locks.insert(idx as u32, lock_type);
             }
 
             Opcode::CastBangLocal(slot, ref cast_type) => {
@@ -371,14 +367,12 @@ impl Vm {
             Opcode::CastBangGlobal(idx, ref cast_type) => {
                 let cast_type = cast_type.clone();
                 // Validate against hard type lock if one exists.
-                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
-                    if let Some(lock) = self.session.global_hard_type_locks.get(&name).cloned() {
-                        if lock != cast_type {
-                            return Err(GoblinError::Runtime(format!(
-                                "R0215: type-lock-cast: cannot recast variable to '{}': variable is locked to '{}'",
-                                cast_type, lock
-                            )));
-                        }
+                if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
+                    if lock != cast_type {
+                        return Err(GoblinError::Runtime(format!(
+                            "R0215: type-lock-cast: cannot recast variable to '{}': variable is locked to '{}'",
+                            cast_type, lock
+                        )));
                     }
                 }
                 let t = self.session.get_global(idx as usize)
@@ -388,9 +382,7 @@ impl Vm {
                 let new_val = crate::builtins::cast_value_to_lock(val, &cast_type)?;
                 let new_t = self.session.alloc_value(new_val);
                 self.session.set_global(idx as usize, new_t.clone());
-                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
-                    self.session.global_type_locks.insert(name, cast_type);
-                }
+                self.session.global_type_locks.insert(idx as u32, cast_type);
                 self.stack.push(new_t);
             }
 
@@ -416,8 +408,7 @@ impl Vm {
             }
 
             Opcode::GetTypeLockGlobal(idx) => {
-                let lock = self.session.global_names.get(idx as usize)
-                    .and_then(|name| self.session.global_type_locks.get(name).cloned());
+                let lock = self.session.global_type_locks.get(&(idx as u32)).cloned();
                 if let Some(lock) = lock {
                     let t = self.session.get_global(idx as usize)
                         .cloned()
@@ -462,15 +453,13 @@ impl Vm {
             Opcode::CastMemberGlobal(idx, ref cast_type) => {
                 let cast_type = cast_type.clone();
                 // If a hard type lock exists and mismatches, error.
-                if let Some(name) = self.session.global_names.get(idx as usize).cloned() {
-                    if let Some(lock) = self.session.global_hard_type_locks.get(&name).cloned() {
-                        let canonical = if cast_type == "string" { "str" } else { cast_type.as_str() };
-                        if lock != canonical {
-                            return Err(GoblinError::Runtime(format!(
-                                "R0215: type-lock-cast: cannot cast variable to '{}': variable is locked to '{}'",
-                                canonical, lock
-                            )));
-                        }
+                if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
+                    let canonical = if cast_type == "string" { "str" } else { cast_type.as_str() };
+                    if lock != canonical {
+                        return Err(GoblinError::Runtime(format!(
+                            "R0215: type-lock-cast: cannot cast variable to '{}': variable is locked to '{}'",
+                            canonical, lock
+                        )));
                     }
                 }
                 let t = self.session.get_global(idx as usize)
