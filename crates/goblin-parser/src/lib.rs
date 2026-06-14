@@ -2883,7 +2883,7 @@ impl<'t> Parser<'t> {
         // into `parse_coalesce()`.
         let mut rhs_guard: Option<ast::Stmt> = None;
 
-        let rhs = if class_name.is_some() {
+        let rhs = if class_name.is_some() && !self.peek_op("{") {
             // --- Object construction: name <> ClassName | field: val, field: val ---
             // Single-line: fields are comma-separated, terminated by newline/eof/end.
             // Multi-line: fields one per line, terminated by end/xx.

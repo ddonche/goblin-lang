@@ -1,0 +1,675 @@
+@Nation |
+    military:    .5
+    economy:     .5
+    stability:   .5
+    cohesion:    .5
+    democracy:   .5
+    aggression:  .5
+    cooperation: .5
+    population:  .5
+
+    /// Margin is intended for target-choice tolerance in the runtime.
+    /// It is kept here as nation behavior data, even though this sim rewrite focuses only on action mechanics.
+    margin:      .08
+
+    /// Raw resource fields are material constraints.
+    /// They should matter whenever an action requires ships, armies, food, fuel, industrial capacity, or political spending.
+    ~gold:   500
+    ~oil:    200
+    ~grain:  400
+    ~steel:  200
+
+    /// Limited military attack.
+    /// The judge decides when this is selected.
+    /// This action does not contain its own strategic selection criteria.
+    /// It simply applies the consequence of a limited strike.
+    act strike(target)
+        say "ACTION strike"
+        target >> military |= target >> military - .018
+        target >> economy |= target >> economy - .012
+        target >> stability |= target >> stability - .014
+        target >> aggression |= target >> aggression + .014
+        self >> gold |= self >> gold - 35
+        self >> oil |= self >> oil - 15
+        self >> steel |= self >> steel - 20
+        self link to target on border offset +.18 for 8 ticks
+        self link to target on trade offset -.08 for 8 ticks
+        overlay WarExhaustion on self at .12 for 5 ticks
+        overlay WarExhaustion on target at .18 for 6 ticks
+    end
+
+    /// Resource raid.
+    /// The raid is not selected here.
+    /// If the judge chose raid, the raid happens.
+    /// This creates material gain for the actor and material/stability loss for the target.
+    act raid(target)
+        say "ACTION raid"
+        self >> gold |= self >> gold + 20
+        self >> oil |= self >> oil + 10
+        self >> steel |= self >> steel + 8
+        target >> gold |= target >> gold - 25
+        target >> oil |= target >> oil - 12
+        target >> steel |= target >> steel - 10
+        target >> stability |= target >> stability - .012
+        target >> aggression |= target >> aggression + .018
+        self >> gold |= self >> gold - 20
+        self link to target on border offset +.14 for 6 ticks
+        self link to target on trade offset -.1 for 8 ticks
+    end
+
+    /// Full invasion attempt.
+    /// This is the heavy war action.
+    /// Absorption/annexation remains a transition outcome, not a normal action.
+    act invade(target)
+        say "ACTION invade"
+        overlay WarExhaustion on self at .35 for 10 ticks
+        overlay WarExhaustion on target at .65 for 12 ticks
+        target >> military |= target >> military - .035
+        target >> economy |= target >> economy - .025
+        target >> stability |= target >> stability - .035
+        target >> population |= target >> population - .01
+        target >> aggression |= target >> aggression + .025
+        self >> gold |= self >> gold - 100
+        self >> oil |= self >> oil - 30
+        self >> steel |= self >> steel - 60
+        self >> grain |= self >> grain - 40
+        self link to target on border offset +.35 for 16 ticks
+        self link to target on trade offset -.22 for 16 ticks
+        self link to target on culture offset -.12 for 16 ticks
+    end
+
+    /// Military intimidation.
+    /// This is saber-rattling: border tension rises and the target becomes less stable.
+    act threaten(target)
+        say "ACTION threaten"
+        target >> stability |= target >> stability - .008
+        target >> aggression |= target >> aggression + .012
+        self link to target on border offset +.1 for 5 ticks
+    end
+
+    /// Economic pressure.
+    /// This is policy pressure, not a blockade.
+    /// It damages economy/trade and costs the actor some political/economic capital.
+    act sanction(target)
+        say "ACTION sanction"
+        target >> economy |= target >> economy - .018
+        target >> gold |= target >> gold - 25
+        self >> gold |= self >> gold - 15
+        self link to target on trade offset -.18 for 12 ticks
+        self link to target on culture offset -.04 for 8 ticks
+    end
+
+    /// Espionage.
+    /// This improves the actor's military readiness and destabilizes the target.
+    act spy(target)
+        say "ACTION spy"
+        self >> military |= self >> military + .007
+        target >> stability |= target >> stability - .007
+        self >> gold |= self >> gold - 15
+        self link to target on culture offset -.04 for 5 ticks
+    end
+
+    /// Cultural/political smear campaign.
+    /// This is informational pressure against the target's cohesion and legitimacy.
+    act smear(target)
+        say "ACTION smear"
+        target >> cohesion |= target >> cohesion - .009
+        target >> democracy |= target >> democracy - .007
+        self link to target on culture offset -.1 for 6 ticks
+    end
+
+    /// Public condemnation.
+    /// This damages legitimacy/cohesion and worsens cultural relations.
+    act denounce(target)
+        say "ACTION denounce"
+        target >> stability |= target >> stability - .008
+        target >> cohesion |= target >> cohesion - .007
+        self link to target on culture offset -.12 for 8 ticks
+    end
+
+    /// Ideological export through propaganda.
+    /// This applies a spreadable overlay instead of directly rewriting the target.
+    act propagandize(target)
+        say "ACTION propagandize"
+        overlay Nationalism on target at .18 for 5 ticks
+        self link to target on culture offset -.08 for 6 ticks
+    end
+
+    /// Liberal/democratic influence.
+    /// This is cultural influence, not conquest.
+    act convert(target)
+        say "ACTION convert"
+        overlay Liberalism on target at .15 for 6 ticks
+        self link to target on culture offset +.08 for 6 ticks
+    end
+
+    /// Bribery/payment to soften an aggressive target.
+    /// This transfers gold into reduced aggression and better cooperation.
+    act bribe(target)
+        say "ACTION bribe"
+        target >> cooperation |= target >> cooperation + .03
+        target >> aggression |= target >> aggression - .02
+        self >> gold |= self >> gold - 60
+        self link to target on trade offset +.04 for 5 ticks
+    end
+
+    /// Appeasement.
+    /// Defensive pressure reduction by paying down tension.
+    act appease(target)
+        say "ACTION appease"
+        self >> gold |= self >> gold - 40
+        target >> aggression |= target >> aggression - .025
+        target >> cooperation |= target >> cooperation + .015
+        self link to target on border offset -.2 for 8 ticks
+        self link to target on trade offset +.08 for 8 ticks
+    end
+
+    /// Recognition.
+    /// Improves legitimacy and cultural ties.
+    act recognize(target)
+        say "ACTION recognize"
+        self link to target on culture offset +.08 for 12 ticks
+        target >> stability |= target >> stability + .008
+        self >> gold |= self >> gold + 5
+    end
+
+    /// Legitimization.
+    /// Stronger than recognition; stabilizes and coheres the target.
+    act legitimize(target)
+        say "ACTION legitimize"
+        target >> stability |= target >> stability + .015
+        target >> cohesion |= target >> cohesion + .008
+        self link to target on culture offset +.12 for 8 ticks
+    end
+
+    /// Trade.
+    /// Material cooperation: both sides gain resources and trade relations improve.
+    act trade(target)
+        say "ACTION trade"
+        self >> economy |= self >> economy + .01
+        target >> economy |= target >> economy + .01
+        self >> gold |= self >> gold + 35
+        target >> gold |= target >> gold + 35
+        self >> steel |= self >> steel + 10
+        target >> steel |= target >> steel + 10
+        self >> oil |= self >> oil + 6
+        target >> oil |= target >> oil + 6
+        self link to target on trade offset +.1 for 10 ticks
+    end
+
+    /// Aid.
+    /// Transfers resources and stabilizes the target while increasing cooperation.
+    act aid(target)
+        say "ACTION aid"
+        self >> gold |= self >> gold - 50
+        self >> grain |= self >> grain - 40
+        target >> gold |= target >> gold + 35
+        target >> grain |= target >> grain + 35
+        target >> stability |= target >> stability + .012
+        target >> cooperation |= target >> cooperation + .018
+        self link to target on trade offset +.08 for 8 ticks
+        self link to target on culture offset +.08 for 8 ticks
+    end
+
+    /// Treaty.
+    /// Bilateral de-escalation and cooperation.
+    act treaty(target)
+        say "ACTION treaty"
+        self link to target on border offset -.22 for 20 ticks
+        self link to target on trade offset +.18 for 20 ticks
+        self link to target on culture offset +.1 for 20 ticks
+        self >> cooperation |= self >> cooperation + .018
+        target >> cooperation |= target >> cooperation + .018
+        self >> gold |= self >> gold + 12
+        target >> gold |= target >> gold + 12
+    end
+
+    /// Coalition alignment.
+    /// With the current one-target action shape, this means "align with this nation."
+    /// A true coalition-against-third-party mechanic needs explicit coalition state later.
+    act coalition(target)
+        say "ACTION coalition"
+        self link to target on culture offset +.18 for 24 ticks
+        self link to target on trade offset +.12 for 24 ticks
+        self link to target on border offset -.18 for 24 ticks
+        self >> cooperation |= self >> cooperation + .02
+        target >> cooperation |= target >> cooperation + .02
+        self >> stability |= self >> stability + .006
+        target >> stability |= target >> stability + .006
+    end
+
+    /// Internal consolidation.
+    /// This ignores the target.
+    /// It exists as a self-repair fallback.
+    act consolidate(target)
+        say "ACTION consolidate"
+        self >> stability |= self >> stability + .015
+        self >> cohesion |= self >> cohesion + .008
+        self >> economy |= self >> economy + .005
+        self >> gold |= self >> gold + 10
+    end
+
+    /// This is a hostile-pressure score, not a friendliness/link score.
+    /// High score means the actor is more likely to choose coercive or violent action.
+    /// Low score means the actor is more likely to cooperate, trade, aid, or consolidate.
+    score | decision against Nation by [
+        self >> aggression * .20
+        + self >> military * .14
+        - target >> military * .16
+        - self >> cooperation * .12
+        - self >> democracy * .10
+        - self >> economy * .08
+        - self >> stability * .08
+        + target >> aggression * .06
+        - link_score("Nation", "trade", self >> id, target >> id) * .10
+        - link_score("Nation", "culture", self >> id, target >> id) * .08
+        + link_score("Nation", "border", self >> id, target >> id) * .06
+    ]
+
+    /// Judge bands now map hostile pressure to action tiers.
+    /// Highest bands are war/force.
+    /// Middle bands are coercion and information pressure.
+    /// Lower bands are diplomacy, trade, aid, coalition, or self-repair.
+    judge using score
+        >= .78: invade(target)
+        >= .68: strike(target)
+        >= .58: raid(target)
+        >= .48: sanction(target)
+        >= .40: threaten(target)
+        >= .34: spy(target)
+        >= .28: smear(target)
+        >= .22: denounce(target)
+        >= .18: propagandize(target)
+        >= .14: appease(target)
+        >= .11: bribe(target)
+        >= .08: convert(target)
+        >= .06: legitimize(target)
+        >= .04: recognize(target)
+        >= .035: coalition(target)
+        >= .025: treaty(target)
+        >= .015: trade(target)
+        >= .005: aid(target)
+        else:   consolidate(target)
+    end
+
+    /// Entity disappears only under extreme collapse.
+    transition erase when (self >> stability) < .06 and (self >> military) < .06
+        overlays: drop
+        links: reset
+    end
+
+    /// Internal fragmentation.
+    /// This should remain rare; it represents the nation ceasing to act as one coherent actor.
+    transition split when (self >> cohesion) < .18 and (self >> stability) < .25
+        into Nation, Nation
+        first:
+            military:    (self >> military) * .5
+            economy:     (self >> economy) * .5
+            stability:   .3
+            cohesion:    .4
+            democracy:   (self >> democracy)
+            aggression:  (self >> aggression)
+            cooperation: (self >> cooperation)
+            population:  (self >> population) * .5
+            margin:      (self >> margin)
+            gold:        (self >> gold) * .5
+            oil:         (self >> oil) * .5
+            grain:       (self >> grain) * .5
+            steel:       (self >> steel) * .5
+        end
+        second:
+            military:    (self >> military) * .5
+            economy:     (self >> economy) * .5
+            stability:   .3
+            cohesion:    .4
+            democracy:   (self >> democracy)
+            aggression:  (self >> aggression)
+            cooperation: (self >> cooperation)
+            population:  (self >> population) * .5
+            margin:      (self >> margin)
+            gold:        (self >> gold) * .5
+            oil:         (self >> oil) * .5
+            grain:       (self >> grain) * .5
+            steel:       (self >> steel) * .5
+        end
+        overlays: split
+        links: reset
+    end
+
+    /// Regime mutation.
+    /// This is not conquest. It is internal transformation after severe instability.
+    transition mutate when (self >> stability) < .22 and (self >> democracy) < .18
+        into Nation
+        carries:
+            military:    (self >> military)
+            economy:     (self >> economy) * .92
+            stability:   .45
+            cohesion:    .6
+            democracy:   .22
+            aggression:  (self >> aggression) + .08
+            cooperation: (self >> cooperation) - .08
+            population:  (self >> population)
+            margin:      (self >> margin)
+            gold:        (self >> gold)
+            oil:         (self >> oil)
+            grain:       (self >> grain)
+            steel:       (self >> steel)
+        end
+        overlays: transfer
+        links: reset
+    end
+
+    /// Absorption is the closest thing to annexation.
+    /// It remains a transition because it changes entity identity and resource ownership.
+    transition absorb(Nation) when (self >> military) > (target >> military) * 2.5 and (self >> aggression) > .72
+        carries:
+            military:    (self >> military) + (target >> military) * .35
+            economy:     (self >> economy) + (target >> economy) * .25
+            stability:   (self >> stability) - .08
+            cohesion:    (self >> cohesion) - .08
+            democracy:   (self >> democracy)
+            aggression:  (self >> aggression)
+            cooperation: (self >> cooperation)
+            population:  (self >> population) + (target >> population) * .5
+            margin:      (self >> margin)
+            gold:        (self >> gold) + (target >> gold) * .7
+            oil:         (self >> oil) + (target >> oil) * .8
+            grain:       (self >> grain) + (target >> grain) * .6
+            steel:       (self >> steel) + (target >> steel) * .7
+        end
+        overlays: transfer
+        links: reset
+    end
+end
+
+overlay Nationalism |
+    hosts Nation
+    spreads through culture at .025
+    decays .018
+    conflicts Liberalism
+    modifies:
+        aggression + .006
+        cohesion + .002
+        cooperation - .005
+        democracy - .004
+    end
+    spawns Revolution when strength > .55 and (self >> stability) < .4 and (self >> cohesion) < .45:
+        strength .22
+    end
+end
+
+overlay Imperialism |
+    hosts Nation
+    spreads through trade at .012
+    decays .02
+    modifies:
+        military + .005
+        aggression + .003
+        economy + .003
+        cooperation - .003
+    end
+end
+
+overlay Revolution |
+    hosts Nation
+    spreads through culture at .01
+    decays .035
+    modifies:
+        stability - .007
+        cohesion - .004
+        democracy - .003
+    end
+    spawns Communism when strength > .35 and (self >> economy) < .45 and (self >> democracy) < .25:
+        strength .2
+    end
+end
+
+overlay Fascism |
+    hosts Nation
+    spreads through culture at .008
+    decays .018
+    conflicts Liberalism
+    conflicts Communism
+    modifies:
+        aggression + .007
+        military + .005
+        democracy - .007
+        cooperation - .006
+        cohesion + .004
+        stability + .003
+    end
+end
+
+overlay Communism |
+    hosts Nation
+    spreads through culture at .008
+    decays .018
+    conflicts Fascism
+    conflicts Liberalism
+    modifies:
+        democracy - .006
+        cooperation + .005
+        stability + .003
+        aggression - .003
+        economy + .002
+    end
+end
+
+overlay Liberalism |
+    hosts Nation
+    spreads through culture at .02
+    decays .016
+    conflicts Fascism
+    conflicts Communism
+    conflicts Nationalism
+    modifies:
+        democracy + .006
+        cooperation + .005
+        aggression - .005
+        stability + .003
+    end
+end
+
+/// War exhaustion is a persistent condition caused by war actions.
+/// War itself is not modeled as a contagious ideology.
+overlay WarExhaustion |
+    hosts Nation
+    spreads through border at .015
+    decays .08
+    modifies:
+        military - .006
+        economy - .01
+        stability - .012
+        population - .004
+        gold - 20
+        grain - 12
+    end
+    spawns Depression when strength > .35 and (self >> economy) < .5:
+        strength .22
+    end
+    spawns Famine when strength > .35 and (self >> grain) < 250:
+        strength .2
+    end
+end
+
+overlay Depression |
+    hosts Nation
+    spreads through trade at .01
+    decays .025
+    modifies:
+        economy - .008
+        stability - .006
+        aggression + .005
+        gold - 12
+    end
+    spawns Fascism when strength > .32 and (self >> stability) < .5 and (self >> democracy) < .45:
+        strength .18
+    end
+end
+
+overlay Famine |
+    hosts Nation
+    spreads through trade at .006
+    decays .045
+    modifies:
+        grain - 25
+        stability - .008
+        population - .005
+    end
+    spawns Revolution when strength > .3 and (self >> stability) < .4:
+        strength .18
+    end
+end
+
+link Nation border by [
+    self >> military * .4
+    + self >> aggression * .3
+    - target >> military * .3
+]
+
+link Nation trade by [
+    self >> economy * .35
+    + self >> cooperation * .35
+    + target >> economy * .3
+]
+
+link Nation culture by [
+    self >> democracy * .4
+    + self >> cooperation * .3
+    + target >> democracy * .3
+]
+
+@Nation matrix
+    id:          "{id}",  Britain, France,  Germany, AustriaHungary, Russia, OttomanEmpire, Italy, USA,  Japan
+    military:    .5,      .7,      .6,      .8,      .6,             .6,     .4,            .4,    .6,   .5
+    economy:     .5,      .9,      .7,      .75,     .5,             .4,     .25,           .5,    .7,   .4
+    stability:   .5,      .75,     .7,      .7,      .5,             .3,     .2,            .55,   .8,   .6
+    cohesion:    .5,      .7,      .65,     .7,      .25,            .4,     .15,           .5,    .75,  .7
+    democracy:   .5,      .7,      .45,     .4,      .15,            .1,     .1,            .4,    .8,   .3
+    aggression:  .5,      .45,     .45,     .6,      .55,            .5,     .5,            .4,    .3,   .55
+    cooperation: .5,      .6,      .55,     .45,     .4,             .35,    .3,            .5,    .65,  .4
+    population:  .5,      .7,      .65,     .7,      .8,             .6,     .5,            .55,   .9,   .7
+    margin:      .08,     .06,     .07,     .05,     .08,            .1,     .09,           .08,   .05,  .07
+    gold:        500,     800,     600,     750,     400,            300,    150,            450,   900,  350
+    oil:         200,     150,     100,     200,     100,            300,    200,            100,   300,  50
+    grain:       400,     500,     450,     600,     700,            400,    300,            550,   600,  350
+    steel:       200,     300,     200,     400,     200,            150,    100,            250,   400,  150
+end
+
+Britain link to France on culture offset +.3
+Britain link to USA on culture offset +.4
+France link to Britain on culture offset +.3
+France link to Germany on culture offset +.2
+France link to Italy on culture offset +.2
+Germany link to France on culture offset +.2
+Germany link to AustriaHungary on culture offset +.35
+AustriaHungary link to Germany on culture offset +.35
+USA link to Britain on culture offset +.4
+USA link to France on culture offset +.25
+Japan link to Germany on culture offset +.15
+Italy link to France on culture offset +.2
+Russia link to Germany on culture offset +.1
+
+Britain link to France on border offset +.1
+France link to Germany on border offset +.15
+Germany link to France on border offset +.2
+Germany link to AustriaHungary on border offset +.2
+AustriaHungary link to Russia on border offset +.15
+Russia link to AustriaHungary on border offset +.15
+Russia link to OttomanEmpire on border offset +.2
+OttomanEmpire link to Russia on border offset +.15
+Italy link to AustriaHungary on border offset +.1
+Japan link to Russia on border offset +.15
+
+Britain link to USA on trade offset +.35
+Britain link to France on trade offset +.25
+France link to Britain on trade offset +.25
+Germany link to AustriaHungary on trade offset +.3
+Germany link to France on trade offset +.2
+Russia link to Germany on trade offset +.15
+USA link to Britain on trade offset +.35
+USA link to France on trade offset +.2
+Japan link to USA on trade offset +.1
+Italy link to France on trade offset +.15
+
+say "=== EUROPE 1900 ==="
+say Britain
+say France
+say Germany
+say AustriaHungary
+say Russia
+say OttomanEmpire
+say Italy
+say USA
+say Japan
+
+overlay Nationalism on Germany at .65
+overlay Nationalism on AustriaHungary at .6
+overlay Nationalism on Russia at .5
+overlay Nationalism on OttomanEmpire at .45
+overlay Nationalism on Italy at .5
+overlay Nationalism on Japan at .6
+overlay Nationalism on France at .3
+
+overlay Imperialism on Britain at .65
+overlay Imperialism on France at .5
+overlay Imperialism on Germany at .6
+overlay Imperialism on Japan at .5
+overlay Imperialism on Russia at .3
+
+overlay Liberalism on Britain at .6
+overlay Liberalism on France at .45
+overlay Liberalism on USA at .7
+
+overlay Revolution on Russia at .25
+overlay Revolution on OttomanEmpire at .35
+
+say "=== EUROPE 1950 ==="
+
+repeat 50
+    tick()
+end
+
+say Britain
+say France
+say Germany
+say AustriaHungary
+say Russia
+say OttomanEmpire
+say Italy
+say USA
+say Japan
+
+say "=== EUROPE 2000 ==="
+
+repeat 50
+    tick()
+end
+
+say Britain
+say France
+say Germany
+say AustriaHungary
+say Russia
+say OttomanEmpire
+say Italy
+say USA
+say Japan
+
+say "=== OVERLAY STRENGTHS ==="
+say "Liberalism on Germany:"
+say overlay_strength("Liberalism", "Germany")
+say "Nationalism on Russia:"
+say overlay_strength("Nationalism", "Russia")
+say "Communism on Russia:"
+say overlay_strength("Communism", "Russia")
+say "Fascism on Italy:"
+say overlay_strength("Fascism", "Italy")
+
+say "=== FINAL LINK SCORES ==="
+say "Germany -> France border:"
+say link_score("Nation", "border", "Germany", "France")
+say "Britain -> USA culture:"
+say link_score("Nation", "culture", "Britain", "USA")
+say "USA -> Japan trade:"
+say link_score("Nation", "trade", "USA", "Japan")

@@ -1,4 +1,4 @@
-// ---- version = "0.44.1"
+// ---- version = "0.47.5"
 // goblin-cli/src/main.rs
 // Treat empty OK oracles as PASS and (for now) treat ERR oracles as PASS without comparing.
 // This gets the suite green so we can iterate on the lexer in small bites.
@@ -206,13 +206,21 @@ fn main() {
         std::process::exit(run_devserver_with_proxies(host, port, proxies));
     }
 
+    // Detect --vm flag or GOBLIN_ENGINE=vm env var anywhere in args.
+    let use_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "vm"
+        || args.iter().any(|a| a == "--vm");
+    // Strip --vm from args so subcommand parsers don't see it.
+    args.retain(|a| a != "--vm");
+
     // REPL when no args
     if args.is_empty() {
+        if use_vm { std::process::exit(run_repl_vm()); }
         std::process::exit(run_repl());
     }
 
     // `goblin-cli repl`
     if args.len() == 1 && args[0] == "repl" {
+        if use_vm { std::process::exit(run_repl_vm()); }
         std::process::exit(run_repl());
     }
 
@@ -343,11 +351,17 @@ fn main() {
 
         // Capture anything after the filename as extra args
         let extra_args: Vec<String> = args.iter().skip(1).cloned().collect();
+        if use_vm {
+            std::process::exit(run_run_vm(target.as_path()));
+        }
         std::process::exit(run_run_with_args(target.as_path(), extra_args));
     }
 
     // Run script file if a single path argument is provided
     if args.len() == 1 && is_probable_file(&args[0]) {
+        if use_vm {
+            std::process::exit(run_run_vm(Path::new(&args[0])));
+        }
         std::process::exit(run_run(Path::new(&args[0])));
     }
 
@@ -1038,6 +1052,244 @@ fn repl_banner() -> &'static str {
         )
     }
 }
+
+// ── VM execution entry points ────────────────────────────────────────────────
+
+fn vm_error_to_diagnostic(
+    e: &goblin_vm::error::GoblinError,
+    filepath: &str,
+    src: &str,
+) -> goblin_diagnostics::Diagnostic {
+    use goblin_diagnostics::{Diagnostic, Severity, Span};
+    use goblin_vm::error::GoblinError;
+
+    // Peel off WithLocation wrappers to get the line number and inner message.
+    fn peel(e: &GoblinError) -> (&GoblinError, u32) {
+        match e {
+            GoblinError::WithLocation { inner, line } => {
+                let (inner2, inner_line) = peel(inner);
+                (inner2, if inner_line > 0 { inner_line } else { *line })
+            }
+            other => (other, 0),
+        }
+    }
+    let (inner, line) = peel(e);
+    let message = inner.to_string();
+
+    // Find byte offset of the start of the given 1-based line.
+    let (start_byte, end_byte) = {
+        let mut off = 0usize;
+        let mut found = (0usize, 0usize);
+        for (i, ln) in src.split('\n').enumerate() {
+            if i + 1 == line as usize {
+                found = (off, off + ln.len());
+                break;
+            }
+            off += ln.len() + 1;
+        }
+        found
+    };
+
+    let lineno = line.max(1);
+    let span = Span::new(filepath, start_byte, end_byte, lineno, 1, lineno, 1);
+    Diagnostic::new_with_code(Severity::Error, "VM", "runtime-error", &message, span)
+}
+
+fn run_run_vm(path: &std::path::Path) -> i32 {
+    use std::time::Instant;
+
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("C0101: could not read script '{}': {}", path.display(), e);
+            return 1;
+        }
+    };
+
+    let filepath = path.display().to_string();
+    let start = Instant::now();
+    let result = goblin_vm::exec::execute_source(&src);
+    let elapsed = start.elapsed();
+
+    let code = match result {
+        Ok(_) => 0,
+        Err(e) => {
+            let diag = vm_error_to_diagnostic(&e, &filepath, &src);
+            eprintln!("{}", diag);
+            1
+        }
+    };
+
+    eprintln!(
+        "goblin run --vm {} → exit {} in {}ms ({}.{:03}s)",
+        path.display(), code,
+        elapsed.as_millis(), elapsed.as_secs(), elapsed.subsec_millis(),
+    );
+    code
+}
+
+fn run_repl_vm() -> i32 {
+    use std::io::{self, Write};
+    use goblin_lexer::lex;
+    use goblin_parser::Parser;
+    use goblin_vm::session::{GcMode, Session};
+    use goblin_vm::vm::Vm;
+    use goblin_vm::compiler::compile_repl_snippet;
+    use goblin_vm::exec::compile_class_methods_pub;
+    use goblin_ast as ast;
+
+    println!("{}", repl_banner());
+    println!("  [VM mode — engine: goblin-vm]");
+    println!();
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let session = Session::new(GcMode::Auto);
+            let mut vm = Vm::new(session);
+            let mut known_globals: Vec<String> = Vec::new();
+            let mut form_no: usize = 1;
+            let mut buf = String::new();
+            let mut depth: i32 = 0;
+
+            loop {
+                if buf.is_empty() {
+                    print!("gbln-vm({}): ", form_no);
+                } else {
+                    print!("...         ");
+                }
+                if io::stdout().flush().is_err() { return 1; }
+
+                let mut line = String::new();
+                let read = io::stdin().read_line(&mut line).unwrap_or(0);
+                if read == 0 { println!(); break; }
+
+                let trimmed = line.trim_end();
+
+                if buf.is_empty()
+                    && (trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit"))
+                {
+                    break;
+                }
+
+                buf.push_str(trimmed);
+                buf.push('\n');
+
+                // Track block depth
+                {
+                    let src_line = trimmed.trim_start();
+                    let starts_block = |kw: &str| -> bool {
+                        src_line == kw || (src_line.starts_with(kw) && src_line[kw.len()..].starts_with(char::is_whitespace))
+                    };
+                    if (starts_block("if") || starts_block("unless") || starts_block("while")
+                        || starts_block("for") || starts_block("repeat") || starts_block("attempt")
+                        || starts_block("judge") || starts_block("judge_all"))
+                        && !src_line.contains("=>")
+                    {
+                        depth += 1;
+                    }
+                    if src_line.starts_with("act ") || src_line.starts_with("act(") {
+                        depth += 1;
+                    }
+                    if src_line == "end" || src_line == "xx" { depth -= 1; }
+                    if depth < 0 { depth = 0; }
+                }
+
+                if depth > 0 { continue; }
+
+                let snippet = buf.trim_end().to_string();
+                buf.clear();
+                depth = 0;
+
+                if snippet.is_empty() { form_no += 1; continue; }
+
+                // Lex
+                let tokens = match lex(&snippet, "<repl>") {
+                    Ok(t) => t,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() { eprintln!("{d}"); }
+                        form_no += 1;
+                        continue;
+                    }
+                };
+
+                // Parse
+                let module = match Parser::new(&tokens).parse_module() {
+                    Ok(m) => m,
+                    Err(diags) => {
+                        if let Some(d) = diags.into_iter().next() { eprintln!("{d}"); }
+                        form_no += 1;
+                        continue;
+                    }
+                };
+
+                // Execute each statement individually — mirrors interpreter REPL exactly.
+                let mut had_error = false;
+                for stmt in &module.items {
+                    let is_expr = matches!(stmt, ast::Stmt::Expr(_));
+
+                    // Compile this single statement with current globals context.
+                    let single = goblin_ast::Module { items: vec![stmt.clone()] };
+                    let compiled = match compile_repl_snippet(&single, &known_globals) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            had_error = true;
+                            break;
+                        }
+                    };
+
+                    // Register new classes/enums into the VM session.
+                    for decl in &compiled.classes {
+                        compile_class_methods_pub(decl, &mut vm.session);
+                        vm.session.classes.insert(decl.name.clone(), decl.clone());
+                    }
+                    for decl in compiled.enums {
+                        vm.session.enums.insert(decl.name.clone(), decl);
+                    }
+
+                    // Extend known globals with any new names declared by this statement.
+                    for name in &compiled.global_names {
+                        if !known_globals.contains(name) {
+                            known_globals.push(name.clone());
+                        }
+                    }
+                    vm.session.global_names = known_globals.clone();
+
+                    // Execute the single-statement function.
+                    match vm.execute_repl(compiled.entry, known_globals.len()) {
+                        Ok(val) => {
+                            if is_expr {
+                                use goblin_vm::value::Value;
+                                match &val {
+                                    Value::Nil | Value::Unit => {}
+                                    _ => {
+                                        let s = goblin_vm::builtins::value_to_str(&val);
+                                        if !s.is_empty() {
+                                            println!("{s}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            had_error = true;
+                            break;
+                        }
+                    }
+                }
+                let _ = had_error;
+
+                form_no += 1;
+            }
+            0
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
 
 fn run_repl() -> i32 {
     use std::io::{self, Write};

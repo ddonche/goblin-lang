@@ -1,5 +1,5 @@
 act main
-    x = [[[[[[[[[9]]]]]]]]]
+    x | [[[[[[[[[9]]]]]]]]]
     say x
     say "Success"
 end

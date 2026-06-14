@@ -1,7 +1,26 @@
 [package]
 name = "goblin-vm"
-version = "0.1.0"
+version = "0.1.12"
 edition = "2021"
 
 [dependencies]
-slab = "0.4"         # generational-ish arena; we’ll wrap it
+slab = "0.4"
+goblin-ast = { path = "../goblin-ast" }
+goblin-diagnostics = { path = "../goblin-diagnostics" }
+goblin-parser = { path = "../goblin-parser" }
+goblin-lexer = { path = "../goblin-lexer" }
+rust_decimal = "1"
+indexmap = "2"
+regex = "1"
+serde_json = "1"
+goblin-yall = { path = "../goblin-yall" }
+goblin-des = { path = "../goblin-des" }
+uuid = { version = "1", features = ["v4", "v7"] }
+zip = "2"
+walkdir = "2"
+comrak = "0.21"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "yaml-load"] }
+
+[[bench]]
+name = "vm_bench"
+harness = false
