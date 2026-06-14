@@ -4146,6 +4146,29 @@ pub(crate) fn cast_value_to_lock(v: Value, lock: &str) -> Result<Value, GoblinEr
             }
             return Ok(Value::MapOrd(results));
         }
+        Value::Collection(coll) => {
+            use crate::value::CollectionLayout;
+            let new_coll = match &coll.layout {
+                CollectionLayout::FlatArray(items) => {
+                    let mut results = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        results.push(cast_value_to_lock(item.clone(), lock)?);
+                    }
+                    crate::value::CollectionValue::from_flat(results)
+                }
+                CollectionLayout::SmallMap(pairs) => {
+                    let mut results = Vec::with_capacity(pairs.len());
+                    for (k, v) in pairs.iter() {
+                        results.push((k.clone(), cast_value_to_lock(v.clone(), lock)?));
+                    }
+                    crate::value::CollectionValue::from_map(results)
+                }
+                _ => {
+                    return Err(cast_err("cannot apply type lock to this collection layout"));
+                }
+            };
+            return Ok(Value::Collection(std::rc::Rc::new(new_coll)));
+        }
         _ => {}
     }
 
