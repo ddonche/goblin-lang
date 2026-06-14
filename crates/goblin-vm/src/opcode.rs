@@ -195,6 +195,31 @@ pub enum Opcode {
     /// Load a field from self (locals[0], which is the receiver object in a class method).
     /// constants[idx] is the field name string. Pushes nil if self is not an Object or field absent.
     SelfField(u16),
+
+    // ── Type-lock opcodes ─────────────────────────────────────────────────────
+    /// Tether with type lock for a local slot: pop value, cast to lock_type, store in slot,
+    /// register lock in BOTH type_locks and hard_type_locks of the current frame.
+    StoreLockLocal(u8, String),
+    /// Same as StoreLockLocal but for a global slot (by index).
+    StoreLockGlobal(u16, String),
+
+    /// Cast-bang for a local: read value from slot, cast to cast_type, store back, update
+    /// type_locks (NOT hard_type_locks). Push new value onto stack.
+    CastBangLocal(u8, String),
+    /// Same as CastBangLocal but for a global slot.
+    CastBangGlobal(u16, String),
+
+    /// Get the type lock for a local variable: if type_lock is set push it as a string
+    /// (qualified for collections), otherwise fall through to normal TypeOf on the value.
+    GetTypeLockLocal(u8),
+    /// Same as GetTypeLockLocal but for a global slot.
+    GetTypeLockGlobal(u16),
+
+    /// Cast member with hard-lock check for a local: read from slot, check hard_type_lock
+    /// (error R0215 on mismatch), cast value, push result. Does NOT store back.
+    CastMemberLocal(u8, String),
+    /// Same as CastMemberLocal but for a global slot.
+    CastMemberGlobal(u16, String),
 }
 
 impl Opcode {
@@ -275,6 +300,14 @@ impl Opcode {
             Opcode::RegisterAction(_) => "RegisterAction",
             Opcode::StringInterp(_)   => "StringInterp",
             Opcode::SelfField(_)      => "SelfField",
+            Opcode::StoreLockLocal(..)   => "StoreLockLocal",
+            Opcode::StoreLockGlobal(..)  => "StoreLockGlobal",
+            Opcode::CastBangLocal(..)    => "CastBangLocal",
+            Opcode::CastBangGlobal(..)   => "CastBangGlobal",
+            Opcode::GetTypeLockLocal(_)  => "GetTypeLockLocal",
+            Opcode::GetTypeLockGlobal(_) => "GetTypeLockGlobal",
+            Opcode::CastMemberLocal(..)  => "CastMemberLocal",
+            Opcode::CastMemberGlobal(..) => "CastMemberGlobal",
         }
     }
 }

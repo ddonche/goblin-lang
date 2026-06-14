@@ -4113,6 +4113,245 @@ fn zip_directory(src: &str, dest: &str) -> Result<(), GoblinError> {
     Ok(())
 }
 
+/// Cast a value to the named lock type, mirroring interpreter's cast_value_to_lock.
+/// Returns R0215-style error message on failure.
+pub(crate) fn cast_value_to_lock(v: Value, lock: &str) -> Result<Value, GoblinError> {
+    let cast_err = |detail: &str| -> GoblinError {
+        GoblinError::Runtime(format!(
+            "R0215: type-lock-cast: cannot cast value to locked type '{}': {}",
+            lock, detail
+        ))
+    };
+
+    // Collections: apply cast element-wise.
+    match v {
+        Value::Array(elems) => {
+            let mut results = Vec::with_capacity(elems.len());
+            for elem in elems {
+                results.push(cast_value_to_lock(elem, lock)?);
+            }
+            return Ok(Value::Array(results));
+        }
+        Value::Map(map) => {
+            let mut results = std::collections::BTreeMap::new();
+            for (k, val) in map {
+                results.insert(k, cast_value_to_lock(val, lock)?);
+            }
+            return Ok(Value::Map(results));
+        }
+        Value::MapOrd(map) => {
+            let mut results = indexmap::IndexMap::new();
+            for (k, val) in map {
+                results.insert(k, cast_value_to_lock(val, lock)?);
+            }
+            return Ok(Value::MapOrd(results));
+        }
+        _ => {}
+    }
+
+    match lock {
+        "str" => {
+            let s = match v {
+                Value::Str(s)              => s,
+                Value::Char(c)             => c.to_string(),
+                Value::Int(n)              => n.to_string(),
+                Value::Float(f) | Value::Pct(f) => {
+                    let s = format!("{}", f);
+                    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+                }
+                Value::Big(d)              => d.to_string(),
+                Value::Bool(b)             => if b { "true".to_string() } else { "false".to_string() },
+                Value::Nil                 => "nil".to_string(),
+                other                      => fmt_value_raw(&other),
+            };
+            Ok(Value::Str(s))
+        }
+
+        "bool" => match v {
+            Value::Bool(_) => Ok(v),
+            _ => Err(cast_err("bool lock only accepts boolean values — use true or false")),
+        },
+
+        "i8" => {
+            let n = lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= i8::MIN as i64 && i <= i8::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows i8 ({}..{})", i, i8::MIN, i8::MAX))),
+                other => Ok(other),
+            }
+        }
+        "i16" => {
+            let n = lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= i16::MIN as i64 && i <= i16::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows i16 ({}..{})", i, i16::MIN, i16::MAX))),
+                other => Ok(other),
+            }
+        }
+        "i32" => {
+            let n = lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= i32::MIN as i64 && i <= i32::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows i32 ({}..{})", i, i32::MIN, i32::MAX))),
+                other => Ok(other),
+            }
+        }
+        "i64" | "int" => lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer")),
+
+        "u8" => {
+            let n = lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 && i <= u8::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows u8 (0..{})", i, u8::MAX))),
+                other => Ok(other),
+            }
+        }
+        "u16" => {
+            let n = lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 && i <= u16::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows u16 (0..{})", i, u16::MAX))),
+                other => Ok(other),
+            }
+        }
+        "u32" => {
+            let n = lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 && i <= u32::MAX as i64 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} overflows u32 (0..{})", i, u32::MAX))),
+                other => Ok(other),
+            }
+        }
+        "u64" | "uint" => {
+            let n = lock_to_int(v).map_err(|_| cast_err("value cannot be converted to integer"))?;
+            match n {
+                Value::Int(i) if i >= 0 => Ok(Value::Int(i)),
+                Value::Int(i) => Err(cast_err(&format!("{} is negative, cannot store in u64", i))),
+                other => Ok(other),
+            }
+        }
+
+        "f32" => {
+            let f = lock_to_float(v).map_err(|_| cast_err("value cannot be converted to float"))?;
+            match f {
+                Value::Float(n) if (n as f32).is_infinite() && n.is_finite() =>
+                    Err(cast_err(&format!("{} overflows f32", n))),
+                other => Ok(other),
+            }
+        }
+        "f64" | "float" => lock_to_float(v).map_err(|_| cast_err("value cannot be converted to float")),
+
+        "big" => lock_to_big(v).map_err(|_| cast_err("value cannot be converted to big decimal")),
+
+        "pct" => lock_to_pct(v).map_err(|_| cast_err("value cannot be converted to pct")),
+
+        "money" | "date" | "time" | "datetime" | "duration" => {
+            Err(GoblinError::Runtime(format!(
+                "R0215: type-lock-cast: type lock '{}' is not yet implemented — omit the type suffix for now",
+                lock
+            )))
+        }
+
+        _ => Err(cast_err("unknown type lock")),
+    }
+}
+
+fn lock_to_int(v: Value) -> Result<Value, GoblinError> {
+    Ok(match v {
+        Value::Int(n)   => Value::Int(n),
+        Value::Float(f) | Value::Pct(f) => Value::Int(f.trunc() as i64),
+        Value::Bool(b)  => Value::Int(b as i64),
+        Value::Char(c)  => Value::Int(c as u32 as i64),
+        Value::Big(d)   => {
+            let t = d.trunc();
+            use rust_decimal::prelude::ToPrimitive;
+            if let Some(i) = t.to_i64() { Value::Int(i) } else { Value::Big(t) }
+        }
+        Value::Str(s)   => {
+            let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+            if let Ok(i) = cleaned.parse::<i64>() {
+                Value::Int(i)
+            } else if let Ok(f) = cleaned.parse::<f64>() {
+                Value::Int(f.trunc() as i64)
+            } else {
+                return Err(GoblinError::Runtime(format!("int: cannot parse '{}'", s)));
+            }
+        }
+        Value::Nil => Value::Nil,
+        other => return Err(GoblinError::type_error("number or str", other.type_name(), "int cast")),
+    })
+}
+
+fn lock_to_float(v: Value) -> Result<Value, GoblinError> {
+    Ok(match v {
+        Value::Float(f) => Value::Float(f),
+        Value::Pct(p)   => Value::Float(p),
+        Value::Int(i)   => Value::Float(i as f64),
+        Value::Big(d)   => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_f64().map(Value::Float)
+                .ok_or_else(|| GoblinError::Runtime("float: cannot represent big as float".into()))?
+        }
+        Value::Str(s)   => {
+            let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+            cleaned.parse::<f64>()
+                .map(Value::Float)
+                .map_err(|_| GoblinError::Runtime(format!("float: cannot parse '{}'", s)))?
+        }
+        Value::Nil => Value::Nil,
+        other => return Err(GoblinError::type_error("number or str", other.type_name(), "float cast")),
+    })
+}
+
+fn lock_to_big(v: Value) -> Result<Value, GoblinError> {
+    match v {
+        Value::Big(d)   => Ok(Value::Big(d)),
+        Value::Int(i)   => Ok(Value::Big(rust_decimal::Decimal::from(i))),
+        Value::Float(f) | Value::Pct(f) => {
+            use rust_decimal::prelude::FromPrimitive;
+            rust_decimal::Decimal::from_f64(f)
+                .map(Value::Big)
+                .ok_or_else(|| GoblinError::Runtime("big: cannot represent float as decimal".into()))
+        }
+        Value::Str(s)   => {
+            let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+            use std::str::FromStr;
+            rust_decimal::Decimal::from_str(&cleaned)
+                .map(Value::Big)
+                .map_err(|_| GoblinError::Runtime(format!("big: cannot parse '{}'", s)))
+        }
+        Value::Nil => Ok(Value::Nil),
+        other => Err(GoblinError::type_error("number or str", other.type_name(), "big cast")),
+    }
+}
+
+fn lock_to_pct(v: Value) -> Result<Value, GoblinError> {
+    Ok(match v {
+        Value::Pct(p)   => Value::Pct(p),
+        Value::Int(n)   => Value::Pct(n as f64),
+        Value::Float(f) => Value::Pct(f),
+        Value::Big(d)   => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_f64().map(Value::Pct)
+                .ok_or_else(|| GoblinError::Runtime("pct: cannot represent big as pct".into()))?
+        }
+        Value::Str(s)   => {
+            let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
+            if cleaned.ends_with('%') {
+                let num = cleaned[..cleaned.len()-1].trim();
+                if let Ok(f) = num.parse::<f64>() {
+                    return Ok(Value::Pct(f / 100.0));
+                }
+            } else if let Ok(f) = cleaned.parse::<f64>() {
+                return Ok(Value::Pct(f));
+            }
+            return Err(GoblinError::Runtime(format!("pct: invalid string '{}'", s)));
+        }
+        Value::Nil => Value::Nil,
+        other => return Err(GoblinError::type_error("number or str", other.type_name(), "pct cast")),
+    })
+}
+
 fn cast_to_int_builtin(v: Value) -> Result<Value, GoblinError> {
     Ok(match v {
         Value::Int(n)   => Value::Int(n),

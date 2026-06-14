@@ -472,23 +472,34 @@ impl Compiler {
                                         span_debug: format!("{:?}", bind.name.1),
                                     });
                                 }
-                                // Same snippet re-declares it (shouldn't normally happen, but allow overwrite)
-                                self.emit(Opcode::StoreGlobal(pos as u16));
+                                if let Some(ref lock) = bind.lock_type {
+                                    self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                                } else {
+                                    self.emit(Opcode::StoreGlobal(pos as u16));
+                                }
                             } else {
                                 let pos = self.globals.len();
                                 self.globals.push(name.clone());
-                                self.emit(Opcode::StoreGlobal(pos as u16));
+                                if let Some(ref lock) = bind.lock_type {
+                                    self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                                } else {
+                                    self.emit(Opcode::StoreGlobal(pos as u16));
+                                }
                             }
                         } else {
                             // x | expr — initial binding. Reuse pre-declared slot if
                             // present (hoisted from module pre-pass), else declare new.
                             let slot = self.scope_mut().find_local(name)
                                 .unwrap_or_else(|| self.scopes.last_mut().unwrap().declare_local(name));
-                            self.emit(Opcode::StoreLocal(slot));
+                            if let Some(ref lock) = bind.lock_type {
+                                self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
+                            } else {
+                                self.emit(Opcode::StoreLocal(slot));
+                            }
                         }
                     }
                     BindMode::Retether => {
-                        // x |= expr — rebind existing slot.
+                        // x |= expr — rebind existing slot. Lock check handled in StoreLocal/StoreGlobal at runtime.
                         let op = self.resolve_store(name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name.clone() }))?;
                         self.emit(op);
@@ -496,7 +507,11 @@ impl Compiler {
                     BindMode::Shadow => {
                         // x[= expr — shadow: always declare a new slot.
                         let slot = self.scope_mut().declare_local(name);
-                        self.emit(Opcode::StoreLocal(slot));
+                        if let Some(ref lock) = bind.lock_type {
+                            self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
+                        } else {
+                            self.emit(Opcode::StoreLocal(slot));
+                        }
                     }
                 }
             }
@@ -882,6 +897,36 @@ impl Compiler {
             }
 
             Expr::Member(obj, name, _) => {
+                const CAST_TYPES: &[&str] = &[
+                    "str", "string", "bool", "int", "uint", "float", "big", "pct",
+                    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+                ];
+                // Special case: Ident.vt / Ident.valtype — return type lock if set.
+                if name == "vt" || name == "valtype" {
+                    if let Expr::Ident(var_name, _) = obj.as_ref() {
+                        if let Some(slot) = self.scope().find_local(var_name) {
+                            self.emit(Opcode::GetTypeLockLocal(slot));
+                            return Ok(());
+                        }
+                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                            self.emit(Opcode::GetTypeLockGlobal(pos as u16));
+                            return Ok(());
+                        }
+                    }
+                }
+                // Special case: Ident.cast_type — check hard lock, then cast.
+                if CAST_TYPES.contains(&name.as_str()) {
+                    if let Expr::Ident(var_name, _) = obj.as_ref() {
+                        if let Some(slot) = self.scope().find_local(var_name) {
+                            self.emit(Opcode::CastMemberLocal(slot, name.clone()));
+                            return Ok(());
+                        }
+                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                            self.emit(Opcode::CastMemberGlobal(pos as u16, name.clone()));
+                            return Ok(());
+                        }
+                    }
+                }
                 self.compile_expr(obj)?;
                 let kidx = self.add_constant(Value::Str(name.clone()));
                 self.emit(Opcode::GetMember(kidx));
@@ -1011,6 +1056,36 @@ impl Compiler {
             }
 
             Expr::Postfix(inner, op, _) => {
+                // Detect cast-bang: x.cast_type! — reads x, casts in-place, updates type_lock.
+                if op == "!" {
+                    const CAST_BANG_TYPES: &[&str] = &[
+                        "str", "bool",
+                        "i8", "i16", "i32", "i64",
+                        "u8", "u16", "u32", "u64",
+                        "f32", "f64", "float",
+                        "big", "int", "uint", "pct",
+                    ];
+                    let cast_bang: Option<(String, String)> = match inner.as_ref() {
+                        Expr::Member(base, type_name, _) if CAST_BANG_TYPES.contains(&type_name.as_str()) => {
+                            match base.as_ref() {
+                                Expr::Ident(var_name, _) => Some((var_name.clone(), type_name.clone())),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some((var_name, type_name)) = cast_bang {
+                        if let Some(slot) = self.scope().find_local(&var_name) {
+                            self.emit(Opcode::CastBangLocal(slot, type_name));
+                            return Ok(());
+                        }
+                        if let Some(pos) = self.globals.iter().position(|g| g == &var_name) {
+                            self.emit(Opcode::CastBangGlobal(pos as u16, type_name));
+                            return Ok(());
+                        }
+                        return Err(self.locate_err(GoblinError::UndefinedVariable { name: var_name }));
+                    }
+                }
                 self.compile_expr(inner)?;
                 match op.as_str() {
                     "%" => { self.emit(Opcode::ToPct); }
@@ -1027,7 +1102,7 @@ impl Compiler {
                         self.emit(Opcode::LoadConst(one));
                         if op == "++" { self.emit(Opcode::Add); } else { self.emit(Opcode::Sub); }
                     }
-                    _ => { /* ! and other postfix ops: compile inner value, no transform */ }
+                    _ => { /* other postfix ops: compile inner value, no transform */ }
                 }
             }
 
