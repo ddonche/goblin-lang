@@ -394,6 +394,10 @@ impl Vm {
                     let label = match &val {
                         Value::Array(_) => format!("array({})", lock),
                         Value::Map(_) | Value::MapOrd(_) => format!("map({})", lock),
+                        Value::Collection(c) => match &c.layout {
+                            crate::value::CollectionLayout::SmallMap(_) | crate::value::CollectionLayout::HashMapBackend(_) => format!("map({})", lock),
+                            _ => format!("array({})", lock),
+                        },
                         _ => lock,
                     };
                     let result = self.session.alloc_value(Value::Str(label));
@@ -417,6 +421,10 @@ impl Vm {
                     let label = match &val {
                         Value::Array(_) => format!("array({})", lock),
                         Value::Map(_) | Value::MapOrd(_) => format!("map({})", lock),
+                        Value::Collection(c) => match &c.layout {
+                            crate::value::CollectionLayout::SmallMap(_) | crate::value::CollectionLayout::HashMapBackend(_) => format!("map({})", lock),
+                            _ => format!("array({})", lock),
+                        },
                         _ => lock,
                     };
                     let result = self.session.alloc_value(Value::Str(label));

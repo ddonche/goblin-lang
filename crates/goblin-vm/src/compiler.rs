@@ -950,6 +950,36 @@ impl Compiler {
             }
 
             Expr::Call(recv, method, args, _) => {
+                // Special case: recv.vt / recv.valtype (0 args, Ident recv) → type lock query
+                if (method == "vt" || method == "valtype") && args.is_empty() {
+                    if let Expr::Ident(var_name, _) = recv.as_ref() {
+                        if let Some(slot) = self.scope().find_local(var_name) {
+                            self.emit(Opcode::GetTypeLockLocal(slot));
+                            return Ok(());
+                        }
+                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                            self.emit(Opcode::GetTypeLockGlobal(pos as u16));
+                            return Ok(());
+                        }
+                    }
+                }
+                // Special case: recv.cast_type (0 args, Ident recv) → cast member
+                const CALL_CAST_TYPES: &[&str] = &[
+                    "str", "string", "bool", "int", "uint", "float", "big", "pct",
+                    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+                ];
+                if CALL_CAST_TYPES.contains(&method.as_str()) && args.is_empty() {
+                    if let Expr::Ident(var_name, _) = recv.as_ref() {
+                        if let Some(slot) = self.scope().find_local(var_name) {
+                            self.emit(Opcode::CastMemberLocal(slot, method.clone()));
+                            return Ok(());
+                        }
+                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                            self.emit(Opcode::CastMemberGlobal(pos as u16, method.clone()));
+                            return Ok(());
+                        }
+                    }
+                }
                 // recv.method(args): only treat as a free-function call if the method
                 // name resolves to a local/global variable. Builtins must NOT shadow
                 // user-defined class methods; instead, let CallMethod fall back to
@@ -1065,10 +1095,11 @@ impl Compiler {
                         "f32", "f64", "float",
                         "big", "int", "uint", "pct",
                     ];
+                    // x.cast_type! — recv.method() with 0 args where method is a cast type
                     let cast_bang: Option<(String, String)> = match inner.as_ref() {
-                        Expr::Member(base, type_name, _) if CAST_BANG_TYPES.contains(&type_name.as_str()) => {
+                        Expr::Call(base, method_name, args, _) if args.is_empty() && CAST_BANG_TYPES.contains(&method_name.as_str()) => {
                             match base.as_ref() {
-                                Expr::Ident(var_name, _) => Some((var_name.clone(), type_name.clone())),
+                                Expr::Ident(var_name, _) => Some((var_name.clone(), method_name.clone())),
                                 _ => None,
                             }
                         }
