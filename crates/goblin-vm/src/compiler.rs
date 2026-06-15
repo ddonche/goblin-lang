@@ -2513,6 +2513,13 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "reap_matching!"                 => BuiltinId::ReapMatching,
         "reap_between!"                  => BuiltinId::ReapBetween,
 
+        // Outbound HTTP
+        "http_get"     => BuiltinId::HttpGet,
+        "http_post"    => BuiltinId::HttpPost,
+        "http_put"     => BuiltinId::HttpPut,
+        "http_delete"  => BuiltinId::HttpDelete,
+        "http_request" => BuiltinId::HttpRequest,
+
         _ => return None,
     })
 }

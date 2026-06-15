@@ -742,6 +742,13 @@ pub enum BuiltinId {
     // Missing builtins
     Tokenize,
     Get,
+
+    // Outbound HTTP
+    HttpGet,
+    HttpPost,
+    HttpPut,
+    HttpDelete,
+    HttpRequest,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -4006,6 +4006,95 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 other => Err(GoblinError::type_error("collection", other.type_name(), "get")),
             }
         }
+
+        // ── Outbound HTTP ─────────────────────────────────────────────────────
+        BuiltinId::HttpGet => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(GoblinError::Runtime(format!("http_get: expected 1-2 args (url[, headers]), got {}", args.len())));
+            }
+            let url = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_get")),
+            };
+            let headers = if args.len() == 2 { http_extract_headers(read(1)?, "http_get")? } else { vec![] };
+            http_call("GET", &url, None, "", &headers)
+        }
+
+        BuiltinId::HttpPost => {
+            if args.len() < 2 || args.len() > 4 {
+                return Err(GoblinError::Runtime(format!("http_post: expected 2-4 args (url, body[, content_type[, headers]]), got {}", args.len())));
+            }
+            let url = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_post url")),
+            };
+            let body = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_post body")),
+            };
+            let content_type = if args.len() >= 3 {
+                match read(2)? { Value::Str(s) => s, _ => "application/json".to_string() }
+            } else { "application/json".to_string() };
+            let headers = if args.len() == 4 { http_extract_headers(read(3)?, "http_post")? } else { vec![] };
+            http_call("POST", &url, Some(&body), &content_type, &headers)
+        }
+
+        BuiltinId::HttpPut => {
+            if args.len() < 2 || args.len() > 4 {
+                return Err(GoblinError::Runtime(format!("http_put: expected 2-4 args (url, body[, content_type[, headers]]), got {}", args.len())));
+            }
+            let url = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_put url")),
+            };
+            let body = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_put body")),
+            };
+            let content_type = if args.len() >= 3 {
+                match read(2)? { Value::Str(s) => s, _ => "application/json".to_string() }
+            } else { "application/json".to_string() };
+            let headers = if args.len() == 4 { http_extract_headers(read(3)?, "http_put")? } else { vec![] };
+            http_call("PUT", &url, Some(&body), &content_type, &headers)
+        }
+
+        BuiltinId::HttpDelete => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(GoblinError::Runtime(format!("http_delete: expected 1-2 args (url[, headers]), got {}", args.len())));
+            }
+            let url = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_delete")),
+            };
+            let headers = if args.len() == 2 { http_extract_headers(read(1)?, "http_delete")? } else { vec![] };
+            http_call("DELETE", &url, None, "", &headers)
+        }
+
+        BuiltinId::HttpRequest => {
+            if args.len() != 5 {
+                return Err(GoblinError::Runtime(format!("http_request: expected 5 args (method, url, body, content_type, headers), got {}", args.len())));
+            }
+            let method = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_request method")),
+            };
+            let url = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "http_request url")),
+            };
+            let body_opt = match read(2)? {
+                Value::Str(s) => Some(s),
+                Value::Nil => None,
+                other => return Err(GoblinError::type_error("str or nil", other.type_name(), "http_request body")),
+            };
+            let content_type = match read(3)? {
+                Value::Str(s) => s,
+                Value::Nil => "application/json".to_string(),
+                other => return Err(GoblinError::type_error("str or nil", other.type_name(), "http_request content_type")),
+            };
+            let headers = http_extract_headers(read(4)?, "http_request")?;
+            http_call(&method, &url, body_opt.as_deref(), &content_type, &headers)
+        }
     }
 }
 
@@ -5106,3 +5195,37 @@ fn process_memory_bytes() -> usize {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn process_memory_bytes() -> usize { 0 }
+
+// ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+fn http_extract_headers(v: Value, caller: &str) -> Result<Vec<(String, String)>, GoblinError> {
+    match v {
+        Value::Map(m) => Ok(m.into_iter().map(|(k, v)| (k, match v {
+            Value::Str(s) => s, other => fmt_value_raw(&other),
+        })).collect()),
+        Value::MapOrd(m) => Ok(m.into_iter().map(|(k, v)| (k, match v {
+            Value::Str(s) => s, other => fmt_value_raw(&other),
+        })).collect()),
+        Value::Nil => Ok(vec![]),
+        other => Err(GoblinError::Runtime(format!("{caller}: headers must be a map, got {}", other.type_name()))),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_call(method: &str, url: &str, body: Option<&str>, content_type: &str, headers: &[(String, String)]) -> Result<Value, GoblinError> {
+    match goblin_http::request(method, url, body, content_type, &headers.to_vec()) {
+        Ok(resp) => {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("status".to_string(), Value::Int(resp.status as i64));
+            m.insert("body".to_string(), Value::Str(resp.body));
+            m.insert("ok".to_string(), Value::Bool(resp.status < 400));
+            Ok(Value::Map(m))
+        }
+        Err(e) => Err(GoblinError::Runtime(format!("http error: {e}"))),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn http_call(_method: &str, _url: &str, _body: Option<&str>, _content_type: &str, _headers: &[(String, String)]) -> Result<Value, GoblinError> {
+    Err(GoblinError::Runtime("outbound HTTP is not available in WASM builds".into()))
+}
