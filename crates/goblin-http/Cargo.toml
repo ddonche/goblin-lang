@@ -1,0 +1,9 @@
+[package]
+name = "goblin-http"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Synchronous outbound HTTP client for Goblin builtins"
+
+[dependencies]
+ureq = { version = "2", default-features = false, features = ["tls"] }
