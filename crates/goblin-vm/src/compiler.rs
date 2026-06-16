@@ -2382,8 +2382,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "ignore_blocks_first"            => BuiltinId::IgnoreBlocksFirst,
         "pick"                           => BuiltinId::Pick,
         "read_json"                      => BuiltinId::ReadJson,
-        "write_text"   | "write_text!"
-        | "write_file" | "write_file!"  => BuiltinId::WriteText,
+        "write_text"   | "write_text!"   => BuiltinId::WriteText,
         "append_file"  | "append_file!"  => BuiltinId::AppendFile,
         "write_json"   | "write_json!"   => BuiltinId::WriteJson,
         "is_type"                        => BuiltinId::IsType,

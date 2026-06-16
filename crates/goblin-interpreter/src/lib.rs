@@ -14293,7 +14293,7 @@ fn call_action_by_name(
         "zip_dir"           => crate::actions::files::zip_dir(sess, &args, &sp)?,
         "append_file"       => crate::actions::files::append_file(sess, &args, &sp)?,
         "delete_path"       => crate::actions::files::delete_path(sess, &args, &sp)?,
-        "write_text" | "write_file" => crate::actions::files::write_text(sess, &args, &sp)?,
+        "write_text"        => crate::actions::files::write_text(sess, &args, &sp)?,
         "read_text"         => crate::actions::files::read_text(sess, &args, &sp)?,
         "copy_file"         => crate::actions::files::copy_file(sess, &args, &sp)?,
         "stem"              => crate::actions::files::stem(sess, &args, &sp)?,
@@ -17599,8 +17599,8 @@ fn mutate_via_call_name(
             return Ok(Value::Unit)
         }
 
-        // write_text!(path, text)  — also aliased as write_file!
-        "write_text" | "write_file" => {
+        // write_text!(path, text)
+        "write_text" => {
             if arg_exprs.len() != 2 {
                 return Err(
                     Diagnostic::new_with_code(
