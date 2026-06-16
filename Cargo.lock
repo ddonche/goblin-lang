@@ -1133,7 +1133,7 @@ version = "0.1.0"
 
 [[package]]
 name = "goblin-vm"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "comrak",
  "goblin-ast",
@@ -1149,6 +1149,7 @@ dependencies = [
  "serde_json",
  "slab",
  "syntect",
+ "toml",
  "uuid",
  "walkdir",
  "zip",

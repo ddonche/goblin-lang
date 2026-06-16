@@ -2777,6 +2777,10 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
 
+        BuiltinId::Need => {
+            Err(GoblinError::NotImplemented { feature: "need requires dynamic action dispatch (VM limitation)" })
+        }
+
         BuiltinId::YallParse => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "yall_parse".into() }); }
             let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "yall_parse")) };

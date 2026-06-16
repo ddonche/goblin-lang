@@ -156,6 +156,7 @@ impl FunctionScope {
             upvalue_descriptors,
             line_numbers: self.line_numbers,
             local_names,
+            owner_glam: None,
         }
     }
 }
@@ -227,6 +228,9 @@ pub struct Compiler {
     /// Stack of loop contexts: (break_patch_indices, continue_ip).
     /// Innermost loop is at the back.
     loop_stack: Vec<LoopCtx>,
+    /// When compiling a GLAM's entry module (via `use <namespace>`), the namespace
+    /// to stamp onto its top-level actions' `owner_glam`, for `:need()` resolution.
+    glam_namespace: Option<String>,
 }
 
 #[derive(Default)]
@@ -241,7 +245,14 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None }
+    }
+
+    /// Mark this compilation as a GLAM's entry module, so its top-level actions
+    /// get `owner_glam` stamped for `:need()` resolution.
+    pub fn with_glam_namespace(mut self, ns: Option<String>) -> Self {
+        self.glam_namespace = ns;
+        self
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -626,12 +637,11 @@ impl Compiler {
                 }
             }
             Stmt::Use(use_stmt) => {
-                // use namespace [as alias] — load glams/<namespace>/<namespace>.gbln
-                let path = format!("glams{sep}{ns}{sep}{ns}.gbln",
-                    sep = std::path::MAIN_SEPARATOR_STR,
-                    ns = use_stmt.namespace);
-                let idx = self.add_constant(Value::Str(path));
-                self.emit(Opcode::ImportFile(idx));
+                // use namespace [as alias] — read glams/<namespace>/glam.toml (for
+                // [needs.actions]) then load glams/<namespace>/<namespace>.gbln,
+                // stamping owner_glam = Some(namespace) on its top-level actions.
+                let idx = self.add_constant(Value::Str(use_stmt.namespace.clone()));
+                self.emit(Opcode::UseGlam(idx));
             }
 
             // ── DES / Overlay / Link statements ──────────────────────────────
@@ -1485,7 +1495,10 @@ impl Compiler {
             }
         }
 
-        let func_obj = self.pop_scope();
+        let mut func_obj = self.pop_scope();
+        if self.scopes.len() == 1 {
+            func_obj.owner_glam = self.glam_namespace.clone();
+        }
         let has_upvalues = !func_obj.upvalue_descriptors.is_empty();
         let v = Value::Function(std::rc::Rc::new(func_obj));
         let cidx = self.add_constant(v);
@@ -2247,6 +2260,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "invoke"                         => BuiltinId::Invoke,
         "summon"                         => BuiltinId::Summon,
         "provoke"                        => BuiltinId::Provoke,
+        "need"                           => BuiltinId::Need,
         "yall_parse"                     => BuiltinId::YallParse,
         "yall_parse_file"                => BuiltinId::YallParseFile,
         "yall_write"                     => BuiltinId::YallWrite,

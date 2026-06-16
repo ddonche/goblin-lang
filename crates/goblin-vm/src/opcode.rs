@@ -164,6 +164,12 @@ pub enum Opcode {
     /// Pushes nothing (import is for side effects / populating globals).
     ImportFile(u16),
 
+    /// Load a GLAM: constants[ns_idx] is the glam namespace string.
+    /// Reads glams/<ns>/glam.toml (if present) to populate session.action_needs,
+    /// then imports glams/<ns>/<ns>.gbln with owner_glam = Some(ns) stamped onto
+    /// its top-level actions. Pushes nothing.
+    UseGlam(u16),
+
     // ── DES statement opcodes (carry AST data inline) ──────────────────────
     /// Register an overlay definition in session.overlay_defs.
     OverlayDef(Box<goblin_ast::OverlayDefStmt>),
@@ -263,6 +269,7 @@ impl Opcode {
             Opcode::TryBegin(_)       => "TryBegin",
             Opcode::TryEnd            => "TryEnd",
             Opcode::ImportFile(_)     => "ImportFile",
+            Opcode::UseGlam(_)        => "UseGlam",
             Opcode::OverlayDef(_)     => "OverlayDef",
             Opcode::OverlayApply {..} => "OverlayApply",
             Opcode::OverlayDetach {..} => "OverlayDetach",

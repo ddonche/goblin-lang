@@ -201,8 +201,8 @@ These are HARD CONSTRAINTS — violating any of them is forbidden regardless of 
 
 ### Compiler — import/use
 - [x] `Stmt::Import` (path/named) — emits `ImportFile` opcode; VM reads/compiles/runs the file
-- [x] `Stmt::Use` — resolves `glams/<ns>/<ns>.gbln` and emits `ImportFile`
-- [x] `ImportFile` opcode — lex+parse+compile+execute sub-file, pre-register its classes/enums, guard against re-import
+- [x] `Stmt::Use` — emits `UseGlam(ns_idx)`; VM reads `glams/<ns>/glam.toml` `[needs.actions]` then imports `glams/<ns>/<ns>.gbln` with `owner_glam` stamped on its top-level actions
+- [x] `ImportFile` / `UseGlam` opcodes — share `Vm::import_file` helper: lex+parse+compile+execute sub-file via push-frame + `run_until_depth` (NOT `self.execute()` — see Action Needs section), pre-register its classes/enums, guard against re-import
 
 ### Compiler — DES statement support
 - [x] `Stmt::OverlayDef` — emits `OverlayDef` opcode; VM registers in `session.overlay_defs`
@@ -226,6 +226,15 @@ These are HARD CONSTRAINTS — violating any of them is forbidden regardless of 
 - [x] `highlight_code` — syntect 5 added, matches interpreter implementation; syntaxes/Goblin.sublime-syntax copied
 
 - [x] `tick` / `tick_db` — full DES tick in `tick.rs`: 9 passes (link offset decay, spread × 4 modes, decay, conflict, spawn, overlay transitions × 8 kinds, dead/orphan removal, decision tick, object transition tick); object_store maintained on StoreLocal/StoreGlobal; expression eval via compile_tick_expr / eval_tick_expr / run_until_depth
+
+### Action Needs for GLAMs (`:need()`) — interpreter + VM
+- [x] `glam.toml` `[needs]` split into `[needs.values]` (box refs, unchanged) and `[needs.actions]` (`need_name = "namespace::action"`, no `#` prefix)
+- [x] Interpreter: `Session.action_needs: HashMap<String, HashMap<String, String>>`; `load_glam_box_toml` parses `[needs.actions]`; new `"need"` arm in `call_action_by_name` resolves via `sess.current_module` → `action_needs` → `call_action_by_name` recursively
+- [x] Error codes `B0106` (missing-action-need), `B0107` (missing-provider-action), `B0108` (need-outside-glam) added to `diagnostics::rtcode`
+- [x] VM: `BuiltinId::Need`, `FunctionObject.owner_glam: Option<String>` (stamped on top-level GLAM actions by `Compiler::with_glam_namespace`), `Opcode::UseGlam(u16)` (replaces direct `ImportFile` for `Stmt::Use`; reads `glams/<ns>/glam.toml` `[needs.actions]` into `session.action_needs`, then imports the entry file with `owner_glam` set)
+- [x] VM: `Vm::vm_need` special-cased in `Opcode::CallBuiltin` (alongside invoke/summon/provoke) — reads owning GLAM from `call_stack.last().func.owner_glam`, dispatches via `session.named_values` / `call_named` (NOT via NsCall — see VM limitation below)
+- [x] Fixed pre-existing VM bug: `import_file` (used by both `ImportFile` and `UseGlam`) now pushes a frame and calls `run_until_depth` instead of `self.execute()` — the old code shared `call_stack`/`stack` with the caller but ran a fresh `run_loop()` that only stopped when the ENTIRE call stack was empty, so a second `use`/`import` statement after the first would execute while `base_dir` was still pointed at the first import's directory (or worse, silently execute the rest of the caller's bytecode from inside the nested call). This blocked any script doing more than one `use`/`import`.
+- [x] VM limitation (not fixed, out of scope): `ns::action(...)` (`Expr::NsCall`) resolves at compile time per-compilation-unit and does not see cross-glam exports, so `:need()`'s provider action is invoked via `invoke`'s `named_values` mechanism instead, not via qualified-name dispatch like the interpreter. `session.named_values` is a flat bare-action-name registry, so two GLAMs declaring an action with the same bare name collide (pre-existing limitation shared with `invoke`/`summon`/`provoke`).
 
 ## VM IS FEATURE-COMPLETE
 
