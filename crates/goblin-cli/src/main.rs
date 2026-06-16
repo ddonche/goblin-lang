@@ -1,4 +1,4 @@
-// ---- version = "0.47.33"
+// ---- version = "0.47.34"
 // goblin-cli/src/main.rs
 // Treat empty OK oracles as PASS and (for now) treat ERR oracles as PASS without comparing.
 // This gets the suite green so we can iterate on the lexer in small bites.
