@@ -141,11 +141,13 @@ fn main() {
              \n  goblin new <project-name>\n\
              \n  goblin run [<file>]\n\
              \n  goblin repl\n\
+             \n  goblin glam run <glam_name>::<action_name>\n\
+             \n  goblin box dump [<dir>]\n\
              \n  goblin start [--host <host>] [--port <port>]\n\
              \n  goblin lex --check\n\
              \n  goblin parse <file>\n\
              \n  goblin gql-parse <file|->\n\
-             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version"
+             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version\n  --vm             Use the VM engine (run/repl) instead of the interpreter"
         );
         return;
     }
@@ -244,6 +246,15 @@ fn main() {
         args.remove(0);
         let input = args.get(0).map(|s| s.as_str()).unwrap_or("-");
         std::process::exit(run_gql_parse(input));
+    }
+
+    // `goblin glam run <glam_name>::<action_name>`
+    if args.len() >= 2 && args[0] == "glam" && args[1] == "run" {
+        if args.len() < 3 {
+            eprintln!("usage: goblin glam run <glam_name>::<action_name>");
+            std::process::exit(2);
+        }
+        std::process::exit(run_glam_run(&args[2]));
     }
 
     if args.len() >= 2 && args[0] == "box" && args[1] == "dump" {
@@ -366,7 +377,7 @@ fn main() {
     }
 
     eprintln!(
-        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
+        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin glam run <glam_name>::<action_name>\n  goblin box dump [<dir>]\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
     );
     std::process::exit(2);
 }
@@ -1859,6 +1870,55 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     );
 
     code
+}
+
+// `goblin glam run <glam_name>::<action_name>` — load a GLAM directly (without a
+// driver script's `use` statement) and invoke one of its actions, establishing the
+// same GLAM execution context that a qualified `namespace::action(...)` call would.
+fn run_glam_run(spec: &str) -> i32 {
+    use goblin_interpreter::Session;
+
+    let (glam_name, action_name) = match spec.split_once("::") {
+        Some((g, a)) if !g.is_empty() && !a.is_empty() => (g, a),
+        _ => {
+            eprintln!("usage: goblin glam run <glam_name>::<action_name>");
+            return 2;
+        }
+    };
+    let glam_name = glam_name.to_string();
+    let action_name = action_name.to_string();
+
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut sess = Session::new();
+
+            // Load the project's own box.toml first so the GLAM's [needs.values]
+            // (which reference already-bound `#ns::var` box values) can resolve.
+            let box_toml = cwd.join("box.toml");
+            if box_toml.exists() {
+                if let Err(e) = goblin_interpreter::load_box_toml(&mut sess, &box_toml) {
+                    eprintln!("box.toml error: {}", e);
+                    return 1;
+                }
+            }
+
+            match goblin_interpreter::run_glam_action(&mut sess, &glam_name, &action_name, Vec::new()) {
+                Ok(val) => {
+                    println!("{}", val);
+                    0
+                }
+                Err(d) => {
+                    eprintln!("{}", d);
+                    1
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap()
 }
 
 fn is_probable_file(s: &str) -> bool {

@@ -5974,6 +5974,117 @@ fn execute_module_wrapped(
     Ok(())
 }
 
+/// Load a GLAM by namespace (mirrors `ast::Stmt::Use`) and invoke one of its actions
+/// directly, establishing the same GLAM execution context (`sess.current_module`)
+/// that a fully-qualified `namespace::action(...)` call would. Used by the
+/// `goblin glam run <glam>::<action>` CLI dev command so `:need()` and other
+/// GLAM-context-dependent builtins work without a separate driver script.
+pub fn run_glam_action(
+    sess: &mut Session,
+    glam_name: &str,
+    action_name: &str,
+    args: Vec<Value>,
+) -> Result<Value, Diag> {
+    use goblin_diagnostics::{Diagnostic, Severity, Span};
+
+    let dev_span = Span::new("<glam run>", 0, 0, 1, 1, 1, 1);
+
+    let glam_dir = sess.project_root.join("glams").join(glam_name);
+
+    if !glam_dir.exists() {
+        return Err(Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::IMPORT_IO,
+            "glam-not-found",
+            &format!(
+                "GLAM '{}' not found — expected directory at '{}'",
+                glam_name,
+                glam_dir.display()
+            ),
+            dev_span,
+        ));
+    }
+
+    // Stash current namespace context
+    let prev_namespace = sess.box_namespace.take();
+    let prev_provides  = sess.box_provides.take();
+
+    // Load glam.toml — sets [needs.values], [needs.actions], [values], [provides]
+    let glam_toml = glam_dir.join("glam.toml");
+    let glam_meta = if glam_toml.exists() {
+        load_glam_box_toml(sess, &glam_toml, Some(glam_name)).map_err(|e| {
+            Diagnostic::new_with_code(
+                Severity::Error,
+                crate::diagnostics::rtcode::BOX_UNRESOLVED_NEED,
+                "glam-load-error",
+                &e,
+                dev_span.clone(),
+            )
+        })?
+    } else {
+        GlamMeta { entry: None }
+    };
+
+    sess.box_namespace = Some(glam_name.to_string());
+
+    // Determine entry file from [glam] entry key, or fall back to convention
+    let entry = {
+        if let Some(name) = glam_meta.entry {
+            let p = std::path::PathBuf::from(&name);
+            if p.is_absolute() { p } else { glam_dir.join(name) }
+        } else {
+            let gbln = glam_dir.join(format!("{}.gbln", glam_name));
+            let gob  = glam_dir.join(format!("{}.gob",  glam_name));
+            if gbln.exists() { gbln } else { gob }
+        }
+    };
+
+    if !entry.exists() {
+        return Err(Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::IMPORT_IO,
+            "glam-entry-not-found",
+            &format!(
+                "GLAM '{}' entry file not found — expected '{}'",
+                glam_name,
+                entry.display()
+            ),
+            dev_span,
+        ));
+    }
+
+    // Load via the module system so actions register under the namespace
+    let entry_str = entry.to_string_lossy().to_string();
+    let (mod_namespace, maybe_ast) = sess
+        .modules
+        .load_module(&entry_str, Some(glam_name), &glam_dir)
+        .map_err(|e| Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::IMPORT_IO,
+            "glam-load-error",
+            &e,
+            dev_span.clone(),
+        ))?;
+
+    if let Some(module_ast) = maybe_ast {
+        execute_module_wrapped(
+            sess,
+            mod_namespace,
+            module_ast,
+            &dev_span,
+            &entry_str,
+            &glam_dir,
+        )?;
+    }
+
+    // Restore namespace context
+    sess.box_namespace = prev_namespace;
+    sess.box_provides  = prev_provides;
+
+    // Set GLAM execution context and invoke the requested action
+    call_action_by_name(sess, &format!("{}::{}", glam_name, action_name), args, dev_span)
+}
+
 // Try a shadowable builtin. Returns Ok(Some(Value)) if handled, Ok(None) if unknown.
 #[allow(dead_code)]
 fn eval_builtin(
