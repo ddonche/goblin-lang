@@ -5974,20 +5974,16 @@ fn execute_module_wrapped(
     Ok(())
 }
 
-/// Load a GLAM by namespace (mirrors `ast::Stmt::Use`) and invoke one of its actions
-/// directly, establishing the same GLAM execution context (`sess.current_module`)
-/// that a fully-qualified `namespace::action(...)` call would. Used by the
-/// `goblin glam run <glam>::<action>` CLI dev command so `:need()` and other
-/// GLAM-context-dependent builtins work without a separate driver script.
-pub fn run_glam_action(
+/// Load a GLAM by namespace (mirrors `ast::Stmt::Use`): locate glams/<namespace>/,
+/// parse glam.toml ([needs.values]/[needs.actions]/[values]/[provides]), then load
+/// the entry file via the module system so its actions register as exports under
+/// `namespace`. Does not invoke anything.
+fn load_glam_module(
     sess: &mut Session,
     glam_name: &str,
-    action_name: &str,
-    args: Vec<Value>,
-) -> Result<Value, Diag> {
-    use goblin_diagnostics::{Diagnostic, Severity, Span};
-
-    let dev_span = Span::new("<glam run>", 0, 0, 1, 1, 1, 1);
+    dev_span: &goblin_diagnostics::Span,
+) -> Result<(), Diag> {
+    use goblin_diagnostics::{Diagnostic, Severity};
 
     let glam_dir = sess.project_root.join("glams").join(glam_name);
 
@@ -6001,7 +5997,7 @@ pub fn run_glam_action(
                 glam_name,
                 glam_dir.display()
             ),
-            dev_span,
+            dev_span.clone(),
         ));
     }
 
@@ -6040,6 +6036,8 @@ pub fn run_glam_action(
     };
 
     if !entry.exists() {
+        sess.box_namespace = prev_namespace;
+        sess.box_provides  = prev_provides;
         return Err(Diagnostic::new_with_code(
             Severity::Error,
             crate::diagnostics::rtcode::IMPORT_IO,
@@ -6049,7 +6047,7 @@ pub fn run_glam_action(
                 glam_name,
                 entry.display()
             ),
-            dev_span,
+            dev_span.clone(),
         ));
     }
 
@@ -6071,7 +6069,7 @@ pub fn run_glam_action(
             sess,
             mod_namespace,
             module_ast,
-            &dev_span,
+            dev_span,
             &entry_str,
             &glam_dir,
         )?;
@@ -6080,6 +6078,54 @@ pub fn run_glam_action(
     // Restore namespace context
     sess.box_namespace = prev_namespace;
     sess.box_provides  = prev_provides;
+
+    Ok(())
+}
+
+/// Load a GLAM and invoke one of its actions directly, establishing the same GLAM
+/// execution context (`sess.current_module`) that a fully-qualified
+/// `namespace::action(...)` call would. Used by the `goblin glam run <glam>::<action>`
+/// CLI dev command so `:need()` and other GLAM-context-dependent builtins work
+/// without a separate driver script.
+///
+/// When `test_mode` is set, also resolves and loads (from glams/<ns>/) every
+/// provider GLAM referenced by the target's own `[needs.actions]`, so `:need()`
+/// can dispatch to a locally configured provider without a full app project or a
+/// `use` statement inside the target GLAM.
+pub fn run_glam_action(
+    sess: &mut Session,
+    glam_name: &str,
+    action_name: &str,
+    args: Vec<Value>,
+    test_mode: bool,
+) -> Result<Value, Diag> {
+    use goblin_diagnostics::Span;
+
+    let dev_span = Span::new("<glam run>", 0, 0, 1, 1, 1, 1);
+
+    load_glam_module(sess, glam_name, &dev_span)?;
+
+    if test_mode {
+        let provider_namespaces: Vec<String> = sess
+            .action_needs
+            .get(glam_name)
+            .map(|needs| {
+                let mut namespaces: Vec<String> = needs
+                    .values()
+                    .filter_map(|action_ref| {
+                        action_ref.split_once("::").map(|(ns, _)| ns.to_string())
+                    })
+                    .collect();
+                namespaces.sort();
+                namespaces.dedup();
+                namespaces
+            })
+            .unwrap_or_default();
+
+        for provider_ns in provider_namespaces {
+            load_glam_module(sess, &provider_ns, &dev_span)?;
+        }
+    }
 
     // Set GLAM execution context and invoke the requested action
     call_action_by_name(sess, &format!("{}::{}", glam_name, action_name), args, dev_span)

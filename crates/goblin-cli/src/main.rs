@@ -141,7 +141,7 @@ fn main() {
              \n  goblin new <project-name>\n\
              \n  goblin run [<file>]\n\
              \n  goblin repl\n\
-             \n  goblin glam run <glam_name>::<action_name>\n\
+             \n  goblin glam run <glam_name>::<action_name> [--test]\n\
              \n  goblin box dump [<dir>]\n\
              \n  goblin start [--host <host>] [--port <port>]\n\
              \n  goblin lex --check\n\
@@ -248,13 +248,20 @@ fn main() {
         std::process::exit(run_gql_parse(input));
     }
 
-    // `goblin glam run <glam_name>::<action_name>`
+    // `goblin glam run <glam_name>::<action_name> [--test]`
     if args.len() >= 2 && args[0] == "glam" && args[1] == "run" {
         if args.len() < 3 {
-            eprintln!("usage: goblin glam run <glam_name>::<action_name>");
+            eprintln!("usage: goblin glam run <glam_name>::<action_name> [--test]");
             std::process::exit(2);
         }
-        std::process::exit(run_glam_run(&args[2]));
+        let spec = args[2].clone();
+        let rest = &args[3..];
+        let test_mode = rest.iter().any(|a| a == "--test");
+        if rest.iter().any(|a| a != "--test") {
+            eprintln!("usage: goblin glam run <glam_name>::<action_name> [--test]");
+            std::process::exit(2);
+        }
+        std::process::exit(run_glam_run(&spec, test_mode));
     }
 
     if args.len() >= 2 && args[0] == "box" && args[1] == "dump" {
@@ -377,7 +384,7 @@ fn main() {
     }
 
     eprintln!(
-        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin glam run <glam_name>::<action_name>\n  goblin box dump [<dir>]\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
+        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin glam run <glam_name>::<action_name> [--test]\n  goblin box dump [<dir>]\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
     );
     std::process::exit(2);
 }
@@ -1872,16 +1879,19 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     code
 }
 
-// `goblin glam run <glam_name>::<action_name>` — load a GLAM directly (without a
-// driver script's `use` statement) and invoke one of its actions, establishing the
-// same GLAM execution context that a qualified `namespace::action(...)` call would.
-fn run_glam_run(spec: &str) -> i32 {
+// `goblin glam run <glam_name>::<action_name> [--test]` — load a GLAM directly
+// (without a driver script's `use` statement) and invoke one of its actions,
+// establishing the same GLAM execution context that a qualified
+// `namespace::action(...)` call would. With `--test`, also loads (from glams/<ns>/)
+// every provider GLAM referenced by the target's own [needs.actions], so `:need()`
+// can dispatch to its configured local provider without a full app project.
+fn run_glam_run(spec: &str, test_mode: bool) -> i32 {
     use goblin_interpreter::Session;
 
     let (glam_name, action_name) = match spec.split_once("::") {
         Some((g, a)) if !g.is_empty() && !a.is_empty() => (g, a),
         _ => {
-            eprintln!("usage: goblin glam run <glam_name>::<action_name>");
+            eprintln!("usage: goblin glam run <glam_name>::<action_name> [--test]");
             return 2;
         }
     };
@@ -1905,7 +1915,7 @@ fn run_glam_run(spec: &str) -> i32 {
                 }
             }
 
-            match goblin_interpreter::run_glam_action(&mut sess, &glam_name, &action_name, Vec::new()) {
+            match goblin_interpreter::run_glam_action(&mut sess, &glam_name, &action_name, Vec::new(), test_mode) {
                 Ok(val) => {
                     println!("{}", val);
                     0
