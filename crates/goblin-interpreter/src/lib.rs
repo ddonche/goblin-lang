@@ -14293,7 +14293,7 @@ fn call_action_by_name(
         "zip_dir"           => crate::actions::files::zip_dir(sess, &args, &sp)?,
         "append_file"       => crate::actions::files::append_file(sess, &args, &sp)?,
         "delete_path"       => crate::actions::files::delete_path(sess, &args, &sp)?,
-        "write_text"        => crate::actions::files::write_text(sess, &args, &sp)?,
+        "write_text" | "write_file" => crate::actions::files::write_text(sess, &args, &sp)?,
         "read_text"         => crate::actions::files::read_text(sess, &args, &sp)?,
         "copy_file"         => crate::actions::files::copy_file(sess, &args, &sp)?,
         "stem"              => crate::actions::files::stem(sess, &args, &sp)?,
@@ -17599,8 +17599,8 @@ fn mutate_via_call_name(
             return Ok(Value::Unit)
         }
 
-        // write_text!(path, text)
-        "write_text" => {
+        // write_text!(path, text)  — also aliased as write_file!
+        "write_text" | "write_file" => {
             if arg_exprs.len() != 2 {
                 return Err(
                     Diagnostic::new_with_code(
@@ -20978,6 +20978,49 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         sess.type_locks[frame_ix].insert(var_name.clone(), type_name.clone());
                         return Ok(new_val);
+                    }
+
+                    // ── Mutation-bang dot-call: var.method! → var |= var.method ──────────
+                    let mutation_bang_var: Option<(String, Span)> = match expr.as_ref() {
+                        ast::Expr::Call(base, method, _args, _) if !CAST_BANG_TYPES.contains(&method.as_str()) => {
+                            match base.as_ref() {
+                                ast::Expr::Ident(var_name, name_sp) => Some((var_name.clone(), name_sp.clone())),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some((var_name, name_sp)) = mutation_bang_var {
+                        let Some(frame_ix) = sess.find_name_frame(&var_name) else {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::UNKNOWN_IDENT,
+                                    "unknown-ident",
+                                    format!("unknown identifier '{}'", var_name),
+                                    name_sp,
+                                )
+                                .with_help("Declare the variable before using .method!.")
+                                .with_link("https://goblinlang.org/docs/errors#R0101"),
+                            );
+                        };
+                        if sess.is_const_in_frame(frame_ix, &var_name) {
+                            return Err(
+                                Diagnostic::new_with_code(
+                                    Severity::Error,
+                                    crate::diagnostics::rtcode::IMMUTABLE_ASSIGN,
+                                    "immutable-assign",
+                                    format!("cannot mutate immutable '{}'", var_name),
+                                    sp.clone(),
+                                )
+                                .with_help("Values declared with 'imm' cannot be mutated.")
+                                .with_link("https://goblinlang.org/docs/errors#R0113"),
+                            );
+                        }
+                        if let Some(slot) = sess.env[frame_ix].get_mut(&var_name) {
+                            *slot = v.clone();
+                        }
+                        return Ok(v);
                     }
 
                     // ── Factorial (default "!" behavior) ──────────────────────────────────

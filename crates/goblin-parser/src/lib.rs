@@ -397,6 +397,7 @@ impl<'t> Parser<'t> {
         let bytes = s.as_bytes();
         let n = bytes.len();
         let mut i: usize = 0;
+        let mut depth: usize = 0;
 
         while i < n {
             // Treat backslash escapes as opaque (skip next char)
@@ -433,7 +434,7 @@ impl<'t> Parser<'t> {
                 }
             }
 
-            // ONLY validate triple-brace tokens {{{ ... }}}
+            // Triple-brace glam token: {{{ ... }}}
             if i + 2 < n && &bytes[i..i + 3] == b"{{{" {
                 // find next }}} (not escaped)
                 let mut j = i + 3;
@@ -461,8 +462,37 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            // Everything else (including single braces) is parser-OK; runtime decides.
+            // Double-brace escapes: {{ = literal '{', }} = literal '}' — skip both chars.
+            if i + 1 < n && bytes[i] == b'{' && bytes[i + 1] == b'{' {
+                i += 2;
+                continue;
+            }
+            if i + 1 < n && bytes[i] == b'}' && bytes[i + 1] == b'}' {
+                i += 2;
+                continue;
+            }
+
+            // Single interpolation braces: track depth, error on unclosed {.
+            if bytes[i] == b'{' {
+                depth += 1;
+                i += 1;
+                continue;
+            }
+            if bytes[i] == b'}' {
+                if depth > 0 { depth -= 1; }
+                i += 1;
+                continue;
+            }
+
             i += 1;
+        }
+
+        if depth > 0 {
+            return Err(s_help_site!(
+                "P0606",
+                "Unclosed interpolation brace '{' in string",
+                "Close every '{' with a matching '}', e.g. \"Hello {name}\"",
+            ));
         }
 
         Ok(())
@@ -1120,12 +1150,15 @@ impl<'t> Parser<'t> {
 
     fn apply_postfix_ops(&mut self, mut expr: PExpr) -> PExpr {
         // decide if token after an op starts an expression; keeps "**" and "//" postfix
-        // from stealing binary uses like `a ** 2` or `a // 2`
+        // from stealing binary uses like `a ** 2` or `a // 2` on the SAME line.
+        // Newlines terminate a statement, so we do NOT skip them here — a line break
+        // after ** or // always means postfix (not a binary operator with a right-hand
+        // operand on the next line).
         let lookahead_starts_expr = |from: usize| -> bool {
             use goblin_lexer::TokenKind as K;
-            let mut j = from;
-            while matches!(self.toks.get(j), Some(t) if matches!(t.kind, K::Newline)) { j += 1; }
+            let j = from;
             match self.toks.get(j).map(|t| &t.kind) {
+                Some(K::Newline) | Some(K::Eof) => false,
                 Some(K::Ident)
                 | Some(K::Int) | Some(K::Float) | Some(K::String)
                 | Some(K::Blob) | Some(K::Date) | Some(K::Time) | Some(K::DateTime) => true,

@@ -1126,6 +1126,30 @@ impl Compiler {
                         }
                         return Err(self.locate_err(GoblinError::UndefinedVariable { name: var_name }));
                     }
+
+                    // Mutation-bang dot-call: var.method! → compute var.method, write back to var.
+                    let mutation_bang: Option<(String, String)> = match inner.as_ref() {
+                        Expr::Call(base, method_name, _, _) if !CAST_BANG_TYPES.contains(&method_name.as_str()) => {
+                            match base.as_ref() {
+                                Expr::Ident(var_name, _) => Some((var_name.clone(), method_name.clone())),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some((var_name, _method_name)) = mutation_bang {
+                        self.compile_expr(inner)?; // pushes method result
+                        self.emit(Opcode::Dup);    // duplicate: one to store, one to leave as value
+                        if let Some(slot) = self.scope().find_local(&var_name) {
+                            self.emit(Opcode::StoreLocal(slot));
+                            return Ok(());
+                        }
+                        if let Some(pos) = self.globals.iter().position(|g| g == &var_name) {
+                            self.emit(Opcode::StoreGlobal(pos as u16));
+                            return Ok(());
+                        }
+                        return Err(self.locate_err(GoblinError::UndefinedVariable { name: var_name }));
+                    }
                 }
                 self.compile_expr(inner)?;
                 match op.as_str() {
@@ -2358,7 +2382,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "ignore_blocks_first"            => BuiltinId::IgnoreBlocksFirst,
         "pick"                           => BuiltinId::Pick,
         "read_json"                      => BuiltinId::ReadJson,
-        "write_text"   | "write_text!"   => BuiltinId::WriteText,
+        "write_text"   | "write_text!"
+        | "write_file" | "write_file!"  => BuiltinId::WriteText,
         "append_file"  | "append_file!"  => BuiltinId::AppendFile,
         "write_json"   | "write_json!"   => BuiltinId::WriteJson,
         "is_type"                        => BuiltinId::IsType,
