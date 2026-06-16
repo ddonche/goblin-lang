@@ -950,6 +950,7 @@ async fn exec_goblin_script_via_cli_timeout(
        .env("GOBLIN_HOST", host)
        .env("GOBLIN_BODY", body)
        .env("GOBLIN_REQUEST_FILE", request_file_path)
+       .env("GOBLIN_UPLOAD_PATH", request_file_path)
        .env("GOBLIN_AUTHORIZATION", authorization)
        .env("GOBLIN_HEADERS_JSON", headers_json)
        .env("AUTH_USER_ID", auth_user_id)
@@ -959,7 +960,6 @@ async fn exec_goblin_script_via_cli_timeout(
        .stdin(Stdio::null())
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());
-
     let child = cmd.spawn()
         .map_err(|e| ExecErr::Spawn(format!("failed to spawn goblin CLI: {e}")))?;
 

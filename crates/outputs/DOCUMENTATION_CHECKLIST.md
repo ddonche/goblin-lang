@@ -108,11 +108,11 @@ An item is complete only when its documentation covers the applicable parts of: 
   Audience: language users. Parity status: `PARTIAL`.
   Source: `crates/goblin-interpreter/src/lib.rs:6596`, `crates/goblin-vm/src/compiler.rs:1967`, `crates/goblin-vm/src/value.rs:352`, `crates/goblin-vm/src/builtins.rs:177`, `crates/goblin-vm/src/compiler.rs:1968`
   Coverage: Document syntax/call forms, inputs, result, errors, mutation/side effects, examples, aliases, and interactions. Runtime kind: builtin/free call.
-- [ ] **clear_all_tokens**
+- [x] **clear_all_tokens**
   Audience: language users. Parity status: `PARTIAL`.
   Source: `crates/goblin-interpreter/src/lib.rs:6083`, `crates/goblin-vm/src/compiler.rs:2251`, `crates/goblin-vm/src/value.rs:671`, `crates/goblin-vm/src/builtins.rs:3381`, `crates/goblin-vm/src/compiler.rs:2252`
   Coverage: Document syntax/call forms, inputs, result, errors, mutation/side effects, examples, aliases, and interactions. Runtime kind: builtin/free call.
-- [ ] **clear_format**
+- [x] **clear_format**
   Audience: language users. Parity status: `PARTIAL`.
   Source: `crates/goblin-interpreter/src/lib.rs:12349`, `crates/goblin-vm/src/compiler.rs:2239`, `crates/goblin-vm/src/value.rs:659`, `crates/goblin-vm/src/builtins.rs:3233`, `crates/goblin-vm/src/compiler.rs:2240`
   Coverage: Document syntax/call forms, inputs, result, errors, mutation/side effects, examples, aliases, and interactions. Runtime kind: builtin/free call.
