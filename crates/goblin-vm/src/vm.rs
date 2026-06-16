@@ -1061,6 +1061,11 @@ impl Vm {
                         self.stack.push(result);
                         return Ok(());
                     }
+                    BuiltinId::Need => {
+                        let result = self.vm_need(arg_tethers)?;
+                        self.stack.push(result);
+                        return Ok(());
+                    }
                     BuiltinId::Tick => {
                         self.vm_tick()?;
                         let nil = self.session.alloc_value(Value::Nil);
@@ -1277,48 +1282,26 @@ impl Vm {
                     self.session.base_dir.join(&path_str)
                 };
 
-                // Skip if already imported
-                let canonical = full_path.to_string_lossy().to_string();
-                if self.session.imported.contains(&canonical) {
-                    // already imported — skip
-                } else {
-                    self.session.imported.insert(canonical.clone());
+                self.import_file(full_path, None)?;
+            }
 
-                    // Try .gbln fallback if not found
-                    let actual_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
-                        let p = full_path.with_extension("gbln");
-                        if p.exists() { p } else { full_path.clone() }
-                    } else {
-                        full_path.clone()
-                    };
-
-                    let source = std::fs::read_to_string(&actual_path)
-                        .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", actual_path.display(), e)))?;
-
-                    let tokens = goblin_lexer::lex(&source, &actual_path.to_string_lossy())
-                        .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
-
-                    let module = goblin_parser::Parser::new(&tokens).parse_module()
-                        .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
-
-                    let compiled = crate::compiler::Compiler::new().compile_module(&module)
-                        .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
-
-                    // Pre-register classes/enums from the imported module
-                    for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
-                    for decl in compiled.enums   { self.session.enums.insert(decl.name.clone(), decl); }
-
-                    // Update base_dir to imported file's directory during its execution
-                    let prev_base_dir = self.session.base_dir.clone();
-                    if let Some(parent) = actual_path.parent() {
-                        self.session.base_dir = parent.to_path_buf();
+            Opcode::UseGlam(ns_idx) => {
+                let ns = {
+                    let frame = self.call_stack.last().ok_or_else(|| GoblinError::Runtime("no call frame".into()))?;
+                    match &frame.func.constants[ns_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("UseGlam: namespace must be a string constant".into())),
                     }
+                };
 
-                    self.execute(compiled.entry)?;
-
-                    // Restore base_dir
-                    self.session.base_dir = prev_base_dir;
+                let glam_dir = self.session.base_dir.join("glams").join(&ns);
+                let toml_path = glam_dir.join("glam.toml");
+                if toml_path.exists() {
+                    self.load_glam_action_needs(&toml_path, &ns)?;
                 }
+
+                let entry_path = glam_dir.join(format!("{ns}.gbln"));
+                self.import_file(entry_path, Some(ns))?;
             }
 
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
@@ -1744,6 +1727,109 @@ impl Vm {
         Ok(())
     }
 
+    /// Lex/parse/compile/run a single file, skipping it if already imported.
+    /// `owner_glam`, when Some, is stamped onto the top-level actions compiled
+    /// from this file (so `:need()` can later identify their owning GLAM).
+    fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>) -> Result<(), GoblinError> {
+        let canonical = full_path.to_string_lossy().to_string();
+        if self.session.imported.contains(&canonical) {
+            return Ok(());
+        }
+        self.session.imported.insert(canonical.clone());
+
+        let path_str = full_path.to_string_lossy().to_string();
+        // Try .gbln fallback if not found
+        let actual_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+            let p = full_path.with_extension("gbln");
+            if p.exists() { p } else { full_path.clone() }
+        } else {
+            full_path.clone()
+        };
+
+        let source = std::fs::read_to_string(&actual_path)
+            .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", actual_path.display(), e)))?;
+
+        let tokens = goblin_lexer::lex(&source, &actual_path.to_string_lossy())
+            .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
+
+        let module = goblin_parser::Parser::new(&tokens).parse_module()
+            .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
+
+        let compiled = crate::compiler::Compiler::new().with_glam_namespace(owner_glam).compile_module(&module)
+            .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
+
+        // Pre-register classes/enums from the imported module
+        for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
+        for decl in compiled.enums   { self.session.enums.insert(decl.name.clone(), decl); }
+
+        // Update base_dir to imported file's directory during its execution
+        let prev_base_dir = self.session.base_dir.clone();
+        if let Some(parent) = actual_path.parent() {
+            self.session.base_dir = parent.to_path_buf();
+        }
+
+        // Run the imported module's entry function as a nested call on the
+        // SAME call stack (not via self.execute(), which assumes an empty
+        // stack/call_stack and runs until the whole stack drains — wrong
+        // here, since our caller's frame is still on the stack below us).
+        let mut entry_func = compiled.entry;
+        self.quicken(&mut entry_func);
+        let entry_rc = Rc::new(entry_func);
+        let stack_base = self.stack.len();
+        let depth_before = self.call_stack.len();
+        self.call_stack.push(CallFrame::new(entry_rc, Vec::new(), stack_base));
+        let run_result = self.run_until_depth(depth_before);
+
+        // Restore base_dir (even on error, so the caller's later imports resolve correctly).
+        self.session.base_dir = prev_base_dir;
+        run_result?;
+        self.stack.pop(); // discard the imported module's implicit return value
+        Ok(())
+    }
+
+    /// Parse glam.toml's [needs.actions] table into session.action_needs[ns].
+    /// Mirrors the interpreter's load_glam_box_toml (actions half only — the VM
+    /// does not yet support [needs.values] / box-ref glam loading).
+    fn load_glam_action_needs(&mut self, toml_path: &std::path::Path, ns: &str) -> Result<(), GoblinError> {
+        let content = std::fs::read_to_string(toml_path)
+            .map_err(|e| GoblinError::Runtime(format!("cannot read {}: {}", toml_path.display(), e)))?;
+        let table: toml::Table = content.parse()
+            .map_err(|e| GoblinError::Runtime(format!("invalid TOML in {}: {}", toml_path.display(), e)))?;
+
+        let Some(toml::Value::Table(needs)) = table.get("needs") else { return Ok(()) };
+        let Some(toml::Value::Table(actions)) = needs.get("actions") else { return Ok(()) };
+
+        let mut map = std::collections::HashMap::new();
+        for (need_name, action_ref) in actions {
+            let ref_str = match action_ref {
+                toml::Value::String(s) if s.is_empty() => {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0106: missing-action-need — '{}' has no provider assigned\n\
+                         Assign it in your glam.toml [needs.actions]: {} = \"namespace::action\"",
+                        need_name, need_name
+                    )));
+                }
+                toml::Value::String(s) => s,
+                _ => return Err(GoblinError::Runtime(format!(
+                    "B0106: missing-action-need — '{}' must be an action path like \"namespace::action\"",
+                    need_name
+                ))),
+            };
+
+            if ref_str.starts_with('#') || !ref_str.contains("::") {
+                return Err(GoblinError::Runtime(format!(
+                    "B0106: missing-action-need — '{}' value \"{}\" is not a valid action path\n\
+                     Must be in the form \"namespace::action\" (no '#' prefix — that's reserved for Box values)",
+                    need_name, ref_str
+                )));
+            }
+
+            map.insert(need_name.clone(), ref_str.clone());
+        }
+        self.session.action_needs.insert(ns.to_string(), map);
+        Ok(())
+    }
+
     /// Call a named function from session.named_values and return its result.
     pub(crate) fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
         let func_val = self.session.named_values.get(name).cloned()
@@ -1841,6 +1927,51 @@ impl Vm {
             return Err(GoblinError::Runtime(msg));
         }
         Ok(self.session.alloc_value(Value::Bool(true)))
+    }
+
+    /// :need(name, ...args) — resolve a configured action need for the
+    /// currently-executing GLAM (glam.toml [needs.actions]) and call it.
+    fn vm_need(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
+        if arg_tethers.is_empty() {
+            return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "need".into() });
+        }
+        let need_name = match self.session.read_value(&arg_tethers[0])? {
+            Value::Str(s) => s,
+            other => return Err(GoblinError::type_error("str", other.type_name(), "need")),
+        };
+        let forwarded: Vec<Value> = arg_tethers[1..].iter()
+            .map(|t| self.session.read_value(t))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let glam_ns = self.call_stack.last()
+            .and_then(|f| f.func.owner_glam.clone())
+            .ok_or_else(|| GoblinError::Runtime(
+                "B0108: need-outside-glam — need() can only be called from inside a GLAM action.".into()
+            ))?;
+
+        let action_path = self.session.action_needs.get(&glam_ns)
+            .and_then(|m| m.get(&need_name))
+            .cloned()
+            .ok_or_else(|| GoblinError::Runtime(format!(
+                "B0106: missing-action-need — GLAM '{}' requires action need '{}' but no provider was configured.",
+                glam_ns, need_name
+            )))?;
+
+        let (_provider_ns, provider_action) = action_path.split_once("::")
+            .ok_or_else(|| GoblinError::Runtime(format!(
+                "B0107: missing-provider-action — Configured action need '{}' points to '{}' but that is not a valid 'namespace::action' path.",
+                need_name, action_path
+            )))?;
+
+        if !self.session.named_values.contains_key(provider_action) {
+            return Err(GoblinError::Runtime(format!(
+                "B0107: missing-provider-action — Configured action need '{}' points to '{}' but that action does not exist.",
+                need_name, action_path
+            )));
+        }
+
+        let result = self.call_named(provider_action, forwarded)?;
+        Ok(self.session.alloc_value(result))
     }
 
     // ── Tick (DES simulation step) ────────────────────────────────────────────
@@ -2352,6 +2483,7 @@ mod tests {
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
+            owner_glam: None,
         }
     }
 
@@ -2392,6 +2524,7 @@ mod tests {
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
+            owner_glam: None,
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -2418,6 +2551,7 @@ mod tests {
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
+            owner_glam: None,
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -2442,6 +2576,7 @@ mod tests {
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
+            owner_glam: None,
         };
 
         // Outer: create inner, call with 5, return result
@@ -2459,6 +2594,7 @@ mod tests {
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
+            owner_glam: None,
         };
 
         let result = vm.execute(outer).unwrap();

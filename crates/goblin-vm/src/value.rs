@@ -281,6 +281,9 @@ pub struct FunctionObject {
     pub line_numbers: Vec<u32>,
     /// Name for each local slot (slot index → name), for string interpolation.
     pub local_names: Vec<String>,
+    /// The GLAM namespace this function was defined in (top-level actions loaded
+    /// via `use <namespace>` only), used by `:need()` to resolve action needs.
+    pub owner_glam: Option<String>,
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected
@@ -603,6 +606,7 @@ pub enum BuiltinId {
     Invoke,
     Summon,
     Provoke,
+    Need,
     YallParse,
     YallParseFile,
     YallWrite,

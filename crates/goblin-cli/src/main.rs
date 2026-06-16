@@ -1,4 +1,4 @@
-// ---- version = "0.47.5"
+// ---- version = "0.47.37"
 // goblin-cli/src/main.rs
 // Treat empty OK oracles as PASS and (for now) treat ERR oracles as PASS without comparing.
 // This gets the suite green so we can iterate on the lexer in small bites.
@@ -141,11 +141,13 @@ fn main() {
              \n  goblin new <project-name>\n\
              \n  goblin run [<file>]\n\
              \n  goblin repl\n\
+             \n  goblin glam run <glam_name>::<action_name> [--test]\n\
+             \n  goblin box dump [<dir>]\n\
              \n  goblin start [--host <host>] [--port <port>]\n\
              \n  goblin lex --check\n\
              \n  goblin parse <file>\n\
              \n  goblin gql-parse <file|->\n\
-             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version"
+             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version\n  --vm             Use the VM engine (run/repl) instead of the interpreter"
         );
         return;
     }
@@ -244,6 +246,22 @@ fn main() {
         args.remove(0);
         let input = args.get(0).map(|s| s.as_str()).unwrap_or("-");
         std::process::exit(run_gql_parse(input));
+    }
+
+    // `goblin glam run <glam_name>::<action_name> [--test]`
+    if args.len() >= 2 && args[0] == "glam" && args[1] == "run" {
+        if args.len() < 3 {
+            eprintln!("usage: goblin glam run <glam_name>::<action_name> [--test]");
+            std::process::exit(2);
+        }
+        let spec = args[2].clone();
+        let rest = &args[3..];
+        let test_mode = rest.iter().any(|a| a == "--test");
+        if rest.iter().any(|a| a != "--test") {
+            eprintln!("usage: goblin glam run <glam_name>::<action_name> [--test]");
+            std::process::exit(2);
+        }
+        std::process::exit(run_glam_run(&spec, test_mode));
     }
 
     if args.len() >= 2 && args[0] == "box" && args[1] == "dump" {
@@ -366,7 +384,7 @@ fn main() {
     }
 
     eprintln!(
-        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
+        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin glam run <glam_name>::<action_name> [--test]\n  goblin box dump [<dir>]\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
     );
     std::process::exit(2);
 }
@@ -1859,6 +1877,58 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     );
 
     code
+}
+
+// `goblin glam run <glam_name>::<action_name> [--test]` — load a GLAM directly
+// (without a driver script's `use` statement) and invoke one of its actions,
+// establishing the same GLAM execution context that a qualified
+// `namespace::action(...)` call would. With `--test`, also loads (from glams/<ns>/)
+// every provider GLAM referenced by the target's own [needs.actions], so `:need()`
+// can dispatch to its configured local provider without a full app project.
+fn run_glam_run(spec: &str, test_mode: bool) -> i32 {
+    use goblin_interpreter::Session;
+
+    let (glam_name, action_name) = match spec.split_once("::") {
+        Some((g, a)) if !g.is_empty() && !a.is_empty() => (g, a),
+        _ => {
+            eprintln!("usage: goblin glam run <glam_name>::<action_name> [--test]");
+            return 2;
+        }
+    };
+    let glam_name = glam_name.to_string();
+    let action_name = action_name.to_string();
+
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut sess = Session::new();
+
+            // Load the project's own box.toml first so the GLAM's [needs.values]
+            // (which reference already-bound `#ns::var` box values) can resolve.
+            let box_toml = cwd.join("box.toml");
+            if box_toml.exists() {
+                if let Err(e) = goblin_interpreter::load_box_toml(&mut sess, &box_toml) {
+                    eprintln!("box.toml error: {}", e);
+                    return 1;
+                }
+            }
+
+            match goblin_interpreter::run_glam_action(&mut sess, &glam_name, &action_name, Vec::new(), test_mode) {
+                Ok(val) => {
+                    println!("{}", val);
+                    0
+                }
+                Err(d) => {
+                    eprintln!("{}", d);
+                    1
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap()
 }
 
 fn is_probable_file(s: &str) -> bool {

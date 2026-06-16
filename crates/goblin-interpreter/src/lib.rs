@@ -576,6 +576,9 @@ pub struct Session {
     pub box_namespace: Option<String>,
     pub box_provides: Option<std::collections::HashSet<String>>,
 
+    // ==== GLAM ACTION NEEDS ==== glam namespace -> need name -> "provider_ns::action" path
+    pub action_needs: HashMap<String, HashMap<String, String>>,
+
     // ==== GRID SYSTEM ====
     pub grid_store: crate::actions::grid_store::GridStore,
 }
@@ -700,58 +703,94 @@ pub fn load_glam_box_toml(
         }
     };
 
-    // [needs] — each value is a Box reference string like "#site::content_dir"
+    // [needs.values] — each value is a Box reference string like "#site::content_dir"
+    // [needs.actions] — each value is an action path string like "goblin_supabase::insert"
     if let Some(toml::Value::Table(needs)) = table.get("needs") {
-        for (local_name, box_ref) in needs {
-            let ref_str = match box_ref {
-                toml::Value::String(s) if s.is_empty() => {
-                    return Err(format!(
-                        "B0104: unresolved-glam-need — '{}' has no value assigned\n\
-                         Assign it in your glam.toml [needs]: {} = \"#namespace::varname\"",
-                        local_name, local_name
-                    ));
-                }
-                toml::Value::String(s) => s,
-                _ => return Err(format!(
-                    "B0104: unresolved-glam-need — '{}' must be a Box reference like \"#site::content_dir\"",
-                    local_name
-                )),
-            };
-
-            if !ref_str.starts_with('#') || !ref_str.contains("::") {
-                return Err(format!(
-                    "B0104: unresolved-glam-need — '{}' value \"{}\" is not a valid Box reference\n\
-                     Must be in the form \"#namespace::varname\"",
-                    local_name, ref_str
-                ));
-            }
-
-            let trimmed = &ref_str[1..];
-            let pos = trimmed.find("::").unwrap();
-            let ref_ns = &trimmed[..pos];
-            let varname = &trimmed[pos + 2..];
-            let key = format!("{}::{}", ref_ns, varname);
-
-            match sess.box_store.get(&key).cloned() {
-                Some(v) => {
-                    let v = if let Value::Str(s) = &v {
-                        Value::Str(resolve_box_template(s, &sess.box_store))
-                    } else {
-                        v
-                    };
-                    if let Some(ns) = namespace {
-                        sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+        if let Some(toml::Value::Table(values)) = needs.get("values") {
+            for (local_name, box_ref) in values {
+                let ref_str = match box_ref {
+                    toml::Value::String(s) if s.is_empty() => {
+                        return Err(format!(
+                            "B0104: unresolved-glam-need — '{}' has no value assigned\n\
+                             Assign it in your glam.toml [needs.values]: {} = \"#namespace::varname\"",
+                            local_name, local_name
+                        ));
                     }
-                    sess.define_local(local_name.clone(), v, false);
-                }
-                None => {
+                    toml::Value::String(s) => s,
+                    _ => return Err(format!(
+                        "B0104: unresolved-glam-need — '{}' must be a Box reference like \"#site::content_dir\"",
+                        local_name
+                    )),
+                };
+
+                if !ref_str.starts_with('#') || !ref_str.contains("::") {
                     return Err(format!(
-                        "B0104: unresolved-glam-need — '{}' references '#{}'  \
-                         but that Box variable does not exist\n\
-                         Run 'goblin box dump' to see what is currently in the Box.",
-                        local_name, key
+                        "B0104: unresolved-glam-need — '{}' value \"{}\" is not a valid Box reference\n\
+                         Must be in the form \"#namespace::varname\"",
+                        local_name, ref_str
                     ));
                 }
+
+                let trimmed = &ref_str[1..];
+                let pos = trimmed.find("::").unwrap();
+                let ref_ns = &trimmed[..pos];
+                let varname = &trimmed[pos + 2..];
+                let key = format!("{}::{}", ref_ns, varname);
+
+                match sess.box_store.get(&key).cloned() {
+                    Some(v) => {
+                        let v = if let Value::Str(s) = &v {
+                            Value::Str(resolve_box_template(s, &sess.box_store))
+                        } else {
+                            v
+                        };
+                        if let Some(ns) = namespace {
+                            sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+                        }
+                        sess.define_local(local_name.clone(), v, false);
+                    }
+                    None => {
+                        return Err(format!(
+                            "B0104: unresolved-glam-need — '{}' references '#{}'  \
+                             but that Box variable does not exist\n\
+                             Run 'goblin box dump' to see what is currently in the Box.",
+                            local_name, key
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Some(toml::Value::Table(actions)) = needs.get("actions") {
+            let mut map = HashMap::new();
+            for (need_name, action_ref) in actions {
+                let ref_str = match action_ref {
+                    toml::Value::String(s) if s.is_empty() => {
+                        return Err(format!(
+                            "B0106: missing-action-need — '{}' has no provider assigned\n\
+                             Assign it in your glam.toml [needs.actions]: {} = \"namespace::action\"",
+                            need_name, need_name
+                        ));
+                    }
+                    toml::Value::String(s) => s,
+                    _ => return Err(format!(
+                        "B0106: missing-action-need — '{}' must be an action path like \"namespace::action\"",
+                        need_name
+                    )),
+                };
+
+                if ref_str.starts_with('#') || !ref_str.contains("::") {
+                    return Err(format!(
+                        "B0106: missing-action-need — '{}' value \"{}\" is not a valid action path\n\
+                         Must be in the form \"namespace::action\" (no '#' prefix — that's reserved for Box values)",
+                        need_name, ref_str
+                    ));
+                }
+
+                map.insert(need_name.clone(), ref_str.clone());
+            }
+            if let Some(ns) = namespace {
+                sess.action_needs.insert(ns.to_string(), map);
             }
         }
     }
@@ -889,6 +928,7 @@ impl Session {
             box_store: HashMap::new(),
             box_namespace: None,
             box_provides: None,
+            action_needs: HashMap::new(),
 
             grid_store: crate::actions::grid_store::GridStore::new(),
 
@@ -5932,6 +5972,177 @@ fn execute_module_wrapped(
 
     sess.current_module = old_module;
     Ok(())
+}
+
+/// Load a GLAM by namespace (mirrors `ast::Stmt::Use`): locate glams/<namespace>/,
+/// parse glam.toml ([needs.values]/[needs.actions]/[values]/[provides]), then load
+/// the entry file via the module system so its actions register as exports under
+/// `namespace`. Does not invoke anything.
+///
+/// When `test_mode` is set, every provider GLAM referenced by this GLAM's own
+/// `[needs.actions]` is resolved and loaded (from glams/<ns>/, non-recursively)
+/// AFTER glam.toml is parsed but BEFORE this GLAM's entry file is executed — so
+/// that even a top-level call in the entry file itself (not just a later action
+/// invocation) can resolve `:need()` against its configured provider.
+fn load_glam_module(
+    sess: &mut Session,
+    glam_name: &str,
+    dev_span: &goblin_diagnostics::Span,
+    test_mode: bool,
+) -> Result<(), Diag> {
+    use goblin_diagnostics::{Diagnostic, Severity};
+
+    let glam_dir = sess.project_root.join("glams").join(glam_name);
+
+    if !glam_dir.exists() {
+        return Err(Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::IMPORT_IO,
+            "glam-not-found",
+            &format!(
+                "GLAM '{}' not found — expected directory at '{}'",
+                glam_name,
+                glam_dir.display()
+            ),
+            dev_span.clone(),
+        ));
+    }
+
+    // Stash current namespace context
+    let prev_namespace = sess.box_namespace.take();
+    let prev_provides  = sess.box_provides.take();
+
+    // Load glam.toml — sets [needs.values], [needs.actions], [values], [provides]
+    let glam_toml = glam_dir.join("glam.toml");
+    let glam_meta = if glam_toml.exists() {
+        load_glam_box_toml(sess, &glam_toml, Some(glam_name)).map_err(|e| {
+            Diagnostic::new_with_code(
+                Severity::Error,
+                crate::diagnostics::rtcode::BOX_UNRESOLVED_NEED,
+                "glam-load-error",
+                &e,
+                dev_span.clone(),
+            )
+        })?
+    } else {
+        GlamMeta { entry: None }
+    };
+
+    sess.box_namespace = Some(glam_name.to_string());
+
+    // Determine entry file from [glam] entry key, or fall back to convention
+    let entry = {
+        if let Some(name) = glam_meta.entry {
+            let p = std::path::PathBuf::from(&name);
+            if p.is_absolute() { p } else { glam_dir.join(name) }
+        } else {
+            let gbln = glam_dir.join(format!("{}.gbln", glam_name));
+            let gob  = glam_dir.join(format!("{}.gob",  glam_name));
+            if gbln.exists() { gbln } else { gob }
+        }
+    };
+
+    if !entry.exists() {
+        sess.box_namespace = prev_namespace;
+        sess.box_provides  = prev_provides;
+        return Err(Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::IMPORT_IO,
+            "glam-entry-not-found",
+            &format!(
+                "GLAM '{}' entry file not found — expected '{}'",
+                glam_name,
+                entry.display()
+            ),
+            dev_span.clone(),
+        ));
+    }
+
+    // Test mode: load every provider this GLAM's [needs.actions] points at
+    // *before* this GLAM's own entry file executes (non-recursive — providers
+    // are loaded strictly, without loading their own providers in turn).
+    if test_mode {
+        let provider_namespaces: Vec<String> = sess
+            .action_needs
+            .get(glam_name)
+            .map(|needs| {
+                let mut namespaces: Vec<String> = needs
+                    .values()
+                    .filter_map(|action_ref| {
+                        action_ref.split_once("::").map(|(ns, _)| ns.to_string())
+                    })
+                    .collect();
+                namespaces.sort();
+                namespaces.dedup();
+                namespaces
+            })
+            .unwrap_or_default();
+
+        for provider_ns in provider_namespaces {
+            if let Err(e) = load_glam_module(sess, &provider_ns, dev_span, false) {
+                sess.box_namespace = prev_namespace;
+                sess.box_provides  = prev_provides;
+                return Err(e);
+            }
+        }
+    }
+
+    // Load via the module system so actions register under the namespace
+    let entry_str = entry.to_string_lossy().to_string();
+    let (mod_namespace, maybe_ast) = sess
+        .modules
+        .load_module(&entry_str, Some(glam_name), &glam_dir)
+        .map_err(|e| Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::IMPORT_IO,
+            "glam-load-error",
+            &e,
+            dev_span.clone(),
+        ))?;
+
+    if let Some(module_ast) = maybe_ast {
+        execute_module_wrapped(
+            sess,
+            mod_namespace,
+            module_ast,
+            dev_span,
+            &entry_str,
+            &glam_dir,
+        )?;
+    }
+
+    // Restore namespace context
+    sess.box_namespace = prev_namespace;
+    sess.box_provides  = prev_provides;
+
+    Ok(())
+}
+
+/// Load a GLAM and invoke one of its actions directly, establishing the same GLAM
+/// execution context (`sess.current_module`) that a fully-qualified
+/// `namespace::action(...)` call would. Used by the `goblin glam run <glam>::<action>`
+/// CLI dev command so `:need()` and other GLAM-context-dependent builtins work
+/// without a separate driver script.
+///
+/// When `test_mode` is set, also resolves and loads (from glams/<ns>/) every
+/// provider GLAM referenced by the target's own `[needs.actions]`, so `:need()`
+/// can dispatch to a locally configured provider without a full app project or a
+/// `use` statement inside the target GLAM.
+pub fn run_glam_action(
+    sess: &mut Session,
+    glam_name: &str,
+    action_name: &str,
+    args: Vec<Value>,
+    test_mode: bool,
+) -> Result<Value, Diag> {
+    use goblin_diagnostics::Span;
+
+    let dev_span = Span::new("<glam run>", 0, 0, 1, 1, 1, 1);
+
+    load_glam_module(sess, glam_name, &dev_span, test_mode)?;
+
+    // Set GLAM execution context and invoke the requested action
+    call_action_by_name(sess, &format!("{}::{}", glam_name, action_name), args, dev_span)
 }
 
 // Try a shadowable builtin. Returns Ok(Some(Value)) if handled, Ok(None) if unknown.
@@ -11471,6 +11682,113 @@ fn call_action_by_name(
             };
 
             return Ok(value);
+        }
+
+        // ===== NEED: resolve a configured action need for the current GLAM and call it =====
+        "need" => {
+            use goblin_diagnostics::{Diagnostic, Severity};
+            use crate::diagnostics::rtcode;
+
+            if args.is_empty() {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::WRONG_ARITY, // R0301
+                        "wrong-arity",
+                        &format!("Wrong number of arguments to need (expected at least 1, got {}).", args.len()),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: need(\"insert\", table, data)")
+                    .with_help("The first argument must be the action need's name, as declared in [needs.actions].")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let need_name = match &args[0] {
+                Value::Str(s) => s.clone(),
+                _ => {
+                    return Err(
+                        Diagnostic::new_with_code(
+                            Severity::Error,
+                            rtcode::TYPE_MISMATCH, // T0205
+                            "type-mismatch",
+                            "The first argument to need() must be a string.",
+                            sp.clone(),
+                        )
+                        .with_help("Example: need(\"insert\", table, data)")
+                        .with_link("https://goblinlang.org/docs/errors#T0205"),
+                    );
+                }
+            };
+
+            let forwarded_args: Vec<Value> = args[1..].to_vec();
+
+            let glam_ns = sess.current_module.clone().ok_or_else(|| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    rtcode::NEED_OUTSIDE_GLAM, // B0108
+                    "need-outside-glam",
+                    "need() can only be called from inside a GLAM action.",
+                    sp.clone(),
+                )
+                .with_help("Call need() from within an action defined in a GLAM's entry file.")
+                .with_link("https://goblinlang.org/docs/errors#B0108")
+            })?;
+
+            let action_path = sess.action_needs
+                .get(&glam_ns)
+                .and_then(|m| m.get(&need_name))
+                .cloned()
+                .ok_or_else(|| {
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::MISSING_ACTION_NEED, // B0106
+                        "missing-action-need",
+                        &format!(
+                            "GLAM '{}' requires action need '{}' but no provider was configured.",
+                            glam_ns, need_name
+                        ),
+                        sp.clone(),
+                    )
+                    .with_help(&format!(
+                        "Add it to {}'s glam.toml: [needs.actions]\n{} = \"<namespace>::<action>\"",
+                        glam_ns, need_name
+                    ))
+                    .with_link("https://goblinlang.org/docs/errors#B0106")
+                })?;
+
+            let (provider_ns, provider_action) = action_path.split_once("::").ok_or_else(|| {
+                Diagnostic::new_with_code(
+                    Severity::Error,
+                    rtcode::MISSING_PROVIDER_ACTION, // B0107
+                    "missing-provider-action",
+                    &format!(
+                        "Configured action need '{}' points to '{}' but that is not a valid 'namespace::action' path.",
+                        need_name, action_path
+                    ),
+                    sp.clone(),
+                )
+                .with_link("https://goblinlang.org/docs/errors#B0107")
+            })?;
+
+            if sess.modules.get_export(provider_ns, provider_action).is_none() {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::MISSING_PROVIDER_ACTION, // B0107
+                        "missing-provider-action",
+                        &format!(
+                            "Configured action need '{}' points to '{}' but that action does not exist.",
+                            need_name, action_path
+                        ),
+                        sp.clone(),
+                    )
+                    .with_help("Check that the provider GLAM is used (via 'use') and exports this action.")
+                    .with_link("https://goblinlang.org/docs/errors#B0107"),
+                );
+            }
+
+            call_action_by_name(sess, &action_path, forwarded_args, sp.clone())?
         }
 
         // ===== SUMMON: thread a value through a list of events using invoke =====

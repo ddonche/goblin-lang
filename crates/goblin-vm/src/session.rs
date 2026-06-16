@@ -170,6 +170,9 @@ pub struct Session {
     /// Box store: namespace::name → Value (cross-module mutable state).
     pub box_store: HashMap<String, Value>,
 
+    /// Action needs declared in glam.toml [needs.actions]: glam_namespace -> (need_name -> "provider_ns::action").
+    pub action_needs: HashMap<String, HashMap<String, String>>,
+
     /// Output buffer — when Some, say/print write here instead of stdout.
     /// Used by the WASM REPL to capture output.
     pub output_buf: Option<String>,
@@ -223,6 +226,7 @@ impl Session {
             global_hard_type_locks: HashMap::new(),
             named_values: HashMap::new(),
             box_store: HashMap::new(),
+            action_needs: HashMap::new(),
             output_buf: None,
         }
     }
