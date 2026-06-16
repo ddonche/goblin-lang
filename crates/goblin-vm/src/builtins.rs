@@ -4095,6 +4095,18 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let headers = http_extract_headers(read(4)?, "http_request")?;
             http_call(&method, &url, body_opt.as_deref(), &content_type, &headers)
         }
+
+        BuiltinId::RenderTemplate => {
+            if args.len() != 2 {
+                return Err(GoblinError::Runtime(format!("render_template: expected 2 args (path, data), got {}", args.len())));
+            }
+            let path = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "render_template path")),
+            };
+            let data = read(1)?;
+            crate::render::render_template(&path, data)
+        }
     }
 }
 

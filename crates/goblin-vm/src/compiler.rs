@@ -2520,6 +2520,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "http_delete"  => BuiltinId::HttpDelete,
         "http_request" => BuiltinId::HttpRequest,
 
+        // Render mode
+        "render_template" => BuiltinId::RenderTemplate,
+
         _ => return None,
     })
 }

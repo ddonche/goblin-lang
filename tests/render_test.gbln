@@ -1,0 +1,8 @@
+posts | [{"id": 1, "title": "Hello", "body": "World"}, {"id": 2, "title": "Second", "body": "Post"}]
+html | :render_template("tests/render_page.gbln", { "posts": posts })
+assert(html.contains("<h1>Posts</h1>"))
+assert(html.contains("<h2>Hello</h2>"))
+assert(html.contains("<p>World</p>"))
+assert(html.contains("<h2>Second</h2>"))
+assert(html.contains("<p>Post</p>"))
+say "render_template: ALL ASSERTIONS PASSED"
