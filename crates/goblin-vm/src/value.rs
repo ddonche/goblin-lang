@@ -749,6 +749,9 @@ pub enum BuiltinId {
     HttpPut,
     HttpDelete,
     HttpRequest,
+
+    // Render mode
+    RenderTemplate,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
