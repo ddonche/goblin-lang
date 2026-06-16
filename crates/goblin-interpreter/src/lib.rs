@@ -5978,10 +5978,17 @@ fn execute_module_wrapped(
 /// parse glam.toml ([needs.values]/[needs.actions]/[values]/[provides]), then load
 /// the entry file via the module system so its actions register as exports under
 /// `namespace`. Does not invoke anything.
+///
+/// When `test_mode` is set, every provider GLAM referenced by this GLAM's own
+/// `[needs.actions]` is resolved and loaded (from glams/<ns>/, non-recursively)
+/// AFTER glam.toml is parsed but BEFORE this GLAM's entry file is executed — so
+/// that even a top-level call in the entry file itself (not just a later action
+/// invocation) can resolve `:need()` against its configured provider.
 fn load_glam_module(
     sess: &mut Session,
     glam_name: &str,
     dev_span: &goblin_diagnostics::Span,
+    test_mode: bool,
 ) -> Result<(), Diag> {
     use goblin_diagnostics::{Diagnostic, Severity};
 
@@ -6051,6 +6058,35 @@ fn load_glam_module(
         ));
     }
 
+    // Test mode: load every provider this GLAM's [needs.actions] points at
+    // *before* this GLAM's own entry file executes (non-recursive — providers
+    // are loaded strictly, without loading their own providers in turn).
+    if test_mode {
+        let provider_namespaces: Vec<String> = sess
+            .action_needs
+            .get(glam_name)
+            .map(|needs| {
+                let mut namespaces: Vec<String> = needs
+                    .values()
+                    .filter_map(|action_ref| {
+                        action_ref.split_once("::").map(|(ns, _)| ns.to_string())
+                    })
+                    .collect();
+                namespaces.sort();
+                namespaces.dedup();
+                namespaces
+            })
+            .unwrap_or_default();
+
+        for provider_ns in provider_namespaces {
+            if let Err(e) = load_glam_module(sess, &provider_ns, dev_span, false) {
+                sess.box_namespace = prev_namespace;
+                sess.box_provides  = prev_provides;
+                return Err(e);
+            }
+        }
+    }
+
     // Load via the module system so actions register under the namespace
     let entry_str = entry.to_string_lossy().to_string();
     let (mod_namespace, maybe_ast) = sess
@@ -6103,29 +6139,7 @@ pub fn run_glam_action(
 
     let dev_span = Span::new("<glam run>", 0, 0, 1, 1, 1, 1);
 
-    load_glam_module(sess, glam_name, &dev_span)?;
-
-    if test_mode {
-        let provider_namespaces: Vec<String> = sess
-            .action_needs
-            .get(glam_name)
-            .map(|needs| {
-                let mut namespaces: Vec<String> = needs
-                    .values()
-                    .filter_map(|action_ref| {
-                        action_ref.split_once("::").map(|(ns, _)| ns.to_string())
-                    })
-                    .collect();
-                namespaces.sort();
-                namespaces.dedup();
-                namespaces
-            })
-            .unwrap_or_default();
-
-        for provider_ns in provider_namespaces {
-            load_glam_module(sess, &provider_ns, &dev_span)?;
-        }
-    }
+    load_glam_module(sess, glam_name, &dev_span, test_mode)?;
 
     // Set GLAM execution context and invoke the requested action
     call_action_by_name(sess, &format!("{}::{}", glam_name, action_name), args, dev_span)
