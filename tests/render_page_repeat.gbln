@@ -1,0 +1,6 @@
+<{ render }>
+<h1>Posts</h1>
+<{ repeat posts }>
+<h2><{ it{"title"} }></h2>
+<p><{ it{"body"} }></p>
+<{ xx }>
