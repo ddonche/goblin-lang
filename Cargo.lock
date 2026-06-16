@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.47.37"
+version = "0.47.38"
 dependencies = [
  "anyhow",
  "clap",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-lexer"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chumsky",
  "goblin-diagnostics",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-parser"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "goblin-ast",
  "goblin-diagnostics",

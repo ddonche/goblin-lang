@@ -1228,9 +1228,12 @@ fn lex_identifier(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {
         state.advance();
     }
 
-    // Optional trailing !
-    if state.current() == Some(b'!') {
-        state.advance();
+    // A trailing '_' glued directly onto an identifier is the postfix floor operator
+    // (e.g. `x_`), not part of the name — split it off, mirroring the `!` postfix case.
+    // The standalone "_" special case above already handles a bare `_` on its own.
+    if state.i - start_i > 1 && state.bytes[state.i - 1] == b'_' {
+        state.i -= 1;
+        state.col -= 1;
     }
 
     let name = String::from_utf8_lossy(&state.bytes[start_i..state.i]).into_owned();

@@ -3937,6 +3937,8 @@ impl<'t> Parser<'t> {
             let raw = self.eat_op("~");
 
             let Some(mut fname) = self.eat_ident() else { break; };
+            // Lexer no longer fuses a trailing '!' into the identifier token; re-attach it here.
+            if self.eat_op("!") { fname.push('!'); }
 
             // Modifiers: ? (nullable), ! (readonly) as suffixes
             let mut readonly = false;
@@ -11352,7 +11354,10 @@ impl<'t> Parser<'t> {
                 let name_tok = self
                     .eat_ident()
                     .ok_or_else(|| s_help_site!("P.DOTID", "Expected identifier after '.'", "Example: obj.method(...)"))?;
-                let opname = name_tok.as_str().to_string();
+                let mut opname = name_tok.as_str().to_string();
+                // Lexer no longer fuses a trailing '!' into the identifier token; re-attach it here
+                // (cast-bang dot-call form, e.g. age.str!, is never followed by parens).
+                if self.eat_op("!") { opname.push('!'); }
 
                 if self.eat_op("(") {
                     // Special-case: .format(...)
