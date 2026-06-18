@@ -96,49 +96,6 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
     vm.execute(compiled.entry)
 }
 
-/// Like `execute_source_api` but pre-seeds a `fields` global from a JSON string.
-/// Used by goblin-host when running a Goblin Form action file.
-pub fn execute_source_api_with_fields(source: &str, fields_json: &str) -> Result<(String, ResponseState), GoblinError> {
-    use crate::compiler::compile_repl_snippet;
-
-    let fields_value = if fields_json.is_empty() {
-        Value::Map(Default::default())
-    } else {
-        let jv: serde_json::Value = serde_json::from_str(fields_json)
-            .map_err(|e| GoblinError::Runtime(format!("form fields parse error: {e}")))?;
-        crate::builtins::json_to_value(&jv)
-    };
-
-    let tokens = goblin_lexer::lex(source, "<source>")
-        .map_err(|diags| GoblinError::CompileError {
-            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
-            span_debug: "<lex>".into(),
-        })?;
-    let module = goblin_parser::Parser::new(&tokens).parse_module()
-        .map_err(|diags| GoblinError::CompileError {
-            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
-            span_debug: "<parse>".into(),
-        })?;
-
-    let known = vec!["fields".to_string()];
-    let compiled = compile_repl_snippet(&module, &known)?;
-
-    let mut session = Session::new(GcMode::Auto);
-    session.global_names = compiled.global_names;
-    session.enable_output_capture();
-    for decl in compiled.classes { session.classes.insert(decl.name.clone(), decl); }
-    for decl in compiled.enums   { session.enums.insert(decl.name.clone(), decl); }
-
-    let t = session.alloc_value(fields_value);
-    session.set_global(0, t);
-
-    let mut vm = Vm::new(session);
-    vm.execute_repl(compiled.entry, 1)?;
-    let output = vm.session.take_output();
-    let response = vm.session.response.clone();
-    Ok((output, response))
-}
-
 /// Like `execute_source` but captures print/say output and returns it with the response state.
 /// Used by goblin-host to run scripts in-process with the VM engine.
 pub fn execute_source_api(source: &str) -> Result<(String, ResponseState), GoblinError> {
