@@ -967,6 +967,8 @@ async fn exec_goblin_script_via_vm(
     let src = std::fs::read_to_string(script_path)
         .map_err(|e| ExecErr::Spawn(format!("read script: {e}")))?;
 
+    let script_path_str = script_path.to_string_lossy().to_string();
+
     let query_string = query_string.to_string();
     let method = method.to_string();
     let path = path.to_string();
@@ -979,6 +981,8 @@ async fn exec_goblin_script_via_vm(
     let auth_email = auth_email.to_string();
     let auth_role = auth_role.to_string();
     let auth_json = auth_json.to_string();
+
+    let is_render = goblin_vm::render::is_render_source(&src);
 
     let task = tokio::task::spawn_blocking(move || {
         let _guard = VM_EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -996,7 +1000,21 @@ async fn exec_goblin_script_via_vm(
         std::env::set_var("AUTH_EMAIL", &auth_email);
         std::env::set_var("AUTH_ROLE", &auth_role);
         std::env::set_var("AUTH_JSON", &auth_json);
-        goblin_vm::exec::execute_source_api(&src)
+
+        if is_render {
+            use goblin_vm::value::Value;
+            let html = goblin_vm::render::render_template(&script_path_str, Value::Nil)?;
+            let html_str = match html {
+                Value::Str(s) => s,
+                other => format!("{other:?}"),
+            };
+            let mut response = goblin_vm::session::ResponseState::default();
+            response.status = Some(200);
+            response.headers.insert("Content-Type".to_string(), "text/html; charset=utf-8".to_string());
+            Ok((html_str, response))
+        } else {
+            goblin_vm::exec::execute_source_api(&src)
+        }
     });
 
     match timeout(Duration::from_millis(timeout_ms), task).await {
