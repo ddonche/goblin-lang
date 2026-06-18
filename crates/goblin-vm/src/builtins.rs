@@ -4929,7 +4929,7 @@ fn rng_u01(session: &mut Session) -> f64 {
     (x as f64) / (u64::MAX as f64)
 }
 
-fn json_to_value(v: &serde_json::Value) -> Value {
+pub(crate) fn json_to_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null        => Value::Nil,
         serde_json::Value::Bool(b)     => Value::Bool(*b),

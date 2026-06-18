@@ -18,6 +18,10 @@ const CONTROL_KEYWORDS: &[&str] = &[
     "for", "if", "unless", "while", "repeat", "else", "elif", "judge", "xx", "end",
 ];
 
+const BLOCK_OPENERS: &[&str] = &[
+    "for", "if", "unless", "while", "repeat", "judge", "judge_all", "act",
+];
+
 /// True if `source`'s first meaningful content is the `<{ render }>` directive.
 pub fn is_render_source(source: &str) -> bool {
     let rest = match source.trim_start().strip_prefix("<{") {
@@ -78,6 +82,46 @@ fn is_control_chunk(code: &str) -> bool {
     false
 }
 
+/// If `code` is `goblin form "path"`, return the action path. Otherwise None.
+fn parse_goblin_form(code: &str) -> Option<String> {
+    let rest = code.trim().strip_prefix("goblin")?.trim_start().strip_prefix("form")?.trim_start();
+    let path = if let Some(inner) = rest.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        inner
+    } else if let Some(inner) = rest.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        inner
+    } else {
+        return None;
+    };
+    Some(path.to_string())
+}
+
+const GOBLIN_FORM_JS: &str = r#"<script>
+(function(){
+  document.querySelectorAll('[data-goblin-form]').forEach(function(wrapper){
+    var action = wrapper.dataset.goblinForm;
+    var form = wrapper.querySelector('form');
+    if (!form) return;
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      var fields = {};
+      new FormData(form).forEach(function(v,k){ fields[k] = v; });
+      fetch(action, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','X-Goblin-Form':'1'},
+        body: JSON.stringify(fields)
+      }).then(function(r){
+        var loc = r.headers.get('X-Goblin-Redirect') || r.headers.get('Location');
+        if (loc) { window.location.href = loc; return; }
+        return r.text().then(function(html){
+          document.open(); document.write(html); document.close();
+        });
+      });
+    });
+  });
+})();
+</script>
+"#;
+
 /// Transpile a render-page body (text after the `<{ render }>` directive) into
 /// literal Goblin source that builds `__render_out` and returns it.
 fn transpile(body: &str) -> String {
@@ -86,6 +130,10 @@ fn transpile(body: &str) -> String {
     out.push_str(" | \"\"\n");
 
     let mut rest = body;
+    let mut has_goblin_form = false;
+    // Stack tracks open block kinds: "form" for goblin form, "code" for normal Goblin blocks.
+    let mut block_stack: Vec<&'static str> = Vec::new();
+
     loop {
         let Some(open) = rest.find("<{") else {
             if !rest.is_empty() {
@@ -99,13 +147,30 @@ fn transpile(body: &str) -> String {
         }
         let after_open = &rest[open + 2..];
         let Some(close) = after_open.find("}>") else {
-            // Unterminated block: treat the remainder as literal text.
             emit_literal(&mut out, after_open);
             break;
         };
         let code = after_open[..close].trim();
         if !code.is_empty() {
-            if is_control_chunk(code) {
+            if let Some(action_path) = parse_goblin_form(code) {
+                has_goblin_form = true;
+                block_stack.push("form");
+                let escaped = action_path.replace('\\', "\\\\").replace('"', "\\\"");
+                emit_literal(&mut out, &format!("<div data-goblin-form=\"{escaped}\">"));
+            } else if code == "xx" || code == "end" {
+                if block_stack.last() == Some(&"form") {
+                    block_stack.pop();
+                    emit_literal(&mut out, "</div>");
+                } else {
+                    block_stack.pop();
+                    out.push_str(code);
+                    out.push('\n');
+                }
+            } else if is_control_chunk(code) {
+                let first = code.split_whitespace().next().unwrap_or("");
+                if BLOCK_OPENERS.contains(&first) {
+                    block_stack.push("code");
+                }
                 out.push_str(code);
                 out.push('\n');
             } else {
@@ -118,6 +183,10 @@ fn transpile(body: &str) -> String {
             }
         }
         rest = &after_open[close + 2..];
+    }
+
+    if has_goblin_form {
+        emit_literal(&mut out, GOBLIN_FORM_JS);
     }
 
     out.push_str(OUT_VAR);

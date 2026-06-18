@@ -765,6 +765,107 @@ impl Host {
                                 }
                             }
 
+                            // ---- Goblin Form POST ----
+                            let is_goblin_form_post = use_vm
+                                && method.eq_ignore_ascii_case("POST")
+                                && headers_map.get("x-goblin-form").map(|v| v == "1").unwrap_or(false)
+                                && path.ends_with(".gbln");
+
+                            if is_goblin_form_post {
+                                let action_path = match safe_join(&request_root, path) {
+                                    Some(p) => p,
+                                    None => {
+                                        let resp = b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+                                        let _ = socket.write_all(resp).await;
+                                        log.done(403, 0);
+                                        break 'conn;
+                                    }
+                                };
+
+                                if action_path.exists() {
+                                    let s_host = host_header.unwrap_or("").to_string();
+                                    let s_auth = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_headers_json = serde_json::to_string(&headers_map).unwrap_or_else(|_| "{}".to_string());
+                                    let s_auth_user_id = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-user-id")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_auth_email = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-email")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_auth_role = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-role")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_auth_json = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-json")).map(|(_, v)| v.clone()).unwrap_or_default();
+
+                                    match exec_goblin_form_action(
+                                        &action_path,
+                                        30000,
+                                        &body_text,
+                                        query_string,
+                                        method,
+                                        path,
+                                        &s_host,
+                                        &s_auth,
+                                        &s_headers_json,
+                                        &s_auth_user_id,
+                                        &s_auth_email,
+                                        &s_auth_role,
+                                        &s_auth_json,
+                                    ).await {
+                                        Ok(body) => {
+                                            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
+                                            if let Ok(v) = parsed {
+                                                let status = v.get("status").and_then(|x| x.as_u64()).unwrap_or(200) as u16;
+                                                let response_body = v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                                let mut extra_headers = String::new();
+                                                if let Some(headers_obj) = v.get("headers").and_then(|x| x.as_object()) {
+                                                    for (k, val) in headers_obj {
+                                                        if let Some(s) = val.as_str() {
+                                                            extra_headers.push_str(&format!("{k}: {s}\r\n"));
+                                                        }
+                                                    }
+                                                }
+                                                if let Some(cookies_arr) = v.get("cookies").and_then(|x| x.as_array()) {
+                                                    for c in cookies_arr {
+                                                        if let Some(s) = c.as_str() {
+                                                            extra_headers.push_str(&format!("Set-Cookie: {s}\r\n"));
+                                                        }
+                                                    }
+                                                }
+                                                let reason = match status { 200 => "OK", 201 => "Created", 204 => "No Content", 302 => "Found", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found", 500 => "Internal Server Error", _ => "OK" };
+                                                let content_type = v.get("headers").and_then(|h| h.get("Content-Type")).and_then(|x| x.as_str()).unwrap_or("text/plain; charset=utf-8");
+                                                let resp_headers = format!(
+                                                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
+                                                    response_body.len(), crate::CONTRACT_VERSION
+                                                );
+                                                if socket.write_all(resp_headers.as_bytes()).await.is_ok() {
+                                                    let _ = socket.write_all(response_body.as_bytes()).await;
+                                                }
+                                                log.done(status, response_body.len());
+                                            } else {
+                                                let resp_headers = format!(
+                                                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
+                                                    body.len(), crate::CONTRACT_VERSION
+                                                );
+                                                if socket.write_all(resp_headers.as_bytes()).await.is_ok() {
+                                                    let _ = socket.write_all(body.as_bytes()).await;
+                                                }
+                                                log.done(200, body.len());
+                                            }
+                                        }
+                                        Err(ExecErr::Timeout) => {
+                                            let body = "504 Gateway Timeout";
+                                            let resp_headers = format!("HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n", body.len(), crate::CONTRACT_VERSION);
+                                            let _ = socket.write_all(resp_headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(504, body.len());
+                                        }
+                                        Err(ExecErr::NonZero(e) | ExecErr::Spawn(e)) => {
+                                            let body = format!("Goblin form error:\n{e}");
+                                            let resp_headers = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n", body.len(), crate::CONTRACT_VERSION);
+                                            let _ = socket.write_all(resp_headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(500, body.len());
+                                        }
+                                    }
+                                    if want_close { break 'conn; } else { continue 'conn; }
+                                }
+                            }
+
                             // ---- PROXY (GET-only; dev convenience) ----
                             if method.eq_ignore_ascii_case("GET") && !proxies.is_empty() {
                                 if let Some(rule) = proxies.iter().find(|r| path.starts_with(&r.prefix)) {
@@ -1008,6 +1109,82 @@ enum ExecErr {
 }
 
 static VM_EXEC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+async fn exec_goblin_form_action(
+    action_path: &std::path::Path,
+    timeout_ms: u64,
+    fields_json: &str,
+    query_string: &str,
+    method: &str,
+    path: &str,
+    host: &str,
+    authorization: &str,
+    headers_json: &str,
+    auth_user_id: &str,
+    auth_email: &str,
+    auth_role: &str,
+    auth_json: &str,
+) -> Result<String, ExecErr> {
+    use tokio::time::{timeout, Duration};
+
+    let src = std::fs::read_to_string(action_path)
+        .map_err(|e| ExecErr::Spawn(format!("read action: {e}")))?;
+
+    let fields_json = fields_json.to_string();
+    let query_string = query_string.to_string();
+    let method = method.to_string();
+    let path = path.to_string();
+    let host = host.to_string();
+    let authorization = authorization.to_string();
+    let headers_json = headers_json.to_string();
+    let auth_user_id = auth_user_id.to_string();
+    let auth_email = auth_email.to_string();
+    let auth_role = auth_role.to_string();
+    let auth_json = auth_json.to_string();
+
+    let task = tokio::task::spawn_blocking(move || {
+        let _guard = VM_EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("GOBLIN_NONINTERACTIVE", "1");
+        std::env::set_var("GOBLIN_FORM", "1");
+        std::env::set_var("GOBLIN_FORM_JSON", &fields_json);
+        std::env::set_var("GOBLIN_QUERY_STRING", &query_string);
+        std::env::set_var("GOBLIN_METHOD", &method);
+        std::env::set_var("GOBLIN_PATH", &path);
+        std::env::set_var("GOBLIN_HOST", &host);
+        std::env::set_var("GOBLIN_BODY", &fields_json);
+        std::env::set_var("GOBLIN_AUTHORIZATION", &authorization);
+        std::env::set_var("GOBLIN_HEADERS_JSON", &headers_json);
+        std::env::set_var("AUTH_USER_ID", &auth_user_id);
+        std::env::set_var("AUTH_EMAIL", &auth_email);
+        std::env::set_var("AUTH_ROLE", &auth_role);
+        std::env::set_var("AUTH_JSON", &auth_json);
+        goblin_vm::exec::execute_source_api_with_fields(&src, &fields_json)
+    });
+
+    match timeout(Duration::from_millis(timeout_ms), task).await {
+        Err(_) => Err(ExecErr::Timeout),
+        Ok(Ok(Ok((output, response)))) => {
+            let status = response.status.unwrap_or(200);
+            let headers_obj: serde_json::Map<String, serde_json::Value> = response.headers
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            let cookies_arr: Vec<serde_json::Value> = response.cookies
+                .iter()
+                .map(|c| serde_json::Value::String(c.clone()))
+                .collect();
+            let envelope = serde_json::json!({
+                "status": status,
+                "headers": headers_obj,
+                "cookies": cookies_arr,
+                "body": output,
+            });
+            Ok(envelope.to_string())
+        }
+        Ok(Ok(Err(e))) => Err(ExecErr::NonZero(e.to_string())),
+        Ok(Err(e)) => Err(ExecErr::Spawn(format!("task panic: {e}"))),
+    }
+}
 
 async fn exec_goblin_script_via_vm(
     script_path: &std::path::Path,
