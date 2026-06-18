@@ -8,18 +8,19 @@ pub struct DevOptions {
     pub host: String,
     pub port: u16,
     pub proxies: Vec<(String, String)>,
+    pub use_vm: bool,
 }
 
 impl Default for DevOptions {
     fn default() -> Self {
-        Self { host: "0.0.0.0".into(), port: 5173, proxies: Vec::new() }
+        Self { host: "0.0.0.0".into(), port: 5173, proxies: Vec::new(), use_vm: false }
     }
 }
 
 /// Start a dev server with sensible defaults (wraps goblin-host).
 /// Returns when the server shuts down (e.g., Ctrl+C).
 pub async fn start(opts: DevOptions) -> anyhow::Result<()> {
-    let mut b = HostBuilder::new().bind(opts.host, opts.port);
+    let mut b = HostBuilder::new().bind(opts.host, opts.port).vm(opts.use_vm);
     for (prefix, target) in &opts.proxies {
         b = b.proxy(prefix.clone(), target.clone());
     }

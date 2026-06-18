@@ -12,6 +12,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 goblin-interpreter = { path = "../goblin-interpreter" }
+goblin-vm = { path = "../goblin-vm" }
 goblin-source = { path = "../goblin-source" }
 goblin-diagnostics = { path = "../goblin-diagnostics" }
 serde = { version = "1", features = ["derive"] }

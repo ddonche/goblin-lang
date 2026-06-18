@@ -169,6 +169,7 @@ pub struct HostConfig {
     pub caps: Caps,
     pub steps: Vec<Step>,
     pub proxies: Vec<ProxyRule>,
+    pub use_vm: bool,
 }
 
 impl Default for HostConfig {
@@ -180,6 +181,7 @@ impl Default for HostConfig {
             caps: Caps::default(),
             steps: Vec::new(),
             proxies: Vec::new(),
+            use_vm: false,
         }
     }
 }
@@ -211,6 +213,7 @@ impl HostBuilder {
     pub fn add_static(mut self, cfg: StaticCfg) -> Self { self.cfg.steps.push(Step::Static(cfg)); self }
     pub fn add_proxy(mut self, cfg: ProxyCfg) -> Self { self.cfg.steps.push(Step::Proxy(cfg)); self }
     pub fn add_app(mut self, app: Box<dyn WebApp>) -> Self { self.cfg.steps.push(Step::App(app)); self }
+    pub fn vm(mut self, enabled: bool) -> Self { self.cfg.use_vm = enabled; self }
     pub fn build(self) -> Host { Host { cfg: self.cfg } }
 }
 
@@ -356,6 +359,7 @@ impl Host {
                     let idle_ms = 60_000;
                     let proxies = self.cfg.proxies.clone();
                     let docroot = docroot.clone();
+                    let use_vm = self.cfg.use_vm;
 
                     tokio::spawn(async move {
                         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -588,22 +592,42 @@ impl Host {
                                         ""
                                     };
 
-                                    match exec_goblin_script_via_cli_timeout(
-                                        &script_path,
-                                        30000,
-                                        query_string,
-                                        method,
-                                        path,
-                                        &host,
-                                        goblin_body,
-                                        &request_file_path,
-                                        &authorization,
-                                        &headers_json,
-                                        &auth_user_id,
-                                        &auth_email,
-                                        &auth_role,
-                                        &auth_json,
-                                    ).await {
+                                    let exec_result = if use_vm {
+                                        exec_goblin_script_via_vm(
+                                            &script_path,
+                                            30000,
+                                            query_string,
+                                            method,
+                                            path,
+                                            &host,
+                                            goblin_body,
+                                            &request_file_path,
+                                            &authorization,
+                                            &headers_json,
+                                            &auth_user_id,
+                                            &auth_email,
+                                            &auth_role,
+                                            &auth_json,
+                                        ).await
+                                    } else {
+                                        exec_goblin_script_via_cli_timeout(
+                                            &script_path,
+                                            30000,
+                                            query_string,
+                                            method,
+                                            path,
+                                            &host,
+                                            goblin_body,
+                                            &request_file_path,
+                                            &authorization,
+                                            &headers_json,
+                                            &auth_user_id,
+                                            &auth_email,
+                                            &auth_role,
+                                            &auth_json,
+                                        ).await
+                                    };
+                                    match exec_result {
                                         Ok(body) => {
                                             let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
 
@@ -918,6 +942,86 @@ enum ExecErr {
     Spawn(String),
     Timeout,
     NonZero(String),
+}
+
+static VM_EXEC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+async fn exec_goblin_script_via_vm(
+    script_path: &std::path::Path,
+    timeout_ms: u64,
+    query_string: &str,
+    method: &str,
+    path: &str,
+    host: &str,
+    body: &str,
+    request_file_path: &str,
+    authorization: &str,
+    headers_json: &str,
+    auth_user_id: &str,
+    auth_email: &str,
+    auth_role: &str,
+    auth_json: &str,
+) -> Result<String, ExecErr> {
+    use tokio::time::{timeout, Duration};
+
+    let src = std::fs::read_to_string(script_path)
+        .map_err(|e| ExecErr::Spawn(format!("read script: {e}")))?;
+
+    let query_string = query_string.to_string();
+    let method = method.to_string();
+    let path = path.to_string();
+    let host = host.to_string();
+    let body = body.to_string();
+    let request_file_path = request_file_path.to_string();
+    let authorization = authorization.to_string();
+    let headers_json = headers_json.to_string();
+    let auth_user_id = auth_user_id.to_string();
+    let auth_email = auth_email.to_string();
+    let auth_role = auth_role.to_string();
+    let auth_json = auth_json.to_string();
+
+    let task = tokio::task::spawn_blocking(move || {
+        let _guard = VM_EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("GOBLIN_NONINTERACTIVE", "1");
+        std::env::set_var("GOBLIN_QUERY_STRING", &query_string);
+        std::env::set_var("GOBLIN_METHOD", &method);
+        std::env::set_var("GOBLIN_PATH", &path);
+        std::env::set_var("GOBLIN_HOST", &host);
+        std::env::set_var("GOBLIN_BODY", &body);
+        std::env::set_var("GOBLIN_REQUEST_FILE", &request_file_path);
+        std::env::set_var("GOBLIN_UPLOAD_PATH", &request_file_path);
+        std::env::set_var("GOBLIN_AUTHORIZATION", &authorization);
+        std::env::set_var("GOBLIN_HEADERS_JSON", &headers_json);
+        std::env::set_var("AUTH_USER_ID", &auth_user_id);
+        std::env::set_var("AUTH_EMAIL", &auth_email);
+        std::env::set_var("AUTH_ROLE", &auth_role);
+        std::env::set_var("AUTH_JSON", &auth_json);
+        goblin_vm::exec::execute_source_api(&src)
+    });
+
+    match timeout(Duration::from_millis(timeout_ms), task).await {
+        Err(_) => Err(ExecErr::Timeout),
+        Ok(Ok(Ok((output, response)))) => {
+            let status = response.status.unwrap_or(200);
+            let headers_obj: serde_json::Map<String, serde_json::Value> = response.headers
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            let cookies_arr: Vec<serde_json::Value> = response.cookies
+                .iter()
+                .map(|c| serde_json::Value::String(c.clone()))
+                .collect();
+            let envelope = serde_json::json!({
+                "status": status,
+                "headers": headers_obj,
+                "cookies": cookies_arr,
+                "body": output,
+            });
+            Ok(envelope.to_string())
+        }
+        Ok(Ok(Err(e))) => Err(ExecErr::NonZero(e.to_string())),
+        Ok(Err(e)) => Err(ExecErr::Spawn(format!("task panic: {e}"))),
+    }
 }
 
 async fn exec_goblin_script_via_cli_timeout(
