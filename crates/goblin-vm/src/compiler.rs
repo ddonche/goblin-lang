@@ -1037,12 +1037,20 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
                 } else {
-                    // Namespace call: try full_name then bare name as a function.
+                    // Namespace call: try full_name then bare name as a compile-time
+                    // local/global; if neither is found, fall back to a runtime lookup
+                    // in session.named_values (handles `import X as alias; alias::fn()`).
                     let full_name = format!("{}::{}", ns, name);
-                    let load_op = self.resolve_load(&full_name)
-                        .or_else(|_| self.resolve_load(name))
-                        .map_err(|e| self.locate_err(e))?;
-                    self.emit(load_op);
+                    match self.resolve_load(&full_name).or_else(|_| self.resolve_load(name)) {
+                        Ok(load_op) => { self.emit(load_op); }
+                        Err(_) => {
+                            // Neither compile-time name exists — emit a runtime named lookup.
+                            // The bare action name is used because imports register actions
+                            // under their bare names via RegisterAction.
+                            let name_idx = self.add_constant(Value::Str(name.clone()));
+                            self.emit(Opcode::LoadNamed(name_idx));
+                        }
+                    }
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call(args.len() as u8));
                 }

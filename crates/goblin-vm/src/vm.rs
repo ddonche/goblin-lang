@@ -1449,6 +1449,21 @@ impl Vm {
                 self.session.named_values.insert(name, value);
             }
 
+            Opcode::LoadNamed(name_idx) => {
+                let name = {
+                    let frame = self.call_stack.last().unwrap();
+                    match frame.func.constants.get(name_idx as usize).cloned() {
+                        Some(Value::Str(s)) => s,
+                        _ => return Err(GoblinError::Runtime("LoadNamed: name constant must be a string".into())),
+                    }
+                };
+                let value = self.session.named_values.get(&name)
+                    .ok_or_else(|| GoblinError::UndefinedVariable { name: name.clone() })?
+                    .clone();
+                let t = self.session.alloc_value(value);
+                self.stack.push(t);
+            }
+
             Opcode::StringInterp(idx) => {
                 let template = {
                     let frame = self.call_stack.last().unwrap();
