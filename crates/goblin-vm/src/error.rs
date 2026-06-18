@@ -49,7 +49,7 @@ pub enum GoblinError {
     Runtime(String),
 
     /// An error annotated with a source location.
-    WithLocation { inner: Box<GoblinError>, line: u32 },
+    WithLocation { inner: Box<GoblinError>, line: u32, file: String },
 }
 
 impl GoblinError {
@@ -91,8 +91,18 @@ impl fmt::Display for GoblinError {
                 write!(f, "not yet implemented: {feature}"),
             GoblinError::Runtime(msg) =>
                 write!(f, "runtime error: {msg}"),
-            GoblinError::WithLocation { inner, line } =>
-                write!(f, "[line {line}] {inner}"),
+            GoblinError::WithLocation { inner, line, file } => {
+                if file.is_empty() {
+                    write!(f, "[line {line}] {inner}")
+                } else {
+                    // Show only the filename portion, not the full path
+                    let name = std::path::Path::new(file)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(file.as_str());
+                    write!(f, "[{name}:{line}] {inner}")
+                }
+            }
         }
     }
 }

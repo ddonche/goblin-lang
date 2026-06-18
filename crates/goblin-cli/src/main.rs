@@ -1086,7 +1086,7 @@ fn vm_error_to_diagnostic(
     // Peel off WithLocation wrappers to get the line number and inner message.
     fn peel(e: &GoblinError) -> (&GoblinError, u32) {
         match e {
-            GoblinError::WithLocation { inner, line } => {
+            GoblinError::WithLocation { inner, line, .. } => {
                 let (inner2, inner_line) = peel(inner);
                 (inner2, if inner_line > 0 { inner_line } else { *line })
             }

@@ -137,7 +137,7 @@ impl FunctionScope {
         }
     }
 
-    fn finish(self) -> FunctionObject {
+    fn finish(self, source_file: String) -> FunctionObject {
         let upvalue_descriptors: Vec<UpvalueDescriptor> =
             self.upvalues.into_iter().map(|(_, d)| d).collect();
         let total_slots = self.next_slot as usize;
@@ -157,6 +157,7 @@ impl FunctionScope {
             line_numbers: self.line_numbers,
             local_names,
             owner_glam: None,
+            source_file,
         }
     }
 }
@@ -231,6 +232,8 @@ pub struct Compiler {
     /// When compiling a GLAM's entry module (via `use <namespace>`), the namespace
     /// to stamp onto its top-level actions' `owner_glam`, for `:need()` resolution.
     glam_namespace: Option<String>,
+    /// Source file being compiled (stamped onto every FunctionObject, for error messages).
+    source_file: String,
 }
 
 #[derive(Default)]
@@ -245,7 +248,13 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new() }
+    }
+
+    /// Set the source file name stamped onto compiled functions (for error messages).
+    pub fn for_file(mut self, path: &str) -> Self {
+        self.source_file = path.to_string();
+        self
     }
 
     /// Mark this compilation as a GLAM's entry module, so its top-level actions
@@ -347,7 +356,7 @@ impl Compiler {
     }
 
     fn pop_scope(&mut self) -> FunctionObject {
-        self.scopes.pop().unwrap().finish()
+        self.scopes.pop().unwrap().finish(self.source_file.clone())
     }
 
     fn scope(&self) -> &FunctionScope {
@@ -371,7 +380,7 @@ impl Compiler {
 
     fn locate_err(&self, e: GoblinError) -> GoblinError {
         if matches!(e, GoblinError::WithLocation { .. }) { return e; }
-        GoblinError::WithLocation { inner: Box::new(e), line: self.current_line }
+        GoblinError::WithLocation { inner: Box::new(e), line: self.current_line, file: self.source_file.clone() }
     }
 
     fn add_constant(&mut self, v: Value) -> u16 {
@@ -2584,8 +2593,16 @@ pub fn compile_repl_snippet(
     module: &Module,
     known_globals: &[String],
 ) -> Result<CompiledModule, GoblinError> {
-    let mut c = Compiler::new();
-    // Pre-populate globals with already-known names so the compiler can resolve them.
+    compile_repl_snippet_for_file(module, known_globals, "")
+}
+
+/// Like `compile_repl_snippet` but stamps `source_file` onto compiled functions.
+pub fn compile_repl_snippet_for_file(
+    module: &Module,
+    known_globals: &[String],
+    source_file: &str,
+) -> Result<CompiledModule, GoblinError> {
+    let mut c = Compiler::new().for_file(source_file);
     c.globals = known_globals.to_vec();
     c.repl_known_globals_count = known_globals.len();
     c.compile_repl_module(module)

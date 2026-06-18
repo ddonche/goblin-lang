@@ -6,7 +6,7 @@
 //! an output string, which is then compiled and executed like any other
 //! Goblin module.
 
-use crate::compiler::compile_repl_snippet;
+use crate::compiler::compile_repl_snippet_for_file;
 use crate::error::GoblinError;
 use crate::session::{GcMode, Session};
 use crate::value::Value;
@@ -179,7 +179,7 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     let data_pairs = map_to_pairs(data)?;
     let mut known_globals: Vec<String> = data_pairs.iter().map(|(k, _)| k.clone()).collect();
 
-    let compiled = compile_repl_snippet(&module, &known_globals).map_err(|e| {
+    let compiled = compile_repl_snippet_for_file(&module, &known_globals, path).map_err(|e| {
         GoblinError::Runtime(format!("render_template: compile error in '{path}': {e}"))
     })?;
 
