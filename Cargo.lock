@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.47.40"
+version = "0.47.38"
 dependencies = [
  "anyhow",
  "clap",
@@ -1065,6 +1065,7 @@ dependencies = [
  "goblin-diagnostics",
  "goblin-interpreter",
  "goblin-source",
+ "goblin-vm",
  "reqwest",
  "serde",
  "serde_json",
