@@ -204,13 +204,16 @@ impl Vm {
                             frame.ip = handler.catch_ip;
                         }
                     } else {
-                        let line = self.call_stack.last()
-                            .and_then(|f| f.func.line_numbers.get(f.ip.saturating_sub(1)).copied())
-                            .unwrap_or(0);
+                        let (line, file) = self.call_stack.last()
+                            .map(|f| (
+                                f.func.line_numbers.get(f.ip.saturating_sub(1)).copied().unwrap_or(0),
+                                f.func.source_file.clone(),
+                            ))
+                            .unwrap_or((0, String::new()));
                         let located = if matches!(e, GoblinError::WithLocation { .. }) {
                             e
                         } else {
-                            GoblinError::WithLocation { inner: Box::new(e), line }
+                            GoblinError::WithLocation { inner: Box::new(e), line, file }
                         };
                         return Err(located);
                     }
@@ -2484,6 +2487,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            source_file: String::new(),
         }
     }
 
@@ -2525,6 +2529,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            source_file: String::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -2552,6 +2557,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            source_file: String::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -2577,6 +2583,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            source_file: String::new(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -2595,6 +2602,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            source_file: String::new(),
         };
 
         let result = vm.execute(outer).unwrap();

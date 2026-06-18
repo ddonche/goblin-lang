@@ -1073,7 +1073,7 @@ async fn exec_goblin_script_via_vm(
             response.headers.insert("Content-Type".to_string(), "text/html; charset=utf-8".to_string());
             Ok((html_str, response))
         } else {
-            goblin_vm::exec::execute_source_api(&src)
+            goblin_vm::exec::execute_source_api(&src, &script_path_str)
         }
     });
 

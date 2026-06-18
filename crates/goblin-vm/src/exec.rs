@@ -98,8 +98,9 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
 
 /// Like `execute_source` but captures print/say output and returns it with the response state.
 /// Used by goblin-host to run scripts in-process with the VM engine.
-pub fn execute_source_api(source: &str) -> Result<(String, ResponseState), GoblinError> {
-    let tokens = goblin_lexer::lex(source, "<source>")
+/// `source_file` is used in error messages; pass "" when the path is not known.
+pub fn execute_source_api(source: &str, source_file: &str) -> Result<(String, ResponseState), GoblinError> {
+    let tokens = goblin_lexer::lex(source, if source_file.is_empty() { "<source>" } else { source_file })
         .map_err(|diags| GoblinError::CompileError {
             message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
             span_debug: "<lex>".into(),
@@ -112,7 +113,7 @@ pub fn execute_source_api(source: &str) -> Result<(String, ResponseState), Gobli
             span_debug: "<parse>".into(),
         })?;
 
-    let compiled = Compiler::new().compile_module(&module)?;
+    let compiled = Compiler::new().for_file(source_file).compile_module(&module)?;
 
     let mut session = Session::new(GcMode::Auto);
     session.global_names = compiled.global_names;

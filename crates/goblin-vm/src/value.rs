@@ -284,6 +284,8 @@ pub struct FunctionObject {
     /// The GLAM namespace this function was defined in (top-level actions loaded
     /// via `use <namespace>` only), used by `:need()` to resolve action needs.
     pub owner_glam: Option<String>,
+    /// Source file this function was compiled from (empty = unknown).
+    pub source_file: String,
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected
