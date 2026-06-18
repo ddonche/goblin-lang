@@ -681,30 +681,53 @@ impl Host {
                                                     200 => "OK",
                                                     201 => "Created",
                                                     204 => "No Content",
+                                                    301 => "Moved Permanently",
+                                                    302 => "Found",
+                                                    303 => "See Other",
+                                                    304 => "Not Modified",
+                                                    307 => "Temporary Redirect",
+                                                    308 => "Permanent Redirect",
                                                     400 => "Bad Request",
                                                     401 => "Unauthorized",
                                                     403 => "Forbidden",
                                                     404 => "Not Found",
+                                                    405 => "Method Not Allowed",
+                                                    409 => "Conflict",
+                                                    422 => "Unprocessable Entity",
+                                                    429 => "Too Many Requests",
                                                     500 => "Internal Server Error",
+                                                    502 => "Bad Gateway",
+                                                    503 => "Service Unavailable",
                                                     504 => "Gateway Timeout",
                                                     _ => "OK",
                                                 };
 
-                                                let content_type = v.get("headers")
-                                                    .and_then(|h| h.get("Content-Type"))
-                                                    .and_then(|x| x.as_str())
-                                                    .unwrap_or("text/plain; charset=utf-8");
+                                                // For redirects, send no body and no Content-Type.
+                                                let is_redirect = status >= 300 && status < 400;
 
-                                                let headers = format!(
-                                                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
-                                                    response_body.len(),
-                                                    crate::CONTRACT_VERSION
-                                                );
+                                                let headers = if is_redirect {
+                                                    format!(
+                                                        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
+                                                        crate::CONTRACT_VERSION
+                                                    )
+                                                } else {
+                                                    let content_type = v.get("headers")
+                                                        .and_then(|h| h.get("Content-Type"))
+                                                        .and_then(|x| x.as_str())
+                                                        .unwrap_or("text/plain; charset=utf-8");
+                                                    format!(
+                                                        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
+                                                        response_body.len(),
+                                                        crate::CONTRACT_VERSION
+                                                    )
+                                                };
 
                                                 if socket.write_all(headers.as_bytes()).await.is_ok() {
-                                                    let _ = socket.write_all(response_body.as_bytes()).await;
+                                                    if !is_redirect {
+                                                        let _ = socket.write_all(response_body.as_bytes()).await;
+                                                    }
                                                 }
-                                                log.done(status, response_body.len());
+                                                log.done(status, if is_redirect { 0 } else { response_body.len() });
                                                 if want_close { break 'conn; } else { continue 'conn; }
                                             }
 
@@ -889,17 +912,43 @@ impl Host {
                                         Ok(envelope_json) => {
                                             let parsed: serde_json::Value = serde_json::from_str(&envelope_json).unwrap_or(serde_json::Value::Null);
                                             let body_str = parsed.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string();
-                                            let content_type = parsed.get("headers").and_then(|h| h.get("Content-Type")).and_then(|v| v.as_str()).unwrap_or("text/html; charset=utf-8");
                                             let status = parsed.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
-                                            let reason = if status == 200 { "OK" } else { "Error" };
-                                            let resp_headers = format!(
-                                                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
-                                                body_str.len(), crate::CONTRACT_VERSION
-                                            );
-                                            if socket.write_all(resp_headers.as_bytes()).await.is_ok() {
-                                                let _ = socket.write_all(body_str.as_bytes()).await;
+                                            let is_redirect = status >= 300 && status < 400;
+                                            let reason = match status {
+                                                200 => "OK", 201 => "Created", 204 => "No Content",
+                                                301 => "Moved Permanently", 302 => "Found",
+                                                303 => "See Other", 307 => "Temporary Redirect",
+                                                308 => "Permanent Redirect",
+                                                400 => "Bad Request", 401 => "Unauthorized",
+                                                403 => "Forbidden", 404 => "Not Found",
+                                                500 => "Internal Server Error", _ => "OK",
+                                            };
+                                            let mut extra_headers = String::new();
+                                            if let Some(ho) = parsed.get("headers").and_then(|h| h.as_object()) {
+                                                for (k, val) in ho {
+                                                    if let Some(s) = val.as_str() {
+                                                        extra_headers.push_str(&format!("{k}: {s}\r\n"));
+                                                    }
+                                                }
                                             }
-                                            log.done(status, body_str.len());
+                                            let resp_headers = if is_redirect {
+                                                format!(
+                                                    "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
+                                                    crate::CONTRACT_VERSION
+                                                )
+                                            } else {
+                                                let content_type = parsed.get("headers").and_then(|h| h.get("Content-Type")).and_then(|v| v.as_str()).unwrap_or("text/html; charset=utf-8");
+                                                format!(
+                                                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
+                                                    body_str.len(), crate::CONTRACT_VERSION
+                                                )
+                                            };
+                                            if socket.write_all(resp_headers.as_bytes()).await.is_ok() {
+                                                if !is_redirect {
+                                                    let _ = socket.write_all(body_str.as_bytes()).await;
+                                                }
+                                            }
+                                            log.done(status, if is_redirect { 0 } else { body_str.len() });
                                         }
                                         Err(ExecErr::Timeout) => {
                                             let body = "504 Gateway Timeout";
