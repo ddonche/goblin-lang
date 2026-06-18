@@ -57,7 +57,7 @@ fn run_devserver(host: String, port: u16) -> i32 {
 
     let result = rt.block_on(async move {
         use goblin_devserver::{start, DevOptions};
-        let opts = DevOptions { host, port, proxies: Vec::new() };
+        let opts = DevOptions { host, port, proxies: Vec::new(), use_vm: false };
         start(opts).await
     });
 
@@ -169,16 +169,17 @@ fn main() {
         let mut host = String::from("0.0.0.0");
         let mut port: u16 = 5173;
         let mut proxies: Vec<(String, String)> = Vec::new();
+        let mut start_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "vm";
 
         let mut i = 0;
         while i < args.len() {
             match args[i].as_str() {
                 "--host" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]..."); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]"); std::process::exit(2); }
                     host = args[i + 1].clone(); i += 2;
                 }
                 "--port" | "-p" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]..."); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]"); std::process::exit(2); }
                     port = args[i + 1].parse().unwrap_or_else(|_| { eprintln!("invalid port: {}", args[i + 1]); std::process::exit(2); });
                     i += 2;
                 }
@@ -197,15 +198,16 @@ fn main() {
                     }
                     i += 2;
                 }
+                "--vm" => { start_vm = true; i += 1; }
                 other => {
                     eprintln!("unknown start option: {}", other);
-                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]...");
+                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]");
                     std::process::exit(2);
                 }
             }
         }
 
-        std::process::exit(run_devserver_with_proxies(host, port, proxies));
+        std::process::exit(run_devserver_with_proxies(host, port, proxies, start_vm));
     }
 
     // Detect --vm flag or GOBLIN_ENGINE=vm env var anywhere in args.
@@ -1956,7 +1958,7 @@ fn resolve_entry_from_yaml(cwd: &std::path::Path) -> Option<std::path::PathBuf> 
 // =======================================================
 // Devserver launcher with proxy support
 // =======================================================
-fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, String)>) -> i32 {
+fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, String)>, use_vm: bool) -> i32 {
     // Create a Tokio runtime manually (CLI entrypoints can’t be async)
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1966,7 +1968,7 @@ fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, St
     // Block on async start
     let result = rt.block_on(async move {
         use goblin_devserver::{start, DevOptions};
-        let opts = DevOptions { host, port, proxies: Vec::new() };
+        let opts = DevOptions { host, port, proxies: Vec::new(), use_vm };
         start(opts).await
     });
 
