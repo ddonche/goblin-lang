@@ -194,6 +194,10 @@ pub enum Opcode {
     /// Does NOT pop — the value stays on stack for the subsequent StoreLocal.
     RegisterAction(u16),
 
+    /// Runtime named-value lookup: load session.named_values[constants[name_idx]] onto stack.
+    /// Used as fallback for namespace-qualified calls (import X as ns; ns::action()).
+    LoadNamed(u16),
+
     /// Interpolate a string constant: constants[idx] is a raw template string.
     /// Looks up {ident} placeholders in the current locals/globals scope at runtime.
     StringInterp(u16),
@@ -305,6 +309,7 @@ impl Opcode {
             Opcode::ObjectDecision {..} => "ObjectDecision",
             Opcode::UnitDecl(_)       => "UnitDecl",
             Opcode::RegisterAction(_) => "RegisterAction",
+            Opcode::LoadNamed(_)      => "LoadNamed",
             Opcode::StringInterp(_)   => "StringInterp",
             Opcode::SelfField(_)      => "SelfField",
             Opcode::StoreLockLocal(..)   => "StoreLockLocal",
