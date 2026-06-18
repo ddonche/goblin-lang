@@ -20,6 +20,8 @@ const CONTROL_KEYWORDS: &[&str] = &[
 
 /// True if `source`'s first meaningful content is the `<{ render }>` directive.
 pub fn is_render_source(source: &str) -> bool {
+    // Strip UTF-8 BOM if present (Windows editors sometimes add it)
+    let source = source.trim_start_matches('\u{FEFF}');
     let rest = match source.trim_start().strip_prefix("<{") {
         Some(r) => r.trim_start(),
         None => return false,

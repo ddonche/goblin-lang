@@ -858,68 +858,65 @@ impl Host {
                             }
 
                             if let Ok(bytes) = fs::read(&candidate).await {
-                                // If it's a .gbln file and VM mode is on, execute it instead of serving it raw
+                                // Never serve .gbln files as raw static content — always execute via VM
                                 let ext = candidate.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
                                 if use_vm && ext == "gbln" {
-                                    let src = String::from_utf8_lossy(&bytes).into_owned();
-                                    if goblin_vm::render::is_render_source(&src) {
-                                        let script_path = candidate.clone();
-                                        let s_host = host_header.unwrap_or("").to_string();
-                                        let s_auth = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization")).map(|(_, v)| v.clone()).unwrap_or_default();
-                                        let s_headers_json = serde_json::to_string(&headers_map).unwrap_or_else(|_| "{}".to_string());
-                                        let s_auth_user_id = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-user-id")).map(|(_, v)| v.clone()).unwrap_or_default();
-                                        let s_auth_email = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-email")).map(|(_, v)| v.clone()).unwrap_or_default();
-                                        let s_auth_role = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-role")).map(|(_, v)| v.clone()).unwrap_or_default();
-                                        let s_auth_json = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-json")).map(|(_, v)| v.clone()).unwrap_or_default();
-                                        let result = exec_goblin_script_via_vm(
-                                            &script_path,
-                                            30000,
-                                            query_string,
-                                            method,
-                                            path,
-                                            &s_host,
-                                            &body_text,
-                                            "",
-                                            &s_auth,
-                                            &s_headers_json,
-                                            &s_auth_user_id,
-                                            &s_auth_email,
-                                            &s_auth_role,
-                                            &s_auth_json,
-                                        ).await;
-                                        match result {
-                                            Ok(envelope_json) => {
-                                                let parsed: serde_json::Value = serde_json::from_str(&envelope_json).unwrap_or(serde_json::Value::Null);
-                                                let body_str = parsed.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string();
-                                                let content_type = parsed.get("headers").and_then(|h| h.get("Content-Type")).and_then(|v| v.as_str()).unwrap_or("text/html; charset=utf-8");
-                                                let status = parsed.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
-                                                let reason = if status == 200 { "OK" } else { "Error" };
-                                                let resp_headers = format!(
-                                                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
-                                                    body_str.len(), crate::CONTRACT_VERSION
-                                                );
-                                                if socket.write_all(resp_headers.as_bytes()).await.is_ok() {
-                                                    let _ = socket.write_all(body_str.as_bytes()).await;
-                                                }
-                                                log.done(status, body_str.len());
+                                    let script_path = candidate.clone();
+                                    let s_host = host_header.unwrap_or("").to_string();
+                                    let s_auth = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_headers_json = serde_json::to_string(&headers_map).unwrap_or_else(|_| "{}".to_string());
+                                    let s_auth_user_id = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-user-id")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_auth_email = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-email")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_auth_role = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-role")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let s_auth_json = headers_map.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-goblin-auth-json")).map(|(_, v)| v.clone()).unwrap_or_default();
+                                    let result = exec_goblin_script_via_vm(
+                                        &script_path,
+                                        30000,
+                                        query_string,
+                                        method,
+                                        path,
+                                        &s_host,
+                                        &body_text,
+                                        "",
+                                        &s_auth,
+                                        &s_headers_json,
+                                        &s_auth_user_id,
+                                        &s_auth_email,
+                                        &s_auth_role,
+                                        &s_auth_json,
+                                    ).await;
+                                    match result {
+                                        Ok(envelope_json) => {
+                                            let parsed: serde_json::Value = serde_json::from_str(&envelope_json).unwrap_or(serde_json::Value::Null);
+                                            let body_str = parsed.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string();
+                                            let content_type = parsed.get("headers").and_then(|h| h.get("Content-Type")).and_then(|v| v.as_str()).unwrap_or("text/html; charset=utf-8");
+                                            let status = parsed.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
+                                            let reason = if status == 200 { "OK" } else { "Error" };
+                                            let resp_headers = format!(
+                                                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
+                                                body_str.len(), crate::CONTRACT_VERSION
+                                            );
+                                            if socket.write_all(resp_headers.as_bytes()).await.is_ok() {
+                                                let _ = socket.write_all(body_str.as_bytes()).await;
                                             }
-                                            Err(ExecErr::Timeout) => {
-                                                let body = "504 Gateway Timeout";
-                                                let resp_headers = format!("HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n", body.len(), crate::CONTRACT_VERSION);
-                                                let _ = socket.write_all(resp_headers.as_bytes()).await;
-                                                let _ = socket.write_all(body.as_bytes()).await;
-                                                log.done(504, body.len());
-                                            }
-                                            Err(ExecErr::NonZero(e) | ExecErr::Spawn(e)) => {
-                                                let body = format!("Goblin render error:\n{e}");
-                                                let resp_headers = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n", body.len(), crate::CONTRACT_VERSION);
-                                                let _ = socket.write_all(resp_headers.as_bytes()).await;
-                                                let _ = socket.write_all(body.as_bytes()).await;
-                                                log.done(500, body.len());
-                                            }
+                                            log.done(status, body_str.len());
                                         }
-                                        if want_close { break 'conn; } else { continue 'conn; }
+                                        Err(ExecErr::Timeout) => {
+                                            let body = "504 Gateway Timeout";
+                                            let resp_headers = format!("HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n", body.len(), crate::CONTRACT_VERSION);
+                                            let _ = socket.write_all(resp_headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(504, body.len());
+                                        }
+                                        Err(ExecErr::NonZero(e) | ExecErr::Spawn(e)) => {
+                                            let body = format!("Goblin script error:\n{e}");
+                                            let resp_headers = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n", body.len(), crate::CONTRACT_VERSION);
+                                            let _ = socket.write_all(resp_headers.as_bytes()).await;
+                                            let _ = socket.write_all(body.as_bytes()).await;
+                                            log.done(500, body.len());
+                                        }
                                     }
+                                    if want_close { break 'conn; } else { continue 'conn; }
                                 }
 
                                 let meta = fs::metadata(&candidate).await.ok();
