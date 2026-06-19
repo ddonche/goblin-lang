@@ -1773,7 +1773,10 @@ impl Vm {
         let module = goblin_parser::Parser::new(&tokens).parse_module()
             .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
 
-        let compiled = crate::compiler::Compiler::new().with_glam_namespace(owner_glam).compile_module(&module)
+        let compiled = crate::compiler::Compiler::new()
+            .with_glam_namespace(owner_glam)
+            .for_file(&actual_path.to_string_lossy())
+            .compile_module(&module)
             .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
 
         // Pre-register classes/enums from the imported module
