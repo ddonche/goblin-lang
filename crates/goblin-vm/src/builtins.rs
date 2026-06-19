@@ -1467,190 +1467,141 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Err(GoblinError::NotImplemented { feature: "grab_where / grab_matching require VM predicate callback" })
         }
 
-        // ── Collections put (legacy) ──────────────────────────────────────────
+        // ── Collections put ───────────────────────────────────────────────────
         BuiltinId::Put => {
             if args.len() == 2 {
-                let coll = require_collection(read(0)?, "put")?;
+                let coll = read(0)?;
                 let val = read(1)?;
-                collections::put(&coll, Value::Int(coll.meta.len as i64), val)
+                collections::collection_operation(&coll, collections::Position::All, collections::Operation::Put(val), session)
             } else if args.len() == 3 {
-                let coll = require_collection(read(0)?, "put")?;
+                let coll = read(0)?;
                 let key = read(1)?;
                 let val = read(2)?;
-                collections::put(&coll, key, val)
+                collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Put(val), session)
             } else {
                 Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "put".into() })
             }
         }
         BuiltinId::PutFirst => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "put_first".into() }); }
-            collections::put_first(&*require_collection(read(0)?, "put_first")?, read(1)?)
+            let coll = read(0)?; let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::First, collections::Operation::Put(val), session)
         }
         BuiltinId::PutLast => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "put_last".into() }); }
-            collections::put_last(&*require_collection(read(0)?, "put_last")?, read(1)?)
+            let coll = read(0)?; let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::Last, collections::Operation::Put(val), session)
         }
         BuiltinId::PutAt => {
             if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "put_at".into() }); }
-            let coll = require_collection(read(0)?, "put_at")?;
-            let idx = require_int(read(1)?, "put_at index")?;
-            collections::put_at(&coll, idx, read(2)?)
+            let coll = read(0)?; let key = read(1)?; let val = read(2)?;
+            collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Put(val), session)
         }
 
-        // ── Collections update (legacy) ───────────────────────────────────────
+        // ── Collections update ────────────────────────────────────────────────
         BuiltinId::Update => {
-            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "update".into() }); }
-            let coll = require_collection(read(0)?, "update")?;
-            let key = read(1)?;
-            collections::update(&coll, &key, read(2)?)
+            if args.len() == 2 {
+                let coll = read(0)?; let val = read(1)?;
+                collections::collection_operation(&coll, collections::Position::All, collections::Operation::Update(val), session)
+            } else if args.len() == 3 {
+                let coll = read(0)?; let key = read(1)?; let val = read(2)?;
+                collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Update(val), session)
+            } else {
+                Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "update".into() })
+            }
         }
         BuiltinId::UpdateFirst => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "update_first".into() }); }
-            collections::update_first(&*require_collection(read(0)?, "update_first")?, read(1)?)
+            let coll = read(0)?; let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::First, collections::Operation::Update(val), session)
         }
         BuiltinId::UpdateLast => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "update_last".into() }); }
-            collections::update_last(&*require_collection(read(0)?, "update_last")?, read(1)?)
+            let coll = read(0)?; let val = read(1)?;
+            collections::collection_operation(&coll, collections::Position::Last, collections::Operation::Update(val), session)
         }
         BuiltinId::UpdateAt => {
             if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "update_at".into() }); }
-            let coll = require_collection(read(0)?, "update_at")?;
-            let idx = require_int(read(1)?, "update_at index")?;
-            collections::update_at(&coll, idx, read(2)?)
+            let coll = read(0)?; let key = read(1)?; let val = read(2)?;
+            collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Update(val), session)
         }
 
-        // ── Collections delete (legacy) ───────────────────────────────────────
+        // ── Collections delete ────────────────────────────────────────────────
         BuiltinId::Delete => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "delete".into() }); }
-            let coll = require_collection(read(0)?, "delete")?;
-            collections::delete(&coll, &read(1)?)
+            if args.len() == 1 {
+                let coll = read(0)?;
+                collections::collection_operation(&coll, collections::Position::All, collections::Operation::Delete, session)
+            } else if args.len() == 2 {
+                let coll = read(0)?; let key = read(1)?;
+                collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Delete, session)
+            } else {
+                Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "delete".into() })
+            }
         }
         BuiltinId::DeleteFirst => {
             expect_n(1)?;
-            collections::delete_first(&*require_collection(read(0)?, "delete_first")?)
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::First, collections::Operation::Delete, session)
         }
         BuiltinId::DeleteLast => {
             expect_n(1)?;
-            collections::delete_last(&*require_collection(read(0)?, "delete_last")?)
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Last, collections::Operation::Delete, session)
         }
         BuiltinId::DeleteAt => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "delete_at".into() }); }
-            let coll = require_collection(read(0)?, "delete_at")?;
-            let idx = require_int(read(1)?, "delete_at index")?;
-            collections::delete_at(&coll, idx)
+            let coll = read(0)?; let key = read(1)?;
+            collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Delete, session)
         }
         BuiltinId::DeleteWhere => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "delete_where".into() }); }
+            let coll = read(0)?;
             let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_where pred")) };
-            let is_ident = pred.chars().all(|c| c.is_alphanumeric() || c == '_');
-            match read(0)? {
-                Value::Array(mut xs) => {
-                    xs.retain(|v| {
-                        if !is_ident {
-                            fmt_value_raw(v) != pred
-                        } else if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
-                            let t = session.alloc_value(v.clone());
-                            match call_builtin(bid, vec![t], session) {
-                                Ok(rt) => !matches!(session.read_value(&rt), Ok(Value::Bool(true))),
-                                _ => true,
-                            }
-                        } else { true }
-                    });
-                    Ok(Value::Array(xs))
-                }
-                Value::Map(mut m) => {
-                    m.retain(|_, v| {
-                        if !is_ident {
-                            fmt_value_raw(v) != pred
-                        } else if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
-                            let t = session.alloc_value(v.clone());
-                            match call_builtin(bid, vec![t], session) {
-                                Ok(rt) => !matches!(session.read_value(&rt), Ok(Value::Bool(true))),
-                                _ => true,
-                            }
-                        } else { true }
-                    });
-                    Ok(Value::Map(m))
-                }
-                other => Err(GoblinError::type_error("array or map", other.type_name(), "delete_where")),
-            }
+            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Delete, session)
         }
         BuiltinId::DeleteAll => {
             expect_n(1)?;
-            match read(0)? {
-                Value::Array(_) => Ok(Value::Array(vec![])),
-                Value::Map(_) => Ok(Value::Map(std::collections::BTreeMap::new())),
-                Value::MapOrd(_) => Ok(Value::MapOrd(indexmap::IndexMap::new())),
-                other => Err(GoblinError::type_error("array or map", other.type_name(), "delete_all")),
-            }
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Delete, session)
         }
 
-        // ── Collections reap (legacy) ─────────────────────────────────────────
+        // ── Collections reap ──────────────────────────────────────────────────
+        // All reap operations match the interpreter: return the element(s), not a pair.
         BuiltinId::Reap => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap".into() }); }
-            let coll = require_collection(read(0)?, "reap")?;
-            let (elem, new_coll) = collections::reap(&coll, &read(1)?)?;
-            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![elem, new_coll]))))
+            let coll = read(0)?; let key = read(1)?;
+            collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Reap, session)
         }
         BuiltinId::ReapFirst => {
             expect_n(1)?;
-            let rc = require_collection(read(0)?, "reap_first")?; let (elem, new_coll) = collections::reap_first(&*rc)?;
-            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![elem, new_coll]))))
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::First, collections::Operation::Reap, session)
         }
         BuiltinId::ReapLast => {
             expect_n(1)?;
-            let rc = require_collection(read(0)?, "reap_last")?; let (elem, new_coll) = collections::reap_last(&*rc)?;
-            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![elem, new_coll]))))
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Last, collections::Operation::Reap, session)
         }
         BuiltinId::ReapAt => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_at".into() }); }
-            let coll = require_collection(read(0)?, "reap_at")?;
-            let idx = require_int(read(1)?, "reap_at index")?;
-            let (elem, new_coll) = collections::reap_at(&coll, idx)?;
-            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![elem, new_coll]))))
+            let coll = read(0)?; let key = read(1)?;
+            collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Reap, session)
         }
         BuiltinId::ReapRandom => {
             expect_n(1)?;
-            let coll = require_collection(read(0)?, "reap_random")?;
-            let items = collections::to_vec(&coll);
-            if items.is_empty() {
-                return Ok(Value::Collection(Rc::new(CollectionValue::from_flat(
-                    vec![Value::Nil, Value::Collection(Rc::new(CollectionValue::empty_array()))]
-                ))));
-            }
-            let idx = rng_bounded(session, items.len() as u64) as usize;
-            let (elem, new_coll) = collections::reap_at(&coll, idx as i64)?;
-            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![elem, new_coll]))))
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Reap, session)
         }
         BuiltinId::ReapWhere => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_where".into() }); }
+            let coll = read(0)?;
             let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where pred")) };
-            let is_ident = pred.chars().all(|c| c.is_alphanumeric() || c == '_');
-            let matches_pred = |v: &Value, session: &mut Session| -> bool {
-                if !is_ident { return fmt_value_raw(v) == pred; }
-                if let Some(bid) = crate::compiler::builtin_by_name(&pred) {
-                    let t = session.alloc_value(v.clone());
-                    match call_builtin(bid, vec![t], session) {
-                        Ok(rt) => matches!(session.read_value(&rt), Ok(Value::Bool(true))),
-                        _ => false,
-                    }
-                } else { false }
-            };
-            match read(0)? {
-                Value::Array(mut xs) => {
-                    let mut reaped = vec![];
-                    xs.retain(|v| { if matches_pred(v, session) { reaped.push(v.clone()); false } else { true } });
-                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![Value::Array(reaped), Value::Array(xs)]))))
-                }
-                other => Err(GoblinError::type_error("array", other.type_name(), "reap_where")),
-            }
+            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Reap, session)
         }
         BuiltinId::ReapAll => {
             expect_n(1)?;
-            match read(0)? {
-                Value::Array(xs) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(vec![Value::Array(xs), Value::Array(vec![])])))),
-                other => Err(GoblinError::type_error("array", other.type_name(), "reap_all")),
-            }
+            let coll = read(0)?;
+            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Reap, session)
         }
 
         BuiltinId::ReapSample => {
