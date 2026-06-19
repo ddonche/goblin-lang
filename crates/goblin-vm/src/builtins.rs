@@ -5059,6 +5059,7 @@ fn yall_to_value(v: &goblin_yall::YallValue) -> Value {
 }
 
 fn value_to_yall(v: &Value) -> goblin_yall::YallValue {
+    use crate::value::CollectionLayout;
     match v {
         Value::Nil          => goblin_yall::YallValue::Null,
         Value::Bool(b)      => goblin_yall::YallValue::Bool(*b),
@@ -5074,6 +5075,27 @@ fn value_to_yall(v: &Value) -> goblin_yall::YallValue {
         Value::MapOrd(map) => {
             let mut out = indexmap::IndexMap::new();
             for (k, v2) in map.iter() { out.insert(k.clone(), value_to_yall(v2)); }
+            goblin_yall::YallValue::Map(out)
+        }
+        Value::Collection(c) => {
+            match &c.layout {
+                CollectionLayout::SmallMap(_) | CollectionLayout::HashMapBackend(_) => {
+                    let pairs = collections::to_pairs(c);
+                    let mut out = indexmap::IndexMap::new();
+                    for (k, v2) in pairs {
+                        out.insert(value_to_map_key(&k), value_to_yall(&v2));
+                    }
+                    goblin_yall::YallValue::Map(out)
+                }
+                _ => {
+                    let items = collections::to_vec(c);
+                    goblin_yall::YallValue::Array(items.iter().map(value_to_yall).collect())
+                }
+            }
+        }
+        Value::Object { fields, .. } => {
+            let mut out = indexmap::IndexMap::new();
+            for (k, v2) in fields.iter() { out.insert(k.clone(), value_to_yall(v2)); }
             goblin_yall::YallValue::Map(out)
         }
         _ => goblin_yall::YallValue::Str(fmt_value_raw(v)),
