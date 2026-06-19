@@ -3143,6 +3143,37 @@ impl<'t> Parser<'t> {
         val
     }
 
+    /// Peek ahead to determine if the current `{` token opens an enum variant
+    /// field block (`{ ident: expr, ... }` or `{ }`) vs. a map-index expression
+    /// (`{ "key" }`, `{ expr }`, etc.).
+    ///
+    /// Returns true only when `{` is immediately followed by (optional newlines
+    /// then) either `}` (empty fields) or `ident :` (named field).  All other
+    /// contents mean it is a runtime key expression and the `{` should be left
+    /// for the map-index postfix handler.
+    #[inline]
+    fn peek_is_enum_fields_brace(&self) -> bool {
+        if !self.peek_op("{") { return false; }
+        let mut i = self.i + 1;
+        // Skip newlines
+        while matches!(self.toks.get(i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) {
+            i += 1;
+        }
+        // Empty braces {}
+        if matches!(self.toks.get(i), Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == "}")) {
+            return true;
+        }
+        // Must be ident followed by ':'
+        if !matches!(self.toks.get(i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Ident)) {
+            return false;
+        }
+        i += 1;
+        while matches!(self.toks.get(i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) {
+            i += 1;
+        }
+        matches!(self.toks.get(i), Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == ":"))
+    }
+
     // Consume consecutive NEWLINE tokens.
     #[inline]
     fn skip_newlines(&mut self) {
@@ -11548,8 +11579,9 @@ impl<'t> Parser<'t> {
                 } else if self.eat_op(":") {
                     let args = self.parse_args_colon()?;
                     lhs = PExpr::NsCall(ns, name, args);
-                } else if self.eat_op("{") {
+                } else if self.peek_is_enum_fields_brace() && { self.eat_op("{"); true } {
                     // Enum variant with fields: Message::move { x: 10, y: 20 }
+                    // (only entered when { is followed by ident: or empty {})
                     let mut fields = Vec::new();
                     
                     loop {
