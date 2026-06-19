@@ -116,7 +116,7 @@ pub fn collection_operation(
 ) -> Result<Value, GoblinError> {
     match coll {
         Value::Array(xs) => array_op(xs, pos, op, session),
-        Value::Collection(c) => { let xs = to_vec(c); array_op(&xs, pos, op, session) }
+        Value::Collection(c) => collection_value_op(c, pos, op, session),
         Value::Map(m)    => map_op_btree(m, pos, op, session),
         Value::MapOrd(m) => map_op_indexed(m, pos, op, session),
         Value::Str(s)    => str_op(s, pos, op, session),
@@ -997,6 +997,55 @@ fn build_map(pairs: Vec<(Value, Value)>, meta: CollectionMeta) -> CollectionValu
         CollectionLayout::SmallMap(Rc::new(pairs))
     };
     CollectionValue { layout, meta: CollectionMeta { len, ..meta } }
+}
+
+// ── Canonical collection dispatch: routes Value::Collection by its backend ────
+
+fn update_meta_for_op(meta: &CollectionMeta, pos: &Position, _op: &Operation) -> CollectionMeta {
+    let mut m = meta.clone();
+    match pos {
+        Position::First               => m.front_hits = m.front_hits.saturating_add(1),
+        Position::Last                => m.back_hits  = m.back_hits.saturating_add(1),
+        Position::At(_) | Position::Random => m.mid_hits = m.mid_hits.saturating_add(1),
+        Position::All | Position::Where(_) | Position::Matching(_) | Position::Between(..) => {
+            m.scan_hits = m.scan_hits.saturating_add(1);
+        }
+    }
+    m
+}
+
+fn collection_value_op(
+    c: &CollectionValue,
+    pos: Position,
+    op: Operation,
+    session: &mut crate::session::Session,
+) -> Result<Value, GoblinError> {
+    let meta = update_meta_for_op(&c.meta, &pos, &op);
+    let result = if is_map(c) {
+        // SmallMap / HashMapBackend → map semantics
+        let pairs = to_pairs(c);
+        let as_btree: std::collections::BTreeMap<String, Value> = pairs
+            .iter()
+            .filter_map(|(k, v)| value_to_map_key(k).map(|s| (s, v.clone())))
+            .collect();
+        map_op_btree(&as_btree, pos, op, session)?
+    } else {
+        // FlatArray / RingBuf / ChunkedSeq → sequence semantics
+        let xs = to_vec(c);
+        array_op(&xs, pos, op, session)?
+    };
+    Ok(match result {
+        Value::Array(arr) => {
+            Value::Collection(Rc::new(build_seq(arr, meta)))
+        }
+        Value::Map(m2) => {
+            let pairs: Vec<(Value, Value)> = m2.into_iter()
+                .map(|(k, v)| (Value::Str(k), v))
+                .collect();
+            Value::Collection(Rc::new(build_map(pairs, meta)))
+        }
+        other => other, // scalar: Get/Reap element, or Str from str_op
+    })
 }
 
 // ── GetIndex / SetIndex (used directly by the VM for [] and {} syntax) ────────

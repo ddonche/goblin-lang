@@ -87,8 +87,8 @@ pub enum Value {
     },
     Class { name: String },
 
-    // ── Legacy VM collection type (kept for backward compat) ─────────────────
-    /// Unified collections (arrays, maps, stacks, queues).
+    // ── Canonical VM adaptive collection type ───────────────────────────────
+    /// Unified adaptive collection: FlatArray, RingBuf, ChunkedSeq, SmallMap, HashMapBackend.
     Collection(Rc<CollectionValue>),
 
     // ── VM-only ──────────────────────────────────────────────────────────────
