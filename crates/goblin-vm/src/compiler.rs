@@ -1074,9 +1074,9 @@ impl Compiler {
                         Ok(load_op) => { self.emit(load_op); }
                         Err(_) => {
                             // Neither compile-time name exists — emit a runtime named lookup.
-                            // The bare action name is used because imports register actions
-                            // under their bare names via RegisterAction.
-                            let name_idx = self.add_constant(Value::Str(name.clone()));
+                            // Use the qualified name ("ns::action") so GLAM namespace dispatch
+                            // works: UseGlam registers actions under both bare and qualified names.
+                            let name_idx = self.add_constant(Value::Str(full_name.clone()));
                             self.emit(Opcode::LoadNamed(name_idx));
                         }
                     }

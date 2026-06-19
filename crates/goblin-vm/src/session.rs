@@ -163,9 +163,15 @@ pub struct Session {
     /// Hard type lock: declared lock type per global slot index (set only at declaration, never changes).
     pub global_hard_type_locks: HashMap<u32, String>,
 
-    /// Named function registry for `invoke`/`summon`/`provoke`.
-    /// Top-level action declarations are registered here by name.
+    /// Named function registry for `invoke`/`summon`/`provoke` and GLAM namespace dispatch.
+    /// Actions are stored under both bare names ("create_shard") and qualified names
+    /// ("graveyard::create_shard") when registered during a `use glam` import.
     pub named_values: HashMap<String, Value>,
+
+    /// The namespace of the GLAM currently being imported, if any.
+    /// Set by UseGlam before importing the GLAM entry file; cleared after.
+    /// Nested use statements save/restore this so inner GLAMs register correctly.
+    pub current_glam_ns: Option<String>,
 
     /// Box store: namespace::name → Value (cross-module mutable state).
     pub box_store: HashMap<String, Value>,
@@ -225,6 +231,7 @@ impl Session {
             global_type_locks: HashMap::new(),
             global_hard_type_locks: HashMap::new(),
             named_values: HashMap::new(),
+            current_glam_ns: None,
             box_store: HashMap::new(),
             action_needs: HashMap::new(),
             output_buf: None,
