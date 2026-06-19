@@ -1911,10 +1911,23 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         }
         BuiltinId::Slice => {
             if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "slice".into() }); }
-            let coll = require_collection(read(0)?, "slice")?;
+            let val   = read(0)?;
             let start = require_int(read(1)?, "slice start")?;
             let end   = require_int(read(2)?, "slice end")?;
-            collections::slice_collection(&coll, start, end)
+            match val {
+                Value::Str(s) => {
+                    let chars: Vec<char> = s.chars().collect();
+                    let len = chars.len() as i64;
+                    let s_idx = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+                    let e_idx = if end   < 0 { (len + end  ).max(0) } else { end.min(len)   } as usize;
+                    let e_idx = e_idx.max(s_idx);
+                    Ok(Value::Str(chars[s_idx..e_idx].iter().collect()))
+                }
+                other => {
+                    let coll = require_collection(other, "slice")?;
+                    collections::slice_collection(&coll, start, end)
+                }
+            }
         }
 
         // ── Range ──────────────────────────────────────────────────────────────
@@ -4521,6 +4534,15 @@ fn parse_dice_string_to_map(s: &str) -> Result<std::collections::BTreeMap<String
 fn require_collection(v: Value, op: &'static str) -> Result<std::rc::Rc<CollectionValue>, GoblinError> {
     match v {
         Value::Collection(c) => Ok(c),
+        Value::Array(xs) => Ok(std::rc::Rc::new(CollectionValue::from_flat(xs))),
+        Value::Map(m) => {
+            let pairs = m.into_iter().map(|(k, v)| (Value::Str(k), v)).collect();
+            Ok(std::rc::Rc::new(CollectionValue::from_map(pairs)))
+        }
+        Value::MapOrd(m) => {
+            let pairs = m.into_iter().map(|(k, v)| (Value::Str(k), v)).collect();
+            Ok(std::rc::Rc::new(CollectionValue::from_map(pairs)))
+        }
         other => Err(GoblinError::type_error("collection", other.type_name(), op)),
     }
 }
