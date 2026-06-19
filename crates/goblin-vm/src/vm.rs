@@ -2288,6 +2288,7 @@ impl Vm {
             (Value::Big(x), Value::Int(y))     => Ok(ord_to_i32(x.cmp(&rust_decimal::Decimal::from(*y)))),
             (Value::Int(x), Value::Big(y))     => Ok(ord_to_i32(rust_decimal::Decimal::from(*x).cmp(y))),
             (Value::Pct(x), Value::Pct(y))     => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
+            (Value::DateTime(a), Value::DateTime(b)) => Ok(ord_to_i32(a.utc.cmp(&b.utc))),
             _ => Err(GoblinError::type_error("comparable", b.type_name(), op)),
         }
     }

@@ -28,6 +28,43 @@ use std::io::copy;
 
 static SEED_BUMP: AtomicU64 = AtomicU64::new(0);
 
+// ── DateTime support ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoblinDateKind { DateTime, Date, Time }
+
+#[derive(Debug, Clone)]
+pub struct GoblinDateTime {
+    pub utc:  chrono::DateTime<chrono::Utc>,
+    pub tz:   Option<String>,
+    pub kind: GoblinDateKind,
+}
+impl PartialEq for GoblinDateTime {
+    fn eq(&self, other: &Self) -> bool { self.utc == other.utc }
+}
+impl Eq for GoblinDateTime {}
+impl std::hash::Hash for GoblinDateTime {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.utc.timestamp_nanos_opt().hash(state);
+    }
+}
+
+pub fn dt_display(gdt: &GoblinDateTime) -> String {
+    fn in_tz(gdt: &GoblinDateTime) -> chrono::DateTime<chrono_tz::Tz> {
+        match &gdt.tz {
+            None => gdt.utc.with_timezone(&chrono_tz::UTC),
+            Some(name) => name.parse::<chrono_tz::Tz>()
+                .map(|tz| gdt.utc.with_timezone(&tz))
+                .unwrap_or_else(|_| gdt.utc.with_timezone(&chrono_tz::UTC)),
+        }
+    }
+    match gdt.kind {
+        GoblinDateKind::Date     => in_tz(gdt).format("%Y-%m-%d").to_string(),
+        GoblinDateKind::Time     => in_tz(gdt).format("%H:%M:%S").to_string(),
+        GoblinDateKind::DateTime => in_tz(gdt).to_rfc3339(),
+    }
+}
+
 pub type Diag = goblin_diagnostics::Diagnostic;
 pub mod modules;
 pub mod actions;
@@ -248,6 +285,7 @@ pub enum Value {
     Char(char),
     Bool(bool),
     Pct(f64),
+    DateTime(GoblinDateTime),
     Formatted(Box<Value>, FormatSpec),
     Array(Vec<Value>),
     Map(BTreeMap<String, Value>),
@@ -1602,6 +1640,21 @@ fn want_str(v: &Value, label: &str, sp: Span) -> Result<String, Diag> {
     }
 }
 
+#[allow(dead_code)]
+fn interp_require_int(v: &Value, label: &str, sp: &Span) -> Result<i64, Diag> {
+    use goblin_diagnostics::{Diagnostic, Severity};
+    match v {
+        Value::Int(n)   => Ok(*n),
+        Value::Float(f) => Ok(*f as i64),
+        _ => Err(Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::TYPE_MISMATCH,
+            "type-mismatch",
+            format!("{label} expects an integer value"),
+            sp.clone(),
+        )),
+    }
+}
 
 #[allow(dead_code)]
 fn want_char(v: &Value, label: &str, sp: Span) -> Result<char, Diag> {
@@ -1666,6 +1719,7 @@ fn to_json(v: &Value) -> sj::Value {
             sj::Value::String(format!("{}::{}", enum_name, variant_name))
         }
         Value::Class { name } => sj::Value::String(format!("<class:{}>", name)),
+        Value::DateTime(gdt) => sj::Value::String(dt_display(gdt)),
     }
 }
 
@@ -2721,7 +2775,41 @@ fn fmt_value_with_depth(v: &Value, depth: usize) -> String {
 
         Value::Unit | Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_) => String::new(),
         Value::Class { name } => format!("<class {}>", name),
+        Value::DateTime(gdt) => interp_dt_display(gdt),
     }
+}
+
+// ── Interpreter datetime helpers ──────────────────────────────────────────────
+
+fn interp_dt_in_tz(gdt: &GoblinDateTime) -> chrono::DateTime<chrono_tz::Tz> {
+    match &gdt.tz {
+        None => gdt.utc.with_timezone(&chrono_tz::UTC),
+        Some(name) => {
+            let tz: chrono_tz::Tz = name.parse().unwrap_or(chrono_tz::UTC);
+            gdt.utc.with_timezone(&tz)
+        }
+    }
+}
+
+fn interp_dt_display(gdt: &GoblinDateTime) -> String {
+    match gdt.kind {
+        GoblinDateKind::Date => {
+            let dt = interp_dt_in_tz(gdt);
+            dt.format("%Y-%m-%d").to_string()
+        }
+        GoblinDateKind::Time => {
+            let dt = interp_dt_in_tz(gdt);
+            dt.format("%H:%M:%S").to_string()
+        }
+        GoblinDateKind::DateTime => {
+            let dt = interp_dt_in_tz(gdt);
+            dt.to_rfc3339()
+        }
+    }
+}
+
+fn interp_dt_now() -> GoblinDateTime {
+    GoblinDateTime { utc: chrono::Utc::now(), tz: None, kind: GoblinDateKind::DateTime }
 }
 
 fn fmt_value_raw(v: &Value) -> String {
@@ -2746,6 +2834,7 @@ fn value_kind_str(v: &Value) -> &'static str {
         Value::Big(_)              => "big",
         Value::Str(_)              => "str",
         Value::Char(_)             => "char",
+        Value::DateTime(_)         => "datetime",
         Value::Array(_)            => "array",
         Value::Map(_)              => "map",
         Value::MapOrd(_)           => "map",
@@ -3449,7 +3538,7 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
         "big" => cast_to_big(v).map_err(|_| cast_err("value cannot be converted to big decimal")),
 
         // ── financial ─────────────────────────────────────────────────────────
-        "money" | "date" | "time" | "datetime" | "duration" => {
+        "money" | "duration" => {
             Err(
                 Diagnostic::new_with_code(
                     Severity::Error,
@@ -3461,6 +3550,48 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
                 .with_help("Remove the type suffix and use a plain variable declaration.")
                 .with_link("https://goblinlang.org/docs/errors#R0215"),
             )
+        }
+        "date" => {
+            match v {
+                Value::DateTime(mut gdt) => { gdt.kind = GoblinDateKind::Date; Ok(Value::DateTime(gdt)) }
+                Value::Str(s) => {
+                    use chrono::TimeZone;
+                    let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .or_else(|_| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                            .map(|d| chrono::Utc.from_utc_datetime(&d.and_hms_opt(0,0,0).unwrap())))
+                        .map_err(|_| cast_err(&format!("cannot parse {:?} as date", s)))?;
+                    Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+                }
+                other => Err(cast_err(&format!("cannot cast {} to date", value_kind_str(&other)))),
+            }
+        }
+        "time" => {
+            match v {
+                Value::DateTime(mut gdt) => { gdt.kind = GoblinDateKind::Time; Ok(Value::DateTime(gdt)) }
+                Value::Str(s) => {
+                    use chrono::TimeZone;
+                    let naive = chrono::NaiveTime::parse_from_str(&s, "%H:%M:%S")
+                        .or_else(|_| chrono::NaiveTime::parse_from_str(&s, "%H:%M"))
+                        .map_err(|_| cast_err(&format!("cannot parse {:?} as time", s)))?;
+                    let dt = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap().and_time(naive);
+                    let utc = chrono::Utc.from_utc_datetime(&dt);
+                    Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time }))
+                }
+                other => Err(cast_err(&format!("cannot cast {} to time", value_kind_str(&other)))),
+            }
+        }
+        "datetime" => {
+            match v {
+                Value::DateTime(mut gdt) => { gdt.kind = GoblinDateKind::DateTime; Ok(Value::DateTime(gdt)) }
+                Value::Str(s) => {
+                    let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .map_err(|_| cast_err(&format!("cannot parse {:?} as datetime", s)))?;
+                    Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+                }
+                other => Err(cast_err(&format!("cannot cast {} to datetime", value_kind_str(&other)))),
+            }
         }
         "pct" => cast_to_pct(v).map_err(|_| cast_err("value cannot be converted to pct")),
 
@@ -7028,6 +7159,280 @@ fn eval_builtin(
                     Value::Float(score.clamp(0.0, 1.0))
                 }
             }
+        }
+
+        // ── Date/time builtins ────────────────────────────────────────────────
+        "now" | "utc_now" => {
+            arity(0)?;
+            Value::DateTime(interp_dt_now())
+        }
+        "epoch_ms" => {
+            arity(0)?;
+            Value::Int(chrono::Utc::now().timestamp_millis())
+        }
+        "epoch_s" => {
+            arity(0)?;
+            Value::Int(chrono::Utc::now().timestamp())
+        }
+        "local_now" => {
+            arity(0)?;
+            let local = chrono::Local::now();
+            let utc = local.with_timezone(&chrono::Utc);
+            let offset = *local.offset();
+            let total_secs = offset.local_minus_utc();
+            let h = total_secs / 3600;
+            let m = (total_secs.abs() % 3600) / 60;
+            let tz_name = format!("{:+03}:{:02}", h, m);
+            Value::DateTime(GoblinDateTime { utc, tz: Some(tz_name), kind: GoblinDateKind::DateTime })
+        }
+        "today" => {
+            arity(0)?;
+            use chrono::{Datelike, TimeZone};
+            let now = chrono::Utc::now();
+            let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
+                .unwrap().and_hms_opt(0,0,0).unwrap();
+            let utc = chrono::Utc.from_utc_datetime(&naive);
+            Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })
+        }
+        "tomorrow" => {
+            arity(0)?;
+            use chrono::{Datelike, Duration, TimeZone};
+            let now = chrono::Utc::now();
+            let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
+                .unwrap().and_hms_opt(0,0,0).unwrap();
+            let utc = chrono::Utc.from_utc_datetime(&naive) + Duration::days(1);
+            Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })
+        }
+        "yesterday" => {
+            arity(0)?;
+            use chrono::{Datelike, Duration, TimeZone};
+            let now = chrono::Utc::now();
+            let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
+                .unwrap().and_hms_opt(0,0,0).unwrap();
+            let utc = chrono::Utc.from_utc_datetime(&naive) - Duration::days(1);
+            Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })
+        }
+        "date" => {
+            use chrono::TimeZone;
+            if args.len() == 1 {
+                let s = want_str(&args[0], "date")?;
+                let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .or_else(|_| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                        .map(|d| chrono::Utc.from_utc_datetime(&d.and_hms_opt(0,0,0).unwrap())))
+                    .map_err(|_| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("date: cannot parse {:?}", s), sp.clone()))?;
+                Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })
+            } else if args.len() == 3 {
+                let y  = interp_require_int(&args[0], "date", sp)?;
+                let mo = interp_require_int(&args[1], "date", sp)? as u32;
+                let d  = interp_require_int(&args[2], "date", sp)? as u32;
+                let naive = chrono::NaiveDate::from_ymd_opt(y as i32, mo, d)
+                    .ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "date: invalid date".to_string(), sp.clone()))?
+                    .and_hms_opt(0,0,0).unwrap();
+                let utc = chrono::Utc.from_utc_datetime(&naive);
+                Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })
+            } else {
+                return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", "date: expected (str) or (y, mo, d)".to_string(), sp.clone()));
+            }
+        }
+        "time" => {
+            use chrono::TimeZone;
+            if args.len() == 1 {
+                let s = want_str(&args[0], "time")?;
+                let naive = chrono::NaiveTime::parse_from_str(&s, "%H:%M:%S")
+                    .or_else(|_| chrono::NaiveTime::parse_from_str(&s, "%H:%M"))
+                    .map_err(|_| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("time: cannot parse {:?}", s), sp.clone()))?;
+                let dt = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap().and_time(naive);
+                let utc = chrono::Utc.from_utc_datetime(&dt);
+                Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time })
+            } else if args.len() == 3 {
+                let h = interp_require_int(&args[0], "time", sp)? as u32;
+                let m = interp_require_int(&args[1], "time", sp)? as u32;
+                let s = interp_require_int(&args[2], "time", sp)? as u32;
+                let naive = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
+                    .and_hms_opt(h, m, s)
+                    .ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "time: invalid time".to_string(), sp.clone()))?;
+                let utc = chrono::Utc.from_utc_datetime(&naive);
+                Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time })
+            } else {
+                return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", "time: expected (str) or (h, m, s)".to_string(), sp.clone()));
+            }
+        }
+        "datetime" => {
+            use chrono::TimeZone;
+            if args.len() == 1 {
+                let s = want_str(&args[0], "datetime")?;
+                let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .map_err(|_| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("datetime: cannot parse {:?}", s), sp.clone()))?;
+                Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })
+            } else if args.len() == 6 {
+                let y  = interp_require_int(&args[0], "datetime", sp)?;
+                let mo = interp_require_int(&args[1], "datetime", sp)? as u32;
+                let d  = interp_require_int(&args[2], "datetime", sp)? as u32;
+                let h  = interp_require_int(&args[3], "datetime", sp)? as u32;
+                let m  = interp_require_int(&args[4], "datetime", sp)? as u32;
+                let s  = interp_require_int(&args[5], "datetime", sp)? as u32;
+                let naive = chrono::NaiveDate::from_ymd_opt(y as i32, mo, d)
+                    .and_then(|d| d.and_hms_opt(h, m, s))
+                    .ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "datetime: invalid date/time".to_string(), sp.clone()))?;
+                let utc = chrono::Utc.from_utc_datetime(&naive);
+                Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })
+            } else {
+                return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", "datetime: expected (str) or (y, mo, d, h, m, s)".to_string(), sp.clone()));
+            }
+        }
+        "duration" => {
+            return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "duration: not yet implemented — use add_duration/since/until for datetime math".to_string(), sp.clone()));
+        }
+        "to_iso" => {
+            arity(1)?;
+            match &args[0] {
+                Value::DateTime(gdt) => Value::Str(interp_dt_display(gdt)),
+                other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("to_iso: expected datetime, got {}", value_kind_str(other)), sp.clone())),
+            }
+        }
+        "from_iso" => {
+            arity(1)?;
+            let s = want_str(&args[0], "from_iso")?;
+            let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                .map(|d| d.with_timezone(&chrono::Utc))
+                .map_err(|_| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("from_iso: cannot parse {:?}", s), sp.clone()))?;
+            Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })
+        }
+        "to_epoch_ms" => {
+            arity(1)?;
+            match &args[0] {
+                Value::DateTime(gdt) => Value::Int(gdt.utc.timestamp_millis()),
+                other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("to_epoch_ms: expected datetime, got {}", value_kind_str(other)), sp.clone())),
+            }
+        }
+        "from_epoch_ms" => {
+            arity(1)?;
+            let ms = interp_require_int(&args[0], "from_epoch_ms", sp)?;
+            let utc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+                .ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "from_epoch_ms: value out of range".to_string(), sp.clone()))?;
+            Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })
+        }
+        "format_datetime" | "format_date" | "format_time" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", format!("{}: expected 2 args, got {}", name, args.len()), sp.clone()));
+            }
+            let gdt = match &args[0] {
+                Value::DateTime(d) => d.clone(),
+                other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("{}: expected datetime, got {}", name, value_kind_str(other)), sp.clone())),
+            };
+            let pat = want_str(&args[1], name)?;
+            let dt = interp_dt_in_tz(&gdt);
+            Value::Str(dt.format(&pat).to_string())
+        }
+        "year" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("year: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            use chrono::Datelike;
+            Value::Int(interp_dt_in_tz(gdt).year() as i64)
+        }
+        "month" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("month: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            use chrono::Datelike;
+            Value::Int(interp_dt_in_tz(gdt).month() as i64)
+        }
+        "day" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("day: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            use chrono::Datelike;
+            Value::Int(interp_dt_in_tz(gdt).day() as i64)
+        }
+        "hour" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("hour: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            use chrono::Timelike;
+            Value::Int(interp_dt_in_tz(gdt).hour() as i64)
+        }
+        "minute" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("minute: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            use chrono::Timelike;
+            Value::Int(interp_dt_in_tz(gdt).minute() as i64)
+        }
+        "second" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("second: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            use chrono::Timelike;
+            Value::Int(interp_dt_in_tz(gdt).second() as i64)
+        }
+        "weekday" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("weekday: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            use chrono::Datelike;
+            let wd = match interp_dt_in_tz(gdt).weekday() {
+                chrono::Weekday::Mon => "Monday",
+                chrono::Weekday::Tue => "Tuesday",
+                chrono::Weekday::Wed => "Wednesday",
+                chrono::Weekday::Thu => "Thursday",
+                chrono::Weekday::Fri => "Friday",
+                chrono::Weekday::Sat => "Saturday",
+                chrono::Weekday::Sun => "Sunday",
+            };
+            Value::Str(wd.to_string())
+        }
+        "add_duration" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", format!("add_duration: expected 2 args, got {}", args.len()), sp.clone()));
+            }
+            let gdt = match &args[0] { Value::DateTime(d) => d.clone(), other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("add_duration: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            fn get_map_int(m: &BTreeMap<String, Value>, key: &str) -> i64 {
+                match m.get(key) { Some(Value::Int(i)) => *i, Some(Value::Float(f)) => *f as i64, _ => 0 }
+            }
+            fn get_map_int_ord(m: &IndexMap<String, Value>, key: &str) -> i64 {
+                match m.get(key) { Some(Value::Int(i)) => *i, Some(Value::Float(f)) => *f as i64, _ => 0 }
+            }
+            let (years, months_n, weeks, days, hours, minutes, seconds) = match &args[1] {
+                Value::Map(m) => (get_map_int(m,"years"), get_map_int(m,"months"), get_map_int(m,"weeks"), get_map_int(m,"days"), get_map_int(m,"hours"), get_map_int(m,"minutes"), get_map_int(m,"seconds")),
+                Value::MapOrd(m) => (get_map_int_ord(m,"years"), get_map_int_ord(m,"months"), get_map_int_ord(m,"weeks"), get_map_int_ord(m,"days"), get_map_int_ord(m,"hours"), get_map_int_ord(m,"minutes"), get_map_int_ord(m,"seconds")),
+                other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("add_duration: expected map, got {}", value_kind_str(other)), sp.clone())),
+            };
+            use chrono::{Months, Duration};
+            let mut utc = gdt.utc;
+            if years != 0 {
+                if years > 0 { utc = utc.checked_add_months(Months::new(years as u32 * 12)).ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "add_duration: overflow".to_string(), sp.clone()))?; }
+                else { utc = utc.checked_sub_months(Months::new((-years) as u32 * 12)).ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "add_duration: overflow".to_string(), sp.clone()))?; }
+            }
+            if months_n != 0 {
+                if months_n > 0 { utc = utc.checked_add_months(Months::new(months_n as u32)).ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "add_duration: overflow".to_string(), sp.clone()))?; }
+                else { utc = utc.checked_sub_months(Months::new((-months_n) as u32)).ok_or_else(|| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", "add_duration: overflow".to_string(), sp.clone()))?; }
+            }
+            let total_secs = weeks * 7 * 86400 + days * 86400 + hours * 3600 + minutes * 60 + seconds;
+            if total_secs != 0 { utc = utc + Duration::seconds(total_secs); }
+            Value::DateTime(GoblinDateTime { utc, ..gdt })
+        }
+        "since" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("since: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            let diff = chrono::Utc::now().signed_duration_since(gdt.utc);
+            Value::Int(diff.num_seconds())
+        }
+        "until" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("until: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            let diff = gdt.utc.signed_duration_since(chrono::Utc::now());
+            Value::Int(diff.num_seconds())
+        }
+        "timezone" => {
+            arity(1)?;
+            let gdt = match &args[0] { Value::DateTime(d) => d, other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("timezone: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            Value::Str(gdt.tz.clone().unwrap_or_else(|| "UTC".to_string()))
+        }
+        "to_timezone" => {
+            if args.len() != 2 {
+                return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", format!("to_timezone: expected 2 args, got {}", args.len()), sp.clone()));
+            }
+            let gdt = match &args[0] { Value::DateTime(d) => d.clone(), other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("to_timezone: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
+            let tz_name = want_str(&args[1], "to_timezone")?;
+            let _tz: chrono_tz::Tz = tz_name.parse()
+                .map_err(|_| Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("to_timezone: unknown timezone {:?}", tz_name), sp.clone()))?;
+            Value::DateTime(GoblinDateTime { tz: Some(tz_name), ..gdt })
         }
 
         _ => return Ok(None),
@@ -11668,7 +12073,8 @@ fn call_action_by_name(
                 | v @ Value::Enum { .. }
                 | v @ Value::Ref(_)
                 | v @ Value::GridRef { .. }
-                | v @ Value::Class { .. } => v,
+                | v @ Value::Class { .. }
+                | v @ Value::DateTime(_) => v,
 
                 // implicit-return: Unit means "no value", do NOT fallback to forwarded args
                 Value::Unit => Value::Unit,

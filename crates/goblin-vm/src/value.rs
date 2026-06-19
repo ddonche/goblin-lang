@@ -2,6 +2,29 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 
+// ──────────────────────────────────────────────────────────────────────────────
+// DateTime support
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoblinDateKind { DateTime, Date, Time }
+
+#[derive(Debug, Clone)]
+pub struct GoblinDateTime {
+    pub utc:  chrono::DateTime<chrono::Utc>,
+    pub tz:   Option<String>,
+    pub kind: GoblinDateKind,
+}
+impl PartialEq for GoblinDateTime {
+    fn eq(&self, other: &Self) -> bool { self.utc == other.utc }
+}
+impl Eq for GoblinDateTime {}
+impl std::hash::Hash for GoblinDateTime {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.utc.timestamp_nanos_opt().hash(state);
+    }
+}
+
 /// Logical address of a stash in the arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Address {
@@ -56,6 +79,7 @@ pub enum Value {
     Pct(f64),
     Char(char),
     Str(String),
+    DateTime(GoblinDateTime),
 
     // ── Structured ──────────────────────────────────────────────────────────
     Formatted(Box<Value>, FormatSpec),
@@ -114,6 +138,7 @@ impl Value {
             Value::Pct(_)        => "pct",
             Value::Char(_)       => "char",
             Value::Str(_)        => "str",
+            Value::DateTime(_)   => "datetime",
             Value::Formatted(..) => "formatted",
             Value::Array(_)      => "array",
             Value::Map(_)        => "map",
@@ -146,6 +171,7 @@ impl Value {
             Value::Pct(p)        => *p != 0.0,
             Value::Char(c)       => *c != '\0',
             Value::Str(s)        => !s.is_empty(),
+            Value::DateTime(_)   => true,
             Value::Formatted(v, _) => v.is_truthy(),
             Value::Array(a)      => !a.is_empty(),
             Value::Map(m)        => !m.is_empty(),
@@ -181,6 +207,7 @@ impl PartialEq for Value {
             (Value::Pct(a),           Value::Pct(b))           => a.to_bits() == b.to_bits(),
             (Value::Char(a),          Value::Char(b))          => a == b,
             (Value::Str(a),           Value::Str(b))           => a == b,
+            (Value::DateTime(a),      Value::DateTime(b))      => a == b,
             (Value::Array(a),         Value::Array(b))         => a == b,
             (Value::Map(a),           Value::Map(b))           => a == b,
             (Value::MapOrd(a),        Value::MapOrd(b))        => a == b,
@@ -215,6 +242,7 @@ impl std::hash::Hash for Value {
             Value::Pct(p)        => p.to_bits().hash(state),
             Value::Char(c)       => c.hash(state),
             Value::Str(s)        => s.hash(state),
+            Value::DateTime(dt)  => dt.hash(state),
             Value::Formatted(v, _) => v.hash(state),
             Value::Array(a)      => { for x in a { x.hash(state); } }
             Value::Map(m)        => { for (k, v) in m { k.hash(state); v.hash(state); } }
@@ -689,7 +717,36 @@ pub enum BuiltinId {
     DeleteObject,
     DeleteOverlaysOn,
 
-    // Date/time type locks (not yet implemented — match interpreter error)
+    // Date/time — full implementation
+    DtNow,
+    DtEpochMs,
+    DtEpochS,
+    DtUtcNow,
+    DtLocalNow,
+    DtToday,
+    DtTomorrow,
+    DtYesterday,
+    DtFromEpochMs,
+    DtToIso,
+    DtFromIso,
+    DtToEpochMs,
+    DtFormatDatetime,
+    DtFormatDate,
+    DtFormatTime,
+    DtYear,
+    DtMonth,
+    DtDay,
+    DtHour,
+    DtMinute,
+    DtSecond,
+    DtWeekday,
+    DtAddDuration,
+    DtSince,
+    DtUntil,
+    DtTimezone,
+    DtToTimezone,
+
+    // Date/time constructors (now fully implemented)
     CastDate,
     CastTime,
     CastDatetime,
