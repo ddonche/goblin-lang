@@ -1297,7 +1297,7 @@ impl Vm {
                     }
                 };
 
-                let glam_dir = self.session.base_dir.join("glams").join(&ns);
+                let glam_dir = self.session.project_root.join("glams").join(&ns);
                 let toml_path = glam_dir.join("glam.toml");
                 if toml_path.exists() {
                     self.load_glam_action_needs(&toml_path, &ns)?;

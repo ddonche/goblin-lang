@@ -1,0 +1,6 @@
+import "storage"
+
+act create_thing(name)
+    ensure_dir("/tmp/testdir")
+    return "created: " + name
+xx
