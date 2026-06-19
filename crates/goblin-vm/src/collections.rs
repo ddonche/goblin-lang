@@ -115,10 +115,10 @@ pub fn collection_operation(
     session: &mut crate::session::Session,
 ) -> Result<Value, GoblinError> {
     match coll {
-        Value::Array(xs) => array_op(xs, pos, op, session),
+        Value::Array(xs) => array_op(xs, pos, op, session).map(into_collection),
         Value::Collection(c) => collection_value_op(c, pos, op, session),
-        Value::Map(m)    => map_op_btree(m, pos, op, session),
-        Value::MapOrd(m) => map_op_indexed(m, pos, op, session),
+        Value::Map(m)    => map_op_btree(m, pos, op, session).map(into_collection),
+        Value::MapOrd(m) => map_op_indexed(m, pos, op, session).map(into_collection),
         Value::Str(s)    => str_op(s, pos, op, session),
         other => Err(GoblinError::type_error(
             "array, map, or str",
@@ -982,6 +982,27 @@ fn build_seq(items: Vec<Value>, meta: CollectionMeta) -> CollectionValue {
         _ => CollectionLayout::FlatArray(Rc::new(items)),
     };
     CollectionValue { layout, meta: CollectionMeta { len, ..meta } }
+}
+
+/// Convert any collection-like Value into a canonical Value::Collection.
+/// Scalars (Int, Str, Bool, etc.) pass through unchanged — they are element values, not collections.
+pub fn into_collection(v: Value) -> Value {
+    match v {
+        Value::Array(xs) => Value::Collection(Rc::new(CollectionValue::from_flat(xs))),
+        Value::Map(m) => {
+            let pairs: Vec<(Value, Value)> = m.into_iter()
+                .map(|(k, v)| (Value::Str(k), v))
+                .collect();
+            Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
+        }
+        Value::MapOrd(m) => {
+            let pairs: Vec<(Value, Value)> = m.into_iter()
+                .map(|(k, v)| (Value::Str(k), v))
+                .collect();
+            Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
+        }
+        other => other,
+    }
 }
 
 fn build_map(pairs: Vec<(Value, Value)>, meta: CollectionMeta) -> CollectionValue {

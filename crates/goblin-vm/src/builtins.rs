@@ -337,7 +337,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             match (read(0)?, read(1)?) {
                 (Value::Str(s), Value::Str(sub)) => {
                     if sub.is_empty() {
-                        return Ok(Value::Array(vec![]));
+                        return Ok(collections::into_collection(Value::Array(vec![])));
                     }
                     let mut out = Vec::new();
                     let mut start = 0usize;
@@ -346,7 +346,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                         out.push(Value::Int(idx as i64));
                         start = idx + sub.len();
                     }
-                    Ok(Value::Array(out))
+                    Ok(collections::into_collection(Value::Array(out)))
                 }
                 (other, _) => Err(GoblinError::type_error("str", other.type_name(), "find_all")),
             }
@@ -418,7 +418,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             } else {
                 s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
             };
-            Ok(Value::Array(parts))
+            Ok(collections::into_collection(Value::Array(parts)))
         }
         BuiltinId::Join => {
             if args.len() != 2 {
@@ -1082,8 +1082,8 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Keys => {
             expect_n(1)?;
             match read(0)? {
-                Value::Map(m)    => Ok(Value::Array(m.keys().cloned().map(Value::Str).collect())),
-                Value::MapOrd(m) => Ok(Value::Array(m.keys().cloned().map(Value::Str).collect())),
+                Value::Map(m)    => Ok(collections::into_collection(Value::Array(m.keys().cloned().map(Value::Str).collect()))),
+                Value::MapOrd(m) => Ok(collections::into_collection(Value::Array(m.keys().cloned().map(Value::Str).collect()))),
                 Value::Collection(c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::keys(&c))))),
                 other => Err(GoblinError::type_error("map or collection", other.type_name(), "keys")),
             }
@@ -1091,8 +1091,8 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Values => {
             expect_n(1)?;
             match read(0)? {
-                Value::Map(m)    => Ok(Value::Array(m.values().cloned().collect())),
-                Value::MapOrd(m) => Ok(Value::Array(m.values().cloned().collect())),
+                Value::Map(m)    => Ok(collections::into_collection(Value::Array(m.values().cloned().collect()))),
+                Value::MapOrd(m) => Ok(collections::into_collection(Value::Array(m.values().cloned().collect()))),
                 Value::Collection(c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::values(&c))))),
                 other => Err(GoblinError::type_error("map or collection", other.type_name(), "values")),
             }
@@ -1104,13 +1104,13 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     let pairs: Vec<Value> = m.iter()
                         .map(|(k, v)| Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())))
                         .collect();
-                    Ok(Value::Array(pairs))
+                    Ok(collections::into_collection(Value::Array(pairs)))
                 }
                 Value::MapOrd(m) => {
                     let pairs: Vec<Value> = m.iter()
                         .map(|(k, v)| Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())))
                         .collect();
-                    Ok(Value::Array(pairs))
+                    Ok(collections::into_collection(Value::Array(pairs)))
                 }
                 other => Err(GoblinError::type_error("map", other.type_name(), "items")),
             }
@@ -1213,10 +1213,15 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 }
                 Value::Array(mut items) => {
                     fisher_yates_shuffle(&mut items, session);
-                    Ok(Value::Array(items))
+                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
+                }
+                Value::Collection(c) => {
+                    let mut items = collections::to_vec(&c);
+                    fisher_yates_shuffle(&mut items, session);
+                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
                 }
                 other => {
-                    // Seq/Collection: treat as array-like
+                    // Seq: treat as array-like
                     Err(GoblinError::type_error("string, int, or array", other.type_name(), "shuffle"))
                 }
             }
@@ -1252,7 +1257,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 }
                 Value::Array(mut items) => {
                     items.sort_by(|a, b| fmt_value_raw(a).cmp(&fmt_value_raw(b)));
-                    Ok(Value::Array(items))
+                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
                 }
                 Value::Collection(c) => Ok(collections::sort_values(&c)),
                 other => Err(GoblinError::type_error("str, int, or array", other.type_name(), "sort")),
@@ -1266,14 +1271,14 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     for (c, n) in cnt { m.insert(c.to_string(), Value::Int(n)); }
-                    Ok(Value::Map(m))
+                    Ok(collections::into_collection(Value::Map(m)))
                 }
                 Value::Array(items) => {
                     let mut tally = std::collections::BTreeMap::<String, i64>::new();
                     for item in &items { *tally.entry(fmt_value_raw(item)).or_insert(0) += 1; }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     for (k, n) in tally { m.insert(k, Value::Int(n)); }
-                    Ok(Value::Map(m))
+                    Ok(collections::into_collection(Value::Map(m)))
                 }
                 other => Err(GoblinError::type_error("string or array", other.type_name(), "freq")),
             }
@@ -1292,7 +1297,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     for (k, n) in &counts { if *n > best_n { best_n = *n; best_k = k.clone(); } }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     m.insert(best_k, Value::Int(best_n));
-                    Ok(Value::Map(m))
+                    Ok(collections::into_collection(Value::Map(m)))
                 }
                 other => Err(GoblinError::type_error("array", other.type_name(), "mode")),
             }
@@ -1345,7 +1350,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 }
                 out.push(xs[lo].clone());
             }
-            Ok(Value::Array(out))
+            Ok(collections::into_collection(Value::Array(out)))
         }
         BuiltinId::Map => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "map".into() }); }
@@ -1395,7 +1400,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 Value::Array(items) => {
                     let mut seen = std::collections::BTreeSet::new();
                     let result: Vec<Value> = items.into_iter().filter(|item| seen.insert(fmt_value_raw(item))).collect();
-                    Ok(Value::Array(result))
+                    Ok(collections::into_collection(Value::Array(result)))
                 }
                 Value::Collection(c) => Ok(collections::unique(&c)),
                 other => Err(GoblinError::type_error("string or array", other.type_name(), "unique")),
@@ -1419,7 +1424,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     }
                     let mut out = Vec::new();
                     for (_, (n, exemplar)) in cnt { if n >= 2 { out.push(exemplar); } }
-                    Ok(Value::Array(out))
+                    Ok(collections::into_collection(Value::Array(out)))
                 }
                 other => Err(GoblinError::type_error("string or array", other.type_name(), "dups")),
             }
@@ -1839,7 +1844,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::Reverse => {
             expect_n(1)?;
             match read(0)? {
-                Value::Array(mut items) => { items.reverse(); Ok(Value::Array(items)) }
+                Value::Array(mut items) => { items.reverse(); Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items)))) }
                 other => { let c = require_collection(other, "reverse")?; Ok(collections::reverse(&*c)) }
             }
         }
@@ -1883,7 +1888,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     let pairs: Vec<Value> = a.into_iter().zip(b.into_iter())
                         .map(|(x, y)| Value::Pair(Box::new(x), Box::new(y)))
                         .collect();
-                    Ok(Value::Array(pairs))
+                    Ok(collections::into_collection(Value::Array(pairs)))
                 }
                 (a, b) => { let ca = require_collection(a, "zip")?; let cb = require_collection(b, "zip")?; Ok(collections::zip_collections(&*ca, &*cb)) }
             }
@@ -1899,7 +1904,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                             other => result.push(other),
                         }
                     }
-                    Ok(Value::Array(result))
+                    Ok(collections::into_collection(Value::Array(result)))
                 }
                 other => { let c = require_collection(other, "flatten")?; Ok(collections::flatten(&*c)) }
             }
@@ -1917,12 +1922,12 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             match args.len() {
                 1 => {
                     let n = require_int(read(0)?, "range")?;
-                    Ok(Value::Array((0..n).map(Value::Int).collect()))
+                    Ok(collections::into_collection(Value::Array((0..n).map(Value::Int).collect())))
                 }
                 2 => {
                     let start = require_int(read(0)?, "range start")?;
                     let end   = require_int(read(1)?, "range end")?;
-                    Ok(Value::Array((start..end).map(Value::Int).collect()))
+                    Ok(collections::into_collection(Value::Array((start..end).map(Value::Int).collect())))
                 }
                 n => Err(GoblinError::ArityMismatch { expected: 1, got: n, name: "range".into() }),
             }
@@ -2614,7 +2619,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             if args.is_empty() { return Ok(Value::Nil); }
             let v = session.read_value(&args[0])?;
             match v {
-                Value::Str(s) => Ok(Value::Array(s.split('\n').map(|l| Value::Str(l.to_string())).collect())),
+                Value::Str(s) => Ok(collections::into_collection(Value::Array(s.split('\n').map(|l| Value::Str(l.to_string())).collect()))),
                 _ => Err(GoblinError::type_error("string", v.type_name(), "lines")),
             }
         }
@@ -2622,7 +2627,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             if args.is_empty() { return Ok(Value::Nil); }
             let v = session.read_value(&args[0])?;
             match v {
-                Value::Str(s) => Ok(Value::Array(s.split_whitespace().map(|w| Value::Str(w.to_string())).collect())),
+                Value::Str(s) => Ok(collections::into_collection(Value::Array(s.split_whitespace().map(|w| Value::Str(w.to_string())).collect()))),
                 _ => Err(GoblinError::type_error("string", v.type_name(), "words")),
             }
         }
@@ -2630,7 +2635,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             if args.is_empty() { return Ok(Value::Nil); }
             let v = session.read_value(&args[0])?;
             match v {
-                Value::Str(s) => Ok(Value::Array(s.chars().map(Value::Char).collect())),
+                Value::Str(s) => Ok(collections::into_collection(Value::Array(s.chars().map(Value::Char).collect()))),
                 _ => Err(GoblinError::type_error("string", v.type_name(), "chars")),
             }
         }

@@ -247,7 +247,7 @@ impl std::hash::Hash for Value {
 /// One arena cell: stores a Value plus metadata.
 #[derive(Debug)]
 pub struct Stash {
-    pub value: Rc<Value>,
+    pub value: Value,
     pub tether_count: usize,
     pub generation: u32,
 }

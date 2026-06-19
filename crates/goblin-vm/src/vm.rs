@@ -774,24 +774,15 @@ impl Vm {
                 let pair_count = n as usize;
                 let start = self.stack.len().saturating_sub(pair_count * 2);
                 let mut pairs = Vec::with_capacity(pair_count);
-                let mut all_str_keys = true;
                 for i in (start..self.stack.len()).step_by(2) {
                     if i + 1 < self.stack.len() {
                         let k = self.session.read_value(&self.stack[i])?;
                         let v = self.session.read_value(&self.stack[i + 1])?;
-                        if !matches!(k, Value::Str(_)) { all_str_keys = false; }
                         pairs.push((k, v));
                     }
                 }
                 self.stack.truncate(start);
-                let result = if all_str_keys {
-                    let m: std::collections::BTreeMap<String, Value> = pairs.into_iter()
-                        .map(|(k, v)| (match k { Value::Str(s) => s, _ => unreachable!() }, v))
-                        .collect();
-                    Value::Map(m)
-                } else {
-                    Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
-                };
+                let result = Value::Collection(Rc::new(CollectionValue::from_map(pairs)));
                 let t = self.session.alloc_value(result);
                 self.stack.push(t);
             }
