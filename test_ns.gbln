@@ -1,0 +1,4 @@
+use testglam
+
+result | testglam::greet("world")
+say result

@@ -1304,7 +1304,14 @@ impl Vm {
                 }
 
                 let entry_path = glam_dir.join(format!("{ns}.gbln"));
-                self.import_file(entry_path, Some(ns))?;
+                // Set current_glam_ns so RegisterAction registers under both bare and
+                // qualified names (e.g. "create_shard" AND "graveyard::create_shard").
+                // Save and restore to handle nested `use` statements correctly.
+                let prev_glam_ns = self.session.current_glam_ns.take();
+                self.session.current_glam_ns = Some(ns.clone());
+                let glam_result = self.import_file(entry_path, Some(ns));
+                self.session.current_glam_ns = prev_glam_ns;
+                glam_result?;
             }
 
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
@@ -1446,6 +1453,12 @@ impl Vm {
                     .ok_or_else(|| GoblinError::Runtime("RegisterAction: empty stack".into()))?
                     .clone();
                 let value = self.session.read_value(&top_tether)?;
+                // Also register under the qualified name if we're inside a `use glam` import,
+                // so that `ns::action(...)` dispatch works without requiring a flat file layout.
+                if let Some(ref ns) = self.session.current_glam_ns.clone() {
+                    let qualified = format!("{}::{}", ns, name);
+                    self.session.named_values.insert(qualified, value.clone());
+                }
                 self.session.named_values.insert(name, value);
             }
 
@@ -1773,7 +1786,10 @@ impl Vm {
         let module = goblin_parser::Parser::new(&tokens).parse_module()
             .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
 
-        let compiled = crate::compiler::Compiler::new().with_glam_namespace(owner_glam).compile_module(&module)
+        let compiled = crate::compiler::Compiler::new()
+            .with_glam_namespace(owner_glam)
+            .for_file(&actual_path.to_string_lossy())
+            .compile_module(&module)
             .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
 
         // Pre-register classes/enums from the imported module

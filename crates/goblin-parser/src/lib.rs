@@ -1221,17 +1221,10 @@ impl<'t> Parser<'t> {
                 continue;
             }
             if self.eat_op("!") {
-                // Check if this is a bang-call: type!(args) — e.g. str!(age), i32!(age)
-                const CAST_BANG_TYPES_P: &[&str] = &[
-                    "str", "bool", "i8", "i16", "i32", "i64",
-                    "u8", "u16", "u32", "u64", "f32", "f64",
-                    "float", "big", "int", "uint", "pct",
-                ];
-                let is_cast_ident = match &expr {
-                    PExpr::Ident(n) => CAST_BANG_TYPES_P.contains(&n.as_str()),
-                    _ => false,
-                };
-                if is_cast_ident && self.peek_op("(") {
+                // name!(args) for ANY ident (cast types, mutation builtins, etc.)
+                // e.g. str!(age), update_at!(meta, "id", val), delete_where!(xs, pred)
+                let is_any_ident = matches!(&expr, PExpr::Ident(_));
+                if is_any_ident && self.peek_op("(") {
                     let ident_name = match expr { PExpr::Ident(n) => n, _ => unreachable!() };
                     self.i += 1; // consume '('
                     let mut call_args = Vec::new();
@@ -1239,7 +1232,7 @@ impl<'t> Parser<'t> {
                     while !self.peek_op(")") && !self.is_eof() {
                         match self.parse_coalesce() {
                             Ok(arg) => call_args.push(arg),
-                            Err(e) => panic!("P0XXX: error parsing argument to bang-cast call: {}", e),
+                            Err(e) => panic!("P0XXX: error parsing argument to bang call: {}", e),
                         }
                         self.skip_layout_inline();
                         if !self.eat_op(",") { break; }
@@ -8188,6 +8181,29 @@ impl<'t> Parser<'t> {
                     self.i += 1; // consume ':'
                     let name = self.eat_ident().unwrap();
                     let builtin_name = format!(":{}", name);
+                    // :builtin!(args) — mutation bang free call e.g. :update_at!(meta, "id", val)
+                    if self.peek_op("!") {
+                        let next_is_paren = matches!(
+                            self.toks.get(self.i + 1),
+                            Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == "(")
+                        );
+                        if next_is_paren {
+                            self.i += 1; // consume '!'
+                            self.i += 1; // consume '('
+                            let bang_name = format!("{}!", name);
+                            let mut args = Vec::new();
+                            self.skip_layout();
+                            while !self.peek_op(")") {
+                                if self.i >= self.toks.len() { break; }
+                                args.push(self.parse_coalesce()?);
+                                self.skip_layout_inline();
+                                if !self.eat_op(",") { break; }
+                                self.skip_layout();
+                            }
+                            self.eat_op(")");
+                            return Ok(PExpr::FreeCall(bang_name, args));
+                        }
+                    }
                     // If followed by '(', parse as FreeCall with args
                     if self.peek_op("(") {
                         self.i += 1; // consume '('

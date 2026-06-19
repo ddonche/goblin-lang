@@ -975,8 +975,20 @@ impl Compiler {
                     return Ok(());
                 }
                 // Check if it's a known builtin call pattern.
-                if let Some(op) = self.try_compile_builtin_call(name, args)? {
-                    let _ = op; // op already emitted
+                if let Some(_) = self.try_compile_builtin_call(name, args)? {
+                    // Mutation-bang free call: name!(collection, ...) stores result back.
+                    // e.g. update_at!(meta, "id", val) → CallBuiltin + Dup + StoreLocal(meta)
+                    let bare = name.trim_start_matches(':');
+                    if bare.ends_with('!') {
+                        if let Some(Expr::Ident(var_name, _)) = args.first() {
+                            self.emit(Opcode::Dup);
+                            if let Some(slot) = self.scope().find_local(var_name) {
+                                self.emit(Opcode::StoreLocal(slot));
+                            } else if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                                self.emit(Opcode::StoreGlobal(pos as u16));
+                            }
+                        }
+                    }
                 } else {
                     let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
@@ -1062,9 +1074,9 @@ impl Compiler {
                         Ok(load_op) => { self.emit(load_op); }
                         Err(_) => {
                             // Neither compile-time name exists — emit a runtime named lookup.
-                            // The bare action name is used because imports register actions
-                            // under their bare names via RegisterAction.
-                            let name_idx = self.add_constant(Value::Str(name.clone()));
+                            // Use the qualified name ("ns::action") so GLAM namespace dispatch
+                            // works: UseGlam registers actions under both bare and qualified names.
+                            let name_idx = self.add_constant(Value::Str(full_name.clone()));
                             self.emit(Opcode::LoadNamed(name_idx));
                         }
                     }

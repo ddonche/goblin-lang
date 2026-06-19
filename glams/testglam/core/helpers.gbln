@@ -1,0 +1,3 @@
+act greet(name)
+    return "hello, " + name
+xx
