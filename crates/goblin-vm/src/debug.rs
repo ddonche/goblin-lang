@@ -236,7 +236,7 @@ fn format_value_depth(v: &Value, depth: usize) -> String {
     }
 }
 
-// Convenience: format a Value stored in a stash reference.
-pub fn format_stash_value(sv: &std::rc::Rc<Value>) -> String {
+// Convenience: format a Value stored in a stash.
+pub fn format_stash_value(sv: &Value) -> String {
     format_value(sv)
 }
