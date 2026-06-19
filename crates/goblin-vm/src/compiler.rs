@@ -492,6 +492,8 @@ impl Compiler {
                                         span_debug: format!("{:?}", bind.name.1),
                                     });
                                 }
+                                let name_idx = self.add_constant(Value::Str(name.clone()));
+                                self.emit(Opcode::RegisterAction(name_idx));
                                 if let Some(ref lock) = bind.lock_type {
                                     self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
                                 } else {
@@ -500,6 +502,8 @@ impl Compiler {
                             } else {
                                 let pos = self.globals.len();
                                 self.globals.push(name.clone());
+                                let name_idx = self.add_constant(Value::Str(name.clone()));
+                                self.emit(Opcode::RegisterAction(name_idx));
                                 if let Some(ref lock) = bind.lock_type {
                                     self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
                                 } else {
@@ -511,6 +515,12 @@ impl Compiler {
                             // present (hoisted from module pre-pass), else declare new.
                             let slot = self.scope_mut().find_local(name)
                                 .unwrap_or_else(|| self.scopes.last_mut().unwrap().declare_local(name));
+                            // At top-level module scope, register in named_values so
+                            // other modules can access this value via LoadNamed after import.
+                            if self.scopes.len() == 1 {
+                                let name_idx = self.add_constant(Value::Str(name.clone()));
+                                self.emit(Opcode::RegisterAction(name_idx));
+                            }
                             if let Some(ref lock) = bind.lock_type {
                                 self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
                             } else {
@@ -883,8 +893,15 @@ impl Compiler {
 
             // ── Variables ─────────────────────────────────────────────────────
             Expr::Ident(name, _) => {
-                let op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
-                self.emit(op);
+                match self.resolve_load(name) {
+                    Ok(op) => { self.emit(op); }
+                    Err(_) => {
+                        // Unknown at compile time — may come from an imported module.
+                        // Emit a runtime named-value lookup as fallback.
+                        let name_idx = self.add_constant(Value::Str(name.clone()));
+                        self.emit(Opcode::LoadNamed(name_idx));
+                    }
+                }
             }
 
             // ── Collections ───────────────────────────────────────────────────

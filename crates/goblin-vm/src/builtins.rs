@@ -3915,10 +3915,17 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                         "unknown variant '{}' for enum '{}'", variant_name, enum_name
                     )));
                 }
+                Ok(Value::Enum { enum_name, variant_name, fields })
             } else {
-                return Err(GoblinError::Runtime(format!("unknown enum '{}'", enum_name)));
+                // Not a known enum — may be a module-qualified value access like storage::my_map.
+                // Fall back to named_values lookup using the variant name.
+                if fields.is_none() {
+                    if let Some(v) = session.named_values.get(&variant_name).cloned() {
+                        return Ok(v);
+                    }
+                }
+                Err(GoblinError::Runtime(format!("unknown enum '{}'", enum_name)))
             }
-            Ok(Value::Enum { enum_name, variant_name, fields })
         }
 
         // LiteralTokenExpr(module_str, ident_str) → Value from token_store
