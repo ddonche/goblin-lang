@@ -1,0 +1,5 @@
+use testglam3
+
+act create_thing(name)
+    return "created: " + name
+xx

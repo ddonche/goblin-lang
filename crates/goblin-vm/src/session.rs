@@ -138,8 +138,14 @@ pub struct Session {
     /// Enum definitions registered at runtime.
     pub enums: HashMap<String, EnumDecl>,
 
-    /// Base directory for resolving import paths.
+    /// Base directory for resolving relative `import` paths.
+    /// Changes to the importing file's directory during nested imports.
     pub base_dir: std::path::PathBuf,
+
+    /// Project root — where `glams/` lives.
+    /// Set once at session creation, never modified.
+    /// `use X` always resolves `glams/X/` relative to this.
+    pub project_root: std::path::PathBuf,
 
     /// Set of already-imported paths (to avoid re-importing).
     pub imported: std::collections::HashSet<String>,
@@ -215,6 +221,7 @@ impl Session {
             compiled_methods: HashMap::new(),
             enums: HashMap::new(),
             base_dir: std::env::current_dir().unwrap_or_default(),
+            project_root: std::env::current_dir().unwrap_or_default(),
             imported: std::collections::HashSet::new(),
             overlay_defs: HashMap::new(),
             link_defs: HashMap::new(),
