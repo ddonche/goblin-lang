@@ -446,7 +446,8 @@ impl Session {
             Value::Nil | Value::Unit | Value::Bool(_) | Value::Int(_) | Value::Float(_)
             | Value::Big(_) | Value::Pct(_) | Value::Char(_) | Value::Str(_)
             | Value::CtrlSkip | Value::CtrlStop
-            | Value::Ref(_) | Value::GridRef { .. } | Value::Class { .. } => {
+            | Value::Ref(_) | Value::GridRef { .. } | Value::Class { .. }
+            | Value::DateTime(_) => {
                 self.alloc_value(value.clone())
             }
 

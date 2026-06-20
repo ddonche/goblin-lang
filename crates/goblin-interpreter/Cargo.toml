@@ -32,6 +32,8 @@ sqlx = { version = "0.7", features = ["postgres", "runtime-tokio", "tls-native-t
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "1.1.2"
 getrandom = "0.3"
+chrono     = { version = "0.4", features = ["clock"] }
+chrono-tz  = "0.10"
 
 [features]
 # Enabling "maths" here also enables rust_decimal's maths feature

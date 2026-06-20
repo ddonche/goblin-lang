@@ -19,6 +19,8 @@ toml = "1.1.2"
 uuid = { version = "1", features = ["v4", "v7", "js"] }
 walkdir = "2"
 comrak = "0.21"
+chrono     = { version = "0.4", features = ["clock"] }
+chrono-tz  = "0.10"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 zip = "2"

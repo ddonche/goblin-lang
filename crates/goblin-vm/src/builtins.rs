@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::collections;
 use crate::error::GoblinError;
 use crate::session::Session;
-use crate::value::{BuiltinId, CollectionValue, FormatSpec, Tether, Value};
+use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Tether, Value};
 
 pub fn call_builtin(
     id: BuiltinId,
@@ -3318,19 +3318,296 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Ok(Value::Nil)
         }
 
-        // ── Date/time type locks (not yet implemented — match interpreter error) ──
-        BuiltinId::CastDate | BuiltinId::CastTime | BuiltinId::CastDatetime | BuiltinId::CastDuration => {
-            let lock = match id {
-                BuiltinId::CastDate     => "date",
-                BuiltinId::CastTime     => "time",
-                BuiltinId::CastDatetime => "datetime",
-                BuiltinId::CastDuration => "duration",
-                _ => unreachable!(),
+        // ── Date/time constructors ────────────────────────────────────────────
+        BuiltinId::CastDate => {
+            use chrono::TimeZone;
+            if args.len() == 1 {
+                let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "date")) };
+                let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .or_else(|_| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                        .map(|d| chrono::Utc.from_utc_datetime(&d.and_hms_opt(0,0,0).unwrap())))
+                    .map_err(|_| GoblinError::Runtime(format!("date: cannot parse {:?}", s)))?;
+                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+            } else if args.len() == 3 {
+                let y  = require_int(read(0)?, "date")? as i32;
+                let mo = require_int(read(1)?, "date")? as u32;
+                let d  = require_int(read(2)?, "date")? as u32;
+                let naive = chrono::NaiveDate::from_ymd_opt(y, mo, d)
+                    .ok_or_else(|| GoblinError::Runtime("date: invalid date".into()))?
+                    .and_hms_opt(0, 0, 0).unwrap();
+                let utc = chrono::Utc.from_utc_datetime(&naive);
+                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+            } else {
+                Err(GoblinError::Runtime("date: expected (str) or (y, mo, d)".into()))
+            }
+        }
+        BuiltinId::CastTime => {
+            use chrono::TimeZone;
+            if args.len() == 1 {
+                let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "time")) };
+                let naive = chrono::NaiveTime::parse_from_str(&s, "%H:%M:%S")
+                    .or_else(|_| chrono::NaiveTime::parse_from_str(&s, "%H:%M"))
+                    .map_err(|_| GoblinError::Runtime(format!("time: cannot parse {:?}", s)))?;
+                let dt = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap().and_time(naive);
+                let utc = chrono::Utc.from_utc_datetime(&dt);
+                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time }))
+            } else if args.len() == 3 {
+                let h  = require_int(read(0)?, "time")? as u32;
+                let m  = require_int(read(1)?, "time")? as u32;
+                let s  = require_int(read(2)?, "time")? as u32;
+                let naive = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
+                    .and_hms_opt(h, m, s)
+                    .ok_or_else(|| GoblinError::Runtime("time: invalid time".into()))?;
+                let utc = chrono::Utc.from_utc_datetime(&naive);
+                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time }))
+            } else {
+                Err(GoblinError::Runtime("time: expected (str) or (h, m, s)".into()))
+            }
+        }
+        BuiltinId::CastDatetime => {
+            use chrono::TimeZone;
+            if args.len() == 1 {
+                let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "datetime")) };
+                let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .map_err(|_| GoblinError::Runtime(format!("datetime: cannot parse {:?}", s)))?;
+                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+            } else if args.len() == 6 {
+                let y  = require_int(read(0)?, "datetime")? as i32;
+                let mo = require_int(read(1)?, "datetime")? as u32;
+                let d  = require_int(read(2)?, "datetime")? as u32;
+                let h  = require_int(read(3)?, "datetime")? as u32;
+                let m  = require_int(read(4)?, "datetime")? as u32;
+                let s  = require_int(read(5)?, "datetime")? as u32;
+                let naive = chrono::NaiveDate::from_ymd_opt(y, mo, d)
+                    .and_then(|d| d.and_hms_opt(h, m, s))
+                    .ok_or_else(|| GoblinError::Runtime("datetime: invalid date/time".into()))?;
+                let utc = chrono::Utc.from_utc_datetime(&naive);
+                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+            } else {
+                Err(GoblinError::Runtime("datetime: expected (str) or (y, mo, d, h, m, s)".into()))
+            }
+        }
+        BuiltinId::CastDuration => {
+            Err(GoblinError::Runtime("duration: not yet implemented — use add_duration/since/until for datetime math".into()))
+        }
+
+        // ── Date/time builtins ────────────────────────────────────────────────
+        BuiltinId::DtNow | BuiltinId::DtUtcNow => {
+            Ok(Value::DateTime(dt_now()))
+        }
+        BuiltinId::DtEpochMs => {
+            let ms = chrono::Utc::now().timestamp_millis();
+            Ok(Value::Int(ms))
+        }
+        BuiltinId::DtEpochS => {
+            let s = chrono::Utc::now().timestamp();
+            Ok(Value::Int(s))
+        }
+        BuiltinId::DtLocalNow => {
+            let local = chrono::Local::now();
+            let utc = local.with_timezone(&chrono::Utc);
+            let offset = *local.offset();
+            let total_secs = offset.local_minus_utc();
+            let h = total_secs / 3600;
+            let m = (total_secs.abs() % 3600) / 60;
+            let tz_name = format!("{:+03}:{:02}", h, m);
+            Ok(Value::DateTime(GoblinDateTime { utc, tz: Some(tz_name), kind: GoblinDateKind::DateTime }))
+        }
+        BuiltinId::DtToday => {
+            use chrono::{Datelike, TimeZone};
+            let now = chrono::Utc::now();
+            let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
+                .unwrap().and_hms_opt(0,0,0).unwrap();
+            let utc = chrono::Utc.from_utc_datetime(&naive);
+            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+        }
+        BuiltinId::DtTomorrow => {
+            use chrono::{Datelike, Duration, TimeZone};
+            let now = chrono::Utc::now();
+            let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
+                .unwrap().and_hms_opt(0,0,0).unwrap();
+            let utc = chrono::Utc.from_utc_datetime(&naive) + Duration::days(1);
+            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+        }
+        BuiltinId::DtYesterday => {
+            use chrono::{Datelike, Duration, TimeZone};
+            let now = chrono::Utc::now();
+            let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
+                .unwrap().and_hms_opt(0,0,0).unwrap();
+            let utc = chrono::Utc.from_utc_datetime(&naive) - Duration::days(1);
+            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+        }
+        BuiltinId::DtToIso => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::DateTime(gdt) => Ok(Value::Str(dt_display(&gdt))),
+                other => Err(GoblinError::type_error("datetime", other.type_name(), "to_iso")),
+            }
+        }
+        BuiltinId::DtFromIso => {
+            expect_n(1)?;
+            let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "from_iso")) };
+            let utc = chrono::DateTime::parse_from_rfc3339(&s)
+                .map(|d| d.with_timezone(&chrono::Utc))
+                .map_err(|_| GoblinError::Runtime(format!("from_iso: cannot parse {:?}", s)))?;
+            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+        }
+        BuiltinId::DtToEpochMs => {
+            expect_n(1)?;
+            match read(0)? {
+                Value::DateTime(gdt) => Ok(Value::Int(gdt.utc.timestamp_millis())),
+                other => Err(GoblinError::type_error("datetime", other.type_name(), "to_epoch_ms")),
+            }
+        }
+        BuiltinId::DtFromEpochMs => {
+            expect_n(1)?;
+            let ms = match read(0)? {
+                Value::Int(i) => i,
+                Value::Float(f) => f as i64,
+                other => return Err(GoblinError::type_error("int", other.type_name(), "from_epoch_ms")),
             };
-            Err(GoblinError::Runtime(format!(
-                "type lock '{}' is not yet implemented — omit the type suffix for now",
-                lock
-            )))
+            let utc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+                .ok_or_else(|| GoblinError::Runtime("from_epoch_ms: value out of range".into()))?;
+            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+        }
+        BuiltinId::DtFormatDatetime | BuiltinId::DtFormatDate | BuiltinId::DtFormatTime => {
+            if args.len() != 2 {
+                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "format_datetime".into() });
+            }
+            let gdt = match read(0)? {
+                Value::DateTime(d) => d,
+                other => return Err(GoblinError::type_error("datetime", other.type_name(), "format_datetime")),
+            };
+            let pat = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "format_datetime")),
+            };
+            let dt = dt_in_tz(&gdt);
+            Ok(Value::Str(dt.format(&pat).to_string()))
+        }
+        BuiltinId::DtYear => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "year")) };
+            use chrono::Datelike;
+            Ok(Value::Int(dt_in_tz(&gdt).year() as i64))
+        }
+        BuiltinId::DtMonth => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "month")) };
+            use chrono::Datelike;
+            Ok(Value::Int(dt_in_tz(&gdt).month() as i64))
+        }
+        BuiltinId::DtDay => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "day")) };
+            use chrono::Datelike;
+            Ok(Value::Int(dt_in_tz(&gdt).day() as i64))
+        }
+        BuiltinId::DtHour => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "hour")) };
+            use chrono::Timelike;
+            Ok(Value::Int(dt_in_tz(&gdt).hour() as i64))
+        }
+        BuiltinId::DtMinute => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "minute")) };
+            use chrono::Timelike;
+            Ok(Value::Int(dt_in_tz(&gdt).minute() as i64))
+        }
+        BuiltinId::DtSecond => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "second")) };
+            use chrono::Timelike;
+            Ok(Value::Int(dt_in_tz(&gdt).second() as i64))
+        }
+        BuiltinId::DtWeekday => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "weekday")) };
+            use chrono::Datelike;
+            let name = match dt_in_tz(&gdt).weekday() {
+                chrono::Weekday::Mon => "Monday",
+                chrono::Weekday::Tue => "Tuesday",
+                chrono::Weekday::Wed => "Wednesday",
+                chrono::Weekday::Thu => "Thursday",
+                chrono::Weekday::Fri => "Friday",
+                chrono::Weekday::Sat => "Saturday",
+                chrono::Weekday::Sun => "Sunday",
+            };
+            Ok(Value::Str(name.to_string()))
+        }
+        BuiltinId::DtAddDuration => {
+            if args.len() != 2 {
+                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "add_duration".into() });
+            }
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "add_duration")) };
+            let map_val = read(1)?;
+
+            fn get_int_btree(m: &std::collections::BTreeMap<String, Value>, key: &str) -> i64 {
+                match m.get(key) {
+                    Some(Value::Int(i)) => *i,
+                    Some(Value::Float(f)) => *f as i64,
+                    _ => 0,
+                }
+            }
+            fn get_int_ord(m: &indexmap::IndexMap<String, Value>, key: &str) -> i64 {
+                match m.get(key) {
+                    Some(Value::Int(i)) => *i,
+                    Some(Value::Float(f)) => *f as i64,
+                    _ => 0,
+                }
+            }
+
+            let (years, months_n, weeks, days, hours, minutes, seconds) = match &map_val {
+                Value::Map(m) => (get_int_btree(m,"years"), get_int_btree(m,"months"), get_int_btree(m,"weeks"), get_int_btree(m,"days"), get_int_btree(m,"hours"), get_int_btree(m,"minutes"), get_int_btree(m,"seconds")),
+                Value::MapOrd(m) => (get_int_ord(m,"years"), get_int_ord(m,"months"), get_int_ord(m,"weeks"), get_int_ord(m,"days"), get_int_ord(m,"hours"), get_int_ord(m,"minutes"), get_int_ord(m,"seconds")),
+                other => return Err(GoblinError::type_error("map", other.type_name(), "add_duration")),
+            };
+
+            use chrono::{Months, Duration};
+            let mut utc = gdt.utc;
+            if years != 0 {
+                if years > 0 { utc = utc.checked_add_months(Months::new(years as u32 * 12)).ok_or_else(|| GoblinError::Runtime("add_duration: overflow".into()))?; }
+                else { utc = utc.checked_sub_months(Months::new((-years) as u32 * 12)).ok_or_else(|| GoblinError::Runtime("add_duration: overflow".into()))?; }
+            }
+            if months_n != 0 {
+                if months_n > 0 { utc = utc.checked_add_months(Months::new(months_n as u32)).ok_or_else(|| GoblinError::Runtime("add_duration: overflow".into()))?; }
+                else { utc = utc.checked_sub_months(Months::new((-months_n) as u32)).ok_or_else(|| GoblinError::Runtime("add_duration: overflow".into()))?; }
+            }
+            let total_secs = weeks * 7 * 86400 + days * 86400 + hours * 3600 + minutes * 60 + seconds;
+            if total_secs != 0 {
+                utc = utc + Duration::seconds(total_secs);
+            }
+            Ok(Value::DateTime(GoblinDateTime { utc, ..gdt }))
+        }
+        BuiltinId::DtSince => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "since")) };
+            let diff = chrono::Utc::now().signed_duration_since(gdt.utc);
+            Ok(Value::Int(diff.num_seconds()))
+        }
+        BuiltinId::DtUntil => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "until")) };
+            let diff = gdt.utc.signed_duration_since(chrono::Utc::now());
+            Ok(Value::Int(diff.num_seconds()))
+        }
+        BuiltinId::DtTimezone => {
+            expect_n(1)?;
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "timezone")) };
+            Ok(Value::Str(gdt.tz.unwrap_or_else(|| "UTC".to_string())))
+        }
+        BuiltinId::DtToTimezone => {
+            if args.len() != 2 {
+                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "to_timezone".into() });
+            }
+            let gdt = match read(0)? { Value::DateTime(d) => d, other => return Err(GoblinError::type_error("datetime", other.type_name(), "to_timezone")) };
+            let tz_name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "to_timezone")) };
+            let _tz: chrono_tz::Tz = tz_name.parse()
+                .map_err(|_| GoblinError::Runtime(format!("to_timezone: unknown timezone {:?}", tz_name)))?;
+            Ok(Value::DateTime(GoblinDateTime { tz: Some(tz_name), ..gdt }))
         }
 
         // ── Tick (DES tick runner — not yet implemented in VM) ────────────────
@@ -4674,6 +4951,7 @@ pub fn value_to_str(v: &Value) -> String {
             let items: Vec<String> = collections::to_vec(c).iter().map(value_to_str).collect();
             format!("[{}]", items.join(", "))
         }
+        Value::DateTime(gdt) => dt_display(gdt),
         Value::Function(f)   => format!("<fn {}>", f.name),
         Value::Closure(c)    => format!("<closure {}>", c.func.name),
         Value::Builtin(b)    => format!("<builtin {:?}>", b),
@@ -4886,8 +5164,42 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
             s.push(']');
             s
         }
+        Value::DateTime(gdt) => dt_display(gdt),
         _ => v.type_name().to_string(),
     }
+}
+
+// ── DateTime helpers ──────────────────────────────────────────────────────────
+
+pub(crate) fn dt_display(gdt: &GoblinDateTime) -> String {
+    match gdt.kind {
+        GoblinDateKind::Date => {
+            let dt = dt_in_tz(gdt);
+            dt.format("%Y-%m-%d").to_string()
+        }
+        GoblinDateKind::Time => {
+            let dt = dt_in_tz(gdt);
+            dt.format("%H:%M:%S").to_string()
+        }
+        GoblinDateKind::DateTime => {
+            let dt = dt_in_tz(gdt);
+            dt.to_rfc3339()
+        }
+    }
+}
+
+fn dt_in_tz(gdt: &GoblinDateTime) -> chrono::DateTime<chrono_tz::Tz> {
+    match &gdt.tz {
+        None => gdt.utc.with_timezone(&chrono_tz::UTC),
+        Some(name) => {
+            let tz: chrono_tz::Tz = name.parse().unwrap_or(chrono_tz::UTC);
+            gdt.utc.with_timezone(&tz)
+        }
+    }
+}
+
+fn dt_now() -> GoblinDateTime {
+    GoblinDateTime { utc: chrono::Utc::now(), tz: None, kind: GoblinDateKind::DateTime }
 }
 
 fn fisher_yates_shuffle(items: &mut Vec<Value>, session: &mut Session) {
@@ -5098,6 +5410,7 @@ fn value_to_yall(v: &Value) -> goblin_yall::YallValue {
             for (k, v2) in fields.iter() { out.insert(k.clone(), value_to_yall(v2)); }
             goblin_yall::YallValue::Map(out)
         }
+        Value::DateTime(gdt) => goblin_yall::YallValue::Str(dt_display(gdt)),
         _ => goblin_yall::YallValue::Str(fmt_value_raw(v)),
     }
 }

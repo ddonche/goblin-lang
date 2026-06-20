@@ -230,6 +230,7 @@ fn format_value_depth(v: &Value, depth: usize) -> String {
                 _ => describe_collection(&Value::Collection(c.clone())),
             }
         }
+        Value::DateTime(gdt) => crate::builtins::dt_display(gdt),
         Value::Function(f)  => format!("<fn {}>", f.name),
         Value::Closure(c)   => format!("<closure {}>", c.func.name),
         Value::Builtin(b)   => format!("<builtin {:?}>", b),

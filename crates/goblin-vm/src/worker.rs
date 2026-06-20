@@ -104,6 +104,8 @@ impl TransferValue {
                 Ok(TransferValue::Array(tv_items))
             }
             Value::Formatted(v, _) => TransferValue::from_value(v),
+            // DateTime: transfer as ISO string
+            Value::DateTime(gdt) => Ok(TransferValue::Str(crate::builtins::dt_display(gdt))),
             // Control flow and object values cannot be transferred
             Value::CtrlSkip | Value::CtrlStop | Value::CtrlReturn(_)
             | Value::Object { .. } | Value::Ref(_) | Value::GridRef { .. }
