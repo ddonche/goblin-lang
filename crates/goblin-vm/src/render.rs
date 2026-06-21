@@ -14,12 +14,6 @@ use crate::vm::Vm;
 
 const OUT_VAR: &str = "__render_out";
 
-/// Single-line keywords that are always statements, never expressions.
-const STATEMENT_KEYWORDS: &[&str] = &[
-    "for", "if", "unless", "while", "repeat", "else", "elif", "judge", "xx", "end",
-    "act", "action", "use", "import", "return", "enum",
-];
-
 /// True if `source`'s first meaningful content is the `<{ render }>` directive.
 pub fn is_render_source(source: &str) -> bool {
     let rest = match source.trim_start().strip_prefix("<{") {
@@ -56,39 +50,13 @@ fn escape_goblin_string(s: &str) -> String {
     out
 }
 
-/// A `<{ ... }>` block is a statement (spliced verbatim) if:
-/// - It spans multiple lines (any block with a body: act, for, if, use, …), OR
-/// - Its first word is a known statement keyword, OR
-/// - It looks like a bind statement (`name | expr`).
-/// Everything else is treated as an expression whose value gets appended to output.
-fn is_control_chunk(code: &str) -> bool {
-    // Multi-line = always a statement. Handles act, enum, for bodies, etc.
-    // without needing every keyword explicitly listed.
-    if code.contains('\n') {
-        return true;
-    }
-    let first_word = code.split_whitespace().next().unwrap_or("");
-    if STATEMENT_KEYWORDS.contains(&first_word) {
-        return true;
-    }
-    if let Some(pipe_pos) = code.find('|') {
-        let is_double_pipe = code.as_bytes().get(pipe_pos + 1) == Some(&b'|')
-            || (pipe_pos > 0 && code.as_bytes()[pipe_pos - 1] == b'|');
-        if !is_double_pipe {
-            let head = code[..pipe_pos].trim();
-            let looks_like_names = !head.is_empty()
-                && head.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
-                && head.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ',' || c.is_whitespace());
-            if looks_like_names {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Transpile a render-page body (text after the `<{ render }>` directive) into
 /// literal Goblin source that builds `__render_out` and returns it.
+///
+/// Model: everything OUTSIDE `<{ }>` is literal HTML appended to the output.
+/// Everything INSIDE `<{ }>` is plain Goblin code, spliced verbatim.
+/// To emit a computed value mid-template use `{varname}` interpolation in the
+/// surrounding HTML, or assign to `__render_out` directly in a code block.
 fn transpile(body: &str) -> String {
     let mut out = String::new();
     out.push_str(OUT_VAR);
@@ -114,17 +82,8 @@ fn transpile(body: &str) -> String {
         };
         let code = after_open[..close].trim();
         if !code.is_empty() {
-            if is_control_chunk(code) {
-                out.push_str(code);
-                out.push('\n');
-            } else {
-                out.push_str(OUT_VAR);
-                out.push_str(" | ");
-                out.push_str(OUT_VAR);
-                out.push_str(" + str(");
-                out.push_str(code);
-                out.push_str(")\n");
-            }
+            out.push_str(code);
+            out.push('\n');
         }
         rest = &after_open[close + 2..];
     }
