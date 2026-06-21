@@ -2481,6 +2481,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "walk"                           => BuiltinId::Walk,
         "list_dirs"                      => BuiltinId::ListDirs,
         "escape_html"                    => BuiltinId::EscapeHtml,
+        "url_decode"                     => BuiltinId::UrlDecode,
         "uuid_v4"                        => BuiltinId::UuidV4,
         "uuid_v7"                        => BuiltinId::UuidV7,
         "pathfind"                       => BuiltinId::Pathfind,

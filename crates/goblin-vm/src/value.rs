@@ -679,6 +679,7 @@ pub enum BuiltinId {
     Walk,
     ListDirs,
     EscapeHtml,
+    UrlDecode,
     UuidV4,
     UuidV7,
     Pathfind,

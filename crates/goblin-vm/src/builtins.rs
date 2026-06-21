@@ -3148,6 +3148,53 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
             Ok(Value::Str(out))
         }
+        BuiltinId::UrlDecode => {
+            expect_n(1)?;
+            let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "url_decode")) };
+
+            fn hex_val(c: u8) -> Option<u8> {
+                match c {
+                    b'0'..=b'9' => Some(c - b'0'),
+                    b'a'..=b'f' => Some(c - b'a' + 10),
+                    b'A'..=b'F' => Some(c - b'A' + 10),
+                    _ => None,
+                }
+            }
+
+            let bytes = s.as_bytes();
+            let mut out_bytes: Vec<u8> = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'%' if i + 2 < bytes.len() => {
+                        match (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                            (Some(hi), Some(lo)) => {
+                                out_bytes.push(hi * 16 + lo);
+                                i += 3;
+                            }
+                            _ => {
+                                // malformed escape — pass the '%' through literally
+                                out_bytes.push(bytes[i]);
+                                i += 1;
+                            }
+                        }
+                    }
+                    b'+' => {
+                        out_bytes.push(b' ');
+                        i += 1;
+                    }
+                    b => {
+                        out_bytes.push(b);
+                        i += 1;
+                    }
+                }
+            }
+
+            // form data is UTF-8; percent-decoding can reconstruct multi-byte
+            // sequences (e.g. emoji, accented chars), so decode as UTF-8 with
+            // lossy fallback rather than assuming ASCII.
+            Ok(Value::Str(String::from_utf8_lossy(&out_bytes).into_owned()))
+        }
         BuiltinId::UuidV4 => {
             Ok(Value::Str(uuid::Uuid::new_v4().to_string()))
         }
