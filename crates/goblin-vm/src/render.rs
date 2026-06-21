@@ -14,9 +14,10 @@ use crate::vm::Vm;
 
 const OUT_VAR: &str = "__render_out";
 
-const CONTROL_KEYWORDS: &[&str] = &[
+/// Single-line keywords that are always statements, never expressions.
+const STATEMENT_KEYWORDS: &[&str] = &[
     "for", "if", "unless", "while", "repeat", "else", "elif", "judge", "xx", "end",
-    "act", "action",
+    "act", "action", "use", "import", "return", "enum",
 ];
 
 /// True if `source`'s first meaningful content is the `<{ render }>` directive.
@@ -57,12 +58,19 @@ fn escape_goblin_string(s: &str) -> String {
     out
 }
 
-/// A `<{ ... }>` block is control flow (spliced verbatim) if it opens/closes a
-/// block (`for`, `if`, `xx`, ...) or is itself a bind statement (`name | value`).
-/// Otherwise it's an expression whose stringified value gets appended to output.
+/// A `<{ ... }>` block is a statement (spliced verbatim) if:
+/// - It spans multiple lines (any block with a body: act, for, if, use, …), OR
+/// - Its first word is a known statement keyword, OR
+/// - It looks like a bind statement (`name | expr`).
+/// Everything else is treated as an expression whose value gets appended to output.
 fn is_control_chunk(code: &str) -> bool {
+    // Multi-line = always a statement. Handles act, enum, for bodies, etc.
+    // without needing every keyword explicitly listed.
+    if code.contains('\n') {
+        return true;
+    }
     let first_word = code.split_whitespace().next().unwrap_or("");
-    if CONTROL_KEYWORDS.contains(&first_word) {
+    if STATEMENT_KEYWORDS.contains(&first_word) {
         return true;
     }
     if let Some(pipe_pos) = code.find('|') {
