@@ -35,28 +35,11 @@ fn render_body(source: &str) -> &str {
     &trimmed[close + 2..]
 }
 
-fn escape_goblin_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            other => out.push(other),
-        }
-    }
-    out
-}
-
 /// Transpile a render-page body (text after the `<{ render }>` directive) into
 /// literal Goblin source that builds `__render_out` and returns it.
 ///
-/// Model: everything OUTSIDE `<{ }>` is literal HTML appended to the output.
+/// Model: everything OUTSIDE `<{ }>` is raw HTML appended verbatim to output.
 /// Everything INSIDE `<{ }>` is plain Goblin code, spliced verbatim.
-/// To emit a computed value mid-template use `{varname}` interpolation in the
-/// surrounding HTML, or assign to `__render_out` directly in a code block.
 fn transpile(body: &str) -> String {
     let mut out = String::new();
     out.push_str(OUT_VAR);
@@ -94,12 +77,24 @@ fn transpile(body: &str) -> String {
 }
 
 fn emit_literal(out: &mut String, text: &str) {
-    out.push_str(OUT_VAR);
-    out.push_str(" | ");
-    out.push_str(OUT_VAR);
-    out.push_str(" + \"");
-    out.push_str(&escape_goblin_string(text));
-    out.push_str("\"\n");
+    // Triple-quoted strings are verbatim in Goblin — no escape processing, no
+    // interpolation. Split on """ (closing delimiter) to handle that edge case.
+    for (i, chunk) in text.split("\"\"\"").enumerate() {
+        if i > 0 {
+            out.push_str(OUT_VAR);
+            out.push_str(" | ");
+            out.push_str(OUT_VAR);
+            out.push_str(" + \"\\\"\\\"\\\"\"\n");
+        }
+        if !chunk.is_empty() {
+            out.push_str(OUT_VAR);
+            out.push_str(" | ");
+            out.push_str(OUT_VAR);
+            out.push_str(" + \"\"\"");
+            out.push_str(chunk);
+            out.push_str("\"\"\"\n");
+        }
+    }
 }
 
 fn map_to_pairs(data: Value) -> Result<Vec<(String, Value)>, GoblinError> {
