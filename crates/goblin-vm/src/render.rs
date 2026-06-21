@@ -16,6 +16,7 @@ const OUT_VAR: &str = "__render_out";
 
 const CONTROL_KEYWORDS: &[&str] = &[
     "for", "if", "unless", "while", "repeat", "else", "elif", "judge", "xx", "end",
+    "act", "action",
 ];
 
 /// True if `source`'s first meaningful content is the `<{ render }>` directive.
