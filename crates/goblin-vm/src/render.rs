@@ -125,9 +125,12 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
                 for decl in compiled.enums {
                     vm.session.enums.insert(decl.name.clone(), decl);
                 }
-                vm.execute_repl(compiled.entry, known_globals.len()).map_err(|e| {
+                let val = vm.execute_repl(compiled.entry, known_globals.len()).map_err(|e| {
                     GoblinError::Runtime(format!("render_template: runtime error in '{path}': {e}"))
                 })?;
+                if !matches!(val, Value::Nil) {
+                    output.push_str(&crate::builtins::fmt_value_raw(&val));
+                }
             }
         }
     }
