@@ -641,7 +641,11 @@ impl Compiler {
                     }
                     ImportItems::Named { items, source } => {
                         // import { a, b } from source — import the source file
-                        let resolved = format!("{}.gbln", source.replace('/', std::path::MAIN_SEPARATOR_STR));
+                        let resolved = if source.ends_with(".gbln") || source.ends_with(".gob") || source.ends_with(".imports") {
+                            source.replace('/', std::path::MAIN_SEPARATOR_STR)
+                        } else {
+                            format!("{}.gbln", source.replace('/', std::path::MAIN_SEPARATOR_STR))
+                        };
                         let idx = self.add_constant(Value::Str(resolved));
                         self.emit(Opcode::ImportFile(idx));
                         let _ = items; // named imports — globals are populated by running the file

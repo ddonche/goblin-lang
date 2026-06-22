@@ -1300,7 +1300,10 @@ impl Vm {
                     self.load_glam_action_needs(&toml_path, &ns)?;
                 }
 
-                let entry_path = glam_dir.join(format!("{ns}.gbln"));
+                let entry_path = {
+                    let p = glam_dir.join(format!("{ns}.gbln"));
+                    if p.exists() { p } else { glam_dir.join(format!("{ns}.gob")) }
+                };
                 self.import_file(entry_path, Some(ns))?;
             }
 
@@ -1744,10 +1747,15 @@ impl Vm {
         self.session.imported.insert(canonical.clone());
 
         let path_str = full_path.to_string_lossy().to_string();
-        // Try .gbln fallback if not found
-        let actual_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+        // Try .gbln / .gob fallback if the bare path doesn't exist
+        let actual_path = if !full_path.exists() && !path_str.ends_with(".gbln") && !path_str.ends_with(".gob") {
             let p = full_path.with_extension("gbln");
-            if p.exists() { p } else { full_path.clone() }
+            if p.exists() {
+                p
+            } else {
+                let p2 = full_path.with_extension("gob");
+                if p2.exists() { p2 } else { full_path.clone() }
+            }
         } else {
             full_path.clone()
         };
