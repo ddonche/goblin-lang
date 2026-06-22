@@ -2130,6 +2130,81 @@ impl Compiler {
                 Ok(true)
             }
 
+            // update!(lhs, rhs)        — whole-variable replacement:    lhs = rhs
+            // update!(coll[key], rhs)  — indexed assignment (interp form): coll[key] = rhs
+            // update!(coll, key, rhs)  — indexed assignment (blueprint form): coll[key] = rhs
+            "update!" => {
+                match args.len() {
+                    2 => {
+                        let lhs = &args[0];
+                        let rhs = &args[1];
+                        match lhs {
+                            Expr::Ident(var_name, _) => {
+                                self.compile_expr(rhs)?;
+                                if let Some(slot) = self.scope().find_local(var_name) {
+                                    self.emit(Opcode::StoreLocal(slot));
+                                } else if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                                    self.emit(Opcode::StoreGlobal(pos as u16));
+                                }
+                            }
+                            Expr::Index(base_expr, key_expr, _) | Expr::IndexMap(base_expr, key_expr, _) => {
+                                if let Expr::Ident(base_name, _) = base_expr.as_ref() {
+                                    let load_op = self.resolve_load(base_name).map_err(|e| self.locate_err(e))?;
+                                    self.emit(load_op);
+                                    self.compile_expr(key_expr)?;
+                                    self.compile_expr(rhs)?;
+                                    self.emit(Opcode::SetIndex);
+                                    if let Some(slot) = self.scope().find_local(base_name) {
+                                        self.emit(Opcode::StoreLocal(slot));
+                                    } else if let Some(pos) = self.globals.iter().position(|g| g == base_name) {
+                                        self.emit(Opcode::StoreGlobal(pos as u16));
+                                    }
+                                } else {
+                                    return Err(GoblinError::CompileError {
+                                        message: "update!: nested index targets not supported".into(),
+                                        span_debug: String::new(),
+                                    });
+                                }
+                            }
+                            _ => {
+                                return Err(GoblinError::CompileError {
+                                    message: "update!: lhs must be a variable or indexed expression".into(),
+                                    span_debug: String::new(),
+                                });
+                            }
+                        }
+                    }
+                    3 => {
+                        // update!(coll, key, val) — blueprint indexed-update form
+                        if let Expr::Ident(base_name, _) = &args[0] {
+                            let load_op = self.resolve_load(base_name).map_err(|e| self.locate_err(e))?;
+                            self.emit(load_op);
+                            self.compile_expr(&args[1])?;
+                            self.compile_expr(&args[2])?;
+                            self.emit(Opcode::SetIndex);
+                            if let Some(slot) = self.scope().find_local(base_name) {
+                                self.emit(Opcode::StoreLocal(slot));
+                            } else if let Some(pos) = self.globals.iter().position(|g| g == base_name) {
+                                self.emit(Opcode::StoreGlobal(pos as u16));
+                            }
+                        } else {
+                            return Err(GoblinError::CompileError {
+                                message: "update!(coll, key, val): first arg must be a variable".into(),
+                                span_debug: String::new(),
+                            });
+                        }
+                    }
+                    _ => {
+                        return Err(GoblinError::CompileError {
+                            message: "update!: expected 2 or 3 arguments".into(),
+                            span_debug: String::new(),
+                        });
+                    }
+                }
+                self.emit(Opcode::LoadNil);
+                Ok(true)
+            }
+
             _ => Ok(false),
         }
     }
