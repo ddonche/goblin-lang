@@ -1,14 +1,17 @@
 //! Render mode: `<{ render }>` template pages.
 //!
-//! Model: everything inside `<{ }>` is plain Goblin code. Everything outside
-//! is raw HTML written directly to the output — no Goblin processing at all.
+//! The entire template compiles as one Goblin program so loops can span blocks.
+//! HTML outside `<{ }>` becomes verbatim triple-quoted string appends.
+//! Code inside `<{ }>` runs as Goblin: bare expressions auto-output their
+//! value; statements (binds, loops, declarations) run silently.
 
 use crate::error::GoblinError;
 use crate::session::{GcMode, Session};
 use crate::value::Value;
 use crate::vm::Vm;
 
-/// True if `source`'s first meaningful content is the `<{ render }>` directive.
+const OUT: &str = "__render_out";
+
 pub fn is_render_source(source: &str) -> bool {
     // Strip UTF-8 BOM if present (Windows editors sometimes add it)
     let source = source.trim_start_matches('\u{FEFF}');
@@ -23,36 +26,95 @@ pub fn is_render_source(source: &str) -> bool {
     rest.starts_with("}>")
 }
 
-/// Everything after the leading `<{ render }>` directive.
 fn render_body(source: &str) -> &str {
     let trimmed = source.trim_start();
     let close = trimmed.find("}>").expect("is_render_source already matched");
     &trimmed[close + 2..]
 }
 
-enum Segment<'a> {
-    Html(&'a str),
-    Code(&'a str),
+/// Emit a raw HTML chunk as a triple-quoted Goblin string append.
+/// Triple-quoted strings are verbatim — no escape processing, no interpolation.
+/// Split on `"""` (the only sequence that would close the literal) to be safe.
+fn emit_html(out: &mut String, html: &str) {
+    for (i, chunk) in html.split("\"\"\"").enumerate() {
+        if i > 0 {
+            // re-emit the literal """ via a regular escaped string
+            out.push_str(OUT);
+            out.push_str(" |= ");
+            out.push_str(OUT);
+            out.push_str(" + \"\\\"\\\"\\\"\"\n");
+        }
+        if !chunk.is_empty() {
+            out.push_str(OUT);
+            out.push_str(" |= ");
+            out.push_str(OUT);
+            out.push_str(" + \"\"\"");
+            out.push_str(chunk);
+            out.push_str("\"\"\"\n");
+        }
+    }
 }
 
-fn segments(body: &str) -> Vec<Segment<'_>> {
-    let mut out = Vec::new();
+/// Return true if `code` is a single bare expression statement (not a bind,
+/// loop, declaration, etc.). Uses the actual Goblin parser — no keyword lists.
+fn is_single_expression(code: &str) -> bool {
+    let tokens = match goblin_lexer::lex(code, "<render>") {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let parser = goblin_parser::Parser::new(&tokens);
+    let module = match parser.parse_module() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    matches!(module.items.as_slice(), [goblin_ast::Stmt::Expr(_)])
+}
+
+/// Transpile the render body into a single Goblin program.
+fn transpile(body: &str) -> String {
+    let mut out = String::new();
+    out.push_str(OUT);
+    out.push_str(" | \"\"\n");
+
     let mut rest = body;
     loop {
         let Some(open) = rest.find("<{") else {
-            if !rest.is_empty() { out.push(Segment::Html(rest)); }
+            if !rest.is_empty() {
+                emit_html(&mut out, rest);
+            }
             break;
         };
-        if open > 0 { out.push(Segment::Html(&rest[..open])); }
+        if open > 0 {
+            emit_html(&mut out, &rest[..open]);
+        }
         let after_open = &rest[open + 2..];
         let Some(close) = after_open.find("}>") else {
-            if !after_open.is_empty() { out.push(Segment::Html(after_open)); }
+            if !after_open.is_empty() {
+                emit_html(&mut out, after_open);
+            }
             break;
         };
         let code = after_open[..close].trim();
-        if !code.is_empty() { out.push(Segment::Code(code)); }
+        if !code.is_empty() {
+            if is_single_expression(code) {
+                // Bare expression — output its value, same as REPL behaviour.
+                out.push_str(OUT);
+                out.push_str(" |= ");
+                out.push_str(OUT);
+                out.push_str(" + :str(");
+                out.push_str(code);
+                out.push_str(")\n");
+            } else {
+                // Statement, declaration, loop, etc. — run verbatim.
+                out.push_str(code);
+                out.push('\n');
+            }
+        }
         rest = &after_open[close + 2..];
     }
+
+    out.push_str(OUT);
+    out.push('\n');
     out
 }
 
@@ -68,9 +130,6 @@ fn map_to_pairs(data: Value) -> Result<Vec<(String, Value)>, GoblinError> {
     }
 }
 
-/// Read `path`, confirm it is a render-mode page, and execute it.
-/// HTML outside `<{ }>` is written directly to the output string.
-/// Goblin code inside `<{ }>` runs in a shared session across all blocks.
 pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| GoblinError::Runtime(format!("render_template: {e}")))?;
@@ -81,60 +140,56 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
         )));
     }
 
+    let transpiled = transpile(render_body(&source));
+
+    let tokens = goblin_lexer::lex(&transpiled, path).map_err(|diags| {
+        GoblinError::Runtime(format!(
+            "render_template: lex error in '{path}': {}",
+            diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")
+        ))
+    })?;
+    let parser = goblin_parser::Parser::new(&tokens);
+    let module = parser.parse_module().map_err(|diags| {
+        GoblinError::Runtime(format!(
+            "render_template: parse error in '{path}': {}",
+            diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")
+        ))
+    })?;
+
     let data_pairs = map_to_pairs(data)?;
     let mut known_globals: Vec<String> = data_pairs.iter().map(|(k, _)| k.clone()).collect();
+    known_globals.push(OUT.to_string());
+
+    let compiled = compile_repl_snippet(&module, &known_globals).map_err(|e| {
+        GoblinError::Runtime(format!("render_template: compile error in '{path}': {e}"))
+    })?;
+
+    for name in &compiled.global_names {
+        if !known_globals.contains(name) {
+            known_globals.push(name.clone());
+        }
+    }
 
     let mut session = Session::new(GcMode::Auto);
     session.global_names = known_globals.clone();
+    for decl in compiled.classes {
+        session.classes.insert(decl.name.clone(), decl);
+    }
+    for decl in compiled.enums {
+        session.enums.insert(decl.name.clone(), decl);
+    }
     for (i, (_, value)) in data_pairs.into_iter().enumerate() {
         let t = session.alloc_value(value);
         session.set_global(i, t);
     }
 
     let mut vm = Vm::new(session);
-    let mut output = String::new();
+    let result = vm
+        .execute_repl(compiled.entry, known_globals.len())
+        .map_err(|e| GoblinError::Runtime(format!("render_template: runtime error in '{path}': {e}")))?;
 
-    for seg in segments(render_body(&source)) {
-        match seg {
-            Segment::Html(text) => output.push_str(text),
-            Segment::Code(code) => {
-                let tokens = goblin_lexer::lex(code, path).map_err(|diags| {
-                    GoblinError::Runtime(format!(
-                        "render_template: lex error in '{path}': {}",
-                        diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")
-                    ))
-                })?;
-                let parser = goblin_parser::Parser::new(&tokens);
-                let module = parser.parse_module().map_err(|diags| {
-                    GoblinError::Runtime(format!(
-                        "render_template: parse error in '{path}': {}",
-                        diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")
-                    ))
-                })?;
-                let compiled = compile_repl_snippet(&module, &known_globals).map_err(|e| {
-                    GoblinError::Runtime(format!("render_template: compile error in '{path}': {e}"))
-                })?;
-                for name in &compiled.global_names {
-                    if !known_globals.contains(name) {
-                        known_globals.push(name.clone());
-                        vm.session.global_names.push(name.clone());
-                    }
-                }
-                for decl in compiled.classes {
-                    vm.session.classes.insert(decl.name.clone(), decl);
-                }
-                for decl in compiled.enums {
-                    vm.session.enums.insert(decl.name.clone(), decl);
-                }
-                let val = vm.execute_repl(compiled.entry, known_globals.len()).map_err(|e| {
-                    GoblinError::Runtime(format!("render_template: runtime error in '{path}': {e}"))
-                })?;
-                if !matches!(val, Value::Nil) {
-                    output.push_str(&crate::builtins::fmt_value_raw(&val));
-                }
-            }
-        }
+    match result {
+        Value::Str(s) => Ok(Value::Str(s)),
+        other => Ok(Value::Str(crate::builtins::fmt_value_raw(&other))),
     }
-
-    Ok(Value::Str(output))
 }
