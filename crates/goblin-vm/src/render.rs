@@ -157,8 +157,9 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     })?;
 
     let data_pairs = map_to_pairs(data)?;
+    // known_globals = only the data variables — OUT is declared by the transpiled `__render_out | ""`
+    // and must NOT be pre-declared here or the compiler will see a duplicate-local.
     let mut known_globals: Vec<String> = data_pairs.iter().map(|(k, _)| k.clone()).collect();
-    known_globals.push(OUT.to_string());
 
     let compiled = compile_repl_snippet(&module, &known_globals).map_err(|e| {
         GoblinError::Runtime(format!("render_template: compile error in '{path}': {e}"))
