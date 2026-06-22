@@ -1125,6 +1125,222 @@ impl Vm {
                         self.stack.push(result);
                         return Ok(());
                     }
+
+                    // ── Map — support user-defined named actions ──────────────
+                    BuiltinId::Map => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "map".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let action_val = self.session.read_value(&arg_tethers[1])?;
+                        let func = match action_val {
+                            Value::Str(s) => Value::Str(s),
+                            other => return Err(GoblinError::type_error("str (action name)", other.type_name(), "map")),
+                        };
+                        let result = self.vm_map_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+
+                    // ── _where family — two-mode predicate (literal or action) ─
+                    BuiltinId::GetWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "get_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "get_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::DeleteWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "delete_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "delete_where predicate")),
+                        };
+                        let result = self.vm_where_delete(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::UpdateWhere => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "update_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "update_where predicate")),
+                        };
+                        let new_val = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_where_update(coll, &pred, new_val)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ReapWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "reap_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ReapWhere2 => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "reap_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::PutWhere => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "put_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "put_where predicate")),
+                        };
+                        let new_val = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_where_put(coll, &pred, new_val)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::GrabWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "grab_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "grab_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+
+                    // ── Higher-order collection ops ───────────────────────────
+                    BuiltinId::Filter => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "filter".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_filter_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::Reduce => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "reduce".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let init = self.session.read_value(&arg_tethers[1])?;
+                        let func = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_reduce_inner(coll, init, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::Any => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "any".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_any_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::All => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "all".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_all_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::FindIndex => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "find_index".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_find_index_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::SortBy => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "sort_by".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_sort_by_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::MapFn => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "map_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_map_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::FilterFn => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "filter_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_filter_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ReduceFn => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "reduce_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let init = self.session.read_value(&arg_tethers[1])?;
+                        let func = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_reduce_inner(coll, init, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ForEachFn => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "for_each_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_for_each_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+
                     _ => {}
                 }
 
@@ -1855,6 +2071,39 @@ impl Vm {
         Ok(())
     }
 
+    /// Low-level function call: set up a frame for (func_rc, upvalues) with args and run it.
+    fn call_func_core(
+        &mut self,
+        func_rc: Rc<FunctionObject>,
+        upvalues: Vec<UpvalueCell>,
+        args: Vec<Value>,
+    ) -> Result<Value, GoblinError> {
+        if args.len() != func_rc.params {
+            return Err(GoblinError::ArityMismatch {
+                expected: func_rc.params,
+                got: args.len(),
+                name: func_rc.name.clone(),
+            });
+        }
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+        let stack_base = self.stack.len();
+        let dummy = self.session.alloc_value(Value::Nil);
+        self.stack.push(dummy);
+        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+        for (i, a) in args.into_iter().enumerate() {
+            let t = self.session.alloc_value(a);
+            new_frame.locals[i] = Some(t);
+        }
+        self.call_stack.push(new_frame);
+        let depth_before = self.call_stack.len() - 1;
+        self.run_until_depth(depth_before)?;
+        let result_tether = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?;
+        Ok(self.session.read_value(&result_tether)?)
+    }
+
     /// Call a named function from session.named_values and return its result.
     pub(crate) fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
         let func_val = self.session.named_values.get(name).cloned()
@@ -1864,30 +2113,346 @@ impl Vm {
             Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
             other => return Err(GoblinError::NotCallable { got: other.type_name() }),
         };
-        if args.len() != func_rc.params {
-            return Err(GoblinError::ArityMismatch { expected: func_rc.params, got: args.len(), name: func_rc.name.clone() });
+        self.call_func_core(func_rc, upvalues, args)
+    }
+
+    /// Call any callable value: Str (action name or builtin), Function, or Closure.
+    pub(crate) fn call_callable(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, GoblinError> {
+        match callee {
+            Value::Str(name) => {
+                if let Some(func_val) = self.session.named_values.get(&name).cloned() {
+                    let (func_rc, upvalues) = match func_val {
+                        Value::Function(f) => (f, Vec::new()),
+                        Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
+                        other => return Err(GoblinError::NotCallable { got: other.type_name() }),
+                    };
+                    self.call_func_core(func_rc, upvalues, args)
+                } else if let Some(bid) = crate::compiler::builtin_by_name(&name) {
+                    let arg_tethers: Vec<Tether> = args.into_iter()
+                        .map(|v| self.session.alloc_value(v))
+                        .collect();
+                    let result_tether = crate::builtins::call_builtin(bid, arg_tethers, &mut self.session)?;
+                    Ok(self.session.read_value(&result_tether)?)
+                } else {
+                    Err(GoblinError::Runtime(format!("callable: unknown action '{name}'")))
+                }
+            }
+            Value::Function(f) => self.call_func_core(f, Vec::new(), args),
+            Value::Closure(c) => {
+                let func_rc = c.func.clone();
+                let upvalues = c.upvalues.clone();
+                self.call_func_core(func_rc, upvalues, args)
+            }
+            other => Err(GoblinError::NotCallable { got: other.type_name() }),
         }
-        if self.call_stack.len() >= MAX_CALL_DEPTH {
-            return Err(GoblinError::StackOverflow);
+    }
+
+    // ── Where-predicate helpers ───────────────────────────────────────────────
+
+    /// Implements interpreter Position::Where two-mode predicate:
+    /// non-identifier string → literal match; identifier string → call as action.
+    fn vm_where_match(&mut self, pred: &str, is_literal: bool, v: &Value) -> Result<bool, GoblinError> {
+        if is_literal {
+            return Ok(match v {
+                Value::Str(s) => s == pred,
+                Value::Char(c) => c.to_string() == pred,
+                _ => false,
+            });
         }
-        let stack_base = self.stack.len();
-        // The result will be pushed at stack_base by Return, so use stack_base as the "func slot".
-        // We push a dummy nil for the func slot position, then bind params directly.
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy); // placeholder for func tether position
-        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
-        for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
-            new_frame.locals[i] = Some(t);
+        let result = self.call_callable(Value::Str(pred.to_string()), vec![v.clone()])?;
+        Ok(matches!(result, Value::Bool(true)))
+    }
+
+    fn vm_where_get(&mut self, coll: Value, pred: &str) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(m) => {
+                let mut out = std::collections::BTreeMap::new();
+                for (k, v) in &m {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::Map(out))
+            }
+            Value::MapOrd(m) => {
+                let mut out = indexmap::IndexMap::new();
+                for (k, v) in &m {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::MapOrd(out))
+            }
+            Value::Str(s) => {
+                let mut out = Vec::new();
+                for c in s.chars() {
+                    let cv = Value::Char(c);
+                    if self.vm_where_match(pred, is_literal, &cv)? { out.push(cv); }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(GoblinError::type_error("collection", other.type_name(), "get_where")),
         }
-        // The dummy func tether is at stack_base; Return will truncate to stack_base and push result.
-        self.call_stack.push(new_frame);
-        let depth_before = self.call_stack.len() - 1;
-        self.run_until_depth(depth_before)?;
-        // Result is on top of stack (Return pushed it at stack_base).
-        let result_tether = self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("invoke: no return value on stack".into()))?;
-        Ok(self.session.read_value(&result_tether)?)
+    }
+
+    fn vm_where_delete(&mut self, coll: Value, pred: &str) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if !self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(m) => {
+                let mut out = std::collections::BTreeMap::new();
+                for (k, v) in &m {
+                    if !self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::Map(out))
+            }
+            Value::MapOrd(m) => {
+                let mut out = indexmap::IndexMap::new();
+                for (k, v) in &m {
+                    if !self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::MapOrd(out))
+            }
+            Value::Str(s) => {
+                let mut out = String::new();
+                for c in s.chars() {
+                    if !self.vm_where_match(pred, is_literal, &Value::Char(c))? { out.push(c); }
+                }
+                Ok(Value::Str(out))
+            }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if !self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(GoblinError::type_error("collection", other.type_name(), "delete_where")),
+        }
+    }
+
+    fn vm_where_update(&mut self, coll: Value, pred: &str, new_val: Value) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? {
+                        out.push(new_val.clone());
+                    } else {
+                        out.push(v);
+                    }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(m) => {
+                let mut out = m.clone();
+                for (k, v) in &m {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), new_val.clone()); }
+                }
+                Ok(Value::Map(out))
+            }
+            Value::MapOrd(m) => {
+                let mut out = m.clone();
+                for (k, v) in m.iter() {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), new_val.clone()); }
+                }
+                Ok(Value::MapOrd(out))
+            }
+            Value::Str(s) => {
+                let repl = match &new_val {
+                    Value::Str(r) => r.clone(),
+                    Value::Char(c) => c.to_string(),
+                    _ => return Err(GoblinError::type_error("str or char", new_val.type_name(), "update_where on string")),
+                };
+                let mut out = String::new();
+                for c in s.chars() {
+                    if self.vm_where_match(pred, is_literal, &Value::Char(c))? {
+                        out.push_str(&repl);
+                    } else {
+                        out.push(c);
+                    }
+                }
+                Ok(Value::Str(out))
+            }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? {
+                        out.push(new_val.clone());
+                    } else {
+                        out.push(v);
+                    }
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(GoblinError::type_error("collection", other.type_name(), "update_where")),
+        }
+    }
+
+    fn vm_where_put(&mut self, coll: Value, pred: &str, new_val: Value) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
+                    out.push(v);
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(_) | Value::MapOrd(_) => Err(GoblinError::Runtime("put_where is not meaningful for maps".into())),
+            other => Err(GoblinError::type_error("array", other.type_name(), "put_where")),
+        }
+    }
+
+    // ── Higher-order collection helpers ──────────────────────────────────────
+
+    fn vm_map_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let is_str = matches!(coll, Value::Str(_));
+        let elems: Vec<Value> = match coll {
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("str or array", other.type_name(), "map")),
+        };
+        let mut results = Vec::with_capacity(elems.len());
+        let mut any_non_text = false;
+        for v in elems {
+            let r = self.call_callable(func.clone(), vec![v])?;
+            if is_str && !matches!(r, Value::Char(_) | Value::Str(_)) { any_non_text = true; }
+            results.push(r);
+        }
+        if is_str && !any_non_text {
+            let mut s = String::new();
+            for r in results {
+                match r { Value::Char(c) => s.push(c), Value::Str(ts) => s.push_str(&ts), _ => {} }
+            }
+            Ok(Value::Str(s))
+        } else {
+            Ok(Value::Array(results))
+        }
+    }
+
+    fn vm_filter_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "filter")),
+        };
+        let mut out = Vec::new();
+        for v in elems {
+            if matches!(self.call_callable(func.clone(), vec![v.clone()])?, Value::Bool(true)) {
+                out.push(v);
+            }
+        }
+        Ok(Value::Array(out))
+    }
+
+    fn vm_reduce_inner(&mut self, coll: Value, init: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array", other.type_name(), "reduce")),
+        };
+        let mut acc = init;
+        for v in elems {
+            acc = self.call_callable(func.clone(), vec![acc, v])?;
+        }
+        Ok(acc)
+    }
+
+    fn vm_any_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "any")),
+        };
+        for v in elems {
+            if matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
+                return Ok(Value::Bool(true));
+            }
+        }
+        Ok(Value::Bool(false))
+    }
+
+    fn vm_all_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "all")),
+        };
+        for v in elems {
+            if !matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
+                return Ok(Value::Bool(false));
+            }
+        }
+        Ok(Value::Bool(true))
+    }
+
+    fn vm_find_index_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array", other.type_name(), "find_index")),
+        };
+        for (i, v) in elems.into_iter().enumerate() {
+            if matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
+                return Ok(Value::Int(i as i64));
+            }
+        }
+        Ok(Value::Nil)
+    }
+
+    fn vm_sort_by_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array", other.type_name(), "sort_by")),
+        };
+        let mut keyed: Vec<(String, Value)> = Vec::with_capacity(elems.len());
+        for v in elems {
+            let k = self.call_callable(func.clone(), vec![v.clone()])?;
+            keyed.push((crate::builtins::fmt_value_raw(&k), v));
+        }
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(Value::Array(keyed.into_iter().map(|(_, v)| v).collect()))
+    }
+
+    fn vm_for_each_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "for_each_fn")),
+        };
+        for v in elems {
+            self.call_callable(func.clone(), vec![v])?;
+        }
+        Ok(Value::Nil)
     }
 
     fn vm_invoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
