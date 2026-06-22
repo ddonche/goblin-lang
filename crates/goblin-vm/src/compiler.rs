@@ -978,8 +978,14 @@ impl Compiler {
                 if let Some(_) = self.try_compile_builtin_call(name, args)? {
                     // Mutation-bang free call: name!(collection, ...) stores result back.
                     // e.g. update_at!(meta, "id", val) → CallBuiltin + Dup + StoreLocal(meta)
+                    // I/O builtins use ! for side-effect signaling only — they return Nil and
+                    // must NOT write back to the first argument variable.
+                    const IO_BANG_NO_WRITEBACK: &[&str] = &[
+                        "write_text!", "write_json!", "append_file!",
+                        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
+                    ];
                     let bare = name.trim_start_matches(':');
-                    if bare.ends_with('!') {
+                    if bare.ends_with('!') && !IO_BANG_NO_WRITEBACK.contains(&bare) {
                         if let Some(Expr::Ident(var_name, _)) = args.first() {
                             self.emit(Opcode::Dup);
                             if let Some(slot) = self.scope().find_local(var_name) {
@@ -2446,6 +2452,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "create_dir"   | "create_dir!"   => BuiltinId::CreateDir,
         "copy_file"    | "copy_file!"    => BuiltinId::CopyFile,
         "delete_path"  | "delete_path!"  => BuiltinId::DeletePath,
+        "zip_dir"      | "zip_dir!"      => BuiltinId::ZipDir,
         "md_to_html"                     => BuiltinId::MdToHtml,
         "highlight_code"                 => BuiltinId::HighlightCode,
         "big"  | "b"                     => BuiltinId::ToBig,
