@@ -706,6 +706,10 @@ pub enum BuiltinId {
     // Process
     ZipDir,
 
+    // Sentinel: emitted for non-bang calls to I/O-mutation builtins.
+    // Always errors at runtime with "mutation-operator-required".
+    RequiresBang,
+
     // Token store
     RegisterToken,
     ResolveToken,

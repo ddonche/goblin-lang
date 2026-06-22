@@ -3516,6 +3516,15 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
         }
 
+        // ── RequiresBang ──────────────────────────────────────────────────────
+        BuiltinId::RequiresBang => {
+            return Err(GoblinError::Runtime(
+                "mutation-operator-required: this operation requires the '!' (bang) form. \
+                 Append '!' to the call, e.g. write_text!(path, text) or zip_dir!(src, dst)."
+                    .to_string(),
+            ));
+        }
+
         // ── ZipDir ────────────────────────────────────────────────────────────
         BuiltinId::ZipDir => {
             if args.len() != 2 {
