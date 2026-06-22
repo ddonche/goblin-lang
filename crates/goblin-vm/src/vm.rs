@@ -2091,6 +2091,12 @@ impl Vm {
                 live.insert(cell.0.borrow().addr.slot);
             }
         }
+        // Globals are roots — never collect them.
+        for maybe_t in &self.session.globals {
+            if let Some(t) = maybe_t {
+                live.insert(t.addr.slot);
+            }
+        }
         live
     }
 

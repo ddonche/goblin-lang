@@ -84,7 +84,7 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     let data_pairs = map_to_pairs(data)?;
     let mut known_globals: Vec<String> = data_pairs.iter().map(|(k, _)| k.clone()).collect();
 
-    let mut session = Session::new(GcMode::Off);
+    let mut session = Session::new(GcMode::Auto);
     session.global_names = known_globals.clone();
     for (i, (_, value)) in data_pairs.into_iter().enumerate() {
         let t = session.alloc_value(value);
