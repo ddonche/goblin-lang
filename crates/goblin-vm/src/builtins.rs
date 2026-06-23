@@ -1635,6 +1635,54 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
         }
 
+        // reap!(arr, count?) — atomically pick+remove random items from arr.
+        // Returns [remaining_arr, reaped_item_or_arr] so the compiler special
+        // form can store remaining back and leave reaped as the expression value.
+        BuiltinId::ReapBang => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "reap!".into() });
+            }
+            let src = read(0)?;
+            let count: usize = if args.len() == 2 {
+                match read(1)? {
+                    Value::Int(n) if n > 0 => n as usize,
+                    other => return Err(GoblinError::Runtime(format!("reap!: count must be a positive integer, got {}", other.type_name()))),
+                }
+            } else { 1 };
+            match src {
+                Value::Array(xs) => {
+                    if xs.is_empty() { return Err(GoblinError::Runtime("reap!: cannot reap from empty array".into())); }
+                    if count > xs.len() { return Err(GoblinError::Runtime(format!("reap!: requested {} but only {} available", count, xs.len()))); }
+                    let mut indices: Vec<usize> = (0..xs.len()).collect();
+                    for i in 0..count {
+                        let j = i + crate::builtins::rng_bounded(session, (xs.len() - i) as u64) as usize;
+                        indices.swap(i, j);
+                    }
+                    let chosen: std::collections::HashSet<usize> = indices[..count].iter().copied().collect();
+                    let reaped: Vec<Value> = indices[..count].iter().map(|&i| xs[i].clone()).collect();
+                    let remaining: Vec<Value> = xs.iter().enumerate().filter(|(i, _)| !chosen.contains(i)).map(|(_, v)| v.clone()).collect();
+                    let reaped_val = if count == 1 { reaped.into_iter().next().unwrap() } else { Value::Array(reaped) };
+                    Ok(Value::Array(vec![Value::Array(remaining), reaped_val]))
+                }
+                Value::Str(s) => {
+                    let chars: Vec<char> = s.chars().collect();
+                    if chars.is_empty() { return Err(GoblinError::Runtime("reap!: cannot reap from empty string".into())); }
+                    if count > chars.len() { return Err(GoblinError::Runtime(format!("reap!: requested {} but only {} available", count, chars.len()))); }
+                    let mut indices: Vec<usize> = (0..chars.len()).collect();
+                    for i in 0..count {
+                        let j = i + crate::builtins::rng_bounded(session, (chars.len() - i) as u64) as usize;
+                        indices.swap(i, j);
+                    }
+                    let chosen: std::collections::HashSet<usize> = indices[..count].iter().copied().collect();
+                    let reaped: Vec<char> = indices[..count].iter().map(|&i| chars[i]).collect();
+                    let remaining: String = chars.iter().enumerate().filter(|(i, _)| !chosen.contains(i)).map(|(_, &c)| c).collect();
+                    let reaped_val = if count == 1 { Value::Char(reaped[0]) } else { Value::Str(reaped.into_iter().collect()) };
+                    Ok(Value::Array(vec![Value::Str(remaining), reaped_val]))
+                }
+                other => Err(GoblinError::type_error("array or string", other.type_name(), "reap!")),
+            }
+        }
+
         // ── Collections — new Position×Operation matrix ───────────────────────
         // Get family
         BuiltinId::GetFirst => {

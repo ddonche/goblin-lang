@@ -631,6 +631,7 @@ pub enum BuiltinId {
     AppendFile,
     WriteJson,
     ReapSample,
+    ReapBang,
     IsType,
     IsBoundName,
     Invoke,

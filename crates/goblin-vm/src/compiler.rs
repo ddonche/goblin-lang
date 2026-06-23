@@ -2172,6 +2172,47 @@ impl Compiler {
                 Ok(true)
             }
 
+            // reap!(arr [, count]) — atomically remove+return random items.
+            // Interpreter bang form: (arr, count?) NOT the {src,count} config-map.
+            // Compiles to: ReapBang → [remaining, reaped]; store remaining back, return reaped.
+            "reap!" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(GoblinError::CompileError {
+                        message: "'reap!' takes 1 or 2 arguments: (arr [, count])".into(),
+                        span_debug: String::new(),
+                    });
+                }
+                let arr_name = match &args[0] {
+                    Expr::Ident(n, _) => n.clone(),
+                    _ => return Err(GoblinError::CompileError {
+                        message: "'reap!' first argument must be a plain variable".into(),
+                        span_debug: String::new(),
+                    }),
+                };
+                // compile ReapBang(arr [, count]) → [remaining, reaped]
+                let load_arr = self.resolve_load(&arr_name).map_err(|e| self.locate_err(e))?;
+                self.emit(load_arr.clone());
+                if args.len() == 2 { self.compile_expr(&args[1])?; }
+                self.emit(Opcode::CallBuiltin(BuiltinId::ReapBang, args.len() as u8));
+                // Store result temporarily, then extract remaining and reaped
+                let tmp_slot = self.scope_mut().declare_local("__reap_tmp__");
+                self.emit(Opcode::StoreLocal(tmp_slot));
+                // remaining = result[0] → store back to arr
+                self.emit(Opcode::LoadLocal(tmp_slot));
+                let zero_idx = self.add_constant(Value::Int(0));
+                self.emit(Opcode::LoadConst(zero_idx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::GetAt, 2));
+                let store_arr = self.resolve_store(&arr_name)
+                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: arr_name.clone() }))?;
+                self.emit(store_arr);
+                // reaped = result[1] → leave on stack as expression value
+                self.emit(Opcode::LoadLocal(tmp_slot));
+                let one_idx = self.add_constant(Value::Int(1));
+                self.emit(Opcode::LoadConst(one_idx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::GetAt, 2));
+                Ok(true)
+            }
+
             _ => Ok(false),
         }
     }
@@ -2667,7 +2708,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "delete_matching!"               => BuiltinId::DeleteMatching,
         "delete_between!"               => BuiltinId::DeleteBetween,
         "delete_random!"                 => BuiltinId::DeleteRandom,
-        "reap!"                          => BuiltinId::ReapSample,
         "reap_first!"                    => BuiltinId::ReapFirst,
         "reap_last!"                     => BuiltinId::ReapLast,
         "reap_at!"                       => BuiltinId::ReapAt,
