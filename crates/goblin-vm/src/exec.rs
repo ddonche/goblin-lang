@@ -96,6 +96,60 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
     vm.execute(compiled.entry)
 }
 
+/// Like `execute_source` but injects CLI arguments as a global `args` array before running.
+/// Matches interpreter behavior: `goblin run main.gbln foo bar` → `args = ["foo", "bar"]`.
+pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result<Value, GoblinError> {
+    let tokens = goblin_lexer::lex(source, "<source>")
+        .map_err(|diags| GoblinError::CompileError {
+            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            span_debug: "<lex>".into(),
+        })?;
+
+    let module = goblin_parser::Parser::new(&tokens).parse_module()
+        .map_err(|diags| GoblinError::CompileError {
+            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            span_debug: "<parse>".into(),
+        })?;
+
+    let compiled = Compiler::new().compile_module(&module)?;
+
+    let mut session = Session::new(GcMode::Auto);
+    session.global_names = compiled.global_names;
+    for decl in &compiled.classes { compile_class_methods(decl, &mut session); }
+    for decl in compiled.classes {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+            if let Some(existing) = session.classes.get(&decl.name) {
+                let mut merged = decl.clone();
+                merged.actions = existing.actions.clone();
+                merged.decision = existing.decision.clone();
+                merged.judge = existing.judge.clone();
+                merged.transitions = existing.transitions.clone();
+                if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                let matrix_field_names: std::collections::HashSet<String> =
+                    merged.fields.iter().map(|f| f.name.clone()).collect();
+                let extra_fields: Vec<_> = existing.fields.iter()
+                    .filter(|f| !matrix_field_names.contains(&f.name))
+                    .cloned()
+                    .collect();
+                merged.fields.extend(extra_fields);
+                merged
+            } else { decl }
+        } else { decl };
+        session.classes.insert(merged.name.clone(), merged);
+    }
+    for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
+
+    // Inject CLI args as global `args` before execution (matches interpreter behavior).
+    if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
+        let args_val = Value::Array(extra_args.into_iter().map(Value::Str).collect());
+        let tether = session.alloc_value(args_val);
+        session.set_global(idx, tether);
+    }
+
+    let mut vm = Vm::new(session);
+    vm.execute(compiled.entry)
+}
+
 /// Like `execute_source` but captures print/say output and returns it with the response state.
 /// Used by goblin-host to run scripts in-process with the VM engine.
 /// `source_file` is used in error messages; pass "" when the path is not known.

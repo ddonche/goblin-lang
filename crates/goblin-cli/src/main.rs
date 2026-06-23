@@ -372,7 +372,7 @@ fn main() {
         // Capture anything after the filename as extra args
         let extra_args: Vec<String> = args.iter().skip(1).cloned().collect();
         if use_vm {
-            std::process::exit(run_run_vm(target.as_path()));
+            std::process::exit(run_run_vm(target.as_path(), extra_args));
         }
         std::process::exit(run_run_with_args(target.as_path(), extra_args));
     }
@@ -380,7 +380,7 @@ fn main() {
     // Run script file if a single path argument is provided
     if args.len() == 1 && is_probable_file(&args[0]) {
         if use_vm {
-            std::process::exit(run_run_vm(Path::new(&args[0])));
+            std::process::exit(run_run_vm(Path::new(&args[0]), vec![]));
         }
         std::process::exit(run_run(Path::new(&args[0])));
     }
@@ -1115,7 +1115,7 @@ fn vm_error_to_diagnostic(
     Diagnostic::new_with_code(Severity::Error, "VM", "runtime-error", &message, span)
 }
 
-fn run_run_vm(path: &std::path::Path) -> i32 {
+fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     use std::time::Instant;
 
     let src = match std::fs::read_to_string(path) {
@@ -1128,7 +1128,7 @@ fn run_run_vm(path: &std::path::Path) -> i32 {
 
     let filepath = path.display().to_string();
     let start = Instant::now();
-    let result = goblin_vm::exec::execute_source(&src);
+    let result = goblin_vm::exec::execute_source_with_args(&src, extra_args);
     let elapsed = start.elapsed();
 
     let code = match result {
