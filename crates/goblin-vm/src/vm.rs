@@ -3046,6 +3046,7 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "is_dir"           => Some(BuiltinId::IsDir),
         "escape_html"      => Some(BuiltinId::EscapeHtml),
         "url_decode"       => Some(BuiltinId::UrlDecode),
+        "url_encode"       => Some(BuiltinId::UrlEncode),
         _ => None,
     };
 

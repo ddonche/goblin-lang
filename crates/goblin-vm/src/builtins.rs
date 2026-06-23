@@ -3196,6 +3196,22 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
             Ok(Value::Str(out))
         }
+        BuiltinId::UrlEncode => {
+            expect_n(1)?;
+            let s = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "url_encode")),
+            };
+            let mut out = String::with_capacity(s.len() * 3);
+            for byte in s.as_bytes() {
+                match byte {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+                    | b'-' | b'_' | b'.' | b'~' => out.push(*byte as char),
+                    b => { out.push('%'); out.push_str(&format!("{:02X}", b)); }
+                }
+            }
+            Ok(Value::Str(out))
+        }
         BuiltinId::UrlDecode => {
             expect_n(1)?;
             let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "url_decode")) };
