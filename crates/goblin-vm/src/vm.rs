@@ -766,8 +766,7 @@ impl Vm {
                     items.push(v);
                 }
                 self.stack.truncate(start);
-                let coll = CollectionValue::from_flat(items);
-                let t = self.session.alloc_value(Value::Collection(Rc::new(coll)));
+                let t = self.session.alloc_value(Value::Array(items));
                 self.stack.push(t);
             }
             Opcode::MakeMap(n) => {
