@@ -1485,11 +1485,18 @@ impl Vm {
                     }
                 };
 
-                // Resolve path against project_root (matches interpreter's ImportBaseMode::ProjectRoot).
-                // All imports are relative to the project root (CWD at startup), not to the
-                // importing file's directory — nested imports do NOT accumulate subdirectories.
+                // Imports inside a GLAM resolve relative to that GLAM's directory (base_dir,
+                // which import_file sets to the GLAM entry file's parent). Imports in regular
+                // modules always resolve relative to project_root — this matches the interpreter's
+                // ImportBaseMode::ProjectRoot default and prevents path-doubling when a module
+                // inside a subdirectory uses paths that include that subdirectory.
+                let in_glam = self.call_stack.last()
+                    .map(|f| f.func.owner_glam.is_some())
+                    .unwrap_or(false);
                 let full_path = if std::path::Path::new(&path_str).is_absolute() {
                     std::path::PathBuf::from(&path_str)
+                } else if in_glam {
+                    self.session.base_dir.join(&path_str)
                 } else {
                     self.session.project_root.join(&path_str)
                 };
@@ -2005,6 +2012,14 @@ impl Vm {
         for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
         for decl in compiled.enums   { self.session.enums.insert(decl.name.clone(), decl); }
 
+        // Track the importing file's directory in base_dir so that GLAM files (which
+        // have owner_glam set on their frames) can resolve sub-imports relative to the
+        // GLAM's own directory. Non-GLAM imports always use project_root instead.
+        let prev_base_dir = self.session.base_dir.clone();
+        if let Some(parent) = actual_path.parent() {
+            self.session.base_dir = parent.to_path_buf();
+        }
+
         // Run the imported module's entry function as a nested call on the
         // SAME call stack (not via self.execute(), which assumes an empty
         // stack/call_stack and runs until the whole stack drains — wrong
@@ -2016,6 +2031,7 @@ impl Vm {
         let depth_before = self.call_stack.len();
         self.call_stack.push(CallFrame::new(entry_rc, Vec::new(), stack_base));
         let run_result = self.run_until_depth(depth_before);
+        self.session.base_dir = prev_base_dir;
         run_result?;
         self.stack.pop(); // discard the imported module's implicit return value
         Ok(())
