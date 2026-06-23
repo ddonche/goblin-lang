@@ -2177,21 +2177,17 @@ impl Vm {
                 self.session.action_needs.insert(ns.to_string(), map);
             }
 
-            // Detect deprecated flat [needs] format (entries directly under [needs]
-            // instead of under [needs.values] or [needs.actions]).
             let has_new_format = needs.contains_key("values") || needs.contains_key("actions");
-            if !has_new_format {
-                let flat_keys: Vec<&str> = needs.keys().map(|s| s.as_str()).collect();
-                if !flat_keys.is_empty() {
-                    return Err(GoblinError::Runtime(format!(
-                        "B0104: deprecated [needs] format in {}\n\
-                         The flat [needs] section is no longer supported.\n\
-                         Move Box references to [needs.values] and action paths to [needs.actions].\n\
-                         Affected keys: {}",
-                        toml_path.display(),
-                        flat_keys.join(", ")
-                    )));
-                }
+            if !has_new_format && !needs.is_empty() {
+                let line_num = content.lines()
+                    .enumerate()
+                    .find(|(_, l)| l.trim() == "[needs]")
+                    .map(|(i, _)| i + 1)
+                    .unwrap_or(1);
+                return Err(GoblinError::Runtime(format!(
+                    "{}:{}: use [needs.values] for Box references and [needs.actions] for action paths",
+                    toml_path.display(), line_num
+                )));
             }
         }
 
