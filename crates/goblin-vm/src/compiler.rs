@@ -2124,6 +2124,54 @@ impl Compiler {
                 Ok(true)
             }
 
+            // update!(target, new_val) — lvalue whole-replacement
+            // Handles: update!(var, v), update!(var[idx], v), update!(var{key}, v)
+            "update!" => {
+                if args.len() != 2 {
+                    return Err(GoblinError::CompileError {
+                        message: "'update!' takes exactly 2 arguments".into(),
+                        span_debug: String::new(),
+                    });
+                }
+                match &args[0] {
+                    Expr::Ident(var_name, _) => {
+                        // update!(var, new_val) → compile new_val, store to var
+                        self.compile_expr(&args[1])?;
+                        let op = self.resolve_store(var_name)
+                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+                        self.emit(op);
+                        self.emit(Opcode::LoadNil);
+                    }
+                    Expr::Index(arr_expr, idx_expr, _) | Expr::IndexMap(arr_expr, idx_expr, _) => {
+                        // update!(arr[idx], new_val) → update_at(arr, idx, new_val) stored back
+                        if let Expr::Ident(arr_name, _) = arr_expr.as_ref() {
+                            let load_op = self.resolve_load(arr_name)
+                                .map_err(|e| self.locate_err(e))?;
+                            self.emit(load_op);
+                            self.compile_expr(idx_expr)?;
+                            self.compile_expr(&args[1])?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::UpdateAt, 3));
+                            let store_op = self.resolve_store(arr_name)
+                                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: arr_name.clone() }))?;
+                            self.emit(store_op);
+                            self.emit(Opcode::LoadNil);
+                        } else {
+                            return Err(GoblinError::CompileError {
+                                message: "'update!' index target must be a plain variable".into(),
+                                span_debug: String::new(),
+                            });
+                        }
+                    }
+                    _ => {
+                        return Err(GoblinError::CompileError {
+                            message: "'update!' target must be a variable or index expression".into(),
+                            span_debug: String::new(),
+                        });
+                    }
+                }
+                Ok(true)
+            }
+
             _ => Ok(false),
         }
     }
