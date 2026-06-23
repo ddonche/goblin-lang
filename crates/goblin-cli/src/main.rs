@@ -1116,6 +1116,11 @@ fn vm_error_to_diagnostic(
 }
 
 fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
+    use goblin_vm::compiler::Compiler;
+    use goblin_vm::exec::compile_class_methods_pub;
+    use goblin_vm::session::{GcMode, Session};
+    use goblin_vm::vm::Vm;
+    use goblin_vm::value::Value as VmValue;
     use std::time::Instant;
 
     let src = match std::fs::read_to_string(path) {
@@ -1128,10 +1133,78 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 
     let filepath = path.display().to_string();
     let start = Instant::now();
-    let result = goblin_vm::exec::execute_source_with_args(&src, extra_args);
-    let elapsed = start.elapsed();
 
-    let code = match result {
+    let tokens = match goblin_lexer::lex(&src, &filepath) {
+        Ok(t) => t,
+        Err(diags) => {
+            for d in &diags { eprintln!("{}", d); }
+            return 1;
+        }
+    };
+    let module = match goblin_parser::Parser::new(&tokens).parse_module() {
+        Ok(m) => m,
+        Err(diags) => {
+            for d in &diags { eprintln!("{}", d); }
+            return 1;
+        }
+    };
+    let compiled = match Compiler::new().with_globals(&["args"]).for_file(&filepath).compile_module(&module) {
+        Ok(c) => c,
+        Err(e) => {
+            let diag = vm_error_to_diagnostic(&e, &filepath, &src);
+            eprintln!("{}", diag);
+            return 1;
+        }
+    };
+
+    let project_root = path.parent()
+        .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let box_toml_path = project_root.join("box.toml");
+
+    let mut session = Session::new(GcMode::Auto);
+    session.global_names = compiled.global_names;
+    session.project_root = project_root.clone();
+    session.base_dir     = project_root;
+
+    // Load box.toml if present — populates session.box_store
+    if box_toml_path.exists() {
+        if let Err(e) = goblin_vm::exec::load_box_toml_into_session(&mut session, &box_toml_path) {
+            eprintln!("box.toml error: {}", e);
+            return 1;
+        }
+    }
+
+    for decl in &compiled.classes { compile_class_methods_pub(decl, &mut session); }
+    for decl in compiled.classes {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+            if let Some(existing) = session.classes.get(&decl.name) {
+                let mut m = decl.clone();
+                m.actions = existing.actions.clone();
+                m.decision = existing.decision.clone();
+                m.judge = existing.judge.clone();
+                m.transitions = existing.transitions.clone();
+                if m.capacity.is_none() { m.capacity = existing.capacity.clone(); }
+                let matrix_names: std::collections::HashSet<String> = m.fields.iter().map(|f| f.name.clone()).collect();
+                let extra: Vec<_> = existing.fields.iter().filter(|f| !matrix_names.contains(&f.name)).cloned().collect();
+                m.fields.extend(extra);
+                m
+            } else { decl }
+        } else { decl };
+        session.classes.insert(merged.name.clone(), merged);
+    }
+    for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
+
+    // Inject CLI args
+    if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
+        let args_val = VmValue::Array(extra_args.into_iter().map(VmValue::Str).collect());
+        let tether = session.alloc_value(args_val);
+        session.set_global(idx, tether);
+    }
+
+    let mut vm = Vm::new(session);
+    let code = match vm.execute(compiled.entry) {
         Ok(_) => 0,
         Err(e) => {
             let diag = vm_error_to_diagnostic(&e, &filepath, &src);
@@ -1140,6 +1213,7 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         }
     };
 
+    let elapsed = start.elapsed();
     eprintln!(
         "goblin run --vm {} → exit {} in {}ms ({}.{:03}s)",
         path.display(), code,

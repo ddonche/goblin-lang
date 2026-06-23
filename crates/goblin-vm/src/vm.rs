@@ -1759,7 +1759,27 @@ impl Vm {
                 }
                 let inner: String = chars[start..j].iter().collect();
                 let inner = inner.trim();
-                if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
+                if inner.starts_with('#') {
+                    // Box template: {#ns::key} or {#ns::key@source}
+                    let trimmed = inner.trim_start_matches('#');
+                    let key = if let Some(at) = trimmed.find('@') { &trimmed[..at] } else { trimmed };
+                    if key.contains("::") {
+                        if let Some(Value::Str(v)) = self.session.box_store.get(key).cloned() {
+                            out.push_str(&v);
+                        } else {
+                            // not found — keep literal
+                            out.push('{');
+                            let raw: String = chars[start..j].iter().collect();
+                            out.push_str(&raw);
+                            out.push('}');
+                        }
+                    } else {
+                        out.push('{');
+                        let raw: String = chars[start..j].iter().collect();
+                        out.push_str(&raw);
+                        out.push('}');
+                    }
+                } else if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
                     let val = self.lookup_interp_var(inner);
                     out.push_str(&val);
                 } else {
@@ -2036,9 +2056,11 @@ impl Vm {
         Ok(())
     }
 
-    /// Parse glam.toml's [needs.actions] table into session.action_needs[ns].
-    /// Mirrors the interpreter's load_glam_box_toml (actions half only — the VM
-    /// does not yet support [needs.values] / box-ref glam loading).
+    /// Parse glam.toml's [needs.actions] and [needs.values] tables.
+    /// Mirrors the interpreter's load_glam_box_toml needs section.
+    /// [needs.values]: each entry is `local_name = "#source_ns::varname"` — resolves from
+    /// box_store and injects into box_store under "<ns>::<local_name>" so GLAM code can
+    /// access the value via BoxVarExpr (#ns::local_name) or string templates ({#ns::local_name}).
     fn load_glam_action_needs(&mut self, toml_path: &std::path::Path, ns: &str) -> Result<(), GoblinError> {
         let content = std::fs::read_to_string(toml_path)
             .map_err(|e| GoblinError::Runtime(format!("cannot read {}: {}", toml_path.display(), e)))?;
@@ -2046,37 +2068,118 @@ impl Vm {
             .map_err(|e| GoblinError::Runtime(format!("invalid TOML in {}: {}", toml_path.display(), e)))?;
 
         let Some(toml::Value::Table(needs)) = table.get("needs") else { return Ok(()) };
-        let Some(toml::Value::Table(actions)) = needs.get("actions") else { return Ok(()) };
 
-        let mut map = std::collections::HashMap::new();
-        for (need_name, action_ref) in actions {
-            let ref_str = match action_ref {
-                toml::Value::String(s) if s.is_empty() => {
+        // [needs.values] — box-ref imports: make source values accessible under this GLAM's namespace
+        if let Some(toml::Value::Table(values)) = needs.get("values") {
+            for (local_name, box_ref) in values {
+                let ref_str = match box_ref {
+                    toml::Value::String(s) if s.is_empty() => {
+                        return Err(GoblinError::Runtime(format!(
+                            "B0104: unresolved-glam-need — '{}' has no value assigned\n\
+                             Assign it in your glam.toml [needs.values]: {} = \"#namespace::varname\"",
+                            local_name, local_name
+                        )));
+                    }
+                    toml::Value::String(s) => s.clone(),
+                    _ => return Err(GoblinError::Runtime(format!(
+                        "B0104: unresolved-glam-need — '{}' must be a Box reference like \"#site::varname\"",
+                        local_name
+                    ))),
+                };
+                if !ref_str.starts_with('#') || !ref_str.contains("::") {
                     return Err(GoblinError::Runtime(format!(
-                        "B0106: missing-action-need — '{}' has no provider assigned\n\
-                         Assign it in your glam.toml [needs.actions]: {} = \"namespace::action\"",
-                        need_name, need_name
+                        "B0104: unresolved-glam-need — '{}' value \"{}\" is not a valid Box reference\n\
+                         Must be in the form \"#namespace::varname\"",
+                        local_name, ref_str
                     )));
                 }
-                toml::Value::String(s) => s,
-                _ => return Err(GoblinError::Runtime(format!(
-                    "B0106: missing-action-need — '{}' must be an action path like \"namespace::action\"",
-                    need_name
-                ))),
-            };
-
-            if ref_str.starts_with('#') || !ref_str.contains("::") {
-                return Err(GoblinError::Runtime(format!(
-                    "B0106: missing-action-need — '{}' value \"{}\" is not a valid action path\n\
-                     Must be in the form \"namespace::action\" (no '#' prefix — that's reserved for Box values)",
-                    need_name, ref_str
-                )));
+                let trimmed = &ref_str[1..];
+                let pos = trimmed.find("::").unwrap();
+                let ref_ns = &trimmed[..pos];
+                let varname = &trimmed[pos + 2..];
+                let key = format!("{}::{}", ref_ns, varname);
+                match self.session.box_store.get(&key).cloned() {
+                    Some(v) => {
+                        let v = if let Value::Str(s) = &v {
+                            let resolved = self.resolve_box_template_from_store(&s.clone());
+                            Value::Str(resolved)
+                        } else {
+                            v
+                        };
+                        // Publish under "<glam_ns>::<local_name>" so it's accessible as a box ref
+                        self.session.box_store.insert(format!("{}::{}", ns, local_name), v);
+                    }
+                    None => {
+                        return Err(GoblinError::Runtime(format!(
+                            "B0104: unresolved-glam-need — '{}' references '#{}'  \
+                             but that Box variable does not exist\n\
+                             Check your box.toml to ensure the value is set.",
+                            local_name, key
+                        )));
+                    }
+                }
             }
-
-            map.insert(need_name.clone(), ref_str.clone());
         }
-        self.session.action_needs.insert(ns.to_string(), map);
+
+        // [needs.actions]
+        if let Some(toml::Value::Table(actions)) = needs.get("actions") {
+            let mut map = std::collections::HashMap::new();
+            for (need_name, action_ref) in actions {
+                let ref_str = match action_ref {
+                    toml::Value::String(s) if s.is_empty() => {
+                        return Err(GoblinError::Runtime(format!(
+                            "B0106: missing-action-need — '{}' has no provider assigned\n\
+                             Assign it in your glam.toml [needs.actions]: {} = \"namespace::action\"",
+                            need_name, need_name
+                        )));
+                    }
+                    toml::Value::String(s) => s,
+                    _ => return Err(GoblinError::Runtime(format!(
+                        "B0106: missing-action-need — '{}' must be an action path like \"namespace::action\"",
+                        need_name
+                    ))),
+                };
+                if ref_str.starts_with('#') || !ref_str.contains("::") {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0106: missing-action-need — '{}' value \"{}\" is not a valid action path\n\
+                         Must be in the form \"namespace::action\" (no '#' prefix — that's reserved for Box values)",
+                        need_name, ref_str
+                    )));
+                }
+                map.insert(need_name.clone(), ref_str.clone());
+            }
+            self.session.action_needs.insert(ns.to_string(), map);
+        }
         Ok(())
+    }
+
+    /// Resolve {#ns::key} templates in a string using session.box_store.
+    fn resolve_box_template_from_store(&self, s: &str) -> String {
+        let mut out = String::new();
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '#' {
+                let start = i + 1;
+                let mut j = start;
+                while j < chars.len() && chars[j] != '}' { j += 1; }
+                if j < chars.len() {
+                    let inner: String = chars[start..j].iter().collect();
+                    let inner = inner.trim().trim_start_matches('#');
+                    let key = if let Some(at) = inner.find('@') { &inner[..at] } else { inner };
+                    if key.contains("::") {
+                        if let Some(Value::Str(v)) = self.session.box_store.get(key) {
+                            out.push_str(v);
+                            i = j + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push(chars[i]);
+            i += 1;
+        }
+        out
     }
 
     /// Low-level function call: set up a frame for (func_rc, upvalues) with args and run it.
