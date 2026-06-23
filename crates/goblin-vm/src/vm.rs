@@ -800,6 +800,76 @@ impl Vm {
                 let t = self.session.alloc_value(updated);
                 self.stack.push(t);
             }
+
+            // ── TupleBind support ─────────────────────────────────────────────
+            Opcode::TupleSplit(n) => {
+                let n = n as usize;
+                let raw = self.pop_value()?;
+                match &raw {
+                    Value::Collection(c) => {
+                        let items = crate::collections::to_vec(c);
+                        if items.is_empty() {
+                            for _ in 0..n {
+                                let t = self.session.alloc_value(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
+                                self.stack.push(t);
+                            }
+                        } else if items.len() == n {
+                            for v in items.into_iter().rev() {
+                                let t = self.session.alloc_value(v);
+                                self.stack.push(t);
+                            }
+                        } else {
+                            return Err(GoblinError::Runtime(format!(
+                                "tuple binding expected {} value(s) but got {}",
+                                n, items.len()
+                            )));
+                        }
+                    }
+                    Value::Array(arr) => {
+                        if arr.is_empty() {
+                            for _ in 0..n {
+                                let t = self.session.alloc_value(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
+                                self.stack.push(t);
+                            }
+                        } else if arr.len() == n {
+                            for v in arr.iter().rev() {
+                                let t = self.session.alloc_value(v.clone());
+                                self.stack.push(t);
+                            }
+                        } else {
+                            return Err(GoblinError::Runtime(format!(
+                                "tuple binding expected {} value(s) but got {}",
+                                n, arr.len()
+                            )));
+                        }
+                    }
+                    other => {
+                        for _ in 0..n {
+                            let t = self.session.alloc_value(other.clone());
+                            self.stack.push(t);
+                        }
+                    }
+                }
+            }
+
+            Opcode::StoreBox(ns_idx, name_idx) => {
+                let (ns, name) = {
+                    let frame = self.call_stack.last().unwrap();
+                    let ns = match &frame.func.constants[ns_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("StoreBox: ns constant is not a str".into())),
+                    };
+                    let name = match &frame.func.constants[name_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("StoreBox: name constant is not a str".into())),
+                    };
+                    (ns, name)
+                };
+                let val = self.pop_value()?;
+                let key = format!("{}::{}", ns, name);
+                self.session.box_store.insert(key, val);
+            }
+
             Opcode::SetField(idx) => {
                 let new_val = self.pop_value()?;
                 let key = {

@@ -230,6 +230,16 @@ pub enum Opcode {
     CastMemberLocal(u8, String),
     /// Same as CastMemberLocal but for a global slot.
     CastMemberGlobal(u16, String),
+
+    /// Pop RHS; if it is a Collection/Array of exactly N elements, push them in
+    /// reverse order (element 0 on top). If empty collection, broadcast empty
+    /// arrays. If scalar (non-collection), broadcast N copies. Arity mismatch on
+    /// non-empty wrong-length array.
+    TupleSplit(u8),
+
+    /// Pop value from stack top and write it to session.box_store["{ns}::{name}"].
+    /// ns_idx and name_idx are constant-pool indices into the enclosing function.
+    StoreBox(u16, u16),
 }
 
 impl Opcode {
@@ -320,6 +330,8 @@ impl Opcode {
             Opcode::GetTypeLockGlobal(_) => "GetTypeLockGlobal",
             Opcode::CastMemberLocal(..)  => "CastMemberLocal",
             Opcode::CastMemberGlobal(..) => "CastMemberGlobal",
+            Opcode::TupleSplit(_)        => "TupleSplit",
+            Opcode::StoreBox(_, _)       => "StoreBox",
         }
     }
 }

@@ -632,18 +632,32 @@ impl Compiler {
 
             Stmt::TupleBind(tb) => {
                 self.compile_expr(&tb.expr)?;
-                let n = tb.names.len();
-                for (i, name) in tb.names.iter().enumerate() {
-                    if i < n - 1 {
-                        self.emit(Opcode::Dup);
-                    }
-                    let idx_val = Value::Int(i as i64);
-                    let cidx = self.add_constant(idx_val);
-                    self.emit(Opcode::LoadConst(cidx));
-                    self.emit(Opcode::GetIndex);
+                let n = tb.names.len() as u8;
+                self.emit(Opcode::TupleSplit(n));
+                for name in tb.names.iter() {
                     let name_str = &name.0;
-                    let slot = self.scope_mut().declare_local(name_str);
-                    self.emit(Opcode::StoreLocal(slot));
+                    if name_str.starts_with('#') && name_str.contains("::") {
+                        // Box ref target: parse ns::key and emit StoreBox
+                        let key = name_str.trim_start_matches('#');
+                        let mut parts = key.splitn(2, "::");
+                        let ns_str = parts.next().unwrap_or("").to_string();
+                        let nm_str = parts.next().unwrap_or("").to_string();
+                        let ns_idx = self.add_constant(Value::Str(ns_str)) as u16;
+                        let nm_idx = self.add_constant(Value::Str(nm_str)) as u16;
+                        self.emit(Opcode::StoreBox(ns_idx, nm_idx));
+                    } else {
+                        let store_op = match tb.mode {
+                            BindMode::Retether => {
+                                self.resolve_store(name_str)
+                                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name_str.to_string() }))?
+                            }
+                            _ => {
+                                let slot = self.scope_mut().declare_local(name_str);
+                                Opcode::StoreLocal(slot)
+                            }
+                        };
+                        self.emit(store_op);
+                    }
                 }
             }
 
