@@ -743,7 +743,44 @@ pub fn load_glam_box_toml(
 
     // [needs.values] — each value is a Box reference string like "#site::content_dir"
     // [needs.actions] — each value is an action path string like "goblin_supabase::insert"
+    // Legacy: flat [needs] with direct string entries (box refs and/or action paths).
     if let Some(toml::Value::Table(needs)) = table.get("needs") {
+        // Helper: resolve one box-ref entry from box_store and publish to ns + define local.
+        let process_value_need = |local_name: &str, ref_str: &str, sess: &mut Session, namespace: Option<&str>| -> Result<(), String> {
+            if !ref_str.starts_with('#') || !ref_str.contains("::") {
+                return Err(format!(
+                    "B0104: unresolved-glam-need — '{}' value \"{}\" is not a valid Box reference\n\
+                     Must be in the form \"#namespace::varname\"",
+                    local_name, ref_str
+                ));
+            }
+            let trimmed = &ref_str[1..];
+            let pos = trimmed.find("::").unwrap();
+            let ref_ns = &trimmed[..pos];
+            let varname = &trimmed[pos + 2..];
+            let key = format!("{}::{}", ref_ns, varname);
+            match sess.box_store.get(&key).cloned() {
+                Some(v) => {
+                    let v = if let Value::Str(s) = &v {
+                        Value::Str(resolve_box_template(s, &sess.box_store))
+                    } else {
+                        v
+                    };
+                    if let Some(ns) = namespace {
+                        sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+                    }
+                    sess.define_local(local_name.to_string(), v, false);
+                    Ok(())
+                }
+                None => Err(format!(
+                    "B0104: unresolved-glam-need — '{}' references '#{}' \
+                     but that Box variable does not exist\n\
+                     Run 'goblin box dump' to see what is currently in the Box.",
+                    local_name, key
+                )),
+            }
+        };
+
         if let Some(toml::Value::Table(values)) = needs.get("values") {
             for (local_name, box_ref) in values {
                 let ref_str = match box_ref {
@@ -760,42 +797,7 @@ pub fn load_glam_box_toml(
                         local_name
                     )),
                 };
-
-                if !ref_str.starts_with('#') || !ref_str.contains("::") {
-                    return Err(format!(
-                        "B0104: unresolved-glam-need — '{}' value \"{}\" is not a valid Box reference\n\
-                         Must be in the form \"#namespace::varname\"",
-                        local_name, ref_str
-                    ));
-                }
-
-                let trimmed = &ref_str[1..];
-                let pos = trimmed.find("::").unwrap();
-                let ref_ns = &trimmed[..pos];
-                let varname = &trimmed[pos + 2..];
-                let key = format!("{}::{}", ref_ns, varname);
-
-                match sess.box_store.get(&key).cloned() {
-                    Some(v) => {
-                        let v = if let Value::Str(s) = &v {
-                            Value::Str(resolve_box_template(s, &sess.box_store))
-                        } else {
-                            v
-                        };
-                        if let Some(ns) = namespace {
-                            sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
-                        }
-                        sess.define_local(local_name.clone(), v, false);
-                    }
-                    None => {
-                        return Err(format!(
-                            "B0104: unresolved-glam-need — '{}' references '#{}'  \
-                             but that Box variable does not exist\n\
-                             Run 'goblin box dump' to see what is currently in the Box.",
-                            local_name, key
-                        ));
-                    }
-                }
+                process_value_need(local_name, ref_str, sess, namespace)?;
             }
         }
 
@@ -829,6 +831,27 @@ pub fn load_glam_box_toml(
             }
             if let Some(ns) = namespace {
                 sess.action_needs.insert(ns.to_string(), map);
+            }
+        }
+
+        // Legacy flat [needs]: entries directly under [needs] (no "values"/"actions" subtables).
+        // Box refs (#ns::key) → treated as value needs. Action paths (ns::action) → action needs.
+        let has_new_format = needs.contains_key("values") || needs.contains_key("actions");
+        if !has_new_format {
+            let mut action_map = HashMap::new();
+            for (k, v) in needs {
+                if let toml::Value::String(ref_str) = v {
+                    if ref_str.starts_with('#') && ref_str.contains("::") {
+                        process_value_need(k, ref_str, sess, namespace)?;
+                    } else if !ref_str.starts_with('#') && ref_str.contains("::") {
+                        action_map.insert(k.clone(), ref_str.clone());
+                    }
+                }
+            }
+            if !action_map.is_empty() {
+                if let Some(ns) = namespace {
+                    sess.action_needs.insert(ns.to_string(), action_map);
+                }
             }
         }
     }
