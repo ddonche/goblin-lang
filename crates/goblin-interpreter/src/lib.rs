@@ -3361,14 +3361,29 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                 // Interpolate {ident}
                 match sess.get_var(inner_trim) {
                     Some(v) => {
-                        out.push_str(&fmt_value_raw(v));
+                        let substituted = fmt_value_raw(v);
+                        // If the substituted string itself contains box references,
+                        // resolve them now against the current box_store. This handles
+                        // GLAM need values like output_dir = "../dist/{#local::portal}/public"
+                        // where {#local::portal} wasn't in the box_store at load time but
+                        // is available by the time the action actually runs.
+                        if substituted.contains("{#") {
+                            out.push_str(&resolve_box_template(&substituted, &sess.box_store));
+                        } else {
+                            out.push_str(&substituted);
+                        }
                         i = j + 1;
                         continue;
                     }
                     None => {
                         if let Some(Value::Map(m)) = sess.get_var("self") {
                             if let Some(v) = m.get(inner_trim) {
-                                out.push_str(&fmt_value_raw(v));
+                                let substituted = fmt_value_raw(v);
+                                if substituted.contains("{#") {
+                                    out.push_str(&resolve_box_template(&substituted, &sess.box_store));
+                                } else {
+                                    out.push_str(&substituted);
+                                }
                                 i = j + 1;
                                 continue;
                             }
