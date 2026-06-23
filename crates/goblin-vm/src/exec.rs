@@ -60,6 +60,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
 
     // Compile
     let compiled = Compiler::new().compile_module(&module)?;
+    // (no args injection needed for execute_source — use execute_source_with_args for CLI runs)
 
     // Execute
     let mut session = Session::new(GcMode::Auto);
@@ -111,7 +112,9 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
             span_debug: "<parse>".into(),
         })?;
 
-    let compiled = Compiler::new().compile_module(&module)?;
+    // Pre-declare "args" so scripts that use it without `let args = ...` can reference it
+    // as a global (resolve_load checks self.globals; if absent it returns UndefinedVariable).
+    let compiled = Compiler::new().with_globals(&["args"]).compile_module(&module)?;
 
     let mut session = Session::new(GcMode::Auto);
     session.global_names = compiled.global_names;

@@ -257,6 +257,17 @@ impl Compiler {
         self
     }
 
+    /// Pre-declare global names so they resolve to LoadGlobal/StoreGlobal at compile time.
+    /// Used to inject runtime-provided globals (e.g. CLI `args`) before compiling a module.
+    pub fn with_globals(mut self, names: &[&str]) -> Self {
+        for name in names {
+            if !self.globals.contains(&name.to_string()) {
+                self.globals.push(name.to_string());
+            }
+        }
+        self
+    }
+
     /// Mark this compilation as a GLAM's entry module, so its top-level actions
     /// get `owner_glam` stamped for `:need()` resolution.
     pub fn with_glam_namespace(mut self, ns: Option<String>) -> Self {
