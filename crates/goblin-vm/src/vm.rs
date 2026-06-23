@@ -2187,12 +2187,7 @@ impl Vm {
                         "B0104: deprecated [needs] format in {}\n\
                          The flat [needs] section is no longer supported.\n\
                          Move Box references to [needs.values] and action paths to [needs.actions].\n\
-                         Affected keys: {}\n\
-                         Example:\n\
-                         [needs.values]\n\
-                         source_dir = \"#site::content_dir\"\n\
-                         [needs.actions]\n\
-                         insert = \"db::insert\"",
+                         Affected keys: {}",
                         toml_path.display(),
                         flat_keys.join(", ")
                     )));
