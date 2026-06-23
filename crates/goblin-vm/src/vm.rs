@@ -766,7 +766,7 @@ impl Vm {
                     items.push(v);
                 }
                 self.stack.truncate(start);
-                let t = self.session.alloc_value(Value::Array(items));
+                let t = self.session.alloc_value(Value::Collection(Rc::new(CollectionValue::from_flat(items))));
                 self.stack.push(t);
             }
             Opcode::MakeMap(n) => {
@@ -2329,6 +2329,15 @@ impl Vm {
                 }
                 Ok(Value::Array(out))
             }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
+                    out.push(v);
+                }
+                Ok(Value::Array(out))
+            }
             Value::Map(_) | Value::MapOrd(_) => Err(GoblinError::Runtime("put_where is not meaningful for maps".into())),
             other => Err(GoblinError::type_error("array", other.type_name(), "put_where")),
         }
@@ -2479,6 +2488,7 @@ impl Vm {
         let forwarded: Vec<Value> = if arg_tethers.len() == 2 {
             match self.session.read_value(&arg_tethers[1])? {
                 Value::Array(arr) => arr.iter().cloned().collect(),
+                Value::Collection(c) => crate::collections::to_vec(&c),
                 other => vec![other],
             }
         } else {
@@ -2496,6 +2506,7 @@ impl Vm {
         let events_val = self.session.read_value(&arg_tethers[1])?;
         let events: Vec<Value> = match &events_val {
             Value::Array(a) => a.iter().cloned().collect(),
+            Value::Collection(c) => crate::collections::to_vec(c),
             _ => return Err(GoblinError::type_error("array", events_val.type_name(), "summon events")),
         };
         for ev in events {

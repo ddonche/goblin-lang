@@ -327,6 +327,13 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                         None => Value::Nil,
                     })
                 }
+                (Value::Collection(c), needle_val) => {
+                    let xs = crate::collections::to_vec(&c);
+                    Ok(match xs.iter().position(|x| x == &needle_val) {
+                        Some(i) => Value::Int(i as i64),
+                        None => Value::Nil,
+                    })
+                }
                 (other, _) => Err(GoblinError::type_error("str or array", other.type_name(), "find")),
             }
         }
@@ -471,6 +478,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let text = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "starts_with")) };
             Ok(Value::Bool(match read(1)? {
                 Value::Array(needles) => needles.iter().any(|n| if let Value::Str(ns) = n { text.starts_with(ns.as_str()) } else { false }),
+                Value::Collection(c) => crate::collections::to_vec(&c).iter().any(|n| if let Value::Str(ns) = n { text.starts_with(ns.as_str()) } else { false }),
                 Value::Str(p) => text.starts_with(p.as_str()),
                 _ => false,
             }))
@@ -480,6 +488,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let text = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ends_with")) };
             Ok(Value::Bool(match read(1)? {
                 Value::Array(needles) => needles.iter().any(|n| if let Value::Str(ns) = n { text.ends_with(ns.as_str()) } else { false }),
+                Value::Collection(c) => crate::collections::to_vec(&c).iter().any(|n| if let Value::Str(ns) = n { text.ends_with(ns.as_str()) } else { false }),
                 Value::Str(p) => text.ends_with(p.as_str()),
                 _ => false,
             }))
@@ -973,6 +982,20 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
                 }
+                Some(Value::Collection(c)) => {
+                    let arr = crate::collections::to_vec(&c);
+                    if arr.is_empty() { return Err(GoblinError::Runtime("pick: empty src array".into())); }
+                    if !allow_dups && n_out > arr.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, arr.len()))); }
+                    let out: Vec<Value> = if allow_dups {
+                        (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
+                    } else {
+                        let mut idxs: Vec<usize> = (0..arr.len()).collect();
+                        let mut result = Vec::with_capacity(n_out);
+                        for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); result.push(arr[idxs[i]].clone()); }
+                        result
+                    };
+                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+                }
                 Some(Value::Map(map)) => {
                     let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                     if entries.is_empty() { return Err(GoblinError::Runtime("pick: empty src map".into())); }
@@ -1280,6 +1303,14 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     for (k, n) in tally { m.insert(k, Value::Int(n)); }
                     Ok(collections::into_collection(Value::Map(m)))
                 }
+                Value::Collection(c) => {
+                    let items = crate::collections::to_vec(&c);
+                    let mut tally = std::collections::BTreeMap::<String, i64>::new();
+                    for item in &items { *tally.entry(fmt_value_raw(item)).or_insert(0) += 1; }
+                    let mut m = std::collections::BTreeMap::<String, Value>::new();
+                    for (k, n) in tally { m.insert(k, Value::Int(n)); }
+                    Ok(collections::into_collection(Value::Map(m)))
+                }
                 other => Err(GoblinError::type_error("string or array", other.type_name(), "freq")),
             }
         }
@@ -1290,6 +1321,18 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     if items.is_empty() {
                         return Err(GoblinError::Runtime("mode: empty array".into()));
                     }
+                    let mut counts = std::collections::BTreeMap::<String, i64>::new();
+                    for v in &items { *counts.entry(fmt_value_raw(v)).or_insert(0) += 1; }
+                    let mut best_k = String::new();
+                    let mut best_n = -1i64;
+                    for (k, n) in &counts { if *n > best_n { best_n = *n; best_k = k.clone(); } }
+                    let mut m = std::collections::BTreeMap::<String, Value>::new();
+                    m.insert(best_k, Value::Int(best_n));
+                    Ok(collections::into_collection(Value::Map(m)))
+                }
+                Value::Collection(c) => {
+                    let items = crate::collections::to_vec(&c);
+                    if items.is_empty() { return Err(GoblinError::Runtime("mode: empty array".into())); }
                     let mut counts = std::collections::BTreeMap::<String, i64>::new();
                     for v in &items { *counts.entry(fmt_value_raw(v)).or_insert(0) += 1; }
                     let mut best_k = String::new();
@@ -1311,11 +1354,13 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let src_val = cfg.get("src").cloned().ok_or_else(|| GoblinError::Runtime("sample_weighted: missing 'src'".into()))?;
             let xs: Vec<Value> = match src_val {
                 Value::Array(a) => a,
+                Value::Collection(c) => crate::collections::to_vec(&c),
                 other => return Err(GoblinError::type_error("array", other.type_name(), "sample_weighted src")),
             };
             let wt_val = cfg.get("weights").cloned().ok_or_else(|| GoblinError::Runtime("sample_weighted: missing 'weights'".into()))?;
             let ws: Vec<Value> = match wt_val {
                 Value::Array(a) => a,
+                Value::Collection(c) => crate::collections::to_vec(&c),
                 other => return Err(GoblinError::type_error("array", other.type_name(), "sample_weighted weights")),
             };
             if xs.is_empty() { return Err(GoblinError::Runtime("sample_weighted: src is empty".into())); }
@@ -1385,6 +1430,16 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     }
                     Ok(Value::Array(out))
                 }
+                Value::Collection(c) => {
+                    let xs = crate::collections::to_vec(&c);
+                    let mut out = vec![];
+                    for v in xs {
+                        let t = session.alloc_value(v);
+                        let rt = call_builtin(bid, vec![t], session)?;
+                        out.push(session.read_value(&rt)?);
+                    }
+                    Ok(Value::Array(out))
+                }
                 other => Err(GoblinError::type_error("str or array", other.type_name(), "map")),
             }
         }
@@ -1417,6 +1472,17 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     Ok(Value::Str(out))
                 }
                 Value::Array(items) => {
+                    let mut cnt = std::collections::BTreeMap::<String, (usize, Value)>::new();
+                    for item in &items {
+                        let k = fmt_value_raw(item);
+                        cnt.entry(k).and_modify(|e| e.0 += 1).or_insert((1, item.clone()));
+                    }
+                    let mut out = Vec::new();
+                    for (_, (n, exemplar)) in cnt { if n >= 2 { out.push(exemplar); } }
+                    Ok(collections::into_collection(Value::Array(out)))
+                }
+                Value::Collection(c) => {
+                    let items = crate::collections::to_vec(&c);
                     let mut cnt = std::collections::BTreeMap::<String, (usize, Value)>::new();
                     for item in &items {
                         let k = fmt_value_raw(item);
@@ -1622,6 +1688,15 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); items.push(arr[idxs[i]].clone()); }
                     if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(items)) }
                 }
+                Some(Value::Collection(c)) => {
+                    let arr = crate::collections::to_vec(&c);
+                    if arr.is_empty() { return Err(GoblinError::Runtime("reap: empty src".into())); }
+                    if n_out > arr.len() { return Err(GoblinError::Runtime(format!("reap: requested {} but only {} available", n_out, arr.len()))); }
+                    let mut idxs: Vec<usize> = (0..arr.len()).collect();
+                    let mut items = Vec::with_capacity(n_out);
+                    for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); items.push(arr[idxs[i]].clone()); }
+                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(items)) }
+                }
                 Some(Value::Map(map)) => {
                     let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                     if entries.is_empty() { return Err(GoblinError::Runtime("reap: empty src map".into())); }
@@ -1651,6 +1726,21 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             } else { 1 };
             match src {
                 Value::Array(xs) => {
+                    if xs.is_empty() { return Err(GoblinError::Runtime("reap!: cannot reap from empty array".into())); }
+                    if count > xs.len() { return Err(GoblinError::Runtime(format!("reap!: requested {} but only {} available", count, xs.len()))); }
+                    let mut indices: Vec<usize> = (0..xs.len()).collect();
+                    for i in 0..count {
+                        let j = i + crate::builtins::rng_bounded(session, (xs.len() - i) as u64) as usize;
+                        indices.swap(i, j);
+                    }
+                    let chosen: std::collections::HashSet<usize> = indices[..count].iter().copied().collect();
+                    let reaped: Vec<Value> = indices[..count].iter().map(|&i| xs[i].clone()).collect();
+                    let remaining: Vec<Value> = xs.iter().enumerate().filter(|(i, _)| !chosen.contains(i)).map(|(_, v)| v.clone()).collect();
+                    let reaped_val = if count == 1 { reaped.into_iter().next().unwrap() } else { Value::Array(reaped) };
+                    Ok(Value::Array(vec![Value::Array(remaining), reaped_val]))
+                }
+                Value::Collection(c) => {
+                    let xs = crate::collections::to_vec(&c);
                     if xs.is_empty() { return Err(GoblinError::Runtime("reap!: cannot reap from empty array".into())); }
                     if count > xs.len() { return Err(GoblinError::Runtime(format!("reap!: requested {} but only {} available", count, xs.len()))); }
                     let mut indices: Vec<usize> = (0..xs.len()).collect();
@@ -1949,6 +2039,19 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                     for item in items {
                         match item {
                             Value::Array(inner) => result.extend(inner),
+                            Value::Collection(c) => result.extend(crate::collections::to_vec(&c)),
+                            other => result.push(other),
+                        }
+                    }
+                    Ok(collections::into_collection(Value::Array(result)))
+                }
+                Value::Collection(c) => {
+                    let items = crate::collections::to_vec(&c);
+                    let mut result = Vec::new();
+                    for item in items {
+                        match item {
+                            Value::Array(inner) => result.extend(inner),
+                            Value::Collection(ic) => result.extend(crate::collections::to_vec(&ic)),
                             other => result.push(other),
                         }
                     }
