@@ -2177,39 +2177,25 @@ impl Vm {
                 self.session.action_needs.insert(ns.to_string(), map);
             }
 
-            // Legacy flat [needs] format: entries directly under [needs] that are neither
-            // "values" nor "actions" subtables. Box refs start with '#'; action paths contain
-            // '::' without a '#' prefix. Silently skip anything else (future keys etc.).
+            // Detect deprecated flat [needs] format (entries directly under [needs]
+            // instead of under [needs.values] or [needs.actions]).
             let has_new_format = needs.contains_key("values") || needs.contains_key("actions");
             if !has_new_format {
-                let mut action_map = std::collections::HashMap::new();
-                let flat_entries: Vec<(String, String)> = needs.iter()
-                    .filter_map(|(k, v)| {
-                        if let toml::Value::String(s) = v { Some((k.clone(), s.clone())) } else { None }
-                    })
-                    .collect();
-                let has_box_refs = flat_entries.iter().any(|(_, v)| v.starts_with('#') && v.contains("::"));
-                if has_box_refs {
-                    // Treat all flat entries as legacy [needs.values] / [needs.actions]
-                    let value_entries: Vec<(String, String)> = flat_entries.iter()
-                        .filter(|(_, v)| v.starts_with('#') && v.contains("::"))
-                        .cloned()
-                        .collect();
-                    let action_entries: Vec<(String, String)> = flat_entries.iter()
-                        .filter(|(_, v)| !v.starts_with('#') && v.contains("::"))
-                        .cloned()
-                        .collect();
-                    // Process value needs via shared helper
-                    let value_table: toml::Table = value_entries.into_iter()
-                        .map(|(k, v)| (k, toml::Value::String(v)))
-                        .collect();
-                    self.process_glam_value_needs(&value_table, ns)?;
-                    for (need_name, ref_str) in action_entries {
-                        action_map.insert(need_name, ref_str);
-                    }
-                }
-                if !action_map.is_empty() {
-                    self.session.action_needs.insert(ns.to_string(), action_map);
+                let flat_keys: Vec<&str> = needs.keys().map(|s| s.as_str()).collect();
+                if !flat_keys.is_empty() {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0104: deprecated [needs] format in {}\n\
+                         The flat [needs] section is no longer supported.\n\
+                         Move Box references to [needs.values] and action paths to [needs.actions].\n\
+                         Affected keys: {}\n\
+                         Example:\n\
+                         [needs.values]\n\
+                         source_dir = \"#site::content_dir\"\n\
+                         [needs.actions]\n\
+                         insert = \"db::insert\"",
+                        toml_path.display(),
+                        flat_keys.join(", ")
+                    )));
                 }
             }
         }

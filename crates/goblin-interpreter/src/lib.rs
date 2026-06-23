@@ -834,24 +834,25 @@ pub fn load_glam_box_toml(
             }
         }
 
-        // Legacy flat [needs]: entries directly under [needs] (no "values"/"actions" subtables).
-        // Box refs (#ns::key) → treated as value needs. Action paths (ns::action) → action needs.
+        // Detect deprecated flat [needs] format (entries directly under [needs]
+        // instead of under [needs.values] or [needs.actions]).
         let has_new_format = needs.contains_key("values") || needs.contains_key("actions");
         if !has_new_format {
-            let mut action_map = HashMap::new();
-            for (k, v) in needs {
-                if let toml::Value::String(ref_str) = v {
-                    if ref_str.starts_with('#') && ref_str.contains("::") {
-                        process_value_need(k, ref_str, sess, namespace)?;
-                    } else if !ref_str.starts_with('#') && ref_str.contains("::") {
-                        action_map.insert(k.clone(), ref_str.clone());
-                    }
-                }
-            }
-            if !action_map.is_empty() {
-                if let Some(ns) = namespace {
-                    sess.action_needs.insert(ns.to_string(), action_map);
-                }
+            let flat_keys: Vec<&str> = needs.keys().map(|s| s.as_str()).collect();
+            if !flat_keys.is_empty() {
+                return Err(format!(
+                    "B0104: deprecated [needs] format in {}\n\
+                     The flat [needs] section is no longer supported.\n\
+                     Move Box references to [needs.values] and action paths to [needs.actions].\n\
+                     Affected keys: {}\n\
+                     Example:\n\
+                     [needs.values]\n\
+                     source_dir = \"#site::content_dir\"\n\
+                     [needs.actions]\n\
+                     insert = \"db::insert\"",
+                    path.display(),
+                    flat_keys.join(", ")
+                ));
             }
         }
     }
