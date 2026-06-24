@@ -769,6 +769,7 @@ pub fn load_glam_box_toml(
                     if let Some(ns) = namespace {
                         sess.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
                     }
+                    sess.box_store.insert(format!("need::{}", local_name), v.clone());
                     sess.define_local(local_name.to_string(), v, false);
                     Ok(())
                 }

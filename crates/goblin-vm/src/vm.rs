@@ -2269,6 +2269,7 @@ impl Vm {
                         v
                     };
                     self.session.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+                    self.session.box_store.insert(format!("need::{}", local_name), v.clone());
                     resolved.insert(local_name.clone(), v);
                 }
                 None => {
