@@ -2166,11 +2166,23 @@ impl Vm {
                 op
             };
             self.execute_op(op).map_err(|e| {
-                // Unwind to target depth on error
+                // Attach innermost location BEFORE unwinding so the error
+                // shows where it actually occurred, not the outer call site.
+                let located = if matches!(e, GoblinError::WithLocation { .. }) {
+                    e
+                } else {
+                    let (line, file) = self.call_stack.last()
+                        .map(|f| (
+                            f.func.line_numbers.get(f.ip.saturating_sub(1)).copied().unwrap_or(0),
+                            f.func.source_file.clone(),
+                        ))
+                        .unwrap_or((0, String::new()));
+                    GoblinError::WithLocation { inner: Box::new(e), line, file }
+                };
                 while self.call_stack.len() > target_depth {
                     self.call_stack.pop();
                 }
-                e
+                located
             })?;
         }
         Ok(())
