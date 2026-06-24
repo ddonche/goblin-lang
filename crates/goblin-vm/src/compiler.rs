@@ -163,9 +163,10 @@ impl FunctionScope {
     }
 }
 
-/// Recursively collect all variable names declared with `bind`/`|` (Tether) or
-/// action names at module level so they can be pre-declared before the main
-/// compilation pass. Does NOT recurse into Action/Class bodies (own scope).
+/// Recursively collect bind variable names declared at module level so they can
+/// be pre-hoisted as locals in __main__ before the main compilation pass.
+/// Does NOT collect action names (those are pre-registered as globals separately)
+/// and does NOT recurse into Action/Class bodies (own scope).
 fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
     for stmt in stmts {
         match stmt {
@@ -177,9 +178,6 @@ fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
                 for (name, _) in &tb.names {
                     if !out.contains(name) { out.push(name.clone()); }
                 }
-            }
-            Stmt::Action(a) => {
-                if !out.contains(&a.name) { out.push(a.name.clone()); }
             }
             Stmt::Block { stmts, .. } => collect_bind_names(stmts, out),
             Stmt::Judge(j) => {
@@ -288,9 +286,21 @@ impl Compiler {
 
     /// Compile a top-level module into a FunctionObject (the module's "main").
     pub fn compile_module(mut self, module: &Module) -> Result<CompiledModule, GoblinError> {
+        // First pass: pre-register all module-level action names as globals so that
+        // cross-action references inside function bodies compile to LoadGlobal rather
+        // than capturing a nil upvalue from __main__'s locals. This matches the
+        // interpreter, which looks up action names at call time from sess.actions/modules.
+        for stmt in &module.items {
+            if let Stmt::Action(a) = stmt {
+                if !self.globals.contains(&a.name) {
+                    self.globals.push(a.name.clone());
+                }
+            }
+        }
+
         self.push_scope("__main__", 0);
-        // Pre-declare all module-level variable and action names so forward
-        // references resolve correctly (interpreter resolves names at runtime).
+        // Pre-hoist bind variable names as nil locals so forward bind references work.
+        // Action names are NOT hoisted here — they live in globals (pre-registered above).
         let mut hoisted: Vec<String> = Vec::new();
         collect_bind_names(&module.items, &mut hoisted);
         for name in &hoisted {
