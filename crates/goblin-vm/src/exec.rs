@@ -8,7 +8,7 @@ use crate::vm::Vm;
 /// Resolve `{#ns::key}` and `{#ns::key@source}` templates in a string using the box_store.
 /// Matches interpreter's resolve_box_template behavior: if key found with Str value, substitute;
 /// otherwise keep the literal `{#...}` text.
-fn resolve_box_template_vm(s: &str, box_store: &std::collections::HashMap<String, Value>) -> String {
+pub(crate) fn resolve_box_template_vm(s: &str, box_store: &std::collections::HashMap<String, Value>) -> String {
     let mut out = String::new();
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;

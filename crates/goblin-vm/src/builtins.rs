@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::collections;
 use crate::error::GoblinError;
+use crate::exec::resolve_box_template_vm;
 use crate::session::Session;
 use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Tether, Value};
 
@@ -4401,7 +4402,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             }
         }
 
-        // BoxVarExpr(namespace_str, name_str) → Value from box_store
+        // BoxVarExpr(namespace_str, name_str) → Value from box_store, with template resolution
         BuiltinId::BoxVarExpr => {
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("BoxVar: expected 2 args, got {}", args.len())));
@@ -4409,7 +4410,14 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let ns   = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box namespace")) };
             let name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box name")) };
             let key = format!("{}::{}", ns, name);
-            Ok(session.box_store.get(&key).cloned().unwrap_or(Value::Nil))
+            match session.box_store.get(&key).cloned() {
+                Some(Value::Str(s)) if s.contains("{#") => {
+                    let resolved = resolve_box_template_vm(&s, &session.box_store);
+                    Ok(Value::Str(resolved))
+                }
+                Some(v) => Ok(v),
+                None => Ok(Value::Nil),
+            }
         }
 
         // BoxBindExpr(namespace_str, name_str, value) → stores in box_store
