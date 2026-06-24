@@ -1570,7 +1570,7 @@ impl Vm {
                     self.session.project_root.join(&path_str)
                 };
 
-                self.import_file(full_path, None)?;
+                self.import_file(full_path, None, std::collections::HashMap::new())?;
             }
 
             Opcode::UseGlam(ns_idx) => {
@@ -1584,9 +1584,11 @@ impl Vm {
 
                 let glam_dir = self.session.project_root.join("glams").join(&ns);
                 let toml_path = glam_dir.join("glam.toml");
-                if toml_path.exists() {
-                    self.load_glam_action_needs(&toml_path, &ns)?;
-                }
+                let value_needs = if toml_path.exists() {
+                    self.load_glam_action_needs(&toml_path, &ns)?
+                } else {
+                    std::collections::HashMap::new()
+                };
 
                 let entry_path = glam_dir.join(format!("{ns}.gbln"));
                 // Set current_glam_ns so RegisterAction registers under both bare and
@@ -1594,7 +1596,7 @@ impl Vm {
                 // Save and restore to handle nested `use` statements correctly.
                 let prev_glam_ns = self.session.current_glam_ns.take();
                 self.session.current_glam_ns = Some(ns.clone());
-                let glam_result = self.import_file(entry_path, Some(ns));
+                let glam_result = self.import_file(entry_path, Some(ns), value_needs);
                 self.session.current_glam_ns = prev_glam_ns;
                 glam_result?;
             }
@@ -2066,7 +2068,7 @@ impl Vm {
     /// Lex/parse/compile/run a single file, skipping it if already imported.
     /// `owner_glam`, when Some, is stamped onto the top-level actions compiled
     /// from this file (so `:need()` can later identify their owning GLAM).
-    fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>) -> Result<(), GoblinError> {
+    fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
         let canonical = full_path.to_string_lossy().to_string();
         if self.session.imported.contains(&canonical) {
             return Ok(());
@@ -2109,6 +2111,16 @@ impl Vm {
             self.session.base_dir = parent.to_path_buf();
         }
 
+        // Inject [needs.values] as globals so GLAM action bodies can access them
+        // via bare name (e.g. `output_dir`). Must happen after compilation so we
+        // know the correct global indices from compiled.global_names.
+        for (name, val) in pre_globals {
+            if let Some(idx) = compiled.global_names.iter().position(|g| g == &name) {
+                let t = self.session.alloc_value(val);
+                self.session.set_global(idx, t);
+            }
+        }
+
         // Run the imported module's entry function as a nested call on the
         // SAME call stack (not via self.execute(), which assumes an empty
         // stack/call_stack and runs until the whole stack drains — wrong
@@ -2135,16 +2147,18 @@ impl Vm {
     ///   [needs]         local_name = "#source_ns::varname"   — legacy flat format (box ref)
     ///   [needs]         need_name  = "provider_ns::action"   — legacy flat format (action need)
     ///   [values]        local_name = "literal"               — GLAM-owned defaults
-    fn load_glam_action_needs(&mut self, toml_path: &std::path::Path, ns: &str) -> Result<(), GoblinError> {
+    fn load_glam_action_needs(&mut self, toml_path: &std::path::Path, ns: &str) -> Result<std::collections::HashMap<String, Value>, GoblinError> {
         let content = std::fs::read_to_string(toml_path)
             .map_err(|e| GoblinError::Runtime(format!("cannot read {}: {}", toml_path.display(), e)))?;
         let table: toml::Table = content.parse()
             .map_err(|e| GoblinError::Runtime(format!("invalid TOML in {}: {}", toml_path.display(), e)))?;
 
+        let mut value_needs: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+
         if let Some(toml::Value::Table(needs)) = table.get("needs") {
-            // [needs.values] — box-ref imports
+            // [needs.values] — box-ref imports; also returned so UseGlam can inject as globals
             if let Some(toml::Value::Table(values)) = needs.get("values") {
-                self.process_glam_value_needs(values, ns)?;
+                value_needs = self.process_glam_value_needs(values, ns)?;
             }
 
             // [needs.actions]
@@ -2205,12 +2219,14 @@ impl Vm {
             }
         }
 
-        Ok(())
+        Ok(value_needs)
     }
 
     /// Shared helper: process a [needs.values]-style table, publishing each entry
-    /// from box_store into "{ns}::{local_name}" so GLAM code can read it.
-    fn process_glam_value_needs(&mut self, values: &toml::Table, ns: &str) -> Result<(), GoblinError> {
+    /// from box_store into "{ns}::{local_name}" so GLAM code can read it via #ns::name.
+    /// Returns the resolved map (local_name → value) so callers can also inject as globals.
+    fn process_glam_value_needs(&mut self, values: &toml::Table, ns: &str) -> Result<std::collections::HashMap<String, Value>, GoblinError> {
+        let mut resolved: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
         for (local_name, box_ref) in values {
             let ref_str = match box_ref {
                 toml::Value::String(s) if s.is_empty() => {
@@ -2241,12 +2257,13 @@ impl Vm {
             match self.session.box_store.get(&key).cloned() {
                 Some(v) => {
                     let v = if let Value::Str(s) = &v {
-                        let resolved = self.resolve_box_template_from_store(&s.clone());
-                        Value::Str(resolved)
+                        let resolved_s = self.resolve_box_template_from_store(&s.clone());
+                        Value::Str(resolved_s)
                     } else {
                         v
                     };
-                    self.session.box_store.insert(format!("{}::{}", ns, local_name), v);
+                    self.session.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+                    resolved.insert(local_name.clone(), v);
                 }
                 None => {
                     return Err(GoblinError::Runtime(format!(
@@ -2258,7 +2275,7 @@ impl Vm {
                 }
             }
         }
-        Ok(())
+        Ok(resolved)
     }
 
     /// Resolve {#ns::key} templates in a string using session.box_store.
