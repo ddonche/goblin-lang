@@ -620,7 +620,11 @@ impl Compiler {
                     };
                     self.emit(Opcode::StoreGlobal(pos as u16));
                 } else {
-                    // Nested action (inside another action body): store as local in enclosing scope.
+                    // Nested action: register in named_values (matches interpreter behavior where
+                    // sess.actions.insert() runs for every Stmt::Action when current_module is None)
+                    // AND store as local so the enclosing scope can reference it by identifier.
+                    let name_idx = self.add_constant(Value::Str(action.name.clone()));
+                    self.emit(Opcode::RegisterAction(name_idx));
                     let slot = self.scope_mut().declare_local(&action.name);
                     self.emit(Opcode::StoreLocal(slot));
                 }
