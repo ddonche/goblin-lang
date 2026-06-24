@@ -137,7 +137,7 @@ impl FunctionScope {
         }
     }
 
-    fn finish(self, source_file: String) -> FunctionObject {
+    fn finish(self, source_file: String, global_names: Vec<String>) -> FunctionObject {
         let upvalue_descriptors: Vec<UpvalueDescriptor> =
             self.upvalues.into_iter().map(|(_, d)| d).collect();
         let total_slots = self.next_slot as usize;
@@ -158,6 +158,7 @@ impl FunctionScope {
             local_names,
             owner_glam: None,
             source_file,
+            global_names,
         }
     }
 }
@@ -367,7 +368,7 @@ impl Compiler {
     }
 
     fn pop_scope(&mut self) -> FunctionObject {
-        self.scopes.pop().unwrap().finish(self.source_file.clone())
+        self.scopes.pop().unwrap().finish(self.source_file.clone(), self.globals.clone())
     }
 
     fn scope(&self) -> &FunctionScope {

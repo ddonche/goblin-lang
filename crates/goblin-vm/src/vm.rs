@@ -1890,9 +1890,15 @@ impl Vm {
                 }
             }
         }
-        // 3. Check globals by name
-        let global_tether = self.session.global_names.iter().position(|n| n == name)
-            .and_then(|slot| self.session.globals.get(slot).cloned().flatten());
+        // 3. Check globals by name — use the current frame's compilation-unit global_names
+        //    so GLAM actions find their own globals (not the main file's name table).
+        let global_tether = self.call_stack.last()
+            .and_then(|frame| frame.func.global_names.iter().position(|n| n == name))
+            .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+            .or_else(|| {
+                self.session.global_names.iter().position(|n| n == name)
+                    .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+            });
         if let Some(t) = global_tether {
             if let Ok(v) = self.session.read_value(&t) {
                 return crate::builtins::fmt_value_raw(&v);
