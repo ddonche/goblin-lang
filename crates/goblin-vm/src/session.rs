@@ -185,6 +185,11 @@ pub struct Session {
     /// Action needs declared in glam.toml [needs.actions]: glam_namespace -> (need_name -> "provider_ns::action").
     pub action_needs: HashMap<String, HashMap<String, String>>,
 
+    /// Tracks which (bare_name, Value) pairs were registered from each source file.
+    /// Used by UseGlam to retroactively register qualified "ns::name" keys even when
+    /// the GLAM entry file was already imported (import guard) without a namespace context.
+    pub action_file_map: HashMap<String, Vec<(String, Value)>>,
+
     /// Output buffer — when Some, say/print write here instead of stdout.
     /// Used by the WASM REPL to capture output.
     pub output_buf: Option<String>,
@@ -241,6 +246,7 @@ impl Session {
             current_glam_ns: None,
             box_store: HashMap::new(),
             action_needs: HashMap::new(),
+            action_file_map: HashMap::new(),
             output_buf: None,
         }
     }

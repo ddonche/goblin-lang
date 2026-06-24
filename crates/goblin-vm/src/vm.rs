@@ -1596,9 +1596,27 @@ impl Vm {
                 // Save and restore to handle nested `use` statements correctly.
                 let prev_glam_ns = self.session.current_glam_ns.take();
                 self.session.current_glam_ns = Some(ns.clone());
-                let glam_result = self.import_file(entry_path, Some(ns), value_needs);
+                let glam_result = self.import_file(entry_path.clone(), Some(ns.clone()), value_needs);
                 self.session.current_glam_ns = prev_glam_ns;
                 glam_result?;
+
+                // Retroactively register qualified "ns::action" names for any actions that
+                // were registered from files inside this GLAM's directory. This handles the
+                // case where the GLAM was first imported via `import` (not `use`), causing
+                // the import guard to skip re-execution — so RegisterAction never fired with
+                // current_glam_ns set. By scanning action_file_map we recover the values.
+                let glam_dir_normalized = glam_dir.to_string_lossy().replace('\\', "/");
+                let pairs: Vec<(String, Value)> = self.session.action_file_map
+                    .iter()
+                    .filter(|(file, _)| {
+                        file.replace('\\', "/").contains(&glam_dir_normalized)
+                    })
+                    .flat_map(|(_, pairs)| pairs.iter().cloned())
+                    .collect();
+                for (bare_name, val) in pairs {
+                    let qualified = format!("{}::{}", ns, bare_name);
+                    self.session.named_values.entry(qualified).or_insert(val);
+                }
             }
 
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
@@ -1746,6 +1764,16 @@ impl Vm {
                     let qualified = format!("{}::{}", ns, name);
                     self.session.named_values.insert(qualified, value.clone());
                 }
+                // Track (bare_name, value) by source file so UseGlam can retroactively
+                // register qualified names even when the file was already imported without
+                // a GLAM namespace context (import guard bypass case).
+                let source_file = self.call_stack.last()
+                    .map(|f| f.func.source_file.clone())
+                    .unwrap_or_default();
+                self.session.action_file_map
+                    .entry(source_file)
+                    .or_default()
+                    .push((name.clone(), value.clone()));
                 self.session.named_values.insert(name, value);
             }
 
