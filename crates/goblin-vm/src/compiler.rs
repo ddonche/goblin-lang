@@ -163,6 +163,40 @@ impl FunctionScope {
     }
 }
 
+/// Collect action names declared directly in a statement list (one level deep).
+/// Recurses into Block/Judge/JudgeAll/Sweep but NOT into Action bodies (those are
+/// handled by compile_action_decl when it processes each body).
+fn collect_action_names(stmts: &[Stmt], out: &mut Vec<String>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Action(a) => {
+                if !out.contains(&a.name) { out.push(a.name.clone()); }
+            }
+            Stmt::Block { stmts, .. } => collect_action_names(stmts, out),
+            Stmt::Judge(j) => {
+                for arm in &j.arms {
+                    if let JudgeArmBody::Stmts(stmts) = &arm.body {
+                        collect_action_names(stmts, out);
+                    }
+                }
+            }
+            Stmt::JudgeAll(j) => {
+                for arm in &j.arms {
+                    if let JudgeArmBody::Stmts(stmts) = &arm.body {
+                        collect_action_names(stmts, out);
+                    }
+                }
+            }
+            Stmt::Sweep(s) => {
+                for arm in &s.arms {
+                    collect_action_names(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Recursively collect bind variable names declared at module level so they can
 /// be pre-hoisted as locals in __main__ before the main compilation pass.
 /// Does NOT collect action names (those are pre-registered as globals separately)
@@ -290,14 +324,17 @@ impl Compiler {
         // cross-action references inside function bodies compile to LoadGlobal rather
         // than capturing a nil upvalue from __main__'s locals. This matches the
         // interpreter, which looks up action names at call time from sess.actions/modules.
-        for stmt in &module.items {
-            if let Stmt::Action(a) = stmt {
-                if !self.globals.contains(&a.name) {
-                    self.globals.push(a.name.clone());
+        // collect_action_names recurses into Block/Judge/Sweep so actions inside
+        // conditional branches at module level are also pre-registered.
+        {
+            let mut module_action_names: Vec<String> = Vec::new();
+            collect_action_names(&module.items, &mut module_action_names);
+            for name in module_action_names {
+                if !self.globals.contains(&name) {
+                    self.globals.push(name);
                 }
             }
         }
-
         self.push_scope("__main__", 0);
         // Pre-hoist bind variable names as nil locals so forward bind references work.
         // Action names are NOT hoisted here — they live in globals (pre-registered above).
@@ -334,6 +371,15 @@ impl Compiler {
         }
         match &action.body {
             ActionBody::Block(stmts) => {
+                // Two-pass: pre-register nested action names as globals.
+                let mut nested_action_names: Vec<String> = Vec::new();
+                collect_action_names(stmts, &mut nested_action_names);
+                for name in &nested_action_names {
+                    if !self.globals.contains(name) {
+                        self.globals.push(name.clone());
+                    }
+                }
+
                 let mut hoisted: Vec<String> = Vec::new();
                 collect_bind_names(stmts, &mut hoisted);
                 for name in hoisted.iter().filter(|n| !param_names.contains(n)) {
@@ -600,34 +646,24 @@ impl Compiler {
             }
 
             Stmt::Action(action) => {
-                // Nested action declaration: compile into a FunctionObject constant.
                 self.compile_action_decl(action)?;
-                // At top-level scope: register by name for invoke() and store as global.
-                // StoreGlobal (not StoreLocal) at top scope so that cross-action references
-                // inside function bodies use LoadGlobal — which reads the populated slot at
-                // call time rather than capturing a nil upvalue at closure-creation time.
-                // This matches interpreter behavior: actions are looked up by name at call
-                // time, after the whole module has run.
-                if self.scopes.len() == 1 {
-                    let name_idx = self.add_constant(Value::Str(action.name.clone()));
-                    self.emit(Opcode::RegisterAction(name_idx));
-                    let pos = if let Some(p) = self.globals.iter().position(|g| g == &action.name) {
-                        p
-                    } else {
-                        let p = self.globals.len();
-                        self.globals.push(action.name.clone());
-                        p
-                    };
-                    self.emit(Opcode::StoreGlobal(pos as u16));
+                // All actions — regardless of nesting depth — register in named_values
+                // and store to the global slot. The interpreter's sess.actions is a flat
+                // global pool: sess.actions.insert() runs for every Stmt::Action whenever
+                // current_module is None (which includes all runtime execution, not just
+                // module loading). The VM matches this: all actions live in globals and are
+                // registered in named_values on execution, enabling string-based dispatch
+                // from collection builtins (grab_where, map, etc.) at any nesting level.
+                let name_idx = self.add_constant(Value::Str(action.name.clone()));
+                self.emit(Opcode::RegisterAction(name_idx));
+                let pos = if let Some(p) = self.globals.iter().position(|g| g == &action.name) {
+                    p
                 } else {
-                    // Nested action: register in named_values (matches interpreter behavior where
-                    // sess.actions.insert() runs for every Stmt::Action when current_module is None)
-                    // AND store as local so the enclosing scope can reference it by identifier.
-                    let name_idx = self.add_constant(Value::Str(action.name.clone()));
-                    self.emit(Opcode::RegisterAction(name_idx));
-                    let slot = self.scope_mut().declare_local(&action.name);
-                    self.emit(Opcode::StoreLocal(slot));
-                }
+                    let p = self.globals.len();
+                    self.globals.push(action.name.clone());
+                    p
+                };
+                self.emit(Opcode::StoreGlobal(pos as u16));
             }
 
             Stmt::Judge(judge) => {
@@ -1696,6 +1732,17 @@ impl Compiler {
 
         match &action.body {
             ActionBody::Block(stmts) => {
+                // Two-pass: pre-register nested action names as globals before compiling
+                // statements. This lets sibling nested actions reference each other
+                // (forward refs) the same way the interpreter can via sess.actions.
+                let mut nested_action_names: Vec<String> = Vec::new();
+                collect_action_names(stmts, &mut nested_action_names);
+                for name in &nested_action_names {
+                    if !self.globals.contains(name) {
+                        self.globals.push(name.clone());
+                    }
+                }
+
                 let mut hoisted: Vec<String> = Vec::new();
                 collect_bind_names(stmts, &mut hoisted);
                 for name in hoisted.iter().filter(|n| !param_names.contains(n)) {
