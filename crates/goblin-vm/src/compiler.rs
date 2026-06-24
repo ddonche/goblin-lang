@@ -269,6 +269,14 @@ impl Compiler {
         self
     }
 
+    /// Seed the compiler with the full list of already-allocated global names from the session.
+    /// Imported modules call this so their new globals are appended at non-overlapping indices,
+    /// preventing different modules from clobbering each other's slots in session.globals.
+    pub fn with_initial_globals(mut self, names: Vec<String>) -> Self {
+        self.globals = names;
+        self
+    }
+
     /// Mark this compilation as a GLAM's entry module, so its top-level actions
     /// get `owner_glam` stamped for `:need()` resolution.
     pub fn with_glam_namespace(mut self, ns: Option<String>) -> Self {

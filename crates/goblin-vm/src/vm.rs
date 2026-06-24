@@ -2198,11 +2198,21 @@ impl Vm {
         let module = goblin_parser::Parser::new(&tokens).parse_module()
             .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
 
+        // Seed the compiler with the session's full accumulated global names so
+        // this module's new globals get non-overlapping indices. Without this,
+        // every module starts at index 0 and clobbers earlier modules' slots.
+        let globals_before = self.session.global_names.clone();
         let compiled = crate::compiler::Compiler::new()
+            .with_initial_globals(globals_before.clone())
             .with_glam_namespace(owner_glam)
             .for_file(&actual_path.to_string_lossy())
             .compile_module(&module)
             .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
+
+        // Append any new global names this module introduced.
+        for name in compiled.global_names[globals_before.len()..].iter() {
+            self.session.global_names.push(name.clone());
+        }
 
         // Pre-register classes/enums from the imported module
         for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
