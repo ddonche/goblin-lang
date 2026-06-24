@@ -602,13 +602,15 @@ impl Compiler {
             Stmt::Action(action) => {
                 // Nested action declaration: compile into a FunctionObject constant.
                 self.compile_action_decl(action)?;
-                // At top-level scope, also register by name for invoke().
+                // At top-level scope: register by name for invoke() and store as global.
+                // StoreGlobal (not StoreLocal) at top scope so that cross-action references
+                // inside function bodies use LoadGlobal — which reads the populated slot at
+                // call time rather than capturing a nil upvalue at closure-creation time.
+                // This matches interpreter behavior: actions are looked up by name at call
+                // time, after the whole module has run.
                 if self.scopes.len() == 1 {
                     let name_idx = self.add_constant(Value::Str(action.name.clone()));
                     self.emit(Opcode::RegisterAction(name_idx));
-                }
-                // In REPL mode at top scope, store into global so it persists.
-                if self.repl_mode && self.scopes.len() == 1 {
                     let pos = if let Some(p) = self.globals.iter().position(|g| g == &action.name) {
                         p
                     } else {
@@ -618,6 +620,7 @@ impl Compiler {
                     };
                     self.emit(Opcode::StoreGlobal(pos as u16));
                 } else {
+                    // Nested action (inside another action body): store as local in enclosing scope.
                     let slot = self.scope_mut().declare_local(&action.name);
                     self.emit(Opcode::StoreLocal(slot));
                 }
