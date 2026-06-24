@@ -1120,16 +1120,15 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
                 } else {
-                    // Namespace call: try full_name then bare name as a compile-time
-                    // local/global; if neither is found, fall back to a runtime lookup
-                    // in session.named_values (handles `import X as alias; alias::fn()`).
+                    // Namespace call: try full_name as a compile-time global/local.
+                    // Do NOT fall back to bare name — a bare local named `foo` must not
+                    // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
                     let full_name = format!("{}::{}", ns, name);
-                    match self.resolve_load(&full_name).or_else(|_| self.resolve_load(name)) {
+                    match self.resolve_load(&full_name) {
                         Ok(load_op) => { self.emit(load_op); }
                         Err(_) => {
-                            // Neither compile-time name exists — emit a runtime named lookup.
-                            // Use the qualified name ("ns::action") so GLAM namespace dispatch
-                            // works: UseGlam registers actions under both bare and qualified names.
+                            // Not known at compile time — emit a runtime named lookup.
+                            // UseGlam registers actions under the qualified name ("ns::action").
                             let name_idx = self.add_constant(Value::Str(full_name.clone()));
                             self.emit(Opcode::LoadNamed(name_idx));
                         }
