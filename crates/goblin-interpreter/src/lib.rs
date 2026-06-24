@@ -3351,7 +3351,14 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                     if key_part.contains("::") {
                         match sess.box_store.get(key_part).cloned() {
                             Some(v) => {
-                                out.push_str(&fmt_value_raw(&v));
+                                let s = fmt_value_raw(&v);
+                                // Secondary resolve: the stored value may itself contain {#...}
+                                // e.g. output_dir = "../dist/{#local::portal}/public"
+                                if s.contains("{#") {
+                                    out.push_str(&resolve_box_template(&s, &sess.box_store));
+                                } else {
+                                    out.push_str(&s);
+                                }
                                 i = j + 1;
                                 continue;
                             }

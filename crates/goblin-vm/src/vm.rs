@@ -1837,7 +1837,13 @@ impl Vm {
                     let key = if let Some(at) = trimmed.find('@') { &trimmed[..at] } else { trimmed };
                     if key.contains("::") {
                         if let Some(Value::Str(v)) = self.session.box_store.get(key).cloned() {
-                            out.push_str(&v);
+                            // Secondary resolve: the stored value may itself contain {#...}
+                            // e.g. output_dir = "../dist/{#local::portal}/public"
+                            if v.contains("{#") {
+                                out.push_str(&self.resolve_box_template_from_store(&v));
+                            } else {
+                                out.push_str(&v);
+                            }
                         } else {
                             // not found — keep literal
                             out.push('{');
@@ -1853,7 +1859,12 @@ impl Vm {
                     }
                 } else if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
                     let val = self.lookup_interp_var(inner);
-                    out.push_str(&val);
+                    // Secondary resolve: a regular variable's value may contain {#...}
+                    if val.contains("{#") {
+                        out.push_str(&self.resolve_box_template_from_store(&val));
+                    } else {
+                        out.push_str(&val);
+                    }
                 } else {
                     out.push('{');
                     let raw: String = chars[start..j].iter().collect();
