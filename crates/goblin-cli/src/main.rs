@@ -1275,21 +1275,57 @@ fn run_repl_vm() -> i32 {
                     let starts_block = |kw: &str| -> bool {
                         src_line == kw || (src_line.starts_with(kw) && src_line[kw.len()..].starts_with(char::is_whitespace))
                     };
+                    let mut opened_by_kw = false;
                     if (starts_block("if") || starts_block("unless") || starts_block("while")
                         || starts_block("for") || starts_block("repeat") || starts_block("attempt")
-                        || starts_block("judge") || starts_block("judge_all"))
+                        || starts_block("judge") || starts_block("judge_all")
+                        || starts_block("class") || starts_block("enum"))
                         && !src_line.contains("=>")
                     {
                         depth += 1;
+                        opened_by_kw = true;
                     }
-                    if src_line.starts_with("act ") || src_line.starts_with("act(") {
+                    if src_line.starts_with("act ") || src_line.starts_with("act(")
+                        || src_line.starts_with("action ") || src_line.starts_with("action(")
+                    {
+                        depth += 1;
+                        opened_by_kw = true;
+                    }
+                    // Trailing | opens a block (e.g. <>Character |, myVar | MyType = ... |).
+                    if !opened_by_kw && src_line.ends_with('|') {
                         depth += 1;
                     }
                     if src_line == "end" || src_line == "xx" { depth -= 1; }
                     if depth < 0 { depth = 0; }
                 }
 
-                if depth > 0 { continue; }
+                // Also wait for unmatched open brackets (multiline arrays/maps).
+                let bracket_depth = {
+                    let mut sq: i32 = 0;
+                    let mut cu: i32 = 0;
+                    let mut in_str = false;
+                    let mut str_ch = '"';
+                    let mut esc = false;
+                    for ch in buf.chars() {
+                        if esc { esc = false; continue; }
+                        if in_str {
+                            if ch == '\\' { esc = true; }
+                            else if ch == str_ch { in_str = false; }
+                            continue;
+                        }
+                        match ch {
+                            '"' | '\'' => { in_str = true; str_ch = ch; }
+                            '[' => sq += 1,
+                            ']' => { if sq > 0 { sq -= 1; } }
+                            '{' => cu += 1,
+                            '}' => { if cu > 0 { cu -= 1; } }
+                            _ => {}
+                        }
+                    }
+                    sq + cu
+                };
+
+                if depth > 0 || bracket_depth > 0 { continue; }
 
                 let snippet = buf.trim_end().to_string();
                 buf.clear();
@@ -1563,13 +1599,15 @@ fn run_repl() -> i32 {
                 // Update block depth
                 {
                     let src_line = trimmed.trim_start();
- 
+
                     let starts_block_kw = |kw: &str| -> bool {
                         src_line == kw
                             || (src_line.starts_with(kw)
                                 && src_line[kw.len()..].starts_with(char::is_whitespace))
                     };
- 
+
+                    let mut opened_by_kw = false;
+
                     if starts_block_kw("if")
                         || starts_block_kw("unless")
                         || starts_block_kw("while")
@@ -1578,12 +1616,15 @@ fn run_repl() -> i32 {
                         || starts_block_kw("attempt")
                         || starts_block_kw("judge")
                         || starts_block_kw("judge_all")
+                        || starts_block_kw("class")
+                        || starts_block_kw("enum")
                     {
                         if !src_line.contains("=>") {
                             depth += 1;
+                            opened_by_kw = true;
                         }
                     }
- 
+
                     if src_line.starts_with("act ")
                         || src_line.starts_with("act(")
                         || src_line.starts_with("action ")
@@ -1608,15 +1649,48 @@ fn run_repl() -> i32 {
                         }
                         if !has_eq_outside_parens {
                             depth += 1;
+                            opened_by_kw = true;
                         }
                     }
- 
+
+                    // Trailing | means a block is opening (e.g. <>Character |, myVar | MyType = ... |).
+                    // Only count it when a keyword check didn't already increment depth.
+                    if !opened_by_kw && src_line.ends_with('|') {
+                        depth += 1;
+                    }
+
                     if src_line == "end" { depth -= 1; }
                     if src_line == "xx"  { depth -= 1; }
                     if depth < 0 { depth = 0; }
                 }
- 
-                if depth > 0 {
+
+                // Also wait while there are unmatched open brackets (multiline arrays/maps).
+                let bracket_depth = {
+                    let mut sq: i32 = 0;
+                    let mut cu: i32 = 0;
+                    let mut in_str = false;
+                    let mut str_ch = '"';
+                    let mut esc = false;
+                    for ch in buf.chars() {
+                        if esc { esc = false; continue; }
+                        if in_str {
+                            if ch == '\\' { esc = true; }
+                            else if ch == str_ch { in_str = false; }
+                            continue;
+                        }
+                        match ch {
+                            '"' | '\'' => { in_str = true; str_ch = ch; }
+                            '[' => sq += 1,
+                            ']' => { if sq > 0 { sq -= 1; } }
+                            '{' => cu += 1,
+                            '}' => { if cu > 0 { cu -= 1; } }
+                            _ => {}
+                        }
+                    }
+                    sq + cu
+                };
+
+                if depth > 0 || bracket_depth > 0 {
                     continue;
                 }
  
