@@ -766,8 +766,7 @@ impl Vm {
                     items.push(v);
                 }
                 self.stack.truncate(start);
-                let coll = CollectionValue::from_flat(items);
-                let t = self.session.alloc_value(Value::Collection(Rc::new(coll)));
+                let t = self.session.alloc_value(Value::Collection(Rc::new(CollectionValue::from_flat(items))));
                 self.stack.push(t);
             }
             Opcode::MakeMap(n) => {
@@ -801,6 +800,76 @@ impl Vm {
                 let t = self.session.alloc_value(updated);
                 self.stack.push(t);
             }
+
+            // ── TupleBind support ─────────────────────────────────────────────
+            Opcode::TupleSplit(n) => {
+                let n = n as usize;
+                let raw = self.pop_value()?;
+                match &raw {
+                    Value::Collection(c) => {
+                        let items = crate::collections::to_vec(c);
+                        if items.is_empty() {
+                            for _ in 0..n {
+                                let t = self.session.alloc_value(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
+                                self.stack.push(t);
+                            }
+                        } else if items.len() == n {
+                            for v in items.into_iter().rev() {
+                                let t = self.session.alloc_value(v);
+                                self.stack.push(t);
+                            }
+                        } else {
+                            return Err(GoblinError::Runtime(format!(
+                                "tuple binding expected {} value(s) but got {}",
+                                n, items.len()
+                            )));
+                        }
+                    }
+                    Value::Array(arr) => {
+                        if arr.is_empty() {
+                            for _ in 0..n {
+                                let t = self.session.alloc_value(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
+                                self.stack.push(t);
+                            }
+                        } else if arr.len() == n {
+                            for v in arr.iter().rev() {
+                                let t = self.session.alloc_value(v.clone());
+                                self.stack.push(t);
+                            }
+                        } else {
+                            return Err(GoblinError::Runtime(format!(
+                                "tuple binding expected {} value(s) but got {}",
+                                n, arr.len()
+                            )));
+                        }
+                    }
+                    other => {
+                        for _ in 0..n {
+                            let t = self.session.alloc_value(other.clone());
+                            self.stack.push(t);
+                        }
+                    }
+                }
+            }
+
+            Opcode::StoreBox(ns_idx, name_idx) => {
+                let (ns, name) = {
+                    let frame = self.call_stack.last().unwrap();
+                    let ns = match &frame.func.constants[ns_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("StoreBox: ns constant is not a str".into())),
+                    };
+                    let name = match &frame.func.constants[name_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("StoreBox: name constant is not a str".into())),
+                    };
+                    (ns, name)
+                };
+                let val = self.pop_value()?;
+                let key = format!("{}::{}", ns, name);
+                self.session.box_store.insert(key, val);
+            }
+
             Opcode::SetField(idx) => {
                 let new_val = self.pop_value()?;
                 let key = {
@@ -1125,6 +1194,222 @@ impl Vm {
                         self.stack.push(result);
                         return Ok(());
                     }
+
+                    // ── Map — support user-defined named actions ──────────────
+                    BuiltinId::Map => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "map".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let action_val = self.session.read_value(&arg_tethers[1])?;
+                        let func = match action_val {
+                            Value::Str(s) => Value::Str(s),
+                            other => return Err(GoblinError::type_error("str (action name)", other.type_name(), "map")),
+                        };
+                        let result = self.vm_map_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+
+                    // ── _where family — two-mode predicate (literal or action) ─
+                    BuiltinId::GetWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "get_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "get_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::DeleteWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "delete_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "delete_where predicate")),
+                        };
+                        let result = self.vm_where_delete(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::UpdateWhere => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "update_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "update_where predicate")),
+                        };
+                        let new_val = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_where_update(coll, &pred, new_val)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ReapWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "reap_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ReapWhere2 => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "reap_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::PutWhere => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "put_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "put_where predicate")),
+                        };
+                        let new_val = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_where_put(coll, &pred, new_val)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::GrabWhere => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "grab_where".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "grab_where predicate")),
+                        };
+                        let result = self.vm_where_get(coll, &pred)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+
+                    // ── Higher-order collection ops ───────────────────────────
+                    BuiltinId::Filter => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "filter".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_filter_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::Reduce => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "reduce".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let init = self.session.read_value(&arg_tethers[1])?;
+                        let func = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_reduce_inner(coll, init, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::Any => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "any".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_any_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::All => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "all".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_all_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::FindIndex => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "find_index".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_find_index_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::SortBy => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "sort_by".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_sort_by_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::MapFn => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "map_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_map_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::FilterFn => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "filter_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_filter_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ReduceFn => {
+                        if arg_tethers.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "reduce_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let init = self.session.read_value(&arg_tethers[1])?;
+                        let func = self.session.read_value(&arg_tethers[2])?;
+                        let result = self.vm_reduce_inner(coll, init, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ForEachFn => {
+                        if arg_tethers.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "for_each_fn".into() });
+                        }
+                        let coll = self.session.read_value(&arg_tethers[0])?;
+                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let result = self.vm_for_each_inner(coll, func)?;
+                        self.stack.push(self.session.alloc_value(result));
+                        return Ok(());
+                    }
+
                     _ => {}
                 }
 
@@ -1269,14 +1554,83 @@ impl Vm {
                     }
                 };
 
-                // Resolve path against base_dir
+                // Imports inside a GLAM resolve relative to that GLAM's directory (base_dir,
+                // which import_file sets to the GLAM entry file's parent). Imports in regular
+                // modules always resolve relative to project_root — this matches the interpreter's
+                // ImportBaseMode::ProjectRoot default and prevents path-doubling when a module
+                // inside a subdirectory uses paths that include that subdirectory.
+                let in_glam = self.call_stack.last()
+                    .map(|f| f.func.owner_glam.is_some())
+                    .unwrap_or(false);
                 let full_path = if std::path::Path::new(&path_str).is_absolute() {
                     std::path::PathBuf::from(&path_str)
-                } else {
+                } else if in_glam {
                     self.session.base_dir.join(&path_str)
+                } else {
+                    self.session.project_root.join(&path_str)
                 };
 
-                self.import_file(full_path, None)?;
+                // Clear current_glam_ns while processing an `import` statement so that
+                // actions in the imported file are NOT registered under the importing GLAM's
+                // namespace. `import` is a file merge, not a namespace load — if the user
+                // wants namespace registration they should use `use "ns"` instead.
+                let prev_ns = self.session.current_glam_ns.take();
+                let r = self.import_file(full_path, None, std::collections::HashMap::new());
+                self.session.current_glam_ns = prev_ns;
+                r?;
+            }
+
+            Opcode::ImportFileAs(path_idx, ns_idx) => {
+                // `import path as ns` — imports the file and registers all top-level
+                // actions under the namespace alias so `ns::action(...)` dispatch works.
+                let (path_str, ns) = {
+                    let frame = self.call_stack.last().ok_or_else(|| GoblinError::Runtime("no call frame".into()))?;
+                    let path = match &frame.func.constants[path_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("ImportFileAs: path must be a string constant".into())),
+                    };
+                    let ns = match &frame.func.constants[ns_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("ImportFileAs: namespace must be a string constant".into())),
+                    };
+                    (path, ns)
+                };
+
+                let in_glam = self.call_stack.last()
+                    .map(|f| f.func.owner_glam.is_some())
+                    .unwrap_or(false);
+                let full_path = if std::path::Path::new(&path_str).is_absolute() {
+                    std::path::PathBuf::from(&path_str)
+                } else if in_glam {
+                    self.session.base_dir.join(&path_str)
+                } else {
+                    self.session.project_root.join(&path_str)
+                };
+
+                // Run with current_glam_ns = Some(alias) so RegisterAction registers
+                // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
+                let prev_ns = self.session.current_glam_ns.take();
+                self.session.current_glam_ns = Some(ns.clone());
+                let r = self.import_file(full_path.clone(), None, std::collections::HashMap::new());
+                self.session.current_glam_ns = prev_ns;
+                r?;
+
+                // Retroactively register qualified names in case the import guard fired.
+                let module_dir = full_path.parent()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                let pairs: Vec<(String, Value)> = self.session.action_file_map
+                    .iter()
+                    .filter(|(file, _)| {
+                        let f = file.replace('\\', "/");
+                        f.contains(&module_dir) || f == full_path.to_string_lossy().replace('\\', "/")
+                    })
+                    .flat_map(|(_, pairs)| pairs.iter().cloned())
+                    .collect();
+                for (bare_name, val) in pairs {
+                    let qualified = format!("{}::{}", ns, bare_name);
+                    self.session.named_values.entry(qualified).or_insert(val);
+                }
             }
 
             Opcode::UseGlam(ns_idx) => {
@@ -1290,9 +1644,11 @@ impl Vm {
 
                 let glam_dir = self.session.project_root.join("glams").join(&ns);
                 let toml_path = glam_dir.join("glam.toml");
-                if toml_path.exists() {
-                    self.load_glam_action_needs(&toml_path, &ns)?;
-                }
+                let value_needs = if toml_path.exists() {
+                    self.load_glam_action_needs(&toml_path, &ns)?
+                } else {
+                    std::collections::HashMap::new()
+                };
 
                 let entry_path = glam_dir.join(format!("{ns}.gbln"));
                 // Set current_glam_ns so RegisterAction registers under both bare and
@@ -1300,9 +1656,27 @@ impl Vm {
                 // Save and restore to handle nested `use` statements correctly.
                 let prev_glam_ns = self.session.current_glam_ns.take();
                 self.session.current_glam_ns = Some(ns.clone());
-                let glam_result = self.import_file(entry_path, Some(ns));
+                let glam_result = self.import_file(entry_path.clone(), Some(ns.clone()), value_needs);
                 self.session.current_glam_ns = prev_glam_ns;
                 glam_result?;
+
+                // Retroactively register qualified "ns::action" names for any actions that
+                // were registered from files inside this GLAM's directory. This handles the
+                // case where the GLAM was first imported via `import` (not `use`), causing
+                // the import guard to skip re-execution — so RegisterAction never fired with
+                // current_glam_ns set. By scanning action_file_map we recover the values.
+                let glam_dir_normalized = glam_dir.to_string_lossy().replace('\\', "/");
+                let pairs: Vec<(String, Value)> = self.session.action_file_map
+                    .iter()
+                    .filter(|(file, _)| {
+                        file.replace('\\', "/").contains(&glam_dir_normalized)
+                    })
+                    .flat_map(|(_, pairs)| pairs.iter().cloned())
+                    .collect();
+                for (bare_name, val) in pairs {
+                    let qualified = format!("{}::{}", ns, bare_name);
+                    self.session.named_values.entry(qualified).or_insert(val);
+                }
             }
 
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
@@ -1450,6 +1824,16 @@ impl Vm {
                     let qualified = format!("{}::{}", ns, name);
                     self.session.named_values.insert(qualified, value.clone());
                 }
+                // Track (bare_name, value) by source file so UseGlam can retroactively
+                // register qualified names even when the file was already imported without
+                // a GLAM namespace context (import guard bypass case).
+                let source_file = self.call_stack.last()
+                    .map(|f| f.func.source_file.clone())
+                    .unwrap_or_default();
+                self.session.action_file_map
+                    .entry(source_file)
+                    .or_default()
+                    .push((name.clone(), value.clone()));
                 self.session.named_values.insert(name, value);
             }
 
@@ -1535,9 +1919,40 @@ impl Vm {
                 }
                 let inner: String = chars[start..j].iter().collect();
                 let inner = inner.trim();
-                if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
+                if inner.starts_with('#') {
+                    // Box template: {#ns::key} or {#ns::key@source}
+                    let trimmed = inner.trim_start_matches('#');
+                    let key = if let Some(at) = trimmed.find('@') { &trimmed[..at] } else { trimmed };
+                    if key.contains("::") {
+                        if let Some(Value::Str(v)) = self.session.box_store.get(key).cloned() {
+                            // Secondary resolve: the stored value may itself contain {#...}
+                            // e.g. output_dir = "../dist/{#local::portal}/public"
+                            if v.contains("{#") {
+                                out.push_str(&self.resolve_box_template_from_store(&v));
+                            } else {
+                                out.push_str(&v);
+                            }
+                        } else {
+                            // not found — keep literal
+                            out.push('{');
+                            let raw: String = chars[start..j].iter().collect();
+                            out.push_str(&raw);
+                            out.push('}');
+                        }
+                    } else {
+                        out.push('{');
+                        let raw: String = chars[start..j].iter().collect();
+                        out.push_str(&raw);
+                        out.push('}');
+                    }
+                } else if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
                     let val = self.lookup_interp_var(inner);
-                    out.push_str(&val);
+                    // Secondary resolve: a regular variable's value may contain {#...}
+                    if val.contains("{#") {
+                        out.push_str(&self.resolve_box_template_from_store(&val));
+                    } else {
+                        out.push_str(&val);
+                    }
                 } else {
                     out.push('{');
                     let raw: String = chars[start..j].iter().collect();
@@ -1574,9 +1989,15 @@ impl Vm {
                 }
             }
         }
-        // 3. Check globals by name
-        let global_tether = self.session.global_names.iter().position(|n| n == name)
-            .and_then(|slot| self.session.globals.get(slot).cloned().flatten());
+        // 3. Check globals by name — use the current frame's compilation-unit global_names
+        //    so GLAM actions find their own globals (not the main file's name table).
+        let global_tether = self.call_stack.last()
+            .and_then(|frame| frame.func.global_names.iter().position(|n| n == name))
+            .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+            .or_else(|| {
+                self.session.global_names.iter().position(|n| n == name)
+                    .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+            });
         if let Some(t) = global_tether {
             if let Ok(v) = self.session.read_value(&t) {
                 return crate::builtins::fmt_value_raw(&v);
@@ -1752,7 +2173,7 @@ impl Vm {
     /// Lex/parse/compile/run a single file, skipping it if already imported.
     /// `owner_glam`, when Some, is stamped onto the top-level actions compiled
     /// from this file (so `:need()` can later identify their owning GLAM).
-    fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>) -> Result<(), GoblinError> {
+    fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
         let canonical = full_path.to_string_lossy().to_string();
         if self.session.imported.contains(&canonical) {
             return Ok(());
@@ -1777,20 +2198,42 @@ impl Vm {
         let module = goblin_parser::Parser::new(&tokens).parse_module()
             .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
 
+        // Seed the compiler with the session's full accumulated global names so
+        // this module's new globals get non-overlapping indices. Without this,
+        // every module starts at index 0 and clobbers earlier modules' slots.
+        let globals_before = self.session.global_names.clone();
         let compiled = crate::compiler::Compiler::new()
+            .with_initial_globals(globals_before.clone())
             .with_glam_namespace(owner_glam)
             .for_file(&actual_path.to_string_lossy())
             .compile_module(&module)
             .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
 
+        // Append any new global names this module introduced.
+        for name in compiled.global_names[globals_before.len()..].iter() {
+            self.session.global_names.push(name.clone());
+        }
+
         // Pre-register classes/enums from the imported module
         for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
         for decl in compiled.enums   { self.session.enums.insert(decl.name.clone(), decl); }
 
-        // Update base_dir to imported file's directory during its execution
+        // Track the importing file's directory in base_dir so that GLAM files (which
+        // have owner_glam set on their frames) can resolve sub-imports relative to the
+        // GLAM's own directory. Non-GLAM imports always use project_root instead.
         let prev_base_dir = self.session.base_dir.clone();
         if let Some(parent) = actual_path.parent() {
             self.session.base_dir = parent.to_path_buf();
+        }
+
+        // Inject [needs.values] as globals so GLAM action bodies can access them
+        // via bare name (e.g. `output_dir`). Must happen after compilation so we
+        // know the correct global indices from compiled.global_names.
+        for (name, val) in pre_globals {
+            if let Some(idx) = compiled.global_names.iter().position(|g| g == &name) {
+                let t = self.session.alloc_value(val);
+                self.session.set_global(idx, t);
+            }
         }
 
         // Run the imported module's entry function as a nested call on the
@@ -1804,90 +2247,602 @@ impl Vm {
         let depth_before = self.call_stack.len();
         self.call_stack.push(CallFrame::new(entry_rc, Vec::new(), stack_base));
         let run_result = self.run_until_depth(depth_before);
-
-        // Restore base_dir (even on error, so the caller's later imports resolve correctly).
         self.session.base_dir = prev_base_dir;
         run_result?;
         self.stack.pop(); // discard the imported module's implicit return value
         Ok(())
     }
 
-    /// Parse glam.toml's [needs.actions] table into session.action_needs[ns].
-    /// Mirrors the interpreter's load_glam_box_toml (actions half only — the VM
-    /// does not yet support [needs.values] / box-ref glam loading).
-    fn load_glam_action_needs(&mut self, toml_path: &std::path::Path, ns: &str) -> Result<(), GoblinError> {
+    /// Parse glam.toml [needs.*] and [values] tables.
+    /// Mirrors the interpreter's load_glam_box_toml needs section.
+    ///
+    /// Handles three formats:
+    ///   [needs.values]  local_name = "#source_ns::varname"   — box-ref import
+    ///   [needs.actions] need_name  = "provider_ns::action"   — action need
+    ///   [needs]         local_name = "#source_ns::varname"   — legacy flat format (box ref)
+    ///   [needs]         need_name  = "provider_ns::action"   — legacy flat format (action need)
+    ///   [values]        local_name = "literal"               — GLAM-owned defaults
+    fn load_glam_action_needs(&mut self, toml_path: &std::path::Path, ns: &str) -> Result<std::collections::HashMap<String, Value>, GoblinError> {
         let content = std::fs::read_to_string(toml_path)
             .map_err(|e| GoblinError::Runtime(format!("cannot read {}: {}", toml_path.display(), e)))?;
         let table: toml::Table = content.parse()
             .map_err(|e| GoblinError::Runtime(format!("invalid TOML in {}: {}", toml_path.display(), e)))?;
 
-        let Some(toml::Value::Table(needs)) = table.get("needs") else { return Ok(()) };
-        let Some(toml::Value::Table(actions)) = needs.get("actions") else { return Ok(()) };
+        let mut value_needs: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
 
-        let mut map = std::collections::HashMap::new();
-        for (need_name, action_ref) in actions {
-            let ref_str = match action_ref {
-                toml::Value::String(s) if s.is_empty() => {
-                    return Err(GoblinError::Runtime(format!(
-                        "B0106: missing-action-need — '{}' has no provider assigned\n\
-                         Assign it in your glam.toml [needs.actions]: {} = \"namespace::action\"",
-                        need_name, need_name
-                    )));
-                }
-                toml::Value::String(s) => s,
-                _ => return Err(GoblinError::Runtime(format!(
-                    "B0106: missing-action-need — '{}' must be an action path like \"namespace::action\"",
-                    need_name
-                ))),
-            };
-
-            if ref_str.starts_with('#') || !ref_str.contains("::") {
-                return Err(GoblinError::Runtime(format!(
-                    "B0106: missing-action-need — '{}' value \"{}\" is not a valid action path\n\
-                     Must be in the form \"namespace::action\" (no '#' prefix — that's reserved for Box values)",
-                    need_name, ref_str
-                )));
+        if let Some(toml::Value::Table(needs)) = table.get("needs") {
+            // [needs.values] — box-ref imports; also returned so UseGlam can inject as globals
+            if let Some(toml::Value::Table(values)) = needs.get("values") {
+                value_needs = self.process_glam_value_needs(values, ns)?;
             }
 
-            map.insert(need_name.clone(), ref_str.clone());
+            // [needs.actions]
+            if let Some(toml::Value::Table(actions)) = needs.get("actions") {
+                let mut map = std::collections::HashMap::new();
+                for (need_name, action_ref) in actions {
+                    let ref_str = match action_ref {
+                        toml::Value::String(s) if s.is_empty() => {
+                            return Err(GoblinError::Runtime(format!(
+                                "B0106: missing-action-need — '{}' has no provider assigned\n\
+                                 Assign it in your glam.toml [needs.actions]: {} = \"namespace::action\"",
+                                need_name, need_name
+                            )));
+                        }
+                        toml::Value::String(s) => s,
+                        _ => return Err(GoblinError::Runtime(format!(
+                            "B0106: missing-action-need — '{}' must be an action path like \"namespace::action\"",
+                            need_name
+                        ))),
+                    };
+                    if ref_str.starts_with('#') || !ref_str.contains("::") {
+                        return Err(GoblinError::Runtime(format!(
+                            "B0106: missing-action-need — '{}' value \"{}\" is not a valid action path\n\
+                             Must be in the form \"namespace::action\" (no '#' prefix — that's reserved for Box values)",
+                            need_name, ref_str
+                        )));
+                    }
+                    map.insert(need_name.clone(), ref_str.clone());
+                }
+                self.session.action_needs.insert(ns.to_string(), map);
+            }
+
+            let has_new_format = needs.contains_key("values") || needs.contains_key("actions");
+            if !has_new_format && !needs.is_empty() {
+                let line_num = content.lines()
+                    .enumerate()
+                    .find(|(_, l)| l.trim() == "[needs]")
+                    .map(|(i, _)| i + 1)
+                    .unwrap_or(1);
+                return Err(GoblinError::Runtime(format!(
+                    "{}:{}: use [needs.values] for Box references and [needs.actions] for action paths",
+                    toml_path.display(), line_num
+                )));
+            }
         }
-        self.session.action_needs.insert(ns.to_string(), map);
-        Ok(())
+
+        // [values] — GLAM-owned defaults, published to box_store under "{ns}::{local_name}"
+        if let Some(toml::Value::Table(values)) = table.get("values") {
+            for (local_name, val) in values {
+                let v = match val {
+                    toml::Value::String(s)  => Value::Str(s.clone()),
+                    toml::Value::Integer(i) => Value::Int(*i),
+                    toml::Value::Float(f)   => Value::Float(*f),
+                    toml::Value::Boolean(b) => Value::Bool(*b),
+                    other                   => Value::Str(other.to_string()),
+                };
+                self.session.box_store.insert(format!("{}::{}", ns, local_name), v);
+            }
+        }
+
+        Ok(value_needs)
+    }
+
+    /// Shared helper: process a [needs.values]-style table, publishing each entry
+    /// from box_store into "{ns}::{local_name}" so GLAM code can read it via #ns::name.
+    /// Returns the resolved map (local_name → value) so callers can also inject as globals.
+    fn process_glam_value_needs(&mut self, values: &toml::Table, ns: &str) -> Result<std::collections::HashMap<String, Value>, GoblinError> {
+        let mut resolved: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        for (local_name, box_ref) in values {
+            let ref_str = match box_ref {
+                toml::Value::String(s) if s.is_empty() => {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0104: unresolved-glam-need — '{}' has no value assigned\n\
+                         Assign it in your glam.toml [needs.values]: {} = \"#namespace::varname\"",
+                        local_name, local_name
+                    )));
+                }
+                toml::Value::String(s) => s.clone(),
+                _ => return Err(GoblinError::Runtime(format!(
+                    "B0104: unresolved-glam-need — '{}' must be a Box reference like \"#site::varname\"",
+                    local_name
+                ))),
+            };
+            if !ref_str.starts_with('#') || !ref_str.contains("::") {
+                return Err(GoblinError::Runtime(format!(
+                    "B0104: unresolved-glam-need — '{}' value \"{}\" is not a valid Box reference\n\
+                     Must be in the form \"#namespace::varname\"",
+                    local_name, ref_str
+                )));
+            }
+            let trimmed = &ref_str[1..];
+            let pos = trimmed.find("::").unwrap();
+            let ref_ns = &trimmed[..pos];
+            let varname = &trimmed[pos + 2..];
+            let key = format!("{}::{}", ref_ns, varname);
+            match self.session.box_store.get(&key).cloned() {
+                Some(v) => {
+                    let v = if let Value::Str(s) = &v {
+                        let resolved_s = self.resolve_box_template_from_store(&s.clone());
+                        Value::Str(resolved_s)
+                    } else {
+                        v
+                    };
+                    self.session.box_store.insert(format!("{}::{}", ns, local_name), v.clone());
+                    self.session.box_store.insert(format!("need::{}", local_name), v.clone());
+                    resolved.insert(local_name.clone(), v);
+                }
+                None => {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0104: unresolved-glam-need — '{}' references '#{}' \
+                         but that Box variable does not exist.\n\
+                         Check your box.toml to ensure the value is set.",
+                        local_name, key
+                    )));
+                }
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// Resolve {#ns::key} templates in a string using session.box_store.
+    fn resolve_box_template_from_store(&self, s: &str) -> String {
+        let mut out = String::new();
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '#' {
+                let start = i + 1;
+                let mut j = start;
+                while j < chars.len() && chars[j] != '}' { j += 1; }
+                if j < chars.len() {
+                    let inner: String = chars[start..j].iter().collect();
+                    let inner = inner.trim().trim_start_matches('#');
+                    let key = if let Some(at) = inner.find('@') { &inner[..at] } else { inner };
+                    if key.contains("::") {
+                        if let Some(Value::Str(v)) = self.session.box_store.get(key) {
+                            out.push_str(v);
+                            i = j + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push(chars[i]);
+            i += 1;
+        }
+        out
+    }
+
+    /// Low-level function call: set up a frame for (func_rc, upvalues) with args and run it.
+    fn call_func_core(
+        &mut self,
+        func_rc: Rc<FunctionObject>,
+        upvalues: Vec<UpvalueCell>,
+        args: Vec<Value>,
+    ) -> Result<Value, GoblinError> {
+        if args.len() != func_rc.params {
+            return Err(GoblinError::ArityMismatch {
+                expected: func_rc.params,
+                got: args.len(),
+                name: func_rc.name.clone(),
+            });
+        }
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+        let stack_base = self.stack.len();
+        let dummy = self.session.alloc_value(Value::Nil);
+        self.stack.push(dummy);
+        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+        for (i, a) in args.into_iter().enumerate() {
+            let t = self.session.alloc_value(a);
+            new_frame.locals[i] = Some(t);
+        }
+        self.call_stack.push(new_frame);
+        let depth_before = self.call_stack.len() - 1;
+        self.run_until_depth(depth_before)?;
+        let result_tether = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?;
+        Ok(self.session.read_value(&result_tether)?)
     }
 
     /// Call a named function from session.named_values and return its result.
     pub(crate) fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
+        // 1. Try exact qualified name ("stagehand::copy_assets").
+        // 2. If not found and name contains ::, try registering from action_file_map
+        //    then try the bare suffix ("copy_assets") as a fallback.
+        //    This handles GLAMs whose qualified names weren't registered because their
+        //    file was loaded via `import` (not `use`) or before `use "ns"` ran.
         let func_val = self.session.named_values.get(name).cloned()
+            .or_else(|| {
+                // Retroactive scan: if name is "ns::bare", look for files in glams/ns/
+                // that registered "bare" and haven't yet been wired up under the qualified key.
+                if let Some((ns, bare)) = name.split_once("::") {
+                    let glam_dir = self.session.project_root
+                        .join("glams").join(ns)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let candidate: Option<Value> = self.session.action_file_map
+                        .iter()
+                        .filter(|(file, _)| file.replace('\\', "/").contains(&glam_dir))
+                        .find_map(|(_, pairs)| {
+                            pairs.iter().find(|(n, _)| n == bare).map(|(_, v)| v.clone())
+                        });
+                    if let Some(val) = candidate {
+                        self.session.named_values.insert(name.to_string(), val.clone());
+                        return Some(val);
+                    }
+                    // Last resort: bare name lookup (pre-existing flat-registry limitation)
+                    self.session.named_values.get(bare).cloned()
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| GoblinError::Runtime(format!("invoke: unknown action '{name}'")))?;
         let (func_rc, upvalues) = match func_val {
             Value::Function(f) => (f, Vec::new()),
             Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
             other => return Err(GoblinError::NotCallable { got: other.type_name() }),
         };
-        if args.len() != func_rc.params {
-            return Err(GoblinError::ArityMismatch { expected: func_rc.params, got: args.len(), name: func_rc.name.clone() });
+        self.call_func_core(func_rc, upvalues, args)
+    }
+
+    /// Call any callable value: Str (action name or builtin), Function, or Closure.
+    pub(crate) fn call_callable(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, GoblinError> {
+        match callee {
+            Value::Str(name) => {
+                if let Some(func_val) = self.session.named_values.get(&name).cloned() {
+                    let (func_rc, upvalues) = match func_val {
+                        Value::Function(f) => (f, Vec::new()),
+                        Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
+                        other => return Err(GoblinError::NotCallable { got: other.type_name() }),
+                    };
+                    self.call_func_core(func_rc, upvalues, args)
+                } else if let Some(bid) = crate::compiler::builtin_by_name(&name) {
+                    let arg_tethers: Vec<Tether> = args.into_iter()
+                        .map(|v| self.session.alloc_value(v))
+                        .collect();
+                    let result_tether = crate::builtins::call_builtin(bid, arg_tethers, &mut self.session)?;
+                    Ok(self.session.read_value(&result_tether)?)
+                } else {
+                    Err(GoblinError::Runtime(format!("callable: unknown action '{name}'")))
+                }
+            }
+            Value::Function(f) => self.call_func_core(f, Vec::new(), args),
+            Value::Closure(c) => {
+                let func_rc = c.func.clone();
+                let upvalues = c.upvalues.clone();
+                self.call_func_core(func_rc, upvalues, args)
+            }
+            other => Err(GoblinError::NotCallable { got: other.type_name() }),
         }
-        if self.call_stack.len() >= MAX_CALL_DEPTH {
-            return Err(GoblinError::StackOverflow);
+    }
+
+    // ── Where-predicate helpers ───────────────────────────────────────────────
+
+    /// Implements interpreter Position::Where two-mode predicate:
+    /// non-identifier string → literal match; identifier string → call as action.
+    fn vm_where_match(&mut self, pred: &str, is_literal: bool, v: &Value) -> Result<bool, GoblinError> {
+        if is_literal {
+            return Ok(match v {
+                Value::Str(s) => s == pred,
+                Value::Char(c) => c.to_string() == pred,
+                _ => false,
+            });
         }
-        let stack_base = self.stack.len();
-        // The result will be pushed at stack_base by Return, so use stack_base as the "func slot".
-        // We push a dummy nil for the func slot position, then bind params directly.
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy); // placeholder for func tether position
-        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
-        for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
-            new_frame.locals[i] = Some(t);
+        let result = self.call_callable(Value::Str(pred.to_string()), vec![v.clone()])?;
+        Ok(matches!(result, Value::Bool(true)))
+    }
+
+    fn vm_where_get(&mut self, coll: Value, pred: &str) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(m) => {
+                let mut out = std::collections::BTreeMap::new();
+                for (k, v) in &m {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::Map(out))
+            }
+            Value::MapOrd(m) => {
+                let mut out = indexmap::IndexMap::new();
+                for (k, v) in &m {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::MapOrd(out))
+            }
+            Value::Str(s) => {
+                let mut out = Vec::new();
+                for c in s.chars() {
+                    let cv = Value::Char(c);
+                    if self.vm_where_match(pred, is_literal, &cv)? { out.push(cv); }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(GoblinError::type_error("collection", other.type_name(), "get_where")),
         }
-        // The dummy func tether is at stack_base; Return will truncate to stack_base and push result.
-        self.call_stack.push(new_frame);
-        let depth_before = self.call_stack.len() - 1;
-        self.run_until_depth(depth_before)?;
-        // Result is on top of stack (Return pushed it at stack_base).
-        let result_tether = self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("invoke: no return value on stack".into()))?;
-        Ok(self.session.read_value(&result_tether)?)
+    }
+
+    fn vm_where_delete(&mut self, coll: Value, pred: &str) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if !self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(m) => {
+                let mut out = std::collections::BTreeMap::new();
+                for (k, v) in &m {
+                    if !self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::Map(out))
+            }
+            Value::MapOrd(m) => {
+                let mut out = indexmap::IndexMap::new();
+                for (k, v) in &m {
+                    if !self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
+                }
+                Ok(Value::MapOrd(out))
+            }
+            Value::Str(s) => {
+                let mut out = String::new();
+                for c in s.chars() {
+                    if !self.vm_where_match(pred, is_literal, &Value::Char(c))? { out.push(c); }
+                }
+                Ok(Value::Str(out))
+            }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if !self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(GoblinError::type_error("collection", other.type_name(), "delete_where")),
+        }
+    }
+
+    fn vm_where_update(&mut self, coll: Value, pred: &str, new_val: Value) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? {
+                        out.push(new_val.clone());
+                    } else {
+                        out.push(v);
+                    }
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(m) => {
+                let mut out = m.clone();
+                for (k, v) in &m {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), new_val.clone()); }
+                }
+                Ok(Value::Map(out))
+            }
+            Value::MapOrd(m) => {
+                let mut out = m.clone();
+                for (k, v) in m.iter() {
+                    if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), new_val.clone()); }
+                }
+                Ok(Value::MapOrd(out))
+            }
+            Value::Str(s) => {
+                let repl = match &new_val {
+                    Value::Str(r) => r.clone(),
+                    Value::Char(c) => c.to_string(),
+                    _ => return Err(GoblinError::type_error("str or char", new_val.type_name(), "update_where on string")),
+                };
+                let mut out = String::new();
+                for c in s.chars() {
+                    if self.vm_where_match(pred, is_literal, &Value::Char(c))? {
+                        out.push_str(&repl);
+                    } else {
+                        out.push(c);
+                    }
+                }
+                Ok(Value::Str(out))
+            }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? {
+                        out.push(new_val.clone());
+                    } else {
+                        out.push(v);
+                    }
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(GoblinError::type_error("collection", other.type_name(), "update_where")),
+        }
+    }
+
+    fn vm_where_put(&mut self, coll: Value, pred: &str, new_val: Value) -> Result<Value, GoblinError> {
+        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+        match coll {
+            Value::Array(xs) => {
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
+                    out.push(v);
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Collection(col) => {
+                let xs = crate::collections::to_vec(&col);
+                let mut out = Vec::new();
+                for v in xs {
+                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
+                    out.push(v);
+                }
+                Ok(Value::Array(out))
+            }
+            Value::Map(_) | Value::MapOrd(_) => Err(GoblinError::Runtime("put_where is not meaningful for maps".into())),
+            other => Err(GoblinError::type_error("array", other.type_name(), "put_where")),
+        }
+    }
+
+    // ── Higher-order collection helpers ──────────────────────────────────────
+
+    fn vm_map_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let is_str = matches!(coll, Value::Str(_));
+        let elems: Vec<Value> = match coll {
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("str or array", other.type_name(), "map")),
+        };
+        let mut results = Vec::with_capacity(elems.len());
+        let mut any_non_text = false;
+        for v in elems {
+            let r = self.call_callable(func.clone(), vec![v])?;
+            if is_str && !matches!(r, Value::Char(_) | Value::Str(_)) { any_non_text = true; }
+            results.push(r);
+        }
+        if is_str && !any_non_text {
+            let mut s = String::new();
+            for r in results {
+                match r { Value::Char(c) => s.push(c), Value::Str(ts) => s.push_str(&ts), _ => {} }
+            }
+            Ok(Value::Str(s))
+        } else {
+            Ok(Value::Array(results))
+        }
+    }
+
+    fn vm_filter_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "filter")),
+        };
+        let mut out = Vec::new();
+        for v in elems {
+            if matches!(self.call_callable(func.clone(), vec![v.clone()])?, Value::Bool(true)) {
+                out.push(v);
+            }
+        }
+        Ok(Value::Array(out))
+    }
+
+    fn vm_reduce_inner(&mut self, coll: Value, init: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array", other.type_name(), "reduce")),
+        };
+        let mut acc = init;
+        for v in elems {
+            acc = self.call_callable(func.clone(), vec![acc, v])?;
+        }
+        Ok(acc)
+    }
+
+    fn vm_any_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "any")),
+        };
+        for v in elems {
+            if matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
+                return Ok(Value::Bool(true));
+            }
+        }
+        Ok(Value::Bool(false))
+    }
+
+    fn vm_all_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "all")),
+        };
+        for v in elems {
+            if !matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
+                return Ok(Value::Bool(false));
+            }
+        }
+        Ok(Value::Bool(true))
+    }
+
+    fn vm_find_index_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array", other.type_name(), "find_index")),
+        };
+        for (i, v) in elems.into_iter().enumerate() {
+            if matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
+                return Ok(Value::Int(i as i64));
+            }
+        }
+        Ok(Value::Nil)
+    }
+
+    fn vm_sort_by_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array", other.type_name(), "sort_by")),
+        };
+        let mut keyed: Vec<(String, Value)> = Vec::with_capacity(elems.len());
+        for v in elems {
+            let k = self.call_callable(func.clone(), vec![v.clone()])?;
+            keyed.push((crate::builtins::fmt_value_raw(&k), v));
+        }
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(Value::Array(keyed.into_iter().map(|(_, v)| v).collect()))
+    }
+
+    fn vm_for_each_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
+        let elems: Vec<Value> = match coll {
+            Value::Array(xs) => xs,
+            Value::Str(s) => s.chars().map(Value::Char).collect(),
+            Value::Collection(col) => crate::collections::to_vec(&col),
+            other => return Err(GoblinError::type_error("array or str", other.type_name(), "for_each_fn")),
+        };
+        for v in elems {
+            self.call_callable(func.clone(), vec![v])?;
+        }
+        Ok(Value::Nil)
     }
 
     fn vm_invoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
@@ -1906,6 +2861,7 @@ impl Vm {
         let forwarded: Vec<Value> = if arg_tethers.len() == 2 {
             match self.session.read_value(&arg_tethers[1])? {
                 Value::Array(arr) => arr.iter().cloned().collect(),
+                Value::Collection(c) => crate::collections::to_vec(&c),
                 other => vec![other],
             }
         } else {
@@ -1923,6 +2879,7 @@ impl Vm {
         let events_val = self.session.read_value(&arg_tethers[1])?;
         let events: Vec<Value> = match &events_val {
             Value::Array(a) => a.iter().cloned().collect(),
+            Value::Collection(c) => crate::collections::to_vec(c),
             _ => return Err(GoblinError::type_error("array", events_val.type_name(), "summon events")),
         };
         for ev in events {
@@ -2472,6 +3429,7 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "is_dir"           => Some(BuiltinId::IsDir),
         "escape_html"      => Some(BuiltinId::EscapeHtml),
         "url_decode"       => Some(BuiltinId::UrlDecode),
+        "url_encode"       => Some(BuiltinId::UrlEncode),
         _ => None,
     };
 

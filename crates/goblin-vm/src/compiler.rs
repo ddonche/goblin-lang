@@ -137,7 +137,7 @@ impl FunctionScope {
         }
     }
 
-    fn finish(self, source_file: String) -> FunctionObject {
+    fn finish(self, source_file: String, global_names: Vec<String>) -> FunctionObject {
         let upvalue_descriptors: Vec<UpvalueDescriptor> =
             self.upvalues.into_iter().map(|(_, d)| d).collect();
         let total_slots = self.next_slot as usize;
@@ -158,13 +158,15 @@ impl FunctionScope {
             local_names,
             owner_glam: None,
             source_file,
+            global_names,
         }
     }
 }
 
-/// Recursively collect all variable names declared with `bind`/`|` (Tether) or
-/// action names at module level so they can be pre-declared before the main
-/// compilation pass. Does NOT recurse into Action/Class bodies (own scope).
+/// Recursively collect bind variable names declared at module level so they can
+/// be pre-hoisted as locals in __main__ before the main compilation pass.
+/// Does NOT collect action names (those are pre-registered as globals separately)
+/// and does NOT recurse into Action/Class bodies (own scope).
 fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
     for stmt in stmts {
         match stmt {
@@ -176,9 +178,6 @@ fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
                 for (name, _) in &tb.names {
                     if !out.contains(name) { out.push(name.clone()); }
                 }
-            }
-            Stmt::Action(a) => {
-                if !out.contains(&a.name) { out.push(a.name.clone()); }
             }
             Stmt::Block { stmts, .. } => collect_bind_names(stmts, out),
             Stmt::Judge(j) => {
@@ -257,6 +256,25 @@ impl Compiler {
         self
     }
 
+    /// Pre-declare global names so they resolve to LoadGlobal/StoreGlobal at compile time.
+    /// Used to inject runtime-provided globals (e.g. CLI `args`) before compiling a module.
+    pub fn with_globals(mut self, names: &[&str]) -> Self {
+        for name in names {
+            if !self.globals.contains(&name.to_string()) {
+                self.globals.push(name.to_string());
+            }
+        }
+        self
+    }
+
+    /// Seed the compiler with the full list of already-allocated global names from the session.
+    /// Imported modules call this so their new globals are appended at non-overlapping indices,
+    /// preventing different modules from clobbering each other's slots in session.globals.
+    pub fn with_initial_globals(mut self, names: Vec<String>) -> Self {
+        self.globals = names;
+        self
+    }
+
     /// Mark this compilation as a GLAM's entry module, so its top-level actions
     /// get `owner_glam` stamped for `:need()` resolution.
     pub fn with_glam_namespace(mut self, ns: Option<String>) -> Self {
@@ -268,9 +286,21 @@ impl Compiler {
 
     /// Compile a top-level module into a FunctionObject (the module's "main").
     pub fn compile_module(mut self, module: &Module) -> Result<CompiledModule, GoblinError> {
+        // First pass: pre-register all module-level action names as globals so that
+        // cross-action references inside function bodies compile to LoadGlobal rather
+        // than capturing a nil upvalue from __main__'s locals. This matches the
+        // interpreter, which looks up action names at call time from sess.actions/modules.
+        for stmt in &module.items {
+            if let Stmt::Action(a) = stmt {
+                if !self.globals.contains(&a.name) {
+                    self.globals.push(a.name.clone());
+                }
+            }
+        }
+
         self.push_scope("__main__", 0);
-        // Pre-declare all module-level variable and action names so forward
-        // references resolve correctly (interpreter resolves names at runtime).
+        // Pre-hoist bind variable names as nil locals so forward bind references work.
+        // Action names are NOT hoisted here — they live in globals (pre-registered above).
         let mut hoisted: Vec<String> = Vec::new();
         collect_bind_names(&module.items, &mut hoisted);
         for name in &hoisted {
@@ -356,7 +386,7 @@ impl Compiler {
     }
 
     fn pop_scope(&mut self) -> FunctionObject {
-        self.scopes.pop().unwrap().finish(self.source_file.clone())
+        self.scopes.pop().unwrap().finish(self.source_file.clone(), self.globals.clone())
     }
 
     fn scope(&self) -> &FunctionScope {
@@ -572,13 +602,15 @@ impl Compiler {
             Stmt::Action(action) => {
                 // Nested action declaration: compile into a FunctionObject constant.
                 self.compile_action_decl(action)?;
-                // At top-level scope, also register by name for invoke().
+                // At top-level scope: register by name for invoke() and store as global.
+                // StoreGlobal (not StoreLocal) at top scope so that cross-action references
+                // inside function bodies use LoadGlobal — which reads the populated slot at
+                // call time rather than capturing a nil upvalue at closure-creation time.
+                // This matches interpreter behavior: actions are looked up by name at call
+                // time, after the whole module has run.
                 if self.scopes.len() == 1 {
                     let name_idx = self.add_constant(Value::Str(action.name.clone()));
                     self.emit(Opcode::RegisterAction(name_idx));
-                }
-                // In REPL mode at top scope, store into global so it persists.
-                if self.repl_mode && self.scopes.len() == 1 {
                     let pos = if let Some(p) = self.globals.iter().position(|g| g == &action.name) {
                         p
                     } else {
@@ -588,6 +620,11 @@ impl Compiler {
                     };
                     self.emit(Opcode::StoreGlobal(pos as u16));
                 } else {
+                    // Nested action: register in named_values (matches interpreter behavior where
+                    // sess.actions.insert() runs for every Stmt::Action when current_module is None)
+                    // AND store as local so the enclosing scope can reference it by identifier.
+                    let name_idx = self.add_constant(Value::Str(action.name.clone()));
+                    self.emit(Opcode::RegisterAction(name_idx));
                     let slot = self.scope_mut().declare_local(&action.name);
                     self.emit(Opcode::StoreLocal(slot));
                 }
@@ -621,18 +658,32 @@ impl Compiler {
 
             Stmt::TupleBind(tb) => {
                 self.compile_expr(&tb.expr)?;
-                let n = tb.names.len();
-                for (i, name) in tb.names.iter().enumerate() {
-                    if i < n - 1 {
-                        self.emit(Opcode::Dup);
-                    }
-                    let idx_val = Value::Int(i as i64);
-                    let cidx = self.add_constant(idx_val);
-                    self.emit(Opcode::LoadConst(cidx));
-                    self.emit(Opcode::GetIndex);
+                let n = tb.names.len() as u8;
+                self.emit(Opcode::TupleSplit(n));
+                for name in tb.names.iter() {
                     let name_str = &name.0;
-                    let slot = self.scope_mut().declare_local(name_str);
-                    self.emit(Opcode::StoreLocal(slot));
+                    if name_str.starts_with('#') && name_str.contains("::") {
+                        // Box ref target: parse ns::key and emit StoreBox
+                        let key = name_str.trim_start_matches('#');
+                        let mut parts = key.splitn(2, "::");
+                        let ns_str = parts.next().unwrap_or("").to_string();
+                        let nm_str = parts.next().unwrap_or("").to_string();
+                        let ns_idx = self.add_constant(Value::Str(ns_str)) as u16;
+                        let nm_idx = self.add_constant(Value::Str(nm_str)) as u16;
+                        self.emit(Opcode::StoreBox(ns_idx, nm_idx));
+                    } else {
+                        let store_op = match tb.mode {
+                            BindMode::Retether => {
+                                self.resolve_store(name_str)
+                                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name_str.to_string() }))?
+                            }
+                            _ => {
+                                let slot = self.scope_mut().declare_local(name_str);
+                                Opcode::StoreLocal(slot)
+                            }
+                        };
+                        self.emit(store_op);
+                    }
                 }
             }
 
@@ -655,8 +706,15 @@ impl Compiler {
                         } else {
                             format!("{}.gbln", path.replace('/', std::path::MAIN_SEPARATOR_STR))
                         };
-                        let idx = self.add_constant(Value::Str(resolved));
-                        self.emit(Opcode::ImportFile(idx));
+                        let path_idx = self.add_constant(Value::Str(resolved));
+                        if let Some(alias) = &import_stmt.alias {
+                            // `import path as ns` — register actions under the alias namespace
+                            // so that `ns::action(...)` dispatch works (same as GLAM `use`).
+                            let ns_idx = self.add_constant(Value::Str(alias.clone()));
+                            self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
+                        } else {
+                            self.emit(Opcode::ImportFile(path_idx));
+                        }
                     }
                     ImportItems::Named { items, source } => {
                         // import { a, b } from source — import the source file
@@ -1066,16 +1124,15 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
                 } else {
-                    // Namespace call: try full_name then bare name as a compile-time
-                    // local/global; if neither is found, fall back to a runtime lookup
-                    // in session.named_values (handles `import X as alias; alias::fn()`).
+                    // Namespace call: try full_name as a compile-time global/local.
+                    // Do NOT fall back to bare name — a bare local named `foo` must not
+                    // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
                     let full_name = format!("{}::{}", ns, name);
-                    match self.resolve_load(&full_name).or_else(|_| self.resolve_load(name)) {
+                    match self.resolve_load(&full_name) {
                         Ok(load_op) => { self.emit(load_op); }
                         Err(_) => {
-                            // Neither compile-time name exists — emit a runtime named lookup.
-                            // Use the qualified name ("ns::action") so GLAM namespace dispatch
-                            // works: UseGlam registers actions under both bare and qualified names.
+                            // Not known at compile time — emit a runtime named lookup.
+                            // UseGlam registers actions under the qualified name ("ns::action").
                             let name_idx = self.add_constant(Value::Str(full_name.clone()));
                             self.emit(Opcode::LoadNamed(name_idx));
                         }
@@ -2124,6 +2181,95 @@ impl Compiler {
                 Ok(true)
             }
 
+            // update!(target, new_val) — lvalue whole-replacement
+            // Handles: update!(var, v), update!(var[idx], v), update!(var{key}, v)
+            "update!" => {
+                if args.len() != 2 {
+                    return Err(GoblinError::CompileError {
+                        message: "'update!' takes exactly 2 arguments".into(),
+                        span_debug: String::new(),
+                    });
+                }
+                match &args[0] {
+                    Expr::Ident(var_name, _) => {
+                        // update!(var, new_val) → compile new_val, store to var
+                        self.compile_expr(&args[1])?;
+                        let op = self.resolve_store(var_name)
+                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+                        self.emit(op);
+                        self.emit(Opcode::LoadNil);
+                    }
+                    Expr::Index(arr_expr, idx_expr, _) | Expr::IndexMap(arr_expr, idx_expr, _) => {
+                        // update!(arr[idx], new_val) → update_at(arr, idx, new_val) stored back
+                        if let Expr::Ident(arr_name, _) = arr_expr.as_ref() {
+                            let load_op = self.resolve_load(arr_name)
+                                .map_err(|e| self.locate_err(e))?;
+                            self.emit(load_op);
+                            self.compile_expr(idx_expr)?;
+                            self.compile_expr(&args[1])?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::UpdateAt, 3));
+                            let store_op = self.resolve_store(arr_name)
+                                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: arr_name.clone() }))?;
+                            self.emit(store_op);
+                            self.emit(Opcode::LoadNil);
+                        } else {
+                            return Err(GoblinError::CompileError {
+                                message: "'update!' index target must be a plain variable".into(),
+                                span_debug: String::new(),
+                            });
+                        }
+                    }
+                    _ => {
+                        return Err(GoblinError::CompileError {
+                            message: "'update!' target must be a variable or index expression".into(),
+                            span_debug: String::new(),
+                        });
+                    }
+                }
+                Ok(true)
+            }
+
+            // reap!(arr [, count]) — atomically remove+return random items.
+            // Interpreter bang form: (arr, count?) NOT the {src,count} config-map.
+            // Compiles to: ReapBang → [remaining, reaped]; store remaining back, return reaped.
+            "reap!" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(GoblinError::CompileError {
+                        message: "'reap!' takes 1 or 2 arguments: (arr [, count])".into(),
+                        span_debug: String::new(),
+                    });
+                }
+                let arr_name = match &args[0] {
+                    Expr::Ident(n, _) => n.clone(),
+                    _ => return Err(GoblinError::CompileError {
+                        message: "'reap!' first argument must be a plain variable".into(),
+                        span_debug: String::new(),
+                    }),
+                };
+                // compile ReapBang(arr [, count]) → [remaining, reaped]
+                let load_arr = self.resolve_load(&arr_name).map_err(|e| self.locate_err(e))?;
+                self.emit(load_arr.clone());
+                if args.len() == 2 { self.compile_expr(&args[1])?; }
+                self.emit(Opcode::CallBuiltin(BuiltinId::ReapBang, args.len() as u8));
+                // Store result temporarily, then extract remaining and reaped
+                let tmp_slot = self.scope_mut().declare_local("__reap_tmp__");
+                self.emit(Opcode::StoreLocal(tmp_slot));
+                // remaining = result[0] → store back to arr
+                self.emit(Opcode::LoadLocal(tmp_slot));
+                let zero_idx = self.add_constant(Value::Int(0));
+                self.emit(Opcode::LoadConst(zero_idx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::GetAt, 2));
+                let store_arr = self.resolve_store(&arr_name)
+                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: arr_name.clone() }))?;
+                self.emit(store_arr);
+                // reaped = result[1] → leave on stack as expression value
+                self.emit(Opcode::LoadLocal(tmp_slot));
+                let one_idx = self.add_constant(Value::Int(1));
+                self.emit(Opcode::LoadConst(one_idx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::GetAt, 2));
+                Ok(true)
+            }
+
             _ => Ok(false),
         }
     }
@@ -2364,8 +2510,12 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "sort"                          => BuiltinId::Sort,
         "sort_by"                       => BuiltinId::SortBy,
         "map"                           => BuiltinId::Map,
+        "map_fn"                        => BuiltinId::MapFn,
         "filter"                        => BuiltinId::Filter,
+        "filter_fn"                     => BuiltinId::FilterFn,
         "reduce"                        => BuiltinId::Reduce,
+        "reduce_fn"                     => BuiltinId::ReduceFn,
+        "for_each_fn"                   => BuiltinId::ForEachFn,
         "any"                           => BuiltinId::Any,
         "all"                           => BuiltinId::All,
         "find"                          => BuiltinId::Find,
@@ -2482,6 +2632,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "list_dirs"                      => BuiltinId::ListDirs,
         "escape_html"                    => BuiltinId::EscapeHtml,
         "url_decode"                     => BuiltinId::UrlDecode,
+        "url_encode"                     => BuiltinId::UrlEncode,
         "uuid_v4"                        => BuiltinId::UuidV4,
         "uuid_v7"                        => BuiltinId::UuidV7,
         "pathfind"                       => BuiltinId::Pathfind,
@@ -2615,7 +2766,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "delete_matching!"               => BuiltinId::DeleteMatching,
         "delete_between!"               => BuiltinId::DeleteBetween,
         "delete_random!"                 => BuiltinId::DeleteRandom,
-        "reap!"                          => BuiltinId::ReapSample,
         "reap_first!"                    => BuiltinId::ReapFirst,
         "reap_last!"                     => BuiltinId::ReapLast,
         "reap_at!"                       => BuiltinId::ReapAt,

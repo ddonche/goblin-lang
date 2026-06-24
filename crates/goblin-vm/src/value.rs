@@ -314,6 +314,9 @@ pub struct FunctionObject {
     pub owner_glam: Option<String>,
     /// Source file this function was compiled from (empty = unknown).
     pub source_file: String,
+    /// Global slot names for this function's compilation unit — parallel to session.globals.
+    /// Used by string interpolation to resolve {varname} by name within the right module scope.
+    pub global_names: Vec<String>,
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected
@@ -631,6 +634,7 @@ pub enum BuiltinId {
     AppendFile,
     WriteJson,
     ReapSample,
+    ReapBang,
     IsType,
     IsBoundName,
     Invoke,
@@ -680,6 +684,7 @@ pub enum BuiltinId {
     ListDirs,
     EscapeHtml,
     UrlDecode,
+    UrlEncode,
     UuidV4,
     UuidV7,
     Pathfind,

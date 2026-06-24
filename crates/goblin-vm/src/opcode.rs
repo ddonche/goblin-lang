@@ -164,6 +164,11 @@ pub enum Opcode {
     /// Pushes nothing (import is for side effects / populating globals).
     ImportFile(u16),
 
+    /// `import path as ns` — imports a file and registers all of its top-level
+    /// actions under the namespace alias so `ns::action` dispatch works.
+    /// constants[path_idx] = file path, constants[ns_idx] = namespace alias string.
+    ImportFileAs(u16, u16),
+
     /// Load a GLAM: constants[ns_idx] is the glam namespace string.
     /// Reads glams/<ns>/glam.toml (if present) to populate session.action_needs,
     /// then imports glams/<ns>/<ns>.gbln with owner_glam = Some(ns) stamped onto
@@ -230,6 +235,16 @@ pub enum Opcode {
     CastMemberLocal(u8, String),
     /// Same as CastMemberLocal but for a global slot.
     CastMemberGlobal(u16, String),
+
+    /// Pop RHS; if it is a Collection/Array of exactly N elements, push them in
+    /// reverse order (element 0 on top). If empty collection, broadcast empty
+    /// arrays. If scalar (non-collection), broadcast N copies. Arity mismatch on
+    /// non-empty wrong-length array.
+    TupleSplit(u8),
+
+    /// Pop value from stack top and write it to session.box_store["{ns}::{name}"].
+    /// ns_idx and name_idx are constant-pool indices into the enclosing function.
+    StoreBox(u16, u16),
 }
 
 impl Opcode {
@@ -298,6 +313,7 @@ impl Opcode {
             Opcode::TryBegin(_)       => "TryBegin",
             Opcode::TryEnd            => "TryEnd",
             Opcode::ImportFile(_)     => "ImportFile",
+            Opcode::ImportFileAs(..)  => "ImportFileAs",
             Opcode::UseGlam(_)        => "UseGlam",
             Opcode::OverlayDef(_)     => "OverlayDef",
             Opcode::OverlayApply {..} => "OverlayApply",
@@ -320,6 +336,8 @@ impl Opcode {
             Opcode::GetTypeLockGlobal(_) => "GetTypeLockGlobal",
             Opcode::CastMemberLocal(..)  => "CastMemberLocal",
             Opcode::CastMemberGlobal(..) => "CastMemberGlobal",
+            Opcode::TupleSplit(_)        => "TupleSplit",
+            Opcode::StoreBox(_, _)       => "StoreBox",
         }
     }
 }

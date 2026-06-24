@@ -372,7 +372,7 @@ fn main() {
         // Capture anything after the filename as extra args
         let extra_args: Vec<String> = args.iter().skip(1).cloned().collect();
         if use_vm {
-            std::process::exit(run_run_vm(target.as_path()));
+            std::process::exit(run_run_vm(target.as_path(), extra_args));
         }
         std::process::exit(run_run_with_args(target.as_path(), extra_args));
     }
@@ -380,7 +380,7 @@ fn main() {
     // Run script file if a single path argument is provided
     if args.len() == 1 && is_probable_file(&args[0]) {
         if use_vm {
-            std::process::exit(run_run_vm(Path::new(&args[0])));
+            std::process::exit(run_run_vm(Path::new(&args[0]), vec![]));
         }
         std::process::exit(run_run(Path::new(&args[0])));
     }
@@ -1115,7 +1115,12 @@ fn vm_error_to_diagnostic(
     Diagnostic::new_with_code(Severity::Error, "VM", "runtime-error", &message, span)
 }
 
-fn run_run_vm(path: &std::path::Path) -> i32 {
+fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
+    use goblin_vm::compiler::Compiler;
+    use goblin_vm::exec::compile_class_methods_pub;
+    use goblin_vm::session::{GcMode, Session};
+    use goblin_vm::vm::Vm;
+    use goblin_vm::value::Value as VmValue;
     use std::time::Instant;
 
     let src = match std::fs::read_to_string(path) {
@@ -1128,10 +1133,78 @@ fn run_run_vm(path: &std::path::Path) -> i32 {
 
     let filepath = path.display().to_string();
     let start = Instant::now();
-    let result = goblin_vm::exec::execute_source(&src);
-    let elapsed = start.elapsed();
 
-    let code = match result {
+    let tokens = match goblin_lexer::lex(&src, &filepath) {
+        Ok(t) => t,
+        Err(diags) => {
+            for d in &diags { eprintln!("{}", d); }
+            return 1;
+        }
+    };
+    let module = match goblin_parser::Parser::new(&tokens).parse_module() {
+        Ok(m) => m,
+        Err(diags) => {
+            for d in &diags { eprintln!("{}", d); }
+            return 1;
+        }
+    };
+    let compiled = match Compiler::new().with_globals(&["args"]).for_file(&filepath).compile_module(&module) {
+        Ok(c) => c,
+        Err(e) => {
+            let diag = vm_error_to_diagnostic(&e, &filepath, &src);
+            eprintln!("{}", diag);
+            return 1;
+        }
+    };
+
+    let project_root = path.parent()
+        .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let box_toml_path = project_root.join("box.toml");
+
+    let mut session = Session::new(GcMode::Auto);
+    session.global_names = compiled.global_names;
+    session.project_root = project_root.clone();
+    session.base_dir     = project_root;
+
+    // Load box.toml if present — populates session.box_store
+    if box_toml_path.exists() {
+        if let Err(e) = goblin_vm::exec::load_box_toml_into_session(&mut session, &box_toml_path) {
+            eprintln!("box.toml error: {}", e);
+            return 1;
+        }
+    }
+
+    for decl in &compiled.classes { compile_class_methods_pub(decl, &mut session); }
+    for decl in compiled.classes {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+            if let Some(existing) = session.classes.get(&decl.name) {
+                let mut m = decl.clone();
+                m.actions = existing.actions.clone();
+                m.decision = existing.decision.clone();
+                m.judge = existing.judge.clone();
+                m.transitions = existing.transitions.clone();
+                if m.capacity.is_none() { m.capacity = existing.capacity.clone(); }
+                let matrix_names: std::collections::HashSet<String> = m.fields.iter().map(|f| f.name.clone()).collect();
+                let extra: Vec<_> = existing.fields.iter().filter(|f| !matrix_names.contains(&f.name)).cloned().collect();
+                m.fields.extend(extra);
+                m
+            } else { decl }
+        } else { decl };
+        session.classes.insert(merged.name.clone(), merged);
+    }
+    for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
+
+    // Inject CLI args
+    if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
+        let args_val = VmValue::Array(extra_args.into_iter().map(VmValue::Str).collect());
+        let tether = session.alloc_value(args_val);
+        session.set_global(idx, tether);
+    }
+
+    let mut vm = Vm::new(session);
+    let code = match vm.execute(compiled.entry) {
         Ok(_) => 0,
         Err(e) => {
             let diag = vm_error_to_diagnostic(&e, &filepath, &src);
@@ -1140,6 +1213,7 @@ fn run_run_vm(path: &std::path::Path) -> i32 {
         }
     };
 
+    let elapsed = start.elapsed();
     eprintln!(
         "goblin run --vm {} → exit {} in {}ms ({}.{:03}s)",
         path.display(), code,
@@ -1201,21 +1275,57 @@ fn run_repl_vm() -> i32 {
                     let starts_block = |kw: &str| -> bool {
                         src_line == kw || (src_line.starts_with(kw) && src_line[kw.len()..].starts_with(char::is_whitespace))
                     };
+                    let mut opened_by_kw = false;
                     if (starts_block("if") || starts_block("unless") || starts_block("while")
                         || starts_block("for") || starts_block("repeat") || starts_block("attempt")
-                        || starts_block("judge") || starts_block("judge_all"))
+                        || starts_block("judge") || starts_block("judge_all")
+                        || starts_block("class") || starts_block("enum"))
                         && !src_line.contains("=>")
                     {
                         depth += 1;
+                        opened_by_kw = true;
                     }
-                    if src_line.starts_with("act ") || src_line.starts_with("act(") {
+                    if src_line.starts_with("act ") || src_line.starts_with("act(")
+                        || src_line.starts_with("action ") || src_line.starts_with("action(")
+                    {
+                        depth += 1;
+                        opened_by_kw = true;
+                    }
+                    // Trailing | opens a block (e.g. <>Character |, myVar | MyType = ... |).
+                    if !opened_by_kw && src_line.ends_with('|') {
                         depth += 1;
                     }
                     if src_line == "end" || src_line == "xx" { depth -= 1; }
                     if depth < 0 { depth = 0; }
                 }
 
-                if depth > 0 { continue; }
+                // Also wait for unmatched open brackets (multiline arrays/maps).
+                let bracket_depth = {
+                    let mut sq: i32 = 0;
+                    let mut cu: i32 = 0;
+                    let mut in_str = false;
+                    let mut str_ch = '"';
+                    let mut esc = false;
+                    for ch in buf.chars() {
+                        if esc { esc = false; continue; }
+                        if in_str {
+                            if ch == '\\' { esc = true; }
+                            else if ch == str_ch { in_str = false; }
+                            continue;
+                        }
+                        match ch {
+                            '"' | '\'' => { in_str = true; str_ch = ch; }
+                            '[' => sq += 1,
+                            ']' => { if sq > 0 { sq -= 1; } }
+                            '{' => cu += 1,
+                            '}' => { if cu > 0 { cu -= 1; } }
+                            _ => {}
+                        }
+                    }
+                    sq + cu
+                };
+
+                if depth > 0 || bracket_depth > 0 { continue; }
 
                 let snippet = buf.trim_end().to_string();
                 buf.clear();
@@ -1489,13 +1599,15 @@ fn run_repl() -> i32 {
                 // Update block depth
                 {
                     let src_line = trimmed.trim_start();
- 
+
                     let starts_block_kw = |kw: &str| -> bool {
                         src_line == kw
                             || (src_line.starts_with(kw)
                                 && src_line[kw.len()..].starts_with(char::is_whitespace))
                     };
- 
+
+                    let mut opened_by_kw = false;
+
                     if starts_block_kw("if")
                         || starts_block_kw("unless")
                         || starts_block_kw("while")
@@ -1504,12 +1616,15 @@ fn run_repl() -> i32 {
                         || starts_block_kw("attempt")
                         || starts_block_kw("judge")
                         || starts_block_kw("judge_all")
+                        || starts_block_kw("class")
+                        || starts_block_kw("enum")
                     {
                         if !src_line.contains("=>") {
                             depth += 1;
+                            opened_by_kw = true;
                         }
                     }
- 
+
                     if src_line.starts_with("act ")
                         || src_line.starts_with("act(")
                         || src_line.starts_with("action ")
@@ -1534,15 +1649,48 @@ fn run_repl() -> i32 {
                         }
                         if !has_eq_outside_parens {
                             depth += 1;
+                            opened_by_kw = true;
                         }
                     }
- 
+
+                    // Trailing | means a block is opening (e.g. <>Character |, myVar | MyType = ... |).
+                    // Only count it when a keyword check didn't already increment depth.
+                    if !opened_by_kw && src_line.ends_with('|') {
+                        depth += 1;
+                    }
+
                     if src_line == "end" { depth -= 1; }
                     if src_line == "xx"  { depth -= 1; }
                     if depth < 0 { depth = 0; }
                 }
- 
-                if depth > 0 {
+
+                // Also wait while there are unmatched open brackets (multiline arrays/maps).
+                let bracket_depth = {
+                    let mut sq: i32 = 0;
+                    let mut cu: i32 = 0;
+                    let mut in_str = false;
+                    let mut str_ch = '"';
+                    let mut esc = false;
+                    for ch in buf.chars() {
+                        if esc { esc = false; continue; }
+                        if in_str {
+                            if ch == '\\' { esc = true; }
+                            else if ch == str_ch { in_str = false; }
+                            continue;
+                        }
+                        match ch {
+                            '"' | '\'' => { in_str = true; str_ch = ch; }
+                            '[' => sq += 1,
+                            ']' => { if sq > 0 { sq -= 1; } }
+                            '{' => cu += 1,
+                            '}' => { if cu > 0 { cu -= 1; } }
+                            _ => {}
+                        }
+                    }
+                    sq + cu
+                };
+
+                if depth > 0 || bracket_depth > 0 {
                     continue;
                 }
  
