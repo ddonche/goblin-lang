@@ -164,6 +164,11 @@ pub enum Opcode {
     /// Pushes nothing (import is for side effects / populating globals).
     ImportFile(u16),
 
+    /// `import path as ns` — imports a file and registers all of its top-level
+    /// actions under the namespace alias so `ns::action` dispatch works.
+    /// constants[path_idx] = file path, constants[ns_idx] = namespace alias string.
+    ImportFileAs(u16, u16),
+
     /// Load a GLAM: constants[ns_idx] is the glam namespace string.
     /// Reads glams/<ns>/glam.toml (if present) to populate session.action_needs,
     /// then imports glams/<ns>/<ns>.gbln with owner_glam = Some(ns) stamped onto
@@ -308,6 +313,7 @@ impl Opcode {
             Opcode::TryBegin(_)       => "TryBegin",
             Opcode::TryEnd            => "TryEnd",
             Opcode::ImportFile(_)     => "ImportFile",
+            Opcode::ImportFileAs(..)  => "ImportFileAs",
             Opcode::UseGlam(_)        => "UseGlam",
             Opcode::OverlayDef(_)     => "OverlayDef",
             Opcode::OverlayApply {..} => "OverlayApply",

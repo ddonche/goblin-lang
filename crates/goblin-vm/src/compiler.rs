@@ -681,8 +681,15 @@ impl Compiler {
                         } else {
                             format!("{}.gbln", path.replace('/', std::path::MAIN_SEPARATOR_STR))
                         };
-                        let idx = self.add_constant(Value::Str(resolved));
-                        self.emit(Opcode::ImportFile(idx));
+                        let path_idx = self.add_constant(Value::Str(resolved));
+                        if let Some(alias) = &import_stmt.alias {
+                            // `import path as ns` — register actions under the alias namespace
+                            // so that `ns::action(...)` dispatch works (same as GLAM `use`).
+                            let ns_idx = self.add_constant(Value::Str(alias.clone()));
+                            self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
+                        } else {
+                            self.emit(Opcode::ImportFile(path_idx));
+                        }
                     }
                     ImportItems::Named { items, source } => {
                         // import { a, b } from source — import the source file

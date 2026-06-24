@@ -1570,7 +1570,67 @@ impl Vm {
                     self.session.project_root.join(&path_str)
                 };
 
-                self.import_file(full_path, None, std::collections::HashMap::new())?;
+                // Clear current_glam_ns while processing an `import` statement so that
+                // actions in the imported file are NOT registered under the importing GLAM's
+                // namespace. `import` is a file merge, not a namespace load — if the user
+                // wants namespace registration they should use `use "ns"` instead.
+                let prev_ns = self.session.current_glam_ns.take();
+                let r = self.import_file(full_path, None, std::collections::HashMap::new());
+                self.session.current_glam_ns = prev_ns;
+                r?;
+            }
+
+            Opcode::ImportFileAs(path_idx, ns_idx) => {
+                // `import path as ns` — imports the file and registers all top-level
+                // actions under the namespace alias so `ns::action(...)` dispatch works.
+                let (path_str, ns) = {
+                    let frame = self.call_stack.last().ok_or_else(|| GoblinError::Runtime("no call frame".into()))?;
+                    let path = match &frame.func.constants[path_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("ImportFileAs: path must be a string constant".into())),
+                    };
+                    let ns = match &frame.func.constants[ns_idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Err(GoblinError::Runtime("ImportFileAs: namespace must be a string constant".into())),
+                    };
+                    (path, ns)
+                };
+
+                let in_glam = self.call_stack.last()
+                    .map(|f| f.func.owner_glam.is_some())
+                    .unwrap_or(false);
+                let full_path = if std::path::Path::new(&path_str).is_absolute() {
+                    std::path::PathBuf::from(&path_str)
+                } else if in_glam {
+                    self.session.base_dir.join(&path_str)
+                } else {
+                    self.session.project_root.join(&path_str)
+                };
+
+                // Run with current_glam_ns = Some(alias) so RegisterAction registers
+                // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
+                let prev_ns = self.session.current_glam_ns.take();
+                self.session.current_glam_ns = Some(ns.clone());
+                let r = self.import_file(full_path.clone(), None, std::collections::HashMap::new());
+                self.session.current_glam_ns = prev_ns;
+                r?;
+
+                // Retroactively register qualified names in case the import guard fired.
+                let module_dir = full_path.parent()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                let pairs: Vec<(String, Value)> = self.session.action_file_map
+                    .iter()
+                    .filter(|(file, _)| {
+                        let f = file.replace('\\', "/");
+                        f.contains(&module_dir) || f == full_path.to_string_lossy().replace('\\', "/")
+                    })
+                    .flat_map(|(_, pairs)| pairs.iter().cloned())
+                    .collect();
+                for (bare_name, val) in pairs {
+                    let qualified = format!("{}::{}", ns, bare_name);
+                    self.session.named_values.entry(qualified).or_insert(val);
+                }
             }
 
             Opcode::UseGlam(ns_idx) => {
@@ -2388,7 +2448,36 @@ impl Vm {
 
     /// Call a named function from session.named_values and return its result.
     pub(crate) fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
+        // 1. Try exact qualified name ("stagehand::copy_assets").
+        // 2. If not found and name contains ::, try registering from action_file_map
+        //    then try the bare suffix ("copy_assets") as a fallback.
+        //    This handles GLAMs whose qualified names weren't registered because their
+        //    file was loaded via `import` (not `use`) or before `use "ns"` ran.
         let func_val = self.session.named_values.get(name).cloned()
+            .or_else(|| {
+                // Retroactive scan: if name is "ns::bare", look for files in glams/ns/
+                // that registered "bare" and haven't yet been wired up under the qualified key.
+                if let Some((ns, bare)) = name.split_once("::") {
+                    let glam_dir = self.session.project_root
+                        .join("glams").join(ns)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let candidate: Option<Value> = self.session.action_file_map
+                        .iter()
+                        .filter(|(file, _)| file.replace('\\', "/").contains(&glam_dir))
+                        .find_map(|(_, pairs)| {
+                            pairs.iter().find(|(n, _)| n == bare).map(|(_, v)| v.clone())
+                        });
+                    if let Some(val) = candidate {
+                        self.session.named_values.insert(name.to_string(), val.clone());
+                        return Some(val);
+                    }
+                    // Last resort: bare name lookup (pre-existing flat-registry limitation)
+                    self.session.named_values.get(bare).cloned()
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| GoblinError::Runtime(format!("invoke: unknown action '{name}'")))?;
         let (func_rc, upvalues) = match func_val {
             Value::Function(f) => (f, Vec::new()),
