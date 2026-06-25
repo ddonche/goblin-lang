@@ -3216,17 +3216,13 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
         BuiltinId::PathNormalize => {
             expect_n(1)?;
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_normalize")) };
-            // Lexical normalization: resolve . and .. without FS access
-            let mut out: Vec<&str> = Vec::new();
-            let normalized = path.replace('\\', "/");
-            for seg in normalized.split('/') {
-                match seg {
-                    "" | "." => {}
-                    ".." => { out.pop(); }
-                    s => out.push(s),
-                }
-            }
-            Ok(Value::Str(out.join("/")))
+            // Match interpreter behavior: normalize separators only, no lexical .. resolution.
+            // Interpreter uses dunce::simplified (strips \\?\ prefix on Windows, no-op otherwise)
+            // then replaces \ with /. Preserve relative components like . and .. as-is.
+            let p = std::path::Path::new(&path);
+            let s = p.to_string_lossy();
+            let stripped = s.strip_prefix("\\\\?\\").unwrap_or(&s);
+            Ok(Value::Str(stripped.replace('\\', "/")))
         }
         BuiltinId::PathRelativeTo => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "path_relative_to".into() }); }
