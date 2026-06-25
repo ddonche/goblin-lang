@@ -2869,6 +2869,33 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             Err(GoblinError::NotImplemented { feature: "higher-order map/filter/reduce require VM callback support" })
         }
 
+        // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
+        BuiltinId::ToForIter => {
+            let v = read(0)?;
+            let arr = match v {
+                Value::Array(xs) => Value::Array(xs),
+                Value::Collection(c) => {
+                    if crate::collections::is_map_collection(&c) {
+                        Value::Array(crate::collections::to_pairs(&c).into_iter()
+                            .map(|(k, v)| Value::Array(vec![k, v]))
+                            .collect())
+                    } else {
+                        Value::Array(crate::collections::to_vec(&c))
+                    }
+                }
+                Value::Map(m) => Value::Array(m.into_iter()
+                    .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
+                    .collect()),
+                Value::MapOrd(m) => Value::Array(m.into_iter()
+                    .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
+                    .collect()),
+                Value::Str(s) => Value::Array(s.chars().map(Value::Char).collect()),
+                Value::Nil => Value::Array(Vec::new()),
+                other => return Err(GoblinError::type_error("array/map/string", other.type_name(), "for..in")),
+            };
+            Ok(arr)
+        }
+
         BuiltinId::IsType => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "is_type".into() }); }
             let recv = read(0)?;

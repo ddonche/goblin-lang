@@ -1094,7 +1094,7 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
                 other => value_to_map_key(other)
                     .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?,
             };
-            m.get(&k).cloned().ok_or(GoblinError::KeyNotFound)
+            Ok(m.get(&k).cloned().unwrap_or(Value::Nil))
         }
         Value::MapOrd(m) => {
             let k = match key {
@@ -1102,15 +1102,15 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
                 other => value_to_map_key(other)
                     .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?,
             };
-            m.get(&k).cloned().ok_or(GoblinError::KeyNotFound)
+            Ok(m.get(&k).cloned().unwrap_or(Value::Nil))
         }
         Value::Collection(c) => {
             if is_map(c) {
                 let pairs = to_pairs(c);
-                pairs.into_iter()
+                Ok(pairs.into_iter()
                     .find(|(k, _)| k == key)
                     .map(|(_, v)| v)
-                    .ok_or(GoblinError::KeyNotFound)
+                    .unwrap_or(Value::Nil))
             } else {
                 let idx = match key {
                     Value::Int(n) => *n,
