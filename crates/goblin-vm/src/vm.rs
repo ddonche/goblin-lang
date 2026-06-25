@@ -2586,14 +2586,9 @@ impl Vm {
                 }
                 Ok(Value::MapOrd(out))
             }
-            Value::Str(s) => {
-                let mut out = Vec::new();
-                for c in s.chars() {
-                    let cv = Value::Char(c);
-                    if self.vm_where_match(pred, is_literal, &cv)? { out.push(cv); }
-                }
-                Ok(Value::Array(out))
-            }
+            Value::Str(_) => Err(GoblinError::Runtime(
+                "get/reap/put with 'where' is not supported for strings; use update_where!/delete_where! instead".into()
+            )),
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
                 let mut out = Vec::new();
@@ -2631,11 +2626,8 @@ impl Vm {
                 Ok(Value::MapOrd(out))
             }
             Value::Str(s) => {
-                let mut out = String::new();
-                for c in s.chars() {
-                    if !self.vm_where_match(pred, is_literal, &Value::Char(c))? { out.push(c); }
-                }
-                Ok(Value::Str(out))
+                // delete_where on a string: always literal substring removal, pred is the needle
+                Ok(Value::Str(s.replace(pred, "")))
             }
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
@@ -2678,20 +2670,13 @@ impl Vm {
                 Ok(Value::MapOrd(out))
             }
             Value::Str(s) => {
+                // update_where on a string: always literal substring replace, pred is the needle
                 let repl = match &new_val {
                     Value::Str(r) => r.clone(),
                     Value::Char(c) => c.to_string(),
-                    _ => return Err(GoblinError::type_error("str or char", new_val.type_name(), "update_where on string")),
+                    _ => return Err(GoblinError::type_error("str", new_val.type_name(), "update_where on string")),
                 };
-                let mut out = String::new();
-                for c in s.chars() {
-                    if self.vm_where_match(pred, is_literal, &Value::Char(c))? {
-                        out.push_str(&repl);
-                    } else {
-                        out.push(c);
-                    }
-                }
-                Ok(Value::Str(out))
+                Ok(Value::Str(s.replace(pred, &repl)))
             }
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
@@ -2730,6 +2715,9 @@ impl Vm {
                 Ok(Value::Array(out))
             }
             Value::Map(_) | Value::MapOrd(_) => Err(GoblinError::Runtime("put_where is not meaningful for maps".into())),
+            Value::Str(_) => Err(GoblinError::Runtime(
+                "get/reap/put with 'where' is not supported for strings; use update_where!/delete_where! instead".into()
+            )),
             other => Err(GoblinError::type_error("array", other.type_name(), "put_where")),
         }
     }
