@@ -1,4 +1,4 @@
-//! actions/files.rs — file/path/uuid/html helpers
+//! actions/files.rs - file/path/uuid/html helpers
 
 use crate::{Session, Value, Diag, Span};
 use crate::diagnostics::rtcode;
@@ -25,7 +25,7 @@ pub fn file_exists(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Val
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘file_exists’ takes exactly 1 argument.")
+            .with_help("'file_exists' takes exactly 1 argument.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -43,10 +43,10 @@ pub fn create_dir(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Val
             Severity::Error,
             rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
-            "‘create_dir’ requires the bang form: use create_dir!(…)",
+            "'create_dir' requires the bang form: use create_dir!(…)",
             sp.clone(),
         )
-        .with_help("Append ‘!’ to create directories, e.g., create_dir!(path).")
+        .with_help("Append '!' to create directories, e.g., create_dir!(path).")
         .with_link("https://goblinlang.org/docs/errors#M0001"),
     )
 }
@@ -57,10 +57,10 @@ pub fn zip_dir(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Value,
             Severity::Error,
             rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
-            "‘zip_dir’ requires the bang form: use zip_dir!(…)",
+            "'zip_dir' requires the bang form: use zip_dir!(…)",
             sp.clone(),
         )
-        .with_help("Append ‘!’ to create zip archives, e.g., zip_dir!(src, dst).")
+        .with_help("Append '!' to create zip archives, e.g., zip_dir!(src, dst).")
         .with_link("https://goblinlang.org/docs/errors#M0001"),
     )
 }
@@ -71,10 +71,10 @@ pub fn write_text(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Val
             Severity::Error,
             rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
-            "‘write_text’ requires the bang form: use write_text!(…)",
+            "'write_text' requires the bang form: use write_text!(…)",
             sp.clone(),
         )
-        .with_help("Append ‘!’ to write files, e.g., write_text!(path, text).")
+        .with_help("Append '!' to write files, e.g., write_text!(path, text).")
         .with_link("https://goblinlang.org/docs/errors#M0001"),
     )
 }
@@ -103,10 +103,10 @@ pub fn delete_path(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Va
             Severity::Error,
             rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
-            "‘delete_path’ requires the bang form: use delete_path!(…)",
+            "'delete_path' requires the bang form: use delete_path!(…)",
             sp.clone(),
         )
-        .with_help("Append ‘!’ to delete files or directories, e.g., delete_path!(path).")
+        .with_help("Append '!' to delete files or directories, e.g., delete_path!(path).")
         .with_link("https://goblinlang.org/docs/errors#M0001"),
     )
 }
@@ -156,10 +156,10 @@ pub fn copy_file(_sess: &mut Session, _args: &[Value], sp: &Span) -> Result<Valu
             Severity::Error,
             rtcode::MUTATION_OPERATOR_REQUIRED,
             "mutation-operator-required",
-            "‘copy_file’ requires the bang form: use copy_file!(…)",
+            "'copy_file' requires the bang form: use copy_file!(…)",
             sp.clone(),
         )
-        .with_help("Append ‘!’ to copy files, e.g., copy_file!(src, dst).")
+        .with_help("Append '!' to copy files, e.g., copy_file!(src, dst).")
         .with_link("https://goblinlang.org/docs/errors#M0001"),
     )
 }
@@ -254,7 +254,7 @@ pub fn path_join(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value
                 &format!("Wrong number of arguments (expected 2, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘path_join(a,b)’ joins two paths safely.")
+            .with_help("'path_join(a,b)' joins two paths safely.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -281,7 +281,7 @@ pub fn basename(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value,
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘basename(path)’ takes exactly 1 argument.")
+            .with_help("'basename(path)' takes exactly 1 argument.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -293,8 +293,67 @@ pub fn basename(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value,
 }
 
 // ==========================================================
-// path_normalize(path)
+// path_fix_separators(path)
 // ==========================================================
+
+pub fn path_fix_separators(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
+    if args.len() != 1 {
+        return Err(
+            Diagnostic::new_with_code(
+                Severity::Error,
+                rtcode::WRONG_ARITY,
+                "wrong-arity",
+                &format!("Wrong number of arguments (expected 1, got {})", args.len()),
+                sp.clone(),
+            )
+            .with_help("'path_fix_separators(path)' takes exactly 1 argument.")
+            .with_link("https://goblinlang.org/docs/errors#R0301"),
+        );
+    }
+
+    let path = want_str(&args[0], "path_fix_separators", sp)?;
+    let simplified = dunce::simplified(Path::new(path));
+    let normalized = simplified.to_string_lossy().replace('\\', "/");
+    Ok(Value::Str(normalized))
+}
+
+// ==========================================================
+// path_normalize(path) - full lexical normalization
+// ==========================================================
+
+fn lexical_path_normalize(path: &str) -> String {
+    let simplified = dunce::simplified(Path::new(path));
+    let s = simplified.to_string_lossy();
+    let normalized = s.replace('\\', "/");
+
+    let is_absolute = normalized.starts_with('/');
+    let work = if is_absolute { &normalized[1..] } else { &normalized[..] };
+
+    let mut out: Vec<&str> = Vec::new();
+    for seg in work.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if is_absolute {
+                    out.pop();
+                } else if out.last().map_or(true, |s| *s == "..") {
+                    out.push("..");
+                } else {
+                    out.pop();
+                }
+            }
+            s => out.push(s),
+        }
+    }
+
+    if is_absolute {
+        if out.is_empty() { "/".to_string() } else { format!("/{}", out.join("/")) }
+    } else if out.is_empty() {
+        ".".to_string()
+    } else {
+        out.join("/")
+    }
+}
 
 pub fn path_normalize(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
     if args.len() != 1 {
@@ -306,15 +365,13 @@ pub fn path_normalize(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘path_normalize(path)’ takes exactly 1 argument.")
+            .with_help("'path_normalize(path)' takes exactly 1 argument.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
 
     let path = want_str(&args[0], "path_normalize", sp)?;
-    let simplified = dunce::simplified(Path::new(path));
-    let normalized = simplified.to_string_lossy().replace('\\', "/");
-    Ok(Value::Str(normalized))
+    Ok(Value::Str(lexical_path_normalize(path)))
 }
 
 // ==========================================================
@@ -331,7 +388,7 @@ pub fn is_file(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘is_file(path)’ takes exactly 1 argument.")
+            .with_help("'is_file(path)' takes exactly 1 argument.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -350,7 +407,7 @@ pub fn is_dir(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, D
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘is_dir(path)’ takes exactly 1 argument.")
+            .with_help("'is_dir(path)' takes exactly 1 argument.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -373,7 +430,7 @@ pub fn path_split(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Valu
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘path_split(path)’ takes exactly 1 argument.")
+            .with_help("'path_split(path)' takes exactly 1 argument.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -400,7 +457,7 @@ pub fn path_relative_to(_sess: &mut Session, args: &[Value], sp: &Span) -> Resul
                 &format!("Wrong number of arguments (expected 2, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘path_relative_to(path, base)’ takes exactly 2 arguments.")
+            .with_help("'path_relative_to(path, base)' takes exactly 2 arguments.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -428,7 +485,7 @@ pub fn walk(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Dia
                 &format!("Wrong number of arguments (expected 1–2, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘walk(dir, pattern?)’ takes 1 or 2 arguments.")
+            .with_help("'walk(dir, pattern?)' takes 1 or 2 arguments.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -536,7 +593,7 @@ pub fn escape_html(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Val
                 &format!("Wrong number of arguments (expected 1, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘escape_html(text)’ takes exactly 1 argument.")
+            .with_help("'escape_html(text)' takes exactly 1 argument.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -570,7 +627,7 @@ pub fn uuid_v4(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
                 &format!("Wrong number of arguments (expected 0, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘uuid_v4’ takes no arguments.")
+            .with_help("'uuid_v4' takes no arguments.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -587,7 +644,7 @@ pub fn uuid_v7(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
                 &format!("Wrong number of arguments (expected 0, got {})", args.len()),
                 sp.clone(),
             )
-            .with_help("‘uuid_v7’ takes no arguments.")
+            .with_help("'uuid_v7' takes no arguments.")
             .with_link("https://goblinlang.org/docs/errors#R0301"),
         );
     }
@@ -595,7 +652,7 @@ pub fn uuid_v7(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, 
 }
 
 // ==========================================================
-// pathfind(from, to, mode?)  — NEW BUILTIN
+// pathfind(from, to, mode?)  - NEW BUILTIN
 // ==========================================================
 
 /// pathfind(from, to, mode?) -> Str
