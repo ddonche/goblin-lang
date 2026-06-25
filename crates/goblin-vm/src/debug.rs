@@ -114,11 +114,9 @@ pub fn dump_vm(vm: &Vm) {
         }
     }
     eprintln!("  operand stack ({} items):", vm.stack.len());
-    for (i, t) in vm.stack.iter().enumerate().rev() {
-        let val = vm.session.read_value(t)
-            .map(|v| format_value(&v))
-            .unwrap_or_else(|e| format!("<err: {}>", e));
-        eprintln!("    [{i}] {:?} = {val}", t.addr);
+    for (i, v) in vm.stack.iter().enumerate().rev() {
+        let val = format_value(v);
+        eprintln!("    [{i}] {val}");
     }
 }
 
