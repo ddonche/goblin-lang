@@ -2685,6 +2685,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "path_join"                      => BuiltinId::PathJoin,
         "path_split"                     => BuiltinId::PathSplit,
         "path_normalize"                 => BuiltinId::PathNormalize,
+        "path_fix_separators"            => BuiltinId::PathFixSeparators,
         "path_relative_to"               => BuiltinId::PathRelativeTo,
         "walk"                           => BuiltinId::Walk,
         "list_dirs"                      => BuiltinId::ListDirs,

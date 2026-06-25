@@ -679,6 +679,7 @@ pub enum BuiltinId {
     PathJoin,
     PathSplit,
     PathNormalize,
+    PathFixSeparators,
     PathRelativeTo,
     Walk,
     ListDirs,

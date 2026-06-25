@@ -3213,16 +3213,18 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
                 .collect();
             Ok(Value::Array(comps))
         }
-        BuiltinId::PathNormalize => {
+        BuiltinId::PathFixSeparators => {
             expect_n(1)?;
-            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_normalize")) };
-            // Match interpreter behavior: normalize separators only, no lexical .. resolution.
-            // Interpreter uses dunce::simplified (strips \\?\ prefix on Windows, no-op otherwise)
-            // then replaces \ with /. Preserve relative components like . and .. as-is.
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_fix_separators")) };
             let p = std::path::Path::new(&path);
             let s = p.to_string_lossy();
             let stripped = s.strip_prefix("\\\\?\\").unwrap_or(&s);
             Ok(Value::Str(stripped.replace('\\', "/")))
+        }
+        BuiltinId::PathNormalize => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "path_normalize")) };
+            Ok(Value::Str(lexical_path_normalize(&path)))
         }
         BuiltinId::PathRelativeTo => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "path_relative_to".into() }); }
@@ -5508,6 +5510,40 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Pair(a, b) => serde_json::Value::Array(vec![value_to_json(a), value_to_json(b)]),
         Value::Nil | Value::Unit => serde_json::Value::Null,
         _ => serde_json::Value::String(fmt_value_raw(v)),
+    }
+}
+
+fn lexical_path_normalize(path: &str) -> String {
+    // Strip Windows extended-length prefix \\?\
+    let path = path.strip_prefix("\\\\?\\").unwrap_or(path);
+    let normalized = path.replace('\\', "/");
+
+    let is_absolute = normalized.starts_with('/');
+    let work = if is_absolute { &normalized[1..] } else { &normalized[..] };
+
+    let mut out: Vec<&str> = Vec::new();
+    for seg in work.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if is_absolute {
+                    out.pop(); // can't go above root
+                } else if out.last().map_or(true, |s| *s == "..") {
+                    out.push(".."); // preserve unresolvable leading ..
+                } else {
+                    out.pop();
+                }
+            }
+            s => out.push(s),
+        }
+    }
+
+    if is_absolute {
+        if out.is_empty() { "/".to_string() } else { format!("/{}", out.join("/")) }
+    } else if out.is_empty() {
+        ".".to_string()
+    } else {
+        out.join("/")
     }
 }
 
