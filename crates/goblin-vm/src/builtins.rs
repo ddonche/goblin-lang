@@ -4405,7 +4405,9 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let ident  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token ident")) };
             match session.token_store.get(&module).and_then(|m| m.get(&ident)) {
                 Some(Value::Str(s)) if s.contains("{#") => {
+                    eprintln!("[VM DEBUG] LiteralToken {module}::{ident} contains {{#...}}, raw = {s:?}");
                     let resolved = resolve_box_template_vm(s, &session.box_store);
+                    eprintln!("[VM DEBUG] LiteralToken resolved = {resolved:?}");
                     Ok(Value::Str(resolved))
                 }
                 Some(v) => Ok(v.clone()),

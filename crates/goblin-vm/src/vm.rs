@@ -1933,7 +1933,15 @@ impl Vm {
                                 out.push_str(&v);
                             }
                         } else {
-                            // not found — keep literal
+                            // not found — emit a diagnostic and keep literal
+                            let ns_prefix = key.split("::").next().unwrap_or("");
+                            let known: Vec<_> = self.session.box_store.keys()
+                                .filter(|k| k.starts_with(&format!("{}::", ns_prefix)))
+                                .cloned().collect();
+                            eprintln!(
+                                "[VM DEBUG] {{#{}}} not in box_store; known keys with prefix '{}::': {:?}",
+                                key, ns_prefix, known
+                            );
                             out.push('{');
                             let raw: String = chars[start..j].iter().collect();
                             out.push_str(&raw);
