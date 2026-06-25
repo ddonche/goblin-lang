@@ -1083,24 +1083,38 @@ fn vm_error_to_diagnostic(
     use goblin_diagnostics::{Diagnostic, Severity, Span};
     use goblin_vm::error::GoblinError;
 
-    // Peel off WithLocation wrappers to get the line number and inner message.
-    fn peel(e: &GoblinError) -> (&GoblinError, u32) {
+    // Peel off WithLocation wrappers to get the innermost file, line, and message.
+    fn peel<'a>(e: &'a GoblinError) -> (&'a GoblinError, u32, &'a str) {
         match e {
-            GoblinError::WithLocation { inner, line, .. } => {
-                let (inner2, inner_line) = peel(inner);
-                (inner2, if inner_line > 0 { inner_line } else { *line })
+            GoblinError::WithLocation { inner, line, file } => {
+                let (inner2, inner_line, inner_file) = peel(inner);
+                let best_line = if inner_line > 0 { inner_line } else { *line };
+                let best_file = if !inner_file.is_empty() { inner_file } else { file.as_str() };
+                (inner2, best_line, best_file)
             }
-            other => (other, 0),
+            other => (other, 0, ""),
         }
     }
-    let (inner, line) = peel(e);
+    let (inner, line, err_file) = peel(e);
     let message = inner.to_string();
+
+    // Use the file from WithLocation if it differs from the entry-point file.
+    let (display_file, display_src_owned);
+    let display_src: &str;
+    if !err_file.is_empty() && err_file != filepath {
+        display_file = err_file;
+        display_src_owned = std::fs::read_to_string(err_file).unwrap_or_default();
+        display_src = &display_src_owned;
+    } else {
+        display_file = filepath;
+        display_src = src;
+    }
 
     // Find byte offset of the start of the given 1-based line.
     let (start_byte, end_byte) = {
         let mut off = 0usize;
         let mut found = (0usize, 0usize);
-        for (i, ln) in src.split('\n').enumerate() {
+        for (i, ln) in display_src.split('\n').enumerate() {
             if i + 1 == line as usize {
                 found = (off, off + ln.len());
                 break;
@@ -1111,7 +1125,7 @@ fn vm_error_to_diagnostic(
     };
 
     let lineno = line.max(1);
-    let span = Span::new(filepath, start_byte, end_byte, lineno, 1, lineno, 1);
+    let span = Span::new(display_file, start_byte, end_byte, lineno, 1, lineno, 1);
     Diagnostic::new_with_code(Severity::Error, "VM", "runtime-error", &message, span)
 }
 
