@@ -1085,7 +1085,7 @@ fn dispatch(id: BuiltinId, args: Vec<Tether>, session: &mut Session) -> Result<V
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "append_file path")) };
             let text = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "append_file text")) };
             use std::io::Write;
-            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| GoblinError::Runtime(format!("append_file: {}", e)))?;
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| GoblinError::Runtime(format!("append_file: {} (path was: {:?})", e, path)))?;
             file.write_all(text.as_bytes()).map_err(|e| GoblinError::Runtime(format!("append_file write: {}", e)))?;
             Ok(Value::Nil)
         }
