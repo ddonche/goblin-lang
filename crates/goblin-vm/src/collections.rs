@@ -967,6 +967,10 @@ fn is_map(coll: &CollectionValue) -> bool {
         CollectionLayout::SmallMap(_) | CollectionLayout::HashMapBackend(_))
 }
 
+pub fn is_map_collection(coll: &CollectionValue) -> bool {
+    is_map(coll)
+}
+
 // ── Build a new CollectionValue from a Vec, respecting adaptive hints ─────────
 
 fn build_seq(items: Vec<Value>, meta: CollectionMeta) -> CollectionValue {

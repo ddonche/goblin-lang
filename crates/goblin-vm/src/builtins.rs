@@ -5467,6 +5467,8 @@ fn json_to_value(v: &serde_json::Value) -> Value {
 }
 
 fn value_to_json(v: &Value) -> serde_json::Value {
+    // Unwrap formatting decorators before serializing, matching interpreter behavior
+    let v = if let Value::Formatted(inner, _) = v { inner.as_ref() } else { v };
     match v {
         Value::Int(i)    => serde_json::Value::Number(serde_json::Number::from(*i)),
         Value::Float(f)  => serde_json::Value::Number(serde_json::Number::from_f64(*f).unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap())),
@@ -5484,6 +5486,19 @@ fn value_to_json(v: &Value) -> serde_json::Value {
             let mut obj = serde_json::Map::new();
             for (k, val) in m.iter() { obj.insert(k.clone(), value_to_json(val)); }
             serde_json::Value::Object(obj)
+        }
+        Value::Collection(c) => {
+            if collections::is_map_collection(c) {
+                let mut obj = serde_json::Map::new();
+                for (k, val) in collections::to_pairs(c) {
+                    if let Some(key) = collections::value_to_map_key(&k) {
+                        obj.insert(key, value_to_json(&val));
+                    }
+                }
+                serde_json::Value::Object(obj)
+            } else {
+                serde_json::Value::Array(collections::to_vec(c).iter().map(value_to_json).collect())
+            }
         }
         Value::Pair(a, b) => serde_json::Value::Array(vec![value_to_json(a), value_to_json(b)]),
         Value::Nil | Value::Unit => serde_json::Value::Null,
