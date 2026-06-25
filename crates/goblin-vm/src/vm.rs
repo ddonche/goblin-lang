@@ -1410,6 +1410,17 @@ impl Vm {
                         return Ok(());
                     }
 
+                    BuiltinId::ResolveToken if arg_tethers.len() == 1 => {
+                        let text = match self.session.read_value(&arg_tethers[0])? {
+                            Value::Str(s) => s,
+                            other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token")),
+                        };
+                        let rendered = self.render_string_interp(&text)?;
+                        let t = self.session.alloc_value(Value::Str(rendered));
+                        self.stack.push(t);
+                        return Ok(());
+                    }
+
                     _ => {}
                 }
 
@@ -1909,6 +1920,47 @@ impl Vm {
                 }
             }
             if chars[i] == '{' {
+                // Triple-brace tokens: {{{MODULE::IDENT}}}
+                if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
+                    let mut j = i + 3;
+                    let mut found = false;
+                    while j + 2 < chars.len() {
+                        if chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}' {
+                            found = true;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if found {
+                        let inner: String = chars[i + 3..j].iter().collect();
+                        let inner_trim = inner.trim();
+                        if let Some(pos) = inner_trim.find("::") {
+                            let module = inner_trim[..pos].trim();
+                            let ident  = inner_trim[pos + 2..].trim();
+                            let val = self.session.token_store.get(module)
+                                .or_else(|| self.session.token_store.get(&module.to_ascii_uppercase()))
+                                .and_then(|m| m.get(ident))
+                                .cloned();
+                            if let Some(v) = val {
+                                out.push_str(&crate::builtins::fmt_value_raw(&v));
+                            } else {
+                                out.push_str("{{{");
+                                out.push_str(inner_trim);
+                                out.push_str("}}}");
+                            }
+                        } else {
+                            out.push_str("{{{");
+                            out.push_str(inner_trim);
+                            out.push_str("}}}");
+                        }
+                        i = j + 3;
+                        continue;
+                    }
+                    out.push('{');
+                    i += 1;
+                    continue;
+                }
+
                 let start = i + 1;
                 let mut j = start;
                 while j < chars.len() && chars[j] != '}' { j += 1; }
