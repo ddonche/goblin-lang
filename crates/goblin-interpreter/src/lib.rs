@@ -875,9 +875,10 @@ pub fn load_glam_box_toml(
             for item in vals {
                 match item {
                     toml::Value::String(s) => {
-                        // Strip leading # if present
-                        let key = s.trim_start_matches('#').to_string();
-                        set.insert(key);
+                        // Strip leading # and optional "namespace::" prefix → bare name
+                        let key = s.trim_start_matches('#');
+                        let bare = key.find("::").map(|i| &key[i+2..]).unwrap_or(key);
+                        set.insert(bare.to_string());
                     }
                     other => return Err(format!(
                         "B0105: [provides] values entries must be strings, got: {}", other
