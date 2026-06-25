@@ -101,11 +101,11 @@ struct CatchFrame {
 /// The Goblin VM: executes bytecode against a Session.
 ///
 /// - `session` owns the arena of stashes (isolated per worker).
-/// - `stack` is the operand stack (Tethers).
+/// - `stack` is the operand stack (Values — no arena for transient computations).
 /// - `call_stack` is the function call stack (no Rust recursion).
 pub struct Vm {
     pub session: Session,
-    pub stack: Vec<Tether>,
+    pub stack: Vec<Value>,
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
     gc_op_counter: u32,
@@ -124,11 +124,13 @@ impl Vm {
         self.call_stack.push(frame);
         self.run_loop()?;
         // Return value is the top of the stack (or Nil).
-        if let Some(t) = self.stack.pop() {
-            self.session.read_value(&t)
-        } else {
-            Ok(Value::Nil)
-        }
+        Ok(match self.stack.pop() {
+            Some(Value::Ref(uuid)) => self.session.object_store.get(&uuid)
+                .cloned()
+                .unwrap_or(Value::Nil),
+            Some(v) => v,
+            None => Value::Nil,
+        })
     }
 
     /// Execute a compiled module in REPL mode: runs the bytecode against the
@@ -144,11 +146,13 @@ impl Vm {
         let frame = CallFrame::new(func_rc, Vec::new(), 0);
         self.call_stack.push(frame);
         self.run_loop()?;
-        if let Some(t) = self.stack.pop() {
-            self.session.read_value(&t)
-        } else {
-            Ok(Value::Nil)
-        }
+        Ok(match self.stack.pop() {
+            Some(Value::Ref(uuid)) => self.session.object_store.get(&uuid)
+                .cloned()
+                .unwrap_or(Value::Nil),
+            Some(v) => v,
+            None => Value::Nil,
+        })
     }
 
     // ── Internal execution loop ──────────────────────────────────────────────
@@ -170,11 +174,10 @@ impl Vm {
                 };
                 if frame.ip >= frame.func.bytecode.len() {
                     // Implicit return Nil at end of bytecode.
-                    let nil_t = self.session.alloc_value(Value::Nil);
                     let stack_base = frame.stack_base;
                     self.call_stack.pop();
                     self.stack.truncate(stack_base);
-                    self.stack.push(nil_t);
+                    self.stack.push(Value::Nil);
                     if self.call_stack.is_empty() {
                         break;
                     }
@@ -197,8 +200,7 @@ impl Vm {
                         self.stack.truncate(handler.stack_depth);
                         // Push error message as a string
                         let err_str = e.to_string();
-                        let t = self.session.alloc_value(Value::Str(err_str));
-                        self.stack.push(t);
+                        self.stack.push(Value::Str(err_str));
                         // Jump to catch block
                         if let Some(frame) = self.call_stack.last_mut() {
                             frame.ip = handler.catch_ip;
@@ -235,48 +237,42 @@ impl Vm {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone()
                 };
-                let t = self.session.alloc_value(val);
-                self.stack.push(t);
+                self.stack.push(val);
             }
             Opcode::LoadNil => {
-                let t = self.session.alloc_value(Value::Nil);
-                self.stack.push(t);
+                self.stack.push(Value::Nil);
             }
             Opcode::LoadUnit => {
-                self.stack.push(self.session.alloc_value(Value::Unit));
+                self.stack.push(Value::Unit);
             }
             Opcode::LoadTrue => {
-                let t = self.session.alloc_value(Value::Bool(true));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(true));
             }
             Opcode::LoadFalse => {
-                let t = self.session.alloc_value(Value::Bool(false));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(false));
             }
 
             // ── Locals ──────────────────────────────────────────────────────
             Opcode::LoadLocal(slot) => {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
-                self.stack.push(t);
+                let v = self.session.read_value(&t)?;
+                self.stack.push(v);
             }
             Opcode::StoreLocal(slot) => {
-                let t = self.stack_pop()?;
+                let val = self.stack_pop()?;
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
-                let t = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
-                    let val = self.session.read_value(&t)?;
-                    let cast = crate::builtins::cast_value_to_lock(val, &lock)?;
-                    self.session.alloc_value(cast)
+                let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    crate::builtins::cast_value_to_lock(val, &lock)?
                 } else {
-                    t
+                    val
                 };
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
-                    // Mirror interpreter: store object in object_store, put Ref in slot.
+                // Mirror interpreter: store Object in object_store, put Ref in slot.
+                let t = if let Value::Object { ref uuid, .. } = val {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
-                    t
+                    self.session.alloc_value(val)
                 };
                 self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
             }
@@ -288,25 +284,23 @@ impl Vm {
                     .ok_or_else(|| GoblinError::Runtime(
                         format!("global slot {idx} is uninitialized")
                     ))?;
-                self.stack.push(t);
+                let v = self.session.read_value(&t)?;
+                self.stack.push(v);
             }
             Opcode::StoreGlobal(idx) => {
-                let t = self.stack_pop()?;
+                let val = self.stack_pop()?;
                 // Retether: if a hard type lock exists for this global, auto-cast the incoming value.
-                let t = if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
-                    let val = self.session.read_value(&t)?;
-                    let cast = crate::builtins::cast_value_to_lock(val, &lock)?;
-                    self.session.alloc_value(cast)
+                let val = if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
+                    crate::builtins::cast_value_to_lock(val, &lock)?
                 } else {
-                    t
+                    val
                 };
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let t = if let Value::Object { ref uuid, .. } = val {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
-                    t
+                    self.session.alloc_value(val)
                 };
                 self.session.set_global(idx as usize, t);
             }
@@ -314,16 +308,15 @@ impl Vm {
             // ── Type-lock opcodes ─────────────────────────────────────────────
             Opcode::StoreLockLocal(slot, ref lock_type) => {
                 let lock_type = lock_type.clone();
-                let t = self.stack_pop()?;
-                let val = self.session.read_value(&t)?;
+                let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
-                let t = self.session.alloc_value(cast);
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let t = if let Value::Object { ref uuid, .. } = cast {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
-                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
-                } else { t };
+                } else {
+                    self.session.alloc_value(cast)
+                };
                 self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
                 let frame = self.call_stack.last_mut().unwrap();
                 frame.set_type_lock(slot, lock_type.clone());
@@ -332,16 +325,15 @@ impl Vm {
 
             Opcode::StoreLockGlobal(idx, ref lock_type) => {
                 let lock_type = lock_type.clone();
-                let t = self.stack_pop()?;
-                let val = self.session.read_value(&t)?;
+                let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
-                let t = self.session.alloc_value(cast);
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let t = if let Value::Object { ref uuid, .. } = cast {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
-                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
-                } else { t };
+                } else {
+                    self.session.alloc_value(cast)
+                };
                 self.session.set_global(idx as usize, t);
                 self.session.global_type_locks.insert(idx as u32, lock_type.clone());
                 self.session.global_hard_type_locks.insert(idx as u32, lock_type);
@@ -361,10 +353,10 @@ impl Vm {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 let val = self.session.read_value(&t)?;
                 let new_val = crate::builtins::cast_value_to_lock(val, &cast_type)?;
-                let new_t = self.session.alloc_value(new_val);
-                self.call_stack.last_mut().unwrap().store_local(slot, new_t.clone(), &mut self.session);
+                let new_t = self.session.alloc_value(new_val.clone());
+                self.call_stack.last_mut().unwrap().store_local(slot, new_t, &mut self.session);
                 self.call_stack.last_mut().unwrap().set_type_lock(slot, cast_type);
-                self.stack.push(new_t);
+                self.stack.push(new_val);
             }
 
             Opcode::CastBangGlobal(idx, ref cast_type) => {
@@ -383,10 +375,10 @@ impl Vm {
                     .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
                 let val = self.session.read_value(&t)?;
                 let new_val = crate::builtins::cast_value_to_lock(val, &cast_type)?;
-                let new_t = self.session.alloc_value(new_val);
-                self.session.set_global(idx as usize, new_t.clone());
+                let new_t = self.session.alloc_value(new_val.clone());
+                self.session.set_global(idx as usize, new_t);
                 self.session.global_type_locks.insert(idx as u32, cast_type);
-                self.stack.push(new_t);
+                self.stack.push(new_val);
             }
 
             Opcode::GetTypeLockLocal(slot) => {
@@ -403,14 +395,12 @@ impl Vm {
                         },
                         _ => lock,
                     };
-                    let result = self.session.alloc_value(Value::Str(label));
-                    self.stack.push(result);
+                    self.stack.push(Value::Str(label));
                 } else {
                     // No lock — fall through to normal type name of the value.
                     let t = self.call_stack.last().unwrap().load_local(slot)?;
                     let val = self.session.read_value(&t)?;
-                    let result = self.session.alloc_value(Value::Str(val.type_name().to_string()));
-                    self.stack.push(result);
+                    self.stack.push(Value::Str(val.type_name().to_string()));
                 }
             }
 
@@ -430,15 +420,13 @@ impl Vm {
                         },
                         _ => lock,
                     };
-                    let result = self.session.alloc_value(Value::Str(label));
-                    self.stack.push(result);
+                    self.stack.push(Value::Str(label));
                 } else {
                     let t = self.session.get_global(idx as usize)
                         .cloned()
                         .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
                     let val = self.session.read_value(&t)?;
-                    let result = self.session.alloc_value(Value::Str(val.type_name().to_string()));
-                    self.stack.push(result);
+                    self.stack.push(Value::Str(val.type_name().to_string()));
                 }
             }
 
@@ -457,8 +445,7 @@ impl Vm {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 let val = self.session.read_value(&t)?;
                 let cast = crate::builtins::cast_value_to_lock(val, &cast_type)?;
-                let result = self.session.alloc_value(cast);
-                self.stack.push(result);
+                self.stack.push(cast);
             }
 
             Opcode::CastMemberGlobal(idx, ref cast_type) => {
@@ -478,8 +465,7 @@ impl Vm {
                     .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
                 let val = self.session.read_value(&t)?;
                 let cast = crate::builtins::cast_value_to_lock(val, &cast_type)?;
-                let result = self.session.alloc_value(cast);
-                self.stack.push(result);
+                self.stack.push(cast);
             }
 
             // ── Upvalues ─────────────────────────────────────────────────────
@@ -488,16 +474,18 @@ impl Vm {
                     .upvalues.get(idx as usize)
                     .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?
                     .get();
-                self.stack.push(t);
+                let v = self.session.read_value(&t)?;
+                self.stack.push(v);
             }
             Opcode::StoreUpvalue(idx) => {
-                let t = self.stack_pop()?;
-                let t = if let Ok(Value::Object { ref uuid, .. }) = self.session.read_value(&t) {
+                let val = self.stack_pop()?;
+                let t = if let Value::Object { ref uuid, .. } = val {
                     let uuid = uuid.clone();
-                    let val = self.session.read_value(&t).unwrap();
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
-                } else { t };
+                } else {
+                    self.session.alloc_value(val)
+                };
                 self.call_stack.last_mut().unwrap()
                     .upvalues.get(idx as usize)
                     .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?
@@ -514,11 +502,25 @@ impl Vm {
             }
 
             // ── overwrite! ───────────────────────────────────────────────────
+            // NOTE: Opcode::Overwrite is dead code (the compiler never emits it).
+            // With Vec<Value> stack, overwrite of named locals requires the slot-based
+            // Overwrite(slot) opcode (future work). This placeholder handles the case
+            // where the target is a Ref in the object_store.
             Opcode::Overwrite => {
-                let new_val_tether = self.stack_pop()?;
-                let target_tether = self.stack_pop()?;
-                let new_val = self.session.read_value(&new_val_tether)?;
-                self.session.overwrite(&target_tether, new_val)?;
+                let new_val = self.stack_pop()?;
+                let target = self.stack_pop()?;
+                match target {
+                    Value::Ref(uuid) => {
+                        if let Some(slot_val) = self.session.object_store.get_mut(&uuid) {
+                            *slot_val = new_val;
+                        }
+                    }
+                    _ => {
+                        return Err(GoblinError::Runtime(
+                            "overwrite!: target must be a Ref (object); slot-based overwrite requires Overwrite(slot) opcode".into()
+                        ));
+                    }
+                }
             }
 
             // ── Arithmetic ───────────────────────────────────────────────────
@@ -552,54 +554,45 @@ impl Vm {
                 let result = if let Some(spec) = a_spec.or(b_spec) {
                     match &raw { Value::Str(_) => raw, _ => Value::Formatted(Box::new(raw), spec) }
                 } else { raw };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::AddInt => {
                 let b = self.pop_int()?;
                 let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(a.wrapping_add(b)));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a.wrapping_add(b)));
             }
             Opcode::AddFloat => {
                 let b = self.pop_float()?;
                 let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a + b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a + b));
             }
             Opcode::Sub => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = self.arith_op(a, b, "sub", |x, y| x - y, |x, y| x - y)?;
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::SubInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(a.wrapping_sub(b)));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a.wrapping_sub(b)));
             }
             Opcode::SubFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a - b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a - b));
             }
             Opcode::Mul => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = self.arith_op(a, b, "mul", |x, y| x * y, |x, y| x * y)?;
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::MulInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(a.wrapping_mul(b)));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a.wrapping_mul(b)));
             }
             Opcode::MulFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a * b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a * b));
             }
             Opcode::Div => {
                 let b = self.pop_value()?;
@@ -628,19 +621,16 @@ impl Vm {
                     (Value::Pct(x), Value::Float(y))   => Value::Pct(x / y),
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "/")),
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::DivInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                let t = self.session.alloc_value(Value::Int(a / b));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a / b));
             }
             Opcode::DivFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(a / b));
-                self.stack.push(t);
+                self.stack.push(Value::Float(a / b));
             }
             Opcode::Rem => {
                 let b = self.pop_value()?;
@@ -653,14 +643,12 @@ impl Vm {
                     (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "%")),
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::RemInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                let t = self.session.alloc_value(Value::Int(a % b));
-                self.stack.push(t);
+                self.stack.push(Value::Int(a % b));
             }
             Opcode::Neg => {
                 let a = self.pop_value()?;
@@ -671,18 +659,15 @@ impl Vm {
                     Value::Pct(x)   => Value::Pct(-x),
                     _ => return Err(GoblinError::type_error("number", a.type_name(), "neg")),
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::NegInt => {
                 let a = self.pop_int()?;
-                let t = self.session.alloc_value(Value::Int(-a));
-                self.stack.push(t);
+                self.stack.push(Value::Int(-a));
             }
             Opcode::NegFloat => {
                 let a = self.pop_float()?;
-                let t = self.session.alloc_value(Value::Float(-a));
-                self.stack.push(t);
+                self.stack.push(Value::Float(-a));
             }
             Opcode::Concat => {
                 // ++ operator: stringify both sides and join with a space
@@ -691,49 +676,41 @@ impl Vm {
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let result = Value::Str(format!("{} {}", a_str, b_str));
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
 
             // ── Comparison ───────────────────────────────────────────────────
             Opcode::Eq => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                let t = self.session.alloc_value(Value::Bool(a == b));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(a == b));
             }
             Opcode::Ne => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                let t = self.session.alloc_value(Value::Bool(a != b));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(a != b));
             }
             Opcode::Lt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<")?;
-                let t = self.session.alloc_value(Value::Bool(result < 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result < 0));
             }
             Opcode::Le => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<=")?;
-                let t = self.session.alloc_value(Value::Bool(result <= 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result <= 0));
             }
             Opcode::Gt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">")?;
-                let t = self.session.alloc_value(Value::Bool(result > 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result > 0));
             }
             Opcode::Ge => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">=")?;
-                let t = self.session.alloc_value(Value::Bool(result >= 0));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(result >= 0));
             }
             Opcode::Not => {
                 let a = self.pop_value()?;
-                let t = self.session.alloc_value(Value::Bool(!a.is_truthy()));
-                self.stack.push(t);
+                self.stack.push(Value::Bool(!a.is_truthy()));
             }
 
             // ── Control flow ─────────────────────────────────────────────────
@@ -760,45 +737,33 @@ impl Vm {
             Opcode::MakeArray(n) => {
                 let count = n as usize;
                 let start = self.stack.len().saturating_sub(count);
-                let mut items = Vec::with_capacity(count);
-                for i in start..self.stack.len() {
-                    let v = self.session.read_value(&self.stack[i])?;
-                    items.push(v);
-                }
-                self.stack.truncate(start);
-                let t = self.session.alloc_value(Value::Collection(Rc::new(CollectionValue::from_flat(items))));
-                self.stack.push(t);
+                let items: Vec<Value> = self.stack.drain(start..).collect();
+                self.stack.push(Value::Collection(Rc::new(CollectionValue::from_flat(items))));
             }
             Opcode::MakeMap(n) => {
                 let pair_count = n as usize;
                 let start = self.stack.len().saturating_sub(pair_count * 2);
+                let flat: Vec<Value> = self.stack.drain(start..).collect();
                 let mut pairs = Vec::with_capacity(pair_count);
-                for i in (start..self.stack.len()).step_by(2) {
-                    if i + 1 < self.stack.len() {
-                        let k = self.session.read_value(&self.stack[i])?;
-                        let v = self.session.read_value(&self.stack[i + 1])?;
-                        pairs.push((k, v));
+                for chunk in flat.chunks(2) {
+                    if let [k, v] = chunk {
+                        pairs.push((k.clone(), v.clone()));
                     }
                 }
-                self.stack.truncate(start);
-                let result = Value::Collection(Rc::new(CollectionValue::from_map(pairs)));
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(Value::Collection(Rc::new(CollectionValue::from_map(pairs))));
             }
             Opcode::GetIndex => {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
             Opcode::SetIndex => {
                 let new_val = self.pop_value()?;
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let updated = crate::collections::set_index(coll_val, &key, new_val)?;
-                let t = self.session.alloc_value(updated);
-                self.stack.push(t);
+                self.stack.push(updated);
             }
 
             // ── TupleBind support ─────────────────────────────────────────────
@@ -810,13 +775,11 @@ impl Vm {
                         let items = crate::collections::to_vec(c);
                         if items.is_empty() {
                             for _ in 0..n {
-                                let t = self.session.alloc_value(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
-                                self.stack.push(t);
+                                self.stack.push(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
                             }
                         } else if items.len() == n {
                             for v in items.into_iter().rev() {
-                                let t = self.session.alloc_value(v);
-                                self.stack.push(t);
+                                self.stack.push(v);
                             }
                         } else {
                             return Err(GoblinError::Runtime(format!(
@@ -828,13 +791,11 @@ impl Vm {
                     Value::Array(arr) => {
                         if arr.is_empty() {
                             for _ in 0..n {
-                                let t = self.session.alloc_value(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
-                                self.stack.push(t);
+                                self.stack.push(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
                             }
                         } else if arr.len() == n {
                             for v in arr.iter().rev() {
-                                let t = self.session.alloc_value(v.clone());
-                                self.stack.push(t);
+                                self.stack.push(v.clone());
                             }
                         } else {
                             return Err(GoblinError::Runtime(format!(
@@ -845,8 +806,7 @@ impl Vm {
                     }
                     other => {
                         for _ in 0..n {
-                            let t = self.session.alloc_value(other.clone());
-                            self.stack.push(t);
+                            self.stack.push(other.clone());
                         }
                     }
                 }
@@ -881,8 +841,8 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("SetField: key must be str, got {}", other.type_name()))),
                 };
                 // The object expression leaves a Ref or Object on the stack.
-                let obj_tether = self.stack_pop()?;
-                let uuid = match self.session.read_value(&obj_tether)? {
+                let obj_val = self.stack_pop()?;
+                let uuid = match obj_val {
                     Value::Ref(u) => u,
                     Value::Object { uuid, .. } => uuid,
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
@@ -896,8 +856,7 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
                 }
                 // Push ref back so caller can chain / store back.
-                let t = self.session.alloc_value(Value::Ref(uuid));
-                self.stack.push(t);
+                self.stack.push(Value::Ref(uuid));
             }
             Opcode::ClassInstantiate(idx) => {
                 let class_name = {
@@ -941,8 +900,7 @@ impl Vm {
                 }
 
                 let obj = Value::Object { class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid };
-                let t = self.session.alloc_value(obj);
-                self.stack.push(t);
+                self.stack.push(obj);
             }
 
             Opcode::CallMethod(name_idx, argc) => {
@@ -956,13 +914,14 @@ impl Vm {
                 let arg_count = argc as usize;
                 // Stack: [recv, arg0, ..., arg_{argc-1}]
                 let recv_idx = self.stack.len() - arg_count - 1;
-                let recv_tether = self.stack[recv_idx].clone();
-                let recv_val = self.session.read_value(&recv_tether)?;
+                let recv_val = self.stack[recv_idx].clone();
 
                 // If receiver is an Object with a compiled method, use it.
-                // Otherwise fall back to builtin dispatch (handles e.g. float.format(), str.split(), etc.)
+                // Otherwise fall back to builtin dispatch.
                 let class_name = match &recv_val {
                     Value::Object { class_name, .. } => Some(class_name.clone()),
+                    Value::Ref(uuid) => self.session.object_store.get(uuid)
+                        .and_then(|v| if let Value::Object { class_name, .. } = v { Some(class_name.clone()) } else { None }),
                     _ => None,
                 };
 
@@ -975,7 +934,7 @@ impl Vm {
                 // If no compiled method found, try builtin dispatch with recv as first arg.
                 if func_rc.is_none() {
                     if let Some(bid) = crate::compiler::builtin_by_name(&method_name) {
-                        let args: Vec<Tether> = self.stack.drain(recv_idx..).collect();
+                        let args: Vec<Value> = self.stack.drain(recv_idx..).collect();
                         let result = crate::builtins::call_builtin(bid, args, &mut self.session)?;
                         self.stack.push(result);
                         return Ok(());
@@ -997,20 +956,13 @@ impl Vm {
                 let mut new_frame = CallFrame::new(func_rc, vec![], stack_base);
 
                 // Move args from stack into frame locals: slot 0 = self (recv), slot 1..n = args
+                // Each arg needs to be allocated into the arena as a Tether for locals.
                 for i in (0..=arg_count).rev() {
-                    let t = self.stack.pop().unwrap();
+                    let v = self.stack.pop().unwrap();
+                    let t = self.session.alloc_value(v);
                     new_frame.locals[i] = Some(t);
                 }
                 self.call_stack.push(new_frame);
-
-                // After the method returns (handled by Opcode::Return), the result is on stack.
-                // To propagate field mutations, we stash the recv_tether so Return can update it.
-                // We encode this by pushing a "self_writeback" marker — but that's complex.
-                // Instead, the method's Return handler will check if the result is an Object
-                // with the same uuid and overwrite the recv_tether.
-                // We store recv_tether in the frame's `self_tether` field for this purpose.
-                let frame = self.call_stack.last_mut().unwrap();
-                frame.self_tether = Some(recv_tether);
             }
 
             Opcode::GetMember(idx) => {
@@ -1024,8 +976,7 @@ impl Vm {
                 } else {
                     crate::collections::get_index(&coll_val, &key)?
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
 
             // ── Function calls ────────────────────────────────────────────────
@@ -1040,23 +991,21 @@ impl Vm {
 
                 // Stack: [..., func, arg0, ..., arg_{argc-1}]
                 let func_idx = self.stack.len() - arg_count - 1;
-                let func_tether = self.stack[func_idx].clone();
-                let func_val = self.session.read_value(&func_tether)?;
+                let func_val = self.stack[func_idx].clone();
 
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
                     let bid = *bid;
-                    let raw_args: Vec<_> = self.stack.drain(func_idx + 1..).collect();
-                    let arg_tethers: Vec<Tether> = raw_args;
+                    let arg_vals: Vec<Value> = self.stack.drain(func_idx + 1..).collect();
                     self.stack.pop(); // pop the func value
-                    let result = crate::builtins::call_builtin(bid, arg_tethers, &mut self.session)?;
+                    let result = crate::builtins::call_builtin(bid, arg_vals, &mut self.session)?;
                     self.stack.push(result);
                 } else {
 
                 let (func_rc, upvalues) = match func_val {
                     Value::Function(f) => (f, Vec::new()),
                     Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
-                    _ => return Err(GoblinError::NotCallable { got: func_val.type_name() }),
+                    other => return Err(GoblinError::NotCallable { got: other.type_name() }),
                 };
 
                 if arg_count != func_rc.params {
@@ -1070,12 +1019,13 @@ impl Vm {
                 let stack_base = func_idx; // caller cleans up from here
                 let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
 
-                // Move args from stack into frame locals.
+                // Move args from stack into frame locals (alloc_value to get Tethers for locals).
                 for i in (0..arg_count).rev() {
-                    let t = self.stack.pop().unwrap();
+                    let v = self.stack.pop().unwrap();
+                    let t = self.session.alloc_value(v);
                     new_frame.locals[i] = Some(t);
                 }
-                // Pop function tether.
+                // Pop function value.
                 self.stack.pop();
 
                 self.call_stack.push(new_frame);
@@ -1086,12 +1036,11 @@ impl Vm {
                 let ret_val = if self.stack.len() > self.call_stack.last().unwrap().stack_base {
                     self.stack.pop().unwrap()
                 } else {
-                    self.session.alloc_value(Value::Nil)
+                    Value::Nil
                 };
 
                 let frame = self.call_stack.pop().unwrap();
                 // Object mutations propagate via object_store (shared Ref semantics).
-                // No explicit self-propagation needed.
                 let _ = frame.self_tether;
 
                 self.stack.truncate(frame.stack_base);
@@ -1105,70 +1054,60 @@ impl Vm {
                     return Err(GoblinError::Runtime("stack underflow on CallBuiltin".into()));
                 }
                 let start = self.stack.len() - arg_count;
-                let arg_tethers: Vec<Tether> = self.stack.drain(start..).collect();
+                let arg_vals: Vec<Value> = self.stack.drain(start..).collect();
 
-                // Special handling for invoke/summon/provoke — these need VM call capability.
+                // Special handling for builtins that need VM call capability.
                 match id {
                     BuiltinId::Invoke => {
-                        let result = self.vm_invoke(arg_tethers)?;
+                        let result = self.vm_invoke(arg_vals)?;
                         self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Summon => {
-                        let result = self.vm_summon(arg_tethers)?;
+                        let result = self.vm_summon(arg_vals)?;
                         self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Provoke => {
-                        let result = self.vm_provoke(arg_tethers)?;
+                        let result = self.vm_provoke(arg_vals)?;
                         self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Need => {
-                        let result = self.vm_need(arg_tethers)?;
+                        let result = self.vm_need(arg_vals)?;
                         self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Tick => {
                         self.vm_tick()?;
-                        let nil = self.session.alloc_value(Value::Nil);
-                        self.stack.push(nil);
+                        self.stack.push(Value::Nil);
                         return Ok(());
                     }
                     BuiltinId::QueryByIdent => {
-                        let name_val = self.session.read_value(&arg_tethers[0])?;
-                        let name = match name_val {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "QueryByIdent")),
+                        let name = match arg_vals.into_iter().next() {
+                            Some(Value::Str(s)) => s,
+                            Some(other) => return Err(GoblinError::type_error("str", other.type_name(), "QueryByIdent")),
+                            None => return Err(GoblinError::Runtime("QueryByIdent: no arg".into())),
                         };
                         let result = self.vm_query_by_ident(&name)?;
                         self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Objects => {
-                        let pred = if arg_tethers.is_empty() {
-                            None
-                        } else {
-                            Some(self.session.read_value(&arg_tethers[0])?)
-                        };
+                        let pred = arg_vals.into_iter().next();
                         let result = self.vm_objects_query(pred)?;
                         self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Overlays => {
-                        let pred = if arg_tethers.is_empty() {
-                            None
-                        } else {
-                            Some(self.session.read_value(&arg_tethers[0])?)
-                        };
+                        let pred = arg_vals.into_iter().next();
                         let result = self.vm_overlays_query(pred)?;
                         self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Gc => {
                         self.vm_gc();
-                        let nil = self.session.alloc_value(Value::Nil);
-                        self.stack.push(nil);
+                        self.stack.push(Value::Nil);
                         return Ok(());
                     }
                     BuiltinId::StashCount => {
@@ -1182,249 +1121,263 @@ impl Vm {
                         map.insert("total".to_string(),     Value::Int(total     as i64));
                         map.insert("live".to_string(),      Value::Int(live      as i64));
                         map.insert("abandoned".to_string(), Value::Int(abandoned as i64));
-                        let result = self.session.alloc_value(Value::MapOrd(map));
-                        self.stack.push(result);
+                        self.stack.push(Value::MapOrd(map));
                         return Ok(());
                     }
                     BuiltinId::TetherCount => {
-                        let slot = if arg_tethers.is_empty() { 0u32 } else { arg_tethers[0].addr.slot };
+                        // TetherCount without slot info is approximate — count all live slots.
                         let live_slots = self.collect_live_slots();
-                        let count = live_slots.iter().filter(|&&s| s == slot).count();
-                        let result = self.session.alloc_value(Value::Int(count as i64));
-                        self.stack.push(result);
+                        let count = live_slots.len();
+                        self.stack.push(Value::Int(count as i64));
                         return Ok(());
                     }
 
                     // ── Map — support user-defined named actions ──────────────
                     BuiltinId::Map => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "map".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "map".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let action_val = self.session.read_value(&arg_tethers[1])?;
-                        let func = match action_val {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = match it.next().unwrap() {
                             Value::Str(s) => Value::Str(s),
                             other => return Err(GoblinError::type_error("str (action name)", other.type_name(), "map")),
                         };
                         let result = self.vm_map_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
 
                     // ── _where family — two-mode predicate (literal or action) ─
                     BuiltinId::GetWhere => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "get_where".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "get_where".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let pred = match it.next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "get_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::DeleteWhere => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "delete_where".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "delete_where".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let pred = match it.next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "delete_where predicate")),
                         };
                         let result = self.vm_where_delete(coll, &pred)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::UpdateWhere => {
-                        if arg_tethers.len() != 3 {
-                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "update_where".into() });
+                        if arg_vals.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_vals.len(), name: "update_where".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let pred = match it.next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "update_where predicate")),
                         };
-                        let new_val = self.session.read_value(&arg_tethers[2])?;
+                        let new_val = it.next().unwrap();
                         let result = self.vm_where_update(coll, &pred, new_val)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::ReapWhere => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "reap_where".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "reap_where".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let pred = match it.next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::ReapWhere2 => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "reap_where".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "reap_where".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let pred = match it.next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::PutWhere => {
-                        if arg_tethers.len() != 3 {
-                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "put_where".into() });
+                        if arg_vals.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_vals.len(), name: "put_where".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let pred = match it.next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "put_where predicate")),
                         };
-                        let new_val = self.session.read_value(&arg_tethers[2])?;
+                        let new_val = it.next().unwrap();
                         let result = self.vm_where_put(coll, &pred, new_val)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::GrabWhere => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "grab_where".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "grab_where".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let pred = match self.session.read_value(&arg_tethers[1])? {
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let pred = match it.next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "grab_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
 
                     // ── Higher-order collection ops ───────────────────────────
                     BuiltinId::Filter => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "filter".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "filter".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_filter_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Reduce => {
-                        if arg_tethers.len() != 3 {
-                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "reduce".into() });
+                        if arg_vals.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_vals.len(), name: "reduce".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let init = self.session.read_value(&arg_tethers[1])?;
-                        let func = self.session.read_value(&arg_tethers[2])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let init = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_reduce_inner(coll, init, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::Any => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "any".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "any".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_any_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::All => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "all".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "all".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_all_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::FindIndex => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "find_index".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "find_index".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_find_index_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::SortBy => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "sort_by".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "sort_by".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_sort_by_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::MapFn => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "map_fn".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "map_fn".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_map_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::FilterFn => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "filter_fn".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "filter_fn".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_filter_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::ReduceFn => {
-                        if arg_tethers.len() != 3 {
-                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_tethers.len(), name: "reduce_fn".into() });
+                        if arg_vals.len() != 3 {
+                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_vals.len(), name: "reduce_fn".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let init = self.session.read_value(&arg_tethers[1])?;
-                        let func = self.session.read_value(&arg_tethers[2])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let init = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_reduce_inner(coll, init, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
                     BuiltinId::ForEachFn => {
-                        if arg_tethers.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "for_each_fn".into() });
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "for_each_fn".into() });
                         }
-                        let coll = self.session.read_value(&arg_tethers[0])?;
-                        let func = self.session.read_value(&arg_tethers[1])?;
+                        let mut it = arg_vals.into_iter();
+                        let coll = it.next().unwrap();
+                        let func = it.next().unwrap();
                         let result = self.vm_for_each_inner(coll, func)?;
-                        self.stack.push(self.session.alloc_value(result));
+                        self.stack.push(result);
                         return Ok(());
                     }
 
-                    BuiltinId::ResolveToken if arg_tethers.len() == 1 => {
-                        let text = match self.session.read_value(&arg_tethers[0])? {
+                    BuiltinId::ResolveToken if arg_vals.len() == 1 => {
+                        let text = match arg_vals.into_iter().next().unwrap() {
                             Value::Str(s) => s,
                             other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token")),
                         };
                         let rendered = self.render_string_interp(&text)?;
-                        let t = self.session.alloc_value(Value::Str(rendered));
-                        self.stack.push(t);
+                        self.stack.push(Value::Str(rendered));
                         return Ok(());
                     }
 
                     _ => {}
                 }
 
-                let result = crate::builtins::call_builtin(id, arg_tethers, &mut self.session)?;
+                let result = crate::builtins::call_builtin(id, arg_vals, &mut self.session)?;
                 self.stack.push(result);
             }
 
@@ -1461,8 +1414,7 @@ impl Vm {
                 }
 
                 let closure = Closure { func: func_rc, upvalues };
-                let t = self.session.alloc_value(Value::Closure(Rc::new(closure)));
-                self.stack.push(t);
+                self.stack.push(Value::Closure(Rc::new(closure)));
             }
 
             Opcode::ToPct => {
@@ -1473,8 +1425,7 @@ impl Vm {
                     Value::Pct(p)   => p,
                     other => return Err(GoblinError::type_error("number", other.type_name(), "%")),
                 };
-                let t = self.session.alloc_value(Value::Pct(f / 100.0));
-                self.stack.push(t);
+                self.stack.push(Value::Pct(f / 100.0));
             }
 
             Opcode::MakePair => {
@@ -1501,8 +1452,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "><")),
                 };
-                let t = self.session.alloc_value(pair);
-                self.stack.push(t);
+                self.stack.push(pair);
             }
 
             Opcode::MakeRange => {
@@ -1516,8 +1466,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "..")),
                 };
-                let t = self.session.alloc_value(Value::Array(v));
-                self.stack.push(t);
+                self.stack.push(Value::Array(v));
             }
 
             Opcode::MakeRangeInclusive => {
@@ -1531,8 +1480,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "...")),
                 };
-                let t = self.session.alloc_value(Value::Array(v));
-                self.stack.push(t);
+                self.stack.push(Value::Array(v));
             }
 
             Opcode::Quick(_) => {
@@ -1825,10 +1773,9 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("RegisterAction: expected str, got {:?}", other.type_name()))),
                 };
                 // Peek at the top of stack without popping.
-                let top_tether = self.stack.last()
+                let value = self.stack.last()
                     .ok_or_else(|| GoblinError::Runtime("RegisterAction: empty stack".into()))?
                     .clone();
-                let value = self.session.read_value(&top_tether)?;
                 // Also register under the qualified name if we're inside a `use glam` import,
                 // so that `ns::action(...)` dispatch works without requiring a flat file layout.
                 if let Some(ref ns) = self.session.current_glam_ns.clone() {
@@ -1859,8 +1806,7 @@ impl Vm {
                 let value = self.session.named_values.get(&name)
                     .ok_or_else(|| GoblinError::UndefinedVariable { name: name.clone() })?
                     .clone();
-                let t = self.session.alloc_value(value);
-                self.stack.push(t);
+                self.stack.push(value);
             }
 
             Opcode::StringInterp(idx) => {
@@ -1872,8 +1818,7 @@ impl Vm {
                     }
                 };
                 let result = self.render_string_interp(&template)?;
-                let t = self.session.alloc_value(Value::Str(result));
-                self.stack.push(t);
+                self.stack.push(Value::Str(result));
             }
 
             Opcode::SelfField(idx) => {
@@ -1896,8 +1841,7 @@ impl Vm {
                 } else {
                     Value::Nil
                 };
-                let t = self.session.alloc_value(result);
-                self.stack.push(t);
+                self.stack.push(result);
             }
         }
         Ok(())
@@ -2127,12 +2071,9 @@ impl Vm {
     // ── GC ────────────────────────────────────────────────────────────────────
 
     /// Collect all live tether slots reachable from the VM's roots:
-    /// stack, all call frame locals, and upvalue cells.
+    /// call frame locals and upvalue cells. Stack holds Values directly (no arena slots).
     fn collect_live_slots(&self) -> std::collections::HashSet<u32> {
         let mut live = std::collections::HashSet::new();
-        for t in &self.stack {
-            live.insert(t.addr.slot);
-        }
         for frame in &self.call_stack {
             for maybe_t in &frame.locals {
                 if let Some(t) = maybe_t {
@@ -2171,13 +2112,18 @@ impl Vm {
         }
     }
 
-    fn stack_pop(&mut self) -> Result<Tether, GoblinError> {
+    fn stack_pop(&mut self) -> Result<Value, GoblinError> {
         self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))
     }
 
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
-        let t = self.stack_pop()?;
-        self.deref_value(&t)
+        let v = self.stack_pop()?;
+        match v {
+            Value::Ref(uuid) => self.session.object_store.get(&uuid)
+                .cloned()
+                .ok_or_else(|| GoblinError::Runtime(format!("dangling ref: uuid {} not in object_store", uuid))),
+            other => Ok(other),
+        }
     }
 
     fn pop_int(&mut self) -> Result<i64, GoblinError> {
@@ -2206,11 +2152,10 @@ impl Vm {
                     None => break,
                 };
                 if frame.ip >= frame.func.bytecode.len() {
-                    let nil_t = self.session.alloc_value(Value::Nil);
                     let stack_base = frame.stack_base;
                     self.call_stack.pop();
                     self.stack.truncate(stack_base);
-                    self.stack.push(nil_t);
+                    self.stack.push(Value::Nil);
                     continue;
                 }
                 let op = frame.func.bytecode[frame.ip].clone();
@@ -2511,8 +2456,7 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy);
+        self.stack.push(Value::Nil);
         let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
@@ -2521,9 +2465,8 @@ impl Vm {
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
         self.run_until_depth(depth_before)?;
-        let result_tether = self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?;
-        Ok(self.session.read_value(&result_tether)?)
+        Ok(self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?)
     }
 
     /// Call a named function from session.named_values and return its result.
@@ -2579,11 +2522,8 @@ impl Vm {
                     };
                     self.call_func_core(func_rc, upvalues, args)
                 } else if let Some(bid) = crate::compiler::builtin_by_name(&name) {
-                    let arg_tethers: Vec<Tether> = args.into_iter()
-                        .map(|v| self.session.alloc_value(v))
-                        .collect();
-                    let result_tether = crate::builtins::call_builtin(bid, arg_tethers, &mut self.session)?;
-                    Ok(self.session.read_value(&result_tether)?)
+                    let result = crate::builtins::call_builtin(bid, args, &mut self.session)?;
+                    Ok(result)
                 } else {
                     Err(GoblinError::Runtime(format!("callable: unknown action '{name}'")))
                 }
@@ -2903,42 +2843,38 @@ impl Vm {
         Ok(Value::Nil)
     }
 
-    fn vm_invoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
-        if arg_tethers.len() < 2 {
-            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "invoke".into() });
+    fn vm_invoke(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        if args.len() < 2 {
+            return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "invoke".into() });
         }
-        let name = match self.session.read_value(&arg_tethers[0])? {
-            Value::Str(s) => s,
+        let name = match &args[0] {
+            Value::Str(s) => s.clone(),
             other => return Err(GoblinError::type_error("str", other.type_name(), "invoke")),
         };
         if name.is_empty() {
             return Err(GoblinError::Runtime("invoke: empty action name".into()));
         }
-        // Form 1: invoke("name", [a, b, c]) — second arg is array
-        // Form 2: invoke("name", a, b, c)
-        let forwarded: Vec<Value> = if arg_tethers.len() == 2 {
-            match self.session.read_value(&arg_tethers[1])? {
-                Value::Array(arr) => arr.iter().cloned().collect(),
+        let forwarded: Vec<Value> = if args.len() == 2 {
+            match args[1].clone() {
+                Value::Array(arr) => arr,
                 Value::Collection(c) => crate::collections::to_vec(&c),
                 other => vec![other],
             }
         } else {
-            arg_tethers[1..].iter().map(|t| self.session.read_value(t)).collect::<Result<Vec<_>, _>>()?
+            args[1..].to_vec()
         };
-        let result = self.call_named(&name, forwarded)?;
-        Ok(self.session.alloc_value(result))
+        self.call_named(&name, forwarded)
     }
 
-    fn vm_summon(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
-        if arg_tethers.len() != 2 {
-            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_tethers.len(), name: "summon".into() });
+    fn vm_summon(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        if args.len() != 2 {
+            return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "summon".into() });
         }
-        let mut acc = self.session.read_value(&arg_tethers[0])?;
-        let events_val = self.session.read_value(&arg_tethers[1])?;
-        let events: Vec<Value> = match &events_val {
-            Value::Array(a) => a.iter().cloned().collect(),
+        let mut acc = args[0].clone();
+        let events: Vec<Value> = match &args[1] {
+            Value::Array(a) => a.clone(),
             Value::Collection(c) => crate::collections::to_vec(c),
-            _ => return Err(GoblinError::type_error("array", events_val.type_name(), "summon events")),
+            other => return Err(GoblinError::type_error("array", other.type_name(), "summon events")),
         };
         for ev in events {
             let name = match ev {
@@ -2947,41 +2883,39 @@ impl Vm {
             };
             acc = self.call_named(&name, vec![acc])?;
         }
-        Ok(self.session.alloc_value(acc))
+        Ok(acc)
     }
 
-    fn vm_provoke(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
-        if arg_tethers.is_empty() || arg_tethers.len() > 2 {
-            return Err(GoblinError::ArityMismatch { expected: 1, got: arg_tethers.len(), name: "provoke".into() });
+    fn vm_provoke(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        if args.is_empty() || args.len() > 2 {
+            return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "provoke".into() });
         }
-        let condition = match self.session.read_value(&arg_tethers[0])? {
-            Value::Bool(b) => b,
+        let condition = match &args[0] {
+            Value::Bool(b) => *b,
             other => return Err(GoblinError::type_error("bool", other.type_name(), "provoke")),
         };
         if !condition {
-            let msg = if arg_tethers.len() == 2 {
-                crate::builtins::fmt_value_raw(&self.session.read_value(&arg_tethers[1])?)
+            let msg = if args.len() == 2 {
+                crate::builtins::fmt_value_raw(&args[1])
             } else {
                 "Provoked constraint violated".to_string()
             };
             return Err(GoblinError::Runtime(msg));
         }
-        Ok(self.session.alloc_value(Value::Bool(true)))
+        Ok(Value::Bool(true))
     }
 
     /// :need(name, ...args) — resolve a configured action need for the
     /// currently-executing GLAM (glam.toml [needs.actions]) and call it.
-    fn vm_need(&mut self, arg_tethers: Vec<Tether>) -> Result<Tether, GoblinError> {
-        if arg_tethers.is_empty() {
+    fn vm_need(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        if args.is_empty() {
             return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "need".into() });
         }
-        let need_name = match self.session.read_value(&arg_tethers[0])? {
-            Value::Str(s) => s,
+        let need_name = match &args[0] {
+            Value::Str(s) => s.clone(),
             other => return Err(GoblinError::type_error("str", other.type_name(), "need")),
         };
-        let forwarded: Vec<Value> = arg_tethers[1..].iter()
-            .map(|t| self.session.read_value(t))
-            .collect::<Result<Vec<_>, _>>()?;
+        let forwarded: Vec<Value> = args[1..].to_vec();
 
         let glam_ns = self.call_stack.last()
             .and_then(|f| f.func.owner_glam.clone())
@@ -3010,8 +2944,7 @@ impl Vm {
             )));
         }
 
-        let result = self.call_named(provider_action, forwarded)?;
-        Ok(self.session.alloc_value(result))
+        self.call_named(provider_action, forwarded)
     }
 
     // ── Tick (DES simulation step) ────────────────────────────────────────────
@@ -3069,8 +3002,7 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy);
+        self.stack.push(Value::Nil);
         let mut new_frame = CallFrame::new(func_rc, Vec::new(), stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
@@ -3079,9 +3011,8 @@ impl Vm {
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
         self.run_until_depth(depth_before)?;
-        let result_tether = self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
-        self.session.read_value(&result_tether)
+        self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -3111,8 +3042,7 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        let dummy = self.session.alloc_value(Value::Nil);
-        self.stack.push(dummy);
+        self.stack.push(Value::Nil);
         let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
@@ -3121,12 +3051,11 @@ impl Vm {
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
         self.run_until_depth(depth_before)?;
-        let result_tether = self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("call_func_value: no return value".into()))?;
-        self.session.read_value(&result_tether)
+        self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call_func_value: no return value".into()))
     }
 
-    fn vm_query_by_ident(&mut self, name: &str) -> Result<Tether, GoblinError> {
+    fn vm_query_by_ident(&mut self, name: &str) -> Result<Value, GoblinError> {
         // Try normalized class/overlay name variants (mirrors interpreter logic)
         let lower = name.to_lowercase();
         let singular = if lower.ends_with('s') { lower[..lower.len()-1].to_string() } else { lower.clone() };
@@ -3189,7 +3118,7 @@ impl Vm {
                     });
                 }
                 let _ = pred_fn;
-                return Ok(self.session.alloc_value(Value::Array(results)));
+                return Ok(Value::Array(results));
             }
         }
         // Check object_store for objects with matching class_name
@@ -3200,14 +3129,14 @@ impl Vm {
                     .filter(|v| matches!(v, Value::Object { class_name, .. } if class_name == &cand))
                     .cloned()
                     .collect();
-                return Ok(self.session.alloc_value(Value::Array(results)));
+                return Ok(Value::Array(results));
             }
         }
         // Not a class/overlay — return empty array (or could error, but interpreter silently returns empty)
-        Ok(self.session.alloc_value(Value::Array(vec![])))
+        Ok(Value::Array(vec![]))
     }
 
-    fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Tether, GoblinError> {
+    fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
         let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
         let mut results: Vec<Value> = Vec::new();
         for obj in all_values {
@@ -3219,10 +3148,10 @@ impl Vm {
             };
             if include { results.push(obj); }
         }
-        Ok(self.session.alloc_value(Value::Array(results)))
+        Ok(Value::Array(results))
     }
 
-    fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Tether, GoblinError> {
+    fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
         use indexmap::IndexMap;
         use std::collections::BTreeSet;
         let instances = self.session.overlay_instances.clone();
@@ -3263,7 +3192,7 @@ impl Vm {
             };
             if include { results.push(obj); }
         }
-        Ok(self.session.alloc_value(Value::Array(results)))
+        Ok(Value::Array(results))
     }
 
     fn vm_tick(&mut self) -> Result<(), GoblinError> {
@@ -3492,9 +3421,7 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
     };
 
     if let Some(id) = bid {
-        let tether = session.alloc_value(v.clone());
-        let result_tether = call_builtin(id, vec![tether], session)?;
-        return session.read_value(&result_tether);
+        return call_builtin(id, vec![v.clone()], session);
     }
 
     // For Object, look in fields (missing fields return nil, matching interpreter behavior)
