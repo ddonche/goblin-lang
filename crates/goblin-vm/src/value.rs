@@ -612,6 +612,7 @@ pub enum BuiltinId {
     FilterFn,
     ReduceFn,
     ForEachFn,
+    ToForIter,
 
     // String extras
     Lines,

@@ -1979,8 +1979,9 @@ impl Compiler {
                         span_debug: String::new(),
                     }),
                 };
-                // Compile iterable, store in hidden local
+                // Compile iterable; coerce maps/strings/nil to sequential array
                 self.compile_expr(&args[1])?;
+                self.emit(Opcode::CallBuiltin(BuiltinId::ToForIter, 1));
                 let iter_slot = self.scope_mut().declare_local("__for_iter__");
                 self.emit(Opcode::StoreLocal(iter_slot));
                 // index = 0
