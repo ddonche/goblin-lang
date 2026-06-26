@@ -10,6 +10,17 @@ use crate::value::{
 
 pub const MAX_CALL_DEPTH: usize = 512;
 
+// ── Operand ───────────────────────────────────────────────────────────────────
+//
+// Expression stack operand: a computed Value OR a lazy reference to a named slot.
+// Using Ref for LoadLocal/Global/Upvalue avoids cloning potentially-large Values
+// until an opcode actually needs them; the arena lookup is deferred to pop time.
+#[derive(Clone)]
+pub(crate) enum Operand {
+    Val(Value),
+    Ref(Tether),
+}
+
 // ── CallFrame ─────────────────────────────────────────────────────────────────
 
 /// One activation record on the call stack.
@@ -105,7 +116,9 @@ struct CatchFrame {
 /// - `call_stack` is the function call stack (no Rust recursion).
 pub struct Vm {
     pub session: Session,
-    pub stack: Vec<Value>,
+    /// Expression operand stack. Holds Val (computed result) or Ref (lazy slot
+    /// reference). Refs are resolved to Values only when an opcode needs them.
+    pub stack: Vec<Operand>,
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
     gc_op_counter: u32,
@@ -123,12 +136,15 @@ impl Vm {
         let frame = CallFrame::new(func_rc, Vec::new(), 0);
         self.call_stack.push(frame);
         self.run_loop()?;
-        // Return value is the top of the stack (or Nil).
+        // Return value is the top of the stack (or Nil). Resolve operand.
         Ok(match self.stack.pop() {
-            Some(Value::Ref(uuid)) => self.session.object_store.get(&uuid)
-                .cloned()
-                .unwrap_or(Value::Nil),
-            Some(v) => v,
+            Some(op) => {
+                let v = self.resolve_op(op)?;
+                match v {
+                    Value::Ref(uuid) => self.session.object_store.get(&uuid).cloned().unwrap_or(Value::Nil),
+                    other => other,
+                }
+            }
             None => Value::Nil,
         })
     }
@@ -137,7 +153,6 @@ impl Vm {
     /// current session state, returns the last expression value if any.
     /// Globals are extended (not reset) so state persists across calls.
     pub fn execute_repl(&mut self, mut func: FunctionObject, n_globals: usize) -> Result<Value, GoblinError> {
-        // Extend globals vec so StoreGlobal(i) never goes out of bounds.
         while self.session.globals.len() < n_globals {
             self.session.globals.push(None);
         }
@@ -147,10 +162,13 @@ impl Vm {
         self.call_stack.push(frame);
         self.run_loop()?;
         Ok(match self.stack.pop() {
-            Some(Value::Ref(uuid)) => self.session.object_store.get(&uuid)
-                .cloned()
-                .unwrap_or(Value::Nil),
-            Some(v) => v,
+            Some(op) => {
+                let v = self.resolve_op(op)?;
+                match v {
+                    Value::Ref(uuid) => self.session.object_store.get(&uuid).cloned().unwrap_or(Value::Nil),
+                    other => other,
+                }
+            }
             None => Value::Nil,
         })
     }
@@ -177,7 +195,7 @@ impl Vm {
                     let stack_base = frame.stack_base;
                     self.call_stack.pop();
                     self.stack.truncate(stack_base);
-                    self.stack.push(Value::Nil);
+                    self.stack.push(Operand::Val(Value::Nil));
                     if self.call_stack.is_empty() {
                         break;
                     }
@@ -200,7 +218,7 @@ impl Vm {
                         self.stack.truncate(handler.stack_depth);
                         // Push error message as a string
                         let err_str = e.to_string();
-                        self.stack.push(Value::Str(err_str));
+                        self.stack.push(Operand::Val(Value::Str(err_str)));
                         // Jump to catch block
                         if let Some(frame) = self.call_stack.last_mut() {
                             frame.ip = handler.catch_ip;
@@ -237,26 +255,26 @@ impl Vm {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone()
                 };
-                self.stack.push(val);
+                self.stack.push(Operand::Val(val));
             }
             Opcode::LoadNil => {
-                self.stack.push(Value::Nil);
+                self.stack.push(Operand::Val(Value::Nil));
             }
             Opcode::LoadUnit => {
-                self.stack.push(Value::Unit);
+                self.stack.push(Operand::Val(Value::Unit));
             }
             Opcode::LoadTrue => {
-                self.stack.push(Value::Bool(true));
+                self.stack.push(Operand::Val(Value::Bool(true)));
             }
             Opcode::LoadFalse => {
-                self.stack.push(Value::Bool(false));
+                self.stack.push(Operand::Val(Value::Bool(false)));
             }
 
             // ── Locals ──────────────────────────────────────────────────────
             Opcode::LoadLocal(slot) => {
+                // Push a lazy Ref — deferred read, no clone until the value is used.
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
-                let v = self.session.read_value(&t)?;
-                self.stack.push(v);
+                self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreLocal(slot) => {
                 let val = self.stack_pop()?;
@@ -284,8 +302,7 @@ impl Vm {
                     .ok_or_else(|| GoblinError::Runtime(
                         format!("global slot {idx} is uninitialized")
                     ))?;
-                let v = self.session.read_value(&t)?;
-                self.stack.push(v);
+                self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreGlobal(idx) => {
                 let val = self.stack_pop()?;
@@ -356,7 +373,7 @@ impl Vm {
                 let new_t = self.session.alloc_value(new_val.clone());
                 self.call_stack.last_mut().unwrap().store_local(slot, new_t, &mut self.session);
                 self.call_stack.last_mut().unwrap().set_type_lock(slot, cast_type);
-                self.stack.push(new_val);
+                self.stack.push(Operand::Val(new_val));
             }
 
             Opcode::CastBangGlobal(idx, ref cast_type) => {
@@ -378,7 +395,7 @@ impl Vm {
                 let new_t = self.session.alloc_value(new_val.clone());
                 self.session.set_global(idx as usize, new_t);
                 self.session.global_type_locks.insert(idx as u32, cast_type);
-                self.stack.push(new_val);
+                self.stack.push(Operand::Val(new_val));
             }
 
             Opcode::GetTypeLockLocal(slot) => {
@@ -395,12 +412,12 @@ impl Vm {
                         },
                         _ => lock,
                     };
-                    self.stack.push(Value::Str(label));
+                    self.stack.push(Operand::Val(Value::Str(label)));
                 } else {
                     // No lock — fall through to normal type name of the value.
                     let t = self.call_stack.last().unwrap().load_local(slot)?;
                     let val = self.session.read_value(&t)?;
-                    self.stack.push(Value::Str(val.type_name().to_string()));
+                    self.stack.push(Operand::Val(Value::Str(val.type_name().to_string())));
                 }
             }
 
@@ -420,13 +437,13 @@ impl Vm {
                         },
                         _ => lock,
                     };
-                    self.stack.push(Value::Str(label));
+                    self.stack.push(Operand::Val(Value::Str(label)));
                 } else {
                     let t = self.session.get_global(idx as usize)
                         .cloned()
                         .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
                     let val = self.session.read_value(&t)?;
-                    self.stack.push(Value::Str(val.type_name().to_string()));
+                    self.stack.push(Operand::Val(Value::Str(val.type_name().to_string())));
                 }
             }
 
@@ -445,7 +462,7 @@ impl Vm {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 let val = self.session.read_value(&t)?;
                 let cast = crate::builtins::cast_value_to_lock(val, &cast_type)?;
-                self.stack.push(cast);
+                self.stack.push(Operand::Val(cast));
             }
 
             Opcode::CastMemberGlobal(idx, ref cast_type) => {
@@ -465,7 +482,7 @@ impl Vm {
                     .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
                 let val = self.session.read_value(&t)?;
                 let cast = crate::builtins::cast_value_to_lock(val, &cast_type)?;
-                self.stack.push(cast);
+                self.stack.push(Operand::Val(cast));
             }
 
             // ── Upvalues ─────────────────────────────────────────────────────
@@ -474,8 +491,7 @@ impl Vm {
                     .upvalues.get(idx as usize)
                     .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?
                     .get();
-                let v = self.session.read_value(&t)?;
-                self.stack.push(v);
+                self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreUpvalue(idx) => {
                 let val = self.stack_pop()?;
@@ -495,10 +511,11 @@ impl Vm {
             // ── Stack ────────────────────────────────────────────────────────
             Opcode::Pop => { self.stack_pop()?; }
             Opcode::Dup => {
-                let t = self.stack.last()
+                // Clone the Operand (cheap for Ref — just 8 bytes; no stash access).
+                let op = self.stack.last()
                     .ok_or(GoblinError::Runtime("dup on empty stack".into()))?
                     .clone();
-                self.stack.push(t);
+                self.stack.push(op);
             }
 
             // ── overwrite! ───────────────────────────────────────────────────
@@ -554,45 +571,45 @@ impl Vm {
                 let result = if let Some(spec) = a_spec.or(b_spec) {
                     match &raw { Value::Str(_) => raw, _ => Value::Formatted(Box::new(raw), spec) }
                 } else { raw };
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
             Opcode::AddInt => {
                 let b = self.pop_int()?;
                 let a = self.pop_int()?;
-                self.stack.push(Value::Int(a.wrapping_add(b)));
+                self.stack.push(Operand::Val(Value::Int(a.wrapping_add(b))));
             }
             Opcode::AddFloat => {
                 let b = self.pop_float()?;
                 let a = self.pop_float()?;
-                self.stack.push(Value::Float(a + b));
+                self.stack.push(Operand::Val(Value::Float(a + b)));
             }
             Opcode::Sub => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = self.arith_op(a, b, "sub", |x, y| x - y, |x, y| x - y)?;
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
             Opcode::SubInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                self.stack.push(Value::Int(a.wrapping_sub(b)));
+                self.stack.push(Operand::Val(Value::Int(a.wrapping_sub(b))));
             }
             Opcode::SubFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                self.stack.push(Value::Float(a - b));
+                self.stack.push(Operand::Val(Value::Float(a - b)));
             }
             Opcode::Mul => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = self.arith_op(a, b, "mul", |x, y| x * y, |x, y| x * y)?;
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
             Opcode::MulInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                self.stack.push(Value::Int(a.wrapping_mul(b)));
+                self.stack.push(Operand::Val(Value::Int(a.wrapping_mul(b))));
             }
             Opcode::MulFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                self.stack.push(Value::Float(a * b));
+                self.stack.push(Operand::Val(Value::Float(a * b)));
             }
             Opcode::Div => {
                 let b = self.pop_value()?;
@@ -621,16 +638,16 @@ impl Vm {
                     (Value::Pct(x), Value::Float(y))   => Value::Pct(x / y),
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "/")),
                 };
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
             Opcode::DivInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                self.stack.push(Value::Int(a / b));
+                self.stack.push(Operand::Val(Value::Int(a / b)));
             }
             Opcode::DivFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                self.stack.push(Value::Float(a / b));
+                self.stack.push(Operand::Val(Value::Float(a / b)));
             }
             Opcode::Rem => {
                 let b = self.pop_value()?;
@@ -643,12 +660,12 @@ impl Vm {
                     (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "%")),
                 };
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
             Opcode::RemInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                self.stack.push(Value::Int(a % b));
+                self.stack.push(Operand::Val(Value::Int(a % b)));
             }
             Opcode::Neg => {
                 let a = self.pop_value()?;
@@ -659,15 +676,15 @@ impl Vm {
                     Value::Pct(x)   => Value::Pct(-x),
                     _ => return Err(GoblinError::type_error("number", a.type_name(), "neg")),
                 };
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
             Opcode::NegInt => {
                 let a = self.pop_int()?;
-                self.stack.push(Value::Int(-a));
+                self.stack.push(Operand::Val(Value::Int(-a)));
             }
             Opcode::NegFloat => {
                 let a = self.pop_float()?;
-                self.stack.push(Value::Float(-a));
+                self.stack.push(Operand::Val(Value::Float(-a)));
             }
             Opcode::Concat => {
                 // ++ operator: stringify both sides and join with a space
@@ -676,41 +693,41 @@ impl Vm {
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let result = Value::Str(format!("{} {}", a_str, b_str));
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
 
             // ── Comparison ───────────────────────────────────────────────────
             Opcode::Eq => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                self.stack.push(Value::Bool(a == b));
+                self.stack.push(Operand::Val(Value::Bool(a == b)));
             }
             Opcode::Ne => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                self.stack.push(Value::Bool(a != b));
+                self.stack.push(Operand::Val(Value::Bool(a != b)));
             }
             Opcode::Lt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<")?;
-                self.stack.push(Value::Bool(result < 0));
+                self.stack.push(Operand::Val(Value::Bool(result < 0)));
             }
             Opcode::Le => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<=")?;
-                self.stack.push(Value::Bool(result <= 0));
+                self.stack.push(Operand::Val(Value::Bool(result <= 0)));
             }
             Opcode::Gt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">")?;
-                self.stack.push(Value::Bool(result > 0));
+                self.stack.push(Operand::Val(Value::Bool(result > 0)));
             }
             Opcode::Ge => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">=")?;
-                self.stack.push(Value::Bool(result >= 0));
+                self.stack.push(Operand::Val(Value::Bool(result >= 0)));
             }
             Opcode::Not => {
                 let a = self.pop_value()?;
-                self.stack.push(Value::Bool(!a.is_truthy()));
+                self.stack.push(Operand::Val(Value::Bool(!a.is_truthy())));
             }
 
             // ── Control flow ─────────────────────────────────────────────────
@@ -737,33 +754,33 @@ impl Vm {
             Opcode::MakeArray(n) => {
                 let count = n as usize;
                 let start = self.stack.len().saturating_sub(count);
-                let items: Vec<Value> = self.stack.drain(start..).collect();
-                self.stack.push(Value::Collection(Rc::new(CollectionValue::from_flat(items))));
+                let items = self.drain_operands(start)?;
+                self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_flat(items)))));
             }
             Opcode::MakeMap(n) => {
                 let pair_count = n as usize;
                 let start = self.stack.len().saturating_sub(pair_count * 2);
-                let flat: Vec<Value> = self.stack.drain(start..).collect();
+                let flat = self.drain_operands(start)?;
                 let mut pairs = Vec::with_capacity(pair_count);
                 for chunk in flat.chunks(2) {
                     if let [k, v] = chunk {
                         pairs.push((k.clone(), v.clone()));
                     }
                 }
-                self.stack.push(Value::Collection(Rc::new(CollectionValue::from_map(pairs))));
+                self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_map(pairs)))));
             }
             Opcode::GetIndex => {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
             Opcode::SetIndex => {
                 let new_val = self.pop_value()?;
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let updated = crate::collections::set_index(coll_val, &key, new_val)?;
-                self.stack.push(updated);
+                self.stack.push(Operand::Val(updated));
             }
 
             // ── TupleBind support ─────────────────────────────────────────────
@@ -775,11 +792,11 @@ impl Vm {
                         let items = crate::collections::to_vec(c);
                         if items.is_empty() {
                             for _ in 0..n {
-                                self.stack.push(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
+                                self.stack.push(Operand::Val(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array()))));
                             }
                         } else if items.len() == n {
                             for v in items.into_iter().rev() {
-                                self.stack.push(v);
+                                self.stack.push(Operand::Val(v));
                             }
                         } else {
                             return Err(GoblinError::Runtime(format!(
@@ -791,11 +808,11 @@ impl Vm {
                     Value::Array(arr) => {
                         if arr.is_empty() {
                             for _ in 0..n {
-                                self.stack.push(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array())));
+                                self.stack.push(Operand::Val(Value::Collection(Rc::new(crate::value::CollectionValue::empty_array()))));
                             }
                         } else if arr.len() == n {
                             for v in arr.iter().rev() {
-                                self.stack.push(v.clone());
+                                self.stack.push(Operand::Val(v.clone()));
                             }
                         } else {
                             return Err(GoblinError::Runtime(format!(
@@ -806,7 +823,7 @@ impl Vm {
                     }
                     other => {
                         for _ in 0..n {
-                            self.stack.push(other.clone());
+                            self.stack.push(Operand::Val(other.clone()));
                         }
                     }
                 }
@@ -856,7 +873,7 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
                 }
                 // Push ref back so caller can chain / store back.
-                self.stack.push(Value::Ref(uuid));
+                self.stack.push(Operand::Val(Value::Ref(uuid)));
             }
             Opcode::ClassInstantiate(idx) => {
                 let class_name = {
@@ -876,6 +893,14 @@ impl Vm {
                 let provided: indexmap::IndexMap<String, Value> = match rhs {
                     Value::Map(m) => m.into_iter().collect(),
                     Value::MapOrd(m) => m,
+                    Value::Collection(c) => {
+                        crate::collections::to_pairs(&c)
+                            .into_iter()
+                            .filter_map(|(k, v)| {
+                                if let Value::Str(s) = k { Some((s, v)) } else { None }
+                            })
+                            .collect()
+                    }
                     other => return Err(GoblinError::Runtime(format!("class instantiation requires a map, got {}", other.type_name()))),
                 };
 
@@ -900,7 +925,7 @@ impl Vm {
                 }
 
                 let obj = Value::Object { class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid };
-                self.stack.push(obj);
+                self.stack.push(Operand::Val(obj));
             }
 
             Opcode::CallMethod(name_idx, argc) => {
@@ -914,7 +939,8 @@ impl Vm {
                 let arg_count = argc as usize;
                 // Stack: [recv, arg0, ..., arg_{argc-1}]
                 let recv_idx = self.stack.len() - arg_count - 1;
-                let recv_val = self.stack[recv_idx].clone();
+                // Resolve the receiver to inspect its type.
+                let recv_val = self.resolve_op(self.stack[recv_idx].clone())?;
 
                 // If receiver is an Object with a compiled method, use it.
                 // Otherwise fall back to builtin dispatch.
@@ -934,9 +960,9 @@ impl Vm {
                 // If no compiled method found, try builtin dispatch with recv as first arg.
                 if func_rc.is_none() {
                     if let Some(bid) = crate::compiler::builtin_by_name(&method_name) {
-                        let args: Vec<Value> = self.stack.drain(recv_idx..).collect();
+                        let args = self.drain_operands(recv_idx)?;
                         let result = crate::builtins::call_builtin(bid, args, &mut self.session)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     return Err(GoblinError::Runtime(format!(
@@ -955,10 +981,10 @@ impl Vm {
                 let stack_base = recv_idx;
                 let mut new_frame = CallFrame::new(func_rc, vec![], stack_base);
 
-                // Move args from stack into frame locals: slot 0 = self (recv), slot 1..n = args
-                // Each arg needs to be allocated into the arena as a Tether for locals.
+                // Move args from stack into frame locals: slot 0 = self (recv), slot 1..n = args.
                 for i in (0..=arg_count).rev() {
-                    let v = self.stack.pop().unwrap();
+                    let op = self.stack.pop().unwrap();
+                    let v = self.resolve_op(op)?;
                     let t = self.session.alloc_value(v);
                     new_frame.locals[i] = Some(t);
                 }
@@ -976,7 +1002,7 @@ impl Vm {
                 } else {
                     crate::collections::get_index(&coll_val, &key)?
                 };
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
 
             // ── Function calls ────────────────────────────────────────────────
@@ -991,15 +1017,16 @@ impl Vm {
 
                 // Stack: [..., func, arg0, ..., arg_{argc-1}]
                 let func_idx = self.stack.len() - arg_count - 1;
-                let func_val = self.stack[func_idx].clone();
+                // Resolve the function operand (may be a Ref to a Closure stored in a local).
+                let func_val = self.resolve_op(self.stack[func_idx].clone())?;
 
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
                     let bid = *bid;
-                    let arg_vals: Vec<Value> = self.stack.drain(func_idx + 1..).collect();
-                    self.stack.pop(); // pop the func value
+                    let arg_vals = self.drain_operands(func_idx + 1)?;
+                    self.stack.pop(); // pop the func operand
                     let result = crate::builtins::call_builtin(bid, arg_vals, &mut self.session)?;
-                    self.stack.push(result);
+                    self.stack.push(Operand::Val(result));
                 } else {
 
                 let (func_rc, upvalues) = match func_val {
@@ -1019,13 +1046,14 @@ impl Vm {
                 let stack_base = func_idx; // caller cleans up from here
                 let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
 
-                // Move args from stack into frame locals (alloc_value to get Tethers for locals).
+                // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
                 for i in (0..arg_count).rev() {
-                    let v = self.stack.pop().unwrap();
+                    let op = self.stack.pop().unwrap();
+                    let v = self.resolve_op(op)?;
                     let t = self.session.alloc_value(v);
                     new_frame.locals[i] = Some(t);
                 }
-                // Pop function value.
+                // Pop function operand.
                 self.stack.pop();
 
                 self.call_stack.push(new_frame);
@@ -1033,18 +1061,21 @@ impl Vm {
             }
 
             Opcode::Return => {
-                let ret_val = if self.stack.len() > self.call_stack.last().unwrap().stack_base {
+                let ret_op = if self.stack.len() > self.call_stack.last().unwrap().stack_base {
                     self.stack.pop().unwrap()
                 } else {
-                    Value::Nil
+                    Operand::Val(Value::Nil)
                 };
+                // Resolve to Value now — callee's frame is about to be popped, after
+                // which its locals are removed from the GC live set. Resolving here
+                // ensures we own the Value before the stash could theoretically be swept.
+                let ret_val = self.resolve_op(ret_op)?;
 
                 let frame = self.call_stack.pop().unwrap();
-                // Object mutations propagate via object_store (shared Ref semantics).
                 let _ = frame.self_tether;
 
                 self.stack.truncate(frame.stack_base);
-                self.stack.push(ret_val);
+                self.stack.push(Operand::Val(ret_val));
             }
 
             // ── Builtins ──────────────────────────────────────────────────────
@@ -1054,33 +1085,33 @@ impl Vm {
                     return Err(GoblinError::Runtime("stack underflow on CallBuiltin".into()));
                 }
                 let start = self.stack.len() - arg_count;
-                let arg_vals: Vec<Value> = self.stack.drain(start..).collect();
+                let arg_vals = self.drain_operands(start)?;
 
                 // Special handling for builtins that need VM call capability.
                 match id {
                     BuiltinId::Invoke => {
                         let result = self.vm_invoke(arg_vals)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Summon => {
                         let result = self.vm_summon(arg_vals)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Provoke => {
                         let result = self.vm_provoke(arg_vals)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Need => {
                         let result = self.vm_need(arg_vals)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Tick => {
                         self.vm_tick()?;
-                        self.stack.push(Value::Nil);
+                        self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
                     BuiltinId::QueryByIdent => {
@@ -1090,24 +1121,24 @@ impl Vm {
                             None => return Err(GoblinError::Runtime("QueryByIdent: no arg".into())),
                         };
                         let result = self.vm_query_by_ident(&name)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Objects => {
                         let pred = arg_vals.into_iter().next();
                         let result = self.vm_objects_query(pred)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Overlays => {
                         let pred = arg_vals.into_iter().next();
                         let result = self.vm_overlays_query(pred)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Gc => {
                         self.vm_gc();
-                        self.stack.push(Value::Nil);
+                        self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
                     BuiltinId::StashCount => {
@@ -1121,14 +1152,14 @@ impl Vm {
                         map.insert("total".to_string(),     Value::Int(total     as i64));
                         map.insert("live".to_string(),      Value::Int(live      as i64));
                         map.insert("abandoned".to_string(), Value::Int(abandoned as i64));
-                        self.stack.push(Value::MapOrd(map));
+                        self.stack.push(Operand::Val(Value::MapOrd(map)));
                         return Ok(());
                     }
                     BuiltinId::TetherCount => {
                         // TetherCount without slot info is approximate — count all live slots.
                         let live_slots = self.collect_live_slots();
                         let count = live_slots.len();
-                        self.stack.push(Value::Int(count as i64));
+                        self.stack.push(Operand::Val(Value::Int(count as i64)));
                         return Ok(());
                     }
 
@@ -1144,7 +1175,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str (action name)", other.type_name(), "map")),
                         };
                         let result = self.vm_map_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
 
@@ -1160,7 +1191,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str", other.type_name(), "get_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::DeleteWhere => {
@@ -1174,7 +1205,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str", other.type_name(), "delete_where predicate")),
                         };
                         let result = self.vm_where_delete(coll, &pred)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::UpdateWhere => {
@@ -1189,7 +1220,7 @@ impl Vm {
                         };
                         let new_val = it.next().unwrap();
                         let result = self.vm_where_update(coll, &pred, new_val)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::ReapWhere => {
@@ -1203,7 +1234,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::ReapWhere2 => {
@@ -1217,7 +1248,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::PutWhere => {
@@ -1232,7 +1263,7 @@ impl Vm {
                         };
                         let new_val = it.next().unwrap();
                         let result = self.vm_where_put(coll, &pred, new_val)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::GrabWhere => {
@@ -1246,7 +1277,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str", other.type_name(), "grab_where predicate")),
                         };
                         let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
 
@@ -1259,7 +1290,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_filter_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Reduce => {
@@ -1271,7 +1302,7 @@ impl Vm {
                         let init = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_reduce_inner(coll, init, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::Any => {
@@ -1282,7 +1313,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_any_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::All => {
@@ -1293,7 +1324,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_all_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::FindIndex => {
@@ -1304,7 +1335,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_find_index_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::SortBy => {
@@ -1315,7 +1346,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_sort_by_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::MapFn => {
@@ -1326,7 +1357,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_map_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::FilterFn => {
@@ -1337,7 +1368,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_filter_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::ReduceFn => {
@@ -1349,7 +1380,7 @@ impl Vm {
                         let init = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_reduce_inner(coll, init, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
                     BuiltinId::ForEachFn => {
@@ -1360,7 +1391,7 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_for_each_inner(coll, func)?;
-                        self.stack.push(result);
+                        self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
 
@@ -1370,7 +1401,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token")),
                         };
                         let rendered = self.render_string_interp(&text)?;
-                        self.stack.push(Value::Str(rendered));
+                        self.stack.push(Operand::Val(Value::Str(rendered)));
                         return Ok(());
                     }
 
@@ -1378,7 +1409,7 @@ impl Vm {
                 }
 
                 let result = crate::builtins::call_builtin(id, arg_vals, &mut self.session)?;
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
 
             // ── Closures ──────────────────────────────────────────────────────
@@ -1414,7 +1445,7 @@ impl Vm {
                 }
 
                 let closure = Closure { func: func_rc, upvalues };
-                self.stack.push(Value::Closure(Rc::new(closure)));
+                self.stack.push(Operand::Val(Value::Closure(Rc::new(closure))));
             }
 
             Opcode::ToPct => {
@@ -1425,7 +1456,7 @@ impl Vm {
                     Value::Pct(p)   => p,
                     other => return Err(GoblinError::type_error("number", other.type_name(), "%")),
                 };
-                self.stack.push(Value::Pct(f / 100.0));
+                self.stack.push(Operand::Val(Value::Pct(f / 100.0)));
             }
 
             Opcode::MakePair => {
@@ -1452,7 +1483,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "><")),
                 };
-                self.stack.push(pair);
+                self.stack.push(Operand::Val(pair));
             }
 
             Opcode::MakeRange => {
@@ -1466,7 +1497,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "..")),
                 };
-                self.stack.push(Value::Array(v));
+                self.stack.push(Operand::Val(Value::Array(v)));
             }
 
             Opcode::MakeRangeInclusive => {
@@ -1480,7 +1511,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "...")),
                 };
-                self.stack.push(Value::Array(v));
+                self.stack.push(Operand::Val(Value::Array(v)));
             }
 
             Opcode::Quick(_) => {
@@ -1772,19 +1803,18 @@ impl Vm {
                     Value::Str(s) => s,
                     other => return Err(GoblinError::Runtime(format!("RegisterAction: expected str, got {:?}", other.type_name()))),
                 };
-                // Peek at the top of stack without popping.
-                let value = self.stack.last()
-                    .ok_or_else(|| GoblinError::Runtime("RegisterAction: empty stack".into()))?
-                    .clone();
-                // Also register under the qualified name if we're inside a `use glam` import,
-                // so that `ns::action(...)` dispatch works without requiring a flat file layout.
+                // Peek at the top of stack without popping, resolve to Value.
+                let value = {
+                    let op = self.stack.last()
+                        .ok_or_else(|| GoblinError::Runtime("RegisterAction: empty stack".into()))?
+                        .clone();
+                    self.resolve_op(op)?
+                };
+                // Also register under the qualified name if we're inside a `use glam` import.
                 if let Some(ref ns) = self.session.current_glam_ns.clone() {
                     let qualified = format!("{}::{}", ns, name);
                     self.session.named_values.insert(qualified, value.clone());
                 }
-                // Track (bare_name, value) by source file so UseGlam can retroactively
-                // register qualified names even when the file was already imported without
-                // a GLAM namespace context (import guard bypass case).
                 let source_file = self.call_stack.last()
                     .map(|f| f.func.source_file.clone())
                     .unwrap_or_default();
@@ -1806,7 +1836,7 @@ impl Vm {
                 let value = self.session.named_values.get(&name)
                     .ok_or_else(|| GoblinError::UndefinedVariable { name: name.clone() })?
                     .clone();
-                self.stack.push(value);
+                self.stack.push(Operand::Val(value));
             }
 
             Opcode::StringInterp(idx) => {
@@ -1818,7 +1848,7 @@ impl Vm {
                     }
                 };
                 let result = self.render_string_interp(&template)?;
-                self.stack.push(Value::Str(result));
+                self.stack.push(Operand::Val(Value::Str(result)));
             }
 
             Opcode::SelfField(idx) => {
@@ -1841,7 +1871,7 @@ impl Vm {
                 } else {
                     Value::Nil
                 };
-                self.stack.push(result);
+                self.stack.push(Operand::Val(result));
             }
         }
         Ok(())
@@ -2084,6 +2114,12 @@ impl Vm {
                 live.insert(cell.0.borrow().addr.slot);
             }
         }
+        // Ref operands on the expression stack hold arena slots too.
+        for op in &self.stack {
+            if let Operand::Ref(t) = op {
+                live.insert(t.addr.slot);
+            }
+        }
         live
     }
 
@@ -2095,21 +2131,25 @@ impl Vm {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Read a value, automatically dereferencing Value::Ref through object_store.
-    fn deref_value(&self, t: &Tether) -> Result<Value, GoblinError> {
-        let v = self.session.read_value(t)?;
-        match v {
-            Value::Ref(uuid) => self.session.object_store.get(&uuid)
-                .cloned()
-                .ok_or_else(|| GoblinError::Runtime(format!("dangling ref: uuid {} not in object_store", uuid))),
-            other => Ok(other),
+    /// Resolve an Operand to a Value: Val is returned directly (free), Ref is
+    /// read from the arena (clones only when actually needed).
+    #[inline]
+    fn resolve_op(&self, op: Operand) -> Result<Value, GoblinError> {
+        match op {
+            Operand::Val(v) => Ok(v),
+            Operand::Ref(t) => self.session.read_value(&t),
         }
     }
 
+    /// Pop one operand and resolve it.  Does NOT deref Value::Ref → Object.
+    #[inline]
     fn stack_pop(&mut self) -> Result<Value, GoblinError> {
-        self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))
+        let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
+        self.resolve_op(op)
     }
 
+    /// Pop one operand, resolve it, and dereference Value::Ref through object_store.
+    #[inline]
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
         let v = self.stack_pop()?;
         match v {
@@ -2135,6 +2175,28 @@ impl Vm {
         }
     }
 
+    /// Drain operands from `start..` and resolve each to a Value.
+    fn drain_operands(&mut self, start: usize) -> Result<Vec<Value>, GoblinError> {
+        let ops: Vec<Operand> = self.stack.drain(start..).collect();
+        let mut vals = Vec::with_capacity(ops.len());
+        for op in ops {
+            vals.push(self.resolve_op(op)?);
+        }
+        Ok(vals)
+    }
+
+    /// Dead code kept to avoid cascading changes — use resolve_op instead.
+    #[allow(dead_code)]
+    fn deref_value(&self, t: &Tether) -> Result<Value, GoblinError> {
+        let v = self.session.read_value(t)?;
+        match v {
+            Value::Ref(uuid) => self.session.object_store.get(&uuid)
+                .cloned()
+                .ok_or_else(|| GoblinError::Runtime(format!("dangling ref: uuid {} not in object_store", uuid))),
+            other => Ok(other),
+        }
+    }
+
     // ── invoke / summon / provoke ────────────────────────────────────────────
 
     /// Execute instructions until call_stack depth drops back to `target_depth`.
@@ -2149,7 +2211,7 @@ impl Vm {
                     let stack_base = frame.stack_base;
                     self.call_stack.pop();
                     self.stack.truncate(stack_base);
-                    self.stack.push(Value::Nil);
+                    self.stack.push(Operand::Val(Value::Nil));
                     continue;
                 }
                 let op = frame.func.bytecode[frame.ip].clone();
@@ -2450,7 +2512,7 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        self.stack.push(Value::Nil);
+        self.stack.push(Operand::Val(Value::Nil));
         let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
@@ -2459,8 +2521,9 @@ impl Vm {
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
         self.run_until_depth(depth_before)?;
-        Ok(self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?)
+        let op = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?;
+        self.resolve_op(op)
     }
 
     /// Call a named function from session.named_values and return its result.
@@ -2996,7 +3059,7 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        self.stack.push(Value::Nil);
+        self.stack.push(Operand::Val(Value::Nil));
         let mut new_frame = CallFrame::new(func_rc, Vec::new(), stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
@@ -3005,8 +3068,9 @@ impl Vm {
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
         self.run_until_depth(depth_before)?;
-        self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))
+        let op = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
+        self.resolve_op(op)
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -3036,7 +3100,7 @@ impl Vm {
             return Err(GoblinError::StackOverflow);
         }
         let stack_base = self.stack.len();
-        self.stack.push(Value::Nil);
+        self.stack.push(Operand::Val(Value::Nil));
         let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
@@ -3045,8 +3109,9 @@ impl Vm {
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
         self.run_until_depth(depth_before)?;
-        self.stack.pop()
-            .ok_or_else(|| GoblinError::Runtime("call_func_value: no return value".into()))
+        let op = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call_func_value: no return value".into()))?;
+        self.resolve_op(op)
     }
 
     fn vm_query_by_ident(&mut self, name: &str) -> Result<Value, GoblinError> {
