@@ -4,7 +4,7 @@
 use crate::opcode::Opcode;
 use crate::session::Session;
 use crate::value::{FunctionObject, Tether, Value};
-use crate::vm::Vm;
+use crate::vm::{Operand, Vm};
 
 // ── Disassembler ─────────────────────────────────────────────────────────────
 
@@ -114,9 +114,11 @@ pub fn dump_vm(vm: &Vm) {
         }
     }
     eprintln!("  operand stack ({} items):", vm.stack.len());
-    for (i, v) in vm.stack.iter().enumerate().rev() {
-        let val = format_value(v);
-        eprintln!("    [{i}] {val}");
+    for (i, op) in vm.stack.iter().enumerate().rev() {
+        match op {
+            Operand::Val(v) => eprintln!("    [{i}] {}", format_value(v)),
+            Operand::Ref(t) => eprintln!("    [{i}] Ref({:?})", t.addr),
+        }
     }
 }
 

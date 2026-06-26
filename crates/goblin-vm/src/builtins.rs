@@ -959,7 +959,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         BuiltinId::Pick => {
             expect_n(1)?;
-            let cfg = match read(0)? { Value::Map(m) => m, other => return Err(GoblinError::type_error("map", other.type_name(), "pick")) };
+            let cfg: std::collections::BTreeMap<String, Value> = match read(0)? {
+                Value::Map(m) => m,
+                Value::MapOrd(m) => m.into_iter().collect(),
+                Value::Collection(c) => crate::collections::to_pairs(&c).into_iter().filter_map(|(k, v)| if let Value::Str(s) = k { Some((s, v)) } else { None }).collect(),
+                other => return Err(GoblinError::type_error("map", other.type_name(), "pick")),
+            };
             let get_num = |k: &str| -> Option<f64> { match cfg.get(k)? { Value::Float(n) => Some(*n), Value::Int(i) => Some(*i as f64), Value::Str(s) => s.parse::<f64>().ok(), _ => None } };
             let count_f = get_num("count_expr").or_else(|| get_num("count")).unwrap_or(1.0);
             let n_out = count_f as usize;
