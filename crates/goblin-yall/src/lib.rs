@@ -29,7 +29,7 @@ pub use writer::yall_write;
 /// Parse a Y’all string into a YallValue.
 /// Old API compatibility preserved.
 pub fn yall_parse(text: &str, label: &str) -> Result<YallValue, YallError> {
-    let p = Parser::new(text, label);
+    let p = Parser::new(text, label)?;
     p.parse()
 }
 
@@ -37,7 +37,7 @@ pub fn yall_parse(text: &str, label: &str) -> Result<YallValue, YallError> {
 pub fn yall_parse_file(path: &str) -> Result<YallValue, YallError> {
     let text = fs::read_to_string(path)
         .map_err(|e| YallError::new(path, 0, format!("cannot read file: {e}")))?;
-    let p = Parser::new(&text, path);
+    let p = Parser::new(&text, path)?;
     p.parse()
 }
 

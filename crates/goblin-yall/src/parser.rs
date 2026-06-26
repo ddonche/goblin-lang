@@ -19,11 +19,150 @@ pub struct Parser<'a> {
     label: &'a str,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(cleaned_text: &'a str, label: &'a str) -> Self {
-        let mut lines = Vec::new();
+fn strip_comments(text: &str, label: &str) -> Result<String, YallError> {
+    let mut out = String::new();
+    let mut in_block_comment = false;
+    let mut block_start_line = 0usize;
+    let mut in_multiline_string = false;
 
-        for (i, raw) in cleaned_text.lines().enumerate() {
+    for (i, raw) in text.lines().enumerate() {
+        let line_no = i + 1;
+        let trimmed = raw.trim();
+
+        if in_multiline_string {
+            out.push_str(raw);
+            out.push('\n');
+
+            if trimmed == "\"\"\"" {
+                in_multiline_string = false;
+            }
+
+            continue;
+        }
+
+        if in_block_comment {
+            if trimmed == "////" {
+                in_block_comment = false;
+            }
+
+            out.push('\n');
+            continue;
+        }
+
+        if trimmed == "////" {
+            in_block_comment = true;
+            block_start_line = line_no;
+            out.push('\n');
+            continue;
+        }
+
+        if trimmed.starts_with("///") {
+            out.push('\n');
+            continue;
+        }
+
+        let cleaned = strip_inline_comment(raw);
+
+        if starts_multiline_string(&cleaned) {
+            in_multiline_string = true;
+        }
+
+        out.push_str(&cleaned);
+        out.push('\n');
+    }
+
+    if in_block_comment {
+        return Err(YallError::new(
+            label,
+            block_start_line,
+            "unterminated block comment",
+        ));
+    }
+
+    Ok(out)
+}
+
+fn starts_multiline_string(line: &str) -> bool {
+    let trimmed = line.trim();
+
+    if let Some(pos) = trimmed.find(':') {
+        let rest = trimmed[pos + 1..].trim_start();
+        return rest == "\"\"\"";
+    }
+
+    false
+}
+
+fn strip_inline_comment(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let marker: Vec<char> = "<----".chars().collect();
+
+    let mut in_string = false;
+    let mut escape = false;
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        if in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+
+        if i + marker.len() <= chars.len()
+            && chars[i..i + marker.len()] == marker[..]
+            && i > 0
+            && chars[i - 1].is_whitespace()
+        {
+            return chars[..i].iter().collect::<String>().trim_end().to_string();
+        }
+
+        i += 1;
+    }
+
+    line.to_string()
+}
+
+fn escape_multiline_for_scalar(s: &str) -> String {
+    let mut out = String::new();
+
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+
+    out
+}
+
+impl<'a> Parser<'a> {
+    pub fn new(text: &'a str, label: &'a str) -> Result<Self, YallError> {
+        let cleaned_text = strip_comments(text, label)?;
+        let leaked: &'a str = Box::leak(cleaned_text.into_boxed_str());
+
+        let mut lines = Vec::new();
+        let mut iter = leaked.lines().enumerate();
+
+        while let Some((i, raw)) = iter.next() {
             let line_no = i + 1;
             let trimmed = raw.trim();
 
@@ -31,10 +170,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            // count indent
             let indent = raw.chars().take_while(|c| *c == ' ').count();
 
-            // BLOCK LIST?
             if trimmed.starts_with("- ") {
                 let rest = &trimmed[2..];
                 lines.push(Line {
@@ -47,13 +184,49 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            // BLOCK KEY: VALUE?
             if let Some(pos) = trimmed.find(':') {
                 let key = &trimmed[..pos];
                 let after = &trimmed[pos + 1..];
-
-                // allow pure "key:" meaning nested block starts
                 let rest = after.trim_start();
+
+                if rest == "\"\"\"" {
+                    let mut buf = String::new();
+                    let mut found_end = false;
+
+                    while let Some((_j, next_raw)) = iter.next() {
+                        if next_raw.trim() == "\"\"\"" {
+                            found_end = true;
+                            break;
+                        }
+
+                        if !buf.is_empty() {
+                            buf.push('\n');
+                        }
+
+                        buf.push_str(next_raw);
+                    }
+
+                    if !found_end {
+                        return Err(YallError::new(
+                            label,
+                            line_no,
+                            "unterminated multiline string",
+                        ));
+                    }
+
+                    let escaped = escape_multiline_for_scalar(&buf);
+                    let rest: &'a str = Box::leak(format!("\"{}\"", escaped).into_boxed_str());
+
+                    lines.push(Line {
+                        indent,
+                        key,
+                        rest,
+                        raw,
+                        line_no,
+                    });
+
+                    continue;
+                }
 
                 lines.push(Line {
                     indent,
@@ -65,7 +238,6 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            // SCALAR TOP-LEVEL (error)
             lines.push(Line {
                 indent,
                 key: trimmed,
@@ -75,7 +247,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        Self { lines, label }
+        Ok(Self { lines, label })
     }
 
     fn error<T>(&self, line: usize, msg: &str) -> Result<T, YallError> {
@@ -467,6 +639,10 @@ impl<'a> Parser<'a> {
     fn parse_scalar(&self, text: &str, line_no: usize) -> Result<YallValue, YallError> {
         let trimmed = text.trim();
 
+        if trimmed.starts_with('"') && !trimmed.ends_with('"') {
+            return self.error(line_no, "unterminated string");
+        }
+
         // ---------- DOUBLE-QUOTED STRING ----------
         // Handles things like: "trailboss::build_routes_once"
         if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
@@ -502,7 +678,7 @@ impl<'a> Parser<'a> {
 
         // ---------- KEYWORDS ----------
         match trimmed {
-            "null" => return Ok(YallValue::Null),
+            "nil" => return Ok(YallValue::Null),
             "true" => return Ok(YallValue::Bool(true)),
             "false" => return Ok(YallValue::Bool(false)),
             _ => {}

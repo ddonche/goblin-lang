@@ -29,7 +29,7 @@ fn write_value(out: &mut String, v: &YallValue, indent: usize, top_level: bool) 
         }
 
         YallValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        YallValue::Null => out.push_str("null"),
+        YallValue::Null => out.push_str("nil"),
         YallValue::Int(i) => out.push_str(&i.to_string()),
         YallValue::Float(f) => out.push_str(&f.to_string()),
     }
@@ -70,9 +70,15 @@ fn is_bare_ok(s: &str) -> bool {
     }
 
     for ch in s.chars() {
-        match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' => {}
-            _ => return false,
+        if ch.is_whitespace()
+            || ch == '"'
+            || ch == '{'
+            || ch == '}'
+            || ch == '['
+            || ch == ']'
+            || ch == ','
+        {
+            return false;
         }
     }
 
