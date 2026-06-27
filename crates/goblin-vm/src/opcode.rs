@@ -245,6 +245,12 @@ pub enum Opcode {
     /// Pop value from stack top and write it to session.box_store["{ns}::{name}"].
     /// ns_idx and name_idx are constant-pool indices into the enclosing function.
     StoreBox(u16, u16),
+
+    /// Collect-loop accumulator append: pops the top-of-stack element and appends
+    /// it to the array in locals[slot] without a full clone.
+    /// If tether_count == 1 (sole owner), mutates in place (O(1)).
+    /// Otherwise falls back to clone + alloc (O(N)).
+    ArrayPushToLocal(u8),
 }
 
 impl Opcode {
@@ -338,6 +344,7 @@ impl Opcode {
             Opcode::CastMemberGlobal(..) => "CastMemberGlobal",
             Opcode::TupleSplit(_)        => "TupleSplit",
             Opcode::StoreBox(_, _)       => "StoreBox",
+            Opcode::ArrayPushToLocal(_)  => "ArrayPushToLocal",
         }
     }
 }

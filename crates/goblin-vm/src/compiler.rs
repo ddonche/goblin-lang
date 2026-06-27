@@ -2117,11 +2117,9 @@ impl Compiler {
                 self.emit(Opcode::LoadLocal(n_slot));
                 self.emit(Opcode::Lt);
                 let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // evaluate body, then arr = array_push(arr, value)
-                self.emit(Opcode::LoadLocal(arr_slot));
+                // evaluate body, then append to accumulator in-place
                 self.compile_expr(&args[1])?;
-                self.emit(Opcode::CallBuiltin(BuiltinId::ArrayPush, 2));
-                self.emit(Opcode::StoreLocal(arr_slot));
+                self.emit(Opcode::ArrayPushToLocal(arr_slot));
                 // i++
                 let one_idx = self.scope_mut().add_constant(Value::Int(1));
                 self.emit(Opcode::LoadLocal(i_slot));

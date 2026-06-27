@@ -295,6 +295,31 @@ impl Vm {
                 self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
             }
 
+            // Collect-loop fast path: append element to array in locals[slot]
+            // without a full Vec clone when we have sole ownership.
+            Opcode::ArrayPushToLocal(slot) => {
+                let elem = self.stack_pop()?;
+                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                // Fast path: sole owner — mutate in place, no new stash.
+                {
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if stash.tether_count == 1 {
+                        if let Value::Array(ref mut v) = stash.value {
+                            v.push(elem);
+                            return Ok(());
+                        }
+                    }
+                }
+                // Fallback: clone array, push elem, allocate new stash.
+                let mut arr = match self.session.read_value(&t)? {
+                    Value::Array(v) => v,
+                    other => return Err(GoblinError::type_error("array", other.type_name(), "collect")),
+                };
+                arr.push(elem);
+                let new_t = self.session.alloc_value(Value::Array(arr));
+                self.call_stack.last_mut().unwrap().store_local(slot, new_t, &mut self.session);
+            }
+
             // ── Globals ──────────────────────────────────────────────────────
             Opcode::LoadGlobal(idx) => {
                 let t = self.session.get_global(idx as usize)
