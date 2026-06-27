@@ -2127,6 +2127,8 @@ impl Vm {
                 live.insert(t.addr.slot);
             }
         }
+        live
+    }
 
     /// Mark-sweep GC: free all arena stashes not reachable from live roots.
     pub fn vm_gc(&mut self) {

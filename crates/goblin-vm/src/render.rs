@@ -5,6 +5,7 @@
 //! Code inside `<{ }>` runs as Goblin: bare expressions auto-output their
 //! value; statements (binds, loops, declarations) run silently.
 
+use crate::compiler::compile_repl_snippet;
 use crate::error::GoblinError;
 use crate::session::{GcMode, Session};
 use crate::value::Value;
