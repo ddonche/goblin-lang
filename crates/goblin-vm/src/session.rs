@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use slab::Slab;
+use std::time::Instant;
 
 use crate::error::GoblinError;
 use crate::grid::GridStore;
@@ -193,6 +194,10 @@ pub struct Session {
     /// Output buffer — when Some, say/print write here instead of stdout.
     /// Used by the WASM REPL to capture output.
     pub output_buf: Option<String>,
+
+    /// Time shit
+    pub script_start: Instant,
+    pub last_split: Instant,
 }
 
 impl Session {
@@ -207,7 +212,10 @@ impl Session {
             .map(|d| d.subsec_nanos() as u128 | ((d.as_secs() as u128) << 32))
             .unwrap_or(0x123456789abcdef0u128)
             | 1; // MCG requires odd seed
+        let now = Instant::now();
         Session {
+            script_start: now,
+            last_split: now,
             arena: Slab::new(),
             globals: Vec::new(),
             global_names: Vec::new(),

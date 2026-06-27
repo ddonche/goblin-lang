@@ -377,6 +377,8 @@ pub enum BuiltinId {
     GcMode,
     StashCount,
     TetherCount,
+    TotalTime,
+    SplitTime,
 
     // Arithmetic helpers (called as functions)
     Abs,

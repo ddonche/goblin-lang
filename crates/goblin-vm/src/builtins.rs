@@ -20,6 +20,10 @@ pub fn call_builtin(
     dispatch(id, args, session)
 }
 
+fn fmt_ms(ms: u128) -> String {
+    format!("{}ms ({}.{:03}s)", ms, ms / 1000, ms % 1000)
+}
+
 fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
     let read = |i: usize| -> Result<Value, GoblinError> {
         args.get(i).cloned().ok_or_else(|| GoblinError::Runtime(
@@ -71,6 +75,18 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 },
                 _ => Err(GoblinError::Runtime("gc_mode: expected a string".into())),
             }
+        }
+        BuiltinId::TotalTime => {
+            expect_n(0)?;
+            Ok(Value::Str(fmt_ms(session.script_start.elapsed().as_millis())))
+        }
+
+        BuiltinId::SplitTime => {
+            expect_n(0)?;
+            let now = std::time::Instant::now();
+            let ms = now.duration_since(session.last_split).as_millis();
+            session.last_split = now;
+            Ok(Value::Str(fmt_ms(ms)))
         }
 
         // ── Math ──────────────────────────────────────────────────────────────
