@@ -44,6 +44,9 @@ struct FunctionScope {
     line_numbers: Vec<u32>,
     /// Current source line to attach to emitted opcodes.
     current_line: u32,
+    /// Counter for raw (arena-free) internal slots.  These slots are separate
+    /// from the tethered `locals` Vec and have no Goblin identity.
+    next_raw_slot: u8,
 }
 
 impl FunctionScope {
@@ -61,6 +64,7 @@ impl FunctionScope {
             loop_start: None,
             line_numbers: Vec::new(),
             current_line: 0,
+            next_raw_slot: 0,
         }
     }
 
@@ -80,6 +84,14 @@ impl FunctionScope {
         let slot = self.next_slot;
         self.next_slot = self.next_slot.saturating_add(1);
         self.locals.push((name.to_string(), slot));
+        slot
+    }
+
+    /// Allocate a raw (arena-free) internal slot for VM-generated temporaries.
+    /// Raw slots are invisible to Goblin source, closures, :mem_id, and overwrite!.
+    fn declare_raw_local(&mut self) -> u8 {
+        let slot = self.next_raw_slot;
+        self.next_raw_slot = self.next_raw_slot.saturating_add(1);
         slot
     }
 
@@ -159,6 +171,7 @@ impl FunctionScope {
             owner_glam: None,
             source_file,
             global_names,
+            raw_locals: self.next_raw_slot as usize,
         }
     }
 }
@@ -1985,44 +1998,45 @@ impl Compiler {
                         span_debug: String::new(),
                     }),
                 };
-                // Compile iterable; coerce maps/strings/nil to sequential array
+                // Coerce iterable to a Collection (Rc-backed, O(1) clone per iteration).
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::CallBuiltin(BuiltinId::ToForIter, 1));
-                let iter_slot = self.scope_mut().declare_local("__for_iter__");
-                self.emit(Opcode::StoreLocal(iter_slot));
-                // index = 0
+                // iter, len, idx go into raw (arena-free) slots — they have no
+                // Goblin identity and need no tether/stash round-trip.
+                let iter_raw = self.scope_mut().declare_raw_local(); // __for_iter__
+                self.emit(Opcode::StoreRawLocal(iter_raw));
+                // Cache length once (O1: eliminates N Count() calls in the hot loop).
+                self.emit(Opcode::LoadRawLocal(iter_raw));
+                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
+                let len_raw = self.scope_mut().declare_raw_local(); // __for_len__
+                self.emit(Opcode::StoreRawLocal(len_raw));
+                // Counter starts at 0.
                 let zero = self.scope_mut().add_constant(Value::Int(0));
                 self.emit(Opcode::LoadConst(zero));
-                let idx_slot = self.scope_mut().declare_local("__for_i__");
-                self.emit(Opcode::StoreLocal(idx_slot));
-                // loop variable slot
+                let idx_raw = self.scope_mut().declare_raw_local(); // __for_i__
+                self.emit(Opcode::StoreRawLocal(idx_raw));
+                // Loop variable is a normal tethered local — user code can reference it.
                 let var_slot = self.scope_mut().declare_local(&var_name);
-                self.emit(Opcode::LoadConst(zero));
+                self.emit(Opcode::LoadNil);
                 self.emit(Opcode::StoreLocal(var_slot));
-                // loop_start: idx < count(iter)?
+                // loop condition: idx < len  (raw local reads, no arena)
                 let loop_start = self.scope_mut().bytecode.len();
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
+                self.emit(Opcode::LoadRawLocal(idx_raw));
+                self.emit(Opcode::LoadRawLocal(len_raw));
                 self.emit(Opcode::Lt);
                 let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // elem = iter[idx]
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::LoadLocal(idx_slot));
+                // var = iter[idx]  (iter is Rc-backed Collection: O(1) clone)
+                self.emit(Opcode::LoadRawLocal(iter_raw));
+                self.emit(Opcode::LoadRawLocal(idx_raw));
                 self.emit(Opcode::GetIndex);
-                self.emit(Opcode::StoreLocal(var_slot));
-                // push loop context for stop/skip
-                self.loop_stack.push(LoopCtx::default());
+                self.emit(Opcode::StoreLocal(var_slot)); // 1 alloc_value per iter (user var)
                 // body
+                self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[2])?;
                 self.emit(Opcode::Pop);
-                // increment position (skip jumps here)
+                // increment (O2: IncrRawLocal — no stack round-trip, no alloc_value)
                 let increment_ip = self.scope_mut().bytecode.len();
-                let one = self.scope_mut().add_constant(Value::Int(1));
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::LoadConst(one));
-                self.emit(Opcode::Add);
-                self.emit(Opcode::StoreLocal(idx_slot));
+                self.emit(Opcode::IncrRawLocal(idx_raw));
                 // back-jump
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);

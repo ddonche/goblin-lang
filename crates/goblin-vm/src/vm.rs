@@ -43,15 +43,20 @@ pub struct CallFrame {
     /// If this is a method call, the tether for `self` in the caller's frame.
     /// On return, if the result is an Object with same uuid, overwrite this tether.
     pub self_tether: Option<Tether>,
+    /// Arena-free raw internal slots for VM-generated loop temporaries.
+    /// Not visible to Goblin source code, closures, :mem_id, or overwrite!.
+    pub raw_locals: Vec<Value>,
 }
 
 impl CallFrame {
     fn new(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> Self {
         let n = func.locals;
+        let raw_n = func.raw_locals;
         CallFrame {
             locals: vec![None; n],
             type_locks: vec![None; n],
             hard_type_locks: vec![None; n],
+            raw_locals: vec![Value::Nil; raw_n],
             upvalues, ip: 0, func, stack_base, self_tether: None,
         }
     }
@@ -318,6 +323,30 @@ impl Vm {
                 arr.push(elem);
                 let new_t = self.session.alloc_value(Value::Array(arr));
                 self.call_stack.last_mut().unwrap().store_local(slot, new_t, &mut self.session);
+            }
+
+            // ── Raw internal slots (loop temporaries, arena-free) ─────────────
+            Opcode::LoadRawLocal(slot) => {
+                let v = self.call_stack.last()
+                    .and_then(|f| f.raw_locals.get(slot as usize))
+                    .cloned()
+                    .unwrap_or(Value::Nil);
+                self.stack.push(Operand::Val(v));
+            }
+            Opcode::StoreRawLocal(slot) => {
+                let val = self.stack_pop()?;
+                let frame = self.call_stack.last_mut().unwrap();
+                let idx = slot as usize;
+                if idx >= frame.raw_locals.len() {
+                    frame.raw_locals.resize(idx + 1, Value::Nil);
+                }
+                frame.raw_locals[idx] = val;
+            }
+            Opcode::IncrRawLocal(slot) => {
+                let frame = self.call_stack.last_mut().unwrap();
+                if let Some(Value::Int(n)) = frame.raw_locals.get_mut(slot as usize) {
+                    *n += 1;
+                }
             }
 
             // ── Globals ──────────────────────────────────────────────────────
@@ -3546,6 +3575,8 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
+            raw_locals: 0,
         }
     }
 
@@ -3588,6 +3619,8 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
+            raw_locals: 0,
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -3616,6 +3649,8 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
+            raw_locals: 0,
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -3642,6 +3677,8 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
+            raw_locals: 0,
         };
 
         // Outer: create inner, call with 5, return result
@@ -3661,6 +3698,8 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
+            raw_locals: 0,
         };
 
         let result = vm.execute(outer).unwrap();

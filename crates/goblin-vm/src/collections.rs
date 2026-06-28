@@ -106,6 +106,29 @@ fn resolve_seq_index(idx: i64, len: usize) -> Result<usize, GoblinError> {
     }
 }
 
+// ── Direct layout index (no to_vec, O(1) for FlatArray/RingBuf/ChunkedSeq) ───
+
+fn collection_get_seq_index(c: &crate::value::CollectionValue, idx: i64) -> Result<Value, GoblinError> {
+    use crate::value::CollectionLayout;
+    match &c.layout {
+        CollectionLayout::FlatArray(rc_vec) => {
+            let i = resolve_seq_index(idx, rc_vec.len())?;
+            Ok(rc_vec[i].clone())
+        }
+        CollectionLayout::RingBuf(rb) => {
+            let i = resolve_seq_index(idx, rb.len)?;
+            Ok(rb.get(i).cloned().unwrap_or(Value::Nil))
+        }
+        CollectionLayout::ChunkedSeq(cs) => {
+            let i = resolve_seq_index(idx, cs.len)?;
+            Ok(cs.get(i).cloned().unwrap_or(Value::Nil))
+        }
+        CollectionLayout::SmallMap(_) | CollectionLayout::HashMapBackend(_) => {
+            Err(GoblinError::Runtime("integer index into map-backed collection".into()))
+        }
+    }
+}
+
 // ── Main dispatch ─────────────────────────────────────────────────────────────
 
 pub fn collection_operation(
@@ -1116,9 +1139,8 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
                     Value::Int(n) => *n,
                     _ => return Err(GoblinError::type_error("int", key.type_name(), "index")),
                 };
-                let items = to_vec(c);
-                let i = resolve_seq_index(idx, items.len())?;
-                Ok(items[i].clone())
+                // Use direct layout access — no to_vec(), O(1) for FlatArray.
+                collection_get_seq_index(c, idx)
             }
         }
         Value::Str(s) => {
