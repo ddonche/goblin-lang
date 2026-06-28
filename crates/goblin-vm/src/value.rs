@@ -317,6 +317,9 @@ pub struct FunctionObject {
     /// Global slot names for this function's compilation unit — parallel to session.globals.
     /// Used by string interpolation to resolve {varname} by name within the right module scope.
     pub global_names: Vec<String>,
+    /// Number of raw (arena-free) internal slots needed by this function.
+    /// Populated by the compiler for VM-generated loop temporaries (__for_i__, etc.).
+    pub raw_locals: usize,
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected
