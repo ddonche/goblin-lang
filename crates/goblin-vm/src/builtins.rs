@@ -2886,28 +2886,49 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
         BuiltinId::ToForIter => {
             let v = read(0)?;
-            let arr = match v {
-                Value::Array(xs) => Value::Array(xs),
-                Value::Collection(c) => {
-                    if crate::collections::is_map_collection(&c) {
-                        Value::Array(crate::collections::to_pairs(&c).into_iter()
-                            .map(|(k, v)| Value::Array(vec![k, v]))
-                            .collect())
-                    } else {
-                        Value::Array(crate::collections::to_vec(&c))
-                    }
+            // Always return Value::Collection(Rc<…>) so that loading the iterator
+            // slot each iteration is an O(1) Rc-clone instead of an O(N) Vec-clone.
+            let col = match v {
+                // Already a FlatArray collection — return as-is (O(1) Rc clone).
+                Value::Collection(c) if !crate::collections::is_map_collection(&c) => {
+                    Value::Collection(c)
                 }
-                Value::Map(m) => Value::Array(m.into_iter()
-                    .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
-                    .collect()),
-                Value::MapOrd(m) => Value::Array(m.into_iter()
-                    .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
-                    .collect()),
-                Value::Str(s) => Value::Array(s.chars().map(Value::Char).collect()),
-                Value::Nil => Value::Array(Vec::new()),
+                // Map-backed collection — expand into [key, val] pairs.
+                Value::Collection(c) => {
+                    Value::Collection(Rc::new(crate::value::CollectionValue::from_flat(
+                        crate::collections::to_pairs(&c).into_iter()
+                            .map(|(k, v)| Value::Array(vec![k, v]))
+                            .collect()
+                    )))
+                }
+                Value::Array(xs) => Value::Collection(Rc::new(
+                    crate::value::CollectionValue::from_flat(xs)
+                )),
+                Value::Map(m) => Value::Collection(Rc::new(
+                    crate::value::CollectionValue::from_flat(
+                        m.into_iter()
+                            .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
+                            .collect()
+                    )
+                )),
+                Value::MapOrd(m) => Value::Collection(Rc::new(
+                    crate::value::CollectionValue::from_flat(
+                        m.into_iter()
+                            .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
+                            .collect()
+                    )
+                )),
+                Value::Str(s) => Value::Collection(Rc::new(
+                    crate::value::CollectionValue::from_flat(
+                        s.chars().map(Value::Char).collect()
+                    )
+                )),
+                Value::Nil => Value::Collection(Rc::new(
+                    crate::value::CollectionValue::from_flat(Vec::new())
+                )),
                 other => return Err(GoblinError::type_error("array/map/string", other.type_name(), "for..in")),
             };
-            Ok(arr)
+            Ok(col)
         }
 
         BuiltinId::IsType => {

@@ -251,6 +251,19 @@ pub enum Opcode {
     /// If tether_count == 1 (sole owner), mutates in place (O(1)).
     /// Otherwise falls back to clone + alloc (O(N)).
     ArrayPushToLocal(u8),
+
+    // ── Raw internal slots (arena-free, not visible to Goblin source) ─────────
+    /// Push raw_locals[slot] onto the stack as Val (no arena lookup, no tether).
+    /// Used exclusively for VM-generated temporaries: loop counters, cached lengths,
+    /// and iterator cursors.  These slots have no identity — :mem_id/:mem_addr error,
+    /// overwrite! cannot reach them, closures cannot capture them.
+    LoadRawLocal(u8),
+    /// Pop stack top and store directly into raw_locals[slot] (no alloc_value, no
+    /// tether).  The old value is simply dropped.
+    StoreRawLocal(u8),
+    /// Increment raw_locals[slot] in-place as Int by 1.  No allocation, no stack
+    /// round-trip.  Silent no-op if the slot is not Int (defensive).
+    IncrRawLocal(u8),
 }
 
 impl Opcode {
@@ -345,6 +358,9 @@ impl Opcode {
             Opcode::TupleSplit(_)        => "TupleSplit",
             Opcode::StoreBox(_, _)       => "StoreBox",
             Opcode::ArrayPushToLocal(_)  => "ArrayPushToLocal",
+            Opcode::LoadRawLocal(_)      => "LoadRawLocal",
+            Opcode::StoreRawLocal(_)     => "StoreRawLocal",
+            Opcode::IncrRawLocal(_)      => "IncrRawLocal",
         }
     }
 }
