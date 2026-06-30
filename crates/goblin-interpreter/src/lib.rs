@@ -12304,17 +12304,63 @@ fn call_action_by_name(
             acc
         }
 
-        // ===== PROVOKE: validate conditions or error =====
-        "provoke" => {
+        // ===== ASSERT: catchable invariant check =====
+        "assert" => {
             use goblin_diagnostics::{Diagnostic, Severity};
             use crate::diagnostics::rtcode;
-            
-            // provoke(condition) or provoke(condition, message)
+
             if args.is_empty() || args.len() > 2 {
                 return Err(
                     Diagnostic::new_with_code(
                         Severity::Error,
-                        rtcode::WRONG_ARITY, // R0301
+                        rtcode::WRONG_ARITY,
+                        "wrong-arity",
+                        &format!(
+                            "Wrong number of arguments to assert (expected 1-2, got {}).",
+                            args.len()
+                        ),
+                        sp.clone(),
+                    )
+                    .with_help("Usage: assert(condition) or assert(condition, message)")
+                    .with_link("https://goblinlang.org/docs/errors#R0301"),
+                );
+            }
+
+            let condition = as_bool(args[0].clone(), sp.clone(), "assert condition")?;
+
+            if !condition {
+                let msg = if args.len() == 2 {
+                    fmt_value_raw(&args[1])
+                } else {
+                    "Assertion failed".to_string()
+                };
+
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::ASSERTION_FAILED,
+                        "assertion-failed",
+                        &msg,
+                        sp.clone(),
+                    )
+                    .with_help("This condition must be true to proceed.")
+                    .with_link("https://goblinlang.org/docs/errors#A0501"),
+                );
+            }
+
+            Value::Bool(true)
+        }
+
+        // ===== PROVOKE: uncatchable fatal constraint check =====
+        "provoke" => {
+            use goblin_diagnostics::{Diagnostic, Severity};
+            use crate::diagnostics::rtcode;
+
+            if args.is_empty() || args.len() > 2 {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        rtcode::WRONG_ARITY,
                         "wrong-arity",
                         &format!(
                             "Wrong number of arguments to provoke (expected 1-2, got {}).",
@@ -12326,32 +12372,30 @@ fn call_action_by_name(
                     .with_link("https://goblinlang.org/docs/errors#R0301"),
                 );
             }
-            
-            // args[0] is already a Value, just check if it's truthy
+
             let condition = as_bool(args[0].clone(), sp.clone(), "provoke condition")?;
-            
+
             if !condition {
-                // Get custom message or generate one
                 let msg = if args.len() == 2 {
                     fmt_value_raw(&args[1])
                 } else {
                     "Provoked constraint violated".to_string()
                 };
-                
-                return Err(
-                    Diagnostic::new_with_code(
-                        Severity::Error,
-                        rtcode::TYPE_MISMATCH, // R0205 (reusing existing code)
-                        "constraint-violated",
-                        &msg,
-                        sp.clone(),
-                    )
-                    .with_help("This condition must be true to proceed.")
-                    .with_link("https://goblinlang.org/docs/errors#R0205"),
-                );
+
+                let d = Diagnostic::new_with_code(
+                    Severity::Error,
+                    rtcode::PROVOKED_ABORT,
+                    "provoked-abort",
+                    &msg,
+                    sp.clone(),
+                )
+                .with_help("This constraint must be true to continue. The program cannot recover.")
+                .with_link("https://goblinlang.org/docs/errors#A0502");
+
+                eprintln!("{}", d);
+                std::process::abort();
             }
-            
-            // Condition passed - return true (no Ok() wrapper needed here)
+
             Value::Bool(true)
         }
 
