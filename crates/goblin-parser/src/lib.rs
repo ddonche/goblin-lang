@@ -1220,7 +1220,21 @@ impl<'t> Parser<'t> {
                 }
                 continue;
             }
-            if self.eat_op("!") {
+            if self.peek_op("!") {
+                // Don't consume `!!` if followed by `=>` — that's the `!! =>` error guard.
+                if matches!(self.toks.get(self.i + 1), Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == "!")) {
+                    let mut k = self.i + 2;
+                    while let Some(t) = self.toks.get(k) {
+                        match &t.kind {
+                            goblin_lexer::TokenKind::Newline | goblin_lexer::TokenKind::Indent | goblin_lexer::TokenKind::Dedent => { k += 1; }
+                            _ => break,
+                        }
+                    }
+                    if matches!(self.toks.get(k), Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == "=>")) {
+                        break; // leave `!! =>` for the bind parser
+                    }
+                }
+                self.i += 1; // consume '!'
                 // name!(args) for ANY ident (cast types, mutation builtins, etc.)
                 // e.g. str!(age), update_at!(meta, "id", val), delete_where!(xs, pred)
                 let is_any_ident = matches!(&expr, PExpr::Ident(_));
@@ -3026,6 +3040,42 @@ impl<'t> Parser<'t> {
             }
         }
 
+        // Optional error guard: `!! => <stmt>`
+        // Parallel to `?? =>` nil guard, but catches runtime errors instead of nil values.
+        let mut err_guard: Option<ast::Stmt> = None;
+        let err_guard_start_i = self.i;
+        {
+            let save_i = self.i;
+            let is_first_bang = matches!(self.toks.get(self.i),
+                Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "!"));
+            let is_second_bang = matches!(self.toks.get(self.i + 1),
+                Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "!"));
+            if is_first_bang && is_second_bang {
+                self.i += 2; // consume `!!`
+                let mut j = self.i;
+                while let Some(tok) = self.toks.get(j) {
+                    match &tok.kind {
+                        TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => { j += 1; continue; }
+                        TokenKind::Op(s) if s == ";" => { j += 1; continue; }
+                        _ => break,
+                    }
+                }
+                if matches!(self.toks.get(j), Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "=>")) {
+                    self.i = j + 1; // consume `=>`
+                    while let Some(t) = self.peek() {
+                        if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                            self.i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    err_guard = Some(self.parse_stmt()?);
+                } else {
+                    self.i = save_i;
+                }
+            }
+        }
+
         // 5) Build Stmt::Bind (single target)
         let name_for_cond = name_text.clone();
         let span_for_cond = name_span.clone();
@@ -3073,6 +3123,67 @@ impl<'t> Parser<'t> {
             let block_span = Self::span_from_tokens(self.toks, start_i_expr, self.i.saturating_sub(1));
             return Ok(ast::Stmt::Block {
                 stmts: vec![bind_stmt, if_stmt],
+                span: block_span,
+            });
+        }
+
+        // If an error guard was present, desugar:
+        //   name | expr !! => guard_stmt
+        // Into:
+        //   name | nil
+        //   attempt
+        //       name |= expr
+        //   rescue
+        //       guard_stmt
+        if let Some(err_guard_stmt) = err_guard {
+            let attempt_span = Self::span_from_tokens(
+                self.toks,
+                err_guard_start_i.min(self.toks.len().saturating_sub(1)),
+                self.i.saturating_sub(1),
+            );
+            let block_span = Self::span_from_tokens(self.toks, start_i_expr, self.i.saturating_sub(1));
+
+            let pre_bind = ast::Stmt::Bind(ast::BindStmt {
+                name: (name_for_cond.clone(), span_for_cond.clone()),
+                expr: ast::Expr::Nil(attempt_span.clone()),
+                is_imm: false,
+                is_local: false,
+                mode: ast::BindMode::Tether,
+                span: attempt_span.clone(),
+                class_name: None,
+                lock_type: None,
+            });
+
+            let retether_bind = if let ast::Stmt::Bind(mut bs) = bind_stmt {
+                bs.mode = ast::BindMode::Retether;
+                ast::Stmt::Bind(bs)
+            } else {
+                bind_stmt
+            };
+
+            let attempt_body = ast::Expr::Block {
+                stmts: vec![retether_bind],
+                span: attempt_span.clone(),
+            };
+            let rescue_body = ast::Expr::Block {
+                stmts: vec![err_guard_stmt],
+                span: attempt_span.clone(),
+            };
+            let rescues_expr = ast::Expr::Array(
+                vec![ast::Expr::Array(
+                    vec![ast::Expr::Nil(attempt_span.clone()), rescue_body],
+                    attempt_span.clone(),
+                )],
+                attempt_span.clone(),
+            );
+            let attempt_stmt = ast::Stmt::Expr(ast::Expr::FreeCall(
+                "attempt".to_string(),
+                vec![attempt_body, rescues_expr],
+                attempt_span.clone(),
+            ));
+
+            return Ok(ast::Stmt::Block {
+                stmts: vec![pre_bind, attempt_stmt],
                 span: block_span,
             });
         }
@@ -9315,7 +9426,32 @@ impl<'t> Parser<'t> {
         
         debug_assert_eq!(self.peek_ident().as_deref(), Some("provoke"));
         let _ = self.eat_ident();
-        
+
+        // Call form: provoke(condition) or provoke(condition, message)
+        if self.peek_op("(") {
+            self.i += 1; // consume '('
+            let mut call_args: Vec<ast::Expr> = Vec::new();
+            self.skip_layout();
+            if !self.peek_op(")") {
+                loop {
+                    let arg_pe = self.parse_coalesce()?;
+                    call_args.push(self.lower_expr(arg_pe));
+                    self.skip_layout_inline();
+                    if !self.eat_op(",") { break; }
+                    self.skip_layout();
+                }
+            }
+            if !self.eat_op(")") {
+                return Err(s_help_site!(
+                    "P0505",
+                    "Expected ')' to close provoke(...)",
+                    "Close the argument list with ')'."
+                ));
+            }
+            let span = Self::span_from_tokens(self.toks, header_tok_i, self.i.saturating_sub(1));
+            return Ok(ast::Stmt::Expr(ast::Expr::FreeCall("provoke".to_string(), call_args, span)));
+        }
+
         // Check for inline form: provoke => condition
         self.skip_newlines();
         if self.peek_op("=>") {
@@ -11136,7 +11272,24 @@ impl<'t> Parser<'t> {
                 }
                 continue;
             }
-            if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());  continue; }
+            if self.peek_op("!") {
+                // Don't consume `!!` if followed by `=>` — that's the `!! =>` error guard.
+                if matches!(self.toks.get(self.i + 1), Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == "!")) {
+                    let mut k = self.i + 2;
+                    while let Some(t) = self.toks.get(k) {
+                        match &t.kind {
+                            goblin_lexer::TokenKind::Newline | goblin_lexer::TokenKind::Indent | goblin_lexer::TokenKind::Dedent => { k += 1; }
+                            _ => break,
+                        }
+                    }
+                    if matches!(self.toks.get(k), Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == "=>")) {
+                        break; // leave `!! =>` for the bind parser
+                    }
+                }
+                self.i += 1;
+                lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());
+                continue;
+            }
             if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());  continue; }
             if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());  continue; }
 

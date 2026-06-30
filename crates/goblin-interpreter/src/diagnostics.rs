@@ -217,6 +217,10 @@ pub mod rtcode {
     pub const MISSING_PROVIDER_ACTION:  &str = "B0107"; // configured provider action does not exist
     pub const NEED_OUTSIDE_GLAM:        &str = "B0108"; // need() called outside any GLAM action context
 
+    // ASSERTION / PROVOKE
+    pub const ASSERTION_FAILED: &str = "A0501"; // :assert condition was false
+    pub const PROVOKED_ABORT:   &str = "A0502"; // :provoke condition was false (fatal, uncatchable)
+
     // YALL
     pub const YALL_PARSE_FAILED:  &str = "YA0001"; // strict parse failure (syntax)
     pub const YALL_ENFORCE_FAILED:&str = "YA0002"; // enforcement-level fail (rules/comments)
