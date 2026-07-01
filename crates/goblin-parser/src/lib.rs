@@ -6504,7 +6504,7 @@ impl<'t> Parser<'t> {
                     let lhs = self.lower_expr(lhs_pe);
 
                     match lhs {
-                        ast::Expr::Index(base, index, _) => {
+                        ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
                             let call = ast::Expr::FreeCall(
                                 "update_at!".to_string(),
                                 vec![*base, *index, rhs],
@@ -6542,6 +6542,64 @@ impl<'t> Parser<'t> {
                 }
 
                 // Not actually a |! statement; rewind and let normal parsing handle it.
+                self.i = save_i;
+            }
+        }
+
+        // ---- indexed !| delete sugar: array[1] !|  or  name !| ----
+        {
+            let save_i = self.i;
+
+            if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident)) {
+                let lhs_pe = self.parse_coalesce()?;
+
+                self.skip_newlines();
+
+                if self.peek_op("!|") {
+                    let op_sp = self.peek().unwrap().span.clone();
+                    let _ = self.eat_op("!|");
+
+                    let lhs = self.lower_expr(lhs_pe);
+
+                    match lhs {
+                        ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "delete_at!".to_string(),
+                                vec![*base, *index],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        ast::Expr::Index2(base, x, y, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "delete_at2!".to_string(),
+                                vec![*base, *x, *y],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        ast::Expr::Ident(_, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "delete!".to_string(),
+                                vec![lhs],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        _ => {
+                            return Err(s_help_site!(
+                                "P04D1",
+                                "Invalid target for '!|' delete",
+                                "Use '!|' with a name or indexed collection target: names !| or names[0] !|."
+                            ));
+                        }
+                    }
+                }
+
+                // Not a !| statement; rewind and let normal parsing handle it.
                 self.i = save_i;
             }
         }
