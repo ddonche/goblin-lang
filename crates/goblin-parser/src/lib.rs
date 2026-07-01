@@ -2516,37 +2516,18 @@ impl<'t> Parser<'t> {
         if let Some(tok) = self.toks.get(j) {
             if matches!(tok.kind, TokenKind::Op(ref s) if s == "=>") {
                 self.i = j + 1;
-                
-                // Check if this is a return statement
-                if let Some(ret_tok) = self.toks.get(self.i) {
-                    if matches!(ret_tok.kind, TokenKind::Ident) && matches!(ret_tok.value.as_deref(), Some("return") | Some("send")) {
-                        self.i += 1; // consume 'return'
-                        let pexpr = self.parse_coalesce()?;
-                        let expr = self.lower_expr(pexpr);
-                        
-                        // Create ReturnStmt properly
-                        let ret_stmt = ast::Stmt::Return(ast::ReturnStmt {
-                            values: vec![expr],
-                            span: action_span.clone(),
-                        });
-                        let act = ast::ActionDecl {
-                            name: pa.name,
-                            params,
-                            body: ast::ActionBody::Block(vec![ret_stmt]),
-                            span: action_span,
-                            ret: None,
-                        };
-                        return Ok(ast::Stmt::Action(act));
-                    }
-                }
-                
-                // Normal expression case
-                let pexpr = self.parse_coalesce()?;
-                let expr  = self.lower_expr(pexpr);
+
+                // Parse statement chain (supports `=> stmt => stmt => ...`)
+                let chain_stmt = self.parse_arrow_stmt_chain()?;
+                let body = match chain_stmt {
+                    ast::Stmt::Expr(e) => ast::ActionBody::Expr(e),
+                    ast::Stmt::Block { stmts, .. } => ast::ActionBody::Block(stmts),
+                    other => ast::ActionBody::Block(vec![other]),
+                };
                 let act = ast::ActionDecl {
                     name: pa.name,
                     params,
-                    body: ast::ActionBody::Expr(expr),
+                    body,
                     span: action_span,
                     ret: None,
                 };
@@ -2667,6 +2648,36 @@ impl<'t> Parser<'t> {
         } else {
             false
         }
+    }
+
+    // Parse one statement after `=>`, then continue consuming `=> stmt` as long as the next
+    // significant token (no newline crossing) is `=>`.  Returns a single Stmt; if more than
+    // one statement was collected they are wrapped in Stmt::Block.
+    fn parse_arrow_stmt_chain(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let start_i = self.i;
+
+        let first = self.parse_stmt()?;
+
+        if !self.peek_op("=>") {
+            return Ok(first);
+        }
+
+        let mut stmts = vec![first];
+        while self.peek_op("=>") {
+            self.i += 1; // consume `=>`
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) {
+                    self.i += 1;
+                } else {
+                    break;
+                }
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Block { stmts, span })
     }
 
     // === BEGIN: parse_bind_stmt (tuple targets + |= + fallback-to-expr for comma expressions) ===
@@ -3032,7 +3043,7 @@ impl<'t> Parser<'t> {
                         }
                     }
 
-                    rhs_guard = Some(self.parse_stmt()?);
+                    rhs_guard = Some(self.parse_arrow_stmt_chain()?);
                 } else {
                     // Not a guard; rewind to before '??'
                     self.i = save_i;
@@ -3069,7 +3080,7 @@ impl<'t> Parser<'t> {
                             break;
                         }
                     }
-                    err_guard = Some(self.parse_stmt()?);
+                    err_guard = Some(self.parse_arrow_stmt_chain()?);
                 } else {
                     self.i = save_i;
                 }
@@ -4792,16 +4803,20 @@ impl<'t> Parser<'t> {
                     }
                 }
                 
-                // Parse single statement
-                let stmt = self.parse_stmt()?;
-                
+                // Parse statement chain (supports `=> stmt => stmt => ...`)
+                let chain_stmt = self.parse_arrow_stmt_chain()?;
+
                 // Calculate span for the entire inline if
                 let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                
-                // Create single-statement block
-                let then_block = ast::Expr::Block { 
-                    stmts: vec![stmt], 
-                    span: span.clone() 
+
+                // Flatten chain into block stmts
+                let then_stmts = match chain_stmt {
+                    ast::Stmt::Block { stmts, .. } => stmts,
+                    other => vec![other],
+                };
+                let then_block = ast::Expr::Block {
+                    stmts: then_stmts,
+                    span: span.clone()
                 };
                 
                 // Return inline if (no elif, no else)
