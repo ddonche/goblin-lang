@@ -16217,6 +16217,65 @@ fn call_action_by_name(
             Value::Str(out)
         }
 
+        // ========================= URL ENCODE / DECODE ==========================
+
+        "url_encode" => {
+            arity(1)?;
+            let s = want_str(&args[0], "url_encode")?;
+            let mut out = String::with_capacity(s.len() * 3);
+            for byte in s.as_bytes() {
+                match byte {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+                    | b'-' | b'_' | b'.' | b'~' => out.push(*byte as char),
+                    b => { out.push('%'); out.push_str(&format!("{:02X}", b)); }
+                }
+            }
+            Value::Str(out)
+        }
+
+        "url_decode" => {
+            arity(1)?;
+            let s = want_str(&args[0], "url_decode")?;
+
+            fn hex_val(c: u8) -> Option<u8> {
+                match c {
+                    b'0'..=b'9' => Some(c - b'0'),
+                    b'a'..=b'f' => Some(c - b'a' + 10),
+                    b'A'..=b'F' => Some(c - b'A' + 10),
+                    _ => None,
+                }
+            }
+
+            let bytes = s.as_bytes();
+            let mut out_bytes: Vec<u8> = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'%' if i + 2 < bytes.len() => {
+                        match (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                            (Some(hi), Some(lo)) => {
+                                out_bytes.push(hi * 16 + lo);
+                                i += 3;
+                            }
+                            _ => {
+                                out_bytes.push(bytes[i]);
+                                i += 1;
+                            }
+                        }
+                    }
+                    b'+' => {
+                        out_bytes.push(b' ');
+                        i += 1;
+                    }
+                    b => {
+                        out_bytes.push(b);
+                        i += 1;
+                    }
+                }
+            }
+            Value::Str(String::from_utf8_lossy(&out_bytes).into_owned())
+        }
+
         // ======================= IGNORE / KEEP (CORE SET) =======================
 
         // -- literal remove: ignore_where(text, needle) --------------------------
