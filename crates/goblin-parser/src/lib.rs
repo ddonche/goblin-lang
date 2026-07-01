@@ -5876,11 +5876,20 @@ impl<'t> Parser<'t> {
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
-        // Strip leading : from builtin calls at statement level
+        // Strip leading : from builtin calls at statement level.
+        // Exception: :ident!(args) bang form — do NOT strip; let parse_primary handle it
+        // via the :builtin!(args) path, otherwise parse_postfix produces a Postfix node
+        // that the interpreter mishandles as logical-NOT (T0203).
         if self.peek_op(":") {
             if let Some(next) = self.toks.get(self.i + 1) {
                 if matches!(next.kind, TokenKind::Ident) {
-                    self.i += 1; // consume the colon
+                    let is_bang_form = matches!(
+                        self.toks.get(self.i + 2),
+                        Some(t) if matches!(&t.kind, goblin_lexer::TokenKind::Op(s) if s == "!")
+                    );
+                    if !is_bang_form {
+                        self.i += 1; // consume the colon
+                    }
                 }
             }
         }
