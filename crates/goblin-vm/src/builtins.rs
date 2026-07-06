@@ -3920,6 +3920,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) };
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token key")) };
+            if ns.eq_ignore_ascii_case("GOBLIN") && key.eq_ignore_ascii_case("EMPTY") {
+                return Ok(Value::Str(String::new()));
+            }
             match session.token_store.get(&ns).and_then(|m| m.get(&key)) {
                 Some(v) => Ok(v.clone()),
                 None => Ok(Value::Nil),
@@ -4463,6 +4466,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let module = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token module")) };
             let ident  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token ident")) };
+            if module.eq_ignore_ascii_case("GOBLIN") && ident.eq_ignore_ascii_case("EMPTY") {
+                return Ok(Value::Str(String::new()));
+            }
             match session.token_store.get(&module).and_then(|m| m.get(&ident)) {
                 Some(Value::Str(s)) if s.contains("{#") => {
                     let resolved = resolve_box_template_vm(s, &session.box_store);

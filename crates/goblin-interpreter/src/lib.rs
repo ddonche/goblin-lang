@@ -3136,7 +3136,7 @@ fn parse_dice_string(s: &str, sp: Span) -> Result<BTreeMap<String, Value>, Diag>
 }
 
 // Render "Hello {name}" by looking identifiers up in the Session env.
-// NEW: Supports "\{" -> "{" and "\}" -> "}", and resolves triple-brace tokens.
+// NEW: Supports "\{" -> "{" and "\}" -> "}", and resolves triple-brace if !module.is_empty() && !ident.is_empty() {s.
 // Legacy "{{" / "}}" escapes have been removed.
 fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String, Diag> {
     // ---- RAW BYPASS: if string came from raw(), return it literally (no changes)
@@ -3238,6 +3238,10 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
                         let ident  = inner_trim[pos + 2..].trim();
 
                         if !module.is_empty() && !ident.is_empty() {
+                            if module.eq_ignore_ascii_case("GOBLIN") && ident.eq_ignore_ascii_case("EMPTY") {
+                                i = j + 3;
+                                continue;
+                            }
                             // --------------------------------------
                             // SPECIAL CASE: OVERRIDE::NAME as a map
                             // --------------------------------------
@@ -18812,6 +18816,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         // inside: fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag>
 
         ast::Expr::LiteralToken { module, ident, span } => {
+            if module.eq_ignore_ascii_case("GOBLIN") && ident.eq_ignore_ascii_case("EMPTY") {
+                return Ok(Value::Str(String::new()));
+            }
             // 1) Static registry path
             if let Some(v) = sess.resolve_token_value(module.as_str(), ident.as_str()) {
                 return Ok(v);
