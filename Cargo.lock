@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.47.45"
+version = "0.47.46"
 dependencies = [
  "anyhow",
  "clap",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-interpreter"
-version = "0.46.27"
+version = "0.46.28"
 dependencies = [
  "blake3",
  "chrono",

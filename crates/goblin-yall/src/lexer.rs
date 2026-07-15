@@ -215,7 +215,12 @@ impl<'a> Lexer<'a> {
                     tokens.push(self.read_string()?);
                 }
                 _ => {
-                    if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '#' {
+                    if ch.is_alphanumeric()
+                        || ch == '_'
+                        || ch == '-'
+                        || ch == '#'
+                        || ch == '/'
+                    {
                         tokens.push(self.read_bare()?);
                     } else {
                         return self.error(&format!("unexpected character '{}'", ch));

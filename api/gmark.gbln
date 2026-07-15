@@ -1,0 +1,10 @@
+act id
+    repeat 10
+        a | pick 1_4
+        b | pick 2 from "a"..."z" with dups
+        c | :shuffle(a + b).upper()
+        :say c
+    xx
+xx
+
+id()                                                              
