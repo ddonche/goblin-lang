@@ -2453,15 +2453,21 @@ impl Vm {
         // Seed the compiler with the session's full accumulated global names so
         // this module's new globals get non-overlapping indices. Without this,
         // every module starts at index 0 and clobbers earlier modules' slots.
-        let globals_before = self.session.global_names.clone();
+        let globals_before_len = self.session.global_names.len();
         let module_prefix = format!("{}::",
             actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone()).display());
-        let compiled = crate::modcache::compile_import(
-            &actual_path, &globals_before, &module_prefix, owner_glam, |entry| self.quicken(entry),
-        )?;
+        let compiled = match crate::modcache::lookup(&actual_path, &self.session.global_names, &module_prefix, &owner_glam) {
+            Some(hit) => hit,
+            None => {
+                let globals_before = self.session.global_names.clone();
+                crate::modcache::compile_import(
+                    &actual_path, &globals_before, &module_prefix, owner_glam, |entry| self.quicken(entry),
+                )?
+            }
+        };
 
         // Append any new global names this module introduced.
-        for name in compiled.global_names[globals_before.len()..].iter() {
+        for name in compiled.global_names[globals_before_len..].iter() {
             self.session.global_names.push(name.clone());
         }
 

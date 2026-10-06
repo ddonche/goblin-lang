@@ -22,7 +22,7 @@ pub struct ImportedModule {
     pub entry: Rc<FunctionObject>,
     pub classes: Vec<goblin_ast::ClassDecl>,
     pub enums: Vec<goblin_ast::EnumDecl>,
-    pub global_names: Vec<String>,
+    pub global_names: Rc<Vec<String>>,
 }
 
 struct Cached {
@@ -31,7 +31,7 @@ struct Cached {
     entry: Rc<FunctionObject>,
     classes: Vec<goblin_ast::ClassDecl>,
     enums: Vec<goblin_ast::EnumDecl>,
-    global_names: Vec<String>,
+    global_names: Rc<Vec<String>>,
 }
 
 thread_local! {
@@ -49,6 +49,29 @@ fn enabled() -> bool {
     crate::reqenv::var("GOBLIN_MODULE_CACHE").as_deref() != Some("0")
 }
 
+/// The cached compilation of `path`, if it is still valid for an importer
+/// whose globals are `globals_before`.
+pub fn lookup(
+    path: &Path,
+    globals_before: &[String],
+    module_prefix: &str,
+    owner_glam: &Option<String>,
+) -> Option<ImportedModule> {
+    if !enabled() { return None; }
+    let st = stamp(path)?;
+    CACHE.with(|c| {
+        let c = c.borrow();
+        let key = (path.to_string_lossy().into_owned(), module_prefix.to_string(), owner_glam.clone());
+        c.get(&key).filter(|m| m.stamp == st && m.globals_before == globals_before).map(|m| ImportedModule {
+            entry: m.entry.clone(),
+            classes: m.classes.clone(),
+            enums: m.enums.clone(),
+            global_names: m.global_names.clone(),
+        })
+    })
+}
+
+/// Lex, parse and compile `path`, and cache the result.
 pub fn compile_import(
     path: &Path,
     globals_before: &[String],
@@ -58,17 +81,6 @@ pub fn compile_import(
 ) -> Result<ImportedModule, GoblinError> {
     let key = (path.to_string_lossy().into_owned(), module_prefix.to_string(), owner_glam.clone());
     let st = if enabled() { stamp(path) } else { None };
-    if let Some(st) = st {
-        let hit = CACHE.with(|c| {
-            c.borrow().get(&key).filter(|m| m.stamp == st && m.globals_before == globals_before).map(|m| ImportedModule {
-                entry: m.entry.clone(),
-                classes: m.classes.clone(),
-                enums: m.enums.clone(),
-                global_names: m.global_names.clone(),
-            })
-        });
-        if let Some(hit) = hit { return Ok(hit); }
-    }
 
     let source = std::fs::read_to_string(path)
         .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", path.display(), e)))?;
@@ -86,6 +98,7 @@ pub fn compile_import(
     let mut entry = compiled.entry;
     quicken(&mut entry);
     let entry = Rc::new(entry);
+    let global_names = Rc::new(compiled.global_names);
 
     if let Some(st) = st {
         CACHE.with(|c| c.borrow_mut().insert(key, Cached {
@@ -94,8 +107,8 @@ pub fn compile_import(
             entry: entry.clone(),
             classes: compiled.classes.clone(),
             enums: compiled.enums.clone(),
-            global_names: compiled.global_names.clone(),
+            global_names: global_names.clone(),
         }));
     }
-    Ok(ImportedModule { entry, classes: compiled.classes, enums: compiled.enums, global_names: compiled.global_names })
+    Ok(ImportedModule { entry, classes: compiled.classes, enums: compiled.enums, global_names })
 }
