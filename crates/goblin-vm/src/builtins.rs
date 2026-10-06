@@ -445,7 +445,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 s.chars().map(|c| Value::Str(c.to_string())).collect()
             } else if sep.starts_with("r/") && sep.len() > 2 {
                 let pattern = &sep[2..];
-                let re = regex::Regex::new(pattern).map_err(|e| GoblinError::Runtime(format!("split: invalid regex: {}", e)))?;
+                let re = crate::collections::cached_regex(pattern).map_err(|e| GoblinError::Runtime(format!("split: invalid regex: {}", e)))?;
                 re.split(&s).map(|t| Value::Str(t.to_string())).collect()
             } else {
                 s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
@@ -670,14 +670,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "is_matching".into() }); }
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_matching pattern")) };
-            let re = regex::Regex::new(&pattern).map_err(|e| GoblinError::Runtime(format!("is_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pattern).map_err(|e| GoblinError::Runtime(format!("is_matching: invalid regex: {e}")))?;
             Ok(Value::Bool(re.is_match(&text)))
         }
         BuiltinId::CountMatching => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "count_matching".into() }); }
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "count_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "count_matching pattern")) };
-            let re = regex::Regex::new(&pattern).map_err(|e| GoblinError::Runtime(format!("count_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pattern).map_err(|e| GoblinError::Runtime(format!("count_matching: invalid regex: {e}")))?;
             Ok(Value::Int(re.find_iter(&text).count() as i64))
         }
         BuiltinId::IgnoreMatching => {
@@ -685,7 +685,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching pattern")) };
             let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
-            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_matching: invalid regex: {e}")))?;
             Ok(Value::Str(re.replace_all(&text, "").to_string()))
         }
         BuiltinId::IgnoreLinesMatching => {
@@ -693,7 +693,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching pattern")) };
             let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
-            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_lines_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_lines_matching: invalid regex: {e}")))?;
             let mut out = String::with_capacity(text.len());
             for line in text.split_inclusive('\n') {
                 let no_nl = line.strip_suffix('\n').unwrap_or(line);
@@ -706,7 +706,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching pattern")) };
             let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
-            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("keep_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("keep_matching: invalid regex: {e}")))?;
             let mut out = String::new();
             for m in re.find_iter(&text) { out.push_str(m.as_str()); }
             Ok(Value::Str(out))
@@ -876,7 +876,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::Env => {
             expect_n(1)?;
             let name = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "env")) };
-            Ok(Value::Str(std::env::var(&name).unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var(&name).unwrap_or_default()))
         }
 
         BuiltinId::Pct => {
@@ -2143,7 +2143,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // A top-level expression statement in API mode: its value becomes
             // response output, unless it is nil or prints as nothing.
             let v = read(0)?;
-            if std::env::var("GOBLIN_NONINTERACTIVE").as_deref() == Ok("1")
+            if crate::reqenv::var("GOBLIN_NONINTERACTIVE").as_deref() == Some("1")
                 && !matches!(v, Value::Nil | Value::Unit)
             {
                 let s = value_to_str(&v);
@@ -2367,6 +2367,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 c
             };
             if let Some(dir) = cwd { cmd.current_dir(dir); }
+            // A hosted request's variables reach its child processes too.
+            for (k, v) in crate::reqenv::overlay_vars() { cmd.env(k, v); }
             for (k, v) in env_vars { cmd.env(k, v); }
             match cmd.output() {
                 Ok(output) => {
@@ -2550,16 +2552,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── Request ───────────────────────────────────────────────────────────
         BuiltinId::ReqMethod => {
-            Ok(Value::Str(std::env::var("GOBLIN_METHOD").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_METHOD").unwrap_or_default()))
         }
         BuiltinId::ReqPath => {
-            Ok(Value::Str(std::env::var("GOBLIN_PATH").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_PATH").unwrap_or_default()))
         }
         BuiltinId::ReqQuery => {
-            Ok(Value::Str(std::env::var("GOBLIN_QUERY_STRING").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_QUERY_STRING").unwrap_or_default()))
         }
         BuiltinId::ReqBody => {
-            Ok(Value::Str(std::env::var("GOBLIN_BODY").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_BODY").unwrap_or_default()))
         }
         BuiltinId::ReqHeader => {
             if args.len() != 1 {
@@ -2569,7 +2571,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => s.to_lowercase(),
                 other => return Err(GoblinError::type_error("str", other.type_name(), "req_header")),
             };
-            let headers_json = std::env::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
+            let headers_json = crate::reqenv::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&headers_json).unwrap_or(serde_json::Value::Null);
             if let serde_json::Value::Object(map) = parsed {
                 for (k, v) in map {
@@ -2588,7 +2590,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => s,
                 other => return Err(GoblinError::type_error("str", other.type_name(), "cookie")),
             };
-            let headers_json = std::env::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
+            let headers_json = crate::reqenv::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&headers_json).unwrap_or(serde_json::Value::Null);
             if let serde_json::Value::Object(map) = parsed {
                 for (k, v) in map {
@@ -4575,7 +4577,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             } else {
                 format!("[^{}]+", escaped)
             };
-            match regex::Regex::new(&pattern) {
+            match crate::collections::cached_regex(&pattern) {
                 Ok(re) => {
                     let tokens: Vec<Value> = re.find_iter(&text)
                         .map(|m| Value::Str(m.as_str().to_string()))

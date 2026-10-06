@@ -111,18 +111,26 @@ impl<'a> LexerState<'a> {
 
     #[inline]
     fn bump_char(&mut self) -> Option<char> {
-        let s = std::str::from_utf8(&self.bytes[self.i..]).ok()?;
-        let mut it = s.chars();
-        let ch = it.next()?;
+        let ch = self.peek_char()?;
         let adv = ch.len_utf8();
         self.i += adv;
         self.col += adv as u32;
         Some(ch)
     }
 
+    /// The character starting at `i`. Decodes only that character: validating
+    /// the whole rest of the source on every call made lexing quadratic.
     #[inline]
     fn peek_char(&self) -> Option<char> {
-        std::str::from_utf8(&self.bytes[self.i..]).ok()?.chars().next()
+        let lead = *self.bytes.get(self.i)?;
+        let len = match lead {
+            0x00..=0x7F => return Some(lead as char),
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            _ => 4,
+        };
+        let end = (self.i + len).min(self.bytes.len());
+        std::str::from_utf8(&self.bytes[self.i..end]).ok()?.chars().next()
     }
 
     #[inline]

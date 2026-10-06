@@ -2205,9 +2205,14 @@ impl Vm {
                 // FunctionObject is behind Rc; we need to get a mutable copy.
                 // Because each worker owns its own bytecode copy, we can clone
                 // the Rc content, quicken it, and replace the Rc.
-                let mut owned = (**f).clone();
-                self.quicken(&mut owned);
-                *f = std::rc::Rc::new(owned);
+                // A freshly compiled function has one owner and is quickened
+                // in place. A shared one came from the module cache, which
+                // stores functions already quickened; copying it here (as
+                // this used to for every function) was a large part of the
+                // cost of loading a module.
+                if let Some(owned) = std::rc::Rc::get_mut(f) {
+                    self.quicken(owned);
+                }
             }
         }
     }
@@ -2397,28 +2402,15 @@ impl Vm {
             full_path.clone()
         };
 
-        let source = std::fs::read_to_string(&actual_path)
-            .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", actual_path.display(), e)))?;
-
-        let tokens = goblin_lexer::lex(&source, &actual_path.to_string_lossy())
-            .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
-
-        let module = goblin_parser::Parser::new(&tokens).parse_module()
-            .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
-
         // Seed the compiler with the session's full accumulated global names so
         // this module's new globals get non-overlapping indices. Without this,
         // every module starts at index 0 and clobbers earlier modules' slots.
         let globals_before = self.session.global_names.clone();
         let module_prefix = format!("{}::",
             actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone()).display());
-        let compiled = crate::compiler::Compiler::new()
-            .with_initial_globals(globals_before.clone())
-            .with_global_prefix(Some(module_prefix.clone()))
-            .with_glam_namespace(owner_glam)
-            .for_file(&actual_path.to_string_lossy())
-            .compile_module(&module)
-            .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
+        let compiled = crate::modcache::compile_import(
+            &actual_path, &globals_before, &module_prefix, owner_glam, |entry| self.quicken(entry),
+        )?;
 
         // Append any new global names this module introduced.
         for name in compiled.global_names[globals_before.len()..].iter() {
@@ -2453,9 +2445,7 @@ impl Vm {
         // SAME call stack (not via self.execute(), which assumes an empty
         // stack/call_stack and runs until the whole stack drains — wrong
         // here, since our caller's frame is still on the stack below us).
-        let mut entry_func = compiled.entry;
-        self.quicken(&mut entry_func);
-        let entry_rc = Rc::new(entry_func);
+        let entry_rc = compiled.entry;
         let stack_base = self.stack.len();
         let depth_before = self.call_stack.len();
         self.call_stack.push(CallFrame::new(entry_rc, Vec::new(), stack_base));
@@ -3712,6 +3702,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
         }
     }
 
@@ -3755,6 +3746,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -3784,6 +3776,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -3811,6 +3804,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -3831,6 +3825,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Vec::new(),
         };
 
         let result = vm.execute(outer).unwrap();

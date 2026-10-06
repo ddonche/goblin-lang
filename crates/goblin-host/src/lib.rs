@@ -1053,8 +1053,6 @@ enum ExecErr {
     NonZero(String),
 }
 
-static VM_EXEC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 async fn exec_goblin_script_via_vm(
     script_path: &std::path::Path,
     timeout_ms: u64,
@@ -1094,21 +1092,26 @@ async fn exec_goblin_script_via_vm(
     let is_render = goblin_vm::render::is_render_source(&src);
 
     let task = tokio::task::spawn_blocking(move || {
-        let _guard = VM_EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("GOBLIN_NONINTERACTIVE", "1");
-        std::env::set_var("GOBLIN_QUERY_STRING", &query_string);
-        std::env::set_var("GOBLIN_METHOD", &method);
-        std::env::set_var("GOBLIN_PATH", &path);
-        std::env::set_var("GOBLIN_HOST", &host);
-        std::env::set_var("GOBLIN_BODY", &body);
-        std::env::set_var("GOBLIN_REQUEST_FILE", &request_file_path);
-        std::env::set_var("GOBLIN_UPLOAD_PATH", &request_file_path);
-        std::env::set_var("GOBLIN_AUTHORIZATION", &authorization);
-        std::env::set_var("GOBLIN_HEADERS_JSON", &headers_json);
-        std::env::set_var("AUTH_USER_ID", &auth_user_id);
-        std::env::set_var("AUTH_EMAIL", &auth_email);
-        std::env::set_var("AUTH_ROLE", &auth_role);
-        std::env::set_var("AUTH_JSON", &auth_json);
+        // Each request runs on its own blocking thread with its own VM; its
+        // variables go in that thread's overlay rather than the process
+        // environment, so requests no longer have to run one at a time.
+        let vars: std::collections::HashMap<String, String> = [
+            ("GOBLIN_NONINTERACTIVE", "1".to_string()),
+            ("GOBLIN_QUERY_STRING", query_string),
+            ("GOBLIN_METHOD", method),
+            ("GOBLIN_PATH", path),
+            ("GOBLIN_HOST", host),
+            ("GOBLIN_BODY", body),
+            ("GOBLIN_REQUEST_FILE", request_file_path.clone()),
+            ("GOBLIN_UPLOAD_PATH", request_file_path),
+            ("GOBLIN_AUTHORIZATION", authorization),
+            ("GOBLIN_HEADERS_JSON", headers_json),
+            ("AUTH_USER_ID", auth_user_id),
+            ("AUTH_EMAIL", auth_email),
+            ("AUTH_ROLE", auth_role),
+            ("AUTH_JSON", auth_json),
+        ].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let _env = goblin_vm::reqenv::install(vars);
 
         if is_render {
             use goblin_vm::value::Value;

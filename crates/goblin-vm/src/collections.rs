@@ -20,8 +20,29 @@ use crate::value::{
     BackendHint, ChunkedSeq, CollectionLayout, CollectionMeta, CollectionValue, RingBuf, Value,
 };
 
+/// `Regex::new` through a per-thread cache: templates call the matching
+/// builtins with the same few patterns over and over, and compiling a regex
+/// costs far more than matching one.
+pub fn cached_regex(pat: &str) -> Result<regex::Regex, regex::Error> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+    }
+    if let Some(re) = CACHE.with(|c| c.borrow().get(pat).cloned()) {
+        return Ok(re);
+    }
+    let re = regex::Regex::new(pat)?;
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 512 { c.clear(); }
+        c.insert(pat.to_string(), re.clone());
+    });
+    Ok(re)
+}
+
 fn compile_regex(pat: &str) -> Result<regex::Regex, GoblinError> {
-    regex::Regex::new(pat).map_err(|e| GoblinError::Runtime(format!("invalid regex: {}", e)))
+    cached_regex(pat).map_err(|e| GoblinError::Runtime(format!("invalid regex: {}", e)))
 }
 
 // ── Position and Operation enums ──────────────────────────────────────────────
@@ -1640,14 +1661,29 @@ pub fn reap(coll: &CollectionValue, key: &Value) -> Result<(Value, Value), Gobli
 // ── Legacy query operations ───────────────────────────────────────────────────
 
 /// Membership: a key of a map, an element (structurally compared) of a sequence.
+/// A map key matches when it equals the needle or has the same key text
+/// (so 1 finds "1"); two strings compare directly, without formatting.
+fn key_matches(k: &Value, needle: &Value, needle_text: &str) -> bool {
+    match k {
+        Value::Str(s) => s == needle_text,
+        _ => k == needle || crate::value::map_key_text(k) == needle_text,
+    }
+}
+
 pub fn has(coll: &CollectionValue, needle: &Value) -> bool {
     match &coll.layout {
         CollectionLayout::FlatArray(v)   => v.iter().any(|x| x == needle),
         CollectionLayout::RingBuf(rb)    => (0..rb.len).any(|i| rb.get(i) == Some(needle)),
         CollectionLayout::ChunkedSeq(cs) => cs.chunks.iter().flatten().any(|x| x == needle),
-        CollectionLayout::SmallMap(_) | CollectionLayout::HashMapBackend(_) => {
+        CollectionLayout::SmallMap(pairs) => {
             let key = crate::value::map_key_text(needle);
-            to_pairs(coll).iter().any(|(k, _)| k == needle || crate::value::map_key_text(k) == key)
+            pairs.iter().any(|(k, _)| key_matches(k, needle, &key))
+        }
+        CollectionLayout::HashMapBackend(m) => {
+            m.contains_key(needle) || {
+                let key = crate::value::map_key_text(needle);
+                m.keys().any(|k| key_matches(k, needle, &key))
+            }
         }
     }
 }
