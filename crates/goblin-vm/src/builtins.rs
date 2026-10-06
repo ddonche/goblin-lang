@@ -2869,26 +2869,31 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
         BuiltinId::ToForIter => {
+            // The loop reads `iter[i]` each pass, so the iterable must be cheap to
+            // clone: an Rc-backed Collection, never a Vec-backed Value::Array
+            // (re-reading that local cloned the whole Vec every iteration).
             let v = read(0)?;
+            let seq = |items: Vec<Value>| Value::Collection(std::rc::Rc::new(CollectionValue::from_flat(items)));
             let arr = match v {
-                Value::Array(xs) => Value::Array(xs),
+                Value::Array(xs) => seq(xs),
+                Value::Seq(s) => seq(s.items),
                 Value::Collection(c) => {
                     if crate::collections::is_map_collection(&c) {
-                        Value::Array(crate::collections::to_pairs(&c).into_iter()
+                        seq(crate::collections::to_pairs(&c).into_iter()
                             .map(|(k, v)| Value::Array(vec![k, v]))
                             .collect())
                     } else {
-                        Value::Array(crate::collections::to_vec(&c))
+                        Value::Collection(c)
                     }
                 }
-                Value::Map(m) => Value::Array(m.into_iter()
+                Value::Map(m) => seq(m.into_iter()
                     .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
                     .collect()),
-                Value::MapOrd(m) => Value::Array(m.into_iter()
+                Value::MapOrd(m) => seq(m.into_iter()
                     .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
                     .collect()),
-                Value::Str(s) => Value::Array(s.chars().map(Value::Char).collect()),
-                Value::Nil => Value::Array(Vec::new()),
+                Value::Str(s) => seq(s.chars().map(Value::Char).collect()),
+                Value::Nil => seq(Vec::new()),
                 other => return Err(GoblinError::type_error("array/map/string", other.type_name(), "for..in")),
             };
             Ok(arr)
@@ -4661,6 +4666,11 @@ fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Re
     let start_raw = want_idx(start_v, "slice start")?;
     let end_raw   = want_idx(end_v,   "slice end")?;
 
+    let recv = match recv {
+        Value::Collection(c) if !collections::is_map_collection(&c) => Value::Array(collections::to_vec(&c)),
+        Value::Seq(sq) => Value::Array(sq.items),
+        other => other,
+    };
     match recv {
         Value::Array(xs) => {
             let len = xs.len();
@@ -5220,6 +5230,11 @@ pub fn value_to_str(v: &Value) -> String {
         Value::GridRef { grid_id, x, y } => format!("<gridref {}[{},{}]>", grid_id, x, y),
         Value::Enum { enum_name, variant_name, .. } => format!("{}.{}", enum_name, variant_name),
         Value::Class { name } => format!("<class {}>", name),
+        Value::Collection(c) if collections::is_map_collection(c) => {
+            let parts: Vec<String> = collections::to_pairs(c).iter()
+                .map(|(k, v)| format!("{}: {}", value_to_str(k), value_to_str(v))).collect();
+            format!("{{{}}}", parts.join(", "))
+        }
         Value::Collection(c) => {
             let items: Vec<String> = collections::to_vec(c).iter().map(value_to_str).collect();
             format!("[{}]", items.join(", "))
@@ -5427,6 +5442,17 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
             s
         }
         Value::Pair(a, b) => format!("({}, {})", fmt_value_depth(a, depth + 1), fmt_value_depth(b, depth + 1)),
+        Value::Collection(c) if collections::is_map_collection(c) => {
+            let mut s = String::from("{");
+            for (i, (k, val)) in collections::to_pairs(c).iter().enumerate() {
+                if i > 0 { s.push_str(", "); }
+                s.push_str(&fmt_value_depth(k, depth + 1));
+                s.push_str(": ");
+                s.push_str(&fmt_value_depth(val, depth + 1));
+            }
+            s.push('}');
+            s
+        }
         Value::Collection(c) => {
             let items = collections::to_vec(c);
             let mut s = String::from("[");
@@ -5864,6 +5890,10 @@ fn http_extract_headers(v: Value, caller: &str) -> Result<Vec<(String, String)>,
         Value::MapOrd(m) => Ok(m.into_iter().map(|(k, v)| (k, match v {
             Value::Str(s) => s, other => fmt_value_raw(&other),
         })).collect()),
+        Value::Collection(c) if collections::is_map_collection(&c) => Ok(collections::to_pairs(&c).into_iter().map(|(k, v)| (
+            match k { Value::Str(s) => s, other => fmt_value_raw(&other) },
+            match v { Value::Str(s) => s, other => fmt_value_raw(&other) },
+        )).collect()),
         Value::Nil => Ok(vec![]),
         other => Err(GoblinError::Runtime(format!("{caller}: headers must be a map, got {}", other.type_name()))),
     }

@@ -1104,23 +1104,29 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
             };
             Ok(m.get(&k).cloned().unwrap_or(Value::Nil))
         }
-        Value::Collection(c) => {
-            if is_map(c) {
-                let pairs = to_pairs(c);
-                Ok(pairs.into_iter()
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v)
-                    .unwrap_or(Value::Nil))
-            } else {
+        // Read one element in place: cloning the whole backing store here made
+        // every `xs[i]` (and so every `for x in xs`) O(n).
+        Value::Collection(c) => match &c.layout {
+            CollectionLayout::SmallMap(pairs) => Ok(pairs.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Nil)),
+            CollectionLayout::HashMapBackend(m) => Ok(m.get(key).cloned().unwrap_or(Value::Nil)),
+            layout => {
                 let idx = match key {
                     Value::Int(n) => *n,
                     _ => return Err(GoblinError::type_error("int", key.type_name(), "index")),
                 };
-                let items = to_vec(c);
-                let i = resolve_seq_index(idx, items.len())?;
-                Ok(items[i].clone())
+                let i = resolve_seq_index(idx, c.len())?;
+                let item = match layout {
+                    CollectionLayout::FlatArray(v) => v.get(i),
+                    CollectionLayout::RingBuf(rb) => rb.get(i),
+                    CollectionLayout::ChunkedSeq(cs) => cs.get(i),
+                    _ => unreachable!(),
+                };
+                item.cloned().ok_or_else(|| GoblinError::Runtime(format!("index {} out of bounds", idx)))
             }
-        }
+        },
         Value::Str(s) => {
             let idx = match key {
                 Value::Int(n) => *n,
