@@ -119,13 +119,30 @@ fn bind<'q>(
     q
 }
 
-/// Column types the runtimes understand; anything else reads as Null.
+/// Converts a result cell. Text, integers, floats and booleans map directly;
+/// `numeric` reads as a float; `json`/`jsonb` as their JSON text; dates and
+/// times as Postgres' text form. Other types (and SQL NULL) read as Null.
 fn cell(row: &PgRow, col: &str) -> DbValue {
+    use rust_decimal::prelude::ToPrimitive;
     if let Ok(v) = row.try_get::<String, _>(col) { return DbValue::Str(v); }
     if let Ok(v) = row.try_get::<i64, _>(col) { return DbValue::Int(v); }
     if let Ok(v) = row.try_get::<i32, _>(col) { return DbValue::Int(v as i64); }
+    if let Ok(v) = row.try_get::<i16, _>(col) { return DbValue::Int(v as i64); }
     if let Ok(v) = row.try_get::<f64, _>(col) { return DbValue::Float(v); }
+    if let Ok(v) = row.try_get::<f32, _>(col) { return DbValue::Float(v as f64); }
     if let Ok(v) = row.try_get::<bool, _>(col) { return DbValue::Bool(v); }
+    if let Ok(v) = row.try_get::<rust_decimal::Decimal, _>(col) {
+        return v.to_f64().map(DbValue::Float).unwrap_or(DbValue::Null);
+    }
+    if let Ok(v) = row.try_get::<serde_json::Value, _>(col) { return DbValue::Str(v.to_string()); }
+    if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(col) {
+        return DbValue::Str(v.format("%Y-%m-%d %H:%M:%S%.f+00").to_string());
+    }
+    if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(col) {
+        return DbValue::Str(v.format("%Y-%m-%d %H:%M:%S%.f").to_string());
+    }
+    if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(col) { return DbValue::Str(v.to_string()); }
+    if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(col) { return DbValue::Str(v.to_string()); }
     DbValue::Null
 }
 

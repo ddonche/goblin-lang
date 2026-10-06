@@ -1029,7 +1029,13 @@ impl Vm {
                     frame.func.constants[idx as usize].clone()
                 };
                 let coll_val = self.pop_value()?;
-                let result = if let Value::Str(ref name) = key {
+                let enum_field = match (&coll_val, &key) {
+                    (Value::Enum { fields: Some(f), .. }, Value::Str(name)) => f.get(name).cloned(),
+                    _ => None,
+                };
+                let result = if let Some(v) = enum_field {
+                    v
+                } else if let Value::Str(ref name) = key {
                     member_dispatch(&coll_val, name, &mut self.session)?
                 } else {
                     crate::collections::get_index(&coll_val, &key)?
@@ -2354,8 +2360,8 @@ impl Vm {
         }
 
         // Pre-register classes/enums from the imported module
-        for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
-        for decl in compiled.enums   { self.session.enums.insert(decl.name.clone(), decl); }
+        // (with their methods compiled, as for the entry script)
+        crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums);
 
         // Track the importing file's directory in base_dir so that GLAM files (which
         // have owner_glam set on their frames) can resolve sub-imports relative to the

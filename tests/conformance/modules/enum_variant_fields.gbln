@@ -1,4 +1,3 @@
-/// known-gap: vm enum variant field map literal rejected (expected map or nil, got collection)
 enum Shape
     Circle { r: int }
     Square { side: int }

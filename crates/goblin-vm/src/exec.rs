@@ -277,7 +277,7 @@ pub fn prepare_entry(
 
 /// Registers a compiled module's classes (merging a matrix redeclaration
 /// into the earlier declaration) and enums.
-fn install_classes(session: &mut Session, classes: Vec<goblin_ast::ClassDecl>, enums: Vec<goblin_ast::EnumDecl>) {
+pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::ClassDecl>, enums: Vec<goblin_ast::EnumDecl>) {
     for decl in &classes {
         compile_class_methods(decl, session);
     }

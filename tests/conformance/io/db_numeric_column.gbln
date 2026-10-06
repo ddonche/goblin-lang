@@ -1,6 +1,4 @@
 /// requires: db
-/// known-gap: vm db_* builtins are not in the VM builtin table
-/// known-gap: interp numeric is not decoded (sql_cell_to_value falls through to nil), so a non-NULL value reads as nil
 /// A non-NULL numeric column does not read as nil (its exact Goblin type is not pinned down here).
 r | :db_query_one("SELECT 12.34::numeric(10,2) AS n", [])
 say(:is_nil(r["n"]))

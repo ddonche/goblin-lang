@@ -1,6 +1,4 @@
 /// requires: db
-/// known-gap: vm db_* builtins are not in the VM builtin table
-/// known-gap: interp json/jsonb are not decoded (sql_cell_to_value falls through to nil); campfire casts to text to work around it
 /// Non-NULL json and jsonb columns do not read as nil.
 r | :db_query_one("SELECT '[1,2]'::json AS j, '[3]'::jsonb AS jb", [])
 say(:is_nil(r["j"]))

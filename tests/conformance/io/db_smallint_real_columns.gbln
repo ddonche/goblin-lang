@@ -1,6 +1,4 @@
 /// requires: db
-/// known-gap: vm db_* builtins are not in the VM builtin table
-/// known-gap: interp sql_cell_to_value only tries String/i64/i32/f64/bool, so smallint and real fall through to nil
 /// smallint and real columns are numbers like integer and double precision.
 r | :db_query_one("SELECT 3::smallint AS s, 1.5::real AS r", [])
 say(r["s"])

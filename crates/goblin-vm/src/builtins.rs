@@ -4475,7 +4475,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     for (k, v) in m { out.insert(k, v); }
                     Some(out)
                 }
-                other => return Err(GoblinError::type_error("map or nil", other.type_name(), "enum fields")),
+                other => match other.map_entries() {
+                    Some(entries) => Some(entries.into_iter().collect()),
+                    None => return Err(GoblinError::type_error("map or nil", other.type_name(), "enum fields")),
+                },
             };
             // Validate against registered enum if known
             if let Some(enum_decl) = session.enums.get(&enum_name) {
