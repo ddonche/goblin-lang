@@ -1,4 +1,3 @@
-/// known-gap: interp decision D-truthiness (option B) not implemented yet
 /// Decided 2026-10-06 (D-truthiness, option B; see DECISIONS.md).
 say(nil or 5)
 say(0 or 5)

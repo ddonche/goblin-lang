@@ -1,5 +1,4 @@
 /// Decided 2026-10-06 (D-fallthrough-return-value, option B; see DECISIONS.md).
-/// known-gap: interp decision D-fallthrough-return-value (option B) not implemented yet
 act fx(x)
     if x > 0
         return "pos"

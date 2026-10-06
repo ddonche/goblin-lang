@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use std::collections::BTreeMap;
 use goblin_ast as ast;
 use crate::Value;
@@ -98,7 +99,7 @@ pub struct Module {
     pub namespace: String,
     pub ast: ast::Module,
     pub exports: BTreeMap<String, ExportedItem>,
-    pub env: BTreeMap<String, Value>,
+    pub env: IndexMap<String, Value>,
 }
 
 #[derive(Clone)]
@@ -183,7 +184,7 @@ impl ModuleCache {
             namespace: namespace.clone(),
             ast: module_ast.clone(),
             exports,
-            env: BTreeMap::new(),
+            env: IndexMap::new(),
         };
         self.loaded.insert(namespace.clone(), module);
 
@@ -194,7 +195,7 @@ impl ModuleCache {
         self.loaded.get(namespace)?.exports.get(name)
     }
     
-    pub fn get_module_env(&self, namespace: &str) -> Option<&BTreeMap<String, Value>> {
+    pub fn get_module_env(&self, namespace: &str) -> Option<&IndexMap<String, Value>> {
         self.loaded.get(namespace).map(|m| &m.env)
     }
     

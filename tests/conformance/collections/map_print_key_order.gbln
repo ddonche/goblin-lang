@@ -1,3 +1,2 @@
 /// Decided 2026-10-06 (D-map-key-order, option B; see DECISIONS.md).
-/// known-gap: interp decision D-map-key-order (option B) not implemented yet
 say({"b": 1, "a": 2})

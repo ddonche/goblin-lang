@@ -1,4 +1,3 @@
-/// known-gap: interp a cast of an outer variable inside a loop body corrupts the binding ("const table missing entry")
 i | 0
 n | 0
 while n < 3

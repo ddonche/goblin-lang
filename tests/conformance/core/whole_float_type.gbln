@@ -1,5 +1,4 @@
 /// Decided 2026-10-06 (D-whole-float-type, option B; see DECISIONS.md).
-/// known-gap: interp decision D-whole-float-type (option B) not implemented yet
 say(:valtype(:float(3)))
 say(:valtype(1.5 + 1.5))
 say(:is_float(2.5 * 2))

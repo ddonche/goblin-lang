@@ -26,7 +26,7 @@ fn ptr_for_value(v: &Value) -> *const u8 {
 
         Value::Seq(seq) => (seq as *const _) as *const u8,
 
-        Value::Map(m) => (m as *const BTreeMap<String, Value>) as *const u8,
+        Value::Map(m) => (m as *const IndexMap<String, Value>) as *const u8,
 
         Value::MapOrd(m) => (m as *const IndexMap<String, Value>) as *const u8,
 

@@ -242,8 +242,8 @@ impl Seq {
         }
     }
 
-    pub fn metrics_map(&self) -> BTreeMap<String, Value> {
-        let mut m = BTreeMap::new();
+    pub fn metrics_map(&self) -> IndexMap<String, Value> {
+        let mut m = IndexMap::new();
         m.insert("len".into(), Value::Int(self.metrics.len as i64));
         m.insert("ops_push_back".into(), Value::Int(self.metrics.ops_push_back as i64));
         m.insert("ops_push_front".into(), Value::Int(self.metrics.ops_push_front as i64));
@@ -288,7 +288,7 @@ pub enum Value {
     DateTime(GoblinDateTime),
     Formatted(Box<Value>, FormatSpec),
     Array(Vec<Value>),
-    Map(BTreeMap<String, Value>),
+    Map(IndexMap<String, Value>),
     MapOrd(IndexMap<String, Value>),
     Pair(Box<Value>, Box<Value>), // for >< (divmod)
     Seq(Seq),
@@ -529,7 +529,7 @@ pub struct LinkOffset {
 
 pub struct Session {
     history: Vec<Value>,                               // v(n)
-    pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
+    pub env: Vec<IndexMap<String, Value>>,             // scope stack (globals at [0])
     pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
     pub classes: BTreeMap<String, ast::ClassDecl>,
     pub enums: BTreeMap<String, ast::EnumDecl>,
@@ -544,7 +544,7 @@ pub struct Session {
     pub modules: crate::modules::ModuleCache,
     pub current_module: Option<String>,
     regex_cache: RegexCache,
-    token_store: BTreeMap<String, BTreeMap<String, Value>>,
+    token_store: BTreeMap<String, IndexMap<String, Value>>,
 
     // ==== IMPORT CONTEXT (NEW) ====
     pub import_base_mode: ImportBaseMode,
@@ -557,6 +557,13 @@ pub struct Session {
     pub sweep_scope: Option<(usize, usize)>,
 
     pub response: ResponseState,
+
+    /// D-toplevel-return (B): set when a top-level `return` runs; later
+    /// top-level statements are skipped so the script ends there.
+    pub halted: bool,
+
+    /// Env indexes of frames pushed for blocks (if/loop/attempt bodies), innermost last.
+    block_marks: Vec<usize>,
 
     // ==== OVERLAY SYSTEM ====
     pub overlay_defs: HashMap<String, OverlayDef>,
@@ -930,8 +937,10 @@ impl Session {
         let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         Self {
+            halted: false,
+            block_marks: Vec::new(),
             history: Vec::new(),
-            env: vec![BTreeMap::new()],
+            env: vec![IndexMap::new()],
             actions: BTreeMap::new(),
             classes: BTreeMap::new(),
             enums: BTreeMap::new(),
@@ -1019,7 +1028,7 @@ impl Session {
 
     pub fn register_token_value(&mut self, module: &str, ident: &str, value: Value) {
         let m = self.normalize_module_name(module);
-        let entry = self.token_store.entry(m).or_insert_with(BTreeMap::new);
+        let entry = self.token_store.entry(m).or_insert_with(IndexMap::new);
         entry.insert(ident.to_string(), value);
     }
 
@@ -1035,7 +1044,7 @@ impl Session {
         if let Some(global) = self.env.first_mut() {
             global.insert(name.to_string(), val);
         } else {
-            let mut map = std::collections::BTreeMap::new();
+            let mut map = indexmap::IndexMap::new();
             map.insert(name.to_string(), val);
             self.env.push(map);
         }
@@ -1105,10 +1114,46 @@ impl Session {
     where
         F: FnMut(&mut Session) -> Result<T, Diagnostic>,
     {
+        let depth = sess.env.len();
         sess.push_frame();
+        sess.block_marks.push(depth);
         let r = f(sess);
+        if r.is_err() {
+            // An error can leave frames of failed action calls behind; drop
+            // them too so a caught error (attempt/rescue) resumes in the right scope.
+            while sess.env.len() > depth + 1 {
+                sess.pop_frame();
+            }
+        }
+        sess.block_marks.retain(|&i| i < depth);
         sess.pop_frame();
         r
+    }
+
+    /// D-block-scope (C): inside an `if`/loop/attempt block, `x | v` is an error
+    /// when `x` is already bound in an enclosing block of the same action (its
+    /// parameters and top-level body included) or, at the script's top level,
+    /// earlier in the top-level code. Module globals seen from inside an action
+    /// do not count, and neither do sibling blocks that already closed.
+    fn check_outer_tether(&self, name: &str, at: &Span) -> Result<(), Diagnostic> {
+        let mut i = self.env.len() - 1;
+        while i > 0 && self.block_marks.contains(&i) {
+            i -= 1;
+            if self.env[i].contains_key(name) {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::DUPLICATE_LOCAL, // R0111
+                        "outer-redeclare",
+                        format!("'{}' is already declared in an enclosing block", name),
+                        at.clone(),
+                    )
+                    .with_help("Use '|=' to update it, or '[=' to shadow it in this block.")
+                    .with_link("https://goblinlang.org/docs/errors#R0111"),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Block scope ≙ a regular frame layered on top of the current one.
@@ -1117,7 +1162,7 @@ impl Session {
     pub fn pop_block(&mut self) { self.pop_frame(); }
 
     fn push_frame(&mut self) {
-        self.env.push(BTreeMap::new());
+        self.env.push(IndexMap::new());
         self.consts.push(BTreeMap::new());
         self.type_locks.push(BTreeMap::new());
         self.hard_type_locks.push(BTreeMap::new());
@@ -1339,7 +1384,18 @@ impl Session {
     }
 
     pub fn eval_stmt(&mut self, s: &ast::Stmt) -> Result<Option<Value>, Diag> {
-        eval_stmt(s, self)
+        // D-toplevel-return (B): once a top-level `return` ran, the script is over.
+        if self.halted {
+            return Ok(None);
+        }
+        let out = eval_stmt(s, self)?;
+        if self.env.len() == 1 {
+            if let Some(Value::CtrlReturn(_)) = &out {
+                self.halted = true;
+                return Ok(None);
+            }
+        }
+        Ok(out)
     }
 
     // Evaluate a whole module (returns last expression value if any).
@@ -1347,6 +1403,11 @@ impl Session {
         let mut last = None;
         for stmt in &m.items {
             if let Some(v) = eval_stmt(stmt, self)? {
+                if let Value::CtrlReturn(inner) = v {
+                    // D-toplevel-return (B): a top-level `return` ends the module.
+                    last = Some(*inner);
+                    break;
+                }
                 last = Some(v);
             }
         }
@@ -1408,7 +1469,17 @@ impl Session {
 
     // Evaluate a single expression node and push it to history.
     pub fn eval_expr(&mut self, e: &ast::Expr) -> Result<Value, Diag> {
-        let v = eval_expr(e, self)?;
+        if self.halted {
+            return Ok(Value::Nil);
+        }
+        let mut v = eval_expr(e, self)?;
+        if self.env.len() == 1 {
+            if let Value::CtrlReturn(_) = v {
+                // D-toplevel-return (B): e.g. `if c => return` at the top level.
+                self.halted = true;
+                v = Value::Nil;
+            }
+        }
         self.history.push(v.clone());
         Ok(v)
     }
@@ -1742,6 +1813,80 @@ fn to_json(v: &Value) -> sj::Value {
     }
 }
 
+/// D-map-key-order (B): serialize a Value to JSON keeping map insertion order
+/// (serde_json's own Map is sorted without the preserve_order feature).
+struct OrdJson<'a>(&'a Value);
+
+impl<'a> serde::Serialize for OrdJson<'a> {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        let v = if let Value::Formatted(inner, _) = self.0 { &**inner } else { self.0 };
+        match v {
+            Value::Map(m) | Value::MapOrd(m) => {
+                let mut mp = ser.serialize_map(Some(m.len()))?;
+                for (k, x) in m { mp.serialize_entry(k, &OrdJson(x))?; }
+                mp.end()
+            }
+            Value::Object { class_name, fields, .. } => {
+                let mut mp = ser.serialize_map(Some(fields.len() + 1))?;
+                mp.serialize_entry("__class", class_name)?;
+                for (k, x) in fields { mp.serialize_entry(k, &OrdJson(x))?; }
+                mp.end()
+            }
+            Value::Array(xs) => {
+                let mut sq = ser.serialize_seq(Some(xs.len()))?;
+                for x in xs { sq.serialize_element(&OrdJson(x))?; }
+                sq.end()
+            }
+            Value::Pair(a, b) => {
+                let mut sq = ser.serialize_seq(Some(2))?;
+                sq.serialize_element(&OrdJson(a))?;
+                sq.serialize_element(&OrdJson(b))?;
+                sq.end()
+            }
+            other => serde::Serialize::serialize(&to_json(other), ser),
+        }
+    }
+}
+
+/// D-map-key-order (B): parse JSON text straight into a Value, keeping object key order.
+struct OrdJsonDe(Value);
+
+impl<'de> serde::Deserialize<'de> for OrdJsonDe {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = OrdJsonDe;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { f.write_str("JSON") }
+            fn visit_unit<E>(self) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Nil)) }
+            fn visit_none<E>(self) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Nil)) }
+            fn visit_bool<E>(self, b: bool) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Bool(b))) }
+            fn visit_i64<E>(self, n: i64) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Int(n))) }
+            fn visit_u64<E>(self, n: u64) -> Result<OrdJsonDe, E> {
+                Ok(OrdJsonDe(if n <= i64::MAX as u64 { Value::Int(n as i64) } else { Value::Float(n as f64) }))
+            }
+            fn visit_f64<E>(self, n: f64) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Float(n))) }
+            fn visit_str<E>(self, s: &str) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Str(s.to_string()))) }
+            fn visit_string<E>(self, s: String) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Str(s))) }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<OrdJsonDe, A::Error> {
+                let mut out = Vec::new();
+                while let Some(OrdJsonDe(x)) = a.next_element()? { out.push(x); }
+                Ok(OrdJsonDe(Value::Array(out)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut a: A) -> Result<OrdJsonDe, A::Error> {
+                let mut m = IndexMap::new();
+                while let Some((k, OrdJsonDe(x))) = a.next_entry::<String, OrdJsonDe>()? { m.insert(k, x); }
+                Ok(OrdJsonDe(Value::Map(m)))
+            }
+        }
+        de.deserialize_any(V)
+    }
+}
+
+fn json_parse_ordered(s: &str) -> Result<Value, serde_json::Error> {
+    sj::from_str::<OrdJsonDe>(s).map(|v| v.0)
+}
+
 fn from_json(v: &sj::Value) -> Value {
     match v {
         sj::Value::Null        => Value::Nil,
@@ -1754,7 +1899,7 @@ fn from_json(v: &sj::Value) -> Value {
         sj::Value::String(s)   => Value::Str(s.clone()),
         sj::Value::Array(xs)   => Value::Array(xs.iter().map(from_json).collect()),
         sj::Value::Object(obj) => {
-            let mut m = BTreeMap::new();
+            let mut m = IndexMap::new();
             for (k, v) in obj { m.insert(k.clone(), from_json(v)); }
             Value::Map(m)
         }
@@ -2091,6 +2236,10 @@ fn cast_to_str(v: Value) -> Result<Value, Diag> {
 }
 
 fn cast_to_map(val: Value) -> Result<Value, Diag> {
+    // D-to-map (B): a map cast to a map is returned unchanged.
+    if matches!(val, Value::Map(_) | Value::MapOrd(_)) {
+        return Ok(val);
+    }
     let text = cast_to_str(val)?;
     
     let s = match text {
@@ -2110,7 +2259,7 @@ fn cast_to_map(val: Value) -> Result<Value, Diag> {
         }
     };
     
-    let mut map = BTreeMap::new();
+    let mut map = IndexMap::new();
     
     for line in s.lines() {
         let trimmed = line.trim();
@@ -2563,6 +2712,38 @@ fn span_of_expr(e: &ast::Expr) -> Span {
     }
 }
 
+/// D-truthiness (B): falsy values are false, 0, 0.0, "", [], {}, nil.
+/// Everything else is truthy.
+/// D-whole-float-type (B): floor/ceil/round give an int (a float only when out of i64 range).
+fn whole_to_int(f: f64) -> Value {
+    if f.is_finite() && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+        Value::Int(f as i64)
+    } else {
+        Value::Float(f)
+    }
+}
+
+pub(crate) fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Nil | Value::Unit => false,
+        Value::Int(n) => *n != 0,
+        Value::Float(f) | Value::Pct(f) => *f != 0.0,
+        Value::Big(d) => !d.is_zero(),
+        Value::Str(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Map(m) => !m.is_empty(),
+        Value::MapOrd(m) => !m.is_empty(),
+        Value::Formatted(inner, _) => truthy(inner),
+        _ => true,
+    }
+}
+
+/// Condition test for if / elif / while / judge arms: truthiness (D-truthiness B).
+fn cond_truthy(v: Value, _at: Span, _label: &str) -> Result<bool, Diag> {
+    Ok(truthy(&v))
+}
+
 fn as_bool(v: Value, at: Span, label: &str) -> Result<bool, Diag> {
     match v {
         Value::Bool(b) => Ok(b),
@@ -2947,11 +3128,11 @@ fn clamp_range(mut start: isize, mut end: isize, len: usize) -> (usize, usize) {
     (start as usize, end as usize)
 }
 
-fn parse_dice_string(s: &str, sp: Span) -> Result<BTreeMap<String, Value>, Diag> {
+fn parse_dice_string(s: &str, sp: Span) -> Result<IndexMap<String, Value>, Diag> {
     use std::collections::BTreeMap;
 
     let s = s.trim();
-    let mut cfg = BTreeMap::new();
+    let mut cfg = IndexMap::new();
 
     let d_pos = s.find('d').ok_or_else(|| {
         Diagnostic::new_with_code(
@@ -3466,7 +3647,7 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
             return Ok(Value::Array(results));
         }
         Value::Map(map) => {
-            let mut results = BTreeMap::new();
+            let mut results = IndexMap::new();
             for (k, val) in map {
                 results.insert(k, cast_value_to_lock(val, lock, at)?);
             }
@@ -3755,6 +3936,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                             .with_link("https://goblinlang.org/docs/errors#R0111"),
                                         );
                                     }
+                                    sess.check_outer_tether(&name, &name_span)?;
                                     sess.define_local(name, val, false);
                                 }
 
@@ -3890,6 +4072,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         .with_link("https://goblinlang.org/docs/errors#R0111"),
                                     );
                                 }
+                                sess.check_outer_tether(&name, &name_span)?;
                                 sess.define_local(name, val, false);
                             }
 
@@ -4015,6 +4198,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         .with_link("https://goblinlang.org/docs/errors#R0111"),
                                     );
                                 }
+                                sess.check_outer_tether(&name, &name_span)?;
                                 sess.define_local(name, val, false);
                             }
 
@@ -4672,6 +4856,21 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         return Ok(None);
                     }
 
+                    // D-import-without-alias (C): importing a module file needs `as <alias>`
+                    // (only `.imports` manifests are imported without one).
+                    if import_stmt.alias.is_none() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO, // R0501
+                                "import-alias-required",
+                                format!("import of '{}' needs an alias", path),
+                                import_stmt.span.clone(),
+                            )
+                            .with_help("Write: import <path> as <alias>, then use <alias>::name.")
+                            .with_link("https://goblinlang.org/docs/errors#R0501"),
+                        );
+                    }
                     // Normal path import (existing behavior)
                     let (namespace, maybe_ast) = sess
                         .modules
@@ -4999,6 +5198,22 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
 
                     // Normal path import (existing behavior)
+                    // D-import-without-alias (C): importing a module file needs `as <alias>`
+                    // (only `.imports` manifests are imported without one).
+                    if import_stmt.alias.is_none() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO, // R0501
+                                "import-alias-required",
+                                format!("import of '{}' needs an alias", path_str),
+                                import_stmt.span.clone(),
+                            )
+                            .with_help("Write: import <path> as <alias>, then use <alias>::name.")
+                            .with_link("https://goblinlang.org/docs/errors#R0501"),
+                        );
+                    }
+                    
                     let (namespace, maybe_ast) = sess
                         .modules
                         .load_module(&path_str, import_stmt.alias.as_deref(), &base_dir)
@@ -5057,7 +5272,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 _ => {
                     // If ALL are labeled (identifiers), return a Map keyed by names (back-compat)
                     if labels.iter().all(|l| l.is_some()) {
-                        let mut map = BTreeMap::new();
+                        let mut map = IndexMap::new();
                         for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                             map.insert(lab.unwrap(), v);
                         }
@@ -5066,7 +5281,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         // Mixed/literal returns: build a Map
                         // - Identifiers keep their real names
                         // - Unlabeled expressions get positional keys: "_1", "_2", ...
-                        let mut map = BTreeMap::new();
+                        let mut map = IndexMap::new();
                         let mut idx = 1usize;
                         for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                             if let Some(name) = lab {
@@ -5616,7 +5831,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
                     Some(cond) => {
                         let v = eval_expr(cond.as_ref(), sess)?;
-                        if as_bool(v, arm.span.clone(), "judge condition")? {
+                        if cond_truthy(v, arm.span.clone(), "judge condition")? {
                             match &arm.body {
                                 ast::JudgeArmBody::Expr(e) => {
                                     let v = eval_expr(e, sess)?;
@@ -5670,7 +5885,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     None => { else_arm = Some(arm); }
                     Some(cond) => {
                         let v = eval_expr(cond.as_ref(), sess)?;
-                        if as_bool(v, arm.span.clone(), "judge_all condition")? {
+                        if cond_truthy(v, arm.span.clone(), "judge_all condition")? {
                             hits.push(arm);
                         }
                     }
@@ -5932,6 +6147,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                             .with_link("https://goblinlang.org/docs/errors#R0111"),
                         );
                     }
+                    sess.check_outer_tether(name, &name_span)?;
 
                     // Not present in current frame -> declare here (shadows outer if it exists there).
                     // If a type lock was declared (name.TYPE | value), cast and record it.
@@ -6434,7 +6650,7 @@ fn eval_builtin(
             
             let m = sess.normalize_module_name(&module);
             if let Some(inner) = sess.token_store.get_mut(&m) {
-                inner.remove(&ident.to_string());
+                inner.shift_remove(&ident.to_string());
             }
             Value::Unit
         },
@@ -6495,20 +6711,20 @@ fn eval_builtin(
                 let module = want_str(&args[0], "list_tokens.module")?; // uses your local want_str closure
                 let m = sess.normalize_module_name(&module);
                 if let Some(inner) = sess.token_store.get(&m) {
-                    let mut out = BTreeMap::new();
+                    let mut out = IndexMap::new();
                     for (k, v) in inner {
                         out.insert(k.clone(), v.clone());
                     }
                     Value::Map(out)
                 } else {
                     // Unknown module -> empty map (read-only introspection, non-fatal)
-                    Value::Map(BTreeMap::new())
+                    Value::Map(IndexMap::new())
                 }
             } else {
                 // All modules
-                let mut top = BTreeMap::new();
+                let mut top = IndexMap::new();
                 for (m, inner) in &sess.token_store {
-                    let mut mm = BTreeMap::new();
+                    let mut mm = IndexMap::new();
                     for (k, v) in inner {
                         mm.insert(k.clone(), v.clone());
                     }
@@ -6538,8 +6754,8 @@ fn eval_builtin(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)    => Value::Int(*i),                  // already integral
-                Value::Float(f)  => Value::Float(f.round()),
-                Value::Pct(p)    => Value::Float(p.round()),
+                Value::Float(f)  => whole_to_int(f.round()),
+                Value::Pct(p)    => whole_to_int(p.round()),
                 Value::Big(d)    => Value::Big(d.round_dp(0)),
                 _ => return Err(
                     Diagnostic::new_with_code(
@@ -6558,8 +6774,8 @@ fn eval_builtin(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)    => Value::Int(*i),                  // already integral
-                Value::Float(f)  => Value::Float(f.floor()),
-                Value::Pct(p)    => Value::Float(p.floor()),
+                Value::Float(f)  => whole_to_int(f.floor()),
+                Value::Pct(p)    => whole_to_int(p.floor()),
                 Value::Big(d)    => Value::Big(d.floor()),
                 _ => return Err(
                     Diagnostic::new_with_code(
@@ -6578,8 +6794,8 @@ fn eval_builtin(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)    => Value::Int(*i),
-                Value::Float(f)  => Value::Float(f.ceil()),
-                Value::Pct(p)    => Value::Float(p.ceil()),
+                Value::Float(f)  => whole_to_int(f.ceil()),
+                Value::Pct(p)    => whole_to_int(p.ceil()),
                 Value::Big(d)    => Value::Big(d.ceil()),
                 _ => return Err(
                     Diagnostic::new_with_code(
@@ -7423,7 +7639,7 @@ fn eval_builtin(
                 return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", format!("add_duration: expected 2 args, got {}", args.len()), sp.clone()));
             }
             let gdt = match &args[0] { Value::DateTime(d) => d.clone(), other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("add_duration: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
-            fn get_map_int(m: &BTreeMap<String, Value>, key: &str) -> i64 {
+            fn get_map_int(m: &IndexMap<String, Value>, key: &str) -> i64 {
                 match m.get(key) { Some(Value::Int(i)) => *i, Some(Value::Float(f)) => *f as i64, _ => 0 }
             }
             fn get_map_int_ord(m: &IndexMap<String, Value>, key: &str) -> i64 {
@@ -8881,7 +9097,7 @@ fn erase_var(sess: &mut Session, var_name: &str) {
 
     // Remove env bindings
     for frame in sess.env.iter_mut() {
-        frame.remove(var_name);
+        frame.shift_remove(var_name);
     }
 
     // Remove const bindings
@@ -9322,7 +9538,7 @@ fn eval_link_score(
     sp: &goblin_diagnostics::Span,
 ) -> Result<f64, Diag> {
     // Push a temporary scope with self and target bound
-    sess.env.push(BTreeMap::new());
+    sess.env.push(IndexMap::new());
     sess.consts.push(BTreeMap::new());
     sess.type_locks.push(BTreeMap::new());
     sess.hard_type_locks.push(BTreeMap::new());
@@ -9423,7 +9639,7 @@ fn collection_operation(
                         }
                         Operation::Delete => {
                             let mut out = map.clone();
-                            out.remove(&rand_key);
+                            out.shift_remove(&rand_key);
                             Ok(Value::Map(out))
                         }
                     }
@@ -9497,7 +9713,7 @@ fn collection_operation(
                                 })?
                                 .clone();
                             let mut out = map.clone();
-                            out.remove(&first_key);
+                            out.shift_remove(&first_key);
                             Ok(Value::Map(out))
                         }
                     }
@@ -9589,7 +9805,7 @@ fn collection_operation(
                         }
                         Operation::Delete => {
                             let mut out = map.clone();
-                            out.remove(&key);
+                            out.shift_remove(&key);
                             Ok(Value::Map(out))
                         }
                     }
@@ -9615,7 +9831,7 @@ fn collection_operation(
                     match &op {
                         // get_where / reap_where on a map → filter entries by *value* predicate
                         Operation::Get | Operation::Reap => {
-                            let mut out_map = BTreeMap::new();
+                            let mut out_map = IndexMap::new();
                             for (k, v) in map {
                                 if matches_pred(v.clone())? {
                                     out_map.insert(k.clone(), v.clone());
@@ -9649,7 +9865,7 @@ fn collection_operation(
                             }
 
                             for k in to_remove {
-                                out_map.remove(&k);
+                                out_map.shift_remove(&k);
                             }
 
                             Ok(Value::Map(out_map))
@@ -9694,7 +9910,7 @@ fn collection_operation(
                     match &op {
                         Operation::Get | Operation::Reap => {
                             // Return a new map with only the entries whose keys match the pattern
-                            let mut result_map = BTreeMap::new();
+                            let mut result_map = IndexMap::new();
                             
                             for (key, value) in map {
                                 if regex.is_match(key) {
@@ -9702,7 +9918,8 @@ fn collection_operation(
                                 }
                             }
                             
-                            if result_map.is_empty() {
+                            // D-get-matching-empty (B): get_matching with no match gives an empty result; reap still errors.
+                            if result_map.is_empty() && matches!(op, Operation::Reap) {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -9728,7 +9945,7 @@ fn collection_operation(
                                 .collect();
                             
                             for key in keys_to_remove {
-                                result_map.remove(&key);
+                                result_map.shift_remove(&key);
                             }
                             
                             Ok(Value::Map(result_map))
@@ -9866,7 +10083,7 @@ fn collection_operation(
 
                     match &op {
                         Operation::Get | Operation::Reap => {
-                            let mut result_map = BTreeMap::new();
+                            let mut result_map = IndexMap::new();
                             for key in &between_keys {
                                 result_map.insert(key.clone(), map.get(key).unwrap().clone());
                             }
@@ -9875,7 +10092,7 @@ fn collection_operation(
                         Operation::Delete => {
                             let mut result_map = map.clone();
                             for key in &between_keys {
-                                result_map.remove(key);
+                                result_map.shift_remove(key);
                             }
                             Ok(Value::Map(result_map))
                         }
@@ -9905,7 +10122,7 @@ fn collection_operation(
                 Position::All => {
                     match &op {
                         Operation::Get | Operation::Reap => Ok(Value::Map(map.clone())),
-                        Operation::Delete => Ok(Value::Map(BTreeMap::new())),
+                        Operation::Delete => Ok(Value::Map(IndexMap::new())),
                         Operation::Update(v) | Operation::Put(v) => {
                             match v {
                                 Value::Map(m2) => Ok(Value::Map(m2.clone())),
@@ -9931,7 +10148,7 @@ fn collection_operation(
         // Delegate to the Map arm by converting IndexMap -> BTreeMap, running the op,
         // then converting any Map result back to MapOrd to preserve the type.
         Value::MapOrd(mo) => {
-            let as_btree: BTreeMap<String, Value> = mo.iter()
+            let as_btree: IndexMap<String, Value> = mo.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             let result = collection_operation(
@@ -10393,7 +10610,8 @@ fn collection_operation(
                                 .map(|m| Value::Str(m.as_str().to_string()))
                                 .collect();
                             
-                            if matches.is_empty() {
+                            // D-get-matching-empty (B): get_matching with no match gives an empty result; reap still errors.
+                            if matches.is_empty() && matches!(op, Operation::Reap) {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -11054,7 +11272,8 @@ fn collection_operation(
                                 .cloned()
                                 .collect();
 
-                            if matches.is_empty() {
+                            // D-get-matching-empty (B): get_matching with no match gives an empty result; reap still errors.
+                            if matches.is_empty() && matches!(op, Operation::Reap) {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -11384,7 +11603,8 @@ fn call_action_by_name(
                                         }
                                     }
                                 }
-                                last
+                                // D-fallthrough-return-value (B): no value means nil, not unit.
+                                if matches!(last, Value::Unit) { Value::Nil } else { last }
                             }
                             ast::ActionBody::Expr(expr) => {
                                 // single-line action: implicit return
@@ -11514,7 +11734,8 @@ fn call_action_by_name(
                                 }
                             }
                         }
-                        last
+                        // D-fallthrough-return-value (B): no value means nil, not unit.
+                        if matches!(last, Value::Unit) { Value::Nil } else { last }
                     }
                     ast::ActionBody::Expr(expr) => {
                         eval_expr(expr, sess)?
@@ -11587,7 +11808,8 @@ fn call_action_by_name(
                             }
                         }
                     }
-                    last
+                    // D-fallthrough-return-value (B): no value means nil, not unit.
+                    if matches!(last, Value::Unit) { Value::Nil } else { last }
                 }
                 ast::ActionBody::Expr(expr) => {
                     // single-line action (`=> expr`) — implicit return value
@@ -12010,7 +12232,7 @@ fn call_action_by_name(
                     }
 
                     // New scope
-                    sess.env.push(std::collections::BTreeMap::new());
+                    sess.env.push(indexmap::IndexMap::new());
                     sess.consts.push(std::collections::BTreeMap::new());
                     sess.type_locks.push(std::collections::BTreeMap::new());
                     sess.hard_type_locks.push(std::collections::BTreeMap::new());
@@ -12365,7 +12587,7 @@ fn call_action_by_name(
             let kind = match recv {
                 Value::Nil => "nil",
                 Value::Bool(_) => "bool",
-                Value::Float(n) if n.is_finite() && n.fract() == 0.0 => "int",
+                // D-whole-float-type (B): a whole float is still a float.
                 Value::Big(_) => "big",
                 Value::Float(_) => "float",
                 Value::Int(_) => "int",
@@ -12411,11 +12633,8 @@ fn call_action_by_name(
                 Value::Formatted(inner, _) => &**inner,
                 other => other,
             };
-            let is_int_like_float = match v {
-                Value::Float(n) => n.is_finite() && n.fract() == 0.0,
-                _ => false,
-            };
-            Value::Bool(matches!(v, Value::Int(_)) || is_int_like_float)
+            // D-whole-float-type (B): only ints are ints.
+            Value::Bool(matches!(v, Value::Int(_)))
         }
 
         "is_float" => {
@@ -12425,11 +12644,8 @@ fn call_action_by_name(
                 other => other,
             };
             // float but NOT "int-like" (to mirror valtype -> "int" classification)
-            let is_proper_float = match v {
-                Value::Float(n) => !(n.is_finite() && n.fract() == 0.0),
-                _ => false,
-            };
-            Value::Bool(is_proper_float)
+            // D-whole-float-type (B): every float is a float, whole or not.
+            Value::Bool(matches!(v, Value::Float(_)))
         }
 
         "is_big" => {
@@ -13147,7 +13363,7 @@ fn call_action_by_name(
             }
             match &args[0] {
                 Value::Formatted(_, spec) => {
-                    let mut m = BTreeMap::new();
+                    let mut m = IndexMap::new();
                     m.insert("dec".to_string(), Value::Int(spec.decimals as i64));
                     let th = match spec.sep_thousands {
                         Some(',') => ",".to_string(),
@@ -13158,8 +13374,9 @@ fn call_action_by_name(
                         _ => "?".to_string(),
                     };
                     let dm = match spec.sep_decimal { '.' => ".", ',' => ",", _ => "?" }.to_string();
-                    m.insert("th".to_string(), Value::Str(th));
+                    // Key order: dec, decmark, th (maps keep insertion order, D-map-key-order).
                     m.insert("decmark".to_string(), Value::Str(dm));
+                    m.insert("th".to_string(), Value::Str(th));
                     Value::Map(m)
                 }
                 _ => Value::Nil,
@@ -13209,8 +13426,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)   => Value::Int(*i),                // already integral
-                Value::Float(f) => Value::Float(f.round()),
-                Value::Pct(p)   => Value::Float(p.round()),
+                Value::Float(f) => whole_to_int(f.round()),
+                Value::Pct(p)   => whole_to_int(p.round()),
                 Value::Big(d)   => Value::Big(d.round_dp(0)),
                 _ => {
                     return Err(
@@ -13231,8 +13448,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)   => Value::Int(*i),            // already integral
-                Value::Float(f) => Value::Float(f.floor()),
-                Value::Pct(p)   => Value::Float(p.floor()),
+                Value::Float(f) => whole_to_int(f.floor()),
+                Value::Pct(p)   => whole_to_int(p.floor()),
                 Value::Big(d)   => Value::Big(d.floor()),
                 _ => {
                     return Err(
@@ -13253,8 +13470,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)   => Value::Int(*i),            // already integral
-                Value::Float(f) => Value::Float(f.ceil()),
-                Value::Pct(p)   => Value::Float(p.ceil()),
+                Value::Float(f) => whole_to_int(f.ceil()),
+                Value::Pct(p)   => whole_to_int(p.ceil()),
                 Value::Big(d)   => Value::Big(d.ceil()),
                 _ => {
                     return Err(
@@ -13468,10 +13685,10 @@ fn call_action_by_name(
             };
 
             // ---- small getters (accept Int or Float; Str optional) ----
-            let get_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+            let get_bool = |m: &IndexMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
-            let get_num = |m: &BTreeMap<String, Value>, k: &str| -> Option<f64> {
+            let get_num = |m: &IndexMap<String, Value>, k: &str| -> Option<f64> {
                 match m.get(k)? {
                     Value::Float(n) => Some(*n),
                     Value::Int(i)   => Some(*i as f64),
@@ -13527,7 +13744,7 @@ fn call_action_by_name(
             enum CollectionSource {
                 Array(Vec<Value>),
                 Seq(Vec<Value>),
-                Map(BTreeMap<String, Value>),
+                Map(IndexMap<String, Value>),
             }
 
             let src_collection: Option<CollectionSource> = if let Some(Value::Array(arr)) = cfg.get("src") {
@@ -13651,7 +13868,7 @@ fn call_action_by_name(
                             let mut out = Vec::with_capacity(n_out);
                             for _ in 0..n_out {
                                 let idx = rng_index(sess, entries.len());
-                                let mut pair = BTreeMap::new();
+                                let mut pair = IndexMap::new();
                                 pair.insert(entries[idx].0.clone(), entries[idx].1.clone());
                                 out.push(Value::Map(pair));
                             }
@@ -13662,7 +13879,7 @@ fn call_action_by_name(
                             for i in 0..n_out {
                                 let j = i + rng_index(sess, entries.len() - i);
                                 idxs.swap(i, j);
-                                let mut pair = BTreeMap::new();
+                                let mut pair = IndexMap::new();
                                 pair.insert(entries[idxs[i]].0.clone(), entries[idxs[i]].1.clone());
                                 out.push(Value::Map(pair));
                             }
@@ -14028,7 +14245,7 @@ fn call_action_by_name(
                     _ => None,
                 }
             };
-            let req_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+            let req_i64 = |m: &IndexMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
                     Some(v) => cast_i64_from_value(v).ok_or_else(|| {
                         Diagnostic::new_with_code(
@@ -14054,10 +14271,10 @@ fn call_action_by_name(
                     ),
                 }
             };
-            let opt_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+            let opt_i64 = |m: &IndexMap<String, Value>, k: &str| -> Option<i64> {
                 m.get(k).and_then(|v| cast_i64_from_value(v))
             };
-            let opt_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+            let opt_bool = |m: &IndexMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
 
@@ -14233,7 +14450,7 @@ fn call_action_by_name(
                     _ => None,
                 }
             };
-            let req_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+            let req_i64 = |m: &IndexMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
                     Some(v) => cast_i64_from_value(v).ok_or_else(|| {
                         Diagnostic::new_with_code(
@@ -14259,10 +14476,10 @@ fn call_action_by_name(
                     ),
                 }
             };
-            let opt_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+            let opt_i64 = |m: &IndexMap<String, Value>, k: &str| -> Option<i64> {
                 m.get(k).and_then(|v| cast_i64_from_value(v))
             };
-            let opt_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+            let opt_bool = |m: &IndexMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
 
@@ -14364,7 +14581,7 @@ fn call_action_by_name(
                     if total > hi { total = hi; }
                 }
 
-                let mut out = BTreeMap::<String, Value>::new();
+                let mut out = IndexMap::<String, Value>::new();
                 out.insert("count".into(),    Value::Int(1));
                 out.insert("sides".into(),    Value::Int(sides));
                 out.insert("modifier".into(), Value::Int(modifier));
@@ -14413,7 +14630,7 @@ fn call_action_by_name(
                     if total > hi { total = hi; }
                 }
 
-                let mut out = BTreeMap::<String, Value>::new();
+                let mut out = IndexMap::<String, Value>::new();
                 out.insert("count".into(),    Value::Int(count));
                 out.insert("sides".into(),    Value::Int(sides));
                 out.insert("modifier".into(), Value::Int(modifier));
@@ -15174,7 +15391,7 @@ fn call_action_by_name(
             let v0 = args[0].clone();
             let s  = want_str(&v0, "json_parse")?; // emits T0205 with link
 
-            let vj: sj::Value = sj::from_str(&s).map_err(|e| {
+            let vj: Value = json_parse_ordered(&s).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
@@ -15186,7 +15403,7 @@ fn call_action_by_name(
                 .with_link("https://goblinlang.org/docs/errors#J0001")
             })?;
 
-            from_json(&vj)
+            vj
         }
 
         "json_stringify" => {
@@ -15205,7 +15422,7 @@ fn call_action_by_name(
             }
 
             let v0 = args[0].clone();
-            let s = sj::to_string(&to_json(&v0)).map_err(|e| {
+            let s = sj::to_string(&OrdJson(&v0)).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
@@ -15236,7 +15453,7 @@ fn call_action_by_name(
             }
 
             let v0 = args[0].clone();
-            let s = sj::to_string_pretty(&to_json(&v0)).map_err(|e| {
+            let s = sj::to_string_pretty(&OrdJson(&v0)).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
@@ -15295,7 +15512,7 @@ fn call_action_by_name(
                 .with_link("https://goblinlang.org/docs/errors#J0003")
             })?;
 
-            let vj: sj::Value = sj::from_str(&txt).map_err(|e| {
+            let vj: Value = json_parse_ordered(&txt).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
@@ -15307,7 +15524,7 @@ fn call_action_by_name(
                 .with_link("https://goblinlang.org/docs/errors#J0001")
             })?;
 
-            from_json(&vj)
+            vj
         }
 
         // ===== Replace & remove =====
@@ -15476,7 +15693,7 @@ fn call_action_by_name(
 
                     let mut items: Vec<Value> = Vec::with_capacity(n_out);
                     for &i in &idxs[..n_out] {
-                        let mut pair = BTreeMap::new();
+                        let mut pair = IndexMap::new();
                         pair.insert(entries[i].0.clone(), entries[i].1.clone());
                         items.push(Value::Map(pair));
                     }
@@ -16120,7 +16337,7 @@ fn call_action_by_name(
                 Value::Seq(xs) => Value::Map(xs.metrics_map()),
                 Value::Array(xs) => {
                     // legacy metrics for plain arrays
-                    let mut m = BTreeMap::new();
+                    let mut m = IndexMap::new();
                     m.insert("len".into(), Value::Int(xs.len() as i64));
                     m.insert("backend".into(), Value::Str("array(legacy)".into()));
                     Value::Map(m)
@@ -17754,7 +17971,7 @@ fn mutate_via_call_name(
                 as_bool(vpretty, sp.clone(), "write_json! pretty")?
             } else { false };
 
-            let j = to_json(&vval);
+            let j = OrdJson(&vval);
             let out = (if pretty { sj::to_string_pretty(&j) } else { sj::to_string(&j) })
                 .map_err(|e| {
                     Diagnostic::new_with_code(
@@ -17781,7 +17998,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#J0004")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "create_dir" => {
@@ -17817,7 +18034,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "zip_dir" => {
@@ -17981,7 +18198,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "delete_path" => {
@@ -18044,7 +18261,7 @@ fn mutate_via_call_name(
                 })?;
             }
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         // write_text!(path, text)
@@ -18080,7 +18297,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "append_file" => {
@@ -18133,7 +18350,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
             
-            return Ok(Value::Unit);
+            return Ok(Value::Nil) /* D-bang-io-return (B) */;
         }
 
         // copy_file!(src, dst)
@@ -18176,7 +18393,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         _ => {}
@@ -18473,7 +18690,7 @@ fn mutate_via_call_name(
     if let Some(path) = target_path_opt {
         let slot = get_lvalue_mut(&path, sess, &sp)?;
         *slot = updated;
-        Ok(Value::Unit)
+        Ok(Value::Nil) /* D-bang-io-return (B) */
     } else {
         Ok(updated)
     }
@@ -18852,7 +19069,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
 
                         // New scope for parameters
-                        sess.env.push(BTreeMap::new());
+                        sess.env.push(IndexMap::new());
                         sess.consts.push(BTreeMap::new());
                         sess.type_locks.push(BTreeMap::new());
     sess.hard_type_locks.push(BTreeMap::new());
@@ -19163,7 +19380,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         Some(cond) => {
                             let v = eval_expr(cond.as_ref(), sess)?;
-                            if as_bool(v, arm.span.clone(), "judge_all condition")? {
+                            if cond_truthy(v, arm.span.clone(), "judge_all condition")? {
                                 // Use explicit value if present, otherwise header, otherwise nil
                                 let val = if let Some(expr) = &arm.value {
                                     eval_expr(expr.as_ref(), sess)?
@@ -19205,7 +19422,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         Some(cond) => {
                             let v = eval_expr(cond.as_ref(), sess)?;
-                            if as_bool(v, arm.span.clone(), "judge condition")? {
+                            if cond_truthy(v, arm.span.clone(), "judge condition")? {
                                 let val = if let Some(expr) = &arm.value {
                                     eval_expr(expr.as_ref(), sess)?
                                 } else if let Some(h) = header {
@@ -19246,7 +19463,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
 
         ast::Expr::Object(kvs, _sp) => {
-            let mut m = BTreeMap::new();
+            let mut m = IndexMap::new();
             for (k, vexpr) in kvs {
                 let v = sess.with_eval_depth(|s| eval_expr(vexpr, s))?;
                 m.insert(k.clone(), v);
@@ -19289,31 +19506,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                    // Any scalar key for maps (string, int, float, bool, char)
                 (Value::Map(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                            "no-such-field",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
                 (Value::MapOrd(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                            "no-such-field",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
 
                 (Value::Map(_), other_idx) | (Value::MapOrd(_), other_idx) => Err(
@@ -19350,31 +19549,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             match (b, k) {
                 (Value::Map(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD,
-                            "no-such-key",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
                 (Value::MapOrd(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD,
-                            "no-such-key",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
                 (Value::Array(_), _) => Err(Diagnostic::new_with_code(
                     Severity::Error,
@@ -19715,28 +19896,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
 
             match base_v {
-                Value::Map(map) => {
-                    match map.get(name) {
-                        Some(v) => Ok(v.clone()),
-                        None => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                "missing-key",
-                                &format!("missing key ‘{}’", name),
-                                sp.clone(),
-                            )
-                            .with_help("Ensure the key exists before accessing it.")
-                            .with_link("https://goblinlang.org/docs/errors#R0403"),
-                        ),
-                    }
-                }
+                // D-missing-key-read (B): a missing key reads as nil.
+                Value::Map(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
+                Value::MapOrd(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
 
                 Value::Object { class_name, fields, readonly_fields: _, uuid, .. } => {
                     // 1) If it's a method name on this class, return a bound-method wrapper
                     if let Some(class) = sess.classes.get(&class_name) {
                         if class.actions.iter().any(|a| a.name == *name) {
-                            let mut m = BTreeMap::new();
+                            let mut m = IndexMap::new();
                             m.insert("__kind__".to_string(), Value::Str("__bound_action__".to_string()));
                             m.insert("__name__".to_string(), Value::Str(name.to_string()));
                             // If the receiver is an identifier, capture its var name so mutations persist
@@ -20162,17 +20330,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
             // ============ END BOUND METHOD DISPATCH ============
 
-            // ---- Mutating casts for function form when arg is a plain identifier ----
-            if matches!(name, "float" | "int" | "big" | "str" | "pct" | "f" | "i" | "b" | "string" | "percent")
-               && args.len() == 1
-            {
-                if let ast::Expr::Ident(var_name, _) = &args[0] {
-                    let cur = eval_expr(&args[0], sess)?;
-                    let out = call_action_by_name(sess, &name, vec![cur], sp.clone())?;
-                    sess.set_var(var_name.clone(), out.clone());
-                    return Ok(out);
-                }
-            }
+            // D-cast-rebinds (A): casts are pure; they never rebind their argument.
 
             // ---- bang builtins: put_at!(), delete_all!(), reap!(), ... ----
             if name.ends_with('!') {
@@ -20199,7 +20357,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
 
                     let cond_v = eval_expr(&args[0], sess)?;
-                    let result = if as_bool(cond_v, sp.clone(), "if condition")? {
+                    let result = if cond_truthy(cond_v, sp.clone(), "if condition")? {
                         Session::with_block(sess, |sess| eval_expr(&args[1], sess))?
                     } else if args.len() == 3 {
                         Session::with_block(sess, |sess| eval_expr(&args[2], sess))?
@@ -20234,7 +20392,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     sess.loop_depth += 1;
                     'outer: loop {
                         let c = eval_expr(&args[0], sess)?;
-                        if !as_bool(c, sp.clone(), "while condition")? { break; }
+                        if !cond_truthy(c, sp.clone(), "while condition")? { break; }
 
                         let v = Session::with_block(sess, |sess| eval_expr(&args[1], sess))?;
                         match v {
@@ -20924,13 +21082,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         1 => vals.into_iter().next().unwrap(),
                         _ => {
                             if labels.iter().all(|l| l.is_some()) {
-                                let mut map = BTreeMap::new();
+                                let mut map = IndexMap::new();
                                 for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                                     map.insert(lab.unwrap(), v);
                                 }
                                 Value::Map(map)
                             } else {
-                                let mut map = BTreeMap::new();
+                                let mut map = IndexMap::new();
                                 let mut idx = 1usize;
                                 for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                                     if let Some(name) = lab {
@@ -21214,21 +21372,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "!" | "not" => {
+                    // D-truthiness (B): `not` takes any value and returns a bool.
                     let v = eval_expr(expr, sess)?;
-                    match v {
-                        Value::Bool(b) => Ok(Value::Bool(!b)),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                "boolean-expected",
-                                "logical ‘not’ requires a boolean.",
-                                sp.clone(),
-                            )
-                            .with_help("Use true/false, or an expression that evaluates to a boolean.")
-                            .with_link("https://goblinlang.org/docs/errors#T0203"),
-                        ),
-                    }
+                    Ok(Value::Bool(!truthy(&v)))
                 }
 
                 _ => Err(
@@ -21513,15 +21659,15 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     for i in 2..=k { acc = acc.saturating_mul(i); }
                     Ok(Value::Float(acc as f64))
                 }
-                "^" => Ok(Value::Float(as_num(v, sp.clone(), "ceil")?.ceil())),
-                "_" => Ok(Value::Float(as_num(v, sp.clone(), "floor")?.floor())),
+                "^" => Ok(whole_to_int(as_num(v, sp.clone(), "ceil")?.ceil())),
+                "_" => Ok(whole_to_int(as_num(v, sp.clone(), "floor")?.floor())),
                 "?" => Ok(Value::Bool(!matches!(v, Value::Nil))),
                 "*>>" | "*>>:show_ids" => {
                     let show_ids = op.ends_with(":show_ids");
                     match v {
                         Value::Object { fields, .. } => {
                             // move fields into a plain map; optionally hide ids
-                            let mut out = std::collections::BTreeMap::new();
+                            let mut out = indexmap::IndexMap::new();
                             for (k, val) in fields {
                                 if !show_ids && (k == "id" || k.ends_with("_id")) { continue; }
                                 out.insert(k, val);
@@ -21530,7 +21676,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         Value::Map(m) => {
                             if show_ids { Ok(Value::Map(m)) } else {
-                                let mut out = std::collections::BTreeMap::new();
+                                let mut out = indexmap::IndexMap::new();
                                 for (k, v) in m {
                                     if k == "id" || k.ends_with("_id") { continue; }
                                     out.insert(k, v);
@@ -22034,9 +22180,14 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 .with_link("https://goblinlang.org/docs/errors#R0206")
                             );
                         }
-                        let q = (a / b).floor();
-                        let r = a - q * b;
-                        Value::Float(r)
+                        // D-whole-float-type (B): int % int stays an int (floor modulo).
+                        if let (Value::Int(x), Value::Int(y)) = (&lu, &ru) {
+                            Value::Int(x.rem_euclid(*y) + if *y < 0 && x.rem_euclid(*y) != 0 { *y } else { 0 })
+                        } else {
+                            let q = (a / b).floor();
+                            let r = a - q * b;
+                            Value::Float(r)
+                        }
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
@@ -22081,7 +22232,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 .with_link("https://goblinlang.org/docs/errors#R0206")
                             );
                         }
-                        Value::Float((a / b).floor())
+                        // D-whole-float-type (B): int // int stays an int (floor division).
+                        if let (Value::Int(x), Value::Int(y)) = (&lu, &ru) {
+                            Value::Int(x.div_euclid(*y) - if *y < 0 && x.rem_euclid(*y) != 0 { 1 } else { 0 })
+                        } else {
+                            Value::Float((a / b).floor())
+                        }
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
@@ -22182,7 +22338,16 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         // pure float
                         let a = to_f64_for_math(&lu, sp.clone(), "power: base")?;
                         let b = to_f64_for_math(&ru, sp.clone(), "power: exponent")?;
-                        Value::Float(a.powf(b))
+                        // D-whole-float-type (B): int ** non-negative int stays an int when it fits.
+                        match (&lu, &ru) {
+                            (Value::Int(x), Value::Int(y)) if *y >= 0 && *y <= u32::MAX as i64 => {
+                                match x.checked_pow(*y as u32) {
+                                    Some(n) => Value::Int(n),
+                                    None => Value::Float(a.powf(b)),
+                                }
+                            }
+                            _ => Value::Float(a.powf(b)),
+                        }
                     };
 
                     Ok(reapply_format(out, lspec, rspec))
@@ -22396,79 +22561,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 // logical ops + coalesce
+                // D-truthiness (B): and / or take any values and return a bool.
                 "and" | "&&" => {
                     let lv = eval_expr(lhs, sess)?;
-                    match lv {
-                        Value::Bool(false) => return Ok(Value::Bool(false)), // short-circuit
-                        Value::Bool(true)  => { /* evaluate rhs */ }
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                    "boolean-expected",
-                                    "boolean expected",
-                                    sp.clone(),
-                                )
-                                .with_help("Logical ‘and’ (and/&&) requires a boolean on the left side.")
-                                .with_help("Cast or convert the left operand to Bool before using ‘and’/‘&&’.")
-                                .with_link("https://goblinlang.org/docs/errors#T0203")
-                            );
-                        }
+                    if !truthy(&lv) {
+                        return Ok(Value::Bool(false)); // short-circuit
                     }
                     let rv = eval_expr(rhs, sess)?;
-                    match rv {
-                        Value::Bool(b) => Ok(Value::Bool(b)),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                "boolean-expected",
-                                "boolean expected",
-                                sp.clone(),
-                            )
-                            .with_help("Logical ‘and’ (and/&&) requires a boolean on the right side.")
-                            .with_help("Cast or convert the right operand to Bool before using ‘and’/‘&&’.")
-                            .with_link("https://goblinlang.org/docs/errors#T0203")
-                        ),
-                    }
+                    Ok(Value::Bool(truthy(&rv)))
                 }
                 "or" | "<>" => {
                     let lv = eval_expr(lhs, sess)?;
-                    match lv {
-                        Value::Bool(true)  => return Ok(Value::Bool(true)), // short-circuit
-                        Value::Bool(false) => { /* evaluate rhs */ }
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                    "boolean-expected",
-                                    "boolean expected",
-                                    sp.clone(),
-                                )
-                                .with_help("Logical ‘or’ (or/<>) requires a boolean on the left side.")
-                                .with_help("Cast or convert the left operand to Bool before using ‘or’/‘<>’.")
-                                .with_link("https://goblinlang.org/docs/errors#T0203")
-                            );
-                        }
+                    if truthy(&lv) {
+                        return Ok(Value::Bool(true)); // short-circuit
                     }
                     let rv = eval_expr(rhs, sess)?;
-                    match rv {
-                        Value::Bool(b) => Ok(Value::Bool(b)),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                "boolean-expected",
-                                "boolean expected",
-                                sp.clone(),
-                            )
-                            .with_help("Logical ‘or’ (or/<>) requires a boolean on the right side.")
-                            .with_help("Cast or convert the right operand to Bool before using ‘or’/‘<>’.")
-                            .with_link("https://goblinlang.org/docs/errors#T0203")
-                        ),
-                    }
+                    Ok(Value::Bool(truthy(&rv)))
                 }
 
                 // nix coalesce, works for nil or empty
@@ -22759,7 +22867,9 @@ fn call_object_method_with_values(
                     }
                 }
 
-                last
+                // D-fallthrough-return-value (B): no value means nil, not unit.
+
+                if matches!(last, Value::Unit) { Value::Nil } else { last }
             }
             ast::ActionBody::Expr(expr) => {
                 // single-line action (`=> expr`) — implicit return of the expr value
@@ -22881,7 +22991,8 @@ fn call_object_method(
                         }
                     }
                 }
-                last
+                // D-fallthrough-return-value (B): no value means nil, not unit.
+                if matches!(last, Value::Unit) { Value::Nil } else { last }
             }
             ast::ActionBody::Expr(expr) => {
                 // single-line action (`=> expr`) — implicit return of the expr value
@@ -23443,7 +23554,7 @@ fn sweep_run_arm_on_scope(
     if let Some(frame) = sess.env.last_mut() {
         match old_self {
             Some(v) => { frame.insert("self".into(), v); }
-            None    => { frame.remove("self"); }
+            None    => { frame.shift_remove("self"); }
         }
     }
 

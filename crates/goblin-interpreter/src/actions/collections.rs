@@ -16,6 +16,7 @@ use crate::actions::utils::{
 };
 
 use std::collections::{BTreeMap, BTreeSet};
+use indexmap::IndexMap;
 use crate::call_action_by_name;
 use crate::fmt_value_raw;
 
@@ -386,7 +387,7 @@ pub fn freq(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag
         Value::Str(s) => {
             let mut cnt = BTreeMap::<char, i64>::new();
             for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
-            let mut m = BTreeMap::<String, Value>::new();
+            let mut m = IndexMap::<String, Value>::new();
             for (c, n) in cnt { m.insert(c.to_string(), Value::Int(n)); }
             Value::Map(m)
         }
@@ -404,7 +405,7 @@ pub fn freq(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag
             })?;
             let mut tally = BTreeMap::<String, i64>::new();
             for v in xs { *tally.entry(fmt_value_raw(v)).or_insert(0) += 1; }
-            let mut out = BTreeMap::<String, Value>::new();
+            let mut out = IndexMap::<String, Value>::new();
             for (k, n) in tally { out.insert(k, Value::Int(n)); }
             Value::Map(out)
         }
