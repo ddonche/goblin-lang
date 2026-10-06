@@ -1,0 +1,5 @@
+/// known-gap: interp tether_count is VM-only (unknown action)
+/// tether_count() returns a non-negative int (value is engine-specific).
+n | :tether_count()
+say(:is_int(n))
+say(n >= 0)

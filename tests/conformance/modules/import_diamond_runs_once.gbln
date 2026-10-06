@@ -1,0 +1,5 @@
+/// left and right both import loud; its top level must run only once.
+import _support/modules/left as l
+import _support/modules/right as r
+say(l::name())
+say(r::name())

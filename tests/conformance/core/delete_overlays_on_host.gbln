@@ -1,0 +1,17 @@
+/// delete_overlays_on!(host) removes every overlay instance on that host and leaves others alone.
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+rome <> Polity | stability: .8
+athens <> Polity | stability: .8
+overlay Stunned on rome at .5
+overlay Stunned on athens at .5
+say(:len(:overlays()))
+delete_overlays_on!(rome)
+say(:overlays_of("rome"))
+say(:overlays_of("athens"))
+say(:len(:overlays()))

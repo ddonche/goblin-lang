@@ -1,0 +1,8 @@
+if ""
+    say("truthy")
+else
+    say("falsy")
+xx
+if " "
+    say("truthy")
+xx

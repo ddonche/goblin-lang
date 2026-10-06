@@ -1,0 +1,6 @@
+/// Owner ruling 2026-10-06: `:name(...)` reaches the builtin even when a variable has that name.
+count | [7, 8, 9]
+say(:count(count))
+say(count[0])
+len | 2
+say(:len([1, 2, 3]) + len)

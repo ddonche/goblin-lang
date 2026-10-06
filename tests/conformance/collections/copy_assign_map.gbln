@@ -1,0 +1,5 @@
+a | {"x": 1}
+b | a
+:update!(b{"x"}, 2)
+say(a{"x"})
+say(b{"x"})

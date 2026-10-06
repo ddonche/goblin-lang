@@ -90,6 +90,9 @@ struct LexerState<'a> {
     tokens: Vec<Token>,
     pending_raw: bool,
     pending_trim_lead: bool,
+    /// Open `{{{` literal tokens; `}}}` closes one only while one is open, so
+    /// `{"u": {"n": c{"k"}}}` ends with three plain braces.
+    triple_open: usize,
 }
 
 impl<'a> LexerState<'a> {
@@ -106,23 +109,32 @@ impl<'a> LexerState<'a> {
             tokens: Vec::new(),
             pending_raw: false,
             pending_trim_lead: false,
+            triple_open: 0,
         }
     }
 
     #[inline]
     fn bump_char(&mut self) -> Option<char> {
-        let s = std::str::from_utf8(&self.bytes[self.i..]).ok()?;
-        let mut it = s.chars();
-        let ch = it.next()?;
+        let ch = self.peek_char()?;
         let adv = ch.len_utf8();
         self.i += adv;
         self.col += adv as u32;
         Some(ch)
     }
 
+    /// The character starting at `i`. Decodes only that character: validating
+    /// the whole rest of the source on every call made lexing quadratic.
     #[inline]
     fn peek_char(&self) -> Option<char> {
-        std::str::from_utf8(&self.bytes[self.i..]).ok()?.chars().next()
+        let lead = *self.bytes.get(self.i)?;
+        let len = match lead {
+            0x00..=0x7F => return Some(lead as char),
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            _ => 4,
+        };
+        let end = (self.i + len).min(self.bytes.len());
+        std::str::from_utf8(&self.bytes[self.i..end]).ok()?.chars().next()
     }
 
     #[inline]
@@ -963,6 +975,18 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
     help: Use one of: \n, \r, \t, \\, \", \', \xNN, or \u{...}"#,
         sp,
     ))
+}
+
+/// `raw "…"` (or `raw("…")`) keeps its literal exactly as written: the
+/// string right after the `raw` call takes no escapes.
+fn raw_call_precedes(state: &LexerState) -> bool {
+    let n = state.tokens.len();
+    let is_raw_ident = |t: &Token| t.kind == TokenKind::Ident && t.value.as_deref() == Some("raw");
+    match state.tokens.last() {
+        Some(t) if is_raw_ident(t) => true,
+        Some(t) if t.kind == TokenKind::Op("(".to_string()) && n >= 2 => is_raw_ident(&state.tokens[n - 2]),
+        _ => false,
+    }
 }
 
 fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Result<(), Vec<Diagnostic>> {
@@ -1825,7 +1849,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     }
                 } else {
                     // Double-quoted string
-                    let this_raw = state.pending_raw;
+                    let this_raw = state.pending_raw || raw_call_precedes(&state);
                     let this_trim = state.pending_trim_lead;
                     state.pending_raw = false;
                     state.pending_trim_lead = false;
@@ -1861,12 +1885,14 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance_by(3); // do NOT touch state.nest
+                state.triple_open += 1;
                 let span = state.span(start_i, start_col);
                 state.tokens.push(Token { kind: TokenKind::TripleBraceOpen, span, value: None });
             }
 
             // "}}}" → TripleBraceClose (must be before single '}')
-            b'}' if state.peek(1) == Some(b'}') && state.peek(2) == Some(b'}') => {
+            b'}' if state.triple_open > 0 && state.peek(1) == Some(b'}') && state.peek(2) == Some(b'}') => {
+                state.triple_open -= 1;
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance_by(3); // do NOT touch state.nest

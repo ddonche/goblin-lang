@@ -1,0 +1,4 @@
+/// set_header requires string name and value.
+say("start")
+:set_header("X-N", 5)
+say("unreachable")

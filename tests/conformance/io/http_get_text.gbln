@@ -1,0 +1,9 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// http_get returns a map with status (int), body (str) and ok (bool).
+base | :env("GOBLIN_CONF_HTTP")
+r | :http_get("{base}/text")
+say(r{"status"})
+say(r{"body"})
+say(r{"ok"})
+say(:is_int(r{"status"}))

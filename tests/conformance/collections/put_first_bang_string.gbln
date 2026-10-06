@@ -1,0 +1,3 @@
+s | "bc"
+:put_first!(s, "a")
+say s

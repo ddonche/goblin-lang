@@ -1,0 +1,4 @@
+m | {"a": 1, "b": 2}
+x | :reap_at!(m, "a")
+say x
+say(:keys(m))

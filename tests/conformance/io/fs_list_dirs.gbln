@@ -1,0 +1,6 @@
+/// list_dirs returns the names (not paths) of immediate subdirectories only; files are skipped.
+d | :env("GOBLIN_CONF_TMP")
+:create_dir!("{d}/root/beta/inner")
+:create_dir!("{d}/root/alpha")
+:write_text!("{d}/root/file.txt", "x")
+say(:sort(:list_dirs("{d}/root")))

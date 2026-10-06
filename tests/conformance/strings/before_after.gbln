@@ -1,0 +1,5 @@
+e | "alice@example.com"
+say(:before(e, "@"))
+say(:after(e, "@"))
+say(:before("a=b=c", "="))
+say(:after("a=b=c", "="))

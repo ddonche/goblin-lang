@@ -1,0 +1,13 @@
+import _support/modules/named_like_builtins as nb
+say(nb::all(1))
+say(nb::find(1))
+say(nb::join("a", "b"))
+say(nb::round(1))
+say(nb::update(1))
+say(nb::url_encode("x"))
+say(nb::url_decode("x"))
+say(nb::pct(1))
+say(nb::count(1))
+say(nb::len(1))
+say(nb::sum(1))
+say(nb::keys(1))

@@ -1,0 +1,11 @@
+/// A `first` range arm handles only the first span; a later arm still sees the rest.
+text | "^^^^\ntitle: Hi\n^^^^\nbody ^^^^ not front matter ^^^^"
+fm | ""
+n | 0
+sweep text
+    first "^^^^" ... "^^^^":
+        :update!(fm, :trim(:keep_between(self, "^^^^", "^^^^")))
+        n += 1
+xx
+say(fm)
+say(n)

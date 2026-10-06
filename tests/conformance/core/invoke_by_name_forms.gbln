@@ -1,0 +1,14 @@
+/// invoke(name, [args]) and invoke(name, a, b, ...) call an action by its name;
+/// a single non-array argument is passed as is.
+act add2(a, b)
+    return a + b
+xx
+act double(x)
+    return x * 2
+xx
+say(:invoke("add2", [3, 4]))
+say(:invoke("add2", 3, 4))
+say(:invoke("double", 21))
+say(:invoke("double", [5]))
+name | "dou" + "ble"
+say(:invoke(name, 8))

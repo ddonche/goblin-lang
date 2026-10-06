@@ -1,0 +1,12 @@
+/// A directory target sweeps every file under it.
+d | :env("GOBLIN_CONF_TMP")
+:create_dir!("{d}/sw/sub")
+:write_text!("{d}/sw/a.txt", "x OLD y")
+:write_text!("{d}/sw/sub/b.txt", "OLD z")
+dir | "{d}/sw"
+sweep dir
+    "OLD" :
+        :update_where!(self, "OLD", "NEW")
+xx
+say(:read_text("{d}/sw/a.txt"))
+say(:read_text("{d}/sw/sub/b.txt"))

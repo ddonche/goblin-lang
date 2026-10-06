@@ -1,0 +1,6 @@
+/// known-gap: interp 'rescue err' does not bind err
+attempt
+    x | 1 / 0
+rescue err
+    say(:is_nix(err))
+xx

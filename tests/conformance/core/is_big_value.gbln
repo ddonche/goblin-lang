@@ -1,0 +1,4 @@
+b | :big(1)
+say(:valtype(b))
+say(:is_big(b))
+say(:is_big(1))

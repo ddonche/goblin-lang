@@ -1,0 +1,6 @@
+x | 2
+r |
+    judge
+        x > 5: "big"
+    xx
+say(r)

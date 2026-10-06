@@ -1,0 +1,8 @@
+tally | {"a": 0}
+act inc_a()
+    :update!(tally{"a"}, tally{"a"} + 1)
+    return tally{"a"}
+xx
+say(inc_a())
+say(inc_a())
+say(tally{"a"})

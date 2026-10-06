@@ -1,0 +1,8 @@
+attempt
+    say("a")
+    x | 1 / 0
+    say("b")
+rescue err
+    say("rescued")
+xx
+say("after")

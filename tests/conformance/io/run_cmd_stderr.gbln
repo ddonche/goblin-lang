@@ -1,0 +1,4 @@
+/// stderr of the command is captured separately from stdout (tails only: a login shell may add profile output).
+r | :json_parse(:run_cmd("printf 'out'; printf 'err' 1>&2"))
+say(:ends_with(r{"stderr"}, "err"))
+say(:ends_with(r{"stdout"}, "out"))

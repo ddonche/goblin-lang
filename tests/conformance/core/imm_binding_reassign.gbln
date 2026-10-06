@@ -1,0 +1,5 @@
+/// Decided 2026-10-06 (D-imm, option A; see DECISIONS.md).
+imm x | 1
+say(x)
+x |= 2
+say(x)

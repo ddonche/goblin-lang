@@ -1,0 +1,3 @@
+say(:big(1) + 1)
+say(:big("0.1") + :big("0.2"))
+say(:valtype(:big(1) + 1))

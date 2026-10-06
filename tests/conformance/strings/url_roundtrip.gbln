@@ -1,0 +1,3 @@
+/// known-gap: interp lacks url_encode/url_decode
+s | "q=1 & r=é/ü"
+say(:url_decode(:url_encode(s)) == s)

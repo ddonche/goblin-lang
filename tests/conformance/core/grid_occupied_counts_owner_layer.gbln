@@ -1,0 +1,16 @@
+/// grid_occupied_count / grid_unoccupied_count look at the "owner" layer only;
+/// grid_occupied / grid_unoccupied return the matching cells.
+m | :grid("m", 3, 2)
+say(:grid_occupied_count("m"))
+say(:grid_unoccupied_count("m"))
+:grid_set("m", 0, 0, "owner", "red")
+:grid_set("m", 1, 0, "owner", "blue")
+:grid_set("m", 2, 1, "owner", "red")
+:grid_set("m", 1, 1, "terrain", "hill")
+say(:grid_occupied_count("m"))
+say(:grid_unoccupied_count("m"))
+say(:len(:grid_occupied("m")))
+say(:len(:grid_unoccupied("m")))
+:grid_set("m", 0, 0, "owner", nil)
+say(:grid_occupied_count("m"))
+say(:len(:grid_unoccupied("m")))

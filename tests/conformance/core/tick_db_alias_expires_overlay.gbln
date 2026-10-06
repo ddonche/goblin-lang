@@ -1,0 +1,14 @@
+/// tick_db() is an alias of tick().
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+rome <> Polity | stability: .8
+overlay Stunned on rome at .5 for 1 ticks
+say(rome >> stability)
+tick_db()
+say(rome >> stability)
+say(:overlays_of("rome"))

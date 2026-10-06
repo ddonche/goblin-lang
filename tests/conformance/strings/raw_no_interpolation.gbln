@@ -1,0 +1,4 @@
+/// Owner ruling 2026-10-06: raw keeps its literal exactly as written (no escapes, no interpolation).
+x | 5
+q | raw "c {x}"
+say(q)

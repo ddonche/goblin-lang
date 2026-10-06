@@ -1,0 +1,13 @@
+x | 1
+x += 1
+say(x)
+x -= 3
+say(x)
+x *= 4
+say(x)
+y | 10
+y %= 4
+say(y)
+s | "a"
+s += "b"
+say(s)

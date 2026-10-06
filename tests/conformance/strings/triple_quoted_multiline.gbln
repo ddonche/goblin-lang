@@ -1,0 +1,5 @@
+x | 5
+m | """line one
+line two {x}"""
+say(m)
+say(:len(:lines(m)))

@@ -1,0 +1,5 @@
+/// known-gap: interp caches modules by alias, so the same file runs twice
+/// Same file under two aliases: top-level code runs once (spec §24.4).
+import _support/modules/loud as a
+import _support/modules/loud as b
+say(a::hi() + b::hi())

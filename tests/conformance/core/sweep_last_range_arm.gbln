@@ -1,0 +1,10 @@
+/// A `last` range arm runs once, on the last span, after the other arms.
+text | "[1] [2] [3]"
+order | []
+sweep text
+    last "[" ... "]":
+        :put_last!(order, "last " + self)
+    "[" ... "]":
+        :put_last!(order, "each " + self)
+xx
+say(order)

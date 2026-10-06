@@ -1,0 +1,7 @@
+/// A void cell is not anyone's neighbour and is not counted as unoccupied.
+w | :grid("world", 10, 10)
+say(:len(:grid_neighbors("world", 5, 5)))
+say(:grid_unoccupied_count("world"))
+:grid_void("world", 5, 4)
+say(:len(:grid_neighbors("world", 5, 5)))
+say(:grid_unoccupied_count("world"))

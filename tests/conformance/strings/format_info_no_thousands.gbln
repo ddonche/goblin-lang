@@ -1,0 +1,2 @@
+/// Decided 2026-10-06 (D-format-info-no-thousands, option A; see DECISIONS.md).
+say(:format_info(:format(2.5, 2)))

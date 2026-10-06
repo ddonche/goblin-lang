@@ -1,0 +1,5 @@
+/// requires: db
+/// Non-NULL json and jsonb columns do not read as nil.
+r | :db_query_one("SELECT '[1,2]'::json AS j, '[3]'::jsonb AS jb", [])
+say(:is_nil(r{"j"}))
+say(:is_nil(r{"jb"}))

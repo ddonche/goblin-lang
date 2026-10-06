@@ -1,0 +1,4 @@
+/// Owner ruling 2026-10-06 ("fix increment"): x++ stores x + 1 and evaluates to the new value.
+x | 3
+say(x++)
+say(x)

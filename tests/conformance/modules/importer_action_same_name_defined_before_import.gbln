@@ -1,0 +1,6 @@
+act name()
+    return "main"
+xx
+import _support/modules/left as l
+say(name())
+say(l::name())

@@ -1,0 +1,4 @@
+/// Decided 2026-10-06 (D-toplevel-return, option B; see DECISIONS.md).
+say("x")
+return 5
+say("y")

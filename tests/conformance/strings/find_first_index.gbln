@@ -1,0 +1,4 @@
+say(:find("banana", "an"))
+say(:find("banana", "z"))
+say(:find("héllo", "l"))
+say("banana".find("n"))

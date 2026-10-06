@@ -1,0 +1,4 @@
+l | ["a", "m", "n", "b"]
+x | :reap_between!(l, "a", "b")
+say x
+say l

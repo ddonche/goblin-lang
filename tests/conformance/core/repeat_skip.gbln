@@ -1,0 +1,6 @@
+n | 0
+repeat 4
+    n |= n + 1
+    if n == 2 => skip
+    say(n)
+xx

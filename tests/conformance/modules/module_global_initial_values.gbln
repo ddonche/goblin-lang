@@ -1,0 +1,5 @@
+import _support/modules/state as st
+say(st::get_counter())
+say(:len(st::get_items()))
+say(st::get_tally_a())
+say(st::get_label())

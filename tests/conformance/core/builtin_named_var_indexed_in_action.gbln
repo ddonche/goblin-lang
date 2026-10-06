@@ -1,0 +1,5 @@
+/// Owner ruling 2026-10-06: a bound variable named like a builtin is the variable; `:name(...)` calls the builtin.
+act probe(lines)
+    return lines[0]
+xx
+say(probe([7, 8]))

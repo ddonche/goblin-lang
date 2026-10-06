@@ -1,0 +1,8 @@
+say(:abs(-5))
+say(:abs(-2.5))
+say(:min(3, 1, 2))
+say(:min([3, 1, 2]))
+say(:max([3, 1, 2]))
+say(:max(3, 9))
+say(:max(1, 2.5))
+say(:min(2, 1.5))

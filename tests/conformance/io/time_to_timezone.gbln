@@ -1,0 +1,8 @@
+/// to_timezone keeps the instant but changes the zone used for fields and rendering; timezone() names it.
+dt | :from_iso("2025-03-04T10:20:30Z")
+say(:timezone(dt))
+ny | :to_timezone(dt, "America/New_York")
+say(:timezone(ny))
+say(:hour(ny))
+say(:to_iso(ny))
+say(:to_epoch_ms(ny) == :to_epoch_ms(dt))

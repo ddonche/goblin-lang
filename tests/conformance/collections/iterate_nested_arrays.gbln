@@ -1,0 +1,5 @@
+for row in [[1, 2], [3, 4]]
+    for x in row
+        say x
+    xx
+xx

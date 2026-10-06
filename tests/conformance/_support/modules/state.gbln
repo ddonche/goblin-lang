@@ -1,0 +1,35 @@
+/// helper: module-level mutable state
+counter | 0
+items | []
+tally | {"a": 0}
+label | "start"
+act bump()
+    counter |= counter + 1
+    return counter
+xx
+act get_counter()
+    return counter
+xx
+act push(x)
+    :put_last!(items, x)
+    return :len(items)
+xx
+act get_items()
+    return items
+xx
+act inc_tally(k)
+    :update!(tally{k}, tally{k} + 1)
+    return tally{k}
+xx
+act get_tally()
+    return tally
+xx
+act set_label(s)
+    label |= s
+xx
+act get_label()
+    return label
+xx
+act get_tally_a()
+    return tally{"a"}
+xx

@@ -1,0 +1,4 @@
+/// known-gap: interp lacks render_template
+data | :json_parse("{\"name\": \"Gob\"}")
+out | :render_template("_support/strings/greet.html", data)
+say(out)

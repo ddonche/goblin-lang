@@ -1,0 +1,4 @@
+/// pathfind(from, to) gives the relative path from the file `from` to `to`; mode "href" gives a root-relative URL.
+say(:pathfind("docs/a/page.md", "docs/b/img.png"))
+say(:pathfind("docs/a/page.md", "docs/a/img.png"))
+say(:pathfind("docs/a/page.md", "x//y.png", "href"))

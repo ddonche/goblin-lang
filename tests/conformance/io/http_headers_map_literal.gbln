@@ -1,0 +1,6 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// Request headers passed as a map literal are sent.
+base | :env("GOBLIN_CONF_HTTP")
+r | :http_get("{base}/echo", {"X-Test": "lit"})
+say(r{"body"})

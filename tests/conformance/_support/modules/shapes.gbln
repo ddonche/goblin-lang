@@ -1,0 +1,22 @@
+/// helper: enum and class declared in a module
+enum Color
+    Red
+    Green
+xx
+<>Box |
+    w: 1
+    h: 1
+    act area()
+        return self >> w * self >> h
+    xx
+xx
+act make_box(w, h)
+    b <> Box | w: w, h: h
+    return b
+xx
+act favorite()
+    return Color::Green
+xx
+act is_red(c)
+    return c == Color::Red
+xx

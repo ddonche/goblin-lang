@@ -1,0 +1,8 @@
+say(:is_nix(nil))
+say(:is_nix(""))
+say(:is_nix("   "))
+say(:is_nix("a"))
+say(:is_nix(0))
+say(nil.nix?)
+say("".nix?)
+say("x".nix?)

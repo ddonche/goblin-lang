@@ -1,0 +1,15 @@
+/// requires: db
+/// db_query returns an array of row maps keyed by column name.
+sfx | :keep_before(:uuid_v4(), "-")
+t | "io_db_query_rows_{sfx}"
+:db_exec("CREATE TABLE {t} (id bigint, name text)", [])
+:db_exec("INSERT INTO {t} VALUES (1, 'a'), (2, 'b')", [])
+rows | :db_query("SELECT id, name FROM {t} ORDER BY id", [])
+say(:is_array(rows))
+say(:len(rows))
+say(rows[0]{"id"})
+say(rows[0]{"name"})
+say(rows[1]{"id"} + rows[1]{"id"})
+say(rows[1]{"name"})
+say(:keys(rows[0]))
+:db_exec("DROP TABLE {t}", [])

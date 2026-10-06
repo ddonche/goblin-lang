@@ -1,0 +1,13 @@
+/// grid_count counts owner-layer cells equal to a value; grid_has tells whether any exist;
+/// grid_occupied_by returns those cells.
+m | :grid("m", 3, 2)
+:grid_set("m", 0, 0, "owner", "red")
+:grid_set("m", 1, 0, "owner", "blue")
+:grid_set("m", 2, 1, "owner", "red")
+:grid_set("m", 1, 1, "state", "red")
+say(:grid_count("m", "red"))
+say(:grid_count("m", "green"))
+say(:grid_has("m", "blue"))
+say(:grid_has("m", "green"))
+say(:len(:grid_occupied_by("m", "red")))
+say(:len(:grid_occupied_by("m", "green")))

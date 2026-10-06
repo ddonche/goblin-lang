@@ -1,0 +1,14 @@
+version | 1
+data | 2
+mask | 3
+text | 4
+value | 5
+result | 6
+index | 7
+list | 8
+map | 9
+next | 10
+close | 11
+payload | 12
+say(version + data + mask + text + value + result + index + list + map + next + close + payload)
+say(list)

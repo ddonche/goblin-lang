@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act find(x)
+    return "user-find"
+xx
+say(find([1, 2]))

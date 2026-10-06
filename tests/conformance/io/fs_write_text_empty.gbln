@@ -1,0 +1,6 @@
+/// Writing an empty string creates an empty file.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/empty.txt"
+:write_text!(p, "")
+say(:file_exists(p))
+say(:len(:read_text(p)))

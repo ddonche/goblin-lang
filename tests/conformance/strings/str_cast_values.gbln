@@ -1,0 +1,6 @@
+say(:str(42))
+say(:str(true))
+say(:str(nil))
+say(:str([1, "a"]))
+say(:str(2.50))
+say(:string(42))

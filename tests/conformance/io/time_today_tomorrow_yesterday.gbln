@@ -1,0 +1,7 @@
+/// today/tomorrow/yesterday are midnight UTC dates exactly one day apart.
+t | :today()
+say(:hour(t))
+say(:minute(t))
+say(:to_epoch_ms(:tomorrow()) - :to_epoch_ms(t))
+say(:to_epoch_ms(t) - :to_epoch_ms(:yesterday()))
+say(:to_epoch_ms(:now()) >= :to_epoch_ms(t))

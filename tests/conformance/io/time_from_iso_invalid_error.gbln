@@ -1,0 +1,4 @@
+/// from_iso of a string that is not RFC 3339 is an error.
+say("start")
+dt | :from_iso("March 4th")
+say("unreachable")

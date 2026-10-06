@@ -1,0 +1,7 @@
+/// append_file! on a missing file creates it.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/fresh.txt"
+say(:file_exists(p))
+:append_file!(p, "x")
+say(:file_exists(p))
+say(:read_text(p))

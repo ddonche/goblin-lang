@@ -1,0 +1,6 @@
+/// copy_file! creates missing parent directories of the destination.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/src.txt", "payload")
+:copy_file!("{d}/src.txt", "{d}/x/y/z/dst.txt")
+say(:is_dir("{d}/x/y/z"))
+say(:read_text("{d}/x/y/z/dst.txt"))

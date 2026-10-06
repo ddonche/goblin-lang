@@ -1,0 +1,6 @@
+/// Decided 2026-10-06 (D-cast-rebinds, option A; see DECISIONS.md).
+i | 5
+s | :str(i)
+say(s)
+say(i + 1)
+say(:valtype(i))

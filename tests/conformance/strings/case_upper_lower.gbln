@@ -1,0 +1,3 @@
+s | "john DOE"
+say(:upper(s))
+say(:lower(s))

@@ -1,0 +1,4 @@
+/// Owner ruling 2026-10-06: a bound variable named like a builtin is the variable; `:name(...)` calls the builtin.
+/// A variable shadows the builtin, so `len[1]` indexes the variable.
+len | [7, 8]
+say(len[1])

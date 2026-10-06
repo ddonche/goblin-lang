@@ -1,0 +1,3 @@
+say(:parse_bool("true"))
+say(:parse_bool("FALSE"))
+say(:parse_bool("maybe"))

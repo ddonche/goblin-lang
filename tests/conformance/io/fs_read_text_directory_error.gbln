@@ -1,0 +1,5 @@
+/// read_text of a directory is an error.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+s | :read_text(d)
+say("unreachable")

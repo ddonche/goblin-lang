@@ -1,8 +1,8 @@
 posts | [{"id": 1, "title": "Hello", "body": "World"}, {"id": 2, "title": "Second", "body": "Post"}]
 html | :render_template("tests/render_page_repeat.gbln", { "posts": posts })
-assert(html.contains("<h1>Posts</h1>"))
-assert(html.contains("<h2>Hello</h2>"))
-assert(html.contains("<p>World</p>"))
-assert(html.contains("<h2>Second</h2>"))
-assert(html.contains("<p>Post</p>"))
-say "render_template (repeat/it): ALL ASSERTIONS PASSED"
+say(:has(html, "<h1>Posts</h1>"))
+say(:has(html, "<h2>Hello</h2>"))
+say(:has(html, "<p>World</p>"))
+say(:has(html, "<h2>Second</h2>"))
+say(:has(html, "<p>Post</p>"))
+say "render_template (repeat/it): every line above should be true"

@@ -14,6 +14,7 @@ use goblin_diagnostics::{Diagnostic, Severity};
 
 use blake3::Hasher;
 use std::collections::{BTreeMap, BTreeSet};
+use indexmap::IndexMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -323,11 +324,11 @@ impl CsprngContext {
 // cfg map helpers — mirrors what the pick block uses in lib.rs
 // ---------------------------------------------------------------------------
 
-fn cfg_bool(m: &BTreeMap<String, Value>, k: &str) -> Option<bool> {
+fn cfg_bool(m: &IndexMap<String, Value>, k: &str) -> Option<bool> {
     m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
 }
 
-fn cfg_num(m: &BTreeMap<String, Value>, k: &str) -> Option<f64> {
+fn cfg_num(m: &IndexMap<String, Value>, k: &str) -> Option<f64> {
     match m.get(k)? {
         Value::Float(n) => Some(*n),
         Value::Int(i)   => Some(*i as f64),
@@ -397,7 +398,7 @@ pub fn secure_pick(
     enum CollectionSource {
         Array(Vec<Value>),
         Seq(Vec<Value>),
-        Map(BTreeMap<String, Value>),
+        Map(IndexMap<String, Value>),
     }
 
     let src_collection: Option<CollectionSource> = if let Some(Value::Array(arr)) = cfg.get("src") {
@@ -488,7 +489,7 @@ pub fn secure_pick(
                 let out = if allow_dups {
                     (0..n_out).map(|_| {
                         let idx = ctx.next_index(entries.len());
-                        let mut pair = BTreeMap::new();
+                        let mut pair = IndexMap::new();
                         pair.insert(entries[idx].0.clone(), entries[idx].1.clone());
                         Value::Map(pair)
                     }).collect()
@@ -498,7 +499,7 @@ pub fn secure_pick(
                     for i in 0..n_out {
                         let j = i + ctx.next_index(entries.len() - i);
                         idxs.swap(i, j);
-                        let mut pair = BTreeMap::new();
+                        let mut pair = IndexMap::new();
                         pair.insert(entries[idxs[i]].0.clone(), entries[idxs[i]].1.clone());
                         out.push(Value::Map(pair));
                     }

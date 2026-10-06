@@ -1,0 +1,4 @@
+l | [5, 5, 5]
+x | :reap!(l, 2)
+say x
+say(:len(l))

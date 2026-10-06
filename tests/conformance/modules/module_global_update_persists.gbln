@@ -1,0 +1,4 @@
+import _support/modules/state as st
+say(st::inc_tally("a"))
+say(st::inc_tally("a"))
+say(st::get_tally_a())

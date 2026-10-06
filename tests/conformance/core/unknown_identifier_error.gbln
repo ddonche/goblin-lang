@@ -1,0 +1,2 @@
+say("start")
+say(nope_not_bound + 1)

@@ -1,0 +1,5 @@
+/// Decided 2026-10-06 (D-block-scope, option C; see DECISIONS.md).
+if true
+    z | 2
+xx
+say(z)

@@ -1,0 +1,4 @@
+w | [4, 5, 6]
+x | pick from w
+say(:has(w, x))
+say w

@@ -1,0 +1,4 @@
+l | ["a1", "b", "c2"]
+x | :reap_matching!(l, "[0-9]")
+say x
+say l

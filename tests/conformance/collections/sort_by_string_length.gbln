@@ -1,0 +1,5 @@
+/// known-gap: interp has no sort_by builtin (unknown action)
+act size(w)
+    return :len(w)
+xx
+say(:sort_by(["ccc", "a", "bb"], "size"))

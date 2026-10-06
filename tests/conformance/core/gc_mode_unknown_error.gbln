@@ -1,0 +1,7 @@
+/// known-gap: interp gc_mode is VM-only (unknown action)
+/// gc_mode with an unknown mode name is an error.
+say("start")
+:gc_mode("auto")
+say("auto ok")
+say(:gc_mode("sometimes"))
+say("unreachable")

@@ -1,0 +1,5 @@
+/// format_datetime / format_date / format_time take a strftime-style pattern.
+dt | :from_iso("2025-03-04T10:20:30Z")
+say(:format_datetime(dt, "%Y/%m/%d %H:%M:%S"))
+say(:format_date(dt, "%d.%m.%Y"))
+say(:format_time(dt, "%H:%M"))

@@ -1,0 +1,3 @@
+say(:is_nix([]))
+say(:is_nix({}))
+say(:is_nix([1]))

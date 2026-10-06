@@ -1,0 +1,5 @@
+/// sub/sib_user.gbln does `import sib as s`; paths resolve from the project
+/// root, not from the importing module's directory, so this fails.
+say("before")
+import _support/modules/sub/sib_user as su
+say(su::go())

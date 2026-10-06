@@ -12,3 +12,6 @@ pub mod debug;
 pub mod exec;
 pub mod render;
 pub mod tick;
+pub mod reqenv;
+pub mod modcache;
+pub mod sweep;

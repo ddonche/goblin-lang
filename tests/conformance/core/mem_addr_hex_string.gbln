@@ -1,0 +1,6 @@
+/// known-gap: vm mem_addr always errors ("arena introspection is not supported in this context")
+/// mem_addr(x) returns the address of x's data as a "0x..." string (value is run-specific).
+x | [1, 2]
+a | :mem_addr(x)
+say(:valtype(a))
+say(:starts_with(a, "0x"))

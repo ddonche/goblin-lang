@@ -1,0 +1,9 @@
+act fx()
+    for i in [1, 2]
+        for j in [3, 4]
+            if j == 4 => return i * j
+        xx
+    xx
+    return 0
+xx
+say(fx())

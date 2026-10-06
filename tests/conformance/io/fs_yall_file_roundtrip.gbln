@@ -1,0 +1,7 @@
+/// yall_write_file writes a map as YALL text; yall_parse_file reads it back (keys already sorted, so order is not in question).
+d | :env("GOBLIN_CONF_TMP")
+:yall_write_file("{d}/cfg.yall", {"a": "gob", "b": 2})
+say(:read_text("{d}/cfg.yall"))
+back | :yall_parse_file("{d}/cfg.yall")
+say(back{"a"})
+say(back{"b"} + 1)

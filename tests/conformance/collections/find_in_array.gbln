@@ -1,0 +1,2 @@
+/// Decided 2026-10-06 (D-find-on-array, option A; see DECISIONS.md).
+say(:find([5, 6, 7], 6))

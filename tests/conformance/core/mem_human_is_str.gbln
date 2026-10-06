@@ -1,0 +1,4 @@
+/// mem_human() is the process memory as a non-empty human-readable string (value is machine-specific).
+h | :mem_human()
+say(:valtype(h))
+say(:len(h) > 0)

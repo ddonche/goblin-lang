@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act round(x)
+    return "user-round"
+xx
+say(round(2.7))

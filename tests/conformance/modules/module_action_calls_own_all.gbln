@@ -1,0 +1,3 @@
+/// Campfire lib/db.gbln pattern: module act `one` calls the module's own `all`.
+import _support/modules/named_like_builtins as nb
+say(nb::one(2))

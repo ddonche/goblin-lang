@@ -1,0 +1,11 @@
+/// `name!(x)` applies the builtin `name` and stores the result back into x.
+s | "  Hi There  "
+:trim!(s)
+say("[" + s + "]")
+:upper!(s)
+say(s)
+:lower!(s)
+say(s)
+m | {"t": " x "}
+:trim!(m{"t"})
+say(m)

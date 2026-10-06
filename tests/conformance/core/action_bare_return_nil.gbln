@@ -1,0 +1,4 @@
+act fx()
+    return
+xx
+say(fx())

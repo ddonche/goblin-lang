@@ -1,0 +1,3 @@
+say(:valtype([1, 2]))
+say(:valtype({"a": 1}))
+say(:valtype([]) == "array")

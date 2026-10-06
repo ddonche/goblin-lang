@@ -1,0 +1,11 @@
+enum Status
+    Idle
+    Busy
+xx
+s | Status::Busy
+say(s == Status::Busy)
+say(s == Status::Idle)
+say(s != Status::Idle)
+if s == Status::Busy
+    say("busy")
+xx

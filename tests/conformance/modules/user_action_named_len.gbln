@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act len(x)
+    return "user-len"
+xx
+say(len([1, 2, 3]))

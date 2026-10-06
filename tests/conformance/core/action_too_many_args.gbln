@@ -1,0 +1,5 @@
+act one(a)
+    return a
+xx
+say("start")
+say(one(1, 2))

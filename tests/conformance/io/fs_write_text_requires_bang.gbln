@@ -1,0 +1,5 @@
+/// Filesystem writes require the bang form: plain write_text(...) is an error.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+:write_text("{d}/f.txt", "x")
+say("unreachable")

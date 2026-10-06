@@ -1,0 +1,9 @@
+i | 0
+n | 0
+while n < 3
+    part | :str(i)
+    i |= 5
+    n |= n + 1
+xx
+say(i)
+say(n)

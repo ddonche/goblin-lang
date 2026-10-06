@@ -1,0 +1,5 @@
+l | [1, 2, 3]
+c | l[:]
+:put_last!(c, 4)
+say l
+say c

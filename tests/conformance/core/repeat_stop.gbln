@@ -1,0 +1,7 @@
+/// known-gap: interp 'stop' inside 'repeat N' does not exit the loop (spec: stop exits repeat)
+n | 0
+repeat 5
+    n |= n + 1
+    if n == 3 => stop
+xx
+say(n)

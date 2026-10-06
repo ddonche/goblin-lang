@@ -1,0 +1,6 @@
+/// Enums declared in a module are usable by bare name in the importer
+/// (the spec's qualified sh::Color::Red form does not parse).
+import _support/modules/shapes as sh
+c | Color::Red
+say(sh::is_red(c))
+say(sh::is_red(Color::Green))

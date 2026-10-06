@@ -1,0 +1,3 @@
+/// Goblin's current behaviour (owner, 2026-10-06: the docs predate Goblin and are not
+/// canonical). Was a docs-vs-engine gap: cheat-sheet says nil.str is "" (both print "nil")
+say("[" + :str(nil) + "]")

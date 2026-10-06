@@ -1,0 +1,7 @@
+act fx()
+    for x in [1, 2, 3]
+        if x == 2 => return x * 10
+    xx
+    return 0
+xx
+say(fx())

@@ -1,0 +1,3 @@
+for ch in "abc"
+    say(ch)
+xx

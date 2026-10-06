@@ -1,0 +1,5 @@
+/// path_normalize resolves "." and "..", collapses repeated separators, keeps leading ".." on relative paths.
+say(:path_normalize("a/./b/../c//d"))
+say(:path_normalize("../x/../../y"))
+say(:path_normalize("/a/../../b"))
+say(:path_normalize("a/.."))

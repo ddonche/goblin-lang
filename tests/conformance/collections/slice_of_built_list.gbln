@@ -1,0 +1,5 @@
+l | []
+:put_last!(l, 1)
+:put_last!(l, 2)
+:put_last!(l, 3)
+say(l[0:2])

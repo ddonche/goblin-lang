@@ -1,0 +1,2 @@
+/// `array_push` was removed from the VM on 2026-10-06 (owner ruling); neither engine has it.
+say(:array_push([1], 2))

@@ -1,0 +1,4 @@
+/// A datetime parsed with an offset is normalised to UTC; to_iso round-trips.
+say(:to_iso(:from_iso("2025-03-04T10:20:30+02:00")))
+say(:to_iso(:from_iso("2025-03-04T10:20:30Z")))
+say(:from_iso("2025-03-04T10:20:30Z"))

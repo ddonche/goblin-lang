@@ -1,0 +1,9 @@
+/// D30 (decided: escape once). A {placeholder} does not make a string's
+/// backslashes go through escape processing a second time, so they print the
+/// same with or without one; triple-quoted strings keep them verbatim.
+x | 1
+say("a\\\\b {x}")
+say("a\\\\b")
+say("""p="\\S" {x}""")
+say("""p="\\S" """)
+say("brace \\{x\\} and {x}")

@@ -1,0 +1,9 @@
+/// secure_random(lo, hi) returns an int in the inclusive range.
+ok | true
+for i in 1..50
+    n | :secure_random(1, 3)
+    if :is_int(n) == false or n < 1 or n > 3
+        ok |= false
+    xx
+xx
+say(ok)

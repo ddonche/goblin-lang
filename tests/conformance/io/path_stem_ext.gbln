@@ -1,0 +1,7 @@
+/// stem drops only the last extension; ext includes the dot and is "" when there is none.
+say(:stem("a/b/archive.tar.gz"))
+say(:ext("a/b/archive.tar.gz"))
+say(:stem("notes.md"))
+say(:ext("notes.md"))
+say("[" + :ext("Makefile") + "]")
+say(:stem("Makefile"))

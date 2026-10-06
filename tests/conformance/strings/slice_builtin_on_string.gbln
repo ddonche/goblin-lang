@@ -1,0 +1,3 @@
+/// known-gap: interp lacks slice builtin
+s | "héllo"
+say(:slice(s, 1, 3))

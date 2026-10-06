@@ -1,0 +1,5 @@
+/// Decided 2026-10-06 (D-multi-return, option A; see DECISIONS.md).
+act fx()
+    return 1, 2
+xx
+say(fx())

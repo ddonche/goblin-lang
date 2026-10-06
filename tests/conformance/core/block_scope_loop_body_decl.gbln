@@ -1,0 +1,5 @@
+/// Decided 2026-10-06 (D-block-scope, option C; see DECISIONS.md).
+for i in [1, 2]
+    w | i * 10
+xx
+say(w)

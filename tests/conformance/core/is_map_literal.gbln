@@ -1,0 +1,2 @@
+say(:is_map({"a": 1}))
+say(:is_map([1]))

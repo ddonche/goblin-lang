@@ -1,0 +1,4 @@
+n.int | 5
+say(n)
+n |= "s"
+say(n)

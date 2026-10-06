@@ -1,0 +1,5 @@
+/// helper: prints when its top level runs
+say("loud loaded")
+act hi()
+    return "hi"
+xx

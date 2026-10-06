@@ -20,7 +20,15 @@ use crate::value::{BuiltinId, CompiledModule, FunctionObject, UpvalueDescriptor,
 /// A single lexical scope (one function body).
 struct FunctionScope {
     /// Maps variable names to local slot indices within this function.
+    /// Only the names visible at the current point: a block's locals are
+    /// dropped when it closes (the slots are not reused).
     locals: Vec<(String, u8)>,
+    /// Parallel to `locals`.
+    local_meta: Vec<LocalMeta>,
+    /// `locals.len()` at the start of each open block.
+    block_marks: Vec<usize>,
+    /// Every local ever declared, for slot names (string interpolation).
+    all_locals: Vec<(String, u8)>,
     /// Upvalue captures from enclosing scopes.
     upvalues: Vec<(String, UpvalueDescriptor)>,
     /// Bytecode under construction.
@@ -31,6 +39,8 @@ struct FunctionScope {
     next_slot: u8,
     /// How many slots are parameters (always slots 0..params-1).
     params: usize,
+    /// Arguments a caller must pass; the rest have defaults.
+    required_params: usize,
     /// Function name.
     name: String,
     /// Pending break jump patches (jump offsets that need to be back-patched).
@@ -44,23 +54,31 @@ struct FunctionScope {
     line_numbers: Vec<u32>,
     /// Current source line to attach to emitted opcodes.
     current_line: u32,
+    /// An `:objects(…)` / `:overlays(…)` predicate body: the fields of `it`
+    /// are in scope by name, as in the interpreter.
+    pred_fields: bool,
 }
 
 impl FunctionScope {
     fn new(name: impl Into<String>, params: usize) -> Self {
         FunctionScope {
             locals: Vec::new(),
+            local_meta: Vec::new(),
+            block_marks: Vec::new(),
+            all_locals: Vec::new(),
             upvalues: Vec::new(),
             bytecode: Vec::new(),
             constants: Vec::new(),
             next_slot: params as u8,
             params,
+            required_params: params,
             name: name.into(),
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
             loop_start: None,
             line_numbers: Vec::new(),
             current_line: 0,
+            pred_fields: false,
         }
     }
 
@@ -80,6 +98,17 @@ impl FunctionScope {
         let slot = self.next_slot;
         self.next_slot = self.next_slot.saturating_add(1);
         self.locals.push((name.to_string(), slot));
+        self.local_meta.push(LocalMeta { depth: self.block_marks.len(), bound: true, imm: false });
+        self.all_locals.push((name.to_string(), slot));
+        slot
+    }
+
+    /// Declare a hoisted local: it has a slot from the start of the function
+    /// (so forward references compile), but counts as bound only once its
+    /// `x | v` statement is reached.
+    fn declare_hoisted(&mut self, name: &str) -> u8 {
+        let slot = self.declare_local(name);
+        self.local_meta.last_mut().unwrap().bound = false;
         slot
     }
 
@@ -87,6 +116,31 @@ impl FunctionScope {
     fn declare_params(&mut self, names: &[String]) {
         for (i, n) in names.iter().enumerate() {
             self.locals.push((n.clone(), i as u8));
+            self.local_meta.push(LocalMeta { depth: 0, bound: true, imm: false });
+            self.all_locals.push((n.clone(), i as u8));
+        }
+    }
+
+    /// The innermost visible local with this name: (index into `locals`, slot).
+    fn find_local_entry(&self, name: &str) -> Option<(usize, u8)> {
+        self.locals.iter().enumerate().rev().find(|(_, (n, _))| n == name).map(|(i, (_, s))| (i, *s))
+    }
+
+    fn begin_block(&mut self) {
+        self.block_marks.push(self.locals.len());
+    }
+
+    /// Stop resolving names to this slot (the slot itself stays allocated).
+    fn hide_local(&mut self, slot: u8) {
+        if let Some(e) = self.locals.iter_mut().rev().find(|(_, s)| *s == slot) {
+            e.0 = String::from("\u{0}hidden");
+        }
+    }
+
+    fn end_block(&mut self) {
+        if let Some(mark) = self.block_marks.pop() {
+            self.locals.truncate(mark);
+            self.local_meta.truncate(mark);
         }
     }
 
@@ -123,7 +177,8 @@ impl FunctionScope {
         let current = self.bytecode.len();
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
-            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o) => *o = offset,
+            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
+            | Opcode::JumpIfLocalSet(_, o) | Opcode::LoadItFieldOrJump(_, o) => *o = offset,
             _ => panic!("patch_jump on non-jump opcode"),
         }
     }
@@ -132,17 +187,18 @@ impl FunctionScope {
     fn patch_jump_to(&mut self, jump_idx: usize, target_ip: usize) {
         let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
-            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o) => *o = offset,
+            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
+            | Opcode::JumpIfLocalSet(_, o) | Opcode::LoadItFieldOrJump(_, o) => *o = offset,
             _ => panic!("patch_jump_to on non-jump opcode"),
         }
     }
 
-    fn finish(self, source_file: String, global_names: Vec<String>) -> FunctionObject {
+    fn finish(self, source_file: String, global_names: std::rc::Rc<std::cell::OnceCell<Vec<String>>>) -> FunctionObject {
         let upvalue_descriptors: Vec<UpvalueDescriptor> =
             self.upvalues.into_iter().map(|(_, d)| d).collect();
         let total_slots = self.next_slot as usize;
         let mut local_names = vec![String::new(); total_slots];
-        for (name, slot) in &self.locals {
+        for (name, slot) in &self.all_locals {
             if (*slot as usize) < total_slots {
                 local_names[*slot as usize] = name.clone();
             }
@@ -152,6 +208,7 @@ impl FunctionScope {
             constants: self.constants,
             locals: total_slots,
             params: self.params,
+            required_params: self.required_params,
             name: self.name,
             upvalue_descriptors,
             line_numbers: self.line_numbers,
@@ -193,6 +250,18 @@ fn collect_action_names(stmts: &[Stmt], out: &mut Vec<String>) {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Names bound with `x | v` directly at module top level (not inside blocks,
+/// loops or actions): these become module globals.
+fn collect_global_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
+    for stmt in stmts {
+        if let Stmt::Bind(b) = stmt {
+            if matches!(b.mode, BindMode::Tether) && !out.contains(&b.name.0) {
+                out.push(b.name.0.clone());
+            }
         }
     }
 }
@@ -247,6 +316,7 @@ pub struct Compiler {
     scopes: Vec<FunctionScope>,
     /// Registered global names (name → global slot index).
     globals: Vec<String>,
+    unit_globals: std::rc::Rc<std::cell::OnceCell<Vec<String>>>,
     /// Class declarations collected during compilation.
     pub collected_classes: Vec<ClassDecl>,
     /// Enum declarations collected during compilation.
@@ -267,6 +337,29 @@ pub struct Compiler {
     glam_namespace: Option<String>,
     /// Source file being compiled (stamped onto every FunctionObject, for error messages).
     source_file: String,
+    /// Names of actions declared in this module. Builtins are shadowable
+    /// (docs/language-spec.md §4 "Built-ins (shadowable operations & types)"),
+    /// so a free call to one of these names calls the user's action, never the
+    /// builtin of the same name.
+    user_actions: std::collections::HashSet<String>,
+    /// Imported modules get their own global namespace: names they declare are
+    /// stored as `<prefix><name>` so they cannot collide with the importer's
+    /// (or another module's) globals and actions. None for the entry script.
+    global_prefix: Option<String>,
+    /// Top-level names whose `x | v` has been compiled (module globals), and
+    /// which of them are `imm`.
+    bound_globals: std::collections::HashSet<String>,
+    imm_globals: std::collections::HashSet<String>,
+}
+
+#[derive(Clone, Copy)]
+struct LocalMeta {
+    /// Block depth the local was declared at (0 = the function body).
+    depth: usize,
+    /// False for a hoisted local whose binding has not been reached yet.
+    bound: bool,
+    /// Declared with `imm`.
+    imm: bool,
 }
 
 #[derive(Default)]
@@ -281,7 +374,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -309,6 +402,30 @@ impl Compiler {
         self
     }
 
+    /// Give this module its own global namespace (see `global_prefix`).
+    pub fn with_global_prefix(mut self, prefix: Option<String>) -> Self {
+        self.global_prefix = prefix;
+        self
+    }
+
+    /// Slot of a global visible from this module: its own name first, then a
+    /// shared (unprefixed) one such as `args`.
+    fn global_index(&self, name: &str) -> Option<usize> {
+        if let Some(p) = &self.global_prefix {
+            let own = format!("{p}{name}");
+            if let Some(i) = self.globals.iter().position(|g| *g == own) { return Some(i); }
+        }
+        self.globals.iter().position(|g| g == name)
+    }
+
+    /// Declare a global owned by this module (prefixed in imported modules).
+    fn declare_global(&mut self, name: &str) -> usize {
+        let full = match &self.global_prefix { Some(p) => format!("{p}{name}"), None => name.to_string() };
+        if let Some(i) = self.globals.iter().position(|g| *g == full) { return i; }
+        self.globals.push(full);
+        self.globals.len() - 1
+    }
+
     /// Mark this compilation as a GLAM's entry module, so its top-level actions
     /// get `owner_glam` stamped for `:need()` resolution.
     pub fn with_glam_namespace(mut self, ns: Option<String>) -> Self {
@@ -330,29 +447,49 @@ impl Compiler {
             let mut module_action_names: Vec<String> = Vec::new();
             collect_action_names(&module.items, &mut module_action_names);
             for name in module_action_names {
-                if !self.globals.contains(&name) {
-                    self.globals.push(name);
-                }
+                self.user_actions.insert(name.clone());
+                self.declare_global(&name);
             }
         }
         self.push_scope("__main__", 0);
         // Pre-hoist bind variable names as nil locals so forward bind references work.
         // Action names are NOT hoisted here — they live in globals (pre-registered above).
+        // Top-level `x | v` bindings are module globals: every action reads and
+        // writes the same slot (as locals captured by upvalue, each action got
+        // its own copy and writes were lost). Shadow and tuple binds stay locals.
+        let mut global_binds: Vec<String> = Vec::new();
+        collect_global_bind_names(&module.items, &mut global_binds);
+        for name in &global_binds {
+            let pos = self.declare_global(name);
+            self.emit(Opcode::LoadNil);
+            self.emit(Opcode::StoreGlobal(pos as u16));
+        }
         let mut hoisted: Vec<String> = Vec::new();
         collect_bind_names(&module.items, &mut hoisted);
-        for name in &hoisted {
-            let slot = self.scope_mut().declare_local(name);
+        for name in hoisted.iter().filter(|n| !global_binds.contains(n)) {
+            let slot = self.scope_mut().declare_hoisted(name);
             self.emit(Opcode::LoadNil);
             self.emit(Opcode::StoreLocal(slot));
         }
         for stmt in &module.items {
-            self.compile_stmt(stmt)?;
+            match stmt {
+                // In the entry script, a top-level expression's value is offered
+                // to the API response (GOBLIN_NONINTERACTIVE=1), as the
+                // interpreter's runner does; imported modules never echo.
+                Stmt::Expr(e) if self.global_prefix.is_none() => {
+                    self.compile_expr(e)?;
+                    self.emit(Opcode::CallBuiltin(BuiltinId::ApiEcho, 1));
+                    self.emit(Opcode::Pop);
+                }
+                _ => self.compile_stmt(stmt)?,
+            }
         }
         // Return nil at end of module.
         let scope = self.scopes.last_mut().unwrap();
         scope.emit(Opcode::LoadNil);
         scope.emit(Opcode::Return);
         let entry = self.pop_scope();
+        self.seal_globals();
         Ok(CompiledModule {
             entry,
             classes: self.collected_classes,
@@ -369,21 +506,20 @@ impl Compiler {
             let scope = self.scopes.last_mut().unwrap();
             scope.declare_params(&param_names);
         }
+        self.compile_param_defaults(&action.params)?;
         match &action.body {
             ActionBody::Block(stmts) => {
                 // Two-pass: pre-register nested action names as globals.
                 let mut nested_action_names: Vec<String> = Vec::new();
                 collect_action_names(stmts, &mut nested_action_names);
                 for name in &nested_action_names {
-                    if !self.globals.contains(name) {
-                        self.globals.push(name.clone());
-                    }
+                    self.declare_global(name);
                 }
 
                 let mut hoisted: Vec<String> = Vec::new();
                 collect_bind_names(stmts, &mut hoisted);
                 for name in hoisted.iter().filter(|n| !param_names.contains(n)) {
-                    let slot = self.scope_mut().declare_local(name);
+                    let slot = self.scope_mut().declare_hoisted(name);
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::StoreLocal(slot));
                 }
@@ -422,7 +558,9 @@ impl Compiler {
                 scope.emit(Opcode::Return);
             }
         }
-        Ok(self.pop_scope())
+        let f = self.pop_scope();
+        self.seal_globals();
+        Ok(f)
     }
 
     // ── Scope management ──────────────────────────────────────────────────────
@@ -432,7 +570,13 @@ impl Compiler {
     }
 
     fn pop_scope(&mut self) -> FunctionObject {
-        self.scopes.pop().unwrap().finish(self.source_file.clone(), self.globals.clone())
+        let names = self.unit_globals.clone();
+        self.scopes.pop().unwrap().finish(self.source_file.clone(), names)
+    }
+
+    /// Record the unit's final global names in every function it produced.
+    fn seal_globals(&self) {
+        let _ = self.unit_globals.set(self.globals.clone());
     }
 
     fn scope(&self) -> &FunctionScope {
@@ -480,7 +624,7 @@ impl Compiler {
         }
 
         // 3. Check globals.
-        if let Some(pos) = self.globals.iter().position(|g| g == name) {
+        if let Some(pos) = self.global_index(name) {
             return Ok(Opcode::LoadGlobal(pos as u16));
         }
 
@@ -532,7 +676,7 @@ impl Compiler {
                 return Some(Opcode::StoreUpvalue(uv_idx));
             }
         }
-        if let Some(pos) = self.globals.iter().position(|g| g == name) {
+        if let Some(pos) = self.global_index(name) {
             return Some(Opcode::StoreGlobal(pos as u16));
         }
         None
@@ -561,7 +705,7 @@ impl Compiler {
                     BindMode::Tether => {
                         // In REPL mode at top scope: use globals so state persists.
                         if self.repl_mode && self.scopes.len() == 1 {
-                            if let Some(pos) = self.globals.iter().position(|g| g == name) {
+                            if let Some(pos) = self.global_index(name) {
                                 if pos < self.repl_known_globals_count {
                                     return Err(GoblinError::CompileError {
                                         message: format!("duplicate-local: '{}' is already bound", name),
@@ -587,13 +731,58 @@ impl Compiler {
                                 }
                             }
                         } else {
-                            // x | expr — initial binding. Reuse pre-declared slot if
-                            // present (hoisted from module pre-pass), else declare new.
-                            let slot = self.scope_mut().find_local(name)
-                                .unwrap_or_else(|| self.scopes.last_mut().unwrap().declare_local(name));
+                            // Top-level binding of a module global (see compile_module).
+                            let depth = self.scope().block_marks.len();
+                            let local = self.scope().find_local_entry(name)
+                                .map(|(i, slot)| (slot, self.scope().local_meta[i]));
+                            if self.scopes.len() == 1 && local.is_none() {
+                                if let Some(pos) = self.global_index(name) {
+                                    if self.bound_globals.contains(name.as_str()) {
+                                        // D9 at the top level; D3 inside a top-level block.
+                                        return self.emit_bind_error(name, depth > 0);
+                                    }
+                                    if depth == 0 {
+                                        self.bound_globals.insert(name.clone());
+                                        if bind.is_imm { self.imm_globals.insert(name.clone()); }
+                                        let name_idx = self.add_constant(Value::Str(name.clone()));
+                                        self.emit(Opcode::RegisterAction(name_idx));
+                                        if let Some(ref lock) = bind.lock_type {
+                                            self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                                        } else {
+                                            self.emit(Opcode::StoreGlobal(pos as u16));
+                                        }
+                                        return Ok(());
+                                    }
+                                    // Inside a top-level block before the global is
+                                    // bound: a block-local, as in the interpreter.
+                                }
+                            }
+                            // x | expr — initial binding. A hoisted slot at this depth
+                            // is reused; a binding already made in this block is a
+                            // redeclaration (D9), and one made in an enclosing block
+                            // of this action must be updated with |= or shadowed
+                            // with [= (D3).
+                            let slot = match local {
+                                Some((_, meta)) if meta.bound && meta.depth == depth => {
+                                    return self.emit_bind_error(name, false);
+                                }
+                                Some((_, meta)) if meta.bound => {
+                                    return self.emit_bind_error(name, true);
+                                }
+                                Some((slot, meta)) if meta.depth == depth => {
+                                    let (i, _) = self.scope().find_local_entry(name).unwrap();
+                                    self.scope_mut().local_meta[i].bound = true;
+                                    slot
+                                }
+                                _ => self.scopes.last_mut().unwrap().declare_local(name),
+                            };
+                            if bind.is_imm {
+                                let (i, _) = self.scope().find_local_entry(name).unwrap();
+                                self.scope_mut().local_meta[i].imm = true;
+                            }
                             // At top-level module scope, register in named_values so
                             // other modules can access this value via LoadNamed after import.
-                            if self.scopes.len() == 1 {
+                            if self.scopes.len() == 1 && depth == 0 {
                                 let name_idx = self.add_constant(Value::Str(name.clone()));
                                 self.emit(Opcode::RegisterAction(name_idx));
                             }
@@ -606,6 +795,15 @@ impl Compiler {
                     }
                     BindMode::Retether => {
                         // x |= expr — rebind existing slot. Lock check handled in StoreLocal/StoreGlobal at runtime.
+                        let is_imm = match self.scope().find_local_entry(name) {
+                            Some((i, _)) => self.scope().local_meta[i].imm,
+                            None => self.imm_globals.contains(name.as_str()),
+                        };
+                        if is_imm {
+                            // D16: an `imm` binding cannot be updated (R0113).
+                            let msg = format!("cannot update imm binding '{}' (declared with imm)", name);
+                            return self.emit_runtime_error(&msg);
+                        }
                         let op = self.resolve_store(name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name.clone() }))?;
                         self.emit(op);
@@ -646,6 +844,7 @@ impl Compiler {
             }
 
             Stmt::Action(action) => {
+                self.user_actions.insert(action.name.clone());
                 self.compile_action_decl(action)?;
                 // All actions — regardless of nesting depth — register in named_values
                 // and store to the global slot. The interpreter's sess.actions is a flat
@@ -656,13 +855,7 @@ impl Compiler {
                 // from collection builtins (grab_where, map, etc.) at any nesting level.
                 let name_idx = self.add_constant(Value::Str(action.name.clone()));
                 self.emit(Opcode::RegisterAction(name_idx));
-                let pos = if let Some(p) = self.globals.iter().position(|g| g == &action.name) {
-                    p
-                } else {
-                    let p = self.globals.len();
-                    self.globals.push(action.name.clone());
-                    p
-                };
+                let pos = self.declare_global(&action.name);
                 self.emit(Opcode::StoreGlobal(pos as u16));
             }
 
@@ -848,8 +1041,22 @@ impl Compiler {
 
     fn compile_judge_stmt(&mut self, arms: &[goblin_ast::JudgeArmStmt]) -> Result<(), GoblinError> {
         let mut end_jumps: Vec<usize> = Vec::new();
+        // Only one arm runs, so each arm is compiled as if the others had not
+        // bound anything; after the judge a name counts as bound if any arm
+        // bound it (arms share the enclosing block, as in the interpreter).
+        let before: Vec<bool> = self.scope().local_meta.iter().map(|m| m.bound).collect();
+        let mut bound_after: Vec<bool> = before.clone();
+        let reset = |c: &mut Self, bound_after: &mut Vec<bool>| {
+            let meta = &mut c.scopes.last_mut().unwrap().local_meta;
+            for (i, m) in meta.iter_mut().enumerate() {
+                if i >= bound_after.len() { bound_after.push(false); }
+                bound_after[i] |= m.bound;
+                m.bound = before.get(i).copied().unwrap_or(false);
+            }
+        };
 
         for (i, arm) in arms.iter().enumerate() {
+            if i > 0 { reset(self, &mut bound_after); }
             let is_last = i == arms.len() - 1;
             if let Some(cond) = &arm.condition {
                 self.compile_expr(cond)?;
@@ -869,55 +1076,110 @@ impl Compiler {
         for j in end_jumps {
             self.scope_mut().patch_jump(j);
         }
+        reset(self, &mut bound_after);
+        let meta = &mut self.scopes.last_mut().unwrap().local_meta;
+        for (i, m) in meta.iter_mut().enumerate() {
+            m.bound = bound_after.get(i).copied().unwrap_or(m.bound);
+        }
         Ok(())
     }
 
     fn compile_sweep(&mut self, sweep: &goblin_ast::SweepStmt) -> Result<(), GoblinError> {
-        // sweep compiles each target and runs arm matching.
-        // For now: compile each target and apply arms sequentially.
-        // Full pattern matching (regex, range) is deferred.
-        use goblin_ast::{SweepArmKind, SweepMode};
+        // A sweep is a loop driven by the sweep runtime (sweep.rs): it finds
+        // each match, the arm's body runs with `self` bound to the matched
+        // text, and the arm's `self` is spliced back. Like the interpreter, the
+        // body runs in the enclosing block (its bindings stay visible after
+        // the sweep); `self` is visible only inside the sweep. `skip` keeps the
+        // text unchanged and moves on, `stop` ends the whole sweep.
+        use goblin_ast::{SweepArmKind, SweepArmRepeat, SweepMode};
 
-        for target_expr in &sweep.targets {
-            self.compile_expr(target_expr)?;
-            let target_slot = self.scope_mut().declare_local("__sweep_target__");
-            self.emit(Opcode::StoreLocal(target_slot));
+        let spec: Vec<Value> = sweep.arms.iter().map(|arm| {
+            let s = |x: &str| Value::Str(x.to_string());
+            let fields = match &arm.kind {
+                SweepArmKind::Pattern(p) => vec![s("pattern"), s(p), s(""), s("all")],
+                SweepArmKind::Range { start, end } => vec![s("range"), s(start), s(end), s(match arm.repeat {
+                    SweepArmRepeat::All => "all", SweepArmRepeat::First => "first", SweepArmRepeat::Last => "last",
+                })],
+                SweepArmKind::AllBody => vec![s("all"), s(""), s(""), s("all")],
+            };
+            Value::Array(fields)
+        }).collect();
+        let spec_idx = self.add_constant(Value::Array(spec));
+        self.emit(Opcode::LoadConst(spec_idx));
+        self.emit(if matches!(sweep.mode, SweepMode::All) { Opcode::LoadTrue } else { Opcode::LoadFalse });
+        for t in &sweep.targets { self.compile_expr(t)?; }
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepBegin, (2 + sweep.targets.len()) as u8));
+        let id_slot = self.scope_mut().declare_local("__sweep_id__");
+        self.emit(Opcode::StoreLocal(id_slot));
+        let arm_slot = self.scope_mut().declare_local("__sweep_arm__");
+        let self_slot = self.scope_mut().declare_local("self");
+        self.emit(Opcode::LoadNil);
+        self.emit(Opcode::StoreLocal(self_slot));
 
-            for arm in &sweep.arms {
-                match &arm.kind {
-                    SweepArmKind::Pattern(pat) => {
-                        // Emit: target == pat → run body
-                        self.emit(Opcode::LoadLocal(target_slot));
-                        let idx = self.add_constant(Value::Str(pat.clone()));
-                        self.emit(Opcode::LoadConst(idx));
-                        self.emit(Opcode::Eq);
-                        let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                        for s in &arm.body { self.compile_stmt(s)?; }
-                        self.scope_mut().patch_jump(skip);
-                        if matches!(sweep.mode, SweepMode::Match) { break; }
-                    }
-                    SweepArmKind::AllBody => {
-                        for s in &arm.body { self.compile_stmt(s)?; }
-                    }
-                    SweepArmKind::Range { start, end } => {
-                        // target >= start && target <= end
-                        self.emit(Opcode::LoadLocal(target_slot));
-                        let si = self.add_constant(Value::Str(start.clone()));
-                        self.emit(Opcode::LoadConst(si));
-                        self.emit(Opcode::Ge);
-                        let skip1 = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                        self.emit(Opcode::LoadLocal(target_slot));
-                        let ei = self.add_constant(Value::Str(end.clone()));
-                        self.emit(Opcode::LoadConst(ei));
-                        self.emit(Opcode::Le);
-                        let skip2 = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                        for s in &arm.body { self.compile_stmt(s)?; }
-                        self.scope_mut().patch_jump(skip1);
-                        self.scope_mut().patch_jump(skip2);
-                    }
-                }
-            }
+        // loop: arm = next(id); done when -1
+        let loop_top = self.scope_mut().bytecode.len();
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepNext, 1));
+        self.emit(Opcode::StoreLocal(arm_slot));
+        self.emit(Opcode::LoadLocal(arm_slot));
+        let minus_one = self.add_constant(Value::Int(-1));
+        self.emit(Opcode::LoadConst(minus_one));
+        self.emit(Opcode::Eq);
+        let done_jump = self.scope_mut().emit_jump(Opcode::JumpIfTrue);
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepSelf, 1));
+        self.emit(Opcode::StoreLocal(self_slot));
+
+        let mut to_apply: Vec<usize> = Vec::new();
+        let mut to_skip: Vec<usize> = Vec::new();
+        let mut to_stop: Vec<usize> = Vec::new();
+        for (i, arm) in sweep.arms.iter().enumerate() {
+            self.emit(Opcode::LoadLocal(arm_slot));
+            let k = self.add_constant(Value::Int(i as i64));
+            self.emit(Opcode::LoadConst(k));
+            self.emit(Opcode::Eq);
+            let next_arm = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+            self.loop_stack.push(LoopCtx::default());
+            for st in &arm.body { self.compile_stmt(st)?; }
+            let ctx = self.loop_stack.pop().unwrap();
+            to_skip.extend(ctx.continue_patches);
+            to_stop.extend(ctx.break_patches);
+            to_apply.push(self.scope_mut().emit_jump(Opcode::Jump));
+            self.scope_mut().patch_jump(next_arm);
         }
+
+        // apply(id, self, false); then the next match
+        let apply_ip = self.scope_mut().bytecode.len();
+        for j in to_apply { self.scope_mut().patch_jump_to(j, apply_ip); }
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::LoadLocal(self_slot));
+        self.emit(Opcode::LoadFalse);
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepApply, 3));
+        self.emit(Opcode::Pop);
+        let cur = self.scope_mut().bytecode.len();
+        self.emit(Opcode::Jump(-(((cur - loop_top) as i16) + 1)));
+
+        // skip: apply(id, self, true)
+        let skip_ip = self.scope_mut().bytecode.len();
+        for j in to_skip { self.scope_mut().patch_jump_to(j, skip_ip); }
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::LoadLocal(self_slot));
+        self.emit(Opcode::LoadTrue);
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepApply, 3));
+        self.emit(Opcode::Pop);
+        let cur = self.scope_mut().bytecode.len();
+        self.emit(Opcode::Jump(-(((cur - loop_top) as i16) + 1)));
+
+        // stop: end(id)
+        let stop_ip = self.scope_mut().bytecode.len();
+        for j in to_stop { self.scope_mut().patch_jump_to(j, stop_ip); }
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepEnd, 1));
+        self.emit(Opcode::Pop);
+
+        self.scope_mut().patch_jump(done_jump);
+        // `self` goes out of view after the sweep (an outer `self` is visible again).
+        self.scope_mut().hide_local(self_slot);
         Ok(())
     }
 
@@ -974,7 +1236,32 @@ impl Compiler {
             Expr::Str(s, _) => {
                 let idx = self.add_constant(Value::Str(s.clone()));
                 if s.as_bytes().contains(&b'{') && !s.starts_with('\u{001E}') {
-                    self.emit(Opcode::StringInterp(idx));
+                    // Resolve `{name}` placeholders to the variables in scope here
+                    // (locals, captured upvalues, globals) so shadowed and
+                    // block-local names interpolate the right binding.
+                    let mut names: Vec<String> = Vec::new();
+                    for name in interp_placeholder_names(s) {
+                        let ok = match self.scope().find_local_entry(&name) {
+                            Some((i, _)) => self.scope().local_meta[i].bound,
+                            None => true,
+                        };
+                        if !ok { continue; }
+                        match self.resolve_load(&name) {
+                            Ok(op @ (Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_))) => {
+                                self.emit(op);
+                                names.push(name);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if names.is_empty() {
+                        self.emit(Opcode::StringInterp(idx));
+                    } else {
+                        let mut parts = vec![Value::Str(s.clone())];
+                        parts.extend(names.iter().cloned().map(Value::Str));
+                        let tidx = self.add_constant(Value::Array(parts));
+                        self.emit(Opcode::StringInterpVals(tidx, names.len() as u8));
+                    }
                 } else {
                     self.emit(Opcode::LoadConst(idx));
                 }
@@ -987,6 +1274,12 @@ impl Compiler {
 
             // ── Variables ─────────────────────────────────────────────────────
             Expr::Ident(name, _) => {
+                // In a query predicate, a field of `it` shadows the name.
+                let field_jump = if self.scope().pred_fields && name != "it"
+                    && self.scope().find_local(name).is_none() {
+                    let idx = self.add_constant(Value::Str(name.clone()));
+                    Some(self.emit(Opcode::LoadItFieldOrJump(idx, 0)))
+                } else { None };
                 match self.resolve_load(name) {
                     Ok(op) => { self.emit(op); }
                     Err(_) => {
@@ -996,6 +1289,7 @@ impl Compiler {
                         self.emit(Opcode::LoadNamed(name_idx));
                     }
                 }
+                if let Some(j) = field_jump { self.scope_mut().patch_jump(j); }
             }
 
             // ── Collections ───────────────────────────────────────────────────
@@ -1014,16 +1308,19 @@ impl Compiler {
             }
 
             // ── Indexing ──────────────────────────────────────────────────────
+            // Arrays and strings take `[]`, maps take `{}` (owner, 2026-10-06).
             Expr::Index(obj, idx, _) => {
                 self.compile_expr(obj)?;
                 self.compile_expr(idx)?;
-                self.emit(Opcode::GetIndex);
+                let label = self.add_constant(Value::Str(source_text(obj)));
+                self.emit(Opcode::IndexGet(label));
             }
 
             Expr::IndexMap(obj, key, _) => {
                 self.compile_expr(obj)?;
                 self.compile_expr(key)?;
-                self.emit(Opcode::GetIndex);
+                let label = self.add_constant(Value::Str(source_text(obj)));
+                self.emit(Opcode::KeyGet(label));
             }
 
             Expr::Member(obj, name, _) => {
@@ -1038,7 +1335,7 @@ impl Compiler {
                             self.emit(Opcode::GetTypeLockLocal(slot));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::GetTypeLockGlobal(pos as u16));
                             return Ok(());
                         }
@@ -1051,7 +1348,7 @@ impl Compiler {
                             self.emit(Opcode::CastMemberLocal(slot, name.clone()));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::CastMemberGlobal(pos as u16, name.clone()));
                             return Ok(());
                         }
@@ -1068,6 +1365,73 @@ impl Compiler {
                 if self.try_compile_special_form(name, args)? {
                     return Ok(());
                 }
+                // A user-defined action shadows any builtin of the same name.
+                let bare_name = name.trim_start_matches(':');
+                if self.user_actions.contains(bare_name) {
+                    let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
+                    self.emit(load_op);
+                    for arg in args { self.compile_expr(arg)?; }
+                    self.emit(Opcode::Call(args.len() as u8));
+                    return Ok(());
+                }
+                // `raw "…"`: the literal is kept exactly as written, so it is
+                // loaded as a constant and never interpolated.
+                if bare_name == "raw" && args.len() == 1 {
+                    if let Expr::Str(s, _) = &args[0] {
+                        let idx = self.add_constant(Value::Str(s.clone()));
+                        self.emit(Opcode::LoadConst(idx));
+                        return Ok(());
+                    }
+                }
+                // delete_object!(x) / delete_overlays_on!(x) act on the variable
+                // itself and write nothing back (as in the interpreter). The
+                // builtin gets [x's value, "x", 1]; a wrong arity or a non-variable
+                // argument is passed as [nil, nil, argc] so it raises at run time.
+                if bare_name == "delete_object!" || bare_name == "delete_overlays_on!" {
+                    let bid = if bare_name == "delete_object!" { BuiltinId::DeleteObject } else { BuiltinId::DeleteOverlaysOn };
+                    match args.as_slice() {
+                        [Expr::Ident(var, _)] => {
+                            self.compile_expr(&args[0])?;
+                            let idx = self.add_constant(Value::Str(var.clone()));
+                            self.emit(Opcode::LoadConst(idx));
+                        }
+                        _ => {
+                            self.emit(Opcode::LoadNil);
+                            self.emit(Opcode::LoadNil);
+                        }
+                    }
+                    let n = self.add_constant(Value::Int(args.len() as i64));
+                    self.emit(Opcode::LoadConst(n));
+                    self.emit(Opcode::CallBuiltin(bid, 3));
+                    return Ok(());
+                }
+                // reap_*!(target, …): the call's value is what was reaped, and
+                // the target is left holding the rest (as in the interpreter):
+                // value = reap_X(…), rest = delete_X(…).
+                if let Some(pos_name) = reap_bang_position(bare_name) {
+                    if let Some(target) = args.first().filter(|t| is_lvalue(t)) {
+                        let sp = target.span().clone();
+                        self.compile_expr(&Expr::FreeCall(format!("reap_{pos_name}"), args.clone(), sp.clone()))?;
+                        self.compile_expr(&Expr::FreeCall(format!("delete_{pos_name}"), args.clone(), sp))?;
+                        self.compile_store_from_stack(target)?;
+                        return Ok(());
+                    }
+                }
+                // name!(x[k]…, args…): change the element at the path, in
+                // place when x's collection is not shared.
+                if let Some((bid, root, keys)) = bang_path_call(name, args) {
+                    let load_op = self.resolve_load(&root).map_err(|e| self.locate_err(e))?;
+                    self.emit(load_op);
+                    for k in &keys { self.compile_expr(k)?; }
+                    self.emit_check_path(&args[0])?;
+                    for a in &args[1..] { self.compile_expr(a)?; }
+                    self.emit(Opcode::CallBuiltinMutPath(bid, args.len() as u8, keys.len() as u8));
+                    let store_op = self.resolve_store(&root)
+                        .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root.clone() }))?;
+                    self.emit(store_op);
+                    self.emit(Opcode::LoadNil);
+                    return Ok(());
+                }
                 // Check if it's a known builtin call pattern.
                 if let Some(_) = self.try_compile_builtin_call(name, args)? {
                     // Mutation-bang free call: name!(collection, ...) stores result back.
@@ -1080,12 +1444,22 @@ impl Compiler {
                     ];
                     let bare = name.trim_start_matches(':');
                     if bare.ends_with('!') && !IO_BANG_NO_WRITEBACK.contains(&bare) {
-                        if let Some(Expr::Ident(var_name, _)) = args.first() {
-                            self.emit(Opcode::Dup);
-                            if let Some(slot) = self.scope().find_local(var_name) {
-                                self.emit(Opcode::StoreLocal(slot));
-                            } else if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
-                                self.emit(Opcode::StoreGlobal(pos as u16));
+                        if let Some(target) = args.first() {
+                            if is_lvalue(target) {
+                                // The result goes back into the variable the
+                                // first argument was loaded from, so the call
+                                // may change that variable's collection in place.
+                                if matches!(target, Expr::Ident(..)) {
+                                    if let Some(Opcode::CallBuiltin(id, n)) = self.scope().bytecode.last().cloned() {
+                                        if n as usize == args.len() {
+                                            *self.scope_mut().bytecode.last_mut().unwrap() = Opcode::CallBuiltinMut(id, n);
+                                        }
+                                    }
+                                }
+                                // D13: the call itself gives nil, as in the
+                                // interpreter; the result went into the target.
+                                self.compile_store_from_stack(target)?;
+                                self.emit(Opcode::LoadNil);
                             }
                         }
                     }
@@ -1105,7 +1479,7 @@ impl Compiler {
                             self.emit(Opcode::GetTypeLockLocal(slot));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::GetTypeLockGlobal(pos as u16));
                             return Ok(());
                         }
@@ -1122,7 +1496,7 @@ impl Compiler {
                             self.emit(Opcode::CastMemberLocal(slot, method.clone()));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::CastMemberGlobal(pos as u16, method.clone()));
                             return Ok(());
                         }
@@ -1137,7 +1511,7 @@ impl Compiler {
                         let idx = self.scopes.len() - 1;
                         self.resolve_upvalue(idx, method).is_some()
                     })
-                    || self.globals.iter().any(|g| g == method);
+                    || self.global_index(method).is_some();
                 if is_var {
                     let load_op = self.resolve_load(method).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
@@ -1265,7 +1639,7 @@ impl Compiler {
                             self.emit(Opcode::CastBangLocal(slot, type_name));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == &var_name) {
+                        if let Some(pos) = self.global_index(&var_name) {
                             self.emit(Opcode::CastBangGlobal(pos as u16, type_name));
                             return Ok(());
                         }
@@ -1289,7 +1663,7 @@ impl Compiler {
                             self.emit(Opcode::StoreLocal(slot));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == &var_name) {
+                        if let Some(pos) = self.global_index(&var_name) {
                             self.emit(Opcode::StoreGlobal(pos as u16));
                             return Ok(());
                         }
@@ -1307,12 +1681,29 @@ impl Compiler {
                     }
                     "//" => { self.emit(Opcode::CallBuiltin(BuiltinId::Sqrt, 1)); }
                     "++" | "--" => {
-                        // x++ compiles to x + 1 (non-mutating form; mutation via |! is separate)
+                        // x++ / x-- store x ± 1 back into x and evaluate to the new value.
                         let one = self.scope_mut().add_constant(Value::Int(1));
                         self.emit(Opcode::LoadConst(one));
                         if op == "++" { self.emit(Opcode::Add); } else { self.emit(Opcode::Sub); }
+                        if is_lvalue(inner) {
+                            self.emit(Opcode::Dup);
+                            self.compile_store_from_stack(inner)?;
+                        }
                     }
-                    _ => { /* other postfix ops: compile inner value, no transform */ }
+                    "^" => { self.emit(Opcode::CallBuiltin(BuiltinId::PostfixCeil, 1)); }
+                    "_" => { self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFloor, 1)); }
+                    "!" => { self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFactorial, 1)); }
+                    "?" => {
+                        self.emit(Opcode::LoadNil);
+                        self.emit(Opcode::Ne);
+                    }
+                    "*>>" | "*>>:show_ids" => {
+                        self.emit(if op == "*>>" { Opcode::LoadFalse } else { Opcode::LoadTrue });
+                        self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFieldsMap, 2));
+                    }
+                    other => {
+                        return Err(self.locate_err(GoblinError::Runtime(format!("unknown postfix operator '{other}'"))));
+                    }
                 }
             }
 
@@ -1327,6 +1718,8 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     return Ok(());
                 }
+                // A block is a scope for `|` bindings (D3), as in the interpreter.
+                self.scope_mut().begin_block();
                 let last_idx = stmts.len() - 1;
                 for (i, s) in stmts.iter().enumerate() {
                     if i == last_idx {
@@ -1341,6 +1734,7 @@ impl Compiler {
                         self.compile_stmt(s)?;
                     }
                 }
+                self.scope_mut().end_block();
             }
 
             // arr[start:end] — push recv, start_or_nil, end_or_nil → SliceExpr
@@ -1526,6 +1920,9 @@ impl Compiler {
             self.emit(Opcode::Pop);
             self.compile_expr(rhs)?;
             self.scope_mut().patch_jump(skip);
+            // D8: `and` / `or` give a bool, whatever the operands.
+            self.emit(Opcode::Not);
+            self.emit(Opcode::Not);
             return Ok(());
         }
         if op == "||" || op == "or" {
@@ -1535,6 +1932,9 @@ impl Compiler {
             self.emit(Opcode::Pop);
             self.compile_expr(rhs)?;
             self.scope_mut().patch_jump(skip);
+            // D8: `and` / `or` give a bool, whatever the operands.
+            self.emit(Opcode::Not);
+            self.emit(Opcode::Not);
             return Ok(());
         }
 
@@ -1559,8 +1959,15 @@ impl Compiler {
             "*"          => Opcode::Mul,
             "/"          => Opcode::Div,
             "%"          => Opcode::Rem,
-            "=="  | "===" => Opcode::Eq,
-            "!=" | "/=" | "!==" => Opcode::Ne,
+            "=="         => Opcode::Eq,
+            "!=" | "/="  => Opcode::Ne,
+            // Strict (in)equality: no int/float coercion.
+            "===" => { self.emit(Opcode::CallBuiltin(BuiltinId::StrictEq, 2)); return Ok(()); }
+            "!==" => {
+                self.emit(Opcode::CallBuiltin(BuiltinId::StrictEq, 2));
+                self.emit(Opcode::Not);
+                return Ok(());
+            }
             "<"          => Opcode::Lt,
             "<="         => Opcode::Le,
             ">"          => Opcode::Gt,
@@ -1591,72 +1998,50 @@ impl Compiler {
         Ok(())
     }
 
+    /// Expression-form `judge`: arms are conditions and the first true one
+    /// gives the value; `else` applies only when none matched, wherever it
+    /// sits; with no match and no `else` the value is nil. `judge return <h>`
+    /// makes `h` the value of arms written without one. The parser has
+    /// already expanded `using` into each condition. (Matches the
+    /// interpreter's `Expr::Judge`.)
     fn compile_judge_expr(
         &mut self,
-        using: Option<&Expr>,
+        _using: Option<&Expr>,
         header: Option<&Expr>,
         arms: &[JudgeArm],
         all: bool,
     ) -> Result<(), GoblinError> {
-        // Extract enum name from `using` clause (e.g., `judge x using Status` → "Status")
-        let using_name: Option<String> = using.and_then(|e| match e {
-            Expr::Ident(n, _) => Some(n.clone()),
-            _ => None,
-        });
-
         if all {
-            return self.compile_judge_all_expr(using_name.as_deref(), header, arms);
+            return self.compile_judge_all_expr(header, arms);
         }
-
-        // judge expression evaluates to the value of the first matching arm.
         let mut end_jumps: Vec<usize> = Vec::new();
-
-        // If there's a header, compile it and store for comparison.
-        let header_slot: Option<u8> = if let Some(h) = header {
-            self.compile_expr(h)?;
-            let s = self.scope_mut().declare_local("__judge_header__");
-            self.emit(Opcode::StoreLocal(s));
-            Some(s)
-        } else {
-            None
-        };
-
         for arm in arms.iter() {
-            if let Some(cond) = &arm.condition {
-                if let Some(hslot) = header_slot {
-                    self.emit(Opcode::LoadLocal(hslot));
-                    if let Some(ref en) = using_name {
-                        if let Expr::Ident(variant, sp) = cond.as_ref() {
-                            let qualified = Expr::NsCall(en.clone(), variant.clone(), vec![], sp.clone());
-                            self.compile_expr(&qualified)?;
-                        } else {
-                            self.compile_expr(cond)?;
-                        }
-                    } else {
-                        self.compile_expr(cond)?;
-                    }
-                    self.emit(Opcode::Eq);
-                } else {
-                    self.compile_expr(cond)?;
-                }
-                let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
-                let end = self.scope_mut().emit_jump(Opcode::Jump);
-                end_jumps.push(end);
-                self.scope_mut().patch_jump(skip);
-            } else {
-                // else arm
-                if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
-            }
+            let Some(cond) = &arm.condition else { continue };
+            self.compile_expr(cond)?;
+            let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+            self.compile_judge_arm_value(arm, header)?;
+            end_jumps.push(self.scope_mut().emit_jump(Opcode::Jump));
+            self.scope_mut().patch_jump(skip);
         }
-
+        match arms.iter().find(|a| a.condition.is_none()) {
+            Some(else_arm) => self.compile_judge_arm_value(else_arm, header)?,
+            None => { self.emit(Opcode::LoadNil); }
+        }
         for j in end_jumps { self.scope_mut().patch_jump(j); }
         Ok(())
     }
 
+    /// An arm's value: its own expression, else the `judge return` header, else nil.
+    fn compile_judge_arm_value(&mut self, arm: &JudgeArm, header: Option<&Expr>) -> Result<(), GoblinError> {
+        match (&arm.value, header) {
+            (Some(v), _) => self.compile_expr(v),
+            (None, Some(h)) => self.compile_expr(h),
+            (None, None) => { self.emit(Opcode::LoadNil); Ok(()) }
+        }
+    }
+
     fn compile_judge_all_expr(
         &mut self,
-        using_name: Option<&str>,
         header: Option<&Expr>,
         arms: &[JudgeArm],
     ) -> Result<(), GoblinError> {
@@ -1668,33 +2053,13 @@ impl Compiler {
         // Separate else arm from non-else arms.
         let (cond_arms, else_arms): (Vec<_>, Vec<_>) = arms.iter().partition(|a| a.condition.is_some());
 
-        let header_slot: Option<u8> = if let Some(h) = header {
-            self.compile_expr(h)?;
-            let s = self.scope_mut().declare_local("__judge_all_hdr__");
-            self.emit(Opcode::StoreLocal(s));
-            Some(s)
-        } else {
-            None
-        };
-
         for arm in &cond_arms {
             let cond = arm.condition.as_ref().unwrap();
-            if let Some(hslot) = header_slot {
-                self.emit(Opcode::LoadLocal(hslot));
-                if let Some(en) = using_name {
-                    if let Expr::Ident(variant, sp) = cond.as_ref() {
-                        let qualified = Expr::NsCall(en.to_string(), variant.clone(), vec![], sp.clone());
-                        self.compile_expr(&qualified)?;
-                    } else { self.compile_expr(cond)?; }
-                } else { self.compile_expr(cond)?; }
-                self.emit(Opcode::Eq);
-            } else {
-                self.compile_expr(cond)?;
-            }
+            self.compile_expr(cond)?;
             let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
             // acc = acc.put_last(value)
             self.emit(Opcode::LoadLocal(acc_slot));
-            if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
+            self.compile_judge_arm_value(arm, header)?;
             self.emit(Opcode::CallBuiltin(BuiltinId::PutLast, 2));
             self.emit(Opcode::StoreLocal(acc_slot));
             self.scope_mut().patch_jump(skip);
@@ -1704,11 +2069,13 @@ impl Compiler {
         self.emit(Opcode::LoadLocal(acc_slot));
         self.emit(Opcode::CallBuiltin(BuiltinId::IsEmpty, 1));
         let not_empty_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-        // Empty: emit else value
+        // Empty: the else arm's value in a one-element list, else an empty list.
         if let Some(else_arm) = else_arms.first() {
-            if let Some(v) = &else_arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
+            self.emit(Opcode::LoadLocal(acc_slot));
+            self.compile_judge_arm_value(else_arm, header)?;
+            self.emit(Opcode::CallBuiltin(BuiltinId::PutLast, 2));
         } else {
-            self.emit(Opcode::LoadNil);
+            self.emit(Opcode::LoadLocal(acc_slot));
         }
         let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
         self.scope_mut().patch_jump(not_empty_jump);
@@ -1720,6 +2087,111 @@ impl Compiler {
 
     // ── Nested action / closure compilation ───────────────────────────────────
 
+    /// Stores the value on top of the stack into an lvalue: a variable, or a
+    /// path of indexes and `>>` fields below one (rebuilt with UpdatePath,
+    /// like `update!`). Consumes the value.
+    /// Emits CheckPath for the lvalue path `target` (root and keys already on
+    /// the stack), so a write through the wrong bracket errors.
+    fn emit_check_path(&mut self, target: &Expr) -> Result<(), GoblinError> {
+        let mut info: Vec<Value> = Vec::new();
+        let mut cur = target;
+        loop {
+            match cur {
+                Expr::Index(base, _, _) => { info.push(Value::Str(format!("[{}", source_text(base)))); cur = base.as_ref(); }
+                Expr::IndexMap(base, _, _) => { info.push(Value::Str(format!("{{{}", source_text(base)))); cur = base.as_ref(); }
+                Expr::Member(base, _, _) => { info.push(Value::Str(".".into())); cur = base.as_ref(); }
+                _ => break,
+            }
+        }
+        if info.is_empty() { return Ok(()); }
+        info.reverse();
+        let n = info.len() as u8;
+        let idx = self.add_constant(Value::Array(info));
+        self.emit(Opcode::CheckPath(n, idx));
+        Ok(())
+    }
+
+    fn compile_store_from_stack(&mut self, target: &Expr) -> Result<(), GoblinError> {
+        if let Expr::Ident(var_name, _) = target {
+            let op = self.resolve_store(var_name)
+                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+            self.emit(op);
+            return Ok(());
+        }
+        let mut segs: Vec<(&Expr, bool)> = Vec::new();
+        let mut cur = target;
+        let root_name = loop {
+            match cur {
+                Expr::Index(base, key, _) | Expr::IndexMap(base, key, _) => { segs.push((key.as_ref(), false)); cur = base.as_ref(); }
+                Expr::Member(base, _, _) => { segs.push((cur, true)); cur = base.as_ref(); }
+                Expr::Ident(name, _) => break name.clone(),
+                _ => unreachable!("is_lvalue checked the target"),
+            }
+        };
+        segs.reverse();
+        let tmp = self.scope_mut().declare_local("__store_tmp__");
+        self.emit(Opcode::StoreLocal(tmp));
+        let load_op = self.resolve_load(&root_name).map_err(|e| self.locate_err(e))?;
+        self.emit(load_op);
+        let mut mask: u16 = 0;
+        for (i, (seg, is_field)) in segs.iter().enumerate() {
+            if *is_field {
+                mask |= 1 << i;
+                let Expr::Member(_, field, _) = seg else { unreachable!() };
+                let kidx = self.add_constant(Value::Str(field.clone()));
+                self.emit(Opcode::LoadConst(kidx));
+            } else {
+                self.compile_expr(seg)?;
+            }
+        }
+        self.emit_check_path(target)?;
+        self.emit(Opcode::LoadLocal(tmp));
+        self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
+        let store_op = self.resolve_store(&root_name)
+            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
+        self.emit(store_op);
+        Ok(())
+    }
+
+    /// Compiles to an error raised when execution reaches this point, so
+    /// output before it still happens, as with the interpreter's runtime
+    /// errors.
+    fn emit_runtime_error(&mut self, msg: &str) -> Result<(), GoblinError> {
+        let idx = self.add_constant(Value::Str(msg.to_string()));
+        self.emit(Opcode::LoadConst(idx));
+        self.emit(Opcode::CallBuiltin(BuiltinId::Panic, 1));
+        self.emit(Opcode::Pop);
+        Ok(())
+    }
+
+    /// `x | v` on a name already bound: in the same block it is a
+    /// redeclaration (D9, R0111); from an enclosing block it is an error
+    /// that points at `|=` and `[=` (D3).
+    fn emit_bind_error(&mut self, name: &str, outer: bool) -> Result<(), GoblinError> {
+        let msg = if outer {
+            format!("'{name}' is already bound in an enclosing block; use '{name} |= …' to update it or '{name} [= …' to shadow it")
+        } else {
+            format!("duplicate-local: '{name}' is already bound in this scope; use '{name} |= …' to update it")
+        };
+        self.emit_runtime_error(&msg)
+    }
+
+    /// Parameter defaults (`b | 10`): a caller may omit trailing defaulted
+    /// arguments, and the default is evaluated in the callee when it does,
+    /// as the interpreter binds them.
+    fn compile_param_defaults(&mut self, params: &[goblin_ast::Param]) -> Result<(), GoblinError> {
+        let required = params.iter().rposition(|p| p.default.is_none()).map_or(0, |i| i + 1);
+        self.scope_mut().required_params = required;
+        for (i, p) in params.iter().enumerate() {
+            let Some(default) = &p.default else { continue };
+            let skip = self.emit(Opcode::JumpIfLocalSet(i as u8, 0));
+            self.compile_expr(default)?;
+            self.emit(Opcode::StoreLocal(i as u8));
+            self.scope_mut().patch_jump(skip);
+        }
+        Ok(())
+    }
+
     fn compile_action_decl(&mut self, action: &ActionDecl) -> Result<(), GoblinError> {
         let param_names: Vec<String> = action.params.iter().map(|p| p.name.clone()).collect();
         let n_params = param_names.len();
@@ -1729,6 +2201,7 @@ impl Compiler {
             let scope = self.scopes.last_mut().unwrap();
             scope.declare_params(&param_names);
         }
+        self.compile_param_defaults(&action.params)?;
 
         match &action.body {
             ActionBody::Block(stmts) => {
@@ -1738,15 +2211,13 @@ impl Compiler {
                 let mut nested_action_names: Vec<String> = Vec::new();
                 collect_action_names(stmts, &mut nested_action_names);
                 for name in &nested_action_names {
-                    if !self.globals.contains(name) {
-                        self.globals.push(name.clone());
-                    }
+                    self.declare_global(name);
                 }
 
                 let mut hoisted: Vec<String> = Vec::new();
                 collect_bind_names(stmts, &mut hoisted);
                 for name in hoisted.iter().filter(|n| !param_names.contains(n)) {
-                    let slot = self.scope_mut().declare_local(name);
+                    let slot = self.scope_mut().declare_hoisted(name);
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::StoreLocal(slot));
                 }
@@ -1806,6 +2277,22 @@ impl Compiler {
     fn try_compile_special_form(&mut self, name: &str, args: &[Expr]) -> Result<bool, GoblinError> {
         let bare = name.trim_start_matches(':');
         match bare {
+            // is_bound_name("x") with a literal name: whether `x` is bound where
+            // the call is written (local, captured or module global).
+            "is_bound_name" if args.len() == 1 && matches!(&args[0], Expr::Str(..)) && !self.user_actions.contains(bare) => {
+                let Expr::Str(var, _) = &args[0] else { unreachable!() };
+                let bound = match self.scope().find_local_entry(var) {
+                    Some((i, _)) => self.scope().local_meta[i].bound,
+                    None => {
+                        (self.scopes.len() > 1 && self.resolve_upvalue(self.scopes.len() - 1, var).is_some())
+                            || (self.global_index(var).is_some()
+                                && (self.scopes.len() > 1 || self.bound_globals.contains(var.as_str())))
+                    }
+                };
+                let idx = self.add_constant(Value::Bool(bound));
+                self.emit(Opcode::LoadConst(idx));
+                Ok(true)
+            }
             // if(cond, then [, else])
             "if" | "unless" => {
                 let invert = bare == "unless";
@@ -1845,6 +2332,8 @@ impl Compiler {
                 }
                 self.compile_expr(&args[0])?;
                 let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                // Loop context so `skip`/`stop` in the body target this loop.
+                self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::Pop); // discard body result
                 // Jump back to loop start
@@ -1852,6 +2341,10 @@ impl Compiler {
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
                 self.scope_mut().patch_jump(exit_jump);
+                let exit_ip = self.scope_mut().bytecode.len();
+                let ctx = self.loop_stack.pop().unwrap();
+                for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
+                for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, loop_start); }
                 self.emit(Opcode::LoadNil);
                 Ok(true)
             }
@@ -1868,7 +2361,7 @@ impl Compiler {
                 if let Expr::Ident(name, _) = &args[0] {
                     // Check if name resolves as a local/global variable
                     let has_local = self.scope().find_local(name).is_some()
-                        || self.globals.iter().any(|g| g == name.as_str());
+                        || self.global_index(name.as_str()).is_some();
                     if !has_local {
                         // Emit as class/overlay query by name string
                         let name_str = Value::Str(name.clone());
@@ -1881,92 +2374,117 @@ impl Compiler {
                 } else {
                     self.compile_expr(&args[0])?;
                 }
-                let n_slot = self.scope_mut().declare_local("__repeat_n__");
-                self.emit(Opcode::StoreLocal(n_slot));
-                // Determine at runtime if it's an array (for element iteration)
-                self.emit(Opcode::LoadLocal(n_slot));
-                self.emit(Opcode::CallBuiltin(BuiltinId::IsArray, 1));
-                let is_arr_slot = self.scope_mut().declare_local("__repeat_is_arr__");
-                self.emit(Opcode::StoreLocal(is_arr_slot));
-                // counter = 0
+                // RepeatPrep(n) → [mode, iterable, limit]; mode 0 = count (int),
+                // 1 = items (array/collection), 2 = map (iterable of [k, v]),
+                // 3 = forever (nil), 4 = condition (bool; re-evaluated each pass),
+                // matching the interpreter's `repeat` dispatch.
+                // Loop variables (it, key, val, idx, `as` names) are scoped to the loop.
+                self.scope_mut().begin_block();
+                self.emit(Opcode::CallBuiltin(BuiltinId::RepeatPrep, 1));
+                let prep_slot = self.scope_mut().declare_local("__repeat_prep__");
+                self.emit(Opcode::StoreLocal(prep_slot));
+                let get = |c: &mut Self, slot: u8, i: i64| {
+                    let k = c.scope_mut().add_constant(Value::Int(i));
+                    c.emit(Opcode::LoadLocal(slot));
+                    c.emit(Opcode::LoadConst(k));
+                    c.emit(Opcode::GetIndex);
+                };
+                let mode_slot = self.scope_mut().declare_local("__repeat_mode__");
+                get(self, prep_slot, 0);
+                self.emit(Opcode::StoreLocal(mode_slot));
+                let iter_slot = self.scope_mut().declare_local("__repeat_iter__");
+                get(self, prep_slot, 1);
+                self.emit(Opcode::StoreLocal(iter_slot));
+                let limit_slot = self.scope_mut().declare_local("__repeat_limit__");
+                get(self, prep_slot, 2);
+                self.emit(Opcode::StoreLocal(limit_slot));
+
                 let zero = self.scope_mut().add_constant(Value::Int(0));
+                let one = self.scope_mut().add_constant(Value::Int(1));
+                let two = self.scope_mut().add_constant(Value::Int(2));
+                let four = self.scope_mut().add_constant(Value::Int(4));
                 self.emit(Opcode::LoadConst(zero));
                 let counter_slot = self.scope_mut().declare_local("__repeat_i__");
                 self.emit(Opcode::StoreLocal(counter_slot));
-                // optional as_name binding (or 'it' for array mode)
-                let as_name = if args.len() >= 3 {
-                    match &args[2] {
-                        Expr::Str(s, _) => s.clone(),
-                        Expr::Ident(s, _) => s.clone(),
-                        _ => "it".into(),
-                    }
-                } else { "it".into() };
-                let it_slot = self.scope_mut().declare_local(&as_name);
-                self.emit(Opcode::LoadConst(zero));
-                self.emit(Opcode::StoreLocal(it_slot));
-                // idx slot (separate from 'it' for int mode, same semantics as counter)
+
+                let name_arg = |e: Option<&Expr>| match e {
+                    Some(Expr::Str(s, _)) | Some(Expr::Ident(s, _)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                };
+                let as_name = name_arg(args.get(2));
+                let val_name = name_arg(args.get(3));
+                let item_slot = self.scope_mut().declare_local(as_name.as_deref().unwrap_or("it"));
+                // With an `as` name, items mode and map-key mode bind the same name,
+                // so they share one slot.
+                let key_slot = if as_name.is_some() {
+                    item_slot
+                } else {
+                    self.scope_mut().declare_local("key")
+                };
+                let val_slot = self.scope_mut().declare_local(val_name.as_deref().unwrap_or("val"));
                 let idx_slot = self.scope_mut().declare_local("idx");
                 self.emit(Opcode::LoadConst(zero));
                 self.emit(Opcode::StoreLocal(idx_slot));
 
-                // LOOP START: check exit condition (dispatch on type)
+                // LOOP START: counter < limit
                 let loop_start = self.scope_mut().bytecode.len();
-                // push counter
                 self.emit(Opcode::LoadLocal(counter_slot));
-                // push limit depending on is_arr
-                self.emit(Opcode::LoadLocal(is_arr_slot));
-                let not_arr_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // array: limit = count(arr)
-                self.emit(Opcode::LoadLocal(n_slot));
-                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
-                let skip_int_jump = self.scope_mut().emit_jump(Opcode::Jump);
-                // int: limit = n (or handle nil/bool below)
-                self.scope_mut().patch_jump(not_arr_jump);
-                self.emit(Opcode::LoadLocal(n_slot));
-                self.scope_mut().patch_jump(skip_int_jump);
-                // compare: counter < limit
+                self.emit(Opcode::LoadLocal(limit_slot));
                 self.emit(Opcode::Lt);
                 let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-
-                // If array mode: bind it_slot = arr[counter], idx = counter
-                self.emit(Opcode::LoadLocal(is_arr_slot));
-                let skip_bind_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                self.emit(Opcode::LoadLocal(n_slot));
+                // condition mode: re-evaluate the header expression
+                self.emit(Opcode::LoadLocal(mode_slot));
+                self.emit(Opcode::LoadConst(four));
+                self.emit(Opcode::Eq);
+                let not_cond = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.compile_expr(&args[0])?;
+                let cond_exit = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.scope_mut().patch_jump(not_cond);
+                // items mode: bind the element
+                self.emit(Opcode::LoadLocal(mode_slot));
+                self.emit(Opcode::LoadConst(one));
+                self.emit(Opcode::Eq);
+                let not_items = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.emit(Opcode::LoadLocal(iter_slot));
                 self.emit(Opcode::LoadLocal(counter_slot));
                 self.emit(Opcode::GetIndex);
-                self.emit(Opcode::StoreLocal(it_slot));
-                self.scope_mut().patch_jump(skip_bind_jump);
-                // always update idx = counter
+                self.emit(Opcode::StoreLocal(item_slot));
+                self.scope_mut().patch_jump(not_items);
+                // map mode: bind key and value
+                self.emit(Opcode::LoadLocal(mode_slot));
+                self.emit(Opcode::LoadConst(two));
+                self.emit(Opcode::Eq);
+                let not_map = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                for (slot, k) in [(key_slot, zero), (val_slot, one)] {
+                    self.emit(Opcode::LoadLocal(iter_slot));
+                    self.emit(Opcode::LoadLocal(counter_slot));
+                    self.emit(Opcode::GetIndex);
+                    self.emit(Opcode::LoadConst(k));
+                    self.emit(Opcode::GetIndex);
+                    self.emit(Opcode::StoreLocal(slot));
+                }
+                self.scope_mut().patch_jump(not_map);
                 self.emit(Opcode::LoadLocal(counter_slot));
                 self.emit(Opcode::StoreLocal(idx_slot));
 
-                // push loop context for stop/skip
                 self.loop_stack.push(LoopCtx::default());
-                // body
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::Pop);
-                // increment position (skip jumps here)
                 let increment_ip = self.scope_mut().bytecode.len();
-                let one = self.scope_mut().add_constant(Value::Int(1));
                 self.emit(Opcode::LoadLocal(counter_slot));
                 self.emit(Opcode::LoadConst(one));
                 self.emit(Opcode::Add);
                 self.emit(Opcode::StoreLocal(counter_slot));
-                // back-jump
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
-                // exit position
                 let exit_ip = self.scope_mut().bytecode.len();
                 self.scope_mut().patch_jump(exit_jump);
-                // patch stop/skip jumps
+                self.scope_mut().patch_jump(cond_exit);
                 let ctx = self.loop_stack.pop().unwrap();
-                for idx in ctx.break_patches {
-                    self.scope_mut().patch_jump_to(idx, exit_ip);
-                }
-                for idx in ctx.continue_patches {
-                    self.scope_mut().patch_jump_to(idx, increment_ip);
-                }
+                for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
+                for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, increment_ip); }
+                self.scope_mut().end_block();
                 self.emit(Opcode::LoadNil);
                 Ok(true)
             }
@@ -1985,6 +2503,8 @@ impl Compiler {
                         span_debug: String::new(),
                     }),
                 };
+                // The loop variable is scoped to the loop (D3).
+                self.scope_mut().begin_block();
                 // Compile iterable; coerce maps/strings/nil to sequential array
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::CallBuiltin(BuiltinId::ToForIter, 1));
@@ -2037,6 +2557,7 @@ impl Compiler {
                 for idx in ctx.continue_patches {
                     self.scope_mut().patch_jump_to(idx, increment_ip);
                 }
+                self.scope_mut().end_block();
                 self.emit(Opcode::LoadNil);
                 Ok(true)
             }
@@ -2049,13 +2570,6 @@ impl Compiler {
                     self.compile_expr(&args[0])?;
                     self.emit(Opcode::CallBuiltin(BuiltinId::Println, 1));
                 }
-                Ok(true)
-            }
-
-            // print(val) — no newline
-            "print" => {
-                for arg in args { self.compile_expr(arg)?; }
-                self.emit(Opcode::CallBuiltin(BuiltinId::Print, args.len() as u8));
                 Ok(true)
             }
 
@@ -2215,7 +2729,16 @@ impl Compiler {
                         self.emit(Opcode::Pop);
                     }
                 } else {
-                    self.emit(Opcode::Pop); // no rescue block, discard error
+                    // No rescue: run the ensure block, then raise the error again.
+                    let err_slot = self.scope_mut().declare_local("__attempt_error__");
+                    self.emit(Opcode::StoreLocal(err_slot));
+                    if args.len() > 2 {
+                        let ensure_body = args[2].clone();
+                        self.compile_expr(&ensure_body)?;
+                        self.emit(Opcode::Pop);
+                    }
+                    self.emit(Opcode::LoadLocal(err_slot));
+                    self.emit(Opcode::CallBuiltin(BuiltinId::Panic, 1));
                 }
 
                 // end label
@@ -2251,25 +2774,60 @@ impl Compiler {
                         self.emit(op);
                         self.emit(Opcode::LoadNil);
                     }
-                    Expr::Index(arr_expr, idx_expr, _) | Expr::IndexMap(arr_expr, idx_expr, _) => {
-                        // update!(arr[idx], new_val) → update_at(arr, idx, new_val) stored back
-                        if let Expr::Ident(arr_name, _) = arr_expr.as_ref() {
-                            let load_op = self.resolve_load(arr_name)
-                                .map_err(|e| self.locate_err(e))?;
-                            self.emit(load_op);
-                            self.compile_expr(idx_expr)?;
-                            self.compile_expr(&args[1])?;
-                            self.emit(Opcode::CallBuiltin(BuiltinId::UpdateAt, 3));
-                            let store_op = self.resolve_store(arr_name)
-                                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: arr_name.clone() }))?;
-                            self.emit(store_op);
-                            self.emit(Opcode::LoadNil);
-                        } else {
+                    Expr::Index(..) | Expr::IndexMap(..) | Expr::Member(..) => {
+                        // update!(root[k1] >> f [k3]…, new_val): walk the lvalue path
+                        // down to its root variable, push root, each key (in source
+                        // order), then the new value, and let UpdatePath rebuild the
+                        // chain. The result is stored back into the root variable.
+                        let mut segs: Vec<(&Expr, bool)> = Vec::new();
+                        let mut cur = &args[0];
+                        let root_name = loop {
+                            match cur {
+                                Expr::Index(base, key, _) | Expr::IndexMap(base, key, _) => {
+                                    segs.push((key.as_ref(), false));
+                                    cur = base.as_ref();
+                                }
+                                Expr::Member(base, _, _) => {
+                                    segs.push((cur, true));
+                                    cur = base.as_ref();
+                                }
+                                Expr::Ident(name, _) => break name.clone(),
+                                _ => {
+                                    return Err(GoblinError::CompileError {
+                                        message: "'update!' target must start with a variable".into(),
+                                        span_debug: String::new(),
+                                    });
+                                }
+                            }
+                        };
+                        segs.reverse();
+                        if segs.len() > 16 {
                             return Err(GoblinError::CompileError {
-                                message: "'update!' index target must be a plain variable".into(),
+                                message: "'update!' target path is too deep (max 16 segments)".into(),
                                 span_debug: String::new(),
                             });
                         }
+                        let load_op = self.resolve_load(&root_name)
+                            .map_err(|e| self.locate_err(e))?;
+                        self.emit(load_op);
+                        let mut mask: u16 = 0;
+                        for (i, (seg, is_field)) in segs.iter().enumerate() {
+                            if *is_field {
+                                mask |= 1 << i;
+                                let Expr::Member(_, field, _) = seg else { unreachable!() };
+                                let kidx = self.add_constant(Value::Str(field.clone()));
+                                self.emit(Opcode::LoadConst(kidx));
+                            } else {
+                                self.compile_expr(seg)?;
+                            }
+                        }
+                        self.emit_check_path(&args[0])?;
+                        self.compile_expr(&args[1])?;
+                        self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
+                        let store_op = self.resolve_store(&root_name)
+                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
+                        self.emit(store_op);
+                        self.emit(Opcode::LoadNil);
                     }
                     _ => {
                         return Err(GoblinError::CompileError {
@@ -2332,7 +2890,10 @@ impl Compiler {
         args: &[Expr],
     ) -> Result<Option<()>, GoblinError> {
         let bare = name.trim_start_matches(':');
-        let bid = match builtin_by_name(bare).or_else(|| builtin_by_name(name)) {
+        // `name!(x, …)` is `name(x, …)` written back into x (the caller does
+        // the write-back), as in the interpreter, which strips the `!`.
+        let bid = match builtin_by_name(bare).or_else(|| builtin_by_name(name))
+            .or_else(|| bare.strip_suffix('!').and_then(builtin_by_name)) {
             Some(b) => b,
             None    => return Ok(None),
         };
@@ -2350,6 +2911,7 @@ impl Compiler {
     fn compile_predicate_lambda(&mut self, expr: &Expr) -> Result<(), GoblinError> {
         self.push_scope("__pred__", 1);
         self.scope_mut().declare_params(&["it".to_string()]);
+        self.scope_mut().pred_fields = true;
         self.compile_expr(expr)?;
         self.scope_mut().emit(Opcode::Return);
         let func_obj = self.pop_scope();
@@ -2421,9 +2983,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "clamp"                         => BuiltinId::Clamp,
         "pow"                           => BuiltinId::Pow,
         "len"          | "count"        => BuiltinId::Len,
-        "to_string"    | "str" | "string" => BuiltinId::ToStr,
-        "to_upper"                      => BuiltinId::ToUpperCase,
-        "to_lower"                      => BuiltinId::ToLowerCase,
+        "str" | "string"  => BuiltinId::ToStr,
         "trim"                          => BuiltinId::Trim,
         "trim_lead"                     => BuiltinId::TrimLead,
         "trim_trail"                    => BuiltinId::TrimTrail,
@@ -2437,10 +2997,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "ord"                           => BuiltinId::Ord,
         "split"                         => BuiltinId::Split,
         "join"                          => BuiltinId::Join,
-        "contains"                      => BuiltinId::Contains,
         "starts_with"                   => BuiltinId::StartsWith,
         "ends_with"                     => BuiltinId::EndsWith,
-        "replace"                       => BuiltinId::Replace,
         "before"                        => BuiltinId::Before,
         "after"                         => BuiltinId::After,
         "before_last"                   => BuiltinId::BeforeLast,
@@ -2474,10 +3032,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "is_map"                        => BuiltinId::IsMap,
         "mem_total"     | ":mem_total"  => BuiltinId::MemTotal,
         "mem_human"     | ":mem_human"  => BuiltinId::MemHuman,
-        "ipsum"                         => BuiltinId::Ipsum,
-        "ipsum_sentences"               => BuiltinId::IpsumSentences,
-        "ipsum_paragraphs"              => BuiltinId::IpsumParagraphs,
-        "ipsum_full"                    => BuiltinId::IpsumFull,
         "run_cmd"                       => BuiltinId::RunCmd,
 
         // Request (HTTP context)
@@ -2496,15 +3050,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "roll"                          => BuiltinId::Roll,
         "roll_detail"                   => BuiltinId::RollDetail,
         "rand_seed"                     => BuiltinId::RandSeed,
-        "grab"                          => BuiltinId::Get,
-        "grab_first"                    => BuiltinId::GetFirst,
-        "grab_last"                     => BuiltinId::GetLast,
-        "grab_at"                       => BuiltinId::GetAt,
-        "grab_random"                   => BuiltinId::GetRandom,
-        "grab_where"                    => BuiltinId::GetWhere,
-        "grab_all"                      => BuiltinId::GetAll,
-        "grab_between"                  => BuiltinId::GetBetween,
-        "grab_matching"                 => BuiltinId::GetMatching,
         "put"                           => BuiltinId::Put,
         "put_first"                     => BuiltinId::PutFirst,
         "put_last"                      => BuiltinId::PutLast,
@@ -2523,9 +3068,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "reap_first"                    => BuiltinId::ReapFirst,
         "reap_last"                     => BuiltinId::ReapLast,
         "reap_at"                       => BuiltinId::ReapAt,
-        "reap_random"                   => BuiltinId::ReapRandom,
         "reap_where"                    => BuiltinId::ReapWhere,
-        "reap_all"                      => BuiltinId::ReapAll,
         // New Position×Operation matrix
         "get_first"    | ":get_first"    => BuiltinId::GetFirst,
         "get_last"     | ":get_last"     => BuiltinId::GetLast,
@@ -2535,11 +3078,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "get_matching" | ":get_matching" => BuiltinId::GetMatching,
         "get_between"  | ":get_between"  => BuiltinId::GetBetween,
         "get_random"   | ":get_random"   => BuiltinId::GetRandom,
-        "put_where"    | ":put_where"    => BuiltinId::PutWhere,
         "put_matching" | ":put_matching" => BuiltinId::PutMatching,
         "put_between"  | ":put_between"  => BuiltinId::PutBetween,
         "put_random"   | ":put_random"   => BuiltinId::PutRandom,
-        "put_all"      | ":put_all"      => BuiltinId::PutAll,
         "update_all"      | ":update_all"      => BuiltinId::UpdateAll,
         "update_where"    | ":update_where"    => BuiltinId::UpdateWhere,
         "update_matching" | ":update_matching" => BuiltinId::UpdateMatching,
@@ -2553,8 +3094,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "has"                           => BuiltinId::Has,
         "keys"                          => BuiltinId::Keys,
         "values"                        => BuiltinId::Values,
-        "pairs"                         => BuiltinId::Pairs,
-        "is_empty"                      => BuiltinId::IsEmpty,
         "reverse"                       => BuiltinId::Reverse,
         "reverse_chars"                 => BuiltinId::ReverseChars,
         "minimize"                      => BuiltinId::Minimize,
@@ -2571,21 +3110,13 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "any"                           => BuiltinId::Any,
         "all"                           => BuiltinId::All,
         "find"                          => BuiltinId::Find,
-        "find_index"                    => BuiltinId::FindIndex,
-        "zip"                           => BuiltinId::Zip,
-        "flatten"                       => BuiltinId::Flatten,
         "unique"                        => BuiltinId::Unique,
         "slice"                         => BuiltinId::Slice,
-        "print"                         => BuiltinId::Print,
-        "println"                       => BuiltinId::Println,
-        "eprint"                        => BuiltinId::Eprint,
-        "eprintln"                      => BuiltinId::Eprintln,
         "is_nil"                        => BuiltinId::IsNil,
         "is_bool"                       => BuiltinId::IsBool,
         "is_int"                        => BuiltinId::IsInt,
         "is_float"                      => BuiltinId::IsFloat,
         "is_str"                        => BuiltinId::IsStr,
-        "is_collection"                 => BuiltinId::IsCollection,
         "is_function"                   => BuiltinId::IsFunction,
         "is_big"                        => BuiltinId::IsBig,
         "is_pct"                        => BuiltinId::IsPct,
@@ -2604,13 +3135,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "is_positive"                   => BuiltinId::IsPositive,
         "is_negative"                   => BuiltinId::IsNegative,
         "is_nix"                        => BuiltinId::IsNix,
-        "to_int"                        => BuiltinId::ToInt,
-        "to_float"                      => BuiltinId::ToFloat,
-        "to_str"                        => BuiltinId::ToStr,
-        "to_bool"                       => BuiltinId::ToBool,
-        "type_of"                       => BuiltinId::TypeOf,
-        "assert"                        => BuiltinId::Assert,
-        "panic"                         => BuiltinId::Panic,
         "secure_pick"    | ":secure_pick"    => BuiltinId::SecurePick,
         "secure_random"  | ":secure_random"  => BuiltinId::SecureRandom,
         "secure_shuffle" | ":secure_shuffle" => BuiltinId::SecureShuffle,
@@ -2620,10 +3144,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "words"        | ":words"         => BuiltinId::Words,
         "chars"        | ":chars"         => BuiltinId::Chars,
         "format"       | ":format"        => BuiltinId::Format,
-        "pad"          | ":pad"           => BuiltinId::Pad,
-        "pad_left"     | ":pad_left"      => BuiltinId::PadLeft,
-        "pad_right"    | ":pad_right"     => BuiltinId::PadRight,
-        "repeat_str"   | ":repeat_str"    => BuiltinId::Repeat,
         "pct"          | "percent"       => BuiltinId::Pct,
         "between"                        => BuiltinId::Between,
         "is_control"                     => BuiltinId::IsControl,
@@ -2658,7 +3178,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "big"  | "b"                     => BuiltinId::ToBig,
         "to_map" | "m"                   => BuiltinId::ToMap,
         "read_text"                      => BuiltinId::ReadText,
-        "array_push"                     => BuiltinId::ArrayPush,
         "i8"                             => BuiltinId::CastI8,
         "i16"                            => BuiltinId::CastI16,
         "i32"                            => BuiltinId::CastI32,
@@ -2802,11 +3321,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "put_first!"                     => BuiltinId::PutFirst,
         "put_last!"                      => BuiltinId::PutLast,
         "put_at!"                        => BuiltinId::PutAt,
-        "put_where!"                     => BuiltinId::PutWhere,
         "put_matching!"                  => BuiltinId::PutMatching,
         "put_between!"                   => BuiltinId::PutBetween,
         "put_random!"                    => BuiltinId::PutRandom,
-        "put_all!"                       => BuiltinId::PutAll,
         "update_first!"                  => BuiltinId::UpdateFirst,
         "update_last!"                   => BuiltinId::UpdateLast,
         "update_at!"                     => BuiltinId::UpdateAt,
@@ -2827,9 +3344,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "reap_first!"                    => BuiltinId::ReapFirst,
         "reap_last!"                     => BuiltinId::ReapLast,
         "reap_at!"                       => BuiltinId::ReapAt,
-        "reap_random!"                   => BuiltinId::ReapRandom,
         "reap_where!"                    => BuiltinId::ReapWhere,
-        "reap_all!"                      => BuiltinId::ReapAll,
         "reap_matching!"                 => BuiltinId::ReapMatching,
         "reap_between!"                  => BuiltinId::ReapBetween,
 
@@ -2839,6 +3354,11 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "http_put"     => BuiltinId::HttpPut,
         "http_delete"  => BuiltinId::HttpDelete,
         "http_request" => BuiltinId::HttpRequest,
+
+        // Postgres
+        "db_query"     => BuiltinId::DbQuery,
+        "db_query_one" => BuiltinId::DbQueryOne,
+        "db_exec"      => BuiltinId::DbExec,
 
         // Render mode
         "render_template" => BuiltinId::RenderTemplate,
@@ -2930,11 +3450,121 @@ impl Compiler {
         }
 
         let entry = self.pop_scope();
+        self.seal_globals();
         Ok(CompiledModule {
             entry,
             classes: self.collected_classes,
             enums: self.collected_enums,
             global_names: self.globals.clone(),
         })
+    }
+}
+
+/// A variable, or indexes / `>>` fields below one (at most 16 segments).
+/// For `name!(x[k1]…[kN], args…)` with a builtin `name` that writes back
+/// into its first argument: the builtin, the root variable and the keys.
+/// Paths with `>>` fields keep the general lowering.
+fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String, Vec<&'a Expr>)> {
+    const IO_BANG_NO_WRITEBACK: &[&str] = &[
+        "write_text!", "write_json!", "append_file!",
+        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
+    ];
+    let bare = name.trim_start_matches(':');
+    if !bare.ends_with('!') || IO_BANG_NO_WRITEBACK.contains(&bare) || args.len() > 255 { return None; }
+    let bid = builtin_by_name(bare).or_else(|| builtin_by_name(name))
+        .or_else(|| bare.strip_suffix('!').and_then(builtin_by_name))?;
+    let mut keys = Vec::new();
+    let mut cur = args.first()?;
+    let root = loop {
+        match cur {
+            Expr::Index(base, key, _) | Expr::IndexMap(base, key, _) => { keys.push(key.as_ref()); cur = base.as_ref(); }
+            Expr::Ident(name, _) => break name.clone(),
+            _ => return None,
+        }
+    };
+    if keys.is_empty() || keys.len() > 16 { return None; }
+    keys.reverse();
+    Some((bid, root, keys))
+}
+
+fn is_lvalue(e: &Expr) -> bool {
+    let mut cur = e;
+    let mut depth = 0;
+    loop {
+        match cur {
+            Expr::Ident(..) => return true,
+            Expr::Index(base, _, _) | Expr::IndexMap(base, _, _) | Expr::Member(base, _, _) => {
+                depth += 1;
+                if depth > 16 { return false; }
+                cur = base.as_ref();
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// The position a `reap_*!` call removes from.
+fn reap_bang_position(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "reap_first!" => "first",
+        "reap_last!" => "last",
+        "reap_at!" => "at",
+        "reap_where!" => "where",
+        "reap_matching!" => "matching",
+        "reap_between!" => "between",
+        _ => return None,
+    })
+}
+
+/// The `{name}` placeholders of an interpolated string, in order, without
+/// duplicates (escaped `\{`, `{{{…}}}` tokens and `{#…}` box keys skipped).
+fn interp_placeholder_names(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' { i += 2; continue; }
+        if chars[i] == '{' {
+            if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
+                let mut j = i + 3;
+                while j + 2 < chars.len() && !(chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}') { j += 1; }
+                i = j + 3;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '}' { j += 1; }
+            if j >= chars.len() { break; }
+            let inner: String = chars[i + 1..j].iter().collect();
+            let inner = inner.trim();
+            if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && !out.iter().any(|n| n == inner)
+            {
+                out.push(inner.to_string());
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// How an indexed expression reads in the source, for bracket errors.
+fn source_text(e: &Expr) -> String {
+    match e {
+        Expr::Ident(n, _) => n.clone(),
+        Expr::Index(b, k, _) => format!("{}[{}]", source_text(b), key_text(k)),
+        Expr::IndexMap(b, k, _) => format!("{}{{{}}}", source_text(b), key_text(k)),
+        Expr::Member(b, f, _) => format!("{}.{}", source_text(b), f),
+        _ => "this value".into(),
+    }
+}
+
+fn key_text(e: &Expr) -> String {
+    match e {
+        Expr::Str(s, _) => format!("\"{s}\""),
+        Expr::Ident(n, _) => n.clone(),
+        Expr::Number(n, _) => n.clone(),
+        _ => "…".into(),
     }
 }

@@ -1,0 +1,2 @@
+say("start")
+say(:split("abc", 1))

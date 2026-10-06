@@ -1,0 +1,4 @@
+t | "keep\n```\ncode\n```\nafter\n```\nmore\n```\nend"
+say(:ignore_blocks(t, "```", "```"))
+say("--")
+say(:ignore_blocks_first(t, "```", "```"))

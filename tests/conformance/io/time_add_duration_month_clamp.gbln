@@ -1,0 +1,3 @@
+/// Adding months is calendar-aware and clamps to the end of a shorter month.
+say(:add_duration(:from_iso("2024-01-31T00:00:00Z"), {"months": 1}))
+say(:add_duration(:from_iso("2025-03-04T00:00:00Z"), {"years": 1}))

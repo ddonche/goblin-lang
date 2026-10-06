@@ -1,0 +1,4 @@
+say("a\tb")
+say("q\"q")
+say("back\\slash")
+say("it\'s")

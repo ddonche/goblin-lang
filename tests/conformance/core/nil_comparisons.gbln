@@ -1,0 +1,11 @@
+x | nil
+say(x == nil)
+say(nil == nil)
+say(nil == false)
+say(nil != false)
+say("" == nil)
+say(nil == 0)
+say(0 == false)
+say(true == 1)
+say("1" == 1)
+say('a' == "a")

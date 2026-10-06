@@ -1,0 +1,8 @@
+/// requires: db
+/// bigint, integer, text, varchar, boolean and double precision columns map to int, int, str, str, bool, float.
+r | :db_query_one("SELECT 1::bigint AS b, 2::integer AS i, 'x'::text AS t, 'v'::varchar(5) AS v, true AS f, 2.5::double precision AS d", [])
+for k in ["b", "i", "t", "v", "f", "d"]
+    v | r{k}
+    ty | :vt(v)
+    say("{k}={v} {ty}")
+xx

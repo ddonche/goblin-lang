@@ -1,0 +1,11 @@
+/// grid_neighbors: mode 8 (default) gives 8 around an inner cell and 3 at a corner;
+/// mode 4 gives the cardinal cells only; "wrapped" wraps the edges.
+e | :grid("e", 4, 4)
+say(:len(:grid_neighbors("e", 1, 1)))
+say(:len(:grid_neighbors("e", 0, 0)))
+say(:len(:grid_neighbors("e", 0, 2)))
+f | :grid("f", 4, 4, 4)
+say(:len(:grid_neighbors("f", 1, 1)))
+say(:len(:grid_neighbors("f", 0, 0)))
+wr | :grid("wr", 4, 4, "wrapped")
+say(:len(:grid_neighbors("wr", 0, 0)))

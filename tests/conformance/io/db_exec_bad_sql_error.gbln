@@ -1,0 +1,5 @@
+/// requires: db
+/// db_exec on a missing table is a runtime error.
+say("start")
+r | :db_exec("INSERT INTO io_db_exec_bad_sql_error_does_not_exist VALUES (1)", [])
+say("unreachable")

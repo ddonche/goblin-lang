@@ -1,0 +1,2 @@
+say(:escape_html("<a href=\"x\">&'</a>"))
+say(:escape_html("plain"))

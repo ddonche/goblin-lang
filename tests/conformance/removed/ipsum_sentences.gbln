@@ -1,0 +1,2 @@
+/// `ipsum_sentences` was removed from the VM on 2026-10-06 (owner ruling); neither engine has it.
+say(:ipsum_sentences(1))

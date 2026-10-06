@@ -1,0 +1,6 @@
+/// Token namespaces are case-insensitive (normalised to upper case); identifiers are case-sensitive.
+:register_token("theme", "ACCENT", "purple")
+:register_token("THEME", "accent", "green")
+say(:resolve_token("THEME", "ACCENT"))
+say(:resolve_token("Theme", "accent"))
+say(:resolve_token("theme", "ACCENT"))

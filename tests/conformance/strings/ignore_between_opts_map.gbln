@@ -1,0 +1,1 @@
+say(:ignore_between("a(b)c", "(", ")", {"include_delims": false}))

@@ -1,0 +1,4 @@
+/// known-gap: interp rand_seed rejects an int seed (want_num only accepts floats)
+/// rand_seed accepts an integer seed.
+:rand_seed(42)
+say("seeded")

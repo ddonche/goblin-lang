@@ -1,0 +1,4 @@
+/// known-gap: interp string indexing s[i] errors (slicing works)
+s | "héllo"
+say(s[1])
+say(s[4])

@@ -1,0 +1,9 @@
+/// is_file / is_dir distinguish files from directories; both are false for missing paths.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/f.txt", "x")
+say(:is_file("{d}/f.txt"))
+say(:is_dir("{d}/f.txt"))
+say(:is_file(d))
+say(:is_dir(d))
+say(:is_file("{d}/nope"))
+say(:is_dir("{d}/nope"))

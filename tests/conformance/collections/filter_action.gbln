@@ -1,0 +1,5 @@
+/// known-gap: interp has no filter builtin (unknown action)
+act over_five(n)
+    return n > 5
+xx
+say(:filter([5, 6, 7], "over_five"))

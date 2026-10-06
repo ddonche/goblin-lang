@@ -1,0 +1,12 @@
+/// requires: db
+/// db_exec returns a map {ok, rows_affected}; DDL affects 0 rows, an INSERT with parameters affects 1.
+sfx | :keep_before(:uuid_v4(), "-")
+t | "io_db_exec_create_insert_{sfx}"
+c | :db_exec("CREATE TABLE {t} (id bigint, name text)", [])
+say(c{"ok"})
+say(c{"rows_affected"})
+i | :db_exec("INSERT INTO {t} VALUES ($1, $2), ($3, $4)", [1, "a", 2, "b"])
+say(i{"rows_affected"})
+u | :db_exec("UPDATE {t} SET name = $1", ["z"])
+say(u{"rows_affected"})
+:db_exec("DROP TABLE {t}", [])

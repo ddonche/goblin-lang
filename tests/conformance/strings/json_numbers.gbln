@@ -1,0 +1,4 @@
+x | :json_parse("[1, 2.0, -3, 1e2]")
+say(:json_stringify(x))
+say(:json_stringify(1.0))
+say(:json_stringify(2.50))

@@ -1,0 +1,19 @@
+/// helper: recursion and mutual recursion inside one module
+act fact(n)
+    if n <= 1
+        return 1
+    xx
+    return n * fact(n - 1)
+xx
+act is_even(n)
+    if n == 0
+        return true
+    xx
+    return is_odd(n - 1)
+xx
+act is_odd(n)
+    if n == 0
+        return false
+    xx
+    return is_even(n - 1)
+xx

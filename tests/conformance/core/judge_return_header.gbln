@@ -1,0 +1,15 @@
+x | 9
+r |
+    judge return "fb"
+        x > 5:
+        else: "ok"
+    xx
+say(r)
+y | 4
+s |
+    judge return "fb"
+        y > 5:
+        y > 2: "mid"
+        else: "ok"
+    xx
+say(s)

@@ -1,0 +1,5 @@
+/// Goblin's current behaviour (owner, 2026-10-06: the docs predate Goblin and are not
+/// canonical). Was a docs-vs-engine gap: lines() does not treat \r\n as a newline (docs: universal newlines)
+parts | :lines("x\ny\r\nz")
+say(:len(parts))
+say(:len(parts[1]))

@@ -1,0 +1,9 @@
+/// A provoke block checks each condition line; when all hold, execution continues.
+x | 50
+provoke
+    x > 0
+    x < 100
+    x !== 25
+xx
+say("all checks passed")
+say(x)

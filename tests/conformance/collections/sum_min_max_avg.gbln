@@ -1,0 +1,5 @@
+l | [85, 92, 78, 96, 88]
+say(:sum(l))
+say(:min(l))
+say(:max(l))
+say(:avg(l))

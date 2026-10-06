@@ -1,0 +1,6 @@
+cfg | {"a": 1}
+act bump()
+    :update!(cfg{"a"}, 2)
+xx
+bump()
+say(cfg{"a"})

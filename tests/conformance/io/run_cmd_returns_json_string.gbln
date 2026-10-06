@@ -1,0 +1,4 @@
+/// run_cmd returns a JSON string with keys code, ok, stderr, stdout.
+r | :run_cmd("true")
+say(:is_str(r))
+say(:sort(:keys(:json_parse(r))))

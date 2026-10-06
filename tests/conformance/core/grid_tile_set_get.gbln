@@ -1,0 +1,15 @@
+/// grid_tile_set / grid_tile_get store a value on a whole tile; cells of the tile inherit it
+/// through grid_get, and a cell value overrides it.
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 4
+say(:grid_tile_get("h", 3, 3, "temp"))
+:grid_tile_set("h", 3, 3, "temp", 30)
+say(:grid_tile_get("h", 3, 3, "temp"))
+say(:grid_tile_get("h", 0, 0, "temp"))
+say(:grid_get("h", 6, 6, "temp"))
+say(:grid_get("h", 7, 7, "temp"))
+say(:grid_get("h", 5, 5, "temp"))
+:grid_set("h", 7, 7, "temp", 40)
+say(:grid_get("h", 7, 7, "temp"))
+say(:grid_tile_get("h", 3, 3, "temp"))

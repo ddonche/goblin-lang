@@ -106,10 +106,37 @@ pub enum Opcode {
     /// Pop new_val, pop key, pop collection → push updated collection (|! semantics).
     SetIndex,
 
+    /// `x[k]` in source: GetIndex that errors when x is a map (maps take `{}`).
+    /// constants[idx] = how x reads in the source, for the message.
+    IndexGet(u16),
+    /// `x{k}` in source: GetIndex that errors when x is an array or string.
+    KeyGet(u16),
+    /// Before a write through `root[k1]{k2}…` (n segments): checks each level
+    /// takes the bracket the source used, without consuming anything.
+    /// Stack: [root, key1, …, keyN]. constants[idx] = array of strings, one
+    /// per segment: "[" or "{" followed by the level's source text, or "."
+    /// for a `>>` field.
+    CheckPath(u8, u16),
     /// Like GetIndex but key is constants[idx] (string member access).
     GetMember(u16),
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
     SetField(u16),
+    /// Nested `update!` through an lvalue path of `n` segments.
+    /// Stack: [root, key1, …, keyN, new_val] → push the updated root.
+    /// Bit i of the mask marks segment i as a `>>` field access (key is a
+    /// field-name string) rather than an index.
+    UpdatePath(u8, u16),
+    /// UpdatePath whose root was loaded from a variable that the result is
+    /// stored back into: writes through in place when the VM holds the only
+    /// reference to the root's stash, and otherwise acts as UpdatePath.
+    UpdatePathMut(u8, u16),
+    /// Jump by the offset when local slot `slot` already holds a value; used by
+    /// parameter defaults, whose slots stay unset when the caller omits them.
+    JumpIfLocalSet(u8, i16),
+    /// Inside an `:objects(…)` / `:overlays(…)` predicate: when local 0 (`it`)
+    /// is an object with the field constants[idx], push that field's value and
+    /// jump by the offset (past the name's ordinary load); otherwise fall through.
+    LoadItFieldOrJump(u16, i16),
     /// Pop a map value, instantiate a class object from it. constants[idx] = class name string.
     ClassInstantiate(u16),
     /// Stack: [recv, arg0..arg_{argc-1}]. constants[name_idx] = method name. Pop all, push result.
@@ -130,6 +157,18 @@ pub enum Opcode {
     /// Call a builtin function with argc args.
     /// Args are popped; result is pushed.
     CallBuiltin(BuiltinId, u8),
+    /// CallBuiltin for `name!(x, …)` where `x` is a variable the result is
+    /// stored back into: changes x's collection in place when the VM holds
+    /// the only reference to its stash (leaving x's operand as the result),
+    /// and otherwise acts as CallBuiltin.
+    CallBuiltinMut(BuiltinId, u8),
+    /// `name!(x[k1]…[kN], args…)` where x is a variable: stack is
+    /// [x, k1…kN, args…] (argc counts the target as one argument). Changes
+    /// the element at the path in place when the VM holds the only reference
+    /// to x's stash (leaving x's operand), and otherwise reads the element,
+    /// calls the builtin and writes the result back along the path as
+    /// `update!` does, pushing x's new value. The caller stores it into x.
+    CallBuiltinMutPath(BuiltinId, u8, u8),
 
     // ── Closures ──────────────────────────────────────────────────────────────
     /// Create a closure from constants[func_idx] (a FunctionObject).
@@ -206,6 +245,10 @@ pub enum Opcode {
     /// Interpolate a string constant: constants[idx] is a raw template string.
     /// Looks up {ident} placeholders in the current locals/globals scope at runtime.
     StringInterp(u16),
+    /// Like StringInterp, with the values of n placeholders resolved at
+    /// compile time: constants[idx] = [template, name1, …, nameN] and the
+    /// stack holds the N values (last on top).
+    StringInterpVals(u16, u8),
 
     /// Load a field from self (locals[0], which is the receiver object in a class method).
     /// constants[idx] is the field name string. Pushes nil if self is not an Object or field absent.
@@ -302,9 +345,19 @@ impl Opcode {
             Opcode::MakeArray(_)    => "MakeArray",
             Opcode::MakeMap(_)      => "MakeMap",
             Opcode::GetIndex        => "GetIndex",
+            Opcode::IndexGet(_)     => "IndexGet",
+            Opcode::KeyGet(_)       => "KeyGet",
+            Opcode::CheckPath(..)   => "CheckPath",
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",
+            Opcode::UpdatePath(..)  => "UpdatePath",
+            Opcode::UpdatePathMut(..) => "UpdatePathMut",
+            Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
+            Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
+            Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
+            Opcode::LoadItFieldOrJump(..) => "LoadItFieldOrJump",
+            Opcode::StringInterpVals(..) => "StringInterpVals",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",
             Opcode::CallMethod(_, _)    => "CallMethod",
             Opcode::Call(_)         => "Call",

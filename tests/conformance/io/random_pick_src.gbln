@@ -1,0 +1,15 @@
+/// pick({count, src}) picks distinct elements of src; without count it returns a single element.
+xs | [10, 20, 30, 40]
+p | :pick({"count": 3, "src": xs})
+say(:len(p))
+all_in | true
+for v in p
+    if v != 10 and v != 20 and v != 30 and v != 40
+        all_in |= false
+    xx
+xx
+say(all_in)
+say(p[0] != p[1] and p[1] != p[2] and p[0] != p[2])
+one | :pick({"src": xs})
+say(:is_int(one))
+say(one >= 10 and one <= 40)

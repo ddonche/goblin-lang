@@ -122,11 +122,13 @@ pub struct Vm {
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
     gc_op_counter: u32,
+    /// Placeholder values for the string being interpolated (StringInterpVals).
+    interp_overrides: Vec<(String, Value)>,
 }
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0 }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0, interp_overrides: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -209,21 +211,8 @@ impl Vm {
             match self.execute_op(op) {
                 Ok(()) => {}
                 Err(e) => {
-                    if let Some(handler) = self.catch_stack.pop() {
-                        // Unwind call stack to catch frame's depth
-                        while self.call_stack.len() > handler.call_depth {
-                            self.call_stack.pop();
-                        }
-                        // Restore operand stack
-                        self.stack.truncate(handler.stack_depth);
-                        // Push error message as a string
-                        let err_str = e.to_string();
-                        self.stack.push(Operand::Val(Value::Str(err_str)));
-                        // Jump to catch block
-                        if let Some(frame) = self.call_stack.last_mut() {
-                            frame.ip = handler.catch_ip;
-                        }
-                    } else {
+                    let e = match self.catch_error(e, 0) { Ok(()) => continue, Err(e) => e };
+                    {
                         let (line, file) = self.call_stack.last()
                             .map(|f| (
                                 f.func.line_numbers.get(f.ip.saturating_sub(1)).copied().unwrap_or(0),
@@ -277,6 +266,16 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreLocal(slot) => {
+                // Storing a variable's own stash back into it (after an
+                // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
+                if let Some(Operand::Ref(t)) = self.stack.last() {
+                    let frame = self.call_stack.last().unwrap();
+                    if frame.locals.get(slot as usize).and_then(|o| o.as_ref()) == Some(t)
+                        && frame.get_hard_type_lock(slot).is_none() {
+                        self.stack.pop();
+                        return Ok(());
+                    }
+                }
                 let val = self.stack_pop()?;
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
@@ -330,6 +329,13 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreGlobal(idx) => {
+                if let Some(Operand::Ref(t)) = self.stack.last() {
+                    if self.session.get_global(idx as usize) == Some(t)
+                        && !self.session.global_hard_type_locks.contains_key(&(idx as u32)) {
+                        self.stack.pop();
+                        return Ok(());
+                    }
+                }
                 let val = self.stack_pop()?;
                 // Retether: if a hard type lock exists for this global, auto-cast the incoming value.
                 let val = if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
@@ -581,12 +587,20 @@ impl Vm {
                     (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
                     (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
                     (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
+                    (Value::Big(_), Value::Float(_)) | (Value::Float(_), Value::Big(_)) =>
+                        crate::value::numeric_binop("add", &a_inner, &b_inner).expect("numeric")?,
                     (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
                     (Value::Pct(x), Value::Float(y))   => Value::Pct(x + y),
                     (Value::Float(x), Value::Pct(y))   => Value::Pct(x + y),
                     (Value::Char(c), Value::Int(n))    => {
                         let new_cp = (*c as i64).wrapping_add(*n) as u32;
                         Value::Char(char::from_u32(new_cp).unwrap_or(*c))
+                    }
+                    // array + array → a new array holding both in order
+                    (x, y) if x.is_seq_like() && y.is_seq_like() => {
+                        let mut items = x.seq_items().map(|c| c.into_owned()).unwrap_or_default();
+                        items.extend(y.seq_items().map(|c| c.into_owned()).unwrap_or_default());
+                        Value::Collection(Rc::new(crate::value::CollectionValue::from_flat(items)))
                     }
                     // Formatted + Str / Str + Formatted → string concat
                     (a2, Value::Str(y)) => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
@@ -640,22 +654,12 @@ impl Vm {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = match (&a, &b) {
-                    (Value::Int(_), Value::Int(0)) | (Value::Float(_), Value::Float(_))
-                        if matches!(&b, Value::Int(0)) => {
-                        return Err(GoblinError::DivisionByZero);
-                    }
-                    (Value::Int(x), Value::Int(y)) => {
-                        if *y == 0 { return Err(GoblinError::DivisionByZero); }
-                        Value::Int(x / y)
-                    }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x / y),
-                    (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 / y),
-                    (Value::Float(x), Value::Int(y))   => Value::Float(x / *y as f64),
-                    (Value::Big(x), Value::Big(y))     => {
+                    (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => num_div(&a, &b)?,
+                    (Value::Big(x), Value::Big(y)) => {
                         if y.is_zero() { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / y)
                     }
-                    (Value::Big(x), Value::Int(y))     => {
+                    (Value::Big(x), Value::Int(y)) => {
                         if *y == 0 { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / rust_decimal::Decimal::from(*y))
                     }
@@ -667,30 +671,26 @@ impl Vm {
             }
             Opcode::DivInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                if b == 0 { return Err(GoblinError::DivisionByZero); }
-                self.stack.push(Operand::Val(Value::Int(a / b)));
+                self.stack.push(Operand::Val(num_div(&Value::Int(a), &Value::Int(b))?));
             }
             Opcode::DivFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                self.stack.push(Operand::Val(Value::Float(a / b)));
+                self.stack.push(Operand::Val(num_div(&Value::Float(a), &Value::Float(b))?));
             }
             Opcode::Rem => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
-                let result = match (&a, &b) {
-                    (Value::Int(x), Value::Int(y)) => {
-                        if *y == 0 { return Err(GoblinError::DivisionByZero); }
-                        Value::Int(x % y)
-                    }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
-                    _ => return Err(GoblinError::type_error("number", b.type_name(), "%")),
+                let result = match crate::value::numeric_binop("rem", &a, &b) {
+                    Some(r) => floor_mod_adjust(r?, &b),
+                    None => return Err(GoblinError::type_error("number", b.type_name(), "%")),
                 };
                 self.stack.push(Operand::Val(result));
             }
             Opcode::RemInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                self.stack.push(Operand::Val(Value::Int(a % b)));
+                let r = a.wrapping_rem_euclid(b);
+                self.stack.push(Operand::Val(Value::Int(if b < 0 && r != 0 { r + b } else { r })));
             }
             Opcode::Neg => {
                 let a = self.pop_value()?;
@@ -712,23 +712,25 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Float(-a)));
             }
             Opcode::Concat => {
-                // ++ operator: stringify both sides and join with a space
+                // ++ operator: stringify both sides and join them with a space
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
-                let result = Value::Str(format!("{} {}", a_str, b_str));
+                // An empty side adds no space; surrounding quote marks are dropped.
+                let joined = if a_str.is_empty() { b_str } else if b_str.is_empty() { a_str } else { format!("{} {}", a_str, b_str) };
+                let result = Value::Str(joined.trim_matches('"').to_string());
                 self.stack.push(Operand::Val(result));
             }
 
             // ── Comparison ───────────────────────────────────────────────────
             Opcode::Eq => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                self.stack.push(Operand::Val(Value::Bool(a == b)));
+                self.stack.push(Operand::Val(Value::Bool(values_equal(&a, &b))));
             }
             Opcode::Ne => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                self.stack.push(Operand::Val(Value::Bool(a != b)));
+                self.stack.push(Operand::Val(Value::Bool(!values_equal(&a, &b))));
             }
             Opcode::Lt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
@@ -799,6 +801,40 @@ impl Vm {
                 let coll_val = self.pop_value()?;
                 let result = crate::collections::get_index(&coll_val, &key)?;
                 self.stack.push(Operand::Val(result));
+            }
+            Opcode::IndexGet(label_idx) | Opcode::KeyGet(label_idx) => {
+                let brace = matches!(op, Opcode::KeyGet(_));
+                let key = self.pop_value()?;
+                let coll_val = self.pop_value()?;
+                self.check_bracket(&coll_val, brace, label_idx)?;
+                let result = crate::collections::get_index(&coll_val, &key)?;
+                self.stack.push(Operand::Val(result));
+            }
+            Opcode::CheckPath(n, info_idx) => {
+                let n = n as usize;
+                let info: Vec<String> = match self.call_stack.last().and_then(|f| f.func.constants.get(info_idx as usize)) {
+                    Some(Value::Array(items)) => items.iter().map(|v| match v { Value::Str(s) => s.clone(), _ => String::new() }).collect(),
+                    _ => return Err(GoblinError::Runtime("CheckPath: bad info constant".into())),
+                };
+                if self.stack.len() < n + 1 {
+                    return Err(GoblinError::Runtime("stack underflow on CheckPath".into()));
+                }
+                let base = self.stack.len() - n - 1;
+                let mut cur = self.resolve_op(self.stack[base].clone())?;
+                for (i, seg) in info.iter().enumerate() {
+                    let key = self.resolve_op(self.stack[base + 1 + i].clone())?;
+                    let next = if seg == "." {
+                        crate::collections::get_index(&cur, &key)
+                    } else {
+                        let brace = seg.starts_with('{');
+                        bracket_error(&cur, brace, &seg[1..]).map_or(Ok(()), Err)?;
+                        crate::collections::get_index(&cur, &key)
+                    };
+                    match next {
+                        Ok(v) if !matches!(v, Value::Nil) => cur = v,
+                        _ => break, // the write creates the rest of the path
+                    }
+                }
             }
             Opcode::SetIndex => {
                 let new_val = self.pop_value()?;
@@ -900,6 +936,43 @@ impl Vm {
                 // Push ref back so caller can chain / store back.
                 self.stack.push(Operand::Val(Value::Ref(uuid)));
             }
+            Opcode::JumpIfLocalSet(slot, offset) => {
+                let frame = self.call_stack.last_mut().unwrap();
+                if frame.locals[slot as usize].is_some() {
+                    frame.ip = (frame.ip as isize + offset as isize) as usize;
+                }
+            }
+            Opcode::LoadItFieldOrJump(idx, offset) => {
+                let (it, field) = {
+                    let frame = self.call_stack.last().unwrap();
+                    let field = match &frame.func.constants[idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Ok(()),
+                    };
+                    (frame.locals.first().cloned().flatten(), field)
+                };
+                let Some(t) = it else { return Ok(()) };
+                let found = match self.deref_value(&t)? {
+                    Value::Object { fields, .. } => fields.get(&field).cloned(),
+                    _ => None,
+                };
+                if let Some(v) = found {
+                    self.stack.push(Operand::Val(v));
+                    let frame = self.call_stack.last_mut().unwrap();
+                    frame.ip = (frame.ip as isize + offset as isize) as usize;
+                }
+            }
+            Opcode::UpdatePath(n, mask) => {
+                let new_val = self.pop_value()?;
+                let mut keys = Vec::with_capacity(n as usize);
+                for _ in 0..n { keys.push(self.pop_value()?); }
+                keys.reverse();
+                let root = self.pop_value()?;
+                let segs: Vec<(Value, bool)> = keys.into_iter().enumerate()
+                    .map(|(i, k)| (k, mask & (1 << i) != 0)).collect();
+                let updated = self.update_path(root, &segs, new_val)?;
+                self.stack.push(Operand::Val(updated));
+            }
             Opcode::ClassInstantiate(idx) => {
                 let class_name = {
                     let frame = self.call_stack.last().unwrap();
@@ -948,6 +1021,8 @@ impl Vm {
                     };
                     fields.insert(field.name.clone(), value);
                 }
+                // As in the interpreter, the object's uuid is also its `uuid` field.
+                fields.insert("uuid".to_string(), Value::Str(uuid.clone()));
 
                 let obj = Value::Object { class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid };
                 self.stack.push(Operand::Val(obj));
@@ -1022,7 +1097,13 @@ impl Vm {
                     frame.func.constants[idx as usize].clone()
                 };
                 let coll_val = self.pop_value()?;
-                let result = if let Value::Str(ref name) = key {
+                let enum_field = match (&coll_val, &key) {
+                    (Value::Enum { fields: Some(f), .. }, Value::Str(name)) => f.get(name).cloned(),
+                    _ => None,
+                };
+                let result = if let Some(v) = enum_field {
+                    v
+                } else if let Value::Str(ref name) = key {
                     member_dispatch(&coll_val, name, &mut self.session)?
                 } else {
                     crate::collections::get_index(&coll_val, &key)?
@@ -1060,7 +1141,7 @@ impl Vm {
                     other => return Err(GoblinError::NotCallable { got: other.type_name() }),
                 };
 
-                if arg_count != func_rc.params {
+                if arg_count < func_rc.required_params || arg_count > func_rc.params {
                     return Err(GoblinError::ArityMismatch {
                         expected: func_rc.params,
                         got: arg_count,
@@ -1104,6 +1185,64 @@ impl Vm {
             }
 
             // ── Builtins ──────────────────────────────────────────────────────
+            Opcode::CallBuiltinMut(id, argc) => {
+                if let Some(t) = self.sole_ref_target(argc as usize) {
+                    let start = self.stack.len() - (argc as usize - 1);
+                    let args = self.drain_operands(start)?;
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if crate::collections::mutate_in_place(&mut stash.value, id, &args) {
+                        // The target's Ref stays on the stack as the call's value.
+                        return Ok(());
+                    }
+                    self.stack.extend(args.into_iter().map(Operand::Val));
+                }
+                return self.execute_op(Opcode::CallBuiltin(id, argc));
+            }
+            Opcode::CallBuiltinMutPath(id, argc, n) => {
+                let n = n as usize;
+                let rest = argc as usize - 1;
+                if let Some(t) = self.sole_ref_target(1 + n + rest) {
+                    let start = self.stack.len() - (n + rest);
+                    let mut keys = self.drain_operands(start)?;
+                    let args = keys.split_off(n);
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if crate::collections::mutate_nested_in_place(&mut stash.value, &keys, id, &args) {
+                        return Ok(());
+                    }
+                    self.stack.extend(keys.into_iter().chain(args).map(Operand::Val));
+                }
+                let start = self.stack.len() - (n + rest);
+                let mut keys = self.drain_operands(start)?;
+                let args = keys.split_off(n);
+                let root = self.pop_value()?;
+                let mut target = root.clone();
+                for k in &keys { target = crate::collections::get_index(&target, k)?; }
+                self.stack.push(Operand::Val(target));
+                self.stack.extend(args.into_iter().map(Operand::Val));
+                self.execute_op(Opcode::CallBuiltin(id, argc))?;
+                let result = self.pop_value()?;
+                let segs: Vec<(Value, bool)> = keys.into_iter().map(|k| (k, false)).collect();
+                let updated = self.update_path(root, &segs, result)?;
+                self.stack.push(Operand::Val(updated));
+            }
+            Opcode::UpdatePathMut(n, mask) => {
+                // Stack: [root, key1, …, keyN, new_val]. Field segments go
+                // through member dispatch, so only index paths are done here.
+                if mask == 0 {
+                    if let Some(t) = self.sole_ref_target(n as usize + 2) {
+                        let start = self.stack.len() - (n as usize + 1);
+                        let mut vals = self.drain_operands(start)?;
+                        let new_val = vals.pop().unwrap();
+                        let stash = self.session.resolve_mut(t.addr)?;
+                        if crate::collections::update_path_in_place(&mut stash.value, &vals, new_val.clone()) {
+                            return Ok(());
+                        }
+                        self.stack.extend(vals.into_iter().map(Operand::Val));
+                        self.stack.push(Operand::Val(new_val));
+                    }
+                }
+                return self.execute_op(Opcode::UpdatePath(n, mask));
+            }
             Opcode::CallBuiltin(id, argc) => {
                 let arg_count = argc as usize;
                 if self.stack.len() < arg_count {
@@ -1129,8 +1268,38 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    // `alias::var` (no enum of that name): the imported module's
+                    // global as it is now, not a copy taken at import time.
+                    BuiltinId::EnumVariantExpr if matches!(arg_vals.get(2), Some(Value::Nil)) => {
+                        if let (Some(Value::Str(ns)), Some(Value::Str(var))) = (arg_vals.get(0), arg_vals.get(1)) {
+                            if !self.session.enums.contains_key(ns) {
+                                if let Some(v) = self.module_var(ns, var)? {
+                                    self.stack.push(Operand::Val(v));
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        let result = crate::builtins::call_builtin(id, arg_vals, &mut self.session)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
                     BuiltinId::Need => {
                         let result = self.vm_need(arg_vals)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::LinkScore => {
+                        let result = self.vm_link_score(arg_vals)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::DecisionDebug => {
+                        self.vm_decision_debug();
+                        self.stack.push(Operand::Val(Value::Nil));
+                        return Ok(());
+                    }
+                    BuiltinId::CloneObject => {
+                        let result = self.vm_clone_object(arg_vals)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -1276,35 +1445,6 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
-                    BuiltinId::PutWhere => {
-                        if arg_vals.len() != 3 {
-                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_vals.len(), name: "put_where".into() });
-                        }
-                        let mut it = arg_vals.into_iter();
-                        let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "put_where predicate")),
-                        };
-                        let new_val = it.next().unwrap();
-                        let result = self.vm_where_put(coll, &pred, new_val)?;
-                        self.stack.push(Operand::Val(result));
-                        return Ok(());
-                    }
-                    BuiltinId::GrabWhere => {
-                        if arg_vals.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "grab_where".into() });
-                        }
-                        let mut it = arg_vals.into_iter();
-                        let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "grab_where predicate")),
-                        };
-                        let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(Operand::Val(result));
-                        return Ok(());
-                    }
 
                     // ── Higher-order collection ops ───────────────────────────
                     BuiltinId::Filter => {
@@ -1349,17 +1489,6 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_all_inner(coll, func)?;
-                        self.stack.push(Operand::Val(result));
-                        return Ok(());
-                    }
-                    BuiltinId::FindIndex => {
-                        if arg_vals.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "find_index".into() });
-                        }
-                        let mut it = arg_vals.into_iter();
-                        let coll = it.next().unwrap();
-                        let func = it.next().unwrap();
-                        let result = self.vm_find_index_inner(coll, func)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -1466,6 +1595,9 @@ impl Vm {
                                 .get()
                         }
                     };
+                    // A captured stash has a second holder, so it is never
+                    // changed in place (see sole_ref_target).
+                    self.session.inc_tether(&tether)?;
                     upvalues.push(UpvalueCell::new(tether));
                 }
 
@@ -1622,6 +1754,26 @@ impl Vm {
                     self.session.project_root.join(&path_str)
                 };
 
+                // Remember which module this alias names in the importing file
+                // (the first import under an alias wins).
+                let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+                let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+                    let p = full_path.with_extension("gbln");
+                    if p.exists() { p } else { full_path.clone() }
+                } else { full_path.clone() };
+                let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
+                match self.session.module_aliases.get(&(importer.clone(), ns.clone())) {
+                    Some(first) if *first != prefix => {
+                        // A second module under an alias this file already uses:
+                        // keep the first one and skip this import.
+                        eprintln!("warning: import of '{}' as '{}' skipped: '{}' already names '{}' in this file",
+                            path_str, ns, ns, first.trim_end_matches("::"));
+                        return Ok(());
+                    }
+                    Some(_) => {}
+                    None => { self.session.module_aliases.insert((importer, ns.clone()), prefix); }
+                }
+
                 // Run with current_glam_ns = Some(alias) so RegisterAction registers
                 // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
                 let prev_ns = self.session.current_glam_ns.take();
@@ -1630,18 +1782,19 @@ impl Vm {
                 self.session.current_glam_ns = prev_ns;
                 r?;
 
-                // Retroactively register qualified names in case the import guard fired.
-                let module_dir = full_path.parent()
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                // Retroactively register qualified names in case the import guard
+                // fired. Only the imported file's own actions get the alias: this
+                // used to take every file under the module's directory, which
+                // gave `alias::` names to sibling files' actions and, run for
+                // every import, was a large part of a request's time.
+                let own = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+                let targets = [own(&full_path), own(&full_path.with_extension("gbln"))];
+                let pairs: Vec<(String, Value)> = targets.iter()
+                    .filter_map(|t| self.session.action_file_map.iter()
+                        .find(|(file, _)| file.replace('\\', "/") == *t)
+                        .map(|(_, pairs)| pairs.clone()))
+                    .next()
                     .unwrap_or_default();
-                let pairs: Vec<(String, Value)> = self.session.action_file_map
-                    .iter()
-                    .filter(|(file, _)| {
-                        let f = file.replace('\\', "/");
-                        f.contains(&module_dir) || f == full_path.to_string_lossy().replace('\\', "/")
-                    })
-                    .flat_map(|(_, pairs)| pairs.iter().cloned())
-                    .collect();
                 for (bare_name, val) in pairs {
                     let qualified = format!("{}::{}", ns, bare_name);
                     self.session.named_values.entry(qualified).or_insert(val);
@@ -1728,7 +1881,9 @@ impl Vm {
                 let def = self.session.overlay_defs.get(overlay_name.as_str())
                     .ok_or_else(|| GoblinError::Runtime(format!("unknown overlay '{}'", overlay_name)))?
                     .clone();
-                let is_temporary = def.default_duration.is_some() || duration_override.is_some();
+                // The overlay's own `lasts N ticks` applies when the statement has no `for`.
+                let duration = duration_override.or(def.default_duration);
+                let is_temporary = duration.is_some();
                 let original_values: Vec<(String, Value)> = if is_temporary {
                     if let Some(Value::Object { fields, .. }) = self.session.object_store.get(&host_uuid) {
                         def.modifiers.iter().filter_map(|(fname, _)| {
@@ -1744,7 +1899,7 @@ impl Vm {
                     host_uuid: host_uuid.clone(),
                     strength,
                     age: 0,
-                    ticks_remaining: duration_override,
+                    ticks_remaining: duration,
                     count: 1,
                     original_values,
                     extra_fields: indexmap::IndexMap::new(),
@@ -1764,12 +1919,13 @@ impl Vm {
             Opcode::LinkDef(def) => {
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
+                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
                 let link_def = LinkDef {
                     class_name: def.class_name.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min: 0.0,
-                    formula_max: 1.0,
+                    formula_min,
+                    formula_max,
                 };
                 self.session.link_defs.insert((def.class_name.clone(), channel), link_def);
             }
@@ -1777,12 +1933,13 @@ impl Vm {
             Opcode::ObjectLinkDef(def) => {
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
+                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
                 let link_def = LinkDef {
                     class_name: def.object_var.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min: 0.0,
-                    formula_max: 1.0,
+                    formula_min,
+                    formula_max,
                 };
                 self.session.object_link_defs.insert((def.object_var.clone(), channel), link_def);
             }
@@ -1811,7 +1968,11 @@ impl Vm {
             }
 
             Opcode::ObjectDecision { var_name, def } => {
-                self.session.object_decisions.insert(var_name.clone(), *def.clone());
+                let mut d = *def.clone();
+                let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
+                d.formula_min = min;
+                d.formula_max = max;
+                self.session.object_decisions.insert(var_name.clone(), d);
             }
 
             Opcode::UnitDecl(decl) => {
@@ -1864,6 +2025,28 @@ impl Vm {
                 self.stack.push(Operand::Val(value));
             }
 
+            Opcode::StringInterpVals(idx, n) => {
+                let parts = {
+                    let frame = self.call_stack.last().unwrap();
+                    match frame.func.constants.get(idx as usize).cloned() {
+                        Some(Value::Array(p)) => p,
+                        _ => return Err(GoblinError::Runtime("StringInterpVals: bad constant".into())),
+                    }
+                };
+                let mut vals: Vec<(String, Value)> = Vec::with_capacity(n as usize);
+                for i in (0..n as usize).rev() {
+                    let v = self.pop_value()?;
+                    let Value::Str(name) = &parts[i + 1] else { continue };
+                    vals.push((name.clone(), v));
+                }
+                let Value::Str(template) = &parts[0] else {
+                    return Err(GoblinError::Runtime("StringInterpVals: bad template".into()));
+                };
+                let saved = std::mem::replace(&mut self.interp_overrides, vals);
+                let result = self.render_string_interp(template);
+                self.interp_overrides = saved;
+                self.stack.push(Operand::Val(Value::Str(result?)));
+            }
             Opcode::StringInterp(idx) => {
                 let template = {
                     let frame = self.call_stack.last().unwrap();
@@ -1903,123 +2086,117 @@ impl Vm {
     }
 
     fn render_string_interp(&mut self, s: &str) -> Result<String, GoblinError> {
+        let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Interp);
         const RAW_SENTINEL: &str = "\u{001E}RAW:";
         if let Some(rest) = s.strip_prefix(RAW_SENTINEL) {
             return Ok(rest.to_string());
         }
-        let chars: Vec<char> = s.chars().collect();
-        let mut out = String::new();
+        // Works on bytes: every character the syntax looks at (`\`, `{`, `}`,
+        // `#`, `@`, `:`) is ASCII, so slicing at those positions is always on
+        // a UTF-8 boundary, and literal runs are copied in one go.
+        let b = s.as_bytes();
+        let n = b.len();
+        let mut out = String::with_capacity(n + 16);
         let mut i = 0;
-        while i < chars.len() {
-            if chars[i] == '\\' && i + 1 < chars.len() {
-                match chars[i + 1] {
-                    '{' => { out.push('{'); i += 2; continue; }
-                    '}' => { out.push('}'); i += 2; continue; }
-                    _ => { out.push('\\'); out.push(chars[i + 1]); i += 2; continue; }
-                }
-            }
-            if chars[i] == '{' {
-                // Triple-brace tokens: {{{MODULE::IDENT}}}
-                if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
-                    let mut j = i + 3;
-                    let mut found = false;
-                    while j + 2 < chars.len() {
-                        if chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}' {
-                            found = true;
-                            break;
+        let mut lit = 0; // start of the pending literal run
+        while i < n {
+            match b[i] {
+                b'\\' if i + 1 < n => {
+                    out.push_str(&s[lit..i]);
+                    match b[i + 1] {
+                        b'{' => out.push('{'),
+                        b'}' => out.push('}'),
+                        _ => {
+                            // Keep the backslash and the (possibly multi-byte) next char.
+                            let ch_len = s[i + 1..].chars().next().map_or(1, |c| c.len_utf8());
+                            out.push_str(&s[i..i + 1 + ch_len]);
+                            i += 1 + ch_len;
+                            lit = i;
+                            continue;
                         }
-                        j += 1;
                     }
-                    if found {
-                        let inner: String = chars[i + 3..j].iter().collect();
-                        let inner_trim = inner.trim();
-                        if let Some(pos) = inner_trim.find("::") {
-                            let module = inner_trim[..pos].trim();
-                            let ident  = inner_trim[pos + 2..].trim();
-                            let val = self.session.token_store.get(module)
-                                .or_else(|| self.session.token_store.get(&module.to_ascii_uppercase()))
-                                .and_then(|m| m.get(ident))
-                                .cloned();
-                            if let Some(v) = val {
-                                out.push_str(&crate::builtins::fmt_value_raw(&v));
-                            } else {
-                                out.push_str("{{{");
-                                out.push_str(inner_trim);
-                                out.push_str("}}}");
+                    i += 2;
+                    lit = i;
+                }
+                b'{' => {
+                    out.push_str(&s[lit..i]);
+                    // Triple-brace tokens: {{{MODULE::IDENT}}}
+                    if i + 2 < n && b[i + 1] == b'{' && b[i + 2] == b'{' {
+                        if let Some(rel) = s[i + 3..].find("}}}") {
+                            let j = i + 3 + rel;
+                            let inner_trim = s[i + 3..j].trim();
+                            let val = inner_trim.find("::").and_then(|pos| {
+                                let module = inner_trim[..pos].trim();
+                                let ident = inner_trim[pos + 2..].trim();
+                                self.session.token_store.get(module)
+                                    .or_else(|| self.session.token_store.get(&module.to_ascii_uppercase()))
+                                    .and_then(|m| m.get(ident))
+                                    .cloned()
+                            });
+                            match val {
+                                Some(v) => out.push_str(&crate::builtins::fmt_value_raw(&v)),
+                                None => { out.push_str("{{{"); out.push_str(inner_trim); out.push_str("}}}"); }
                             }
+                            i = j + 3;
                         } else {
-                            out.push_str("{{{");
-                            out.push_str(inner_trim);
-                            out.push_str("}}}");
+                            out.push('{');
+                            i += 1;
                         }
-                        i = j + 3;
+                        lit = i;
                         continue;
                     }
-                    out.push('{');
-                    i += 1;
-                    continue;
-                }
-
-                let start = i + 1;
-                let mut j = start;
-                while j < chars.len() && chars[j] != '}' { j += 1; }
-                if j >= chars.len() {
-                    out.push('{');
-                    i += 1;
-                    continue;
-                }
-                let inner: String = chars[start..j].iter().collect();
-                let inner = inner.trim();
-                if inner.starts_with('#') {
-                    // Box template: {#ns::key} or {#ns::key@source}
-                    let trimmed = inner.trim_start_matches('#');
-                    let key = if let Some(at) = trimmed.find('@') { &trimmed[..at] } else { trimmed };
-                    if key.contains("::") {
-                        if let Some(Value::Str(v)) = self.session.box_store.get(key).cloned() {
-                            // Secondary resolve: the stored value may itself contain {#...}
-                            // e.g. output_dir = "../dist/{#local::portal}/public"
-                            if v.contains("{#") {
-                                out.push_str(&self.resolve_box_template_from_store(&v));
-                            } else {
-                                out.push_str(&v);
+                    let start = i + 1;
+                    let Some(rel) = s[start..].find('}') else {
+                        // D20: an unclosed `{` is an error (R0500), as in the interpreter.
+                        return Err(GoblinError::Runtime(
+                            "unclosed '{' in interpolated string (use \\{ for a literal brace)".into()));
+                    };
+                    let j = start + rel;
+                    let raw = &s[start..j];
+                    let inner = raw.trim();
+                    if let Some(trimmed) = inner.strip_prefix('#') {
+                        // Box template: {#ns::key} or {#ns::key@source}
+                        let trimmed = trimmed.trim_start_matches('#');
+                        let key = if let Some(at) = trimmed.find('@') { &trimmed[..at] } else { trimmed };
+                        match (key.contains("::"), self.session.box_store.get(key).cloned()) {
+                            (true, Some(Value::Str(v))) => {
+                                // Secondary resolve: the stored value may itself contain {#...}
+                                // e.g. output_dir = "../dist/{#local::portal}/public"
+                                if v.contains("{#") {
+                                    out.push_str(&self.resolve_box_template_from_store(&v));
+                                } else {
+                                    out.push_str(&v);
+                                }
                             }
-                        } else {
                             // not found — keep literal
-                            out.push('{');
-                            let raw: String = chars[start..j].iter().collect();
-                            out.push_str(&raw);
-                            out.push('}');
+                            _ => { out.push('{'); out.push_str(raw); out.push('}'); }
+                        }
+                    } else if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        let val = self.lookup_interp_var(inner);
+                        // Secondary resolve: a regular variable's value may contain {#...}
+                        if val.contains("{#") {
+                            out.push_str(&self.resolve_box_template_from_store(&val));
+                        } else {
+                            out.push_str(&val);
                         }
                     } else {
-                        out.push('{');
-                        let raw: String = chars[start..j].iter().collect();
-                        out.push_str(&raw);
-                        out.push('}');
+                        out.push('{'); out.push_str(raw); out.push('}');
                     }
-                } else if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
-                    let val = self.lookup_interp_var(inner);
-                    // Secondary resolve: a regular variable's value may contain {#...}
-                    if val.contains("{#") {
-                        out.push_str(&self.resolve_box_template_from_store(&val));
-                    } else {
-                        out.push_str(&val);
-                    }
-                } else {
-                    out.push('{');
-                    let raw: String = chars[start..j].iter().collect();
-                    out.push_str(&raw);
-                    out.push('}');
+                    i = j + 1;
+                    lit = i;
                 }
-                i = j + 1;
-            } else {
-                out.push(chars[i]);
-                i += 1;
+                _ => i += 1,
             }
         }
+        out.push_str(&s[lit..]);
         Ok(out)
     }
 
     fn lookup_interp_var(&mut self, name: &str) -> String {
+        // 0. Values resolved at compile time (StringInterpVals).
+        if let Some((_, v)) = self.interp_overrides.iter().find(|(n, _)| n == name) {
+            return crate::builtins::fmt_value_raw(v);
+        }
         // 1. Check locals in current frame by name
         let local_tether = self.call_stack.last().and_then(|frame| {
             frame.func.local_names.iter().position(|n| n == name)
@@ -2043,7 +2220,7 @@ impl Vm {
         // 3. Check globals by name — use the current frame's compilation-unit global_names
         //    so GLAM actions find their own globals (not the main file's name table).
         let global_tether = self.call_stack.last()
-            .and_then(|frame| frame.func.global_names.iter().position(|n| n == name))
+            .and_then(|frame| frame.func.global_names().iter().position(|n| n == name))
             .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
             .or_else(|| {
                 self.session.global_names.iter().position(|n| n == name)
@@ -2098,7 +2275,6 @@ impl Vm {
             func.bytecode[i] = match &func.bytecode[i] {
                 Opcode::Add if a_is_int   && b_is_int   => Opcode::AddInt,
                 Opcode::Add if a_is_float && b_is_float => Opcode::AddFloat,
-                Opcode::Add if a_is_str   && b_is_str   => Opcode::Concat,
                 Opcode::Sub if a_is_int   && b_is_int   => Opcode::SubInt,
                 Opcode::Sub if a_is_float && b_is_float => Opcode::SubFloat,
                 Opcode::Mul if a_is_int   && b_is_int   => Opcode::MulInt,
@@ -2116,9 +2292,14 @@ impl Vm {
                 // FunctionObject is behind Rc; we need to get a mutable copy.
                 // Because each worker owns its own bytecode copy, we can clone
                 // the Rc content, quicken it, and replace the Rc.
-                let mut owned = (**f).clone();
-                self.quicken(&mut owned);
-                *f = std::rc::Rc::new(owned);
+                // A freshly compiled function has one owner and is quickened
+                // in place. A shared one came from the module cache, which
+                // stores functions already quickened; copying it here (as
+                // this used to for every function) was a large part of the
+                // cost of loading a module.
+                if let Some(owned) = std::rc::Rc::get_mut(f) {
+                    self.quicken(owned);
+                }
             }
         }
     }
@@ -2208,6 +2389,22 @@ impl Vm {
     }
 
     /// Drain operands from `start..` and resolve each to a Value.
+    /// The stash of the operand `depth` slots from the top of the stack, when
+    /// it is a variable's Ref holding a collection that nothing else can
+    /// observe: no closure captured it and no other pending operand reads it.
+    /// Changing such a stash in place is indistinguishable from storing a
+    /// new collection into the variable.
+    fn sole_ref_target(&self, depth: usize) -> Option<Tether> {
+        if depth == 0 || self.stack.len() < depth { return None; }
+        let at = self.stack.len() - depth;
+        let Operand::Ref(t) = &self.stack[at] else { return None };
+        let stash = self.session.resolve(t.addr).ok()?;
+        if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return None; }
+        let shared = self.stack.iter().enumerate()
+            .any(|(i, op)| i != at && matches!(op, Operand::Ref(u) if u == t));
+        if shared { None } else { Some(t.clone()) }
+    }
+
     fn drain_operands(&mut self, start: usize) -> Result<Vec<Value>, GoblinError> {
         let ops: Vec<Operand> = self.stack.drain(start..).collect();
         let mut vals = Vec::with_capacity(ops.len());
@@ -2232,6 +2429,28 @@ impl Vm {
     // ── invoke / summon / provoke ────────────────────────────────────────────
 
     /// Execute instructions until call_stack depth drops back to `target_depth`.
+    /// Hand `e` to the innermost `attempt` handler opened deeper than
+    /// `min_depth` frames, unwinding to it and jumping to its rescue block.
+    /// Handlers whose frame has already gone are discarded.
+    fn catch_error(&mut self, e: GoblinError, min_depth: usize) -> Result<(), GoblinError> {
+        while let Some(h) = self.catch_stack.last() {
+            if h.call_depth > self.call_stack.len() { self.catch_stack.pop(); continue; }
+            break;
+        }
+        let Some(handler) = self.catch_stack.last() else { return Err(e) };
+        if handler.call_depth <= min_depth { return Err(e); }
+        let handler = self.catch_stack.pop().unwrap();
+        while self.call_stack.len() > handler.call_depth {
+            self.call_stack.pop();
+        }
+        self.stack.truncate(handler.stack_depth);
+        self.stack.push(Operand::Val(Value::Str(e.to_string())));
+        if let Some(frame) = self.call_stack.last_mut() {
+            frame.ip = handler.catch_ip;
+        }
+        Ok(())
+    }
+
     pub(crate) fn run_until_depth(&mut self, target_depth: usize) -> Result<(), GoblinError> {
         while self.call_stack.len() > target_depth {
             let op = {
@@ -2250,7 +2469,12 @@ impl Vm {
                 frame.ip += 1;
                 op
             };
-            self.execute_op(op).map_err(|e| {
+            let result = match self.execute_op(op) {
+                Ok(()) => Ok(()),
+                // An `attempt` opened inside this nested run catches the error here.
+                Err(e) => self.catch_error(e, target_depth),
+            };
+            result.map_err(|e| {
                 // Attach innermost location BEFORE unwinding so the error
                 // shows where it actually occurred, not the outer call site.
                 let located = if matches!(e, GoblinError::WithLocation { .. }) {
@@ -2277,6 +2501,7 @@ impl Vm {
     /// `owner_glam`, when Some, is stamped onto the top-level actions compiled
     /// from this file (so `:need()` can later identify their owning GLAM).
     fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
+        let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Import);
         let canonical = full_path.to_string_lossy().to_string();
         if self.session.imported.contains(&canonical) {
             return Ok(());
@@ -2292,34 +2517,30 @@ impl Vm {
             full_path.clone()
         };
 
-        let source = std::fs::read_to_string(&actual_path)
-            .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", actual_path.display(), e)))?;
-
-        let tokens = goblin_lexer::lex(&source, &actual_path.to_string_lossy())
-            .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
-
-        let module = goblin_parser::Parser::new(&tokens).parse_module()
-            .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
-
         // Seed the compiler with the session's full accumulated global names so
         // this module's new globals get non-overlapping indices. Without this,
         // every module starts at index 0 and clobbers earlier modules' slots.
-        let globals_before = self.session.global_names.clone();
-        let compiled = crate::compiler::Compiler::new()
-            .with_initial_globals(globals_before.clone())
-            .with_glam_namespace(owner_glam)
-            .for_file(&actual_path.to_string_lossy())
-            .compile_module(&module)
-            .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
+        let globals_before_len = self.session.global_names.len();
+        let module_prefix = format!("{}::",
+            actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone()).display());
+        let compiled = match crate::modcache::lookup(&actual_path, &self.session.global_names, &module_prefix, &owner_glam) {
+            Some(hit) => hit,
+            None => {
+                let globals_before = self.session.global_names.clone();
+                crate::modcache::compile_import(
+                    &actual_path, &globals_before, &module_prefix, owner_glam, |entry| self.quicken(entry),
+                )?
+            }
+        };
 
         // Append any new global names this module introduced.
-        for name in compiled.global_names[globals_before.len()..].iter() {
+        for name in compiled.global_names[globals_before_len..].iter() {
             self.session.global_names.push(name.clone());
         }
 
         // Pre-register classes/enums from the imported module
-        for decl in compiled.classes { self.session.classes.insert(decl.name.clone(), decl); }
-        for decl in compiled.enums   { self.session.enums.insert(decl.name.clone(), decl); }
+        // (with their methods compiled, as for the entry script)
+        crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums);
 
         // Track the importing file's directory in base_dir so that GLAM files (which
         // have owner_glam set on their frames) can resolve sub-imports relative to the
@@ -2333,7 +2554,9 @@ impl Vm {
         // via bare name (e.g. `output_dir`). Must happen after compilation so we
         // know the correct global indices from compiled.global_names.
         for (name, val) in pre_globals {
-            if let Some(idx) = compiled.global_names.iter().position(|g| g == &name) {
+            let own = format!("{module_prefix}{name}");
+            if let Some(idx) = compiled.global_names.iter().position(|g| *g == own)
+                .or_else(|| compiled.global_names.iter().position(|g| g == &name)) {
                 let t = self.session.alloc_value(val);
                 self.session.set_global(idx, t);
             }
@@ -2343,9 +2566,7 @@ impl Vm {
         // SAME call stack (not via self.execute(), which assumes an empty
         // stack/call_stack and runs until the whole stack drains — wrong
         // here, since our caller's frame is still on the stack below us).
-        let mut entry_func = compiled.entry;
-        self.quicken(&mut entry_func);
-        let entry_rc = Rc::new(entry_func);
+        let entry_rc = compiled.entry;
         let stack_base = self.stack.len();
         let depth_before = self.call_stack.len();
         self.call_stack.push(CallFrame::new(entry_rc, Vec::new(), stack_base));
@@ -2558,6 +2779,26 @@ impl Vm {
         self.resolve_op(op)
     }
 
+    /// The current value of `var` in the module the running file imported as `ns`.
+    fn module_var(&self, ns: &str, var: &str) -> Result<Option<Value>, GoblinError> {
+        let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+        let Some(prefix) = self.session.module_aliases.get(&(importer, ns.to_string())) else { return Ok(None) };
+        let full = format!("{prefix}{var}");
+        let Some(idx) = self.session.global_names.iter().position(|g| *g == full) else { return Ok(None) };
+        match self.session.get_global(idx) {
+            Some(t) => Ok(Some(self.session.read_value(t)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn check_bracket(&self, v: &Value, brace: bool, label_idx: u16) -> Result<(), GoblinError> {
+        let label = match self.call_stack.last().and_then(|f| f.func.constants.get(label_idx as usize)) {
+            Some(Value::Str(s)) => s.clone(),
+            _ => "this value".into(),
+        };
+        match bracket_error(v, brace, &label) { Some(e) => Err(e), None => Ok(()) }
+    }
+
     /// Call a named function from session.named_values and return its result.
     pub(crate) fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
         // 1. Try exact qualified name ("stagehand::copy_assets").
@@ -2670,6 +2911,8 @@ impl Vm {
             Value::Str(_) => Err(GoblinError::Runtime(
                 "get/reap/put with 'where' is not supported for strings; use update_where!/delete_where! instead".into()
             )),
+            // A map collection keeps map semantics (insertion-ordered map).
+            Value::Collection(col) if col.is_map() => self.vm_where_get(Value::Collection(col).into_legacy(), pred),
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
                 let mut out = Vec::new();
@@ -2710,6 +2953,8 @@ impl Vm {
                 // delete_where on a string: always literal substring removal, pred is the needle
                 Ok(Value::Str(s.replace(pred, "")))
             }
+            // A map collection keeps map semantics (insertion-ordered map).
+            Value::Collection(col) if col.is_map() => self.vm_where_delete(Value::Collection(col).into_legacy(), pred),
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
                 let mut out = Vec::new();
@@ -2759,6 +3004,8 @@ impl Vm {
                 };
                 Ok(Value::Str(s.replace(pred, &repl)))
             }
+            // A map collection keeps map semantics (insertion-ordered map).
+            Value::Collection(col) if col.is_map() => self.vm_where_update(Value::Collection(col).into_legacy(), pred, new_val),
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
                 let mut out = Vec::new();
@@ -2775,33 +3022,6 @@ impl Vm {
         }
     }
 
-    fn vm_where_put(&mut self, coll: Value, pred: &str, new_val: Value) -> Result<Value, GoblinError> {
-        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
-        match coll {
-            Value::Array(xs) => {
-                let mut out = Vec::new();
-                for v in xs {
-                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
-                    out.push(v);
-                }
-                Ok(Value::Array(out))
-            }
-            Value::Collection(col) => {
-                let xs = crate::collections::to_vec(&col);
-                let mut out = Vec::new();
-                for v in xs {
-                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
-                    out.push(v);
-                }
-                Ok(Value::Array(out))
-            }
-            Value::Map(_) | Value::MapOrd(_) => Err(GoblinError::Runtime("put_where is not meaningful for maps".into())),
-            Value::Str(_) => Err(GoblinError::Runtime(
-                "get/reap/put with 'where' is not supported for strings; use update_where!/delete_where! instead".into()
-            )),
-            other => Err(GoblinError::type_error("array", other.type_name(), "put_where")),
-        }
-    }
 
     // ── Higher-order collection helpers ──────────────────────────────────────
 
@@ -2890,19 +3110,6 @@ impl Vm {
         Ok(Value::Bool(true))
     }
 
-    fn vm_find_index_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
-        let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
-            Value::Collection(col) => crate::collections::to_vec(&col),
-            other => return Err(GoblinError::type_error("array", other.type_name(), "find_index")),
-        };
-        for (i, v) in elems.into_iter().enumerate() {
-            if matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
-                return Ok(Value::Int(i as i64));
-            }
-        }
-        Ok(Value::Nil)
-    }
 
     fn vm_sort_by_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
@@ -2910,12 +3117,13 @@ impl Vm {
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array", other.type_name(), "sort_by")),
         };
-        let mut keyed: Vec<(String, Value)> = Vec::with_capacity(elems.len());
+        let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(elems.len());
         for v in elems {
             let k = self.call_callable(func.clone(), vec![v.clone()])?;
-            keyed.push((crate::builtins::fmt_value_raw(&k), v));
+            keyed.push((k, v));
         }
-        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        // Same ordering as sort: numbers by value, strings lexically.
+        keyed.sort_by(|a, b| crate::collections::compare_for_sort(&a.0, &b.0));
         Ok(Value::Array(keyed.into_iter().map(|(_, v)| v).collect()))
     }
 
@@ -3286,6 +3494,105 @@ impl Vm {
         Ok(Value::Array(results))
     }
 
+    /// A variable's value by name (objects dereferenced), as the interpreter's
+    /// `get_var`: the current frame's locals, then the globals.
+    fn lookup_var(&self, name: &str) -> Option<Value> {
+        let frame = self.call_stack.last()?;
+        let local = frame.func.local_names.iter().position(|n| n == name)
+            .and_then(|slot| frame.locals.get(slot).cloned().flatten());
+        let t = local
+            .or_else(|| frame.func.global_names().iter().position(|n| n == name)
+                .and_then(|slot| self.session.globals.get(slot).cloned().flatten()))
+            .or_else(|| self.session.global_names.iter().position(|n| n == name)
+                .and_then(|slot| self.session.globals.get(slot).cloned().flatten()))?;
+        self.session.read_value(&t).ok()
+    }
+
+    /// link_score(class, [channel,] a_var, b_var): the link formula for the pair,
+    /// normalised to 0..1, plus the pair's offsets (the interpreter's `link_score`).
+    fn vm_link_score(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        if args.len() < 3 { return Ok(Value::Nil); }
+        let s = |i: usize| -> Result<String, GoblinError> {
+            match &args[i] {
+                Value::Str(s) => Ok(s.clone()),
+                other => Err(GoblinError::type_error("str", other.type_name(), "link_score")),
+            }
+        };
+        let (class_name, channel, a_var, b_var) = if args.len() >= 4 {
+            (s(0)?, s(1)?, s(2)?, s(3)?)
+        } else {
+            (s(0)?, "default".to_string(), s(1)?, s(2)?)
+        };
+        let (self_val, target_val) = match (self.lookup_var(&a_var), self.lookup_var(&b_var)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Ok(Value::Nil),
+        };
+        let def = self.session.object_link_defs.get(&(a_var.clone(), channel.clone())).cloned()
+            .or_else(|| self.session.link_defs.get(&(class_name.clone(), channel.clone())).cloned());
+        let Some(d) = def else { return Ok(Value::Nil) };
+        let mut score = crate::tick::eval_link_score(self, self_val, target_val, &d.formula, d.formula_min, d.formula_max)?;
+        if let Some(offsets) = self.session.link_offsets.get(&(a_var, b_var, channel)) {
+            for o in offsets { score += o.value; }
+        }
+        Ok(Value::Float(score.clamp(0.0, 1.0)))
+    }
+
+    /// decision_debug(): one line per object variable saying whether its class
+    /// has a decision and a judge (the interpreter's `decision_debug`).
+    fn vm_decision_debug(&mut self) {
+        let mut bindings: Vec<(String, Tether)> = Vec::new();
+        for (slot, name) in self.session.global_names.iter().enumerate() {
+            if let Some(Some(t)) = self.session.globals.get(slot) {
+                bindings.push((name.clone(), t.clone()));
+            }
+        }
+        for frame in &self.call_stack {
+            for (slot, name) in frame.func.local_names.iter().enumerate() {
+                if name.is_empty() { continue; }
+                if let Some(Some(t)) = frame.locals.get(slot) {
+                    bindings.push((name.clone(), t.clone()));
+                }
+            }
+        }
+        for (var_name, t) in bindings {
+            if let Ok(Value::Object { class_name, .. }) = self.session.read_value(&t) {
+                let class = self.session.classes.get(&class_name);
+                let has_decision = class.map(|c| c.decision.is_some()).unwrap_or(false);
+                let has_judge = class.map(|c| c.judge.is_some()).unwrap_or(false);
+                let line = format!("  var={} class={} has_decision={} has_judge={}",
+                    var_name, class_name, has_decision, has_judge);
+                self.session.write_output(&line, true);
+            }
+        }
+    }
+
+    /// clone_object(obj or var name): a copy of the object with its own uuid and
+    /// no owner (the interpreter's `clone_object`).
+    fn vm_clone_object(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        let source_uuid = match args.first() {
+            Some(Value::Object { uuid, .. }) => uuid.clone(),
+            Some(Value::Str(s)) => match self.lookup_var(s) {
+                Some(Value::Object { uuid, .. }) => uuid,
+                _ => s.clone(),
+            },
+            _ => return Err(GoblinError::Runtime("A0414: clone-object-bad-source: clone_object() argument must be an object".into())),
+        };
+        match self.session.object_store.get(&source_uuid).cloned() {
+            Some(Value::Object { class_name, fields, readonly_fields, trait_fields, .. }) => {
+                let mut fields = (*fields).clone();
+                fields.insert("owner_id".to_string(), Value::Str(String::new()));
+                let new_uuid = uuid::Uuid::new_v4().to_string();
+                fields.insert("uuid".to_string(), Value::Str(new_uuid.clone()));
+                let cloned = Value::Object {
+                    class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid: new_uuid.clone(),
+                };
+                self.session.object_store.insert(new_uuid, cloned.clone());
+                Ok(cloned)
+            }
+            _ => Err(GoblinError::Runtime("A0416: clone-object-not-found: clone_object() source object not found".into())),
+        }
+    }
+
     fn vm_tick(&mut self) -> Result<(), GoblinError> {
         crate::tick::run_tick(self)
     }
@@ -3298,6 +3605,8 @@ impl Vm {
         int_fn: fn(i64, i64) -> i64,
         flt_fn: fn(f64, f64) -> f64,
     ) -> Result<Value, GoblinError> {
+        // int/float/big: exact, overflow promotes to big (value.rs).
+        if let Some(r) = crate::value::numeric_binop(op, &a, &b) { return r; }
         match (&a, &b) {
             (Value::Int(x), Value::Int(y))     => Ok(Value::Int(int_fn(*x, *y))),
             (Value::Float(x), Value::Float(y)) => Ok(Value::Float(flt_fn(*x, *y))),
@@ -3376,6 +3685,52 @@ fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
     }
 }
 
+impl Vm {
+    /// Functional nested update used by `update!(a[i] >> f [j], v)`: rebuilds
+    /// each container on the path with its child replaced. Objects are shared
+    /// references, so a field write mutates the object in place (as SetField
+    /// does) and the reference itself is returned unchanged.
+    fn update_path(&mut self, container: Value, segs: &[(Value, bool)], new_val: Value) -> Result<Value, GoblinError> {
+        let (key, is_field) = &segs[0];
+        let replacement = if segs.len() == 1 {
+            new_val
+        } else {
+            let child = if *is_field {
+                let Value::Str(name) = key else { unreachable!("field segment key is a string") };
+                member_dispatch(&container, name, &mut self.session)?
+            } else {
+                crate::collections::get_index(&container, key)?
+            };
+            self.update_path(child, &segs[1..], new_val)?
+        };
+        match &container {
+            Value::Ref(uuid) | Value::Object { uuid, .. } => {
+                let uuid = uuid.clone();
+                let Value::Str(field) = key else {
+                    return Err(GoblinError::Runtime(format!("update!: object field name must be a string, got {}", key.type_name())));
+                };
+                match self.session.object_store.get_mut(&uuid) {
+                    Some(Value::Object { fields, .. }) => { std::rc::Rc::make_mut(fields).insert(field.clone(), replacement); }
+                    _ => return Err(GoblinError::Runtime(format!("update!: object {} not found", uuid))),
+                }
+                Ok(Value::Ref(uuid))
+            }
+            _ => {
+                // D-update-missing-key: `update!` on a missing map key inserts it,
+                // as the interpreter does; `update_at` still errors.
+                use crate::collections::{collection_operation, Operation, Position};
+                let at = Position::At(key.clone());
+                if is_map_value(&container) {
+                    // Put overwrites an existing key and inserts a missing one.
+                    collection_operation(&container, at, Operation::Put(replacement), &mut self.session)
+                } else {
+                    collection_operation(&container, at, Operation::Update(replacement), &mut self.session)
+                }
+            }
+        }
+    }
+}
+
 fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
     use crate::value::BuiltinId;
     use crate::builtins::call_builtin;
@@ -3414,7 +3769,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "floor"            => Some(BuiltinId::Floor),
         "ceil"             => Some(BuiltinId::Ceil),
         "round"            => Some(BuiltinId::Round),
-        "type_of"          => Some(BuiltinId::TypeOf),
         "pct"              => Some(BuiltinId::Pct),
         "is_big"           => Some(BuiltinId::IsBig),
         "is_pct"           => Some(BuiltinId::IsPct),
@@ -3432,7 +3786,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "is_positive"      => Some(BuiltinId::IsPositive),
         "is_negative"      => Some(BuiltinId::IsNegative),
         "is_nix"           => Some(BuiltinId::IsNix),
-        "is_empty"         => Some(BuiltinId::IsEmpty),
         "is_matching"      => None,  // needs arg; handled below
         "before"           => None,  // needs arg; handled below
         "after"            => None,  // needs arg; handled below
@@ -3444,8 +3797,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "normalize_newlines" => Some(BuiltinId::NormalizeNewlines),
         "json_stringify"   => Some(BuiltinId::JsonStringify),
         "json_stringify_pretty" => Some(BuiltinId::JsonStringifyPretty),
-        "flatten"          => Some(BuiltinId::Flatten),
-        "pairs"            => Some(BuiltinId::Pairs),
         "is_nil"           => Some(BuiltinId::IsNil),
         "is_bool"          => Some(BuiltinId::IsBool),
         "is_int"           => Some(BuiltinId::IsInt),
@@ -3464,7 +3815,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "delete_all"       => Some(BuiltinId::DeleteAll),
         "reap_first"       => Some(BuiltinId::ReapFirst2),
         "reap_last"        => Some(BuiltinId::ReapLast2),
-        "reap_random"      => Some(BuiltinId::ReapRandom2),
         "sum"              => Some(BuiltinId::Sum),
         "avg"              => Some(BuiltinId::Avg),
         "min"              => Some(BuiltinId::Min),
@@ -3540,12 +3890,14 @@ mod tests {
             constants,
             locals: 0,
             params: 0,
+            required_params: 0,
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Default::default(),
         }
     }
 
@@ -3582,12 +3934,14 @@ mod tests {
             constants: vec![Value::Int(10)],
             locals: 1,
             params: 0,
+            required_params: 0,
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -3610,12 +3964,14 @@ mod tests {
             constants: vec![Value::Int(1), Value::Int(2)],
             locals: 0,
             params: 0,
+            required_params: 0,
             name: "if_else".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -3636,12 +3992,14 @@ mod tests {
             constants: vec![Value::Int(1)],
             locals: 1,
             params: 1,
+            required_params: 1,
             name: "add1".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Default::default(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -3655,12 +4013,14 @@ mod tests {
             constants: vec![Value::Function(Rc::new(inner)), Value::Int(5)],
             locals: 0,
             params: 0,
+            required_params: 0,
             name: "outer".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
+            global_names: Default::default(),
         };
 
         let result = vm.execute(outer).unwrap();
@@ -3685,5 +4045,81 @@ mod tests {
             Value::Collection(c) => assert_eq!(c.len(), 3),
             _ => panic!("expected collection"),
         }
+    }
+}
+
+fn is_map_value(v: &Value) -> bool {
+    match v {
+        Value::Map(_) | Value::MapOrd(_) => true,
+        Value::Collection(c) => crate::collections::is_map_collection(c),
+        _ => false,
+    }
+}
+
+/// `==` (D7): an int and a float are equal when they are the same number;
+/// everything else compares structurally.
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => (*x as f64) == *y,
+        _ => a == b,
+    }
+}
+
+/// `/` on ints and floats (D5): int / int stays an int when exact and is a
+/// float otherwise; dividing by zero is an error (D19).
+fn num_div(a: &Value, b: &Value) -> Result<Value, GoblinError> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            if *y == 0 { return Err(GoblinError::DivisionByZero); }
+            match (x.checked_rem(*y), x.checked_div(*y)) {
+                (Some(0), Some(q)) => Ok(Value::Int(q)),
+                _ => Ok(Value::Float(*x as f64 / *y as f64)),
+            }
+        }
+        _ => {
+            let x = match a { Value::Int(n) => *n as f64, Value::Float(f) => *f, _ => unreachable!() };
+            let y = match b { Value::Int(n) => *n as f64, Value::Float(f) => *f, _ => unreachable!() };
+            if y == 0.0 { return Err(GoblinError::DivisionByZero); }
+            Ok(Value::Float(x / y))
+        }
+    }
+}
+
+/// `%` takes the sign of the divisor (floored modulo, D11).
+fn floor_mod_adjust(r: Value, divisor: &Value) -> Value {
+    match (&r, divisor) {
+        (Value::Int(x), Value::Int(y)) if *x != 0 && (*x < 0) != (*y < 0) => Value::Int(x + y),
+        (Value::Float(x), _) => {
+            let y = match divisor { Value::Int(n) => *n as f64, Value::Float(f) => *f, _ => return r };
+            if *x != 0.0 && (*x < 0.0) != (y < 0.0) { Value::Float(x + y) } else { r }
+        }
+        (Value::Big(x), Value::Big(y)) if !x.is_zero() && x.is_sign_negative() != y.is_sign_negative() => Value::Big(x + y),
+        (Value::Big(x), Value::Int(y)) if !x.is_zero() && x.is_sign_negative() != (*y < 0) => Value::Big(x + rust_decimal::Decimal::from(*y)),
+        _ => r,
+    }
+}
+
+/// Arrays and strings are indexed with `[]`, maps with `{}` (owner ruling
+/// 2026-10-06). The error for using the other one, if `v` is of a kind that
+/// takes a particular bracket.
+fn bracket_error(v: &Value, brace: bool, label: &str) -> Option<GoblinError> {
+    let is_map = match v {
+        Value::Map(_) | Value::MapOrd(_) => true,
+        Value::Collection(c) => c.is_map(),
+        _ => false,
+    };
+    let is_seq = match v {
+        Value::Array(_) => true,
+        Value::Collection(c) => !c.is_map(),
+        _ => false,
+    };
+    if !brace && is_map {
+        Some(GoblinError::Runtime(format!("`{label}` is a map. Use {{}} for maps: {label}{{\"key\"}}")))
+    } else if brace && is_seq {
+        Some(GoblinError::Runtime(format!("`{label}` is an array. Use [] for arrays: {label}[0]")))
+    } else if brace && matches!(v, Value::Str(_)) {
+        Some(GoblinError::Runtime(format!("`{label}` is a string. Use [] for strings: {label}[0]")))
+    } else {
+        None
     }
 }

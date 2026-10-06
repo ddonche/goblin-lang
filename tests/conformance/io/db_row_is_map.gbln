@@ -1,0 +1,7 @@
+/// requires: db
+/// known-gap: interp db rows are Value::MapOrd and is_map only recognises Value::Map, so a row is not a map
+/// Rows returned by db_query_one / db_query are maps.
+r | :db_query_one("SELECT 1::bigint AS id", [])
+say(:is_map(r))
+rows | :db_query("SELECT 1::bigint AS id", [])
+say(:is_map(rows[0]))

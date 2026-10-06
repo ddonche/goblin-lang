@@ -1,0 +1,2 @@
+say(:count("banana", "a"))
+say("banana".count("an"))

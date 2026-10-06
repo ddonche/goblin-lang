@@ -1,0 +1,17 @@
+/// owns_tree(root) renders the ownership tree, one "{Class: id}" line per object, children indented two spaces.
+<>Unit |
+    name: ""
+    owner_id: ""
+xx
+king <> Unit | name: "king"
+knight <> Unit | name: "knight"
+squire <> Unit | name: "squire"
+knight >> owner_id |= king >> uuid
+squire >> owner_id |= knight >> uuid
+t | :owns_tree(king)
+rows | :split(t, "\n")
+say(:len(rows))
+say(:starts_with(rows[0], "\{Unit: "))
+say(:starts_with(rows[1], "  \{Unit: "))
+say(:starts_with(rows[2], "    \{Unit: "))
+say(:len(:split(:owns_tree(squire), "\n")))

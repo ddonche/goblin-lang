@@ -1,0 +1,7 @@
+/// Successive clock reads never go backwards, and now() agrees with epoch_ms() to within a few seconds.
+t1 | :to_epoch_ms(:now())
+t2 | :to_epoch_ms(:utc_now())
+t3 | :epoch_ms()
+say(t1 <= t2)
+say(t2 <= t3)
+say(t3 - t1 < 5000)

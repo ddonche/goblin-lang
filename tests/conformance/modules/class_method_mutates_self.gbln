@@ -1,0 +1,12 @@
+/// known-gap: interp `self >> n |=` inside a method does not persist on the object
+<>Counter |
+    n: 0
+    act bump()
+        self >> n |= self >> n + 1
+        return self >> n
+    xx
+xx
+c <> Counter | n: 5
+say(c.bump())
+say(c.bump())
+say(c >> n)

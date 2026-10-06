@@ -1,0 +1,3 @@
+/// known-gap: interp lacks render_template
+out | :render_template("_support/strings/greet.html", {"name": "Gob"})
+say(out)

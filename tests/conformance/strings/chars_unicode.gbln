@@ -1,0 +1,3 @@
+say(:chars("héy"))
+say(:len(:chars("héy")))
+say(:chars(""))

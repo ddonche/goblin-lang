@@ -1,0 +1,8 @@
+/// delete_path! on a directory removes it and everything below it.
+d | :env("GOBLIN_CONF_TMP")
+:create_dir!("{d}/tree/a/b")
+:write_text!("{d}/tree/top.txt", "1")
+:write_text!("{d}/tree/a/b/leaf.txt", "2")
+:delete_path!("{d}/tree")
+say(:file_exists("{d}/tree"))
+say(:file_exists(d))

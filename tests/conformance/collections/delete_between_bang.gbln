@@ -1,0 +1,3 @@
+l | ["a", "m", "n", "b", "c"]
+:delete_between!(l, "a", "b")
+say l

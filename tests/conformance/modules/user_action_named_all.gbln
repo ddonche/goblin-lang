@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act all(x)
+    return "user-all"
+xx
+say(all([true, false]))

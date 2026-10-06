@@ -1,0 +1,5 @@
+/// requires: db
+/// smallint and real columns are numbers like integer and double precision.
+r | :db_query_one("SELECT 3::smallint AS s, 1.5::real AS r", [])
+say(r{"s"})
+say(r{"r"})

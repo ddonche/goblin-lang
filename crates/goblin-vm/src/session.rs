@@ -116,6 +116,8 @@ pub struct Session {
 
     /// Token store: namespace → key → value.
     pub token_store: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Sweeps in progress (see sweep.rs).
+    pub sweeps: crate::sweep::Sweeps,
 
     /// Object store: uuid → Value (for DES/overlay system).
     pub object_store: HashMap<String, Value>,
@@ -178,6 +180,9 @@ pub struct Session {
     /// Set by UseGlam before importing the GLAM entry file; cleared after.
     /// Nested use statements save/restore this so inner GLAMs register correctly.
     pub current_glam_ns: Option<String>,
+    /// `import path as alias`: (importing file, alias) → the module's global-name
+    /// prefix, so `alias::var` reads the module's live global.
+    pub module_aliases: HashMap<(String, String), String>,
 
     /// Box store: namespace::name → Value (cross-module mutable state).
     pub box_store: HashMap<String, Value>,
@@ -218,6 +223,7 @@ impl Session {
             gc_watermark: 10_000,
             rng_state: seed,
             token_store: BTreeMap::new(),
+            sweeps: Default::default(),
             object_store: HashMap::new(),
             overlay_instances: Vec::new(),
             response: ResponseState::default(),
@@ -244,6 +250,7 @@ impl Session {
             global_hard_type_locks: HashMap::new(),
             named_values: HashMap::new(),
             current_glam_ns: None,
+            module_aliases: HashMap::new(),
             box_store: HashMap::new(),
             action_needs: HashMap::new(),
             action_file_map: HashMap::new(),

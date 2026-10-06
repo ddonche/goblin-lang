@@ -1,0 +1,3 @@
+s | "l1\nl2"
+say(s)
+say(:len(s))

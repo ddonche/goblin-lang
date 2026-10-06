@@ -1,0 +1,2 @@
+/// Decided 2026-10-06 (D-negative-int-division, option A; see DECISIONS.md).
+say(-7 // 2)

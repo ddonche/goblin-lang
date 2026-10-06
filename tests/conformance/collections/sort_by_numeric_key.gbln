@@ -1,0 +1,5 @@
+/// known-gap: interp has no sort_by builtin (unknown action)
+act ident(n)
+    return n
+xx
+say(:sort_by([10, 9, 100], "ident"))

@@ -1,0 +1,4 @@
+/// Consecutive uuid_v4 values differ.
+a | :uuid_v4()
+b | :uuid_v4()
+say(a == b)

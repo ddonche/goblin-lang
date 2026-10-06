@@ -1,0 +1,5 @@
+/// from_epoch_ms / to_epoch_ms convert between ints and datetimes.
+say(:from_epoch_ms(0))
+say(:from_epoch_ms(86400000))
+say(:to_epoch_ms(:from_iso("2025-03-04T10:20:30Z")))
+say(:to_epoch_ms(:from_epoch_ms(1234567)))

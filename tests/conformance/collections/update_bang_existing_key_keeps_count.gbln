@@ -1,0 +1,5 @@
+m | {"a": 1, "b": 2}
+:update!(m{"a"}, 9)
+say(m{"a"})
+say(m{"b"})
+say(m.len)

@@ -1,0 +1,4 @@
+/// path_relative_to strips a leading base path; when base is not a prefix the path comes back unchanged.
+say(:path_relative_to("a/b/c.txt", "a"))
+say(:path_relative_to("a/b/c.txt", "a/b"))
+say(:path_relative_to("a/b/c.txt", "z"))

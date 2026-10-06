@@ -1,0 +1,6 @@
+len | 5
+say(len)
+count | "c"
+say(count)
+find | "abc"
+say(:len(find))

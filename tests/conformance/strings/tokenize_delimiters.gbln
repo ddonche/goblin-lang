@@ -1,0 +1,2 @@
+say(:tokenize("a,b;;c", ",;"))
+say(:tokenize("a,b", ",", true))

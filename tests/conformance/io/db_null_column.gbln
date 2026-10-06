@@ -1,0 +1,5 @@
+/// requires: db
+/// SQL NULL reads as nil.
+r | :db_query_one("SELECT NULL::text AS n, NULL::bigint AS m", [])
+say(:is_nil(r{"n"}))
+say(:is_nil(r{"m"}))

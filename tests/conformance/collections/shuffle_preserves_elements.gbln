@@ -1,0 +1,5 @@
+l | [1, 2, 3]
+s | :shuffle(l)
+say(:len(s))
+say(:sort(s))
+say l

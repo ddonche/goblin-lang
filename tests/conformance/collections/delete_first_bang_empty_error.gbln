@@ -1,0 +1,4 @@
+l | []
+say "before"
+:delete_first!(l)
+say "after"

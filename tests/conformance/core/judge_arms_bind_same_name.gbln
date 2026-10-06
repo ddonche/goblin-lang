@@ -1,0 +1,16 @@
+/// Each judge arm may bind the same name: only one arm runs, and its binding
+/// is visible after the judge.
+act f(a)
+    judge
+        a == 1:
+            parts | "one"
+        a == 2:
+            parts | "two"
+        else:
+            parts | "other"
+    xx
+    return parts
+xx
+say(f(1))
+say(f(2))
+say(f(3))

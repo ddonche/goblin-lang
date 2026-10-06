@@ -1,0 +1,9 @@
+/// requires: db
+/// db_query_one returns the first row as a map.
+sfx | :keep_before(:uuid_v4(), "-")
+t | "io_db_query_one_row_{sfx}"
+:db_exec("CREATE TABLE {t} (id bigint, name text)", [])
+:db_exec("INSERT INTO {t} VALUES (1, 'a'), (2, 'b')", [])
+r | :db_query_one("SELECT name FROM {t} WHERE id = $1", [2])
+say(r{"name"})
+:db_exec("DROP TABLE {t}", [])

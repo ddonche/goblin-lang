@@ -1,0 +1,5 @@
+/// to_timezone with an unknown zone name is an error.
+dt | :from_iso("2025-03-04T10:20:30Z")
+say("start")
+x | :to_timezone(dt, "Mars/Olympus")
+say("unreachable")

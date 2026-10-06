@@ -1,0 +1,6 @@
+/// create_dir! fails when a path component is an existing file.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/f", "x")
+say("start")
+:create_dir!("{d}/f/g")
+say("unreachable")

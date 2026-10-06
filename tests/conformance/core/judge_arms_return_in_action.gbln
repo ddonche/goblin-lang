@@ -1,0 +1,8 @@
+act lab(x)
+    judge
+        x > 5: return "big"
+        else: return "small"
+    xx
+xx
+say(lab(9))
+say(lab(1))

@@ -1,0 +1,4 @@
+/// This script lives in modules/, but imports resolve from the working
+/// directory (tests/conformance), not from the script's own directory.
+import _support/modules/mathy as m
+say(m::add(1, 1))

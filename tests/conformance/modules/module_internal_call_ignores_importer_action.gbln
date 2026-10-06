@@ -1,0 +1,8 @@
+/// mathy::twice_add calls the module's own add, not the importer's add.
+import _support/modules/mathy as m
+act add(a, b)
+    return "main-add"
+xx
+say(add(1, 2))
+say(m::add(1, 2))
+say(m::twice_add(1, 2))

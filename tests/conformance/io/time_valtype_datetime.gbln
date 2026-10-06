@@ -1,0 +1,4 @@
+/// known-gap: interp valtype has no DateTime arm and falls through to "unknown"
+/// vt / valtype of a datetime value is "datetime".
+say(:vt(:from_iso("2025-03-04T10:20:30Z")))
+say(:valtype(:now()))

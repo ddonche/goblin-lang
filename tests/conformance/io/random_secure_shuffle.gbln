@@ -1,0 +1,4 @@
+/// secure_shuffle returns a permutation of its input.
+s | :secure_shuffle([3, 1, 4, 1, 5])
+say(:len(s))
+say(:sort(s))

@@ -1,0 +1,5 @@
+/// input/ask print the prompt to stdout (no newline) and return "" when stdin is empty/closed.
+x | :input("name? ")
+say("[{x}]")
+y | :ask()
+say(:is_str(y))

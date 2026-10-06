@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.47.40"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1040,6 +1040,18 @@ dependencies = [
  "tokio",
  "toml",
  "windows",
+]
+
+[[package]]
+name = "goblin-db"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "goblin-diagnostics",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -1103,6 +1115,7 @@ dependencies = [
  "dunce",
  "getrandom 0.3.3",
  "goblin-ast",
+ "goblin-db",
  "goblin-des",
  "goblin-diagnostics",
  "goblin-lexer",
@@ -1114,7 +1127,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sqlx",
  "syntect",
  "tokio",
  "toml",
@@ -1153,6 +1165,7 @@ dependencies = [
  "comrak",
  "getrandom 0.2.16",
  "goblin-ast",
+ "goblin-db",
  "goblin-des",
  "goblin-diagnostics",
  "goblin-http",
@@ -1162,6 +1175,7 @@ dependencies = [
  "indexmap",
  "regex",
  "rust_decimal",
+ "serde",
  "serde_json",
  "slab",
  "syntect",
@@ -2846,6 +2860,7 @@ dependencies = [
  "atoi",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "crossbeam-queue",
  "either",
@@ -2864,6 +2879,7 @@ dependencies = [
  "once_cell",
  "paste",
  "percent-encoding",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
@@ -2926,6 +2942,7 @@ dependencies = [
  "bitflags",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "digest",
  "dotenvy",
@@ -2946,6 +2963,7 @@ dependencies = [
  "percent-encoding",
  "rand 0.8.5",
  "rsa",
+ "rust_decimal",
  "serde",
  "sha1",
  "sha2",
@@ -2967,6 +2985,7 @@ dependencies = [
  "base64 0.21.7",
  "bitflags",
  "byteorder",
+ "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -2984,6 +3003,7 @@ dependencies = [
  "memchr",
  "once_cell",
  "rand 0.8.5",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
@@ -3002,6 +3022,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b244ef0a8414da0bed4bb1910426e890b19e5e9bccc27ada6b797d05c55ae0aa"
 dependencies = [
  "atoi",
+ "chrono",
  "flume",
  "futures-channel",
  "futures-core",

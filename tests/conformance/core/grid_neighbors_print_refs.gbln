@@ -1,0 +1,4 @@
+/// grid_neighbors returns grid refs (row-major order); a ref prints as GridRef(grid, x, y) (owner ruling 2026-10-06).
+m | :grid("m", 3, 2)
+say(:grid_neighbors("m", 0, 0))
+say(m[2, 1])

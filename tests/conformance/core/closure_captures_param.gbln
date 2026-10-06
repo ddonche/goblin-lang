@@ -1,0 +1,9 @@
+/// known-gap: interp a nested action returned as a value cannot be called (unknown action)
+act mk(n)
+    act add(x)
+        return x + n
+    xx
+    return add
+xx
+adder | mk(3)
+say(adder(4))

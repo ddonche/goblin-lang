@@ -1,0 +1,4 @@
+/// env requires a string name.
+say("start")
+v | :env(42)
+say("unreachable")

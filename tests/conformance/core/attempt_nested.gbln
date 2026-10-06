@@ -1,0 +1,10 @@
+attempt
+    attempt
+        q | 1 / 0
+    rescue e1
+        say("inner")
+        w | 1 / 0
+    xx
+rescue e2
+    say("outer")
+xx

@@ -1,0 +1,6 @@
+/// Decided 2026-10-06 (D-block-scope, option C; see DECISIONS.md).
+x | 1
+for x in [7, 8]
+    say(x)
+xx
+say(x)

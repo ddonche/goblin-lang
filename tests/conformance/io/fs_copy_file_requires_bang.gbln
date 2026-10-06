@@ -1,0 +1,6 @@
+/// Plain copy_file(...) without the bang is an error.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/f.txt", "x")
+say("start")
+:copy_file("{d}/f.txt", "{d}/g.txt")
+say("unreachable")

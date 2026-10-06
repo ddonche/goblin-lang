@@ -1,0 +1,2 @@
+/// Decided 2026-10-06 (D-to-map, option B; see DECISIONS.md).
+say(:to_map({"a": 1}))

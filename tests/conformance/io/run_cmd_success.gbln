@@ -1,0 +1,5 @@
+/// A successful command: ok true, code 0, stdout captured (a login shell may prefix profile output, so only the tail is checked).
+r | :json_parse(:run_cmd("printf 'hello\\n'"))
+say(r{"ok"})
+say(r{"code"})
+say(:ends_with(r{"stdout"}, "hello\n"))

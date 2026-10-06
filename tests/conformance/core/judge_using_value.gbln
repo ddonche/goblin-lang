@@ -1,0 +1,7 @@
+/// Owner ruling 2026-10-06: judge picks the first true arm; under `using`, a literal arm is true when it equals the subject.
+c | "go"
+judge using c
+    "look": say("L")
+    "go": say("G")
+    else: say("?")
+xx

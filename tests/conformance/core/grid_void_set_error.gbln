@@ -1,0 +1,6 @@
+/// grid_set on a void cell is an error.
+m | :grid("m", 3, 2)
+:grid_void("m", 0, 0)
+say("voided")
+:grid_set("m", 0, 0, "owner", "red")
+say("unreachable")

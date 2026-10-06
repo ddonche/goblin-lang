@@ -1,0 +1,3 @@
+say(:split("a,b,,c", ","))
+say(:len(:split("a,b,,c", ",")))
+say(:split("abc", ","))

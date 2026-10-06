@@ -1,0 +1,8 @@
+x | 2
+if x > 5
+    say("big")
+end
+if x < 5
+    say("small")
+end
+say("done")

@@ -1,0 +1,4 @@
+say(:json_stringify([1, "two", true, nil, 2.5]))
+say(:json_stringify({"k": [1, {"z": nil}]}))
+say(:json_stringify("s"))
+say(:json_stringify(nil))

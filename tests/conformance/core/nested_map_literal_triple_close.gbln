@@ -1,0 +1,4 @@
+/// Three closing braces in a row end nested map literals (not a {{{ }}} literal token).
+c | {"user": {"name": "x"}}
+x | {"u": {"n": c{"user"}{"name"}}}
+say(x)

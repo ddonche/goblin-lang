@@ -1,0 +1,3 @@
+x | 1
+say(:is_bound_name("x"))
+say(:is_bound_name("nope_not_bound"))

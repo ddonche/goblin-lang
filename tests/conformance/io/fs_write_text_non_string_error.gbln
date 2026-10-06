@@ -1,0 +1,5 @@
+/// write_text! requires string content.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+:write_text!("{d}/f.txt", 5)
+say("unreachable")

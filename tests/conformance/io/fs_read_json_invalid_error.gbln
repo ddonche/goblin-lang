@@ -1,0 +1,6 @@
+/// read_json of a file that is not valid JSON is an error.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/bad.json", "not json at all")
+say("start")
+v | :read_json("{d}/bad.json")
+say("unreachable")

@@ -1,0 +1,3 @@
+for ch in :chars("ab")
+    say(ch)
+xx

@@ -1,0 +1,5 @@
+/// Decided 2026-10-06 (D-missing-key-read, option B; see DECISIONS.md).
+m | {"a": 1}
+say "before"
+say(m{"z"})
+say "after"

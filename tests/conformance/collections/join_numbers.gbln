@@ -1,0 +1,2 @@
+/// Decided 2026-10-06 (D-join-non-strings, option A; see DECISIONS.md).
+say(:join([1, 2], ","))

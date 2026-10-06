@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act max(x)
+    return "user-max"
+xx
+say(max([1, 2]))

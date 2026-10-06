@@ -1,0 +1,5 @@
+words | [7, 8]
+say(:len(words))
+for w in words
+    say(w)
+xx

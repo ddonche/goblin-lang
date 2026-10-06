@@ -1,0 +1,10 @@
+/// `skip` discards that arm's edit; the other edits are still written.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/skip.txt"
+:write_text!(p, "<a>keep</a> <a>edit</a>")
+sweep p
+    "<a>" ... "</a>" :
+        :update_where!(self, "a>", "b>")
+        if :keep_between(self, ">", "<") == "keep" => skip
+xx
+say(:read_text(p))

@@ -1,0 +1,4 @@
+m | :mixed("goblin")
+say(:len(m))
+say(:lower(m))
+say(:is_str(m))

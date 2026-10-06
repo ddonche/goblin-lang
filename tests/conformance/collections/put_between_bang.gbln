@@ -1,0 +1,3 @@
+l | ["a", "m", "b", "c"]
+:put_between!(l, "a", "b", "x")
+say l

@@ -1,0 +1,7 @@
+s | "  Hello   World  "
+a | :trim(s)
+b | :trim_lead(s)
+c | :trim_trail(s)
+say("[{a}]")
+say("[{b}]")
+say("[{c}]")

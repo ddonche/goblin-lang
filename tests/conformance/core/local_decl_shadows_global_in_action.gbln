@@ -1,0 +1,7 @@
+x | 1
+act wr()
+    x | 5
+    return x
+xx
+say(wr())
+say(x)

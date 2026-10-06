@@ -1,0 +1,8 @@
+/// known-gap: interp 'return' inside 'repeat N' does not leave the action
+act fx()
+    repeat 3
+        return "r"
+    xx
+    return "x"
+xx
+say(fx())

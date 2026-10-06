@@ -121,6 +121,14 @@ fn read_module_paths_from_yaml(cwd: &Path) -> BTreeMap<String, PathBuf> {
     out
 }
 
+/// Exits with `code`, first printing `GOBLIN_PHASE_TIMES` totals when on.
+fn exit_with_phase_times(code: i32) -> ! {
+    if goblin_diagnostics::phase::enabled() {
+        eprintln!("{}", goblin_diagnostics::phase::take_report());
+    }
+    std::process::exit(code)
+}
+
 fn main() {
     #[cfg(windows)]
         enable_utf8_console();
@@ -147,7 +155,7 @@ fn main() {
              \n  goblin lex --check\n\
              \n  goblin parse <file>\n\
              \n  goblin gql-parse <file|->\n\
-             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version\n  --vm             Use the VM engine (run/repl) instead of the interpreter"
+             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version\n  --interp         Use the interpreter instead of the VM (run/repl/start; the VM is the default)"
         );
         return;
     }
@@ -169,17 +177,18 @@ fn main() {
         let mut host = String::from("0.0.0.0");
         let mut port: u16 = 5173;
         let mut proxies: Vec<(String, String)> = Vec::new();
-        let mut start_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "vm";
+        // The VM is the default engine; `--interp` (or GOBLIN_ENGINE=interp) selects the interpreter.
+        let mut start_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() != "interp";
 
         let mut i = 0;
         while i < args.len() {
             match args[i].as_str() {
                 "--host" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]"); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]"); std::process::exit(2); }
                     host = args[i + 1].clone(); i += 2;
                 }
                 "--port" | "-p" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]"); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]"); std::process::exit(2); }
                     port = args[i + 1].parse().unwrap_or_else(|_| { eprintln!("invalid port: {}", args[i + 1]); std::process::exit(2); });
                     i += 2;
                 }
@@ -199,9 +208,10 @@ fn main() {
                     i += 2;
                 }
                 "--vm" => { start_vm = true; i += 1; }
+                "--interp" | "--int" => { start_vm = false; i += 1; }
                 other => {
                     eprintln!("unknown start option: {}", other);
-                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]");
+                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]");
                     std::process::exit(2);
                 }
             }
@@ -210,11 +220,13 @@ fn main() {
         std::process::exit(run_devserver_with_proxies(host, port, proxies, start_vm));
     }
 
-    // Detect --vm flag or GOBLIN_ENGINE=vm env var anywhere in args.
-    let use_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "vm"
-        || args.iter().any(|a| a == "--vm");
-    // Strip --vm from args so subcommand parsers don't see it.
-    args.retain(|a| a != "--vm");
+    // The VM is the default engine. `--interp` (or `--int`, or GOBLIN_ENGINE=interp)
+    // selects the interpreter; `--vm` is still accepted.
+    let use_interp = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "interp"
+        || args.iter().any(|a| a == "--interp" || a == "--int");
+    let use_vm = !use_interp;
+    // Strip engine flags from args so subcommand parsers don't see them.
+    args.retain(|a| a != "--vm" && a != "--interp" && a != "--int");
 
     // REPL when no args
     if args.is_empty() {
@@ -372,17 +384,17 @@ fn main() {
         // Capture anything after the filename as extra args
         let extra_args: Vec<String> = args.iter().skip(1).cloned().collect();
         if use_vm {
-            std::process::exit(run_run_vm(target.as_path(), extra_args));
+            exit_with_phase_times(run_run_vm(target.as_path(), extra_args));
         }
-        std::process::exit(run_run_with_args(target.as_path(), extra_args));
+        exit_with_phase_times(run_run_with_args(target.as_path(), extra_args));
     }
 
     // Run script file if a single path argument is provided
     if args.len() == 1 && is_probable_file(&args[0]) {
         if use_vm {
-            std::process::exit(run_run_vm(Path::new(&args[0]), vec![]));
+            exit_with_phase_times(run_run_vm(Path::new(&args[0]), vec![]));
         }
-        std::process::exit(run_run(Path::new(&args[0])));
+        exit_with_phase_times(run_run(Path::new(&args[0])));
     }
 
     eprintln!(
@@ -1096,7 +1108,17 @@ fn vm_error_to_diagnostic(
         }
     }
     let (inner, line, err_file) = peel(e);
-    let message = inner.to_string();
+    // The diagnostic code already says "runtime-error", so a runtime error's
+    // message is shown without the "runtime error: " prefix (also when a
+    // re-raised error carries it again).
+    let message = match inner {
+        GoblinError::Runtime(msg) => {
+            let mut m = msg.as_str();
+            while let Some(rest) = m.strip_prefix("runtime error: ") { m = rest; }
+            m.to_string()
+        }
+        other => other.to_string(),
+    };
 
     // Use the file from WithLocation if it differs from the entry-point file.
     let (display_file, display_src_owned);
@@ -1171,54 +1193,14 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         }
     };
 
-    let project_root = path.parent()
-        .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let box_toml_path = project_root.join("box.toml");
-
-    let mut session = Session::new(GcMode::Auto);
-    session.global_names = compiled.global_names;
-    session.project_root = project_root.clone();
-    session.base_dir     = project_root;
-
-    // Load box.toml if present — populates session.box_store
-    if box_toml_path.exists() {
-        if let Err(e) = goblin_vm::exec::load_box_toml_into_session(&mut session, &box_toml_path) {
-            eprintln!("box.toml error: {}", e);
-            return 1;
-        }
-    }
-
-    for decl in &compiled.classes { compile_class_methods_pub(decl, &mut session); }
-    for decl in compiled.classes {
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
-            if let Some(existing) = session.classes.get(&decl.name) {
-                let mut m = decl.clone();
-                m.actions = existing.actions.clone();
-                m.decision = existing.decision.clone();
-                m.judge = existing.judge.clone();
-                m.transitions = existing.transitions.clone();
-                if m.capacity.is_none() { m.capacity = existing.capacity.clone(); }
-                let matrix_names: std::collections::HashSet<String> = m.fields.iter().map(|f| f.name.clone()).collect();
-                let extra: Vec<_> = existing.fields.iter().filter(|f| !matrix_names.contains(&f.name)).cloned().collect();
-                m.fields.extend(extra);
-                m
-            } else { decl }
-        } else { decl };
-        session.classes.insert(merged.name.clone(), merged);
-    }
-    for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
-
-    // Inject CLI args
-    if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
-        let args_val = VmValue::Array(extra_args.into_iter().map(VmValue::Str).collect());
-        let tether = session.alloc_value(args_val);
-        session.set_global(idx, tether);
-    }
-
-    let mut vm = Vm::new(session);
-    let code = match vm.execute(compiled.entry) {
+    let (mut vm, entry) = match goblin_vm::exec::prepare_entry(compiled, path, extra_args) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("{}", e); return 1; }
+    };
+    // API mode prints the interpreter's response envelope instead of raw output.
+    let is_api = std::env::var("GOBLIN_NONINTERACTIVE").unwrap_or_default() == "1";
+    if is_api { vm.session.enable_output_capture(); }
+    let code = match vm.execute(entry) {
         Ok(_) => 0,
         Err(e) => {
             let diag = vm_error_to_diagnostic(&e, &filepath, &src);
@@ -1226,10 +1208,23 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
             1
         }
     };
+    if is_api {
+        let output = vm.session.take_output();
+        if !output.is_empty() {
+            let r = &vm.session.response;
+            let envelope = json!({
+                "status": r.status.unwrap_or(200),
+                "headers": r.headers.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect::<serde_json::Map<_, _>>(),
+                "cookies": r.cookies.clone(),
+                "body": goblin_vm::exec::api_body(output),
+            });
+            println!("{}", envelope);
+        }
+    }
 
     let elapsed = start.elapsed();
     eprintln!(
-        "goblin run --vm {} → exit {} in {}ms ({}.{:03}s)",
+        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
         path.display(), code,
         elapsed.as_millis(), elapsed.as_secs(), elapsed.subsec_millis(),
     );
@@ -1898,7 +1893,7 @@ fn run_run(path: &std::path::Path) -> i32 {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
+        "goblin run --interp {} → exit {} in {}ms ({}.{:03}s)",
         path.display(),
         code,
         elapsed.as_millis(),
@@ -2032,7 +2027,7 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
+        "goblin run --interp {} → exit {} in {}ms ({}.{:03}s)",
         path.display(),
         code,
         elapsed.as_millis(),
@@ -2124,6 +2119,10 @@ fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, St
     // Create a Tokio runtime manually (CLI entrypoints can’t be async)
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        // VM requests run on blocking threads, each with its own compiled-
+        // module cache; keeping idle threads alive keeps their caches warm
+        // (tokio's default drops an idle thread after 10 s).
+        .thread_keep_alive(std::time::Duration::from_secs(3600))
         .build()
         .expect("tokio runtime");
 

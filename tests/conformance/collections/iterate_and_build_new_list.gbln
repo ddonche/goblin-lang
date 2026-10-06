@@ -1,0 +1,7 @@
+l | [1, 2, 3]
+out | []
+for x in l
+    :put_last!(out, x * 10)
+xx
+say out
+say l

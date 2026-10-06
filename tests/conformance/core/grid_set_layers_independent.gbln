@@ -1,0 +1,7 @@
+/// Each layer of a cell holds its own value; the grid may be named by its string or by the bound value.
+w | :grid("world", 4, 4)
+:grid_set("world", 3, 3, "owner", "France")
+:grid_set(w, 3, 3, "terrain", "forest")
+say(:grid_get("world", 3, 3, "owner"))
+say(:grid_get(w, 3, 3, "terrain"))
+say(:grid_get("world", 3, 3, "climate"))

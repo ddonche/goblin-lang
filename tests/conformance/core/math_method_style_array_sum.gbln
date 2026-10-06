@@ -1,0 +1,2 @@
+/// known-gap: interp method-style .sum on an array is an unknown postfix action (spec/cheat-sheet: nums.sum)
+say([1, 2, 3].sum)

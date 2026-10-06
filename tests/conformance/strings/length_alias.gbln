@@ -1,0 +1,3 @@
+/// known-gap: interp lacks the .length alias (docs: "length (alias: len)")
+say("daniel".length)
+say("héllo".length)

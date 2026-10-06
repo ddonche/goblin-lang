@@ -1,0 +1,3 @@
+/// Decided 2026-10-06 (D-map-key-order, option B; see DECISIONS.md).
+say(:keys({"b": 1, "a": 2, "c": 3}))
+say(:values({"b": 1, "a": 2, "c": 3}))

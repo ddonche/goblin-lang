@@ -1,0 +1,4 @@
+say(:json_parse("null"))
+say(:json_parse("true"))
+say(:json_parse("\"s\""))
+say(:json_parse("  42 "))

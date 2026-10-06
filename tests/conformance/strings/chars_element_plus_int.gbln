@@ -1,0 +1,2 @@
+/// known-gap: interp Char + Int is a numeric-expected error
+say(:chars("ab")[0] + 1)

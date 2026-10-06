@@ -1,0 +1,27 @@
+/// An attempt/rescue inside an action run by summon (or invoke) catches its own
+/// error, and the summoning action carries on after the call.
+act inner(x)
+    t | ""
+    attempt
+        :update!(t, :trim(x{"title"}))
+    rescue
+        :update!(t, "none")
+    end
+    return t
+xx
+
+act step(ctx)
+    say("inner gave " + inner({}))
+    return ctx
+xx
+
+act runner()
+    c | {"a": 1}
+    ret | :summon(c, ["step"])
+    say("after summon")
+    ret2 | :invoke("step", c)
+    say("after invoke")
+    return c
+xx
+
+say(runner(){"a"})

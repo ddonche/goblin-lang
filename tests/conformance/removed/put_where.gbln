@@ -1,0 +1,4 @@
+/// `put_where!` was removed from the VM on 2026-10-06 (owner ruling); neither engine has it.
+l | [1, 2]
+:put_where!(l, "> 1", 0)
+say(l)

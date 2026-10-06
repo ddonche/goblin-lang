@@ -1,0 +1,5 @@
+/// known-gap: interp gc is VM-only (unknown action)
+/// gc() runs a collection and returns nil.
+x | [1, 2, 3]
+say(:gc())
+say(x)

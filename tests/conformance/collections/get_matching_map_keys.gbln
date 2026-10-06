@@ -1,0 +1,3 @@
+m | {"ab": 1, "b": 2, "ac": 3}
+r | :get_matching(m, "^a")
+say(:keys(r))

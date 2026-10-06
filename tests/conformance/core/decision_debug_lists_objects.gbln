@@ -1,0 +1,8 @@
+/// decision_debug() prints one line per object variable saying whether its class has a decision and a judge.
+<>Unit |
+    name: ""
+xx
+a <> Unit | name: "a"
+say("start")
+:decision_debug()
+say("end")

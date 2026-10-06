@@ -1,0 +1,5 @@
+/// Plain write_json(...) without the bang is an error.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+:write_json("{d}/f.json", [1])
+say("unreachable")

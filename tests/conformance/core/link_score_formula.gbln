@@ -1,0 +1,15 @@
+/// link_score(class, channel, a, b) evaluates the class's link formula for the pair (normalised to 0..1);
+/// an undefined channel or an unknown object gives nil.
+<>Nation |
+    military: .5
+    economy: .5
+xx
+link Nation border by [
+    self >> military * .5 + target >> economy * .25
+]
+a <> Nation | military: .8, economy: .2
+b <> Nation | military: .4, economy: .4
+say(:link_score("Nation", "border", "a", "b"))
+say(:link_score("Nation", "border", "b", "a"))
+say(:link_score("Nation", "trade", "a", "b"))
+say(:link_score("Nation", "border", "a", "zz"))

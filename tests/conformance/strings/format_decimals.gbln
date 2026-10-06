@@ -1,0 +1,4 @@
+say(:format(3.14159, 2))
+say(3.14159.format(2))
+say(:format(2.5, 2))
+say(:format(2, 3))

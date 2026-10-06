@@ -1,0 +1,1 @@
+say(:get_between(["a", "m", "n", "b"], "a", "b"))

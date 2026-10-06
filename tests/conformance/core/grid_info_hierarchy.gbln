@@ -1,0 +1,13 @@
+/// A grid declared with a tile/regions block reports its hierarchy in grid_info.
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 4
+i | :grid_info("h")
+say(i{"has_hierarchy"})
+say(i{"tile_w"})
+say(i{"tile_h"})
+say(i{"tile_cols"})
+say(i{"tile_rows"})
+say(i{"tile_count"})
+say(i{"region_count"})
+say(i{"region_dim"})

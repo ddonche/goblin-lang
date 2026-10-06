@@ -1,0 +1,3 @@
+r | raw """d\te"""
+say(r)
+say(:len(r))

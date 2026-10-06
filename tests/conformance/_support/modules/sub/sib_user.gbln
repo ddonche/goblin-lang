@@ -1,0 +1,6 @@
+/// helper: imports its sibling with a path relative to its own directory
+/// (imports resolve from the project root/cwd, so this must fail)
+import sib as s
+act go()
+    return s::v()
+xx

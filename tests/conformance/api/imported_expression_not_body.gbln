@@ -1,0 +1,4 @@
+/// env: GOBLIN_NONINTERACTIVE=1
+/// Top-level expressions in an imported module are not response output.
+import _support/api/noisy as noisy
+noisy::value()

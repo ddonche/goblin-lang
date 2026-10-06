@@ -1,0 +1,4 @@
+/// Decided 2026-10-06 (D-int-division, option B; see DECISIONS.md).
+x | 10
+x /= 4
+say(x)

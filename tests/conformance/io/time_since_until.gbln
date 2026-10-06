@@ -1,0 +1,8 @@
+/// since(past) is a positive number of seconds; until(past) is negative; both are ints.
+past | :from_iso("2020-01-01T00:00:00Z")
+s | :since(past)
+u | :until(past)
+say(:is_int(s))
+say(s > 0)
+say(u < 0)
+say(s + u > -5 and s + u < 5)

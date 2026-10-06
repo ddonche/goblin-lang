@@ -1,0 +1,19 @@
+/// overlays_of(host_name) lists the names of the overlays on that host ([] for none or an unknown host).
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+overlay Plague |
+    modifies:
+        stability - .5
+    end
+rome <> Polity | stability: .8
+athens <> Polity | stability: .8
+overlay Stunned on rome at .5
+overlay Plague on rome at .2
+say(:sort(:overlays_of("rome")))
+say(:overlays_of("athens"))
+say(:overlays_of("nobody"))

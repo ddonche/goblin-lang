@@ -1,0 +1,8 @@
+/// roll_detail_str returns a map describing the roll; total = sum of kept dice + modifier.
+d | :roll_detail_str("3d4")
+say(d{"count"})
+say(d{"sides"})
+say(:len(d{"values"}))
+say(d{"total"} == d{"sum"} + d{"modifier"})
+say(:len(d{"kept"}) + :len(d{"dropped"}))
+say(:sort(:keys(d)))

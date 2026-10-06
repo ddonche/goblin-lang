@@ -1,0 +1,8 @@
+/// grid_set stores a value on a named layer of a cell; grid_get reads it back.
+/// An unset cell reads as nil, and setting nil clears the cell.
+w | :grid("world", 4, 3)
+:grid_set("world", 2, 1, "state", 99)
+say(:grid_get("world", 2, 1, "state"))
+say(:grid_get("world", 1, 2, "state"))
+:grid_set("world", 2, 1, "state", nil)
+say(:grid_get("world", 2, 1, "state"))

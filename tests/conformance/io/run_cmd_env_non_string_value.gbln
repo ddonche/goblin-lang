@@ -1,0 +1,4 @@
+/// Non-string env values are passed as their text form. (The map comes from json_parse so the VM accepts it.)
+envm | :json_parse(:json_stringify({"GOB_CONF_N": 5}))
+r | :json_parse(:run_cmd("printf '[%s]' \"$GOB_CONF_N\"", "", envm))
+say(:ends_with(r{"stdout"}, "[5]"))

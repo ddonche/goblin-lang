@@ -1,0 +1,3 @@
+/// mem_total() is the process memory in bytes: a positive int (the value itself is machine-specific).
+say(:is_int(:mem_total()))
+say(:mem_total() > 0)

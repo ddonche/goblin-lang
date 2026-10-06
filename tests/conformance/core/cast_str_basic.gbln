@@ -1,0 +1,7 @@
+say(:str(42))
+say(:string(42))
+say(:str(2.5))
+say(:str(true))
+say(:str([1, 2]))
+say(:valtype(:str(7)))
+say(:str(42) + "!")

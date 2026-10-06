@@ -1,0 +1,6 @@
+/// requires: db
+/// Non-NULL timestamp, timestamptz and date columns do not read as nil.
+r | :db_query_one("SELECT '2025-01-02 03:04:05'::timestamp AS ts, '2025-01-02 03:04:05+00'::timestamptz AS tz, '2025-01-02'::date AS d", [])
+say(:is_nil(r{"ts"}))
+say(:is_nil(r{"tz"}))
+say(:is_nil(r{"d"}))

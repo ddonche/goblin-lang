@@ -1,0 +1,8 @@
+/// Docs disagree; decided 2026-10-06 that the implementation is canonical (DECISIONS.md, "Docs vs both engines"). The docs need updating.
+a | 1
+b | 3
+s | 0
+for i in a..b
+    s |= s + i
+xx
+say(s)

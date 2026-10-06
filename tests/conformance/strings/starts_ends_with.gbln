@@ -1,0 +1,5 @@
+say(:starts_with("goblin", "gob"))
+say(:starts_with("goblin", "lin"))
+say(:starts_with("goblin", ""))
+say(:ends_with("goblin", "lin"))
+say(:ends_with("goblin", "gob"))

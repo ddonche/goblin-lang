@@ -1,0 +1,4 @@
+act over_one(n)
+    return n > 1
+xx
+say(:get_where([1, 2, 3], "over_one"))

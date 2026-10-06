@@ -1,0 +1,2 @@
+/// known-gap: interp has no range builtin (unknown action)
+say(:range(0, 3))

@@ -1,0 +1,4 @@
+f | :freq(["sword", "potion", "potion"])
+say(f{"sword"})
+say(f{"potion"})
+say(:len(f))

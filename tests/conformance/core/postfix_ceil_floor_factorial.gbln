@@ -1,0 +1,13 @@
+/// Postfix numeric operators: x^ rounds up, x_ rounds down (both give an int
+/// for a whole result), and n! is the factorial (a float).
+a | 2.3
+b | -2.3
+say(a^)
+say(a_)
+say(b^)
+say(b_)
+say(5^)
+say(:valtype(a_))
+n | 5
+say(n!)
+say(0!)

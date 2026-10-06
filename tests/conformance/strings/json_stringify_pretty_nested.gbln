@@ -1,0 +1,1 @@
+say(:json_stringify_pretty({"a": [1, 2]}))

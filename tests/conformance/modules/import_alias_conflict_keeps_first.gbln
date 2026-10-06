@@ -1,0 +1,6 @@
+/// Owner ruling 2026-10-06: a second module under an alias already in use is not imported;
+/// the first one stays and a warning goes to stderr.
+say("start")
+import _support/modules/alias_a as m
+import _support/modules/alias_b as m
+say(m::which())

@@ -1,0 +1,3 @@
+repeat [1, 2] as x
+    say(x)
+xx

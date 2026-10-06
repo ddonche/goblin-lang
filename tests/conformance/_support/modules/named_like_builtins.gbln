@@ -1,0 +1,77 @@
+/// helper: user actions whose names collide with builtins
+/// `one` calling the module's own `all` is the lib/db.gbln pattern from the Campfire port
+act all(x)
+    return "mod-all:" + :str(x)
+xx
+act one(x)
+    return all(x)
+xx
+act find(x)
+    return "mod-find:" + :str(x)
+xx
+act join(a, b)
+    return "mod-join"
+xx
+act round(x)
+    return "mod-round"
+xx
+act update(x)
+    return "mod-update"
+xx
+act url_encode(s)
+    return "mod-enc"
+xx
+act url_decode(s)
+    return "mod-dec"
+xx
+act pct(x)
+    return "mod-pct"
+xx
+act count(x)
+    return "mod-count"
+xx
+act len(x)
+    return "mod-len"
+xx
+act sum(x)
+    return "mod-sum"
+xx
+act keys(x)
+    return "mod-keys"
+xx
+act call_join()
+    return join("a", "b")
+xx
+act call_round()
+    return round(2.7)
+xx
+act call_update()
+    return update(1)
+xx
+act call_url_encode()
+    return url_encode("a b")
+xx
+act call_pct()
+    return pct(5)
+xx
+act call_len()
+    return len([1, 2, 3])
+xx
+act call_count()
+    return count([1, 2])
+xx
+act call_find()
+    return find(1)
+xx
+act call_sum()
+    return sum([1, 2])
+xx
+act call_keys()
+    return keys({"a": 1})
+xx
+act call_url_decode()
+    return url_decode("a%20b")
+xx
+act call_colon_len()
+    return :len([1, 2, 3])
+xx

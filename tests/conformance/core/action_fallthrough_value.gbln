@@ -1,0 +1,7 @@
+/// Decided 2026-10-06 (D-fallthrough-return-value, option B; see DECISIONS.md).
+act fx(x)
+    if x > 0
+        return "pos"
+    xx
+xx
+say(:valtype(fx(-1)))

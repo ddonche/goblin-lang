@@ -1,0 +1,7 @@
+# Builtins with no conformance case yet, each with the reason. The tracker
+# (crates/outputs/VM_PARITY_TODO.md) lists them as untested. Remove a line
+# when a case covers the builtin.
+
+# VM-only, and always an error there (no arena address for a stack value),
+# so there is no output to encode yet:
+mem_id

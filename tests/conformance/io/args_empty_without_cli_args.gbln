@@ -1,0 +1,4 @@
+/// The global `args` holds extra CLI arguments; with none it is an empty array.
+say(args)
+say(:len(args))
+say(:is_array(args))

@@ -1,0 +1,9 @@
+/// uuid_v4 is a 36-char string, 5 dash-separated groups of 8-4-4-4-12, version nibble 4.
+u | :uuid_v4()
+say(:len(u))
+parts | :split(u, "-")
+say(:len(parts))
+say(:len(parts[0]))
+say(:len(parts[4]))
+say(:chars(u)[14])
+say(u == :lower(u))

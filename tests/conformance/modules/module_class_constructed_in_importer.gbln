@@ -1,0 +1,4 @@
+import _support/modules/shapes as sh
+b <> Box | w: 4, h: 5
+say(b >> w)
+say(b.area())

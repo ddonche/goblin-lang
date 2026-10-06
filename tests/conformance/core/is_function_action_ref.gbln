@@ -1,0 +1,6 @@
+/// known-gap: interp is_function is VM-only and actions cannot be referenced as values
+act h(x)
+    return x
+xx
+say(:is_function(h))
+say(:is_function(5))

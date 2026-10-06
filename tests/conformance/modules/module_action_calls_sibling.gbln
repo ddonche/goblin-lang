@@ -1,0 +1,2 @@
+import _support/modules/mathy as m
+say(m::twice_add(1, 2))

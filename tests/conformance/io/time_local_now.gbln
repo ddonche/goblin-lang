@@ -1,0 +1,5 @@
+/// local_now() is the same instant as now(), only rendered in the local offset (the offset itself is machine-specific and not printed).
+a | :to_epoch_ms(:now())
+b | :to_epoch_ms(:local_now())
+say(b - a >= 0 and b - a < 5000)
+say(:len(:split(:to_iso(:local_now()), "T")))

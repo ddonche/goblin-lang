@@ -1,0 +1,5 @@
+s | "héllo"
+say(s[0:2])
+say(s[2:])
+say(s[:2])
+say(s[1:4])

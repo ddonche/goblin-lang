@@ -1,0 +1,5 @@
+a | {"x": [1]}
+b | a{"x"}
+:put_last!(b, 2)
+say(a{"x"})
+say b

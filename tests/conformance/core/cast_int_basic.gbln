@@ -1,0 +1,7 @@
+say(:int("42") + 1)
+say(:i("42") + 1)
+say(:int(3.9))
+say(:int(-3.9))
+say(:int("3.9"))
+say(:valtype(:int("7")))
+say(:valtype(:i(7.9)))

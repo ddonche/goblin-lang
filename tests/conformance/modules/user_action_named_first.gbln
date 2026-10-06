@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act first(x)
+    return "user-first"
+xx
+say(first([1, 2]))

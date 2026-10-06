@@ -1,0 +1,2 @@
+d | [9, 9, 9]
+say(:reap({"src": d, "count": 2}))

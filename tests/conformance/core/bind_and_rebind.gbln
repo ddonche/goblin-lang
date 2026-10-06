@@ -1,0 +1,9 @@
+x | 1
+say(x)
+x |= 2
+say(x)
+x |= "s"
+say(x)
+MAX | 10
+MAX |= 20
+say(MAX)

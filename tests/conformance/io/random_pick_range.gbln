@@ -1,0 +1,10 @@
+/// pick with range_start/range_end draws ints from the inclusive range.
+r | :pick({"count": 20, "range_start": 1, "range_end": 3, "allow_dups": true})
+say(:len(r))
+ok | true
+for v in r
+    if v < 1 or v > 3
+        ok |= false
+    xx
+xx
+say(ok)

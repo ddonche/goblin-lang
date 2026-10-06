@@ -1,0 +1,8 @@
+act inc(x)
+    return x + 1
+xx
+act add2(a, b)
+    return a + b
+xx
+say(4.inc())
+say(4.add2(3))

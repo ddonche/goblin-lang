@@ -153,7 +153,9 @@ impl Value {
             Value::GridRef { .. } => "grid_ref",
             Value::Enum { .. }   => "enum",
             Value::Class { .. }  => "class",
-            Value::Collection(_) => "collection",
+            // Collections are the VM's representation of array/map literals;
+            // user-visible type names match the interpreter.
+            Value::Collection(c) => if c.is_map() { "map" } else { "array" },
             Value::Function(_)   => "function",
             Value::Closure(_)    => "closure",
             Value::Builtin(_)    => "builtin",
@@ -210,14 +212,17 @@ impl PartialEq for Value {
             (Value::DateTime(a),      Value::DateTime(b))      => a == b,
             (Value::Array(a),         Value::Array(b))         => a == b,
             (Value::Map(a),           Value::Map(b))           => a == b,
-            (Value::MapOrd(a),        Value::MapOrd(b))        => a == b,
             (Value::Pair(ak, av),     Value::Pair(bk, bv))     => ak == bk && av == bv,
-            (Value::Seq(a),           Value::Seq(b))           => a == b,
             (Value::CtrlSkip,         Value::CtrlSkip)         => true,
             (Value::CtrlStop,         Value::CtrlStop)         => true,
             (Value::CtrlReturn(a),    Value::CtrlReturn(b))    => a == b,
             (Value::Ref(a),           Value::Ref(b))           => a == b,
-            (Value::Collection(a),    Value::Collection(b))    => Rc::ptr_eq(a, b),
+            (Value::GridRef { grid_id: ga, x: xa, y: ya },
+             Value::GridRef { grid_id: gb, x: xb, y: yb }) => ga == gb && xa == xb && ya == yb,
+            (Value::Collection(a),    Value::Collection(b)) if Rc::ptr_eq(a, b) => true,
+            // Containers compare structurally, whatever their representation
+            // (legacy Array/Map/MapOrd/Seq or an Rc-backed Collection).
+            (a, b) if a.is_container() && b.is_container() => containers_eq(a, b),
             (Value::Function(a),      Value::Function(b))      => Rc::ptr_eq(a, b),
             (Value::Closure(a),       Value::Closure(b))       => Rc::ptr_eq(a, b),
             (Value::Builtin(a),       Value::Builtin(b))       => a == b,
@@ -229,8 +234,146 @@ impl PartialEq for Value {
 }
 impl Eq for Value {}
 
+/// Key text used to compare map keys across representations (legacy maps have
+/// String keys, map collections have Value keys).
+pub fn map_key_text(k: &Value) -> String {
+    match k {
+        Value::Str(s)   => s.clone(),
+        Value::Int(n)   => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b)  => b.to_string(),
+        Value::Char(c)  => c.to_string(),
+        Value::Nil      => "nil".into(),
+        other           => format!("{:?}", other),
+    }
+}
+
+fn containers_eq(a: &Value, b: &Value) -> bool {
+    if a.is_seq_like() && b.is_seq_like() {
+        let (Some(x), Some(y)) = (a.seq_items(), b.seq_items()) else { return false };
+        return x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| p == q);
+    }
+    if a.is_map_like() && b.is_map_like() {
+        if a.container_len() != b.container_len() { return false; }
+        let Some(entries) = a.map_entries() else { return false };
+        return entries.iter().all(|(k, v)| b.map_lookup(k).map_or(false, |w| &w == v));
+    }
+    false
+}
+
+// ── Representation-independent views of array-like and map-like values ─────
+
+impl Value {
+    /// Array-like: legacy Array, Seq, or a non-map Collection.
+    pub fn is_seq_like(&self) -> bool {
+        match self {
+            Value::Array(_) | Value::Seq(_) => true,
+            Value::Collection(c) => !c.is_map(),
+            _ => false,
+        }
+    }
+
+    /// Map-like: legacy Map / MapOrd, or a map Collection.
+    pub fn is_map_like(&self) -> bool {
+        match self {
+            Value::Map(_) | Value::MapOrd(_) => true,
+            Value::Collection(c) => c.is_map(),
+            _ => false,
+        }
+    }
+
+    pub fn is_container(&self) -> bool { self.is_seq_like() || self.is_map_like() }
+
+    /// Element count of an array-like or map-like value (0 otherwise). O(1).
+    pub fn container_len(&self) -> usize {
+        match self {
+            Value::Array(xs)     => xs.len(),
+            Value::Seq(s)        => s.len(),
+            Value::Map(m)        => m.len(),
+            Value::MapOrd(m)     => m.len(),
+            Value::Collection(c) => c.len(),
+            _ => 0,
+        }
+    }
+
+    /// The elements of an array-like value; borrowed when the backing store is
+    /// already contiguous (Array, Seq, FlatArray), so no copy on the hot path.
+    pub fn seq_items(&self) -> Option<std::borrow::Cow<'_, [Value]>> {
+        use std::borrow::Cow;
+        match self {
+            Value::Array(xs) => Some(Cow::Borrowed(xs.as_slice())),
+            Value::Seq(s)    => Some(Cow::Borrowed(s.items.as_slice())),
+            Value::Collection(c) => match &c.layout {
+                CollectionLayout::FlatArray(v)   => Some(Cow::Borrowed(v.as_slice())),
+                CollectionLayout::RingBuf(r)     => Some(Cow::Owned(r.to_vec())),
+                CollectionLayout::ChunkedSeq(cs) => Some(Cow::Owned(cs.to_flat())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The entries of a map-like value as (key text, value), in the map's own
+    /// order (insertion order for MapOrd / SmallMap, sorted for Map).
+    pub fn map_entries(&self) -> Option<Vec<(String, Value)>> {
+        match self {
+            Value::Map(m)    => Some(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Value::MapOrd(m) => Some(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Value::Collection(c) => match &c.layout {
+                CollectionLayout::SmallMap(p) =>
+                    Some(p.iter().map(|(k, v)| (map_key_text(k), v.clone())).collect()),
+                CollectionLayout::HashMapBackend(m) =>
+                    Some(m.iter().map(|(k, v)| (map_key_text(k), v.clone())).collect()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Look up a key (by its text) in a map-like value.
+    pub fn map_lookup(&self, key: &str) -> Option<Value> {
+        match self {
+            Value::Map(m)    => m.get(key).cloned(),
+            Value::MapOrd(m) => m.get(key).cloned(),
+            Value::Collection(c) => match &c.layout {
+                CollectionLayout::SmallMap(p) =>
+                    p.iter().find(|(k, _)| map_key_text(k) == key).map(|(_, v)| v.clone()),
+                CollectionLayout::HashMapBackend(m) => m.get(&Value::Str(key.to_string())).cloned()
+                    .or_else(|| m.iter().find(|(k, _)| map_key_text(k) == key).map(|(_, v)| v.clone())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A map-like value as an insertion-ordered legacy map (for builtins that
+    /// take option/config maps).
+    pub fn to_index_map(&self) -> Option<indexmap::IndexMap<String, Value>> {
+        self.map_entries().map(|e| e.into_iter().collect())
+    }
+
+    /// A map-like value as a sorted legacy map.
+    pub fn to_btree_map(&self) -> Option<std::collections::BTreeMap<String, Value>> {
+        self.map_entries().map(|e| e.into_iter().collect())
+    }
+
+    /// Rewrite a Collection into its legacy equivalent (Array / MapOrd); other
+    /// values pass through. For builtins that only understand legacy shapes.
+    pub fn into_legacy(self) -> Value {
+        match &self {
+            Value::Collection(c) if c.is_map() => Value::MapOrd(self.to_index_map().unwrap_or_default()),
+            Value::Collection(_) => Value::Array(self.seq_items().map(|x| x.into_owned()).unwrap_or_default()),
+            _ => self,
+        }
+    }
+}
+
 impl std::hash::Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Containers are equal across representations (see PartialEq), so they
+        // hash by kind and length only, never by variant or pointer.
+        if self.is_seq_like() { 0xA5u8.hash(state); self.container_len().hash(state); return; }
+        if self.is_map_like() { 0x5Au8.hash(state); self.container_len().hash(state); return; }
         std::mem::discriminant(self).hash(state);
         match self {
             Value::Nil           => {}
@@ -302,6 +445,8 @@ pub struct FunctionObject {
     pub locals: usize,
     /// Number of parameter slots (always the first `params` locals).
     pub params: usize,
+    /// Arguments a caller must pass (the rest have defaults).
+    pub required_params: usize,
     pub name: String,
     /// How to populate upvalues when this function is wrapped in a Closure.
     pub upvalue_descriptors: Vec<UpvalueDescriptor>,
@@ -316,7 +461,17 @@ pub struct FunctionObject {
     pub source_file: String,
     /// Global slot names for this function's compilation unit — parallel to session.globals.
     /// Used by string interpolation to resolve {varname} by name within the right module scope.
-    pub global_names: Vec<String>,
+    /// Shared by every function of one compilation unit and filled in once the
+    /// unit has finished compiling (the list only ever grows, so later entries
+    /// keep the indices they would have had in an earlier snapshot).
+    pub global_names: std::rc::Rc<std::cell::OnceCell<Vec<String>>>,
+}
+
+impl FunctionObject {
+    /// Global slot names of this function's compilation unit.
+    pub fn global_names(&self) -> &[String] {
+        self.global_names.get().map(|v| v.as_slice()).unwrap_or(&[])
+    }
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected
@@ -408,14 +563,10 @@ pub enum BuiltinId {
     // String ops
     Len,
     ToString,
-    ToUpperCase,
-    ToLowerCase,
     Split,
     Join,
-    Contains,
     StartsWith,
     EndsWith,
-    Replace,
     Before,
     After,
     BeforeLast,
@@ -456,17 +607,6 @@ pub enum BuiltinId {
     Unique,
     Dups,
 
-    // Collections — grab family (legacy)
-    Grab,
-    GrabFirst,
-    GrabLast,
-    GrabAt,
-    GrabRandom,
-    GrabWhere,
-    GrabAll,
-    GrabBetween,
-    GrabMatching,
-
     // Collections — put family (legacy)
     Put,
     PutFirst,
@@ -492,24 +632,22 @@ pub enum BuiltinId {
     ReapFirst,
     ReapLast,
     ReapAt,
-    ReapRandom,
     ReapWhere,
-    ReapAll,
 
     // Collections — new Position×Operation matrix (interpreter-aligned)
     // Get family
     GetFirst, GetLast, GetAt, GetWhere, GetAll, GetMatching, GetBetween, GetRandom,
     // Put family (new)
-    PutWhere, PutMatching, PutBetween, PutRandom, PutAll,
+     PutMatching, PutBetween, PutRandom,
     // Update family (new)
     UpdateAll, UpdateWhere, UpdateMatching, UpdateBetween, UpdateRandom,
     // Delete family (new)
     DeleteMatching, DeleteBetween, DeleteRandom,
     // Reap family (new — avoid name collision with legacy ReapFirst etc.)
-    ReapFirst2, ReapLast2, ReapAt2, ReapWhere2, ReapMatching, ReapBetween, ReapRandom2,
+    ReapFirst2, ReapLast2, ReapAt2, ReapWhere2, ReapMatching, ReapBetween,
 
     // Collections — query (legacy)
-    Pairs,
+    
     IsEmpty,
     Reverse,
     ReverseChars,
@@ -520,16 +658,11 @@ pub enum BuiltinId {
     Reduce,
     Any,
     All,
-    FindIndex,
-    Zip,
-    Flatten,
     Slice,
 
     // I/O
-    Print,
+    
     Println,
-    Eprint,
-    Eprintln,
 
     // Type checks
     IsNil,
@@ -539,7 +672,6 @@ pub enum BuiltinId {
     IsStr,
     IsArray,
     IsMap,
-    IsCollection,
     IsFunction,
     IsBig,
     IsPct,
@@ -567,17 +699,10 @@ pub enum BuiltinId {
 
     // Meta
     TypeOf,
-    Assert,
     Panic,
 
     // Range
     Range,
-
-    // Lorem ipsum
-    Ipsum,
-    IpsumSentences,
-    IpsumParagraphs,
-    IpsumFull,
 
     // Process
     RunCmd,
@@ -613,16 +738,15 @@ pub enum BuiltinId {
     ReduceFn,
     ForEachFn,
     ToForIter,
+    RepeatPrep,
+    ApiEcho,
+    StrictEq,
 
     // String extras
     Lines,
     Words,
     Chars,
     Format,
-    Pad,
-    PadLeft,
-    PadRight,
-    Repeat,
 
     // Missing builtins
     Pct,
@@ -656,8 +780,6 @@ pub enum BuiltinId {
     ToBig,
     ToMap,
     ReadText,
-
-    ArrayPush,
     CastI8,
     CastI16,
     CastI32,
@@ -799,6 +921,22 @@ pub enum BuiltinId {
     GridRegionInfo,
 
     // Compiler-synthesized builtins for AST nodes
+    // postfix operators: x^ (ceil), x_ (floor), n! (factorial), x *>> (fields as a map)
+    PostfixCeil,
+    PostfixFloor,
+    PostfixFactorial,
+    // (value, show_ids_bool)
+    PostfixFieldsMap,
+    // sweep statement steps (see sweep.rs): (arms_spec, all_mode, targets...) → id
+    SweepBegin,
+    // (id) → index of the arm to run, or -1 when done
+    SweepNext,
+    // (id) → the text the pending arm sees as `self`
+    SweepSelf,
+    // (id, self, skip_bool) → nil
+    SweepApply,
+    // (id) → nil (stop)
+    SweepEnd,
     // slice expr: (recv, start_or_nil, end_or_nil) → array/str
     SliceExpr,
     // slice3 expr: (recv, start_or_nil, end_or_nil, step_or_nil) → array/str
@@ -824,6 +962,11 @@ pub enum BuiltinId {
     HttpPut,
     HttpDelete,
     HttpRequest,
+
+    // Postgres (shared goblin-db crate, same as the interpreter)
+    DbQuery,
+    DbQueryOne,
+    DbExec,
 
     // Render mode
     RenderTemplate,
@@ -872,6 +1015,11 @@ impl CollectionValue {
     pub fn is_empty(&self) -> bool {
         self.meta.len == 0
     }
+
+    /// True for the map layouts (SmallMap / HashMapBackend).
+    pub fn is_map(&self) -> bool {
+        matches!(self.layout, CollectionLayout::SmallMap(_) | CollectionLayout::HashMapBackend(_))
+    }
 }
 
 /// The concrete backend layout Goblin uses for this collection.
@@ -881,7 +1029,7 @@ pub enum CollectionLayout {
     RingBuf(Rc<RingBuf>),
     ChunkedSeq(Rc<ChunkedSeq>),
     SmallMap(Rc<Vec<(Value, Value)>>),
-    HashMapBackend(Rc<HashMap<Value, Value>>),
+    HashMapBackend(Rc<indexmap::IndexMap<Value, Value>>),
 }
 
 /// Ring buffer for queue/stack semantics.
@@ -902,39 +1050,44 @@ impl RingBuf {
         RingBuf { buf: v, head: 0, len }
     }
 
+    /// Copies the elements, in order, into a buffer twice the size (padded
+    /// with nil so `buf.len()` is the capacity), with `extra` slots free.
+    fn grow(&mut self) -> Vec<Value> {
+        let new_cap = (self.buf.len() * 2).max(4);
+        let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
+        let cap = self.buf.len().max(1);
+        for i in 0..self.len {
+            let src = (self.head + i) % cap;
+            new_buf.push(std::mem::replace(&mut self.buf[src], Value::Nil));
+        }
+        new_buf
+    }
+
     pub fn push_back(&mut self, v: Value) {
         if self.len == self.buf.len() {
-            let new_cap = (self.buf.len() * 2).max(4);
-            let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
-            for i in 0..self.len {
-                let src = (self.head + i) % self.buf.len().max(1);
-                new_buf.push(self.buf[src].clone());
-            }
+            // `buf.len()` is the capacity: padding the new buffer keeps the
+            // next pushes from regrowing (and copying) every time.
+            let mut new_buf = self.grow();
+            let new_cap = new_buf.capacity().max(self.len + 1);
             new_buf.push(v);
+            new_buf.resize(new_cap, Value::Nil);
             self.buf = new_buf;
             self.head = 0;
             self.len += 1;
         } else {
             let tail = (self.head + self.len) % self.buf.len();
-            if tail < self.buf.len() {
-                self.buf[tail] = v;
-            } else {
-                self.buf.push(v);
-            }
+            self.buf[tail] = v;
             self.len += 1;
         }
     }
 
     pub fn push_front(&mut self, v: Value) {
         if self.len == self.buf.len() {
-            let new_cap = (self.buf.len() * 2).max(4);
-            let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
-            new_buf.push(v);
-            for i in 0..self.len {
-                let src = (self.head + i) % self.buf.len().max(1);
-                new_buf.push(self.buf[src].clone());
-            }
-            self.buf = new_buf;
+            let mut items = self.grow();
+            let new_cap = items.capacity().max(self.len + 1);
+            items.insert(0, v);
+            items.resize(new_cap, Value::Nil);
+            self.buf = items;
             self.head = 0;
             self.len += 1;
         } else {
@@ -962,6 +1115,12 @@ impl RingBuf {
     pub fn get(&self, i: usize) -> Option<&Value> {
         if i >= self.len || self.buf.is_empty() { return None; }
         Some(&self.buf[(self.head + i) % self.buf.len()])
+    }
+
+    pub fn get_mut(&mut self, i: usize) -> Option<&mut Value> {
+        if i >= self.len || self.buf.is_empty() { return None; }
+        let cap = self.buf.len();
+        Some(&mut self.buf[(self.head + i) % cap])
     }
 
     pub fn to_vec(&self) -> Vec<Value> {
@@ -997,6 +1156,17 @@ impl ChunkedSeq {
         for chunk in &self.chunks {
             if rem < chunk.len() {
                 return Some(&chunk[rem]);
+            }
+            rem -= chunk.len();
+        }
+        None
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> Option<&mut Value> {
+        let mut rem = idx;
+        for chunk in &mut self.chunks {
+            if rem < chunk.len() {
+                return Some(&mut chunk[rem]);
             }
             rem -= chunk.len();
         }
@@ -1059,4 +1229,81 @@ pub enum BackendHint {
 
 impl Default for BackendHint {
     fn default() -> Self { BackendHint::Auto }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Numeric binary operators shared by the VM's generic arithmetic opcodes
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `+ - * %` on int / float / big operands. Ints that overflow promote to big
+/// (exactly); any operation with a big is done in exact decimal arithmetic and
+/// yields a big (spec: "any with big -> big"); a float with an int yields a
+/// float. Returns None for operand kinds this does not cover (pct, strings…),
+/// which the caller handles itself.
+pub fn numeric_binop(op: &str, a: &Value, b: &Value) -> Option<Result<Value, crate::error::GoblinError>> {
+    use crate::error::GoblinError;
+    use rust_decimal::Decimal;
+    use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+
+    fn to_dec(v: &Value) -> Option<Decimal> {
+        match v {
+            Value::Big(d)   => Some(*d),
+            Value::Int(n)   => Some(Decimal::from(*n)),
+            Value::Float(f) => Decimal::from_f64(*f),
+            _ => None,
+        }
+    }
+    fn to_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(n)   => Some(*n as f64),
+            Value::Float(f) => Some(*f),
+            Value::Big(d)   => d.to_f64(),
+            _ => None,
+        }
+    }
+    let float_op = |x: f64, y: f64| -> Value {
+        Value::Float(match op { "add" => x + y, "sub" => x - y, "mul" => x * y, _ => x % y })
+    };
+
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            let r = match op {
+                "add" => x.checked_add(*y),
+                "sub" => x.checked_sub(*y),
+                "mul" => x.checked_mul(*y),
+                _ => {
+                    if *y == 0 { return Some(Err(GoblinError::DivisionByZero)); }
+                    x.checked_rem(*y)
+                }
+            };
+            Some(Ok(match r {
+                Some(n) => Value::Int(n),
+                // Overflow: redo exactly in decimal (falls back to float only
+                // beyond the decimal range).
+                None => big_op(op, Decimal::from(*x), Decimal::from(*y))
+                    .map(Value::Big)
+                    .unwrap_or_else(|| float_op(*x as f64, *y as f64)),
+            }))
+        }
+        (Value::Big(_), Value::Int(_) | Value::Big(_) | Value::Float(_))
+        | (Value::Int(_) | Value::Float(_), Value::Big(_)) => {
+            let (x, y) = (to_dec(a)?, to_dec(b)?);
+            if op == "rem" && y.is_zero() { return Some(Err(GoblinError::DivisionByZero)); }
+            Some(Ok(big_op(op, x, y).map(Value::Big)
+                .unwrap_or_else(|| float_op(to_f64(a).unwrap_or(f64::NAN), to_f64(b).unwrap_or(f64::NAN)))))
+        }
+        (Value::Float(_), Value::Float(_) | Value::Int(_)) | (Value::Int(_), Value::Float(_)) => {
+            Some(Ok(float_op(to_f64(a)?, to_f64(b)?)))
+        }
+        _ => None,
+    }
+}
+
+fn big_op(op: &str, x: rust_decimal::Decimal, y: rust_decimal::Decimal) -> Option<rust_decimal::Decimal> {
+    match op {
+        "add" => x.checked_add(y),
+        "sub" => x.checked_sub(y),
+        "mul" => x.checked_mul(y),
+        _     => x.checked_rem(y),
+    }
 }

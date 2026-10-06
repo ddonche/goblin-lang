@@ -20,8 +20,29 @@ use crate::value::{
     BackendHint, ChunkedSeq, CollectionLayout, CollectionMeta, CollectionValue, RingBuf, Value,
 };
 
+/// `Regex::new` through a per-thread cache: templates call the matching
+/// builtins with the same few patterns over and over, and compiling a regex
+/// costs far more than matching one.
+pub fn cached_regex(pat: &str) -> Result<regex::Regex, regex::Error> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+    }
+    if let Some(re) = CACHE.with(|c| c.borrow().get(pat).cloned()) {
+        return Ok(re);
+    }
+    let re = regex::Regex::new(pat)?;
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 512 { c.clear(); }
+        c.insert(pat.to_string(), re.clone());
+    });
+    Ok(re)
+}
+
 fn compile_regex(pat: &str) -> Result<regex::Regex, GoblinError> {
-    regex::Regex::new(pat).map_err(|e| GoblinError::Runtime(format!("invalid regex: {}", e)))
+    cached_regex(pat).map_err(|e| GoblinError::Runtime(format!("invalid regex: {}", e)))
 }
 
 // ── Position and Operation enums ──────────────────────────────────────────────
@@ -214,7 +235,8 @@ fn array_op(
                 Value::Int(n) => n,
                 other => return Err(GoblinError::type_error("int", other.type_name(), "array index")),
             };
-            let i = resolve_seq_index(idx, xs.len())?;
+            // Inserting at index == len appends (positions 0..=len are valid).
+            let i = if idx == xs.len() as i64 { xs.len() } else { resolve_seq_index(idx, xs.len())? };
             let mut new_xs = xs.clone();
             new_xs.insert(i, v);
             Ok(Value::Array(new_xs))
@@ -226,9 +248,9 @@ fn array_op(
             Ok(Value::Array(new_xs))
         }
         (Position::All, Operation::Put(v)) => {
-            match v {
-                Value::Array(arr) => Ok(Value::Array(arr)),
-                _ => Err(GoblinError::type_error("array", v.type_name(), "put-all on array expects array value")),
+            match v.seq_items() {
+                Some(items) => Ok(Value::Array(items.into_owned())),
+                None => Err(GoblinError::type_error("array", v.type_name(), "put-all on array expects array value")),
             }
         }
         (Position::Where(pred), Operation::Put(v)) => {
@@ -305,9 +327,9 @@ fn array_op(
             Ok(Value::Array(new_xs))
         }
         (Position::All, Operation::Update(v)) => {
-            match v {
-                Value::Array(arr) => Ok(Value::Array(arr)),
-                _ => Err(GoblinError::type_error("array", v.type_name(), "update-all on array expects array value")),
+            match v.seq_items() {
+                Some(items) => Ok(Value::Array(items.into_owned())),
+                None => Err(GoblinError::type_error("array", v.type_name(), "update-all on array expects array value")),
             }
         }
         (Position::Where(pred), Operation::Update(v)) => {
@@ -340,11 +362,11 @@ fn array_op(
 
         // ── Delete ──────────────────────────────────────────────────────────
         (Position::First, Operation::Delete) => {
-            if xs.is_empty() { return Ok(Value::Array(xs.clone())); }
+            if xs.is_empty() { return Err(GoblinError::Runtime("delete_first: empty array".into())); }
             Ok(Value::Array(xs[1..].to_vec()))
         }
         (Position::Last, Operation::Delete) => {
-            if xs.is_empty() { return Ok(Value::Array(xs.clone())); }
+            if xs.is_empty() { return Err(GoblinError::Runtime("delete_last: empty array".into())); }
             Ok(Value::Array(xs[..xs.len()-1].to_vec()))
         }
         (Position::At(idx_val), Operation::Delete) => {
@@ -529,9 +551,9 @@ fn map_op_btree(
         }
         // All + Put/Update: replace entire map (v must be a Map)
         (Position::All, Operation::Put(v)) | (Position::All, Operation::Update(v)) => {
-            match v {
-                Value::Map(m2) => Ok(Value::Map(m2)),
-                _ => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
+            match v.to_btree_map() {
+                Some(m2) => Ok(Value::Map(m2)),
+                None => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
             }
         }
         // Random + Put: update a random key's value (same as Random + Update)
@@ -611,6 +633,221 @@ fn map_op_btree(
     }
 }
 
+// ── Map dispatch (insertion-ordered) ──────────────────────────────────────────
+// The same operations as map_op_btree, on an insertion-ordered map: Goblin
+// maps keep insertion order (D6), so collection maps must not pass through a
+// sorted map.
+
+fn map_op_ordered(
+    m: &indexmap::IndexMap<String, Value>,
+    pos: Position,
+    op: Operation,
+    session: &mut crate::session::Session,
+) -> Result<Value, GoblinError> {
+    match (pos, op) {
+        // Get
+        (Position::First, Operation::Get) | (Position::First, Operation::Reap) => {
+            m.iter().next().map(|(_, v)| v.clone())
+                .ok_or(GoblinError::IndexOutOfBounds { index: 0, len: 0 })
+        }
+        (Position::Last, Operation::Get) | (Position::Last, Operation::Reap) => {
+            m.iter().last().map(|(_, v)| v.clone())
+                .ok_or(GoblinError::IndexOutOfBounds { index: -1, len: 0 })
+        }
+        (Position::At(key_val), Operation::Get) | (Position::At(key_val), Operation::Reap) => {
+            let key = value_to_map_key(&key_val)
+                .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
+            m.get(&key).cloned().ok_or(GoblinError::KeyNotFound)
+        }
+        (Position::Random, Operation::Get) | (Position::Random, Operation::Reap) => {
+            if m.is_empty() { return Ok(Value::Nil); }
+            let i = rng_bounded(session, m.len());
+            Ok(m.values().nth(i).cloned().unwrap_or(Value::Nil))
+        }
+        (Position::All, Operation::Get) | (Position::All, Operation::Reap) => {
+            Ok(Value::MapOrd(m.clone()))
+        }
+        (Position::Where(pred), Operation::Get) | (Position::Where(pred), Operation::Reap) => {
+            let result: Vec<Value> = m.values()
+                .filter(|v| fmt_value_raw(v) == pred)
+                .cloned()
+                .collect();
+            Ok(Value::Array(result))
+        }
+        (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
+            let re = compile_regex(&pat)?;
+            let result: indexmap::IndexMap<String, Value> = m.iter()
+                .filter(|(k, _)| re.is_match(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(Value::MapOrd(result))
+        }
+        // Put
+        (Position::At(key_val), Operation::Put(v)) => {
+            let key = value_to_map_key(&key_val)
+                .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
+            let mut new_m = m.clone();
+            new_m.insert(key, v);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::First, Operation::Put(_)) | (Position::Last, Operation::Put(_)) => {
+            Err(GoblinError::Runtime("put_first/put_last not meaningful for maps".into()))
+        }
+        // Update
+        (Position::First, Operation::Update(v)) => {
+            let first_key = m.iter().next().ok_or(GoblinError::IndexOutOfBounds { index: 0, len: 0 })?.0.clone();
+            let mut new_m = m.clone();
+            new_m.insert(first_key, v);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::At(key_val), Operation::Update(v)) => {
+            let key = value_to_map_key(&key_val)
+                .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
+            if !m.contains_key(&key) { return Err(GoblinError::KeyNotFound); }
+            let mut new_m = m.clone();
+            new_m.insert(key, v);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Random, Operation::Update(v)) => {
+            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            let i = rng_bounded(session, m.len());
+            let key = m.keys().nth(i).cloned().unwrap();
+            let mut new_m = m.clone();
+            new_m.insert(key, v);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Where(pred), Operation::Update(v)) => {
+            let mut new_m = m.clone();
+            for (k, val) in m { if fmt_value_raw(val) == pred { new_m.insert(k.clone(), v.clone()); } }
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Matching(pat), Operation::Update(v)) => {
+            let re = compile_regex(&pat)?;
+            let mut new_m = m.clone();
+            for k in m.keys() { if re.is_match(k) { new_m.insert(k.clone(), v.clone()); } }
+            Ok(Value::MapOrd(new_m))
+        }
+        // Delete
+        (Position::First, Operation::Delete) => {
+            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            let first_key = m.iter().next().map(|(k, _)| k.clone()).unwrap();
+            let mut new_m = m.clone();
+            new_m.shift_remove(&first_key);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Last, Operation::Delete) => {
+            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            let last_key = m.iter().last().map(|(k, _)| k.clone()).unwrap();
+            let mut new_m = m.clone();
+            new_m.shift_remove(&last_key);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::At(key_val), Operation::Delete) => {
+            let key = value_to_map_key(&key_val)
+                .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
+            let mut new_m = m.clone();
+            new_m.shift_remove(&key);
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::All, Operation::Delete) => {
+            Ok(Value::MapOrd(indexmap::IndexMap::new()))
+        }
+        (Position::Where(pred), Operation::Delete) => {
+            let new_m = m.iter()
+                .filter(|(_, v)| fmt_value_raw(v) != pred)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(Value::MapOrd(new_m))
+        }
+        (Position::Matching(pat), Operation::Delete) => {
+            let re = compile_regex(&pat)?;
+            let new_m = m.iter().filter(|(k, _)| !re.is_match(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+            Ok(Value::MapOrd(new_m))
+        }
+        // All + Put/Update: replace entire map (v must be a Map)
+        (Position::All, Operation::Put(v)) | (Position::All, Operation::Update(v)) => {
+            match v.to_index_map() {
+                Some(m2) => Ok(Value::MapOrd(m2)),
+                None => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
+            }
+        }
+        // Random + Put: update a random key's value (same as Random + Update)
+        (Position::Random, Operation::Put(v)) => {
+            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            let i = rng_bounded(session, m.len());
+            let key = m.keys().nth(i).cloned().unwrap();
+            let mut new_m = m.clone();
+            new_m.insert(key, v);
+            Ok(Value::MapOrd(new_m))
+        }
+        // Last + Put/Update/Delete: not meaningful for maps
+        (Position::Last, Operation::Put(_)) | (Position::Last, Operation::Update(_)) | (Position::Last, Operation::Delete) => {
+            Err(GoblinError::Runtime("operation not meaningful for maps in 'last' position".into()))
+        }
+        // Where + Put: not meaningful for maps
+        (Position::Where(_), Operation::Put(_)) => {
+            Err(GoblinError::Runtime("put_where is not meaningful for maps".into()))
+        }
+        // Matching + Put: use pattern as literal key if it looks like a plain identifier
+        (Position::Matching(pat), Operation::Put(v)) => {
+            if pat.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ') {
+                let mut new_m = m.clone();
+                new_m.insert(pat, v);
+                Ok(Value::MapOrd(new_m))
+            } else {
+                Err(GoblinError::Runtime("put_matching with complex regex is not meaningful for maps".into()))
+            }
+        }
+        // Between: find keys lexicographically between matched start/end keys
+        (Position::Between(start_pat, end_pat), op) => {
+            let start_re = compile_regex(&start_pat)?;
+            let end_re   = compile_regex(&end_pat)?;
+            let start_keys: Vec<String> = m.keys().filter(|k| start_re.is_match(k)).cloned().collect();
+            let end_keys:   Vec<String> = m.keys().filter(|k| end_re.is_match(k)).cloned().collect();
+            if start_keys.is_empty() || end_keys.is_empty() {
+                return Err(GoblinError::Runtime("start or end pattern did not match any keys".into()));
+            }
+            let mut between: Vec<String> = Vec::new();
+            for sk in &start_keys {
+                for ek in &end_keys {
+                    for k in m.keys() {
+                        if k > sk && k < ek && !start_re.is_match(k) && !end_re.is_match(k) {
+                            between.push(k.clone());
+                        }
+                    }
+                }
+            }
+            between.sort();
+            between.dedup();
+            if between.is_empty() {
+                return Err(GoblinError::Runtime("no keys found between matched patterns".into()));
+            }
+            match op {
+                Operation::Get | Operation::Reap => {
+                    let result: indexmap::IndexMap<String, Value> = between.iter()
+                        .map(|k| (k.clone(), m.get(k).unwrap().clone()))
+                        .collect();
+                    Ok(Value::MapOrd(result))
+                }
+                Operation::Delete => {
+                    let mut new_m = m.clone();
+                    for k in &between { new_m.shift_remove(k); }
+                    Ok(Value::MapOrd(new_m))
+                }
+                Operation::Update(v) => {
+                    let mut new_m = m.clone();
+                    for k in &between { new_m.insert(k.clone(), v.clone()); }
+                    Ok(Value::MapOrd(new_m))
+                }
+                Operation::Put(_) => {
+                    Err(GoblinError::Runtime("put_between is not meaningful for maps".into()))
+                }
+            }
+        }
+        _ => Err(GoblinError::Runtime("unsupported map operation".into())),
+    }
+}
+
 // ── Map dispatch (IndexMap) ───────────────────────────────────────────────────
 
 fn map_op_indexed(
@@ -619,19 +856,7 @@ fn map_op_indexed(
     op: Operation,
     session: &mut crate::session::Session,
 ) -> Result<Value, GoblinError> {
-    // Convert to BTreeMap, run op, convert any Map result back to MapOrd.
-    // This mirrors the interpreter's MapOrd → Map → result → MapOrd delegation exactly.
-    let as_btree: std::collections::BTreeMap<String, Value> = m.iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let result = map_op_btree(&as_btree, pos, op, session)?;
-    Ok(match result {
-        Value::Map(m2) => {
-            let ord: indexmap::IndexMap<String, Value> = m2.into_iter().collect();
-            Value::MapOrd(ord)
-        }
-        other => other,
-    })
+    map_op_ordered(m, pos, op, session)
 }
 
 // ── String dispatch ───────────────────────────────────────────────────────────
@@ -1012,8 +1237,7 @@ pub fn into_collection(v: Value) -> Value {
 fn build_map(pairs: Vec<(Value, Value)>, meta: CollectionMeta) -> CollectionValue {
     let len = pairs.len();
     let layout = if len > 16 {
-        use std::collections::HashMap;
-        let mut m = HashMap::new();
+        let mut m = indexmap::IndexMap::new();
         for (k, v) in pairs {
             m.insert(k, v);
         }
@@ -1049,11 +1273,11 @@ fn collection_value_op(
     let result = if is_map(c) {
         // SmallMap / HashMapBackend → map semantics
         let pairs = to_pairs(c);
-        let as_btree: std::collections::BTreeMap<String, Value> = pairs
+        let ordered: indexmap::IndexMap<String, Value> = pairs
             .iter()
             .filter_map(|(k, v)| value_to_map_key(k).map(|s| (s, v.clone())))
             .collect();
-        map_op_btree(&as_btree, pos, op, session)?
+        map_op_ordered(&ordered, pos, op, session)?
     } else {
         // FlatArray / RingBuf / ChunkedSeq → sequence semantics
         let xs = to_vec(c);
@@ -1064,6 +1288,12 @@ fn collection_value_op(
             Value::Collection(Rc::new(build_seq(arr, meta)))
         }
         Value::Map(m2) => {
+            let pairs: Vec<(Value, Value)> = m2.into_iter()
+                .map(|(k, v)| (Value::Str(k), v))
+                .collect();
+            Value::Collection(Rc::new(build_map(pairs, meta)))
+        }
+        Value::MapOrd(m2) => {
             let pairs: Vec<(Value, Value)> = m2.into_iter()
                 .map(|(k, v)| (Value::Str(k), v))
                 .collect();
@@ -1104,23 +1334,29 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
             };
             Ok(m.get(&k).cloned().unwrap_or(Value::Nil))
         }
-        Value::Collection(c) => {
-            if is_map(c) {
-                let pairs = to_pairs(c);
-                Ok(pairs.into_iter()
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v)
-                    .unwrap_or(Value::Nil))
-            } else {
+        // Read one element in place: cloning the whole backing store here made
+        // every `xs[i]` (and so every `for x in xs`) O(n).
+        Value::Collection(c) => match &c.layout {
+            CollectionLayout::SmallMap(pairs) => Ok(pairs.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Nil)),
+            CollectionLayout::HashMapBackend(m) => Ok(m.get(key).cloned().unwrap_or(Value::Nil)),
+            layout => {
                 let idx = match key {
                     Value::Int(n) => *n,
                     _ => return Err(GoblinError::type_error("int", key.type_name(), "index")),
                 };
-                let items = to_vec(c);
-                let i = resolve_seq_index(idx, items.len())?;
-                Ok(items[i].clone())
+                let i = resolve_seq_index(idx, c.len())?;
+                let item = match layout {
+                    CollectionLayout::FlatArray(v) => v.get(i),
+                    CollectionLayout::RingBuf(rb) => rb.get(i),
+                    CollectionLayout::ChunkedSeq(cs) => cs.get(i),
+                    _ => unreachable!(),
+                };
+                item.cloned().ok_or_else(|| GoblinError::Runtime(format!("index {} out of bounds", idx)))
             }
-        }
+        },
         Value::Str(s) => {
             let idx = match key {
                 Value::Int(n) => *n,
@@ -1193,45 +1429,15 @@ pub fn set_index(coll_val: Value, key: &Value, new_val: Value) -> Result<Value, 
 
 // ── Legacy grab family ────────────────────────────────────────────────────────
 
-pub fn grab(coll: &CollectionValue) -> Value {
-    Value::Collection(Rc::new(coll.clone()))
-}
-
-pub fn grab_first(coll: &CollectionValue) -> Result<Value, GoblinError> {
-    if is_map(coll) {
-        return Err(GoblinError::Runtime("grab_first not supported on maps".into()));
-    }
+fn slice_between(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
+    // End-exclusive, as for strings (D24 A): negative indices count from the
+    // end, and out-of-range bounds are clamped.
     let items = to_vec(coll);
-    if items.is_empty() { return Ok(Value::Nil); }
-    Ok(items[0].clone())
-}
-
-pub fn grab_last(coll: &CollectionValue) -> Result<Value, GoblinError> {
-    if is_map(coll) {
-        return Err(GoblinError::Runtime("grab_last not supported on maps".into()));
-    }
-    let items = to_vec(coll);
-    if items.is_empty() { return Ok(Value::Nil); }
-    Ok(items[items.len() - 1].clone())
-}
-
-pub fn grab_at(coll: &CollectionValue, idx: i64) -> Result<Value, GoblinError> {
-    let items = to_vec(coll);
-    let i = resolve_seq_index(idx, items.len())?;
-    Ok(items[i].clone())
-}
-
-pub fn grab_between(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
-    let items = to_vec(coll);
-    let len = items.len();
-    let s = resolve_seq_index(start, len)?;
-    let e = resolve_seq_index(end, len)? + 1;
-    let slice = items[s..e].to_vec();
+    let len = items.len() as i64;
+    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+    let e = if end < 0 { (len + end).max(0) } else { end.min(len) } as usize;
+    let slice = items[s..e.max(s)].to_vec();
     Ok(Value::Collection(Rc::new(CollectionValue::from_flat(slice))))
-}
-
-pub fn grab_all(coll: &CollectionValue) -> Value {
-    Value::Collection(Rc::new(coll.clone()))
 }
 
 // ── Legacy put family ─────────────────────────────────────────────────────────
@@ -1424,16 +1630,30 @@ pub fn reap(coll: &CollectionValue, key: &Value) -> Result<(Value, Value), Gobli
 
 // ── Legacy query operations ───────────────────────────────────────────────────
 
-pub fn has(coll: &CollectionValue, key: &Value) -> bool {
-    if is_map(coll) {
-        to_pairs(coll).iter().any(|(k, _)| k == key)
-    } else {
-        match key {
-            Value::Int(i) => {
-                let len = coll.meta.len as i64;
-                *i >= -len && *i < len
+/// Membership: a key of a map, an element (structurally compared) of a sequence.
+/// A map key matches when it equals the needle or has the same key text
+/// (so 1 finds "1"); two strings compare directly, without formatting.
+fn key_matches(k: &Value, needle: &Value, needle_text: &str) -> bool {
+    match k {
+        Value::Str(s) => s == needle_text,
+        _ => k == needle || crate::value::map_key_text(k) == needle_text,
+    }
+}
+
+pub fn has(coll: &CollectionValue, needle: &Value) -> bool {
+    match &coll.layout {
+        CollectionLayout::FlatArray(v)   => v.iter().any(|x| x == needle),
+        CollectionLayout::RingBuf(rb)    => (0..rb.len).any(|i| rb.get(i) == Some(needle)),
+        CollectionLayout::ChunkedSeq(cs) => cs.chunks.iter().flatten().any(|x| x == needle),
+        CollectionLayout::SmallMap(pairs) => {
+            let key = crate::value::map_key_text(needle);
+            pairs.iter().any(|(k, _)| key_matches(k, needle, &key))
+        }
+        CollectionLayout::HashMapBackend(m) => {
+            m.contains_key(needle) || {
+                let key = crate::value::map_key_text(needle);
+                m.keys().any(|k| key_matches(k, needle, &key))
             }
-            _ => false,
         }
     }
 }
@@ -1475,12 +1695,31 @@ pub fn sort_values(coll: &CollectionValue) -> Value {
     Value::Collection(Rc::new(build_seq(items, meta)))
 }
 
-fn compare_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
+/// Ordering used by sort / sort_by: numbers (int, float, big, pct) compare by
+/// value across kinds, strings and chars lexically; anything else is left in
+/// place (stable sort).
+pub fn compare_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn num(v: &Value) -> Option<f64> {
+        use rust_decimal::prelude::ToPrimitive;
+        match v {
+            Value::Int(n) => Some(*n as f64),
+            Value::Float(f) | Value::Pct(f) => Some(*f),
+            Value::Big(d) => d.to_f64(),
+            Value::Formatted(inner, _) => num(inner),
+            _ => None,
+        }
+    }
     match (a, b) {
         (Value::Int(x), Value::Int(y))     => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Big(x), Value::Big(y))     => x.cmp(y),
         (Value::Str(x), Value::Str(y))     => x.cmp(y),
-        _ => std::cmp::Ordering::Equal,
+        (Value::Char(x), Value::Char(y))   => x.cmp(y),
+        (Value::Bool(x), Value::Bool(y))   => x.cmp(y),
+        _ => match (num(a), num(b)) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            _ => Ordering::Equal,
+        },
     }
 }
 
@@ -1497,28 +1736,224 @@ pub fn unique(coll: &CollectionValue) -> Value {
     Value::Collection(Rc::new(build_seq(items, meta)))
 }
 
-pub fn flatten(coll: &CollectionValue) -> Value {
-    let mut result = Vec::new();
-    for v in to_vec(coll) {
-        match v {
-            Value::Collection(c) => result.extend(to_vec(&c)),
-            other => result.push(other),
-        }
-    }
-    let meta = CollectionMeta { len: result.len(), ..Default::default() };
-    Value::Collection(Rc::new(build_seq(result, meta)))
-}
 
-pub fn zip_collections(a: &CollectionValue, b: &CollectionValue) -> Value {
-    let av = to_vec(a);
-    let bv = to_vec(b);
-    let pairs: Vec<Value> = av.into_iter().zip(bv.into_iter()).map(|(x, y)| {
-        Value::Collection(Rc::new(CollectionValue::from_flat(vec![x, y])))
-    }).collect();
-    let meta = CollectionMeta { len: pairs.len(), ..Default::default() };
-    Value::Collection(Rc::new(build_seq(pairs, meta)))
-}
 
 pub fn slice_collection(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
-    grab_between(coll, start, end)
+    slice_between(coll, start, end)
+}
+
+// ── In-place writes ───────────────────────────────────────────────────────────
+//
+// `name!(x, …)` and `:update!(x[k]…, v)` build a new collection and store it
+// back into `x`, which copies the whole backing store on every call and made
+// building or updating a list in a loop quadratic. When the VM holds the only
+// reference to x's stash it calls these instead. `Rc::make_mut` still copies
+// any backing store another value shares, so they are only an optimisation:
+// each one returns false, having changed nothing, whenever the general path
+// has to run (another builtin or layout, an error for it to report, or a
+// layout change it would make).
+
+/// Whether `build_seq` would keep this layout for a collection with `meta`.
+fn keeps_seq_layout(layout: &CollectionLayout, meta: &CollectionMeta) -> bool {
+    match (layout, meta.choose_layout()) {
+        (CollectionLayout::RingBuf(_), BackendHint::RingBuf) => true,
+        (CollectionLayout::ChunkedSeq(_), BackendHint::ChunkedSeq) => true,
+        (CollectionLayout::FlatArray(_), hint) =>
+            !matches!(hint, BackendHint::RingBuf | BackendHint::ChunkedSeq),
+        _ => false,
+    }
+}
+
+/// Whether a write at `key` (Put on a map, Update on a sequence, as
+/// `update!` does) can be done in place; `must_exist` also requires the key
+/// to be present already (a path step that descends into it, or `update_at`).
+fn can_write_key(c: &CollectionValue, key: &Value, must_exist: bool) -> bool {
+    match &c.layout {
+        CollectionLayout::SmallMap(pairs) => {
+            // The general path re-keys every entry with value_to_map_key, so
+            // only maps whose keys are all strings are unchanged by it.
+            let Value::Str(k) = key else { return false };
+            if !pairs.iter().all(|(pk, _)| matches!(pk, Value::Str(_))) { return false; }
+            let present = pairs.iter().any(|(pk, _)| matches!(pk, Value::Str(s) if s == k));
+            // A 17th entry moves the map to the large-map backend.
+            present || (!must_exist && pairs.len() < 16)
+        }
+        // Built only by build_map from string-keyed pairs.
+        CollectionLayout::HashMapBackend(m) => {
+            if !matches!(key, Value::Str(_)) { return false; }
+            !must_exist || m.contains_key(key)
+        }
+        layout => {
+            let Value::Int(idx) = key else { return false };
+            if resolve_seq_index(*idx, c.len()).is_err() { return false; }
+            let meta = update_meta_for_op(&c.meta, &Position::At(key.clone()), &Operation::Get);
+            keeps_seq_layout(layout, &meta)
+        }
+    }
+}
+
+/// The slot at `key`, inserting a nil one for a new map key, after
+/// can_write_key has said yes.
+fn slot_for_key<'a>(rc: &'a mut Rc<CollectionValue>, key: &Value) -> &'a mut Value {
+    let c = Rc::make_mut(rc);
+    let mut meta = update_meta_for_op(&c.meta, &Position::At(key.clone()), &Operation::Get);
+    match &mut c.layout {
+        CollectionLayout::SmallMap(pairs) => {
+            let pairs = Rc::make_mut(pairs);
+            let i = match pairs.iter().position(|(pk, _)| pk == key) {
+                Some(i) => i,
+                None => { pairs.push((key.clone(), Value::Nil)); pairs.len() - 1 }
+            };
+            meta.len = pairs.len();
+            c.meta = meta;
+            &mut pairs[i].1
+        }
+        CollectionLayout::HashMapBackend(m) => {
+            let m = Rc::make_mut(m);
+            let i = m.get_index_of(key).unwrap_or_else(|| m.insert_full(key.clone(), Value::Nil).0);
+            meta.len = m.len();
+            c.meta = meta;
+            m.get_index_mut(i).unwrap().1
+        }
+        layout => {
+            let Value::Int(idx) = key else { unreachable!("checked by can_write_key") };
+            let i = resolve_seq_index(*idx, meta.len).expect("checked by can_write_key");
+            c.meta = meta;
+            let slot = match layout {
+                CollectionLayout::FlatArray(v) => Rc::make_mut(v).get_mut(i),
+                CollectionLayout::RingBuf(rb) => Rc::make_mut(rb).get_mut(i),
+                CollectionLayout::ChunkedSeq(cs) => Rc::make_mut(cs).get_mut(i),
+                _ => None,
+            };
+            slot.expect("index checked by can_write_key")
+        }
+    }
+}
+
+fn path_writable(target: &Value, keys: &[Value]) -> bool {
+    let Value::Collection(c) = target else { return false };
+    let last = keys.len() == 1;
+    // A step that descends needs the child to exist (the general path reads
+    // nil for a missing key and then fails on it).
+    if !can_write_key(c, &keys[0], !last && c.is_map()) { return false; }
+    if last { return true; }
+    match get_index(target, &keys[0]) {
+        Ok(child) => path_writable(&child, &keys[1..]),
+        Err(_) => false,
+    }
+}
+
+fn write_path(target: &mut Value, keys: &[Value], val: Value) {
+    let Value::Collection(rc) = target else { unreachable!("checked by path_writable") };
+    let slot = slot_for_key(rc, &keys[0]);
+    if keys.len() == 1 { *slot = val } else { write_path(slot, &keys[1..], val) }
+}
+
+/// `:update!(x[k1][k2]…, val)` in place: inserts or overwrites a map key,
+/// overwrites an in-range sequence element (as VM::update_path does).
+pub fn update_path_in_place(target: &mut Value, keys: &[Value], val: Value) -> bool {
+    if keys.is_empty() || !path_writable(target, keys) { return false; }
+    write_path(target, keys, val);
+    true
+}
+
+/// `name!(x, args…)` in place for the single-element writes.
+/// Whether `name!(x, args…)` on this collection can be done in place.
+fn can_mutate(c: &CollectionValue, id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    use crate::value::BuiltinId;
+    match (id, args) {
+        (BuiltinId::PutLast, [_]) | (BuiltinId::PutFirst, [_]) => {
+            let pos = if id == BuiltinId::PutLast { Position::Last } else { Position::First };
+            let ok = match (&c.layout, &pos) {
+                (CollectionLayout::FlatArray(_), Position::Last) => true,
+                (CollectionLayout::RingBuf(_), _) => true,
+                _ => false,
+            };
+            let mut meta = update_meta_for_op(&c.meta, &pos, &Operation::Get);
+            meta.len = c.len() + 1;
+            ok && keeps_seq_layout(&c.layout, &meta)
+        }
+        // put/put_at on a map inserts or overwrites (on a sequence it inserts,
+        // which is not a single-slot write).
+        (BuiltinId::Put | BuiltinId::PutAt, [k, _]) => c.is_map() && can_write_key(c, k, false),
+        // update/update_at need the key or index to exist already.
+        (BuiltinId::Update | BuiltinId::UpdateAt, [k, _]) => can_write_key(c, k, true),
+        _ => false,
+    }
+}
+
+/// Applies `name!(x, args…)` in place, after can_mutate has said yes.
+fn apply_mutation(rc: &mut Rc<CollectionValue>, id: crate::value::BuiltinId, args: &[Value]) {
+    use crate::value::BuiltinId;
+    match (id, args) {
+        (BuiltinId::PutLast, [v]) | (BuiltinId::PutFirst, [v]) => {
+            let pos = if id == BuiltinId::PutLast { Position::Last } else { Position::First };
+            let c = Rc::make_mut(rc);
+            let mut meta = update_meta_for_op(&c.meta, &pos, &Operation::Get);
+            meta.len = c.len() + 1;
+            match (&mut c.layout, pos) {
+                (CollectionLayout::FlatArray(xs), _) => Rc::make_mut(xs).push(v.clone()),
+                (CollectionLayout::RingBuf(rb), Position::Last) => Rc::make_mut(rb).push_back(v.clone()),
+                (CollectionLayout::RingBuf(rb), _) => Rc::make_mut(rb).push_front(v.clone()),
+                _ => unreachable!("checked by can_mutate"),
+            }
+            c.meta = meta;
+        }
+        (_, [k, v]) => *slot_for_key(rc, k) = v.clone(),
+        _ => unreachable!("checked by can_mutate"),
+    }
+}
+
+/// `name!(x, args…)` in place for the single-element writes.
+pub fn mutate_in_place(target: &mut Value, id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    let Value::Collection(rc) = target else { return false };
+    if !can_mutate(rc, id, args) { return false; }
+    apply_mutation(rc, id, args);
+    true
+}
+
+/// The element at `key`, by reference.
+fn child_ref<'a>(c: &'a CollectionValue, key: &Value) -> Option<&'a Value> {
+    match &c.layout {
+        CollectionLayout::SmallMap(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+        CollectionLayout::HashMapBackend(m) => m.get(key),
+        layout => {
+            let Value::Int(idx) = key else { return None };
+            let i = resolve_seq_index(*idx, c.len()).ok()?;
+            match layout {
+                CollectionLayout::FlatArray(v) => v.get(i),
+                CollectionLayout::RingBuf(rb) => rb.get(i),
+                CollectionLayout::ChunkedSeq(cs) => cs.get(i),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn nested_mutable(target: &Value, keys: &[Value], id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    let Value::Collection(c) = target else { return false };
+    match keys.split_first() {
+        None => can_mutate(c, id, args),
+        // Each step is written back as `update!` does (Put on a map,
+        // Update on a sequence), so the key must exist and the layout hold.
+        Some((k, rest)) => can_write_key(c, k, true)
+            && child_ref(c, k).map_or(false, |child| nested_mutable(child, rest, id, args)),
+    }
+}
+
+fn apply_nested(target: &mut Value, keys: &[Value], id: crate::value::BuiltinId, args: &[Value]) {
+    let Value::Collection(rc) = target else { unreachable!("checked by nested_mutable") };
+    match keys.split_first() {
+        None => apply_mutation(rc, id, args),
+        Some((k, rest)) => apply_nested(slot_for_key(rc, k), rest, id, args),
+    }
+}
+
+/// `name!(x[k1][k2]…, args…)` in place: the element at the path changes
+/// as if it had been read, changed by the builtin and written back with
+/// `update!`.
+pub fn mutate_nested_in_place(target: &mut Value, keys: &[Value], id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    if !nested_mutable(target, keys, id, args) { return false; }
+    apply_nested(target, keys, id, args);
+    true
 }

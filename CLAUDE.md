@@ -22,7 +22,8 @@ These are HARD CONSTRAINTS — violating any of them is forbidden regardless of 
 - `session.alloc_value(v)` — called ONLY at binding points: StoreLocal, StoreGlobal, StoreUpvalue, StoreBox, and when building call frame arg lists. Never bypass it for named values.
 - `session.gc_sweep()` — called by `gc()` builtin and Auto mode. Never remove it.
 - `:mem_id(x)` / `:mem_addr(x)` — return errors when called on stack Values (no Tether address)
-- `overwrite!` is the ONLY mutation primitive — it mutates the stash in place
+- `overwrite!` is the only language-level mutation primitive — it mutates the stash in place
+- Bang writes (`put_last!`, `update!`, `name!(x[k], …)`) rebind the variable; as an optimization the VM applies them to the stash's collection in place when the variable's tether is the only reference to it (`sole_ref_target` in vm.rs), so no alias can observe the change. Approved by the owner 2026-10-06; `tests/conformance/collections/bang_write_keeps_value_semantics.gbln` guards it.
 - Worker isolation: each Worker has its own Session (its own arena). No shared arenas.
 - Do NOT replace the arena with Vec<Value> or any flat structure for "performance"
 - Do NOT change Tether to store Value directly
@@ -30,7 +31,7 @@ These are HARD CONSTRAINTS — violating any of them is forbidden regardless of 
 
 ## What to skip (user instructions)
 - `money` builtins — skip
-- `db_query`, `db_exec`, `db_query_one` — skip (db crate unfinished)
+- `db_query`, `db_exec`, `db_query_one` — no longer skipped: implemented and tested on both engines (2026-10-06)
 
 ## Architecture
 - `crates/goblin-vm/src/value.rs` — Value enum, BuiltinId enum
@@ -235,10 +236,34 @@ These are HARD CONSTRAINTS — violating any of them is forbidden regardless of 
 - [x] Fixed pre-existing VM bug: `import_file` (used by both `ImportFile` and `UseGlam`) now pushes a frame and calls `run_until_depth` instead of `self.execute()` — the old code shared `call_stack`/`stack` with the caller but ran a fresh `run_loop()` that only stopped when the ENTIRE call stack was empty, so a second `use`/`import` statement after the first would execute while `base_dir` was still pointed at the first import's directory (or worse, silently execute the rest of the caller's bytecode from inside the nested call). This blocked any script doing more than one `use`/`import`.
 - [x] VM limitation (not fixed, out of scope): `ns::action(...)` (`Expr::NsCall`) resolves at compile time per-compilation-unit and does not see cross-glam exports, so `:need()`'s provider action is invoked via `invoke`'s `named_values` mechanism instead, not via qualified-name dispatch like the interpreter. `session.named_values` is a flat bare-action-name registry, so two GLAMs declaring an action with the same bare name collide (pre-existing limitation shared with `invoke`/`summon`/`provoke`).
 
-## VM IS FEATURE-COMPLETE
+## Engine selection (owner, 2026-10-06)
+The VM is the default engine for `goblin run`, `goblin repl` and `goblin start`.
+`--interp` (or `--int`, or `GOBLIN_ENGINE=interp`) selects the interpreter, which is
+kept as a reference until it is deleted; `--vm` is still accepted.
 
-All interpreter builtins implemented. All opcodes handled. All AST nodes compiled. No remaining TODO items.
+## Tested status (conformance suite, 2026-10-06)
+
+The checklist above records what was implemented. What is *tested* is generated
+from the interpreter/VM conformance suite (`tests/conformance`, run by
+`cargo test --release -p goblin-cli --test conformance`):
+
+- `crates/outputs/VM_PARITY_TODO.md` — per builtin: which engines define it and
+  how the cases that mention it fare on each engine. Regenerate with
+  `GOBLIN_CONF_TRACKER=crates/outputs/VM_PARITY_TODO.md`.
+- 811 cases: interp 676 pass / 134 known gap / 1 undecided; VM 774 pass /
+  36 known gap / 1 undecided; 0 failures on either engine. Parity is NOT yet
+  demonstrated: `GOBLIN_CONF_STRICT=1` fails until the known gaps and the
+  undecided case are resolved.
+- Builtins: 200 at parity, 64 defined only by the VM, 3 only by the
+  interpreter, 26 where only interpreter cases fall short, 35 where cases fall
+  short on both engines (mostly docs-vs-both questions), 54 untested (grid/DES/token/introspection;
+  listed in `tests/conformance/COVERAGE_EXEMPT.txt`). No builtin is short on
+  the VM alone.
+- Performance regressions are guarded by `crates/goblin-cli/tests/perf_regression.rs`.
+
+The earlier claim that the VM was feature-complete was not backed by tests;
+the conformance suite is the source of truth.
 
 ### Skipped by user instruction
 - [ ] `money` — skip
-- [ ] `db_query`, `db_exec`, `db_query_one` — skip (db crate unfinished)
+- [x] `db_query`, `db_exec`, `db_query_one` — implemented and tested on both engines (pooled connections, 2026-10-06)

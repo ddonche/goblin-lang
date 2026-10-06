@@ -1,0 +1,3 @@
+/// known-gap: interp lacks url_decode
+say(:url_decode("a%20b%26c+d"))
+say(:url_decode("%C3%A9"))

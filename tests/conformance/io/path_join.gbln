@@ -1,0 +1,4 @@
+/// path_join joins with "/", does not double a trailing separator, and an absolute second part wins.
+say(:path_join("a/b", "c.txt"))
+say(:path_join("a/b/", "c.txt"))
+say(:path_join("a", "/abs"))

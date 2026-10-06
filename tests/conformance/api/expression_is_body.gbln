@@ -1,0 +1,5 @@
+/// env: GOBLIN_NONINTERACTIVE=1
+/// In API mode the entry script's top-level expression value is the response body.
+:set_status(201)
+:set_header("X-Test", "yes")
+"hello"

@@ -1,0 +1,4 @@
+repeat {"a": 1} as k, v
+    say(k)
+    say(v)
+xx

@@ -1,0 +1,7 @@
+/// basename / dirname split a path at its last separator; dirname of a bare name is "".
+say(:basename("a/b/c.txt"))
+say(:basename("c.txt"))
+say(:basename("a/b/"))
+say(:dirname("a/b/c.txt"))
+say(:dirname("/abs/file"))
+say("[" + :dirname("c.txt") + "]")

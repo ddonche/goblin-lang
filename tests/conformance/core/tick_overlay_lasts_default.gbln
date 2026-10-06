@@ -1,0 +1,17 @@
+/// An overlay declared with "lasts N ticks" expires after N ticks when applied without "for".
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    lasts 2 ticks
+    modifies:
+        stability - .25
+    end
+rome <> Polity | stability: .8
+overlay Stunned on rome at .5
+say(rome >> stability)
+tick()
+say(:overlays_of("rome"))
+tick()
+say(rome >> stability)
+say(:overlays_of("rome"))

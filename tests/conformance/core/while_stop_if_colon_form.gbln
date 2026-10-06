@@ -1,0 +1,6 @@
+i | 0
+while true
+    i |= i + 1
+    stop if: i > 4
+xx
+say(i)

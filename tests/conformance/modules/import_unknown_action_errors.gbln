@@ -1,0 +1,3 @@
+import _support/modules/mathy as m
+say("before")
+say(m::nope(1))

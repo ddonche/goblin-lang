@@ -17,10 +17,55 @@ pub fn call_builtin(
     args: Vec<Value>,
     session: &mut Session,
 ) -> Result<Value, GoblinError> {
+    let args = if takes_legacy_args(id) { args.into_iter().map(legacy_arg).collect() } else { args };
     dispatch(id, args, session)
 }
 
+/// Builtins whose arms are written against the legacy `Value::Map` /
+/// `Value::Array` shapes and only read their arguments (config / option maps,
+/// small source arrays). Their collection arguments are rewritten to legacy
+/// form on entry, so map and array literals are accepted.
+fn takes_legacy_args(id: BuiltinId) -> bool {
+    matches!(id,
+        BuiltinId::Roll | BuiltinId::RollDetail | BuiltinId::SampleWeighted
+        | BuiltinId::SecurePick | BuiltinId::SecureShuffle | BuiltinId::ReapSample
+        | BuiltinId::RunCmd | BuiltinId::SetCookie | BuiltinId::DtAddDuration
+        | BuiltinId::IgnoreBetween | BuiltinId::IgnoreBlocks | BuiltinId::IgnoreBlocksFirst
+        | BuiltinId::KeepBetween)
+}
+
+/// A collection argument in legacy form: a map collection (or MapOrd) becomes
+/// a `Value::Map` whose collection values are legacy too (one level, e.g. a
+/// config's `src` array); an array collection becomes a `Value::Array`.
+fn legacy_arg(v: Value) -> Value {
+    match v {
+        Value::Collection(ref c) if c.is_map() => {
+            let m = v.to_btree_map().unwrap_or_default();
+            Value::Map(m.into_iter().map(|(k, x)| (k, x.into_legacy())).collect())
+        }
+        Value::Collection(_) => v.into_legacy(),
+        Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (k, x.into_legacy())).collect()),
+        other => other,
+    }
+}
+
+/// Builtins that only take strings: a char argument (e.g. an element of
+/// `chars(s)`) is accepted as the one-character string.
+fn takes_strings(id: BuiltinId) -> bool {
+    matches!(id,
+        BuiltinId::Lower | BuiltinId::Upper | BuiltinId::Title | BuiltinId::Slug | BuiltinId::Mixed
+        | BuiltinId::Raw | BuiltinId::Trim | BuiltinId::TrimLead | BuiltinId::TrimTrail
+        | BuiltinId::Find | BuiltinId::FindAll | BuiltinId::Split
+        | BuiltinId::StartsWith | BuiltinId::EndsWith
+        | BuiltinId::Before | BuiltinId::After | BuiltinId::BeforeLast | BuiltinId::AfterLast
+        | BuiltinId::KeepBefore | BuiltinId::KeepAfter | BuiltinId::KeepBetween
+        | BuiltinId::EscapeHtml | BuiltinId::UrlEncode | BuiltinId::UrlDecode)
+}
+
 fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+    let args: Vec<Value> = if takes_strings(id) && args.iter().any(|a| matches!(a, Value::Char(_))) {
+        args.into_iter().map(|a| match a { Value::Char(c) => Value::Str(c.to_string()), other => other }).collect()
+    } else { args };
     let read = |i: usize| -> Result<Value, GoblinError> {
         args.get(i).cloned().ok_or_else(|| GoblinError::Runtime(
             format!("builtin {:?}: expected arg {i}", id)
@@ -190,6 +235,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Sqrt => {
             expect_n(1)?;
+            // A negative input is a domain error, not NaN (D19).
+            match read(0)? {
+                Value::Int(n) if n < 0 => return Err(GoblinError::Runtime("sqrt domain error: cannot take square root of a negative value".into())),
+                Value::Float(f) if f < 0.0 => return Err(GoblinError::Runtime("sqrt domain error: cannot take square root of a negative value".into())),
+                _ => {}
+            }
             Ok(match read(0)? {
                 Value::Int(n)   => Value::Float((n as f64).sqrt()),
                 Value::Float(f) => Value::Float(f.sqrt()),
@@ -212,7 +263,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "pow".into() });
             }
             Ok(match (read(0)?, read(1)?) {
-                (Value::Int(b), Value::Int(e)) if e >= 0 => Value::Int(b.pow(e as u32)),
+                // Exact; a result past i64 is promoted to big.
+                (Value::Int(b), Value::Int(e)) if e >= 0 => match u32::try_from(e).ok().and_then(|e| b.checked_pow(e)) {
+                    Some(r) => Value::Int(r),
+                    None => Value::Big(big_pow(rust_decimal::Decimal::from(b), e)?),
+                },
+                (Value::Big(b), Value::Int(e)) if e >= 0 => Value::Big(big_pow(b, e)?),
+                // A negative integer exponent gives a fraction: 2 ** -1 = 0.5.
+                (Value::Int(b), Value::Int(e)) => Value::Float((b as f64).powi(e as i32)),
                 (Value::Int(b), Value::Float(e)) => Value::Float((b as f64).powf(e)),
                 (Value::Float(b), Value::Float(e)) => Value::Float(b.powf(e)),
                 (Value::Float(b), Value::Int(e)) => Value::Float(b.powi(e as i32)),
@@ -273,13 +331,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Raw => {
             expect_n(1)?;
-            map_str_1(&read(0)?, &|s: &str| {
-                let mut out = String::with_capacity(s.len());
-                for ch in s.chars() {
-                    match ch { '{' => { out.push('{'); out.push('{'); } '}' => { out.push('}'); out.push('}'); } _ => out.push(ch) }
-                }
-                out
-            })
+            map_str_1(&read(0)?, &|s: &str| s.to_string())
         }
         BuiltinId::Trim => {
             expect_n(1)?;
@@ -319,20 +371,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         None => Value::Nil,
                     })
                 }
-                (Value::Array(arr), needle_val) => {
-                    Ok(match arr.iter().position(|x| x == &needle_val) {
-                        Some(i) => Value::Int(i as i64),
-                        None => Value::Nil,
-                    })
-                }
-                (Value::Collection(c), needle_val) => {
-                    let xs = crate::collections::to_vec(&c);
-                    Ok(match xs.iter().position(|x| x == &needle_val) {
-                        Some(i) => Value::Int(i as i64),
-                        None => Value::Nil,
-                    })
-                }
-                (other, _) => Err(GoblinError::type_error("str or array", other.type_name(), "find")),
+                // `find` searches strings only (D22); arrays use find_index.
+                (other, _) => Err(GoblinError::type_error("str", other.type_name(), "find")),
             }
         }
         BuiltinId::FindAll => {
@@ -373,6 +413,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── String legacy ─────────────────────────────────────────────────────
         BuiltinId::Len => {
+            // `count` resolves to Len; `count(s, sub)` is the occurrence count.
+            if args.len() == 2 { return dispatch(BuiltinId::Count, args, session); }
             expect_n(1)?;
             Ok(match read(0)? {
                 Value::Str(s)        => Value::Int(s.chars().count() as i64),
@@ -387,20 +429,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::ToString | BuiltinId::ToStr => {
             expect_n(1)?;
             Ok(Value::Str(value_to_str(&read(0)?)))
-        }
-        BuiltinId::ToUpperCase => {
-            expect_n(1)?;
-            match read(0)? {
-                Value::Str(s) => Ok(Value::Str(s.to_uppercase())),
-                other => Err(GoblinError::type_error("str", other.type_name(), "to_uppercase")),
-            }
-        }
-        BuiltinId::ToLowerCase => {
-            expect_n(1)?;
-            match read(0)? {
-                Value::Str(s) => Ok(Value::Str(s.to_lowercase())),
-                other => Err(GoblinError::type_error("str", other.type_name(), "to_lowercase")),
-            }
         }
         BuiltinId::Split => {
             if args.len() != 2 {
@@ -418,7 +446,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 s.chars().map(|c| Value::Str(c.to_string())).collect()
             } else if sep.starts_with("r/") && sep.len() > 2 {
                 let pattern = &sep[2..];
-                let re = regex::Regex::new(pattern).map_err(|e| GoblinError::Runtime(format!("split: invalid regex: {}", e)))?;
+                let re = crate::collections::cached_regex(pattern).map_err(|e| GoblinError::Runtime(format!("split: invalid regex: {}", e)))?;
                 re.split(&s).map(|t| Value::Str(t.to_string())).collect()
             } else {
                 s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
@@ -440,36 +468,22 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     }).collect();
                     Ok(Value::Str(out))
                 }
-                Value::Array(items) => {
+                v if v.is_seq_like() => {
+                    // Like the interpreter: only strings and chars can be joined.
+                    let items = v.seq_items().unwrap_or_default();
                     let mut out = String::new();
-                    for (i, v) in items.iter().enumerate() {
+                    for (i, x) in items.iter().enumerate() {
                         if i > 0 { out.push_str(&sep); }
-                        match v {
+                        match x {
                             Value::Str(s)  => out.push_str(s),
                             Value::Char(c) => out.push(*c),
-                            other => out.push_str(&value_to_str(other)),
+                            other => return Err(GoblinError::type_error("str or char element", other.type_name(), "join")),
                         }
                     }
                     Ok(Value::Str(out))
                 }
-                Value::Collection(c) => {
-                    let parts: Vec<String> = collections::to_vec(&c).iter().map(value_to_str).collect();
-                    Ok(Value::Str(parts.join(&sep)))
-                }
                 other => Err(GoblinError::type_error("str, array or collection", other.type_name(), "join")),
             }
-        }
-        BuiltinId::Contains => {
-            if args.len() != 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "contains".into() });
-            }
-            let haystack = read(0)?; let needle = read(1)?;
-            Ok(match (haystack, needle) {
-                (Value::Str(s), Value::Str(n)) => Value::Bool(s.contains(n.as_str())),
-                (Value::Array(arr), v)         => Value::Bool(arr.iter().any(|x| x == &v)),
-                (Value::Collection(c), v)      => Value::Bool(collections::to_vec(&c).iter().any(|x| x == &v)),
-                _ => Value::Bool(false),
-            })
         }
         BuiltinId::StartsWith => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "starts_with".into() }); }
@@ -490,15 +504,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(p) => text.ends_with(p.as_str()),
                 _ => false,
             }))
-        }
-        BuiltinId::Replace => {
-            if args.len() != 3 {
-                return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "replace".into() });
-            }
-            match (read(0)?, read(1)?, read(2)?) {
-                (Value::Str(s), Value::Str(from), Value::Str(to)) => Ok(Value::Str(s.replace(from.as_str(), &to))),
-                _ => Err(GoblinError::type_error("str", "mixed", "replace")),
-            }
         }
 
         BuiltinId::Before => {
@@ -645,14 +650,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "is_matching".into() }); }
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "is_matching pattern")) };
-            let re = regex::Regex::new(&pattern).map_err(|e| GoblinError::Runtime(format!("is_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pattern).map_err(|e| GoblinError::Runtime(format!("is_matching: invalid regex: {e}")))?;
             Ok(Value::Bool(re.is_match(&text)))
         }
         BuiltinId::CountMatching => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "count_matching".into() }); }
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "count_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "count_matching pattern")) };
-            let re = regex::Regex::new(&pattern).map_err(|e| GoblinError::Runtime(format!("count_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pattern).map_err(|e| GoblinError::Runtime(format!("count_matching: invalid regex: {e}")))?;
             Ok(Value::Int(re.find_iter(&text).count() as i64))
         }
         BuiltinId::IgnoreMatching => {
@@ -660,7 +665,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching pattern")) };
             let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
-            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_matching: invalid regex: {e}")))?;
             Ok(Value::Str(re.replace_all(&text, "").to_string()))
         }
         BuiltinId::IgnoreLinesMatching => {
@@ -668,7 +673,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching pattern")) };
             let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
-            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_lines_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_lines_matching: invalid regex: {e}")))?;
             let mut out = String::with_capacity(text.len());
             for line in text.split_inclusive('\n') {
                 let no_nl = line.strip_suffix('\n').unwrap_or(line);
@@ -681,7 +686,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching pattern")) };
             let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
-            let re = regex::Regex::new(&pat).map_err(|e| GoblinError::Runtime(format!("keep_matching: invalid regex: {e}")))?;
+            let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("keep_matching: invalid regex: {e}")))?;
             let mut out = String::new();
             for m in re.find_iter(&text) { out.push_str(m.as_str()); }
             Ok(Value::Str(out))
@@ -690,20 +695,17 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::JsonParse => {
             expect_n(1)?;
             let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "json_parse")) };
-            let jv: serde_json::Value = serde_json::from_str(&s).map_err(|e| GoblinError::Runtime(format!("json_parse failed: {e}")))?;
-            Ok(json_to_value(&jv))
+            json_parse_ordered(&s).map_err(|e| GoblinError::Runtime(format!("json_parse failed: {e}")))
         }
         BuiltinId::JsonStringify => {
             expect_n(1)?;
             let v = read(0)?;
-            let jv = value_to_json(&v);
-            Ok(Value::Str(serde_json::to_string(&jv).unwrap_or_default()))
+            Ok(Value::Str(serde_json::to_string(&JsonOut(&v)).unwrap_or_default()))
         }
         BuiltinId::JsonStringifyPretty => {
             expect_n(1)?;
             let v = read(0)?;
-            let jv = value_to_json(&v);
-            Ok(Value::Str(serde_json::to_string_pretty(&jv).unwrap_or_default()))
+            Ok(Value::Str(serde_json::to_string_pretty(&JsonOut(&v)).unwrap_or_default()))
         }
 
         BuiltinId::IgnoreBetween => {
@@ -851,7 +853,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::Env => {
             expect_n(1)?;
             let name = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "env")) };
-            Ok(Value::Str(std::env::var(&name).unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var(&name).unwrap_or_default()))
         }
 
         BuiltinId::Pct => {
@@ -1070,8 +1072,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "read_json path")) };
             let txt = std::fs::read_to_string(&path).map_err(|e| GoblinError::Runtime(format!("read_json: {}", e)))?;
-            let jv: serde_json::Value = serde_json::from_str(&txt).map_err(|e| GoblinError::Runtime(format!("read_json parse: {}", e)))?;
-            Ok(json_to_value(&jv))
+            json_parse_ordered(&txt).map_err(|e| GoblinError::Runtime(format!("read_json parse: {}", e)))
         }
 
         BuiltinId::WriteText => {
@@ -1098,7 +1099,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_json path")) };
             let val  = read(1)?;
             let pretty = if n == 3 { matches!(read(2)?, Value::Bool(true)) } else { false };
-            let jv = value_to_json(&val);
+            let jv = JsonOut(&val);
             let text = if pretty { serde_json::to_string_pretty(&jv) } else { serde_json::to_string(&jv) }.map_err(|e| GoblinError::Runtime(format!("write_json: {}", e)))?;
             std::fs::write(&path, text).map_err(|e| GoblinError::Runtime(format!("write_json write: {}", e)))?;
             Ok(Value::Nil)
@@ -1110,8 +1111,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             match read(0)? {
                 Value::Map(m)    => Ok(collections::into_collection(Value::Array(m.keys().cloned().map(Value::Str).collect()))),
                 Value::MapOrd(m) => Ok(collections::into_collection(Value::Array(m.keys().cloned().map(Value::Str).collect()))),
-                Value::Collection(c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::keys(&c))))),
-                other => Err(GoblinError::type_error("map or collection", other.type_name(), "keys")),
+                // `keys` is for maps only (D23).
+                Value::Collection(c) if collections::is_map_collection(&c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::keys(&c))))),
+                other => Err(GoblinError::type_error("map", other.type_name(), "keys")),
             }
         }
         BuiltinId::Values => {
@@ -1125,20 +1127,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Items => {
             expect_n(1)?;
-            match read(0)? {
-                Value::Map(m) => {
-                    let pairs: Vec<Value> = m.iter()
-                        .map(|(k, v)| Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())))
+            match read(0)?.map_entries() {
+                Some(entries) => {
+                    let pairs: Vec<Value> = entries.into_iter()
+                        .map(|(k, v)| Value::Pair(Box::new(Value::Str(k)), Box::new(v)))
                         .collect();
                     Ok(collections::into_collection(Value::Array(pairs)))
                 }
-                Value::MapOrd(m) => {
-                    let pairs: Vec<Value> = m.iter()
-                        .map(|(k, v)| Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())))
-                        .collect();
-                    Ok(collections::into_collection(Value::Array(pairs)))
-                }
-                other => Err(GoblinError::type_error("map", other.type_name(), "items")),
+                None => Err(GoblinError::type_error("map", read(0)?.type_name(), "items")),
             }
         }
 
@@ -1282,7 +1278,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     Ok(Value::Int(acc as i64))
                 }
                 Value::Array(mut items) => {
-                    items.sort_by(|a, b| fmt_value_raw(a).cmp(&fmt_value_raw(b)));
+                    items.sort_by(collections::compare_for_sort);
                     Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
                 }
                 Value::Collection(c) => Ok(collections::sort_values(&c)),
@@ -1496,46 +1492,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── Collections grab (legacy) ─────────────────────────────────────────
-        BuiltinId::Grab => {
-            expect_n(1)?;
-            Ok(collections::grab(&*require_collection(read(0)?, "grab")?))
-        }
-        BuiltinId::GrabFirst => {
-            expect_n(1)?;
-            collections::grab_first(&*require_collection(read(0)?, "grab_first")?)
-        }
-        BuiltinId::GrabLast => {
-            expect_n(1)?;
-            collections::grab_last(&*require_collection(read(0)?, "grab_last")?)
-        }
-        BuiltinId::GrabAt => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "grab_at".into() }); }
-            let coll = require_collection(read(0)?, "grab_at")?;
-            let idx = require_int(read(1)?, "grab_at index")?;
-            collections::grab_at(&coll, idx)
-        }
-        BuiltinId::GrabBetween => {
-            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "grab_between".into() }); }
-            let coll = require_collection(read(0)?, "grab_between")?;
-            let start = require_int(read(1)?, "grab_between start")?;
-            let end   = require_int(read(2)?, "grab_between end")?;
-            collections::grab_between(&coll, start, end)
-        }
-        BuiltinId::GrabAll => {
-            expect_n(1)?;
-            Ok(collections::grab_all(&*require_collection(read(0)?, "grab_all")?))
-        }
-        BuiltinId::GrabRandom => {
-            expect_n(1)?;
-            let coll = require_collection(read(0)?, "grab_random")?;
-            let items = collections::to_vec(&coll);
-            if items.is_empty() { return Ok(Value::Nil); }
-            let idx = rng_bounded(session, items.len() as u64) as usize;
-            Ok(items[idx].clone())
-        }
-        BuiltinId::GrabWhere | BuiltinId::GrabMatching => {
-            Err(GoblinError::NotImplemented { feature: "grab_where / grab_matching require VM predicate callback" })
-        }
 
         // ── Collections put ───────────────────────────────────────────────────
         BuiltinId::Put => {
@@ -1657,21 +1613,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let coll = read(0)?; let key = read(1)?;
             collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Reap, session)
         }
-        BuiltinId::ReapRandom => {
-            expect_n(1)?;
-            let coll = read(0)?;
-            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Reap, session)
-        }
         BuiltinId::ReapWhere => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_where".into() }); }
             let coll = read(0)?;
             let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where pred")) };
             collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Reap, session)
-        }
-        BuiltinId::ReapAll => {
-            expect_n(1)?;
-            let coll = read(0)?;
-            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Reap, session)
         }
 
         BuiltinId::ReapSample => {
@@ -1827,13 +1773,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // Put family (new)
-        BuiltinId::PutWhere => {
-            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "put_where".into() }); }
-            let coll = read(0)?;
-            let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "put_where predicate")) };
-            let val = read(2)?;
-            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Put(val), session)
-        }
         BuiltinId::PutMatching => {
             if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "put_matching".into() }); }
             let coll = read(0)?;
@@ -1854,12 +1793,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let coll = read(0)?;
             let val = read(1)?;
             collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Put(val), session)
-        }
-        BuiltinId::PutAll => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "put_all".into() }); }
-            let coll = read(0)?;
-            let val = read(1)?;
-            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Put(val), session)
         }
 
         // Update family (new)
@@ -1954,18 +1887,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let end   = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "reap_between end")) };
             collections::collection_operation(&coll, collections::Position::Between(start, end), collections::Operation::Reap, session)
         }
-        BuiltinId::ReapRandom2 => {
-            expect_n(1)?;
-            let coll = read(0)?;
-            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Reap, session)
-        }
 
         // ── Collections query (legacy) ─────────────────────────────────────────
-        BuiltinId::Pairs => {
-            expect_n(1)?;
-            let coll = require_collection(read(0)?, "pairs")?;
-            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::pairs_vec(&*coll)))))
-        }
         BuiltinId::IsEmpty => {
             expect_n(1)?;
             match read(0)? {
@@ -2014,50 +1937,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 _ => Err(GoblinError::Runtime(format!("parse_bool: expected \"true\" or \"false\", got \"{}\"", s))),
             }
         }
-        BuiltinId::SortBy | BuiltinId::Filter | BuiltinId::Reduce
-        | BuiltinId::Any | BuiltinId::All | BuiltinId::FindIndex => {
+        BuiltinId::SortBy | BuiltinId::Filter | BuiltinId::Reduce | BuiltinId::Any | BuiltinId::All => {
             Err(GoblinError::NotImplemented { feature: "higher-order collection ops require VM predicate callback" })
-        }
-        BuiltinId::Zip => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "zip".into() }); }
-            match (read(0)?, read(1)?) {
-                (Value::Array(a), Value::Array(b)) => {
-                    let pairs: Vec<Value> = a.into_iter().zip(b.into_iter())
-                        .map(|(x, y)| Value::Pair(Box::new(x), Box::new(y)))
-                        .collect();
-                    Ok(collections::into_collection(Value::Array(pairs)))
-                }
-                (a, b) => { let ca = require_collection(a, "zip")?; let cb = require_collection(b, "zip")?; Ok(collections::zip_collections(&*ca, &*cb)) }
-            }
-        }
-        BuiltinId::Flatten => {
-            expect_n(1)?;
-            match read(0)? {
-                Value::Array(items) => {
-                    let mut result = Vec::new();
-                    for item in items {
-                        match item {
-                            Value::Array(inner) => result.extend(inner),
-                            Value::Collection(c) => result.extend(crate::collections::to_vec(&c)),
-                            other => result.push(other),
-                        }
-                    }
-                    Ok(collections::into_collection(Value::Array(result)))
-                }
-                Value::Collection(c) => {
-                    let items = crate::collections::to_vec(&c);
-                    let mut result = Vec::new();
-                    for item in items {
-                        match item {
-                            Value::Array(inner) => result.extend(inner),
-                            Value::Collection(ic) => result.extend(crate::collections::to_vec(&ic)),
-                            other => result.push(other),
-                        }
-                    }
-                    Ok(collections::into_collection(Value::Array(result)))
-                }
-                other => { let c = require_collection(other, "flatten")?; Ok(collections::flatten(&*c)) }
-            }
         }
         BuiltinId::Slice => {
             if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "slice".into() }); }
@@ -2097,24 +1978,22 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── I/O ───────────────────────────────────────────────────────────────
-        BuiltinId::Print => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
-            session.write_output(&parts?.join(" "), false);
+        BuiltinId::StrictEq => Ok(Value::Bool(read(0)? == read(1)?)),
+        BuiltinId::ApiEcho => {
+            // A top-level expression statement in API mode: its value becomes
+            // response output, unless it is nil or prints as nothing.
+            let v = read(0)?;
+            if crate::reqenv::var("GOBLIN_NONINTERACTIVE").as_deref() == Some("1")
+                && !matches!(v, Value::Nil | Value::Unit)
+            {
+                let s = value_to_str(&v);
+                if !s.is_empty() && s != "nil" { session.write_output(&s, true); }
+            }
             Ok(Value::Nil)
         }
         BuiltinId::Println => {
             let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
             session.write_output(&parts?.join(" "), true);
-            Ok(Value::Nil)
-        }
-        BuiltinId::Eprint => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
-            eprint!("{}", parts?.join(" "));
-            Ok(Value::Nil)
-        }
-        BuiltinId::Eprintln => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
-            eprintln!("{}", parts?.join(" "));
             Ok(Value::Nil)
         }
 
@@ -2124,11 +2003,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::IsInt        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Int(_)))) }
         BuiltinId::IsFloat      => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Float(_)))) }
         BuiltinId::IsStr        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Str(_)))) }
-        BuiltinId::IsArray      => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Array(_) | Value::Collection(_)))) }
-        BuiltinId::IsMap        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Map(_) | Value::MapOrd(_)))) }
-        BuiltinId::IsCollection => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Collection(_) | Value::Array(_) | Value::Map(_) | Value::MapOrd(_) | Value::Seq(_)))) }
+        BuiltinId::IsArray      => { expect_n(1)?; let v = read(0)?; Ok(Value::Bool(v.is_seq_like() && !matches!(v, Value::Seq(_)))) }
+        BuiltinId::IsMap        => { expect_n(1)?; Ok(Value::Bool(read(0)?.is_map_like())) }
         BuiltinId::IsFunction   => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Function(_) | Value::Closure(_)))) }
-        BuiltinId::IsBig        => { expect_n(1)?; Ok(Value::Bool(false)) } // no Big in VM
+        BuiltinId::IsBig        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Big(_)))) }
         BuiltinId::IsPct        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Pct(_)))) }
         BuiltinId::IsNum        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Int(_) | Value::Float(_) | Value::Pct(_)))) }
         BuiltinId::IsChar       => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Char(_)))) }
@@ -2219,9 +2097,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Bool(match read(0)? {
                 Value::Nil => true,
                 Value::Str(s) => s.is_empty() || s.chars().all(|c| c.is_whitespace()),
-                Value::Array(a) => a.is_empty(),
-                Value::Map(m) => m.is_empty(),
-                Value::MapOrd(m) => m.is_empty(),
+                v if v.is_container() => v.container_len() == 0,
                 _ => false,
             }))
         }
@@ -2229,22 +2105,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── Conversions ───────────────────────────────────────────────────────
         BuiltinId::ToInt => {
             expect_n(1)?;
-            Ok(match read(0)? {
-                Value::Int(n)   => Value::Int(n),
-                Value::Float(f) | Value::Pct(f) => Value::Int(f.trunc() as i64),
-                Value::Bool(b)  => Value::Int(b as i64),
-                Value::Char(c)  => Value::Int(c as u32 as i64),
-                Value::Str(s)   => {
-                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
-                    cleaned.parse::<i64>()
-                        .map(Value::Int)
-                        .unwrap_or_else(|_| cleaned.parse::<f64>()
-                            .map(|f| Value::Int(f.trunc() as i64))
-                            .unwrap_or(Value::Nil))
-                }
-                Value::Nil => Value::Nil,
-                other => return Err(GoblinError::type_error("number or str", other.type_name(), "to_int")),
-            })
+            // Same conversion as the `:int` lock: an unparsable string is an
+            // error, and so are bool and nil (D18).
+            match read(0)? {
+                v @ (Value::Bool(_) | Value::Nil) => Err(GoblinError::type_error("number or str", v.type_name(), "int")),
+                v => lock_to_int(v),
+            }
         }
         BuiltinId::ToFloat => {
             expect_n(1)?;
@@ -2272,26 +2138,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             Ok(Value::Str(read(0)?.type_name().to_string()))
         }
-        BuiltinId::Assert => {
-            if args.is_empty() { return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "assert".into() }); }
-            if !read(0)?.is_truthy() {
-                let msg = if args.len() > 1 {
-                    match read(1)? { Value::Str(s) => s, v => value_to_str(&v) }
-                } else { "assertion failed".to_string() };
-                return Err(GoblinError::Runtime(msg));
-            }
-            Ok(Value::Nil)
-        }
         BuiltinId::Panic => {
             let msg = if args.is_empty() { "panic!".to_string() } else {
                 match args[0].clone() { Value::Str(s) => s, v => value_to_str(&v) }
             };
+            // A re-raised error (attempt without rescue) already carries the prefix.
+            let msg = msg.strip_prefix("runtime error: ").map(str::to_string).unwrap_or(msg);
             Err(GoblinError::Runtime(msg))
-        }
-
-        // ── Lorem ipsum (stub) ────────────────────────────────────────────────
-        BuiltinId::Ipsum | BuiltinId::IpsumSentences | BuiltinId::IpsumParagraphs | BuiltinId::IpsumFull => {
-            Ok(Value::Str("Lorem ipsum dolor sit amet.".into()))
         }
 
         // ── Process ───────────────────────────────────────────────────────────
@@ -2312,10 +2165,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let env_vars: Vec<(String, String)> = if args.len() == 3 {
                 match read(2)? {
                     Value::Map(map) => map.into_iter().map(|(k, v)| (k, match v {
-                        Value::Str(s) => s, other => format!("{:?}", other),
+                        Value::Str(s) => s, other => value_to_str(&other),
                     })).collect(),
                     Value::MapOrd(map) => map.into_iter().map(|(k, v)| (k, match v {
-                        Value::Str(s) => s, other => format!("{:?}", other),
+                        Value::Str(s) => s, other => value_to_str(&other),
                     })).collect(),
                     _ => return Err(GoblinError::Runtime("run_cmd: env argument must be a map".into())),
                 }
@@ -2330,6 +2183,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 c
             };
             if let Some(dir) = cwd { cmd.current_dir(dir); }
+            // A hosted request's variables reach its child processes too.
+            for (k, v) in crate::reqenv::overlay_vars() { cmd.env(k, v); }
             for (k, v) in env_vars { cmd.env(k, v); }
             match cmd.output() {
                 Ok(output) => {
@@ -2350,8 +2205,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::RandSeed => {
             expect_n(1)?;
-            // interpreter just seeds the RNG — in VM we ignore since session handles it
-            Ok(Value::Nil)
+            // Reseed the session RNG like the interpreter does, so a seed
+            // repeats the same sequence. (|1: the VM's MCG needs an odd state.)
+            let n = match read(0)? {
+                Value::Int(i) => i as f64,
+                Value::Float(f) | Value::Pct(f) => f,
+                other => return Err(GoblinError::type_error("number", other.type_name(), "rand_seed")),
+            };
+            session.rng_state = ((n.to_bits() as u128) ^ 0x9E37_79B9_7F4A_7C15u128) | 1;
+            Ok(Value::Unit)
         }
         BuiltinId::Roll => {
             expect_n(1)?;
@@ -2506,16 +2368,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── Request ───────────────────────────────────────────────────────────
         BuiltinId::ReqMethod => {
-            Ok(Value::Str(std::env::var("GOBLIN_METHOD").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_METHOD").unwrap_or_default()))
         }
         BuiltinId::ReqPath => {
-            Ok(Value::Str(std::env::var("GOBLIN_PATH").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_PATH").unwrap_or_default()))
         }
         BuiltinId::ReqQuery => {
-            Ok(Value::Str(std::env::var("GOBLIN_QUERY_STRING").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_QUERY_STRING").unwrap_or_default()))
         }
         BuiltinId::ReqBody => {
-            Ok(Value::Str(std::env::var("GOBLIN_BODY").unwrap_or_default()))
+            Ok(Value::Str(crate::reqenv::var("GOBLIN_BODY").unwrap_or_default()))
         }
         BuiltinId::ReqHeader => {
             if args.len() != 1 {
@@ -2525,7 +2387,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => s.to_lowercase(),
                 other => return Err(GoblinError::type_error("str", other.type_name(), "req_header")),
             };
-            let headers_json = std::env::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
+            let headers_json = crate::reqenv::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&headers_json).unwrap_or(serde_json::Value::Null);
             if let serde_json::Value::Object(map) = parsed {
                 for (k, v) in map {
@@ -2544,7 +2406,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => s,
                 other => return Err(GoblinError::type_error("str", other.type_name(), "cookie")),
             };
-            let headers_json = std::env::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
+            let headers_json = crate::reqenv::var("GOBLIN_HEADERS_JSON").unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&headers_json).unwrap_or(serde_json::Value::Null);
             if let serde_json::Value::Object(map) = parsed {
                 for (k, v) in map {
@@ -2843,24 +2705,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             Ok(Value::Formatted(Box::new(inner_v), spec))
         }
-        BuiltinId::Pad | BuiltinId::PadLeft => {
-            if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let width = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
-            Ok(Value::Str(format!("{:>width$}", s)))
-        }
-        BuiltinId::PadRight => {
-            if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let width = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
-            Ok(Value::Str(format!("{:<width$}", s)))
-        }
-        BuiltinId::Repeat => {
-            if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let n = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
-            Ok(Value::Str(s.repeat(n)))
-        }
 
         // ── Higher-order (stub — need VM callback) ────────────────────────────
         BuiltinId::MapFn | BuiltinId::FilterFn | BuiltinId::ReduceFn | BuiltinId::ForEachFn => {
@@ -2868,27 +2712,58 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
-        BuiltinId::ToForIter => {
+        BuiltinId::RepeatPrep => {
             let v = read(0)?;
+            let plan = |mode: i64, iter: Value, limit: i64| Ok(Value::Array(vec![Value::Int(mode), iter, Value::Int(limit)]));
+            match v {
+                Value::Int(n) if n >= 0 => plan(0, Value::Nil, n),
+                Value::Int(n) => Err(GoblinError::Runtime(format!("'repeat' count must be >= 0 (got {n})"))),
+                Value::Nil => plan(3, Value::Nil, i64::MAX),
+                Value::Bool(_) => plan(4, Value::Nil, i64::MAX),
+                Value::Map(_) | Value::MapOrd(_) => {
+                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+                    let n = collections::element_count(&it) as i64;
+                    plan(2, it, n)
+                }
+                Value::Collection(ref c) if collections::is_map_collection(c) => {
+                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+                    let n = collections::element_count(&it) as i64;
+                    plan(2, it, n)
+                }
+                Value::Array(_) | Value::Collection(_) | Value::Seq(_) => {
+                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+                    let n = collections::element_count(&it) as i64;
+                    plan(1, it, n)
+                }
+                other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
+            }
+        }
+        BuiltinId::ToForIter => {
+            // The loop reads `iter[i]` each pass, so the iterable must be cheap to
+            // clone: an Rc-backed Collection, never a Vec-backed Value::Array
+            // (re-reading that local cloned the whole Vec every iteration).
+            let v = read(0)?;
+            let seq = |items: Vec<Value>| Value::Collection(std::rc::Rc::new(CollectionValue::from_flat(items)));
             let arr = match v {
-                Value::Array(xs) => Value::Array(xs),
+                Value::Array(xs) => seq(xs),
+                Value::Seq(s) => seq(s.items),
                 Value::Collection(c) => {
                     if crate::collections::is_map_collection(&c) {
-                        Value::Array(crate::collections::to_pairs(&c).into_iter()
+                        seq(crate::collections::to_pairs(&c).into_iter()
                             .map(|(k, v)| Value::Array(vec![k, v]))
                             .collect())
                     } else {
-                        Value::Array(crate::collections::to_vec(&c))
+                        Value::Collection(c)
                     }
                 }
-                Value::Map(m) => Value::Array(m.into_iter()
+                Value::Map(m) => seq(m.into_iter()
                     .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
                     .collect()),
-                Value::MapOrd(m) => Value::Array(m.into_iter()
+                Value::MapOrd(m) => seq(m.into_iter()
                     .map(|(k, v)| Value::Array(vec![Value::Str(k), v]))
                     .collect()),
-                Value::Str(s) => Value::Array(s.chars().map(Value::Char).collect()),
-                Value::Nil => Value::Array(Vec::new()),
+                Value::Str(s) => seq(s.chars().map(Value::Char).collect()),
+                Value::Nil => seq(Vec::new()),
                 other => return Err(GoblinError::type_error("array/map/string", other.type_name(), "for..in")),
             };
             Ok(arr)
@@ -3056,6 +2931,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => s,
                 Value::Map(m) => return Ok(Value::Map(m)),
                 Value::MapOrd(m) => return Ok(Value::MapOrd(m)),
+                // A map is already a map (D29).
+                Value::Collection(c) if collections::is_map_collection(&c) => return Ok(Value::Collection(c)),
                 other => fmt_value_raw(&other),
             };
             let mut map = std::collections::BTreeMap::new();
@@ -3070,15 +2947,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Map(map))
         }
 
-        BuiltinId::ArrayPush => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "array_push".into() }); }
-            let arr = read(0)?;
-            let val = read(1)?;
-            match arr {
-                Value::Array(mut v) => { v.push(val); Ok(Value::Array(v)) }
-                other => Err(GoblinError::type_error("array", other.type_name(), "array_push")),
-            }
-        }
 
         BuiltinId::CastI8 => {
             expect_n(1)?;
@@ -3486,7 +3354,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     map.insert("dec".into(), Value::Int(spec.decimals as i64));
                     map.insert("th".into(), match spec.sep_thousands {
                         Some(c) => Value::Str(c.to_string()),
-                        None => Value::Nil,
+                        None => Value::Str("none".into()),
                     });
                     map.insert("decmark".into(), Value::Str(spec.sep_decimal.to_string()));
                     Ok(Value::Map(map))
@@ -3509,7 +3377,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     };
                     Ok(Value::Str(name.into()))
                 }
-                _ => Ok(Value::Nil),
+                other => Err(GoblinError::type_error("collection", other.type_name(), "backend")),
             }
         }
         BuiltinId::Metrics => {
@@ -3871,7 +3739,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 3 {
                 return Err(GoblinError::Runtime(format!("register_token: expected 3 args, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token key")) };
             let value = read(2)?;
             session.token_store.entry(ns).or_default().insert(key, value);
@@ -3881,7 +3749,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("resolve_token: expected 2 args, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token key")) };
             match session.token_store.get(&ns).and_then(|m| m.get(&key)) {
                 Some(v) => Ok(v.clone()),
@@ -3892,7 +3760,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("clear_token: expected 2 args, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token key")) };
             if let Some(m) = session.token_store.get_mut(&ns) { m.remove(&key); }
             Ok(Value::Nil)
@@ -3901,7 +3769,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 1 {
                 return Err(GoblinError::Runtime(format!("clear_tokens: expected 1 arg, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_tokens ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_tokens ns")) }.to_ascii_uppercase();
             session.token_store.remove(&ns);
             Ok(Value::Nil)
         }
@@ -3910,59 +3778,95 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Nil)
         }
         BuiltinId::ListTokens => {
+            // {id: value} for one namespace ({} when unknown); {namespace: {id: value}} for all.
+            fn ns_map(m: &std::collections::BTreeMap<String, Value>) -> Value {
+                Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
+                    m.iter().map(|(k, v)| (Value::Str(k.clone()), v.clone())).collect())))
+            }
             if args.is_empty() {
-                let names: Vec<Value> = session.token_store.keys().cloned().map(Value::Str).collect();
-                Ok(Value::Array(names))
+                let all = session.token_store.iter().map(|(ns, m)| (Value::Str(ns.clone()), ns_map(m))).collect();
+                Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(all))))
             } else {
-                let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "list_tokens ns")) };
+                let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "list_tokens ns")) }.to_ascii_uppercase();
                 match session.token_store.get(&ns) {
-                    Some(m) => Ok(Value::Array(m.keys().cloned().map(Value::Str).collect())),
-                    None => Ok(Value::Array(vec![])),
+                    Some(m) => Ok(ns_map(m)),
+                    None => Ok(ns_map(&Default::default())),
                 }
             }
         }
 
         // ── DES / Overlay builtins ─────────────────────────────────────────────
         BuiltinId::OwnedBy => {
-            expect_n(1)?;
-            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "owned_by")) };
-            let owned: Vec<Value> = session.object_store.iter()
-                .filter_map(|(k, v)| {
-                    if let Value::Object { fields, .. } = v {
-                        if fields.get("owner").map(|o| matches!(o, Value::Str(u) if u == &uuid)).unwrap_or(false) {
-                            return Some(Value::Str(k.clone()));
-                        }
-                    }
-                    None
-                })
+            // owned_by(owner): the objects whose owner_id is owner's uuid
+            // (direct children only), as the interpreter's object_store scan.
+            let owner_uuid = match args.first() {
+                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Str(s)) => s.clone(),
+                _ => return Err(GoblinError::Runtime("A0412: owned-by-bad-arg: owned_by() argument must be an object".into())),
+            };
+            let owned: Vec<Value> = session.object_store.values()
+                .filter(|v| matches!(v, Value::Object { fields, .. }
+                    if matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)))
+                .cloned()
                 .collect();
             Ok(Value::Array(owned))
         }
         BuiltinId::OwnsTree => {
-            expect_n(1)?;
-            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "owns_tree")) };
-            Ok(Value::Str(format!("owns_tree({})", uuid)))
-        }
-        BuiltinId::CloneObject => {
-            expect_n(1)?;
-            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clone_object")) };
-            if let Some(obj) = session.object_store.get(&uuid).cloned() {
-                let new_uuid = uuid::Uuid::new_v4().to_string();
-                if let Value::Object { class_name, fields, readonly_fields, trait_fields, .. } = obj {
-                    let cloned = Value::Object { class_name, fields, readonly_fields, trait_fields, uuid: new_uuid.clone() };
-                    session.object_store.insert(new_uuid.clone(), cloned);
-                    Ok(Value::Str(new_uuid))
+            // owns_tree(root): one "{Class: id}" line per object, children
+            // (sorted) indented two spaces per level.
+            fn build_tree(owner_uuid: &str, object_store: &std::collections::HashMap<String, Value>, depth: usize) -> String {
+                let indent = "  ".repeat(depth);
+                let label = if let Some(Value::Object { class_name, fields, .. }) = object_store.get(owner_uuid) {
+                    let id = fields.get("id")
+                        .map(fmt_value_raw)
+                        .unwrap_or_else(|| owner_uuid.to_string());
+                    format!("{}{{{}: {}}}", indent, class_name, id)
                 } else {
-                    Ok(Value::Nil)
-                }
-            } else {
-                Ok(Value::Nil)
+                    format!("{}{}", indent, owner_uuid)
+                };
+                let mut children: Vec<String> = object_store.iter()
+                    .filter(|(_, v)| matches!(v, Value::Object { fields, .. } if
+                        matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner_uuid)))
+                    .map(|(child_uuid, _)| build_tree(child_uuid, object_store, depth + 1))
+                    .collect();
+                children.sort();
+                if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
             }
+            let root_uuid = match args.first() {
+                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Str(s)) => s.clone(),
+                _ => return Err(GoblinError::Runtime("A0413: owns-tree-bad-arg: owns_tree() argument must be an object".into())),
+            };
+            Ok(Value::Str(build_tree(&root_uuid, &session.object_store, 0)))
+        }
+        // clone_object resolves a variable name, so the VM handles it.
+        BuiltinId::CloneObject => {
+            Err(GoblinError::Runtime("clone_object: must be called through VM dispatch".to_string()))
+        }
+        BuiltinId::DeleteObject if args.len() == 3 => {
+            // delete_object!(x): [x's value, "x", argc] from the compiler.
+            let var_name = bang_object_target(&args, "delete_object!")?;
+            let uuid = match read(0)? {
+                Value::Object { uuid, .. } => uuid,
+                _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_object! can only delete objects".into())),
+            };
+            erase_object(session, &var_name, &uuid);
+            Ok(Value::Nil)
         }
         BuiltinId::DeleteObject => {
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             session.object_store.remove(&uuid);
+            Ok(Value::Nil)
+        }
+        BuiltinId::DeleteOverlaysOn if args.len() == 3 => {
+            // delete_overlays_on!(x): [x's value, "x", argc] from the compiler.
+            let host_var = bang_object_target(&args, "delete_overlays_on!")?;
+            let host_uuid = match read(0)? {
+                Value::Object { uuid, .. } => uuid,
+                _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_overlays_on! can only target object instances".into())),
+            };
+            drop_overlays_for(session, &host_var, &host_uuid);
             Ok(Value::Nil)
         }
         BuiltinId::DeleteOverlaysOn => {
@@ -3971,10 +3875,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             session.overlay_instances.retain(|oi| oi.host_var != host_var);
             Ok(Value::Nil)
         }
+        // decision_debug reads every variable, so the VM handles it.
         BuiltinId::DecisionDebug => {
-            expect_n(1)?;
-            let v = read(0)?;
-            Ok(Value::Str(format!("decision_debug: {:?}", v.type_name())))
+            Err(GoblinError::Runtime("decision_debug: must be called through VM dispatch".to_string()))
         }
         BuiltinId::OverlaysOf => {
             expect_n(1)?;
@@ -3989,16 +3892,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("overlay_strength: expected 2 args, got {}", args.len())));
             }
-            let host_var = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
-            let overlay = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
+            let overlay = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
+            let host_var = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
             match session.overlay_instances.iter().find(|oi| oi.host_var == host_var && oi.overlay_name == overlay) {
                 Some(oi) => Ok(Value::Float(oi.strength)),
                 None => Ok(Value::Nil),
             }
         }
+        // link_score reads variables by name and evaluates code, so the VM handles it.
         BuiltinId::LinkScore => {
-            // Stub: not fully specified
-            Ok(Value::Nil)
+            Err(GoblinError::Runtime("link_score: must be called through VM dispatch".to_string()))
         }
 
         // ── Grid builtins ─────────────────────────────────────────────────────
@@ -4028,6 +3931,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 let tile_w = match read(4)? { Value::Int(n) => n as i32, _ => 32 };
                 let tile_h = match read(5)? { Value::Int(n) => n as i32, _ => 32 };
                 let regions = match read(6)? { Value::Int(n) => n as i32, _ => 16 };
+                if tile_w == -1 && tile_h == -1 && regions == -1 {
+                    crate::grid::HierarchyConfig::try_default(width, height)
+                } else {
                 let (tw, th, rc) = (
                     if tile_w == -1 { 32 } else { tile_w },
                     if tile_h == -1 { 32 } else { tile_h },
@@ -4036,6 +3942,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 match crate::grid::HierarchyConfig::try_new(width, height, tw, th, rc) {
                     Ok(h) => Some(h),
                     Err(msg) => return Err(GoblinError::Runtime(format!("grid: invalid hierarchy: {}", msg))),
+                }
                 }
             } else {
                 crate::grid::HierarchyConfig::try_default(width, height)
@@ -4318,6 +4225,68 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── Compiler-synthesized builtins ─────────────────────────────────────
 
+        BuiltinId::PostfixCeil | BuiltinId::PostfixFloor | BuiltinId::PostfixFactorial => {
+            let label = match id { BuiltinId::PostfixCeil => "ceil", BuiltinId::PostfixFloor => "floor", _ => "factorial" };
+            let n = match read(0)? {
+                Value::Int(i) => i as f64,
+                Value::Float(f) => f,
+                Value::Pct(p) => p,
+                Value::Big(d) => rust_decimal::prelude::ToPrimitive::to_f64(&d)
+                    .ok_or_else(|| GoblinError::Runtime(format!("{label}: Big value cannot be represented as a float")))?,
+                other => return Err(GoblinError::type_error("number", other.type_name(), "postfix operator")),
+            };
+            let whole = |f: f64| if f.is_finite() && f >= i64::MIN as f64 && f <= i64::MAX as f64 { Value::Int(f as i64) } else { Value::Float(f) };
+            match id {
+                BuiltinId::PostfixCeil => Ok(whole(n.ceil())),
+                BuiltinId::PostfixFloor => Ok(whole(n.floor())),
+                _ => {
+                    if n < 0.0 { return Err(GoblinError::Runtime("factorial requires a non-negative integer (n ≥ 0).".into())); }
+                    if n.fract() != 0.0 { return Err(GoblinError::Runtime("factorial requires an integer value.".into())); }
+                    let mut acc: u128 = 1;
+                    for i in 2..=(n as u128) { acc = acc.saturating_mul(i); }
+                    Ok(Value::Float(acc as f64))
+                }
+            }
+        }
+        BuiltinId::PostfixFieldsMap => {
+            let show_ids = matches!(read(1)?, Value::Bool(true));
+            let keep = |k: &str| show_ids || !(k == "id" || k.ends_with("_id"));
+            match read(0)? {
+                Value::Object { fields, .. } => Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
+                    fields.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (Value::Str(k.clone()), v.clone())).collect())))),
+                m if m.is_map_like() => {
+                    if show_ids { return Ok(m); }
+                    let pairs = m.map_entries().unwrap_or_default();
+                    Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
+                        pairs.into_iter().filter(|(k, _)| keep(k)).map(|(k, v)| (Value::Str(k), v)).collect()))))
+                }
+                other => Err(GoblinError::type_error("object or map", other.type_name(), "*>>")),
+            }
+        }
+        BuiltinId::SweepBegin => {
+            let arms = crate::sweep::parse_arms(&read(0)?);
+            let all_mode = matches!(read(1)?, Value::Bool(true));
+            let targets = (2..args.len()).map(|i| read(i)).collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Int(session.sweeps.begin(arms, all_mode, targets)?))
+        }
+        BuiltinId::SweepNext => {
+            let Value::Int(id) = read(0)? else { return Err(GoblinError::Runtime("sweep: bad id".into())) };
+            Ok(Value::Int(session.sweeps.next(id)?))
+        }
+        BuiltinId::SweepSelf => {
+            let Value::Int(id) = read(0)? else { return Err(GoblinError::Runtime("sweep: bad id".into())) };
+            Ok(Value::Str(session.sweeps.self_text(id)?))
+        }
+        BuiltinId::SweepApply => {
+            let Value::Int(id) = read(0)? else { return Err(GoblinError::Runtime("sweep: bad id".into())) };
+            let skip = matches!(read(2)?, Value::Bool(true));
+            session.sweeps.apply(id, read(1)?, skip)?;
+            Ok(Value::Nil)
+        }
+        BuiltinId::SweepEnd => {
+            if let Value::Int(id) = read(0)? { session.sweeps.end(id); }
+            Ok(Value::Nil)
+        }
         // SliceExpr(recv, start_or_nil, end_or_nil)
         BuiltinId::SliceExpr => {
             if args.len() != 3 {
@@ -4397,7 +4366,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     for (k, v) in m { out.insert(k, v); }
                     Some(out)
                 }
-                other => return Err(GoblinError::type_error("map or nil", other.type_name(), "enum fields")),
+                other => match other.map_entries() {
+                    Some(entries) => Some(entries.into_iter().collect()),
+                    None => return Err(GoblinError::type_error("map or nil", other.type_name(), "enum fields")),
+                },
             };
             // Validate against registered enum if known
             if let Some(enum_decl) = session.enums.get(&enum_name) {
@@ -4426,7 +4398,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let module = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token module")) };
             let ident  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token ident")) };
-            match session.token_store.get(&module).and_then(|m| m.get(&ident)) {
+            match session.token_store.get(&module)
+                .or_else(|| session.token_store.get(&module.to_ascii_uppercase()))
+                .and_then(|m| m.get(&ident)) {
                 Some(Value::Str(s)) if s.contains("{#") => {
                     let resolved = resolve_box_template_vm(s, &session.box_store);
                     Ok(Value::Str(resolved))
@@ -4494,7 +4468,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             } else {
                 format!("[^{}]+", escaped)
             };
-            match regex::Regex::new(&pattern) {
+            match crate::collections::cached_regex(&pattern) {
                 Ok(re) => {
                     let tokens: Vec<Value> = re.find_iter(&text)
                         .map(|m| Value::Str(m.as_str().to_string()))
@@ -4515,6 +4489,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => Ok(Value::Array(s.chars().map(|c| Value::Char(c)).collect())),
                 Value::Map(m) => Ok(Value::Array(m.into_values().collect())),
                 Value::MapOrd(m) => Ok(Value::Array(m.into_values().collect())),
+                Value::Collection(c) if c.is_map() => Ok(Value::Array(collections::values(&c))),
+                v @ Value::Collection(_) => Ok(v),
+                Value::Seq(s) => Ok(Value::Array(s.items)),
                 Value::Nil => Ok(Value::Array(vec![])),
                 other => Err(GoblinError::type_error("collection", other.type_name(), "get")),
             }
@@ -4583,6 +4560,23 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             http_call("DELETE", &url, None, "", &headers)
         }
 
+        BuiltinId::DbQuery | BuiltinId::DbQueryOne | BuiltinId::DbExec => {
+            let fn_name = match id { BuiltinId::DbQuery => "db_query", BuiltinId::DbQueryOne => "db_query_one", _ => "db_exec" };
+            if args.len() != 2 {
+                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: fn_name.into() });
+            }
+            let sql = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), fn_name)),
+            };
+            let params = match read(1)? {
+                v @ (Value::Array(_) | Value::Collection(_)) => value_to_items(v, "db params")?,
+                Value::Seq(s) => s.items,
+                _ => return Err(GoblinError::Runtime(format!("{fn_name} params argument must be an array"))),
+            };
+            db_call(id, &sql, &params, fn_name)
+        }
+
         BuiltinId::HttpRequest => {
             if args.len() != 5 {
                 return Err(GoblinError::Runtime(format!("http_request: expected 5 args (method, url, body, content_type, headers), got {}", args.len())));
@@ -4624,26 +4618,31 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 }
 
 fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Result<Value, GoblinError> {
-    fn want_idx(v: Value, label: &str) -> Result<isize, GoblinError> {
+    // None = bound omitted. Negative indices count from the end (spec §14).
+    fn want_idx(v: Value, label: &str) -> Result<Option<isize>, GoblinError> {
         match v {
-            Value::Nil => Ok(-1), // sentinel: use default
-            Value::Int(n) if n >= 0 => Ok(n as isize),
-            Value::Float(f) if f.is_finite() && f.fract() == 0.0 && f >= 0.0 => Ok(f as isize),
-            _ => Err(GoblinError::Runtime(format!("{} must be a non-negative integer index", label))),
+            Value::Nil => Ok(None),
+            Value::Int(n) => Ok(Some(n as isize)),
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => Ok(Some(f as isize)),
+            _ => Err(GoblinError::Runtime(format!("{} must be an integer index", label))),
         }
     }
-    fn clamp(mut s: isize, mut e: isize, len: usize) -> (usize, usize) {
+    fn clamp(s: Option<isize>, e: Option<isize>, len: usize) -> (usize, usize) {
         let l = len as isize;
-        if s < 0 { s = 0; }
-        if e < 0 { e = l; } // -1 sentinel → default to len
-        if s > l { s = l; }
-        if e > l { e = l; }
+        let norm = |i: isize| if i < 0 { (l + i).max(0) } else { i.min(l) };
+        let s = s.map(norm).unwrap_or(0);
+        let e = e.map(norm).unwrap_or(l);
         (s as usize, e as usize)
     }
 
     let start_raw = want_idx(start_v, "slice start")?;
     let end_raw   = want_idx(end_v,   "slice end")?;
 
+    let recv = match recv {
+        Value::Collection(c) if !collections::is_map_collection(&c) => Value::Array(collections::to_vec(&c)),
+        Value::Seq(sq) => Value::Array(sq.items),
+        other => other,
+    };
     match recv {
         Value::Array(xs) => {
             let len = xs.len();
@@ -4694,6 +4693,13 @@ fn zip_directory(src: &str, dest: &str) -> Result<(), GoblinError> {
         return Err(GoblinError::Runtime(format!("zip_dir: source '{}' does not exist", src)));
     }
 
+    // Like copy_file!, create the destination's missing parent directories.
+    if let Some(parent) = std::path::Path::new(dest).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: cannot create '{}': {}", parent.display(), e)))?;
+        }
+    }
     let dest_file = File::create(dest)
         .map_err(|e| GoblinError::Runtime(format!("zip_dir: cannot create '{}': {}", dest, e)))?;
     let mut zip = zip::ZipWriter::new(BufWriter::new(dest_file));
@@ -5145,11 +5151,12 @@ fn numeric_max(a: Value, b: Value) -> Result<Value, GoblinError> {
 }
 
 fn fmt_num_trim(f: f64) -> String {
-    if f.is_finite() && f.fract() == 0.0 {
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 9.2e18 {
         format!("{}", f as i64)
     } else {
+        // Whole floats past i64 print all their digits (no saturation).
         let s = format!("{}", f);
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
     }
 }
 
@@ -5200,9 +5207,14 @@ pub fn value_to_str(v: &Value) -> String {
             s
         }
         Value::Ref(s)        => format!("<ref {}>", s),
-        Value::GridRef { grid_id, x, y } => format!("<gridref {}[{},{}]>", grid_id, x, y),
-        Value::Enum { enum_name, variant_name, .. } => format!("{}.{}", enum_name, variant_name),
+        Value::GridRef { grid_id, x, y } => format!("GridRef({}, {}, {})", grid_id, x, y),
+        Value::Enum { enum_name, variant_name, .. } => format!("{}::{}", enum_name, variant_name),
         Value::Class { name } => format!("<class {}>", name),
+        Value::Collection(c) if collections::is_map_collection(c) => {
+            let parts: Vec<String> = collections::to_pairs(c).iter()
+                .map(|(k, v)| format!("{}: {}", value_to_str(k), value_to_str(v))).collect();
+            format!("{{{}}}", parts.join(", "))
+        }
         Value::Collection(c) => {
             let items: Vec<String> = collections::to_vec(c).iter().map(value_to_str).collect();
             format!("[{}]", items.join(", "))
@@ -5302,6 +5314,70 @@ fn value_to_map_key(v: &Value) -> String {
         Value::Bool(b)  => b.to_string(),
         other           => fmt_value_raw(other),
     }
+}
+
+/// The variable name of a `delete_object!(x)` / `delete_overlays_on!(x)` call,
+/// whose args the compiler passes as [x's value, "x", argc] (or [nil, nil,
+/// argc] when the call does not name exactly one variable).
+fn bang_object_target(args: &[Value], name: &str) -> Result<String, GoblinError> {
+    let argc = match args.get(2) { Some(Value::Int(n)) => *n, _ => 1 };
+    if argc != 1 {
+        return Err(GoblinError::Runtime(format!(
+            "R0301: wrong-arity: Wrong number of arguments (expected 1, got {})", argc)));
+    }
+    match args.get(1) {
+        Some(Value::Str(s)) => Ok(s.clone()),
+        _ => Err(GoblinError::Runtime(if name == "delete_object!" {
+            "P0802: lvalue-expected: delete_object! expects a plain object variable".to_string()
+        } else {
+            "P0802: lvalue-expected: delete_overlays_on! expects a plain host object variable".to_string()
+        })),
+    }
+}
+
+/// Remove every overlay instance on the host (the interpreter's `drop_overlays_for`).
+fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
+    let to_remove: Vec<(String, crate::session::OverlayInstanceId)> = session.overlay_instances.iter()
+        .filter(|i| i.host_uuid == host_uuid)
+        .map(|i| (i.overlay_name.clone(), i.des_id))
+        .collect();
+    if let Some(host_handle) = session.des_store.handle_for_name(host_var) {
+        for (overlay_name, id) in &to_remove {
+            session.des_index.remove_overlay(host_handle, overlay_name, *id);
+        }
+    }
+    session.overlay_instances.retain(|inst| inst.host_uuid != host_uuid);
+}
+
+/// Erase an object and the runtime state attached to it (the interpreter's
+/// `erase_var`). The variable keeps a dangling reference, so reading it
+/// afterwards is an error.
+fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
+    drop_overlays_for(session, var_name, uuid);
+    session.object_store.remove(uuid);
+    if let Some(handle) = session.des_store.handle_for_name(var_name) {
+        if let Some(entity) = session.des_store.get(handle) {
+            let class = entity.class_name.clone();
+            session.des_index.remove_all(handle, &class, None);
+        }
+        session.des_store.erase(handle);
+    }
+    session.object_decisions.remove(var_name);
+    session.object_link_defs.retain(|(obj, _), _| obj != var_name);
+    let dropped_keys: Vec<(String, String, String)> = session.link_offsets.keys()
+        .filter(|(from, to, _)| from == var_name || to == var_name)
+        .cloned()
+        .collect();
+    for key in &dropped_keys {
+        if let Some(link_id) = session.des_link_ids.remove(key) {
+            let from_h = session.des_store.handle_for_name(&key.0);
+            let to_h = session.des_store.handle_for_name(&key.1);
+            if let (Some(fh), Some(th)) = (from_h, to_h) {
+                session.des_index.remove_link(fh, th, link_id);
+            }
+        }
+    }
+    session.link_offsets.retain(|(from, to, _), _| from != var_name && to != var_name);
 }
 
 pub fn fmt_value_raw(v: &Value) -> String {
@@ -5410,6 +5486,17 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
             s
         }
         Value::Pair(a, b) => format!("({}, {})", fmt_value_depth(a, depth + 1), fmt_value_depth(b, depth + 1)),
+        Value::Collection(c) if collections::is_map_collection(c) => {
+            let mut s = String::from("{");
+            for (i, (k, val)) in collections::to_pairs(c).iter().enumerate() {
+                if i > 0 { s.push_str(", "); }
+                s.push_str(&fmt_value_depth(k, depth + 1));
+                s.push_str(": ");
+                s.push_str(&fmt_value_depth(val, depth + 1));
+            }
+            s.push('}');
+            s
+        }
         Value::Collection(c) => {
             let items = collections::to_vec(c);
             let mut s = String::from("[");
@@ -5576,17 +5663,19 @@ fn lexical_path_normalize(path: &str) -> String {
 
 fn regex_with_flags(pattern: &str, flags_val: &Value) -> String {
     let mut f_i = false; let mut f_m = false; let mut f_s = false;
-    if let Value::Map(m) = flags_val {
-        if let Some(Value::Bool(b)) = m.get("i") { f_i = *b; }
-        if let Some(Value::Bool(b)) = m.get("m") { f_m = *b; }
-        if let Some(Value::Bool(b)) = m.get("s") { f_s = *b; }
-    }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("i") { f_i = b; }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("m") { f_m = b; }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("s") { f_s = b; }
     let mut f = String::new();
     if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
     if f.is_empty() { pattern.to_string() } else { format!("(?{}){}", f, pattern) }
 }
 
 fn pack_value(v: Value) -> Value {
+    if !matches!(v, Value::Array(_)) && v.is_seq_like() {
+        let items = v.seq_items().map(|c| c.into_owned()).unwrap_or_default();
+        return pack_value(Value::Array(items));
+    }
     match v {
         Value::Array(xs) if xs.is_empty() => Value::Int(0),
         Value::Array(xs) => {
@@ -5847,6 +5936,10 @@ fn http_extract_headers(v: Value, caller: &str) -> Result<Vec<(String, String)>,
         Value::MapOrd(m) => Ok(m.into_iter().map(|(k, v)| (k, match v {
             Value::Str(s) => s, other => fmt_value_raw(&other),
         })).collect()),
+        Value::Collection(c) if collections::is_map_collection(&c) => Ok(collections::to_pairs(&c).into_iter().map(|(k, v)| (
+            match k { Value::Str(s) => s, other => fmt_value_raw(&other) },
+            match v { Value::Str(s) => s, other => fmt_value_raw(&other) },
+        )).collect()),
         Value::Nil => Ok(vec![]),
         other => Err(GoblinError::Runtime(format!("{caller}: headers must be a map, got {}", other.type_name()))),
     }
@@ -5869,4 +5962,158 @@ fn http_call(method: &str, url: &str, body: Option<&str>, content_type: &str, he
 #[cfg(target_arch = "wasm32")]
 fn http_call(_method: &str, _url: &str, _body: Option<&str>, _content_type: &str, _headers: &[(String, String)]) -> Result<Value, GoblinError> {
     Err(GoblinError::Runtime("outbound HTTP is not available in WASM builds".into()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn db_call(id: BuiltinId, sql: &str, params: &[Value], fn_name: &str) -> Result<Value, GoblinError> {
+    use goblin_db::DbValue;
+    let mut ps = Vec::with_capacity(params.len());
+    for v in params {
+        ps.push(match v {
+            Value::Str(s) => DbValue::Str(s.clone()),
+            Value::Int(n) => DbValue::Int(*n),
+            Value::Float(x) => DbValue::Float(*x),
+            Value::Bool(b) => DbValue::Bool(*b),
+            Value::Nil => DbValue::Null,
+            _ => return Err(GoblinError::Runtime(format!(
+                "{fn_name} got an unsupported parameter type (supported: str, int, float, bool, nil)"))),
+        });
+    }
+    // Rows come back as map collections (and query results as an array
+    // collection): shared on read, where the legacy MapOrd/Array forms were
+    // deep-copied every time a variable holding them was read.
+    let row_to_value = |row: goblin_db::DbRow| -> Value {
+        collections::into_collection(Value::MapOrd(row.into_iter().map(|(k, c)| (k, match c {
+            DbValue::Null => Value::Nil,
+            DbValue::Bool(b) => Value::Bool(b),
+            DbValue::Int(n) => Value::Int(n),
+            DbValue::Float(x) => Value::Float(x),
+            DbValue::Str(s) => Value::Str(s),
+        })).collect()))
+    };
+    let err = |e: goblin_db::DbError| GoblinError::Runtime(e.to_string());
+    match id {
+        BuiltinId::DbQuery => Ok(collections::into_collection(Value::Array(goblin_db::query(sql, &ps).map_err(err)?.into_iter().map(row_to_value).collect()))),
+        BuiltinId::DbQueryOne => Ok(goblin_db::query_one(sql, &ps).map_err(err)?.map(row_to_value).unwrap_or(Value::Nil)),
+        _ => {
+            let n = goblin_db::exec(sql, &ps).map_err(err)?;
+            let mut m = indexmap::IndexMap::new();
+            m.insert("ok".to_string(), Value::Bool(true));
+            m.insert("rows_affected".to_string(), Value::Int(n as i64));
+            Ok(collections::into_collection(Value::MapOrd(m)))
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn db_call(_id: BuiltinId, _sql: &str, _params: &[Value], fn_name: &str) -> Result<Value, GoblinError> {
+    Err(GoblinError::Runtime(format!("{fn_name}: databases are not available in WASM builds")))
+}
+
+/// Parses JSON straight into Goblin values. Objects keep their key order
+/// (D6: maps are insertion-ordered; serde_json's own map sorts its keys) and
+/// become map collections, so reading them back is not a deep copy.
+fn json_parse_ordered(text: &str) -> Result<Value, serde_json::Error> {
+    use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct Seed;
+    impl<'de> DeserializeSeed<'de> for Seed {
+        type Value = Value;
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+            d.deserialize_any(Seed)
+        }
+    }
+    impl<'de> Visitor<'de> for Seed {
+        type Value = Value;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str("JSON") }
+        fn visit_unit<E>(self) -> Result<Value, E> { Ok(Value::Nil) }
+        fn visit_none<E>(self) -> Result<Value, E> { Ok(Value::Nil) }
+        fn visit_bool<E>(self, b: bool) -> Result<Value, E> { Ok(Value::Bool(b)) }
+        fn visit_i64<E>(self, n: i64) -> Result<Value, E> { Ok(Value::Int(n)) }
+        fn visit_u64<E>(self, n: u64) -> Result<Value, E> {
+            Ok(i64::try_from(n).map(Value::Int).unwrap_or(Value::Float(n as f64)))
+        }
+        fn visit_f64<E>(self, f: f64) -> Result<Value, E> { Ok(Value::Float(f)) }
+        fn visit_str<E>(self, s: &str) -> Result<Value, E> { Ok(Value::Str(s.to_string())) }
+        fn visit_string<E>(self, s: String) -> Result<Value, E> { Ok(Value::Str(s)) }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+            let mut items = Vec::new();
+            while let Some(v) = seq.next_element_seed(Seed)? { items.push(v); }
+            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+            // A repeated key keeps its first position and its last value,
+            // as inserting into a map does.
+            let mut m: indexmap::IndexMap<String, Value> = indexmap::IndexMap::new();
+            while let Some(k) = map.next_key::<String>()? {
+                let v = map.next_value_seed(Seed)?;
+                m.insert(k, v);
+            }
+            Ok(collections::into_collection(Value::MapOrd(m)))
+        }
+    }
+    let mut de = serde_json::Deserializer::from_str(text);
+    let v = Seed.deserialize(&mut de)?;
+    de.end()?;
+    Ok(v)
+}
+
+/// Serializes a value as `value_to_json` would, but writes map keys in the
+/// map's own order (D6) rather than serde_json's sorted order.
+struct JsonOut<'a>(&'a Value);
+
+impl serde::Serialize for JsonOut<'_> {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        let v = if let Value::Formatted(inner, _) = self.0 { inner.as_ref() } else { self.0 };
+        let entries: Option<indexmap::IndexMap<String, &Value>> = match v {
+            Value::Map(m) => Some(m.iter().map(|(k, x)| (k.clone(), x)).collect()),
+            Value::MapOrd(m) => Some(m.iter().map(|(k, x)| (k.clone(), x)).collect()),
+            Value::Collection(c) if collections::is_map_collection(c) => {
+                let mut out = indexmap::IndexMap::new();
+                let pairs: Vec<(&Value, &Value)> = match &c.layout {
+                    crate::value::CollectionLayout::SmallMap(p) => p.iter().map(|(k, x)| (k, x)).collect(),
+                    crate::value::CollectionLayout::HashMapBackend(m) => m.iter().collect(),
+                    _ => Vec::new(),
+                };
+                for (k, x) in pairs {
+                    if let Some(key) = collections::value_to_map_key(k) { out.insert(key, x); }
+                }
+                Some(out)
+            }
+            _ => None,
+        };
+        if let Some(entries) = entries {
+            let mut m = ser.serialize_map(Some(entries.len()))?;
+            for (k, x) in entries { m.serialize_entry(&k, &JsonOut(x))?; }
+            return m.end();
+        }
+        let items: Option<Vec<Value>> = match v {
+            Value::Array(xs) => Some(xs.clone()),
+            Value::Collection(c) => Some(collections::to_vec(c)),
+            Value::Pair(a, b) => Some(vec![(**a).clone(), (**b).clone()]),
+            _ => None,
+        };
+        if let Some(items) = items {
+            let mut seq = ser.serialize_seq(Some(items.len()))?;
+            for x in &items { seq.serialize_element(&JsonOut(x))?; }
+            return seq.end();
+        }
+        value_to_json(v).serialize(ser)
+    }
+}
+
+/// Exact `b ** e` for a big base; errors when the result does not fit a big.
+fn big_pow(b: rust_decimal::Decimal, e: i64) -> Result<rust_decimal::Decimal, GoblinError> {
+    let mut acc = rust_decimal::Decimal::ONE;
+    let mut base = b;
+    let mut e = e;
+    let overflow = || GoblinError::Runtime("pow: result is too large for a big number".into());
+    while e > 0 {
+        if e & 1 == 1 { acc = acc.checked_mul(base).ok_or_else(overflow)?; }
+        e >>= 1;
+        if e > 0 { base = base.checked_mul(base).ok_or_else(overflow)?; }
+    }
+    Ok(acc)
 }

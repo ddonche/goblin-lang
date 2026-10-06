@@ -1,0 +1,8 @@
+/// read_json parses a JSON file written as text.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/h.json", "[1, \"two\", false]")
+v | :read_json("{d}/h.json")
+say(:len(v))
+say(v[0] + 1)
+say(v[1])
+say(v[2])

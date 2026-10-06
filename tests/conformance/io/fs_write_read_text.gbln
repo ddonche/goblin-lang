@@ -1,0 +1,8 @@
+/// write_text! creates a file, read_text returns its contents; a second write overwrites.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/note.txt"
+:write_text!(p, "first")
+say(:read_text(p))
+:write_text!(p, "second\nline")
+say(:read_text(p))
+say(:len(:read_text(p)))

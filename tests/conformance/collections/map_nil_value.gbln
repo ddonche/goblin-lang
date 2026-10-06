@@ -1,0 +1,3 @@
+m | {"a": nil}
+say(m{"a"})
+say(:has(m, "a"))

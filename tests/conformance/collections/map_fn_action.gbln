@@ -1,0 +1,5 @@
+/// known-gap: interp has no map_fn builtin (unknown action)
+act dbl(n)
+    return n * 2
+xx
+say(:map_fn([1, 2], "dbl"))

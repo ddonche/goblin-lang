@@ -1,0 +1,4 @@
+say(:join(["a", "b", "c"], "-"))
+say(:join(["solo"], ","))
+e | :join([], ",")
+say("[{e}]")

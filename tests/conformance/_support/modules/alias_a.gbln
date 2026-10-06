@@ -1,0 +1,4 @@
+/// helper: one of two modules imported under the same alias
+act which()
+    return "alias_a"
+xx

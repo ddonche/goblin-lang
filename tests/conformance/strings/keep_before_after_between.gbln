@@ -1,0 +1,3 @@
+say(:keep_before("a.b.c", "."))
+say(:keep_after("a.b.c", "."))
+say(:keep_between("x[1]y", "[", "]"))

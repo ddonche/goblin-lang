@@ -1,0 +1,2 @@
+import _support/modules/named_like_builtins as nb
+say(nb::call_pct())

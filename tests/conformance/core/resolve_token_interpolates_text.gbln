@@ -1,0 +1,5 @@
+/// resolve_token(text) expands every {{{NS::ID}}} placeholder in a string.
+:register_token("SITE", "TITLE", "Goblin Journal")
+:register_token("SITE", "YEAR", 2026)
+say(:resolve_token("Welcome to {{{SITE::TITLE}}} ({{{SITE::YEAR}}})!"))
+say(:resolve_token("no tokens here"))

@@ -1,0 +1,5 @@
+/// write_text! does not create parent directories; writing under a missing directory is an error.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+:write_text!("{d}/no/such/dir/f.txt", "x")
+say("unreachable")

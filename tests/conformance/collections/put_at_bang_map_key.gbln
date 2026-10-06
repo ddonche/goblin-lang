@@ -1,0 +1,4 @@
+m | {"a": 1}
+:put_at!(m, "b", 2)
+say(m{"b"})
+say(:len(m))

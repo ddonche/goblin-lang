@@ -1,0 +1,2 @@
+/// Decided 2026-10-06 (D-map-key-order, option B; see DECISIONS.md).
+say({"b": 1, "a": 2})

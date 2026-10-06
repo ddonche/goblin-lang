@@ -1,0 +1,7 @@
+act boom()
+    say("called")
+    return true
+xx
+say(false and boom())
+say(true or boom())
+say(true and boom())

@@ -1,0 +1,7 @@
+act fx(a)
+    a |= a + 1
+    return a
+xx
+v | 1
+say(fx(v))
+say(v)

@@ -1,0 +1,7 @@
+/// clear_all_tokens() removes every namespace.
+:register_token("A", "X", 1)
+:register_token("B", "Y", 2)
+say(:len(:list_tokens()))
+:clear_all_tokens()
+say(:len(:list_tokens()))
+say(:len(:list_tokens("A")))

@@ -1,0 +1,5 @@
+w | ["a", "b", "c"]
+x | pick 2 from w
+say(:len(x))
+say(:len(:unique(x)))
+say w

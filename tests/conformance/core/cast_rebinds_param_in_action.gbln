@@ -1,0 +1,6 @@
+/// Decided 2026-10-06 (D-cast-rebinds, option A; see DECISIONS.md).
+act fx(v)
+    t | :str(v)
+    return v + 1
+xx
+say(fx(1))

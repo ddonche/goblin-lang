@@ -242,29 +242,46 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
 /// Like `execute_source` but captures print/say output and returns it with the response state.
 /// Used by goblin-host to run scripts in-process with the VM engine.
 /// `source_file` is used in error messages; pass "" when the path is not known.
-pub fn execute_source_api(source: &str, source_file: &str) -> Result<(String, ResponseState), GoblinError> {
-    let tokens = goblin_lexer::lex(source, if source_file.is_empty() { "<source>" } else { source_file })
-        .map_err(|diags| GoblinError::CompileError {
-            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
-            span_debug: "<lex>".into(),
-        })?;
-
-    let parser = goblin_parser::Parser::new(&tokens);
-    let module = parser.parse_module()
-        .map_err(|diags| GoblinError::CompileError {
-            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
-            span_debug: "<parse>".into(),
-        })?;
-
-    let compiled = Compiler::new().for_file(source_file).compile_module(&module)?;
+/// Builds the VM for an entry script, the way `goblin run --vm` and
+/// goblin-host's VM mode both run one: imports resolve from the working
+/// directory (as the interpreter's `ImportBaseMode::ProjectRoot`), `box.toml`
+/// is read from the script's directory, and `args` holds `extra_args`.
+pub fn prepare_entry(
+    compiled: crate::value::CompiledModule,
+    script_path: &std::path::Path,
+    extra_args: Vec<String>,
+) -> Result<(Vm, crate::value::FunctionObject), GoblinError> {
+    let script_dir = script_path.parent()
+        .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let box_toml_path = script_dir.join("box.toml");
+    let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let mut session = Session::new(GcMode::Auto);
     session.global_names = compiled.global_names;
-    session.enable_output_capture();
-    for decl in &compiled.classes {
-        compile_class_methods(decl, &mut session);
+    session.project_root = project_root.clone();
+    session.base_dir = project_root;
+    if box_toml_path.exists() {
+        load_box_toml_into_session(&mut session, &box_toml_path)
+            .map_err(|e| GoblinError::Runtime(format!("box.toml error: {e}")))?;
     }
-    for decl in compiled.classes {
+    install_classes(&mut session, compiled.classes, compiled.enums);
+    if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
+        let args_val = Value::Array(extra_args.into_iter().map(Value::Str).collect());
+        let tether = session.alloc_value(args_val);
+        session.set_global(idx, tether);
+    }
+    Ok((Vm::new(session), compiled.entry))
+}
+
+/// Registers a compiled module's classes (merging a matrix redeclaration
+/// into the earlier declaration) and enums.
+pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::ClassDecl>, enums: Vec<goblin_ast::EnumDecl>) {
+    for decl in &classes {
+        compile_class_methods(decl, session);
+    }
+    for decl in classes {
         let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
                 let mut merged = decl.clone();
@@ -285,10 +302,36 @@ pub fn execute_source_api(source: &str, source_file: &str) -> Result<(String, Re
         } else { decl };
         session.classes.insert(merged.name.clone(), merged);
     }
-    for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
-    let mut vm = Vm::new(session);
-    vm.execute(compiled.entry)?;
-    let output = vm.session.take_output();
+    for decl in enums { session.enums.insert(decl.name.clone(), decl); }
+}
+
+/// The response body from API-mode output: every `say` and top-level
+/// expression adds one line, and the interpreter's envelope carries a single
+/// emission without a trailing newline.
+pub fn api_body(mut output: String) -> String {
+    if output.ends_with('\n') { output.pop(); }
+    output
+}
+
+pub fn execute_source_api(source: &str, source_file: &str) -> Result<(String, ResponseState), GoblinError> {
+    let tokens = goblin_lexer::lex(source, if source_file.is_empty() { "<source>" } else { source_file })
+        .map_err(|diags| GoblinError::CompileError {
+            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            span_debug: "<lex>".into(),
+        })?;
+
+    let parser = goblin_parser::Parser::new(&tokens);
+    let module = parser.parse_module()
+        .map_err(|diags| GoblinError::CompileError {
+            message: diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            span_debug: "<parse>".into(),
+        })?;
+
+    let compiled = Compiler::new().with_globals(&["args"]).for_file(source_file).compile_module(&module)?;
+    let (mut vm, entry) = prepare_entry(compiled, std::path::Path::new(source_file), Vec::new())?;
+    vm.session.enable_output_capture();
+    vm.execute(entry)?;
+    let output = api_body(vm.session.take_output());
     let response = vm.session.response.clone();
     Ok((output, response))
 }

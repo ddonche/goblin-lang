@@ -1,0 +1,4 @@
+/// requires: db
+/// Casting a timestamp to text in SQL (the campfire workaround) yields a string.
+r | :db_query_one("SELECT ('2025-01-02 03:04:05'::timestamp)::text AS ts", [])
+say(r{"ts"})

@@ -1,0 +1,6 @@
+/// Plain delete_path(...) without the bang is an error, and the file survives.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/f.txt", "x")
+say("start")
+:delete_path("{d}/f.txt")
+say("unreachable")

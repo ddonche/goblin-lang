@@ -1,0 +1,8 @@
+unless false
+    say("u")
+xx
+unless true
+    say("no")
+else
+    say("e")
+xx

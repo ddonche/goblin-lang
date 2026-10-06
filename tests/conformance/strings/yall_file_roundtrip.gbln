@@ -1,0 +1,7 @@
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/c.yall"
+:yall_write_file(p, {"k": "v", "n": 2})
+say(:read_text(p))
+w | :yall_parse_file(p)
+say(w{"k"})
+say(w{"n"})

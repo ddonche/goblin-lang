@@ -1,0 +1,4 @@
+import _support/modules/recur as r
+say(r::fact(5))
+say(r::is_even(10))
+say(r::is_odd(7))

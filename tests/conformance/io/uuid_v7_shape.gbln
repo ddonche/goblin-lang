@@ -1,0 +1,7 @@
+/// uuid_v7 has version nibble 7, and later ids do not sort before earlier ones (time-ordered).
+a | :uuid_v7()
+b | :uuid_v7()
+say(:len(a))
+say(:chars(a)[14])
+say(a != b)
+say(a <= b)

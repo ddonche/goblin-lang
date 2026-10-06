@@ -1,0 +1,7 @@
+x | (20%)
+say(x)
+say(:is_pct(x))
+say((12.5%))
+say(:pct("8.5%"))
+say("{x}")
+say(:str((20%)))
