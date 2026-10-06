@@ -1300,6 +1300,20 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+                // name!(x[k]…, args…): change the element at the path, in
+                // place when x's collection is not shared.
+                if let Some((bid, root, keys)) = bang_path_call(name, args) {
+                    let load_op = self.resolve_load(&root).map_err(|e| self.locate_err(e))?;
+                    self.emit(load_op);
+                    for k in &keys { self.compile_expr(k)?; }
+                    for a in &args[1..] { self.compile_expr(a)?; }
+                    self.emit(Opcode::CallBuiltinMutPath(bid, args.len() as u8, keys.len() as u8));
+                    let store_op = self.resolve_store(&root)
+                        .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root.clone() }))?;
+                    self.emit(store_op);
+                    self.emit(Opcode::LoadNil);
+                    return Ok(());
+                }
                 // Check if it's a known builtin call pattern.
                 if let Some(_) = self.try_compile_builtin_call(name, args)? {
                     // Mutation-bang free call: name!(collection, ...) stores result back.
@@ -3332,6 +3346,32 @@ impl Compiler {
 }
 
 /// A variable, or indexes / `>>` fields below one (at most 16 segments).
+/// For `name!(x[k1]…[kN], args…)` with a builtin `name` that writes back
+/// into its first argument: the builtin, the root variable and the keys.
+/// Paths with `>>` fields keep the general lowering.
+fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String, Vec<&'a Expr>)> {
+    const IO_BANG_NO_WRITEBACK: &[&str] = &[
+        "write_text!", "write_json!", "append_file!",
+        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
+    ];
+    let bare = name.trim_start_matches(':');
+    if !bare.ends_with('!') || IO_BANG_NO_WRITEBACK.contains(&bare) || args.len() > 255 { return None; }
+    let bid = builtin_by_name(bare).or_else(|| builtin_by_name(name))
+        .or_else(|| bare.strip_suffix('!').and_then(builtin_by_name))?;
+    let mut keys = Vec::new();
+    let mut cur = args.first()?;
+    let root = loop {
+        match cur {
+            Expr::Index(base, key, _) | Expr::IndexMap(base, key, _) => { keys.push(key.as_ref()); cur = base.as_ref(); }
+            Expr::Ident(name, _) => break name.clone(),
+            _ => return None,
+        }
+    };
+    if keys.is_empty() || keys.len() > 16 { return None; }
+    keys.reverse();
+    Some((bid, root, keys))
+}
+
 fn is_lvalue(e: &Expr) -> bool {
     let mut cur = e;
     let mut depth = 0;

@@ -147,6 +147,13 @@ pub enum Opcode {
     /// the only reference to its stash (leaving x's operand as the result),
     /// and otherwise acts as CallBuiltin.
     CallBuiltinMut(BuiltinId, u8),
+    /// `name!(x[k1]…[kN], args…)` where x is a variable: stack is
+    /// [x, k1…kN, args…] (argc counts the target as one argument). Changes
+    /// the element at the path in place when the VM holds the only reference
+    /// to x's stash (leaving x's operand), and otherwise reads the element,
+    /// calls the builtin and writes the result back along the path as
+    /// `update!` does, pushing x's new value. The caller stores it into x.
+    CallBuiltinMutPath(BuiltinId, u8, u8),
 
     // ── Closures ──────────────────────────────────────────────────────────────
     /// Create a closure from constants[func_idx] (a FunctionObject).
@@ -329,6 +336,7 @@ impl Opcode {
             Opcode::UpdatePath(..)  => "UpdatePath",
             Opcode::UpdatePathMut(..) => "UpdatePathMut",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
+            Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
             Opcode::StringInterpVals(..) => "StringInterpVals",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",

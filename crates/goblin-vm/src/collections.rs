@@ -1908,13 +1908,12 @@ pub fn update_path_in_place(target: &mut Value, keys: &[Value], val: Value) -> b
 }
 
 /// `name!(x, args…)` in place for the single-element writes.
-pub fn mutate_in_place(target: &mut Value, id: crate::value::BuiltinId, args: &[Value]) -> bool {
+/// Whether `name!(x, args…)` on this collection can be done in place.
+fn can_mutate(c: &CollectionValue, id: crate::value::BuiltinId, args: &[Value]) -> bool {
     use crate::value::BuiltinId;
-    let Value::Collection(rc) = target else { return false };
     match (id, args) {
-        (BuiltinId::PutLast, [v]) | (BuiltinId::PutFirst, [v]) => {
+        (BuiltinId::PutLast, [_]) | (BuiltinId::PutFirst, [_]) => {
             let pos = if id == BuiltinId::PutLast { Position::Last } else { Position::First };
-            let c = &**rc;
             let ok = match (&c.layout, &pos) {
                 (CollectionLayout::FlatArray(_), Position::Last) => true,
                 (CollectionLayout::RingBuf(_), _) => true,
@@ -1922,30 +1921,89 @@ pub fn mutate_in_place(target: &mut Value, id: crate::value::BuiltinId, args: &[
             };
             let mut meta = update_meta_for_op(&c.meta, &pos, &Operation::Get);
             meta.len = c.len() + 1;
-            if !ok || !keeps_seq_layout(&c.layout, &meta) { return false; }
+            ok && keeps_seq_layout(&c.layout, &meta)
+        }
+        // put/put_at on a map inserts or overwrites (on a sequence it inserts,
+        // which is not a single-slot write).
+        (BuiltinId::Put | BuiltinId::PutAt, [k, _]) => c.is_map() && can_write_key(c, k, false),
+        // update/update_at need the key or index to exist already.
+        (BuiltinId::Update | BuiltinId::UpdateAt, [k, _]) => can_write_key(c, k, true),
+        _ => false,
+    }
+}
+
+/// Applies `name!(x, args…)` in place, after can_mutate has said yes.
+fn apply_mutation(rc: &mut Rc<CollectionValue>, id: crate::value::BuiltinId, args: &[Value]) {
+    use crate::value::BuiltinId;
+    match (id, args) {
+        (BuiltinId::PutLast, [v]) | (BuiltinId::PutFirst, [v]) => {
+            let pos = if id == BuiltinId::PutLast { Position::Last } else { Position::First };
             let c = Rc::make_mut(rc);
+            let mut meta = update_meta_for_op(&c.meta, &pos, &Operation::Get);
+            meta.len = c.len() + 1;
             match (&mut c.layout, pos) {
                 (CollectionLayout::FlatArray(xs), _) => Rc::make_mut(xs).push(v.clone()),
                 (CollectionLayout::RingBuf(rb), Position::Last) => Rc::make_mut(rb).push_back(v.clone()),
                 (CollectionLayout::RingBuf(rb), _) => Rc::make_mut(rb).push_front(v.clone()),
-                _ => unreachable!(),
+                _ => unreachable!("checked by can_mutate"),
             }
             c.meta = meta;
-            true
         }
-        // put/put_at on a map inserts or overwrites (on a sequence it inserts,
-        // which is not a single-slot write).
-        (BuiltinId::Put | BuiltinId::PutAt, [k, v]) if rc.is_map() => {
-            if !can_write_key(rc, k, false) { return false; }
-            *slot_for_key(rc, k) = v.clone();
-            true
-        }
-        // update/update_at need the key or index to exist already.
-        (BuiltinId::Update | BuiltinId::UpdateAt, [k, v]) => {
-            if !can_write_key(rc, k, true) { return false; }
-            *slot_for_key(rc, k) = v.clone();
-            true
-        }
-        _ => false,
+        (_, [k, v]) => *slot_for_key(rc, k) = v.clone(),
+        _ => unreachable!("checked by can_mutate"),
     }
+}
+
+/// `name!(x, args…)` in place for the single-element writes.
+pub fn mutate_in_place(target: &mut Value, id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    let Value::Collection(rc) = target else { return false };
+    if !can_mutate(rc, id, args) { return false; }
+    apply_mutation(rc, id, args);
+    true
+}
+
+/// The element at `key`, by reference.
+fn child_ref<'a>(c: &'a CollectionValue, key: &Value) -> Option<&'a Value> {
+    match &c.layout {
+        CollectionLayout::SmallMap(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+        CollectionLayout::HashMapBackend(m) => m.get(key),
+        layout => {
+            let Value::Int(idx) = key else { return None };
+            let i = resolve_seq_index(*idx, c.len()).ok()?;
+            match layout {
+                CollectionLayout::FlatArray(v) => v.get(i),
+                CollectionLayout::RingBuf(rb) => rb.get(i),
+                CollectionLayout::ChunkedSeq(cs) => cs.get(i),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn nested_mutable(target: &Value, keys: &[Value], id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    let Value::Collection(c) = target else { return false };
+    match keys.split_first() {
+        None => can_mutate(c, id, args),
+        // Each step is written back as `update!` does (Put on a map,
+        // Update on a sequence), so the key must exist and the layout hold.
+        Some((k, rest)) => can_write_key(c, k, true)
+            && child_ref(c, k).map_or(false, |child| nested_mutable(child, rest, id, args)),
+    }
+}
+
+fn apply_nested(target: &mut Value, keys: &[Value], id: crate::value::BuiltinId, args: &[Value]) {
+    let Value::Collection(rc) = target else { unreachable!("checked by nested_mutable") };
+    match keys.split_first() {
+        None => apply_mutation(rc, id, args),
+        Some((k, rest)) => apply_nested(slot_for_key(rc, k), rest, id, args),
+    }
+}
+
+/// `name!(x[k1][k2]…, args…)` in place: the element at the path changes
+/// as if it had been read, changed by the builtin and written back with
+/// `update!`.
+pub fn mutate_nested_in_place(target: &mut Value, keys: &[Value], id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    if !nested_mutable(target, keys, id, args) { return false; }
+    apply_nested(target, keys, id, args);
+    true
 }

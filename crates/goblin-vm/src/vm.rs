@@ -1147,6 +1147,33 @@ impl Vm {
                 }
                 return self.execute_op(Opcode::CallBuiltin(id, argc));
             }
+            Opcode::CallBuiltinMutPath(id, argc, n) => {
+                let n = n as usize;
+                let rest = argc as usize - 1;
+                if let Some(t) = self.sole_ref_target(1 + n + rest) {
+                    let start = self.stack.len() - (n + rest);
+                    let mut keys = self.drain_operands(start)?;
+                    let args = keys.split_off(n);
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if crate::collections::mutate_nested_in_place(&mut stash.value, &keys, id, &args) {
+                        return Ok(());
+                    }
+                    self.stack.extend(keys.into_iter().chain(args).map(Operand::Val));
+                }
+                let start = self.stack.len() - (n + rest);
+                let mut keys = self.drain_operands(start)?;
+                let args = keys.split_off(n);
+                let root = self.pop_value()?;
+                let mut target = root.clone();
+                for k in &keys { target = crate::collections::get_index(&target, k)?; }
+                self.stack.push(Operand::Val(target));
+                self.stack.extend(args.into_iter().map(Operand::Val));
+                self.execute_op(Opcode::CallBuiltin(id, argc))?;
+                let result = self.pop_value()?;
+                let segs: Vec<(Value, bool)> = keys.into_iter().map(|k| (k, false)).collect();
+                let updated = self.update_path(root, &segs, result)?;
+                self.stack.push(Operand::Val(updated));
+            }
             Opcode::UpdatePathMut(n, mask) => {
                 // Stack: [root, key1, …, keyN, new_val]. Field segments go
                 // through member dispatch, so only index paths are done here.
