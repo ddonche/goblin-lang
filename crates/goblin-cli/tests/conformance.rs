@@ -15,6 +15,7 @@
 //!   /// known-gap: interp|vm <why>  this engine is known not to conform yet;
 //!                                   reported, not failed (and flagged if it
 //!                                   starts passing, so the marker gets removed)
+//!   /// env: NAME=value              set an environment variable for the run
 //!   /// undecided: <decision-id>    the engines disagree on semantics nobody has
 //!                                   ruled on yet; both outputs are reported, no
 //!                                   `.out` is required, nothing fails
@@ -54,6 +55,7 @@ struct Header {
     requires: Vec<String>,
     known_gap: BTreeMap<String, String>,
     undecided: Option<String>,
+    env: Vec<(String, String)>,
 }
 
 struct Case {
@@ -80,6 +82,10 @@ fn parse_header(src: &str) -> Header {
             let v = v.trim();
             let (eng, why) = v.split_once(' ').unwrap_or((v, ""));
             h.known_gap.insert(eng.trim().to_string(), why.trim().to_string());
+        } else if let Some(v) = rest.strip_prefix("env:") {
+            if let Some((k, val)) = v.trim().split_once('=') {
+                h.env.push((k.trim().to_string(), val.trim().to_string()));
+            }
         } else if let Some(v) = rest.strip_prefix("undecided:") {
             h.undecided = Some(v.trim().to_string());
         }
@@ -258,7 +264,8 @@ fn conformance() {
             let Some((i, eng)) = jobs.lock().unwrap().pop() else { break };
             let c = &cases[i];
             if c.header.requires.iter().any(|r| r == "db") && !db_on { continue; }
-            let r = run_case(&bin, &root, &c.rel, eng, &env);
+            let case_env: Vec<(String, String)> = env.iter().chain(c.header.env.iter()).cloned().collect();
+            let r = run_case(&bin, &root, &c.rel, eng, &case_env);
             results.lock().unwrap().insert((i, eng), r);
         }));
     }

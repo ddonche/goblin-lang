@@ -614,6 +614,7 @@ pub enum BuiltinId {
     ForEachFn,
     ToForIter,
     RepeatPrep,
+    ApiEcho,
 
     // String extras
     Lines,

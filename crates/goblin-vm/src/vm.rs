@@ -3422,12 +3422,18 @@ impl Vm {
                 }
                 Ok(Value::Ref(uuid))
             }
-            _ => crate::collections::collection_operation(
-                &container,
-                crate::collections::Position::At(key.clone()),
-                crate::collections::Operation::Update(replacement),
-                &mut self.session,
-            ),
+            _ => {
+                // D-update-missing-key: `update!` on a missing map key inserts it,
+                // as the interpreter does; `update_at` still errors.
+                use crate::collections::{collection_operation, Operation, Position};
+                let at = Position::At(key.clone());
+                if is_map_value(&container) {
+                    // Put overwrites an existing key and inserts a missing one.
+                    collection_operation(&container, at, Operation::Put(replacement), &mut self.session)
+                } else {
+                    collection_operation(&container, at, Operation::Update(replacement), &mut self.session)
+                }
+            }
         }
     }
 }
@@ -3741,5 +3747,13 @@ mod tests {
             Value::Collection(c) => assert_eq!(c.len(), 3),
             _ => panic!("expected collection"),
         }
+    }
+}
+
+fn is_map_value(v: &Value) -> bool {
+    match v {
+        Value::Map(_) | Value::MapOrd(_) => true,
+        Value::Collection(c) => crate::collections::is_map_collection(c),
+        _ => false,
     }
 }

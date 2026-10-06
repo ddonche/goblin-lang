@@ -2102,6 +2102,18 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             session.write_output(&parts?.join(" "), false);
             Ok(Value::Nil)
         }
+        BuiltinId::ApiEcho => {
+            // A top-level expression statement in API mode: its value becomes
+            // response output, unless it is nil or prints as nothing.
+            let v = read(0)?;
+            if std::env::var("GOBLIN_NONINTERACTIVE").as_deref() == Ok("1")
+                && !matches!(v, Value::Nil | Value::Unit)
+            {
+                let s = value_to_str(&v);
+                if !s.is_empty() && s != "nil" { session.write_output(&s, true); }
+            }
+            Ok(Value::Nil)
+        }
         BuiltinId::Println => {
             let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
             session.write_output(&parts?.join(" "), true);

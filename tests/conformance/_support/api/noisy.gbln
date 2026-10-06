@@ -1,0 +1,4 @@
+"module top-level"
+act value()
+    return "from entry"
+xx

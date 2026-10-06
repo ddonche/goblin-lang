@@ -400,7 +400,17 @@ impl Compiler {
             self.emit(Opcode::StoreLocal(slot));
         }
         for stmt in &module.items {
-            self.compile_stmt(stmt)?;
+            match stmt {
+                // In the entry script, a top-level expression's value is offered
+                // to the API response (GOBLIN_NONINTERACTIVE=1), as the
+                // interpreter's runner does; imported modules never echo.
+                Stmt::Expr(e) if self.global_prefix.is_none() => {
+                    self.compile_expr(e)?;
+                    self.emit(Opcode::CallBuiltin(BuiltinId::ApiEcho, 1));
+                    self.emit(Opcode::Pop);
+                }
+                _ => self.compile_stmt(stmt)?,
+            }
         }
         // Return nil at end of module.
         let scope = self.scopes.last_mut().unwrap();
@@ -2394,11 +2404,7 @@ impl Compiler {
                             }
                         }
                         self.compile_expr(&args[1])?;
-                        if segs.len() == 1 && mask == 0 {
-                            self.emit(Opcode::CallBuiltin(BuiltinId::UpdateAt, 3));
-                        } else {
-                            self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
-                        }
+                        self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
                         let store_op = self.resolve_store(&root_name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
                         self.emit(store_op);

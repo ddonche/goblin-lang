@@ -1171,57 +1171,14 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         }
     };
 
-    // Imports resolve from the working directory, exactly as the interpreter
-    // does (`ImportBaseMode::ProjectRoot`); `box.toml` sits next to the script.
-    let script_dir = path.parent()
-        .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let box_toml_path = script_dir.join("box.toml");
-    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-    let mut session = Session::new(GcMode::Auto);
-    session.global_names = compiled.global_names;
-    session.project_root = project_root.clone();
-    session.base_dir     = project_root;
-
-    // Load box.toml if present — populates session.box_store
-    if box_toml_path.exists() {
-        if let Err(e) = goblin_vm::exec::load_box_toml_into_session(&mut session, &box_toml_path) {
-            eprintln!("box.toml error: {}", e);
-            return 1;
-        }
-    }
-
-    for decl in &compiled.classes { compile_class_methods_pub(decl, &mut session); }
-    for decl in compiled.classes {
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
-            if let Some(existing) = session.classes.get(&decl.name) {
-                let mut m = decl.clone();
-                m.actions = existing.actions.clone();
-                m.decision = existing.decision.clone();
-                m.judge = existing.judge.clone();
-                m.transitions = existing.transitions.clone();
-                if m.capacity.is_none() { m.capacity = existing.capacity.clone(); }
-                let matrix_names: std::collections::HashSet<String> = m.fields.iter().map(|f| f.name.clone()).collect();
-                let extra: Vec<_> = existing.fields.iter().filter(|f| !matrix_names.contains(&f.name)).cloned().collect();
-                m.fields.extend(extra);
-                m
-            } else { decl }
-        } else { decl };
-        session.classes.insert(merged.name.clone(), merged);
-    }
-    for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
-
-    // Inject CLI args
-    if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
-        let args_val = VmValue::Array(extra_args.into_iter().map(VmValue::Str).collect());
-        let tether = session.alloc_value(args_val);
-        session.set_global(idx, tether);
-    }
-
-    let mut vm = Vm::new(session);
-    let code = match vm.execute(compiled.entry) {
+    let (mut vm, entry) = match goblin_vm::exec::prepare_entry(compiled, path, extra_args) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("{}", e); return 1; }
+    };
+    // API mode prints the interpreter's response envelope instead of raw output.
+    let is_api = std::env::var("GOBLIN_NONINTERACTIVE").unwrap_or_default() == "1";
+    if is_api { vm.session.enable_output_capture(); }
+    let code = match vm.execute(entry) {
         Ok(_) => 0,
         Err(e) => {
             let diag = vm_error_to_diagnostic(&e, &filepath, &src);
@@ -1229,6 +1186,19 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
             1
         }
     };
+    if is_api {
+        let output = vm.session.take_output();
+        if !output.is_empty() {
+            let r = &vm.session.response;
+            let envelope = json!({
+                "status": r.status.unwrap_or(200),
+                "headers": r.headers.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect::<serde_json::Map<_, _>>(),
+                "cookies": r.cookies.clone(),
+                "body": goblin_vm::exec::api_body(output),
+            });
+            println!("{}", envelope);
+        }
+    }
 
     let elapsed = start.elapsed();
     eprintln!(

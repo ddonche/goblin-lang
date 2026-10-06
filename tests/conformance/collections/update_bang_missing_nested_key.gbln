@@ -1,0 +1,5 @@
+/// Decided 2026-10-06 (D-update-missing-key): a missing key at the end of a nested path is inserted.
+res | {"status": 200, "headers": {"a": "1"}}
+:update!(res["headers"]["b"], "2")
+say(res["headers"]["b"])
+say(res["headers"].len)
