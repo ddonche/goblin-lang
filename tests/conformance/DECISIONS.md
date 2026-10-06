@@ -913,7 +913,7 @@ say(:to_map({"a": 1}))
 
 ---
 
-## D30 · D-interp-backslash (found running Campfire on the VM; open)
+## D30 · D-interp-backslash (DECIDED 2026-10-06: A, escape once)
 
 ```
 x | 1
@@ -927,7 +927,7 @@ The interpreter runs the escape `\\` a second time when a string has a `{placeho
 - **A. Once (VM).** A backslash prints the same with or without a placeholder. Campfire's boost form (`lib/views/message_edit.gbln:89`, `pattern="\\S+.*"` inside a `"""` template) then has to write `\S`, the way Rails does. Interpreter change: the placeholder renderer stops turning `\\` into `\` (it keeps `\{` and `\}`).
 - **B. Twice (interpreter).** Campfire stays as it is. The VM's renderer has to unescape `\\` too.
 
-Recommended: **A**. Case: `strings/interp_backslash_same_with_placeholder` (undecided). It is the only Campfire page that still differs between the engines.
+**Decided: A** (owner, 2026-10-06): the VM's behaviour is canonical. The interpreter's placeholder renderer keeps `\{`/`\}` as literal braces and leaves every other backslash as written. Campfire's boost form now writes `\S`. Case: `strings/interp_backslash_same_with_placeholder`.
 
 ## Docs vs both engines (`known-gap: both`)
 

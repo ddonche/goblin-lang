@@ -3331,55 +3331,14 @@ fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String,
     let mut i = 0;
 
     while i < chars.len() {
-        // 0) Runtime backslash escapes so \{ / \} survive the lexer and don't trigger interpolation
-        if chars[i] == '\\' {
-            if i + 1 < chars.len() {
-                match chars[i + 1] {
-                    '{' => { out.push('{'); i += 2; continue; }
-                    '}' => { out.push('}'); i += 2; continue; }
-                    '\\' => {
-                        // Handle \\{  and  \\}  → literal \{ or \}
-                        if i + 2 < chars.len() && (chars[i + 2] == '{' || chars[i + 2] == '}') {
-                            out.push('\\');
-                            out.push(chars[i + 2]);
-                            i += 3;
-                            continue;
-                        }
-                        // Plain \\ → single backslash
-                        out.push('\\');
-                        i += 2;
-                        continue;
-                    }
-                    'u' => {
-                        // skip \u{...} sequence wholly
-                        let mut k = i + 2;
-                        if k < chars.len() && chars[k] == '{' {
-                            k += 1;
-                            while k < chars.len() && chars[k] != '}' { k += 1; }
-                            if k < chars.len() && chars[k] == '}' { i = k + 1; continue; }
-                        }
-                        // malformed: just skip two chars
-                        i += 2;
-                        continue;
-                    }
-                    'x' => {
-                        // \xNN if present
-                        if i + 3 < chars.len() { i += 4; } else { i += 2; }
-                        continue;
-                    }
-                    _ => {
-                        // Unknown escape: pass through literally (don't swallow)
-                        out.push('\\');
-                        out.push(chars[i + 1]);
-                        i += 2;
-                        continue;
-                    }
-                }
-            } else {
-                // trailing backslash
-                out.push('\\');
-                i += 1;
-                continue;
+        // 0) `\{` and `\}` are literal braces. Every other backslash was
+        //    already handled by the lexer (or is verbatim in a triple-quoted
+        //    string) and is kept as written: escapes run once (D30).
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            match chars[i + 1] {
+                '{' => { out.push('{'); i += 2; continue; }
+                '}' => { out.push('}'); i += 2; continue; }
+                c => { out.push('\\'); out.push(c); i += 2; continue; }
             }
         }
 

@@ -22,7 +22,8 @@ These are HARD CONSTRAINTS — violating any of them is forbidden regardless of 
 - `session.alloc_value(v)` — called ONLY at binding points: StoreLocal, StoreGlobal, StoreUpvalue, StoreBox, and when building call frame arg lists. Never bypass it for named values.
 - `session.gc_sweep()` — called by `gc()` builtin and Auto mode. Never remove it.
 - `:mem_id(x)` / `:mem_addr(x)` — return errors when called on stack Values (no Tether address)
-- `overwrite!` is the ONLY mutation primitive — it mutates the stash in place
+- `overwrite!` is the only language-level mutation primitive — it mutates the stash in place
+- Bang writes (`put_last!`, `update!`, `name!(x[k], …)`) rebind the variable; as an optimization the VM applies them to the stash's collection in place when the variable's tether is the only reference to it (`sole_ref_target` in vm.rs), so no alias can observe the change. Approved by the owner 2026-10-06; `tests/conformance/collections/bang_write_keeps_value_semantics.gbln` guards it.
 - Worker isolation: each Worker has its own Session (its own arena). No shared arenas.
 - Do NOT replace the arena with Vec<Value> or any flat structure for "performance"
 - Do NOT change Tether to store Value directly
