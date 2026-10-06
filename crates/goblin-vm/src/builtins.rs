@@ -4695,20 +4695,20 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 }
 
 fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Result<Value, GoblinError> {
-    fn want_idx(v: Value, label: &str) -> Result<isize, GoblinError> {
+    // None = bound omitted. Negative indices count from the end (spec §14).
+    fn want_idx(v: Value, label: &str) -> Result<Option<isize>, GoblinError> {
         match v {
-            Value::Nil => Ok(-1), // sentinel: use default
-            Value::Int(n) if n >= 0 => Ok(n as isize),
-            Value::Float(f) if f.is_finite() && f.fract() == 0.0 && f >= 0.0 => Ok(f as isize),
-            _ => Err(GoblinError::Runtime(format!("{} must be a non-negative integer index", label))),
+            Value::Nil => Ok(None),
+            Value::Int(n) => Ok(Some(n as isize)),
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => Ok(Some(f as isize)),
+            _ => Err(GoblinError::Runtime(format!("{} must be an integer index", label))),
         }
     }
-    fn clamp(mut s: isize, mut e: isize, len: usize) -> (usize, usize) {
+    fn clamp(s: Option<isize>, e: Option<isize>, len: usize) -> (usize, usize) {
         let l = len as isize;
-        if s < 0 { s = 0; }
-        if e < 0 { e = l; } // -1 sentinel → default to len
-        if s > l { s = l; }
-        if e > l { e = l; }
+        let norm = |i: isize| if i < 0 { (l + i).max(0) } else { i.min(l) };
+        let s = s.map(norm).unwrap_or(0);
+        let e = e.map(norm).unwrap_or(l);
         (s as usize, e as usize)
     }
 

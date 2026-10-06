@@ -1,4 +1,3 @@
 /// known-gap: interp negative slice start rejected; spec §14 allows negative indices
-/// known-gap: vm slicing a literal array fails ("slice expects array or string, got collection")
 l | [10, 20, 30, 40, 50]
 say(l[-2:])
