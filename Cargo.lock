@@ -1047,6 +1047,7 @@ name = "goblin-db"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "goblin-diagnostics",
  "rust_decimal",
  "serde_json",
  "sqlx",
