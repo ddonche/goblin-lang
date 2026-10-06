@@ -1114,10 +1114,18 @@ impl Session {
     where
         F: FnMut(&mut Session) -> Result<T, Diagnostic>,
     {
+        let depth = sess.env.len();
         sess.push_frame();
-        sess.block_marks.push(sess.env.len() - 1);
+        sess.block_marks.push(depth);
         let r = f(sess);
-        sess.block_marks.pop();
+        if r.is_err() {
+            // An error can leave frames of failed action calls behind; drop
+            // them too so a caught error (attempt/rescue) resumes in the right scope.
+            while sess.env.len() > depth + 1 {
+                sess.pop_frame();
+            }
+        }
+        sess.block_marks.retain(|&i| i < depth);
         sess.pop_frame();
         r
     }
