@@ -1,2 +1,3 @@
-/// Decided 2026-10-06 (D-negative-int-division): the interpreter's behavior is canonical.
+/// Decided 2026-10-06 (D-negative-int-division, option A; see DECISIONS.md).
+/// known-gap: vm decision D-negative-int-division (option A) not implemented yet
 say(-7 // 2)

@@ -1,4 +1,5 @@
-/// Decided 2026-10-06 (D-truthiness): the interpreter's behavior is canonical.
+/// Decided 2026-10-06 (D-truthiness, option B; see DECISIONS.md).
+/// known-gap: both decision D-truthiness (option B) not implemented yet
 say(nil or 5)
 say(0 or 5)
 say(2 and 3)

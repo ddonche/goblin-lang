@@ -1,3 +1,4 @@
-/// Decided 2026-10-06 (D-import-without-alias): the interpreter's behavior is canonical.
+/// Decided 2026-10-06 (D-import-without-alias, option C; see DECISIONS.md).
+/// known-gap: interp decision D-import-without-alias (option C) not implemented yet
 import _support/modules/mathy
 say(mathy::add(2, 3))

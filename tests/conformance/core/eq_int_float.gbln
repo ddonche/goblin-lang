@@ -1,3 +1,4 @@
-/// Decided 2026-10-06 (D-int-float-equality): the interpreter's behavior is canonical.
+/// Decided 2026-10-06 (D-int-float-equality, option A; see DECISIONS.md).
+/// known-gap: vm decision D-int-float-equality (option A) not implemented yet
 say(1 == 1.0)
 say(2 != 2.0)

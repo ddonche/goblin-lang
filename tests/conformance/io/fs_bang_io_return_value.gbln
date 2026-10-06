@@ -1,4 +1,5 @@
-/// Decided 2026-10-06 (D-bang-io-return): the interpreter's behavior is canonical.
+/// Decided 2026-10-06 (D-bang-io-return, option B; see DECISIONS.md).
+/// known-gap: interp decision D-bang-io-return (option B) not implemented yet
 /// What a filesystem bang call evaluates to: interp returns unit, VM returns nil.
 d | :env("GOBLIN_CONF_TMP")
 r | :write_text!("{d}/f.txt", "x")

@@ -1,4 +1,4 @@
-/// Decided 2026-10-06 (D-update-missing-key): update! on a missing map key inserts it.
+/// Decided 2026-10-06 (D-update-missing-key, option A; see DECISIONS.md).
 m | {"a": 1}
 :update!(m["z"], 2)
 say(m["z"])

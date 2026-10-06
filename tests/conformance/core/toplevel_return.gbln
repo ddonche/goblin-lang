@@ -1,4 +1,5 @@
-/// Decided 2026-10-06 (D-toplevel-return): the interpreter's behavior is canonical.
+/// Decided 2026-10-06 (D-toplevel-return, option B; see DECISIONS.md).
+/// known-gap: interp decision D-toplevel-return (option B) not implemented yet
 say("x")
 return 5
 say("y")

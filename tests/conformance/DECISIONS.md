@@ -1,5 +1,7 @@
 # Conformance decisions: questions for the owner
 
+**Status (2026-10-06 16:15 UTC):** the owner accepted the recommendations below for D2-D29 (D1 was answered separately: insert). The cases now expect the recommended behaviour; an engine that does not implement it yet carries a `known-gap` marker naming the decision.
+
 The interpreter (`goblin run`) and the VM (`goblin run --vm`) disagree on the language questions below. Each answer will turn its `/// undecided: D-<slug>` cases into ordinary cases with a `.out` file. While this file was being written, vm-parity commits changed the VM on three questions: D1 is recorded as decided, and the current VM now matches the interpreter on D17 and D25 (these still need your confirmation).
 For each question this file gives what each engine does, what Goblin's own docs, tests, Sheriff and the Campfire port show, and what each answer would require.
 Every behaviour shown was re-run on two builds. **base** is `goblin-base`, the baseline the cases were written against. **cur** is `/home/claude/goblin-build/target/release/goblin` as rebuilt at 2026-10-06 16:08 UTC, with the vm-parity VM fixes (map printing, slicing, nested and inserting `update!`, builtin shadowing, structural equality, repeat modes). Where the two builds differ, the section says so.

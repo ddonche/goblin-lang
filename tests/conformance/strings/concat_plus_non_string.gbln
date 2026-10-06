@@ -1,4 +1,4 @@
-/// Decided 2026-10-06 (D-string-plus-nonstring): the interpreter's behavior is canonical.
+/// Decided 2026-10-06 (D-string-plus-nonstring, option A; see DECISIONS.md).
 say("a" + 1)
 say("n=" + 2.5)
 say("b" + true)
