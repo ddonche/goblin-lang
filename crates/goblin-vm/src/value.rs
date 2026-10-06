@@ -459,7 +459,17 @@ pub struct FunctionObject {
     pub source_file: String,
     /// Global slot names for this function's compilation unit — parallel to session.globals.
     /// Used by string interpolation to resolve {varname} by name within the right module scope.
-    pub global_names: Vec<String>,
+    /// Shared by every function of one compilation unit and filled in once the
+    /// unit has finished compiling (the list only ever grows, so later entries
+    /// keep the indices they would have had in an earlier snapshot).
+    pub global_names: std::rc::Rc<std::cell::OnceCell<Vec<String>>>,
+}
+
+impl FunctionObject {
+    /// Global slot names of this function's compilation unit.
+    pub fn global_names(&self) -> &[String] {
+        self.global_names.get().map(|v| v.as_slice()).unwrap_or(&[])
+    }
 }
 
 /// A compiled module: the entry function plus class/enum metadata collected

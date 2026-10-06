@@ -182,7 +182,7 @@ impl FunctionScope {
         }
     }
 
-    fn finish(self, source_file: String, global_names: Vec<String>) -> FunctionObject {
+    fn finish(self, source_file: String, global_names: std::rc::Rc<std::cell::OnceCell<Vec<String>>>) -> FunctionObject {
         let upvalue_descriptors: Vec<UpvalueDescriptor> =
             self.upvalues.into_iter().map(|(_, d)| d).collect();
         let total_slots = self.next_slot as usize;
@@ -305,6 +305,7 @@ pub struct Compiler {
     scopes: Vec<FunctionScope>,
     /// Registered global names (name → global slot index).
     globals: Vec<String>,
+    unit_globals: std::rc::Rc<std::cell::OnceCell<Vec<String>>>,
     /// Class declarations collected during compilation.
     pub collected_classes: Vec<ClassDecl>,
     /// Enum declarations collected during compilation.
@@ -362,7 +363,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -477,6 +478,7 @@ impl Compiler {
         scope.emit(Opcode::LoadNil);
         scope.emit(Opcode::Return);
         let entry = self.pop_scope();
+        self.seal_globals();
         Ok(CompiledModule {
             entry,
             classes: self.collected_classes,
@@ -545,7 +547,9 @@ impl Compiler {
                 scope.emit(Opcode::Return);
             }
         }
-        Ok(self.pop_scope())
+        let f = self.pop_scope();
+        self.seal_globals();
+        Ok(f)
     }
 
     // ── Scope management ──────────────────────────────────────────────────────
@@ -555,7 +559,13 @@ impl Compiler {
     }
 
     fn pop_scope(&mut self) -> FunctionObject {
-        self.scopes.pop().unwrap().finish(self.source_file.clone(), self.globals.clone())
+        let names = self.unit_globals.clone();
+        self.scopes.pop().unwrap().finish(self.source_file.clone(), names)
+    }
+
+    /// Record the unit's final global names in every function it produced.
+    fn seal_globals(&self) {
+        let _ = self.unit_globals.set(self.globals.clone());
     }
 
     fn scope(&self) -> &FunctionScope {
@@ -3317,6 +3327,7 @@ impl Compiler {
         }
 
         let entry = self.pop_scope();
+        self.seal_globals();
         Ok(CompiledModule {
             entry,
             classes: self.collected_classes,

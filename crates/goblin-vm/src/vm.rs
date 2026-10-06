@@ -2051,115 +2051,104 @@ impl Vm {
         if let Some(rest) = s.strip_prefix(RAW_SENTINEL) {
             return Ok(rest.to_string());
         }
-        let chars: Vec<char> = s.chars().collect();
-        let mut out = String::new();
+        // Works on bytes: every character the syntax looks at (`\`, `{`, `}`,
+        // `#`, `@`, `:`) is ASCII, so slicing at those positions is always on
+        // a UTF-8 boundary, and literal runs are copied in one go.
+        let b = s.as_bytes();
+        let n = b.len();
+        let mut out = String::with_capacity(n + 16);
         let mut i = 0;
-        while i < chars.len() {
-            if chars[i] == '\\' && i + 1 < chars.len() {
-                match chars[i + 1] {
-                    '{' => { out.push('{'); i += 2; continue; }
-                    '}' => { out.push('}'); i += 2; continue; }
-                    _ => { out.push('\\'); out.push(chars[i + 1]); i += 2; continue; }
-                }
-            }
-            if chars[i] == '{' {
-                // Triple-brace tokens: {{{MODULE::IDENT}}}
-                if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
-                    let mut j = i + 3;
-                    let mut found = false;
-                    while j + 2 < chars.len() {
-                        if chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}' {
-                            found = true;
-                            break;
+        let mut lit = 0; // start of the pending literal run
+        while i < n {
+            match b[i] {
+                b'\\' if i + 1 < n => {
+                    out.push_str(&s[lit..i]);
+                    match b[i + 1] {
+                        b'{' => out.push('{'),
+                        b'}' => out.push('}'),
+                        _ => {
+                            // Keep the backslash and the (possibly multi-byte) next char.
+                            let ch_len = s[i + 1..].chars().next().map_or(1, |c| c.len_utf8());
+                            out.push_str(&s[i..i + 1 + ch_len]);
+                            i += 1 + ch_len;
+                            lit = i;
+                            continue;
                         }
-                        j += 1;
                     }
-                    if found {
-                        let inner: String = chars[i + 3..j].iter().collect();
-                        let inner_trim = inner.trim();
-                        if let Some(pos) = inner_trim.find("::") {
-                            let module = inner_trim[..pos].trim();
-                            let ident  = inner_trim[pos + 2..].trim();
-                            let val = self.session.token_store.get(module)
-                                .or_else(|| self.session.token_store.get(&module.to_ascii_uppercase()))
-                                .and_then(|m| m.get(ident))
-                                .cloned();
-                            if let Some(v) = val {
-                                out.push_str(&crate::builtins::fmt_value_raw(&v));
-                            } else {
-                                out.push_str("{{{");
-                                out.push_str(inner_trim);
-                                out.push_str("}}}");
+                    i += 2;
+                    lit = i;
+                }
+                b'{' => {
+                    out.push_str(&s[lit..i]);
+                    // Triple-brace tokens: {{{MODULE::IDENT}}}
+                    if i + 2 < n && b[i + 1] == b'{' && b[i + 2] == b'{' {
+                        if let Some(rel) = s[i + 3..].find("}}}") {
+                            let j = i + 3 + rel;
+                            let inner_trim = s[i + 3..j].trim();
+                            let val = inner_trim.find("::").and_then(|pos| {
+                                let module = inner_trim[..pos].trim();
+                                let ident = inner_trim[pos + 2..].trim();
+                                self.session.token_store.get(module)
+                                    .or_else(|| self.session.token_store.get(&module.to_ascii_uppercase()))
+                                    .and_then(|m| m.get(ident))
+                                    .cloned()
+                            });
+                            match val {
+                                Some(v) => out.push_str(&crate::builtins::fmt_value_raw(&v)),
+                                None => { out.push_str("{{{"); out.push_str(inner_trim); out.push_str("}}}"); }
                             }
+                            i = j + 3;
                         } else {
-                            out.push_str("{{{");
-                            out.push_str(inner_trim);
-                            out.push_str("}}}");
+                            out.push('{');
+                            i += 1;
                         }
-                        i = j + 3;
+                        lit = i;
                         continue;
                     }
-                    out.push('{');
-                    i += 1;
-                    continue;
-                }
-
-                let start = i + 1;
-                let mut j = start;
-                while j < chars.len() && chars[j] != '}' { j += 1; }
-                if j >= chars.len() {
-                    // D20: an unclosed `{` is an error (R0500), as in the interpreter.
-                    return Err(GoblinError::Runtime(
-                        "unclosed '{' in interpolated string (use \\{ for a literal brace)".into()));
-                }
-                let inner: String = chars[start..j].iter().collect();
-                let inner = inner.trim();
-                if inner.starts_with('#') {
-                    // Box template: {#ns::key} or {#ns::key@source}
-                    let trimmed = inner.trim_start_matches('#');
-                    let key = if let Some(at) = trimmed.find('@') { &trimmed[..at] } else { trimmed };
-                    if key.contains("::") {
-                        if let Some(Value::Str(v)) = self.session.box_store.get(key).cloned() {
-                            // Secondary resolve: the stored value may itself contain {#...}
-                            // e.g. output_dir = "../dist/{#local::portal}/public"
-                            if v.contains("{#") {
-                                out.push_str(&self.resolve_box_template_from_store(&v));
-                            } else {
-                                out.push_str(&v);
+                    let start = i + 1;
+                    let Some(rel) = s[start..].find('}') else {
+                        // D20: an unclosed `{` is an error (R0500), as in the interpreter.
+                        return Err(GoblinError::Runtime(
+                            "unclosed '{' in interpolated string (use \\{ for a literal brace)".into()));
+                    };
+                    let j = start + rel;
+                    let raw = &s[start..j];
+                    let inner = raw.trim();
+                    if let Some(trimmed) = inner.strip_prefix('#') {
+                        // Box template: {#ns::key} or {#ns::key@source}
+                        let trimmed = trimmed.trim_start_matches('#');
+                        let key = if let Some(at) = trimmed.find('@') { &trimmed[..at] } else { trimmed };
+                        match (key.contains("::"), self.session.box_store.get(key).cloned()) {
+                            (true, Some(Value::Str(v))) => {
+                                // Secondary resolve: the stored value may itself contain {#...}
+                                // e.g. output_dir = "../dist/{#local::portal}/public"
+                                if v.contains("{#") {
+                                    out.push_str(&self.resolve_box_template_from_store(&v));
+                                } else {
+                                    out.push_str(&v);
+                                }
                             }
-                        } else {
                             // not found — keep literal
-                            out.push('{');
-                            let raw: String = chars[start..j].iter().collect();
-                            out.push_str(&raw);
-                            out.push('}');
+                            _ => { out.push('{'); out.push_str(raw); out.push('}'); }
+                        }
+                    } else if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        let val = self.lookup_interp_var(inner);
+                        // Secondary resolve: a regular variable's value may contain {#...}
+                        if val.contains("{#") {
+                            out.push_str(&self.resolve_box_template_from_store(&val));
+                        } else {
+                            out.push_str(&val);
                         }
                     } else {
-                        out.push('{');
-                        let raw: String = chars[start..j].iter().collect();
-                        out.push_str(&raw);
-                        out.push('}');
+                        out.push('{'); out.push_str(raw); out.push('}');
                     }
-                } else if inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !inner.is_empty() {
-                    let val = self.lookup_interp_var(inner);
-                    // Secondary resolve: a regular variable's value may contain {#...}
-                    if val.contains("{#") {
-                        out.push_str(&self.resolve_box_template_from_store(&val));
-                    } else {
-                        out.push_str(&val);
-                    }
-                } else {
-                    out.push('{');
-                    let raw: String = chars[start..j].iter().collect();
-                    out.push_str(&raw);
-                    out.push('}');
+                    i = j + 1;
+                    lit = i;
                 }
-                i = j + 1;
-            } else {
-                out.push(chars[i]);
-                i += 1;
+                _ => i += 1,
             }
         }
+        out.push_str(&s[lit..]);
         Ok(out)
     }
 
@@ -2191,7 +2180,7 @@ impl Vm {
         // 3. Check globals by name — use the current frame's compilation-unit global_names
         //    so GLAM actions find their own globals (not the main file's name table).
         let global_tether = self.call_stack.last()
-            .and_then(|frame| frame.func.global_names.iter().position(|n| n == name))
+            .and_then(|frame| frame.func.global_names().iter().position(|n| n == name))
             .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
             .or_else(|| {
                 self.session.global_names.iter().position(|n| n == name)
@@ -3736,7 +3725,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
-            global_names: Vec::new(),
+            global_names: Default::default(),
         }
     }
 
@@ -3780,7 +3769,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
-            global_names: Vec::new(),
+            global_names: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -3810,7 +3799,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
-            global_names: Vec::new(),
+            global_names: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -3838,7 +3827,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
-            global_names: Vec::new(),
+            global_names: Default::default(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -3859,7 +3848,7 @@ mod tests {
             local_names: Vec::new(),
             owner_glam: None,
             source_file: String::new(),
-            global_names: Vec::new(),
+            global_names: Default::default(),
         };
 
         let result = vm.execute(outer).unwrap();
