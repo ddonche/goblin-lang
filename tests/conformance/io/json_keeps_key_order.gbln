@@ -1,0 +1,6 @@
+/// Decided 2026-10-06 (D-map-key-order, option B: insertion order; see DECISIONS.md).
+m | :json_parse("{\"b\": 1, \"a\": {\"z\": 1, \"y\": [2, 3.5, null, true]}}")
+say(m)
+say(:keys(m))
+say(:json_stringify(m))
+say(:json_stringify({"z": 1, "a": 2}))

@@ -2097,6 +2097,10 @@ fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, St
     // Create a Tokio runtime manually (CLI entrypoints can’t be async)
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        // VM requests run on blocking threads, each with its own compiled-
+        // module cache; keeping idle threads alive keeps their caches warm
+        // (tokio's default drops an idle thread after 10 s).
+        .thread_keep_alive(std::time::Duration::from_secs(3600))
         .build()
         .expect("tokio runtime");
 

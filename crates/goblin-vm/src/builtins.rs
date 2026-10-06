@@ -715,20 +715,17 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::JsonParse => {
             expect_n(1)?;
             let s = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "json_parse")) };
-            let jv: serde_json::Value = serde_json::from_str(&s).map_err(|e| GoblinError::Runtime(format!("json_parse failed: {e}")))?;
-            Ok(json_to_value(&jv))
+            json_parse_ordered(&s).map_err(|e| GoblinError::Runtime(format!("json_parse failed: {e}")))
         }
         BuiltinId::JsonStringify => {
             expect_n(1)?;
             let v = read(0)?;
-            let jv = value_to_json(&v);
-            Ok(Value::Str(serde_json::to_string(&jv).unwrap_or_default()))
+            Ok(Value::Str(serde_json::to_string(&JsonOut(&v)).unwrap_or_default()))
         }
         BuiltinId::JsonStringifyPretty => {
             expect_n(1)?;
             let v = read(0)?;
-            let jv = value_to_json(&v);
-            Ok(Value::Str(serde_json::to_string_pretty(&jv).unwrap_or_default()))
+            Ok(Value::Str(serde_json::to_string_pretty(&JsonOut(&v)).unwrap_or_default()))
         }
 
         BuiltinId::IgnoreBetween => {
@@ -1095,8 +1092,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "read_json path")) };
             let txt = std::fs::read_to_string(&path).map_err(|e| GoblinError::Runtime(format!("read_json: {}", e)))?;
-            let jv: serde_json::Value = serde_json::from_str(&txt).map_err(|e| GoblinError::Runtime(format!("read_json parse: {}", e)))?;
-            Ok(json_to_value(&jv))
+            json_parse_ordered(&txt).map_err(|e| GoblinError::Runtime(format!("read_json parse: {}", e)))
         }
 
         BuiltinId::WriteText => {
@@ -1123,7 +1119,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_json path")) };
             let val  = read(1)?;
             let pretty = if n == 3 { matches!(read(2)?, Value::Bool(true)) } else { false };
-            let jv = value_to_json(&val);
+            let jv = JsonOut(&val);
             let text = if pretty { serde_json::to_string_pretty(&jv) } else { serde_json::to_string(&jv) }.map_err(|e| GoblinError::Runtime(format!("write_json: {}", e)))?;
             std::fs::write(&path, text).map_err(|e| GoblinError::Runtime(format!("write_json write: {}", e)))?;
             Ok(Value::Nil)
@@ -6019,25 +6015,28 @@ fn db_call(id: BuiltinId, sql: &str, params: &[Value], fn_name: &str) -> Result<
                 "{fn_name} got an unsupported parameter type (supported: str, int, float, bool, nil)"))),
         });
     }
+    // Rows come back as map collections (and query results as an array
+    // collection): shared on read, where the legacy MapOrd/Array forms were
+    // deep-copied every time a variable holding them was read.
     let row_to_value = |row: goblin_db::DbRow| -> Value {
-        Value::MapOrd(row.into_iter().map(|(k, c)| (k, match c {
+        collections::into_collection(Value::MapOrd(row.into_iter().map(|(k, c)| (k, match c {
             DbValue::Null => Value::Nil,
             DbValue::Bool(b) => Value::Bool(b),
             DbValue::Int(n) => Value::Int(n),
             DbValue::Float(x) => Value::Float(x),
             DbValue::Str(s) => Value::Str(s),
-        })).collect())
+        })).collect()))
     };
     let err = |e: goblin_db::DbError| GoblinError::Runtime(e.to_string());
     match id {
-        BuiltinId::DbQuery => Ok(Value::Array(goblin_db::query(sql, &ps).map_err(err)?.into_iter().map(row_to_value).collect())),
+        BuiltinId::DbQuery => Ok(collections::into_collection(Value::Array(goblin_db::query(sql, &ps).map_err(err)?.into_iter().map(row_to_value).collect()))),
         BuiltinId::DbQueryOne => Ok(goblin_db::query_one(sql, &ps).map_err(err)?.map(row_to_value).unwrap_or(Value::Nil)),
         _ => {
             let n = goblin_db::exec(sql, &ps).map_err(err)?;
             let mut m = indexmap::IndexMap::new();
             m.insert("ok".to_string(), Value::Bool(true));
             m.insert("rows_affected".to_string(), Value::Int(n as i64));
-            Ok(Value::MapOrd(m))
+            Ok(collections::into_collection(Value::MapOrd(m)))
         }
     }
 }
@@ -6045,4 +6044,98 @@ fn db_call(id: BuiltinId, sql: &str, params: &[Value], fn_name: &str) -> Result<
 #[cfg(target_arch = "wasm32")]
 fn db_call(_id: BuiltinId, _sql: &str, _params: &[Value], fn_name: &str) -> Result<Value, GoblinError> {
     Err(GoblinError::Runtime(format!("{fn_name}: databases are not available in WASM builds")))
+}
+
+/// Parses JSON straight into Goblin values. Objects keep their key order
+/// (D6: maps are insertion-ordered; serde_json's own map sorts its keys) and
+/// become map collections, so reading them back is not a deep copy.
+fn json_parse_ordered(text: &str) -> Result<Value, serde_json::Error> {
+    use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct Seed;
+    impl<'de> DeserializeSeed<'de> for Seed {
+        type Value = Value;
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+            d.deserialize_any(Seed)
+        }
+    }
+    impl<'de> Visitor<'de> for Seed {
+        type Value = Value;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str("JSON") }
+        fn visit_unit<E>(self) -> Result<Value, E> { Ok(Value::Nil) }
+        fn visit_none<E>(self) -> Result<Value, E> { Ok(Value::Nil) }
+        fn visit_bool<E>(self, b: bool) -> Result<Value, E> { Ok(Value::Bool(b)) }
+        fn visit_i64<E>(self, n: i64) -> Result<Value, E> { Ok(Value::Int(n)) }
+        fn visit_u64<E>(self, n: u64) -> Result<Value, E> {
+            Ok(i64::try_from(n).map(Value::Int).unwrap_or(Value::Float(n as f64)))
+        }
+        fn visit_f64<E>(self, f: f64) -> Result<Value, E> { Ok(Value::Float(f)) }
+        fn visit_str<E>(self, s: &str) -> Result<Value, E> { Ok(Value::Str(s.to_string())) }
+        fn visit_string<E>(self, s: String) -> Result<Value, E> { Ok(Value::Str(s)) }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+            let mut items = Vec::new();
+            while let Some(v) = seq.next_element_seed(Seed)? { items.push(v); }
+            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+            // A repeated key keeps its first position and its last value,
+            // as inserting into a map does.
+            let mut m: indexmap::IndexMap<String, Value> = indexmap::IndexMap::new();
+            while let Some(k) = map.next_key::<String>()? {
+                let v = map.next_value_seed(Seed)?;
+                m.insert(k, v);
+            }
+            Ok(collections::into_collection(Value::MapOrd(m)))
+        }
+    }
+    let mut de = serde_json::Deserializer::from_str(text);
+    let v = Seed.deserialize(&mut de)?;
+    de.end()?;
+    Ok(v)
+}
+
+/// Serializes a value as `value_to_json` would, but writes map keys in the
+/// map's own order (D6) rather than serde_json's sorted order.
+struct JsonOut<'a>(&'a Value);
+
+impl serde::Serialize for JsonOut<'_> {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        let v = if let Value::Formatted(inner, _) = self.0 { inner.as_ref() } else { self.0 };
+        let entries: Option<indexmap::IndexMap<String, &Value>> = match v {
+            Value::Map(m) => Some(m.iter().map(|(k, x)| (k.clone(), x)).collect()),
+            Value::MapOrd(m) => Some(m.iter().map(|(k, x)| (k.clone(), x)).collect()),
+            Value::Collection(c) if collections::is_map_collection(c) => {
+                let mut out = indexmap::IndexMap::new();
+                let pairs: Vec<(&Value, &Value)> = match &c.layout {
+                    crate::value::CollectionLayout::SmallMap(p) => p.iter().map(|(k, x)| (k, x)).collect(),
+                    crate::value::CollectionLayout::HashMapBackend(m) => m.iter().collect(),
+                    _ => Vec::new(),
+                };
+                for (k, x) in pairs {
+                    if let Some(key) = collections::value_to_map_key(k) { out.insert(key, x); }
+                }
+                Some(out)
+            }
+            _ => None,
+        };
+        if let Some(entries) = entries {
+            let mut m = ser.serialize_map(Some(entries.len()))?;
+            for (k, x) in entries { m.serialize_entry(&k, &JsonOut(x))?; }
+            return m.end();
+        }
+        let items: Option<Vec<Value>> = match v {
+            Value::Array(xs) => Some(xs.clone()),
+            Value::Collection(c) => Some(collections::to_vec(c)),
+            Value::Pair(a, b) => Some(vec![(**a).clone(), (**b).clone()]),
+            _ => None,
+        };
+        if let Some(items) = items {
+            let mut seq = ser.serialize_seq(Some(items.len()))?;
+            for x in &items { seq.serialize_element(&JsonOut(x))?; }
+            return seq.end();
+        }
+        value_to_json(v).serialize(ser)
+    }
 }

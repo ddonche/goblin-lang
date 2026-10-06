@@ -1174,6 +1174,7 @@ dependencies = [
  "indexmap",
  "regex",
  "rust_decimal",
+ "serde",
  "serde_json",
  "slab",
  "syntect",
