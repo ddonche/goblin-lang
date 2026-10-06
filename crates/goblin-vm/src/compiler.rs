@@ -31,6 +31,8 @@ struct FunctionScope {
     next_slot: u8,
     /// How many slots are parameters (always slots 0..params-1).
     params: usize,
+    /// Arguments a caller must pass; the rest have defaults.
+    required_params: usize,
     /// Function name.
     name: String,
     /// Pending break jump patches (jump offsets that need to be back-patched).
@@ -55,6 +57,7 @@ impl FunctionScope {
             constants: Vec::new(),
             next_slot: params as u8,
             params,
+            required_params: params,
             name: name.into(),
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
@@ -123,7 +126,8 @@ impl FunctionScope {
         let current = self.bytecode.len();
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
-            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o) => *o = offset,
+            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
+            | Opcode::JumpIfLocalSet(_, o) => *o = offset,
             _ => panic!("patch_jump on non-jump opcode"),
         }
     }
@@ -132,7 +136,8 @@ impl FunctionScope {
     fn patch_jump_to(&mut self, jump_idx: usize, target_ip: usize) {
         let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
-            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o) => *o = offset,
+            Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
+            | Opcode::JumpIfLocalSet(_, o) => *o = offset,
             _ => panic!("patch_jump_to on non-jump opcode"),
         }
     }
@@ -152,6 +157,7 @@ impl FunctionScope {
             constants: self.constants,
             locals: total_slots,
             params: self.params,
+            required_params: self.required_params,
             name: self.name,
             upvalue_descriptors,
             line_numbers: self.line_numbers,
@@ -433,6 +439,7 @@ impl Compiler {
             let scope = self.scopes.last_mut().unwrap();
             scope.declare_params(&param_names);
         }
+        self.compile_param_defaults(&action.params)?;
         match &action.body {
             ActionBody::Block(stmts) => {
                 // Two-pass: pre-register nested action names as globals.
@@ -1799,6 +1806,22 @@ impl Compiler {
 
     // ── Nested action / closure compilation ───────────────────────────────────
 
+    /// Parameter defaults (`b | 10`): a caller may omit trailing defaulted
+    /// arguments, and the default is evaluated in the callee when it does,
+    /// as the interpreter binds them.
+    fn compile_param_defaults(&mut self, params: &[goblin_ast::Param]) -> Result<(), GoblinError> {
+        let required = params.iter().rposition(|p| p.default.is_none()).map_or(0, |i| i + 1);
+        self.scope_mut().required_params = required;
+        for (i, p) in params.iter().enumerate() {
+            let Some(default) = &p.default else { continue };
+            let skip = self.emit(Opcode::JumpIfLocalSet(i as u8, 0));
+            self.compile_expr(default)?;
+            self.emit(Opcode::StoreLocal(i as u8));
+            self.scope_mut().patch_jump(skip);
+        }
+        Ok(())
+    }
+
     fn compile_action_decl(&mut self, action: &ActionDecl) -> Result<(), GoblinError> {
         let param_names: Vec<String> = action.params.iter().map(|p| p.name.clone()).collect();
         let n_params = param_names.len();
@@ -1808,6 +1831,7 @@ impl Compiler {
             let scope = self.scopes.last_mut().unwrap();
             scope.declare_params(&param_names);
         }
+        self.compile_param_defaults(&action.params)?;
 
         match &action.body {
             ActionBody::Block(stmts) => {

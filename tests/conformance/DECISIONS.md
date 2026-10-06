@@ -1,8 +1,8 @@
 # Conformance decisions: questions for the owner
 
-The interpreter (`goblin run`) and the VM (`goblin run --vm`) disagree on the language questions below. Neither engine has been changed. Each answer will turn its `/// undecided: D-<slug>` cases into ordinary cases with a `.out` file.
+The interpreter (`goblin run`) and the VM (`goblin run --vm`) disagree on the language questions below. Each answer will turn its `/// undecided: D-<slug>` cases into ordinary cases with a `.out` file. While this file was being written, vm-parity commits changed the VM on three questions: D1 is recorded as decided, and the current VM now matches the interpreter on D17 and D25 (these still need your confirmation).
 For each question this file gives what each engine does, what Goblin's own docs, tests, Sheriff and the Campfire port show, and what each answer would require.
-Every behaviour shown was re-run on two builds. **base** is `goblin-base`, the baseline the cases were written against. **cur** is `/home/claude/goblin-build/target/release/goblin`, which adds the VM fixes for map printing, slicing, nested `update!` and builtin shadowing. Where the two builds differ, the section says so.
+Every behaviour shown was re-run on two builds. **base** is `goblin-base`, the baseline the cases were written against. **cur** is `/home/claude/goblin-build/target/release/goblin` as rebuilt at 2026-10-06 16:08 UTC, with the vm-parity VM fixes (map printing, slicing, nested and inserting `update!`, builtin shadowing, structural equality, repeat modes). Where the two builds differ, the section says so.
 A general tiebreaker exists. AGENTS.md:5 and CLAUDE.md:5 say "Match interpreter behavior exactly", and AGENTS.md:22 and CLAUDE.md:43 call `crates/goblin-interpreter/src/lib.rs` the "source of truth for behavior". The recommendations below cite that rule only where nothing more specific applies.
 Sheriff runs on the interpreter (`sheriff-core/desk/api/build.gbln:44` runs `goblin run main.gbln`). So does Campfire (`campfire-goblin/GAPS.md:190`).
 
@@ -12,7 +12,7 @@ Reply in the form "D1 A, D2 B, …". Decisions are ordered by how much they matt
 
 | ID | Question | Options | Recommended |
 |---|---|---|---|
-| D1 (D-update-missing-key) | `:update!(m["k"], v)` when `k` is absent | A insert · B error | **A** |
+| D1 (D-update-missing-key) | `:update!(m["k"], v)` when `k` is absent | A insert · B error | **decided: A** (commit a1791ca); nothing to answer |
 | D2 (D-missing-key-read) | Reading `m["k"]` / `m.k` when `k` is absent | A error · B `nil` · C error, but `??` and `?.` treat it as nil | **B** |
 | D3 (D-block-scope) | Are `if`/loop bodies their own scope for `\|` bindings? | A block scope · B action scope · C block scope, but `x \| v` on an outer `x` is an error | **C** |
 | D4 (D-cast-rebinds) | Does `:str(x)` / `:int(x)` rebind `x`? | A pure (no) · B rebinds | **A** |
@@ -28,7 +28,7 @@ Reply in the form "D1 A, D2 B, …". Decisions are ordered by how much they matt
 | D14 (D-whole-float-type) | `:valtype(3.0)` | A `int` · B `float` | **B** |
 | D15 (D-import-without-alias) | `import a/b/mathy` with no `as` | A namespace `mathy` · B file merge · C error (except `.imports` manifests) | **C** |
 | D16 (D-imm) | `imm x \| 1` then `x \|= 2` | A error R0113 · B allowed, drop `imm` | **A** (evidence balanced) |
-| D17 (D-join-non-strings) | `:join([1, 2], ",")` | A TypeError · B `1,2` | **A** |
+| D17 (D-join-non-strings) | `:join([1, 2], ",")` (the cur VM now errors too) | A TypeError · B `1,2` | **A** (confirm) |
 | D18 (D-int-cast-nonnumeric) | `:int(true)`, `:int(nil)` | A error · B `1` / `nil` | **A** |
 | D19 (D-float-div-zero + D-sqrt-negative) | `5.0 / 0`, `:sqrt(-1)` | A error · B `inf` / `NaN` | **A** |
 | D20 (D-unclosed-interp-brace) | `"a{bad"` | A error R0500 · B literal text | **A** |
@@ -36,7 +36,7 @@ Reply in the form "D1 A, D2 B, …". Decisions are ordered by how much they matt
 | D22 (D-find-on-array) | `:find([5, 6, 7], 6)` | A error (strings only) · B index `1` | **A** |
 | D23 (D-keys-on-array) | `:keys([1, 2])` | A error · B `[0, 1]` | **A** (evidence balanced) |
 | D24 (D-slice-builtin-end) | End of `:slice(a, s, e)` (a VM-only builtin) | A exclusive for arrays and strings · B inclusive for arrays (VM today) | **A** |
-| D25 (D-repeat-negative) | `repeat -1` | A error R0207 · B zero iterations | **A** (evidence balanced) |
+| D25 (D-repeat-negative) | `repeat -1` (the cur VM now errors too) | A error R0207 · B zero iterations | **A** (confirm) |
 | D26 (D-toplevel-return) | `return` at the top level of a script | A ignored · B ends the script · C error | **B** |
 | D27 (D-format-info-no-thousands) | `th` in `:format_info` when there is no separator | A `"none"` · B `nil` | evidence balanced; **A** |
 | D28 (D-multi-return) | `return 1, 2` (cur builds now agree) | A `{_1: 1, _2: 2}` · B `[1, 2]` | **A** (confirm) |
@@ -44,7 +44,9 @@ Reply in the form "D1 A, D2 B, …". Decisions are ordered by how much they matt
 
 ---
 
-## D1 · D-update-missing-key: `:update!(m["k"], v)` when the key is absent
+## D1 · D-update-missing-key: `:update!(m["k"], v)` when the key is absent (DECIDED)
+
+**Status.** This is decided. The case header reads "Decided 2026-10-06 (D-update-missing-key): update! on a missing map key inserts it" (`collections/update_bang_missing_map_key.gbln:1`). Commit a1791ca made the VM insert, and on cur both engines now print `2`. The section below is kept as the record.
 
 **Question.** Does `update!` on a map index insert a missing key, or raise an error?
 
@@ -56,9 +58,9 @@ say(m["z"])
 | | base | cur |
 |---|---|---|
 | interp | `2` | `2` |
-| vm | `VM: runtime-error: key not found` | same |
+| vm | `VM: runtime-error: key not found` | `2` (since a1791ca) |
 
-A nested target (`:update!(r["h"]["b"], 2)` on `{"h": {"a": 1}}`) gives `{h: {a: 1, b: 2}}` on the interpreter. On the VM, base fails to compile (`'update!' index target must be a plain variable`) and cur gives `key not found`. In both engines the functional form `:update_at!(n, "z", 3)` errors: interp R0403 "no key 'z'", help "Insert the key with a value before updating it"; VM `key not found`.
+A nested target (`:update!(r["h"]["b"], 2)` on `{"h": {"a": 1}}`) gives `{h: {a: 1, b: 2}}` on the interpreter. On the VM, base fails to compile (`'update!' index target must be a plain variable`); cur matches the interpreter. Before a1791ca, cur gave `key not found`. In both engines the functional form `:update_at!(n, "z", 3)` errors: interp R0403 "no key 'z'", help "Insert the key with a value before updating it"; VM `key not found`.
 
 **Evidence**
 - language-spec.md:2391: `stats["intelligence"] = 8 /// add`, i.e. assigning to a new key adds it. Also language-spec.md:2418: "Update: `m["key"] = value`". Today `:update!(m[k], v)` is the only way to write that.
@@ -69,16 +71,11 @@ A nested target (`:update!(r["h"]["b"], 2)` on `{"h": {"a": 1}}`) gives `{h: {a:
   - Campfire has 175 `:update!(x[…])` sites in total.
 - Sheriff depends on it too:
   - `modules/frontier_fm/frontier.gbln:43-44`: `if :has(fm_map, "categories") == false` / `:update!(fm_map["categories"], [])`.
-  - `trailboss.gbln:77` and `:102` also insert.
   - Sheriff has 44 `:update!(x[…])` sites.
 
 **Options**
-- **A. Insert (interpreter).** On the VM:
-  - Make the single-key path, `CallBuiltin(UpdateAt)` emitted at compiler.rs:2369, insert when called from `update!`. It needs a separate builtin id or a flag, so that `:update_at!` keeps erroring.
-  - Do the same for `Opcode::UpdatePath` (vm.rs:903), the multi-segment path.
-  - The map arms that reject a missing key are collections.rs:469 (`if !m.contains_key(&key) { return Err(KeyNotFound) }`) and collections.rs:1320 (`update`, Collection).
-  - Size: small to medium.
-- **B. Error (VM).** In the interpreter, `get_lvalue_mut` (lib.rs:17282-17290) must stop calling `or_insert`. Campfire (≥4 sites) and Sheriff (≥3 sites) would then need `:put_at!` or a new insert form. Size: small, plus the app rewrites.
+- **A. Insert (interpreter).** Done on the VM in a1791ca: `update!` now always goes through `Opcode::UpdatePath` (compiler.rs:2343-2410, vm.rs:903). `:update_at!` still errors on a missing key in both engines.
+- **B. Error (VM).** In the interpreter, `get_lvalue_mut` (lib.rs:17282-17290) must stop calling `or_insert`. Campfire (≥4 sites) and Sheriff (≥1 site) would then need `:put_at!` or a new insert form. Size: small, plus the app rewrites.
 
 **Recommendation: A.** The spec's own update example adds a key (spec:2391). Both Sheriff and Campfire rely on it, and this is the main blocker to running either on the VM.
 
@@ -120,9 +117,9 @@ Coalescing is where this matters. `x | m["z"] ?? 5` raises R0403 on the interpre
 
 **Options**
 - **A. Error (interpreter).** Make the VM's `collections::get_index` return `KeyNotFound`:
-  - collections.rs:1097 and 1105 (Map, MapOrd);
-  - collections.rs:1110-1114 (Collection map layouts, `unwrap_or(Value::Nil)`);
-  - the member fallback at vm.rs:3578.
+  - collections.rs:1098 and 1105 (Map, MapOrd);
+  - collections.rs:1111-1115 (Collection map layouts, `unwrap_or(Value::Nil)`);
+  - the member fallback at vm.rs:3584.
 
   Sheriff's 139 `??` sites only work while the key is present. Size: small.
 - **B. `nil` (VM).** In the interpreter, return `Value::Nil` instead of R0403 in:
@@ -167,8 +164,8 @@ The other cases behave the same way on both builds:
   - the parser has an explicit shadow bind, `[=` (goblin-parser lib.rs:2781-2820, `BindMode::Shadow`).
 - The spec (language-spec.md:228-241, "Scope") covers only global and operation-local variables and says nothing about blocks.
 - **Sheriff is written as if scope were per action.** On the interpreter these lines silently do nothing:
-  - `main.gbln:65` and `:94`: `pre_ctx | ret` / `post_ctx | ret` in an `else`, next to the comment "/// keep old pre_ctx".
-  - `main.gbln:140-141`: `best_len | cur_len`, `best_path | md_path`.
+  - `main.gbln:66` and `:94`: `pre_ctx | ret` / `post_ctx | ret` in an `else`, next to the comment "/// keep old pre_ctx" (:64).
+  - `main.gbln:141-142`: `best_len | cur_len`, `best_path | md_path`.
   - `scout.gbln:173,201`: `idx | 0` … `idx | idx + 1`, a loop counter.
   - `prospector.gbln:82` and `glams/prospector/prospector.gbln:80`: stripping `.md`.
   - `brindle.gbln:452`: a fallback path.
@@ -182,7 +179,7 @@ The other cases behave the same way on both builds:
 **Options**
 - **A. Block scope (interpreter).** The VM compiler must open a local scope for each block and resolve against it:
   - `declare_local`, compiler.rs:79;
-  - `resolve_load` / `resolve_store`, compiler.rs:521 / 578;
+  - `resolve_load` / `resolve_store`, compiler.rs:531 / 578;
   - the loop variable must also be scoped;
   - `[=` must be honoured.
 
@@ -190,7 +187,7 @@ The other cases behave the same way on both builds:
 - **B. Action scope (VM).** The interpreter stops pushing frames for `if`/loop bodies (`push_block`, lib.rs:1115), and `[=` loses its meaning. Size: medium. It also changes D9 (block-level R0111).
 - **C. Block scope, but `x | v` is an error when `x` is already visible from an enclosing block of the same action.** The error would be R0111-style ("use `|=` to update or `[=` to shadow"). In the interpreter this is the Tether arm, lib.rs:5916, which must check outer frames up to the action frame. The VM needs A plus the same check at compile time. Size: medium to large. Sheriff's 7 sites become loud errors instead of silent no-ops.
 
-**Recommendation: C.** Goblin already has an explicit shadow operator, `[=` (parser lib.rs:2781), and Sheriff shows that an implicit shadow made with `|` causes silent bugs (main.gbln:65, scout.gbln:201).
+**Recommendation: C.** Goblin already has an explicit shadow operator, `[=` (parser lib.rs:2781), and Sheriff shows that an implicit shadow made with `|` causes silent bugs (main.gbln:66, scout.gbln:201).
 
 ---
 
@@ -337,12 +334,12 @@ This shows up in everyday code because some VM builtins return floats. `t | :sum
 **Evidence**
 - cheat-sheet.md:109: "numeric 3 == 3.0 is true".
 - language-spec.md:908: `3 == 3.0 /// true (numeric equality ignores type)`.
-- language-spec.md:911-912: `===` is the strict, type-sensitive form.
+- language-spec.md:911-913: `===` is the strict, type-sensitive form.
 - Interpreter: lib.rs:22282-22296 compares numerically.
-- VM: `Opcode::Eq` / `Ne` (vm.rs:725-732) uses `Value::PartialEq` (value.rs:198-229), which has no cross-type numeric arm.
+- VM: `Opcode::Eq` / `Ne` (vm.rs:725-732) uses `Value::PartialEq` (value.rs:200-232), which has no cross-type numeric arm.
 
 **Options**
-- **A. `true` (interpreter, docs).** Give the VM's `Eq`/`Ne` opcodes (vm.rs:725-732) a numeric comparison for Int/Float/Big/Pct. Do not change `Value::PartialEq`, because it is also used for map-key hashing (value.rs:197). Size: small.
+- **A. `true` (interpreter, docs).** Give the VM's `Eq`/`Ne` opcodes (vm.rs:725-732) a numeric comparison for Int/Float/Big/Pct. Do not change `Value::PartialEq`, because it is also used for map-key hashing (value.rs:199). Size: small.
 - **B. `false`.** The interpreter's `==` drops its numeric branch (lib.rs:22288-22299), and the docs change. Size: small.
 
 **Recommendation: A.** Both the cheat-sheet (line 109) and the spec (line 908) say so, and `===` already exists as the strict form.
@@ -374,7 +371,7 @@ say("end")
   - language-spec.md:871: "Goblin also defines truthiness: which non-boolean values behave as true or false in conditionals";
   - language-spec.md:960-1003, the Truthiness Rules, "Falsy: false, 0, 0.0, "", [], {}, nil";
   - language-spec.md:397: "Empty string is falsy in conditionals";
-  - VM `JumpIfFalse` (vm.rs:763) and `Value::is_truthy` (value.rs:163).
+  - VM `JumpIfFalse` (vm.rs:763) and `Value::is_truthy` (value.rs:165).
 - No doc says what `and`/`or` return.
 - Sheriff and Campfire always write explicit tests, because they were written for the interpreter: `.nix?`, `== false`, `:len(x) > 0`. They work under every option.
 
@@ -432,7 +429,7 @@ say(:get_matching(["a", "b"], "[0-9]"))
   - `lib/storage.gbln:168-169` checks `found == nil or :len(found) == 0` without a guard, so it would raise on the interpreter when nothing matches.
 
 **Options**
-- **A. Error (interpreter).** The VM raises at collections.rs:170 and collections.rs:440 (`Matching` + `Get`) when the result is empty. Size: tiny.
+- **A. Error (interpreter).** The VM raises at collections.rs:170 and collections.rs:441 (`Matching` + `Get`) when the result is empty. Size: tiny.
 - **B. `[]` (VM).** The interpreter returns an empty array instead of R0701, in the array arm (lib.rs ~11063) and the map arm. Size: tiny.
 
 **Recommendation: B.** Campfire wrote a wrapper only to get `[]`, and `storage.gbln:168` already assumes it.
@@ -457,7 +454,7 @@ say(-7 % 3)
 - `int 3.9 → 3 (truncate toward 0)` (cheat-sheet.md:166) is about casts, not division.
 
 **Options**
-- **A. Floor (interpreter).** In the VM, `DivInt` (vm.rs:668), `Div` with Int,Int (vm.rs:647), `Rem` (vm.rs:676) and `RemInt` (vm.rs:688) use `div_euclid`-style floor arithmetic, and the Float arms do the same. Size: small.
+- **A. Floor (interpreter).** In the VM, `DivInt` (vm.rs:668), `Div` with Int,Int (vm.rs:647), `Rem` (vm.rs:677) and `RemInt` (vm.rs:690) use `div_euclid`-style floor arithmetic, and the Float arms do the same. Size: small.
 - **B. Truncate (VM).** Change the interpreter's `//` and `%` arms (lib.rs:21993, 22044). Size: small.
 
 **Recommendation: A.** The interpreter names the operator floor division, and Campfire's hand-written helpers floor.
@@ -572,7 +569,7 @@ say(mathy::add(2, 3))
 - Sheriff's only unaliased import is the manifest, `main.gbln:3` `import "../sheriff-core/manifest.imports"`, which must keep working.
 
 **Options**
-- **A. Namespace from the last segment (interpreter).** The VM compiler (compiler.rs:795 `Stmt::Import`) emits `ImportFileAs` with the derived alias. Size: small.
+- **A. Namespace from the last segment (interpreter).** The VM compiler (compiler.rs:805 `Stmt::Import`) emits `ImportFileAs` with the derived alias. Size: small.
 - **B. File merge (VM).** The interpreter's `Stmt::Import` loads into the importer's namespace. Size: medium.
 - **C. Error unless the target is a `.imports` manifest.** Add a parser or loader check in both engines. Size: small.
 
@@ -606,7 +603,7 @@ say(x)
 - Neither app uses `imm`.
 
 **Options**
-- **A. Enforce.** The VM compiler records `is_imm` per local or global and rejects `|=` on it: `resolve_store`, compiler.rs:578. Size: small.
+- **A. Enforce.** The VM compiler records `is_imm` per local or global and rejects `|=` on it: `resolve_store`, compiler.rs:588. Size: small.
 - **B. Drop `imm`.** Remove it from the parser (lib.rs:2663, 5771) and the interpreter's R0113 paths. Size: small.
 
 **Recommendation: A.** The evidence is balanced. The keyword and its error code are implemented features, while the contrary doc lines sit in sections already stale on syntax.
@@ -615,7 +612,7 @@ say(x)
 
 ## D17 · D-join-non-strings
 
-This slug overlaps `strings/join_non_string_errors`, which is already marked `known-gap: vm` on the strength of the doc line below.
+This slug overlaps `strings/join_non_string_errors`, which is already marked `known-gap: vm` on the strength of the doc line below. On cur both engines now agree on the error, after commit 6bb23a1 ("collection-aware builtins").
 
 ```
 say(:join([1, 2], ","))
@@ -623,15 +620,15 @@ say(:join([1, 2], ","))
 | | base | cur |
 |---|---|---|
 | interp | `T0205 ‘join’ expects an array/seq of strings or chars` | same |
-| vm | `1,2` | same |
+| vm | `1,2` | `type error in join: expected str or char element, got int` |
 
 **Evidence.** language-spec.md:556: "join accepts an array of strings and a string separator; any non-string element ⇒ TypeError".
 
 **Options**
-- **A. TypeError.** The VM's `Join` (builtins.rs:428) rejects non-strings. Size: tiny.
-- **B. Stringify.** The interpreter's join (lib.rs ~15800) stringifies elements, and the strings case flips. Size: tiny.
+- **A. TypeError.** Already the case on cur (VM `Join`, builtins.rs:430). Nothing to change.
+- **B. Stringify.** Both engines' `join` stringify elements: interp lib.rs ~15800, VM builtins.rs:430. The strings case flips. Size: tiny.
 
-**Recommendation: A.** That is what spec:556 says.
+**Recommendation: A.** That is what spec:556 says. Please confirm, so both cases can get a `.out` file.
 
 ---
 
@@ -644,11 +641,11 @@ say(:join([1, 2], ","))
 
 **Evidence**
 - cheat-sheet.md:216: "**TypeError** for unsupported conversions".
-- cheat-sheet.md:218: "Casting is explicit".
+- cheat-sheet.md:217: "Casting is explicit".
 - bool and nil are not mentioned.
 
 **Options**
-- **A. Error.** The VM's `ToInt`/`Int` (builtins.rs:2230) rejects Bool and Nil. Size: tiny.
+- **A. Error.** The VM's `ToInt`/`Int` (builtins.rs:2234) rejects Bool and Nil. Size: tiny.
 - **B. `1`/`0` and `nil`.** The interpreter adds the arms. Size: tiny.
 
 **Recommendation: A.** The docs make unsupported conversions an error, and the interpreter's help text lists the valid inputs.
@@ -722,7 +719,7 @@ say(:str(Status::Busy))
 - `Status::Idle` is the access syntax both engines accept.
 
 **Options**
-- **A. `::`.** Change the VM's display at builtins.rs:5257 and debug.rs:209. Size: tiny.
+- **A. `::`.** Change the VM's display at builtins.rs:5250 and debug.rs:209. Size: tiny.
 - **B. `.`.** Change the interpreter at lib.rs:2774 (and the JSON form at lib.rs:1738). Size: tiny.
 
 **Recommendation: A.** A printed value then matches the syntax that reads it back.
@@ -788,10 +785,10 @@ The VM's `:slice` includes the end for arrays but excludes it for strings, while
 **Evidence**
 - `slice` is undocumented.
 - language-spec.md:2399: "Slicing: `a[s:e]` (end exclusive)".
-- VM: builtins.rs:2062, which goes to `grab_between` (inclusive) for arrays.
+- VM: builtins.rs:2056, which goes to `grab_between` (inclusive) for arrays.
 
 **Options**
-- **A. Exclusive for both, then add `slice` to the interpreter.** Change the VM's array path in `BuiltinId::Slice` (builtins.rs:2062) and add an interpreter builtin. Size: small.
+- **A. Exclusive for both, then add `slice` to the interpreter.** Change the VM's array path in `BuiltinId::Slice` (builtins.rs:2056) and add an interpreter builtin. Size: small.
 - **B. Keep the VM's split.** Port it to the interpreter. Size: small.
 
 **Recommendation: A.** It matches the documented `[s:e]` slicing and the builtin's own string behaviour.
@@ -809,15 +806,15 @@ say("done")
 | | base | cur |
 |---|---|---|
 | interp | `R0207 'repeat' count must be >= 0 (got -1).` | same |
-| vm | `done` | same |
+| vm | `done` | `runtime error: 'repeat' count must be >= 0 (got -1)` (since fcd81fe) |
 
 **Evidence.** There are no docs (the cheat-sheet's Repeat section, lines 1249-1275, gives only positive counts). The interpreter's check is explicit (lib.rs:20557).
 
 **Options**
-- **A. Error.** The VM checks the count where `repeat` is compiled or run. Size: tiny.
-- **B. Zero iterations.** Remove the check in the interpreter. Size: tiny.
+- **A. Error.** Already the case on cur (fcd81fe, "VM: repeat matches interpreter modes"). Nothing to change.
+- **B. Zero iterations.** Remove the check in both engines. Size: tiny.
 
-**Recommendation: A.** The evidence is balanced; this keeps the interpreter's explicit check.
+**Recommendation: A** (please confirm). The evidence is balanced, and both engines now raise the error.
 
 ---
 
@@ -862,7 +859,7 @@ say(:format_info(:format(2.5, 2)))
 - `none` exists as an interpreter-only name in the builtin inventory.
 
 **Options**
-- **A. `"none"`.** Change the VM at builtins.rs:3520. Size: tiny.
+- **A. `"none"`.** Change the VM at builtins.rs:3510. Size: tiny.
 - **B. `nil`.** Change the interpreter at lib.rs:13157. Size: tiny.
 
 **Recommendation: A.** The evidence is balanced. `"none"` matches the spelling `format` accepts.
@@ -904,7 +901,7 @@ say(:to_map({"a": 1}))
 
 **Evidence**
 - `to_map` is undocumented.
-- The interpreter's `cast_to_map` (lib.rs:2093) wraps the map, and the VM's `ToMap` is at builtins.rs:3083.
+- The interpreter's `cast_to_map` (lib.rs:2093) wraps the map, and the VM's `ToMap` is at builtins.rs:3073.
 
 **Options**
 - **A. Keep `{{a: 1}}`.** No change.
@@ -1051,14 +1048,14 @@ All 69 names below give `A0401 unknown action` on the interpreter and are recogn
 |---|---|---|---|---|
 | Casts | `to_int`, `to_float`, `to_str`, `to_string`, `to_bool` | Deprecated: language-spec.md:856-857 "Earlier drafts used .to_int, .to_float, and .to_string … These forms are now deprecated" | none | **Deprecate.** Remove them from the VM or keep them as aliases with a warning; do not add them to the interpreter. |
 | Case | `to_upper`, `to_lower` | no (the documented forms are `upper`/`lower`) | none | Deprecate, as for the casts. |
-| Higher-order | `filter`, `filter_fn`, `map_fn`, `reduce`, `reduce_fn`, `for_each_fn`, `sort_by`, `any`, `all` | no (the docs show `map upper, names`, cheat-sheet.md:645, and `for … where`) | none (Campfire's `db::all` is a user act) | **Add to the interpreter** once D-actions-as-values works there (`action_as_value` is a known interp gap). Fix `sort_by`'s string-keyed comparison first (vm.rs:2918). |
+| Higher-order | `filter`, `filter_fn`, `map_fn`, `reduce`, `reduce_fn`, `for_each_fn`, `sort_by`, `any`, `all` | no (the docs show `map upper, names`, cheat-sheet.md:645, and `for … where`) | none (Campfire's `db::all` is a user act) | **Add to the interpreter** once actions can be passed as values there (cases `action_as_value` and `closure_captures_param` are known interp gaps). Fix `sort_by`'s string-keyed comparison first (`vm_sort_by_inner`, vm.rs:2923). |
 | `grab*` family | `grab`, `grab_first`, `grab_last`, `grab_at`, `grab_all`, `grab_random`, `grab_where`, `grab_matching`, `grab_between` | no | none | Evidence balanced. Either add them (they complete the get/put/delete/update/reap matrix) or declare them VM-only. Rec: add. |
 | Collection extras | `put_all`, `put_where`, `reap_all`, `reap_random`, `find_index`, `pairs`, `flatten`, `zip`, `range`, `slice`, `array_push`, `is_empty`, `is_collection`, `contains` | no; `slice` is undocumented (see D24) | Campfire writes its own `upto`/`span` because `:range` is missing (GAPS.md:185; `http.gbln:352`, `qrcode.gbln:27,37`, `opengraph.gbln:28`) | **Add** `range`, `slice` (after D24), `find_index`, `flatten`, `zip`, `is_empty`, `pairs`, `put_all`, `put_where`, `reap_all`, `reap_random`. `array_push` and `contains` duplicate `put_last!` and `has`: declare them VM-only aliases or drop them. |
-| Strings | `replace`, `pad`, `pad_left`, `pad_right`, `repeat_str`, `url_encode`, `url_decode` | `replace`: cheat-sheet.md:245, 463 and language-spec.md:521 (replaces all). `pad`: cheat-sheet.md:246. Others no | **Sheriff calls `:url_encode`** (`badge_labels/badge.gbln:168-169`), which fails on the interpreter Sheriff runs on. Campfire writes its own `url_decode`/`url_encode` (`http.gbln:52`, `:106`) | **Add all** to the interpreter; `replace` and `pad` are documented. Fix the VM's `pad` ignoring its fill argument first. |
+| Strings | `replace`, `pad`, `pad_left`, `pad_right`, `repeat_str`, `url_encode`, `url_decode` | `replace`: cheat-sheet.md:245, 463 and language-spec.md:521 (replaces all). `pad`: cheat-sheet.md:246. Others no | **Sheriff calls `:url_encode`** (`badge_labels/badge.gbln:168-169`), which fails on the interpreter Sheriff runs on. Campfire writes its own `url_decode`/`url_encode` (`http.gbln:52`, `:106`) | **Add all** to the interpreter; `replace` and `pad` are documented. Fix the VM's `pad` ignoring its fill argument first (builtins.rs:2836). |
 | Output / errors | `print`, `println`, `eprint`, `eprintln`, `panic`, `assert` | `assert`: cheat-sheet.md:1291. Others no | none | **Add.** `assert` is documented, and `panic`/`eprint` are needed for scripts. |
 | Introspection | `type_of`, `is_function` | no (`valtype` is the documented-in-use form) | none | `type_of`: declare VM-only or drop it in favour of `valtype`. `is_function`: add it together with actions-as-values. |
-| HTTP | `http_get`, `http_post`, `http_put`, `http_delete`, `http_request` | `http_post("/pay", payload)` returning a body (language-spec.md:4482), a different shape | Campfire calls `curl` through `bin/net` because the interpreter has no HTTP (GAPS.md, section 5) | **Add to the interpreter** with the VM's `{status, body, ok}` shape, and update the spec. |
-| Templates / text | `render_template`, `ipsum`, `ipsum_full`, `ipsum_paragraphs`, `ipsum_sentences` | no | `tests/render_test.gbln`, `tests/gen1000.gbln` | `render_template`: add. `ipsum*`: the VM's are stubs returning a constant (builtins.rs:2293), so declare them VM-only or drop them. |
+| HTTP | `http_get`, `http_post`, `http_put`, `http_delete`, `http_request` | `http_post("/pay", payload)` returning a body (language-spec.md:4482), a different shape | Campfire calls `curl` through `bin/net` because the interpreter has no HTTP (GAPS.md:88, section 5) | **Add to the interpreter** with the VM's `{status, body, ok}` shape, and update the spec. |
+| Templates / text | `render_template`, `ipsum`, `ipsum_full`, `ipsum_paragraphs`, `ipsum_sentences` | no | `tests/render_test.gbln`, `tests/gen1000.gbln` | `render_template`: add. `ipsum*`: the VM's are stubs returning a constant (builtins.rs:2283), so declare them VM-only or drop them. |
 | VM runtime | `gc`, `gc_mode`, `mem_id`, `objects`, `overlays`, `stash_count`, `tether_count`, `delete_object`, `delete_overlays_on` | no | none | **Declare VM-only.** They expose VM internals. |
 
 The interpreter also has three builtins the VM lacks:

@@ -443,6 +443,8 @@ pub struct FunctionObject {
     pub locals: usize,
     /// Number of parameter slots (always the first `params` locals).
     pub params: usize,
+    /// Arguments a caller must pass (the rest have defaults).
+    pub required_params: usize,
     pub name: String,
     /// How to populate upvalues when this function is wrapped in a Closure.
     pub upvalue_descriptors: Vec<UpvalueDescriptor>,

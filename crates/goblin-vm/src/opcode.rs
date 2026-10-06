@@ -115,6 +115,9 @@ pub enum Opcode {
     /// Bit i of the mask marks segment i as a `>>` field access (key is a
     /// field-name string) rather than an index.
     UpdatePath(u8, u16),
+    /// Jump by the offset when local slot `slot` already holds a value; used by
+    /// parameter defaults, whose slots stay unset when the caller omits them.
+    JumpIfLocalSet(u8, i16),
     /// Pop a map value, instantiate a class object from it. constants[idx] = class name string.
     ClassInstantiate(u16),
     /// Stack: [recv, arg0..arg_{argc-1}]. constants[name_idx] = method name. Pop all, push result.
@@ -311,6 +314,7 @@ impl Opcode {
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",
             Opcode::UpdatePath(..)  => "UpdatePath",
+            Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",
             Opcode::CallMethod(_, _)    => "CallMethod",
             Opcode::Call(_)         => "Call",

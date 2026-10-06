@@ -900,6 +900,12 @@ impl Vm {
                 // Push ref back so caller can chain / store back.
                 self.stack.push(Operand::Val(Value::Ref(uuid)));
             }
+            Opcode::JumpIfLocalSet(slot, offset) => {
+                let frame = self.call_stack.last_mut().unwrap();
+                if frame.locals[slot as usize].is_some() {
+                    frame.ip = (frame.ip as isize + offset as isize) as usize;
+                }
+            }
             Opcode::UpdatePath(n, mask) => {
                 let new_val = self.pop_value()?;
                 let mut keys = Vec::with_capacity(n as usize);
@@ -1071,7 +1077,7 @@ impl Vm {
                     other => return Err(GoblinError::NotCallable { got: other.type_name() }),
                 };
 
-                if arg_count != func_rc.params {
+                if arg_count < func_rc.required_params || arg_count > func_rc.params {
                     return Err(GoblinError::ArityMismatch {
                         expected: func_rc.params,
                         got: arg_count,
@@ -3602,6 +3608,7 @@ mod tests {
             constants,
             locals: 0,
             params: 0,
+            required_params: 0,
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
@@ -3644,6 +3651,7 @@ mod tests {
             constants: vec![Value::Int(10)],
             locals: 1,
             params: 0,
+            required_params: 0,
             name: "test".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
@@ -3672,6 +3680,7 @@ mod tests {
             constants: vec![Value::Int(1), Value::Int(2)],
             locals: 0,
             params: 0,
+            required_params: 0,
             name: "if_else".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
@@ -3698,6 +3707,7 @@ mod tests {
             constants: vec![Value::Int(1)],
             locals: 1,
             params: 1,
+            required_params: 1,
             name: "add1".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
@@ -3717,6 +3727,7 @@ mod tests {
             constants: vec![Value::Function(Rc::new(inner)), Value::Int(5)],
             locals: 0,
             params: 0,
+            required_params: 0,
             name: "outer".into(),
             upvalue_descriptors: Vec::new(),
             line_numbers: Vec::new(),
