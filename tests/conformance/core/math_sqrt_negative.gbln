@@ -1,3 +1,2 @@
 /// Decided 2026-10-06 (D-sqrt-negative, option A; see DECISIONS.md).
-/// known-gap: vm decision D-sqrt-negative (option A) not implemented yet
 say(:sqrt(-1))

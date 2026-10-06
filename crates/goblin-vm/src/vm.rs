@@ -642,22 +642,12 @@ impl Vm {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = match (&a, &b) {
-                    (Value::Int(_), Value::Int(0)) | (Value::Float(_), Value::Float(_))
-                        if matches!(&b, Value::Int(0)) => {
-                        return Err(GoblinError::DivisionByZero);
-                    }
-                    (Value::Int(x), Value::Int(y)) => {
-                        if *y == 0 { return Err(GoblinError::DivisionByZero); }
-                        Value::Int(x / y)
-                    }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x / y),
-                    (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 / y),
-                    (Value::Float(x), Value::Int(y))   => Value::Float(x / *y as f64),
-                    (Value::Big(x), Value::Big(y))     => {
+                    (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => num_div(&a, &b)?,
+                    (Value::Big(x), Value::Big(y)) => {
                         if y.is_zero() { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / y)
                     }
-                    (Value::Big(x), Value::Int(y))     => {
+                    (Value::Big(x), Value::Int(y)) => {
                         if *y == 0 { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / rust_decimal::Decimal::from(*y))
                     }
@@ -669,18 +659,17 @@ impl Vm {
             }
             Opcode::DivInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
-                if b == 0 { return Err(GoblinError::DivisionByZero); }
-                self.stack.push(Operand::Val(Value::Int(a / b)));
+                self.stack.push(Operand::Val(num_div(&Value::Int(a), &Value::Int(b))?));
             }
             Opcode::DivFloat => {
                 let b = self.pop_float()?; let a = self.pop_float()?;
-                self.stack.push(Operand::Val(Value::Float(a / b)));
+                self.stack.push(Operand::Val(num_div(&Value::Float(a), &Value::Float(b))?));
             }
             Opcode::Rem => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let result = match crate::value::numeric_binop("rem", &a, &b) {
-                    Some(r) => r?,
+                    Some(r) => floor_mod_adjust(r?, &b),
                     None => return Err(GoblinError::type_error("number", b.type_name(), "%")),
                 };
                 self.stack.push(Operand::Val(result));
@@ -688,7 +677,8 @@ impl Vm {
             Opcode::RemInt => {
                 let b = self.pop_int()?; let a = self.pop_int()?;
                 if b == 0 { return Err(GoblinError::DivisionByZero); }
-                self.stack.push(Operand::Val(Value::Int(a % b)));
+                let r = a.wrapping_rem_euclid(b);
+                self.stack.push(Operand::Val(Value::Int(if b < 0 && r != 0 { r + b } else { r })));
             }
             Opcode::Neg => {
                 let a = self.pop_value()?;
@@ -722,11 +712,11 @@ impl Vm {
             // ── Comparison ───────────────────────────────────────────────────
             Opcode::Eq => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                self.stack.push(Operand::Val(Value::Bool(a == b)));
+                self.stack.push(Operand::Val(Value::Bool(values_equal(&a, &b))));
             }
             Opcode::Ne => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
-                self.stack.push(Operand::Val(Value::Bool(a != b)));
+                self.stack.push(Operand::Val(Value::Bool(!values_equal(&a, &b))));
             }
             Opcode::Lt => {
                 let b = self.pop_value()?; let a = self.pop_value()?;
@@ -1979,9 +1969,9 @@ impl Vm {
                 let mut j = start;
                 while j < chars.len() && chars[j] != '}' { j += 1; }
                 if j >= chars.len() {
-                    out.push('{');
-                    i += 1;
-                    continue;
+                    // D20: an unclosed `{` is an error (R0500), as in the interpreter.
+                    return Err(GoblinError::Runtime(
+                        "unclosed '{' in interpolated string (use \\{ for a literal brace)".into()));
                 }
                 let inner: String = chars[start..j].iter().collect();
                 let inner = inner.trim();
@@ -3773,5 +3763,48 @@ fn is_map_value(v: &Value) -> bool {
         Value::Map(_) | Value::MapOrd(_) => true,
         Value::Collection(c) => crate::collections::is_map_collection(c),
         _ => false,
+    }
+}
+
+/// `==` (D7): an int and a float are equal when they are the same number;
+/// everything else compares structurally.
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => (*x as f64) == *y,
+        _ => a == b,
+    }
+}
+
+/// `/` on ints and floats (D5): int / int stays an int when exact and is a
+/// float otherwise; dividing by zero is an error (D19).
+fn num_div(a: &Value, b: &Value) -> Result<Value, GoblinError> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            if *y == 0 { return Err(GoblinError::DivisionByZero); }
+            match (x.checked_rem(*y), x.checked_div(*y)) {
+                (Some(0), Some(q)) => Ok(Value::Int(q)),
+                _ => Ok(Value::Float(*x as f64 / *y as f64)),
+            }
+        }
+        _ => {
+            let x = match a { Value::Int(n) => *n as f64, Value::Float(f) => *f, _ => unreachable!() };
+            let y = match b { Value::Int(n) => *n as f64, Value::Float(f) => *f, _ => unreachable!() };
+            if y == 0.0 { return Err(GoblinError::DivisionByZero); }
+            Ok(Value::Float(x / y))
+        }
+    }
+}
+
+/// `%` takes the sign of the divisor (floored modulo, D11).
+fn floor_mod_adjust(r: Value, divisor: &Value) -> Value {
+    match (&r, divisor) {
+        (Value::Int(x), Value::Int(y)) if *x != 0 && (*x < 0) != (*y < 0) => Value::Int(x + y),
+        (Value::Float(x), _) => {
+            let y = match divisor { Value::Int(n) => *n as f64, Value::Float(f) => *f, _ => return r };
+            if *x != 0.0 && (*x < 0.0) != (y < 0.0) { Value::Float(x + y) } else { r }
+        }
+        (Value::Big(x), Value::Big(y)) if !x.is_zero() && x.is_sign_negative() != y.is_sign_negative() => Value::Big(x + y),
+        (Value::Big(x), Value::Int(y)) if !x.is_zero() && x.is_sign_negative() != (*y < 0) => Value::Big(x + rust_decimal::Decimal::from(*y)),
+        _ => r,
     }
 }

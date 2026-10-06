@@ -1,5 +1,4 @@
 /// Decided 2026-10-06 (D-redeclare, option A; see DECISIONS.md).
-/// known-gap: vm decision D-redeclare (option A) not implemented yet
 x | 1
 x | 2
 say(x)

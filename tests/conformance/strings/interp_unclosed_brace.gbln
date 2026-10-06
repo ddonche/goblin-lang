@@ -1,3 +1,2 @@
 /// Decided 2026-10-06 (D-unclosed-interp-brace, option A; see DECISIONS.md).
-/// known-gap: vm decision D-unclosed-interp-brace (option A) not implemented yet
 say("a{bad")

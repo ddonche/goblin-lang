@@ -1,5 +1,4 @@
 /// Decided 2026-10-06 (D-int-division, option B; see DECISIONS.md).
-/// known-gap: vm decision D-int-division (option B) not implemented yet
 x | 10
 x /= 4
 say(x)

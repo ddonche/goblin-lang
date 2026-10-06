@@ -206,7 +206,7 @@ fn format_value_depth(v: &Value, depth: usize) -> String {
         Value::Object { class_name, .. } => format!("<{}>", class_name),
         Value::Ref(s)        => format!("<ref {}>", s),
         Value::GridRef { grid_id, x, y } => format!("<gridref {}[{},{}]>", grid_id, x, y),
-        Value::Enum { enum_name, variant_name, .. } => format!("{}.{}", enum_name, variant_name),
+        Value::Enum { enum_name, variant_name, .. } => format!("{}::{}", enum_name, variant_name),
         Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) => {
             #[allow(unused_imports)] use crate::collections;

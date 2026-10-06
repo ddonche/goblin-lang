@@ -1,5 +1,4 @@
 /// Decided 2026-10-06 (D-enum-display, option A; see DECISIONS.md).
-/// known-gap: vm decision D-enum-display (option A) not implemented yet
 enum Status
     Idle
     Busy

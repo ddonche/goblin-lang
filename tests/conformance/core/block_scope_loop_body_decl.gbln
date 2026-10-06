@@ -1,5 +1,4 @@
 /// Decided 2026-10-06 (D-block-scope, option C; see DECISIONS.md).
-/// known-gap: vm decision D-block-scope (option C) not implemented yet
 for i in [1, 2]
     w | i * 10
 xx

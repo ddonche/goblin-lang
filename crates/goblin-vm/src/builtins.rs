@@ -219,6 +219,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Sqrt => {
             expect_n(1)?;
+            // A negative input is a domain error, not NaN (D19).
+            match read(0)? {
+                Value::Int(n) if n < 0 => return Err(GoblinError::Runtime("sqrt domain error: cannot take square root of a negative value".into())),
+                Value::Float(f) if f < 0.0 => return Err(GoblinError::Runtime("sqrt domain error: cannot take square root of a negative value".into())),
+                _ => {}
+            }
             Ok(match read(0)? {
                 Value::Int(n)   => Value::Float((n as f64).sqrt()),
                 Value::Float(f) => Value::Float(f.sqrt()),
@@ -350,20 +356,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         None => Value::Nil,
                     })
                 }
-                (Value::Array(arr), needle_val) => {
-                    Ok(match arr.iter().position(|x| x == &needle_val) {
-                        Some(i) => Value::Int(i as i64),
-                        None => Value::Nil,
-                    })
-                }
-                (Value::Collection(c), needle_val) => {
-                    let xs = crate::collections::to_vec(&c);
-                    Ok(match xs.iter().position(|x| x == &needle_val) {
-                        Some(i) => Value::Int(i as i64),
-                        None => Value::Nil,
-                    })
-                }
-                (other, _) => Err(GoblinError::type_error("str or array", other.type_name(), "find")),
+                // `find` searches strings only (D22); arrays use find_index.
+                (other, _) => Err(GoblinError::type_error("str", other.type_name(), "find")),
             }
         }
         BuiltinId::FindAll => {
@@ -1141,8 +1135,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             match read(0)? {
                 Value::Map(m)    => Ok(collections::into_collection(Value::Array(m.keys().cloned().map(Value::Str).collect()))),
                 Value::MapOrd(m) => Ok(collections::into_collection(Value::Array(m.keys().cloned().map(Value::Str).collect()))),
-                Value::Collection(c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::keys(&c))))),
-                other => Err(GoblinError::type_error("map or collection", other.type_name(), "keys")),
+                // `keys` is for maps only (D23).
+                Value::Collection(c) if collections::is_map_collection(&c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::keys(&c))))),
+                other => Err(GoblinError::type_error("map", other.type_name(), "keys")),
             }
         }
         BuiltinId::Values => {
@@ -2127,6 +2122,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             session.write_output(&parts?.join(" "), false);
             Ok(Value::Nil)
         }
+        BuiltinId::StrictEq => Ok(Value::Bool(read(0)? == read(1)?)),
         BuiltinId::ApiEcho => {
             // A top-level expression statement in API mode: its value becomes
             // response output, unless it is nil or prints as nothing.
@@ -2264,8 +2260,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── Conversions ───────────────────────────────────────────────────────
         BuiltinId::ToInt => {
             expect_n(1)?;
-            // Same conversion as the `:int` lock: an unparsable string is an error.
-            lock_to_int(read(0)?)
+            // Same conversion as the `:int` lock: an unparsable string is an
+            // error, and so are bool and nil (D18).
+            match read(0)? {
+                v @ (Value::Bool(_) | Value::Nil) => Err(GoblinError::type_error("number or str", v.type_name(), "int")),
+                v => lock_to_int(v),
+            }
         }
         BuiltinId::ToFloat => {
             expect_n(1)?;
@@ -3115,6 +3115,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => s,
                 Value::Map(m) => return Ok(Value::Map(m)),
                 Value::MapOrd(m) => return Ok(Value::MapOrd(m)),
+                // A map is already a map (D29).
+                Value::Collection(c) if collections::is_map_collection(&c) => return Ok(Value::Collection(c)),
                 other => fmt_value_raw(&other),
             };
             let mut map = std::collections::BTreeMap::new();
@@ -3546,7 +3548,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     map.insert("dec".into(), Value::Int(spec.decimals as i64));
                     map.insert("th".into(), match spec.sep_thousands {
                         Some(c) => Value::Str(c.to_string()),
-                        None => Value::Nil,
+                        None => Value::Str("none".into()),
                     });
                     map.insert("decmark".into(), Value::Str(spec.sep_decimal.to_string()));
                     Ok(Value::Map(map))
@@ -5293,7 +5295,7 @@ pub fn value_to_str(v: &Value) -> String {
         }
         Value::Ref(s)        => format!("<ref {}>", s),
         Value::GridRef { grid_id, x, y } => format!("<gridref {}[{},{}]>", grid_id, x, y),
-        Value::Enum { enum_name, variant_name, .. } => format!("{}.{}", enum_name, variant_name),
+        Value::Enum { enum_name, variant_name, .. } => format!("{}::{}", enum_name, variant_name),
         Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) if collections::is_map_collection(c) => {
             let parts: Vec<String> = collections::to_pairs(c).iter()

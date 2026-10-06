@@ -758,6 +758,7 @@ pub enum BuiltinId {
     ToForIter,
     RepeatPrep,
     ApiEcho,
+    StrictEq,
 
     // String extras
     Lines,
