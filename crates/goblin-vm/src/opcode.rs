@@ -110,6 +110,11 @@ pub enum Opcode {
     GetMember(u16),
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
     SetField(u16),
+    /// Nested `update!` through an lvalue path of `n` segments.
+    /// Stack: [root, key1, …, keyN, new_val] → push the updated root.
+    /// Bit i of the mask marks segment i as a `>>` field access (key is a
+    /// field-name string) rather than an index.
+    UpdatePath(u8, u16),
     /// Pop a map value, instantiate a class object from it. constants[idx] = class name string.
     ClassInstantiate(u16),
     /// Stack: [recv, arg0..arg_{argc-1}]. constants[name_idx] = method name. Pop all, push result.
@@ -305,6 +310,7 @@ impl Opcode {
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",
+            Opcode::UpdatePath(..)  => "UpdatePath",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",
             Opcode::CallMethod(_, _)    => "CallMethod",
             Opcode::Call(_)         => "Call",

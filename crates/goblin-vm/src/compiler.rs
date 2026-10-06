@@ -267,6 +267,11 @@ pub struct Compiler {
     glam_namespace: Option<String>,
     /// Source file being compiled (stamped onto every FunctionObject, for error messages).
     source_file: String,
+    /// Names of actions declared in this module. Builtins are shadowable
+    /// (docs/language-spec.md §4 "Built-ins (shadowable operations & types)"),
+    /// so a free call to one of these names calls the user's action, never the
+    /// builtin of the same name.
+    user_actions: std::collections::HashSet<String>,
 }
 
 #[derive(Default)]
@@ -281,7 +286,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default() }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -330,6 +335,7 @@ impl Compiler {
             let mut module_action_names: Vec<String> = Vec::new();
             collect_action_names(&module.items, &mut module_action_names);
             for name in module_action_names {
+                self.user_actions.insert(name.clone());
                 if !self.globals.contains(&name) {
                     self.globals.push(name);
                 }
@@ -646,6 +652,7 @@ impl Compiler {
             }
 
             Stmt::Action(action) => {
+                self.user_actions.insert(action.name.clone());
                 self.compile_action_decl(action)?;
                 // All actions — regardless of nesting depth — register in named_values
                 // and store to the global slot. The interpreter's sess.actions is a flat
@@ -1066,6 +1073,15 @@ impl Compiler {
             Expr::FreeCall(name, args, _) => {
                 // Special forms (look like calls but compile to control flow).
                 if self.try_compile_special_form(name, args)? {
+                    return Ok(());
+                }
+                // A user-defined action shadows any builtin of the same name.
+                let bare_name = name.trim_start_matches(':');
+                if self.user_actions.contains(bare_name) {
+                    let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
+                    self.emit(load_op);
+                    for arg in args { self.compile_expr(arg)?; }
+                    self.emit(Opcode::Call(args.len() as u8));
                     return Ok(());
                 }
                 // Check if it's a known builtin call pattern.
@@ -2251,25 +2267,63 @@ impl Compiler {
                         self.emit(op);
                         self.emit(Opcode::LoadNil);
                     }
-                    Expr::Index(arr_expr, idx_expr, _) | Expr::IndexMap(arr_expr, idx_expr, _) => {
-                        // update!(arr[idx], new_val) → update_at(arr, idx, new_val) stored back
-                        if let Expr::Ident(arr_name, _) = arr_expr.as_ref() {
-                            let load_op = self.resolve_load(arr_name)
-                                .map_err(|e| self.locate_err(e))?;
-                            self.emit(load_op);
-                            self.compile_expr(idx_expr)?;
-                            self.compile_expr(&args[1])?;
-                            self.emit(Opcode::CallBuiltin(BuiltinId::UpdateAt, 3));
-                            let store_op = self.resolve_store(arr_name)
-                                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: arr_name.clone() }))?;
-                            self.emit(store_op);
-                            self.emit(Opcode::LoadNil);
-                        } else {
+                    Expr::Index(..) | Expr::IndexMap(..) | Expr::Member(..) => {
+                        // update!(root[k1] >> f [k3]…, new_val): walk the lvalue path
+                        // down to its root variable, push root, each key (in source
+                        // order), then the new value, and let UpdatePath rebuild the
+                        // chain. The result is stored back into the root variable.
+                        let mut segs: Vec<(&Expr, bool)> = Vec::new();
+                        let mut cur = &args[0];
+                        let root_name = loop {
+                            match cur {
+                                Expr::Index(base, key, _) | Expr::IndexMap(base, key, _) => {
+                                    segs.push((key.as_ref(), false));
+                                    cur = base.as_ref();
+                                }
+                                Expr::Member(base, _, _) => {
+                                    segs.push((cur, true));
+                                    cur = base.as_ref();
+                                }
+                                Expr::Ident(name, _) => break name.clone(),
+                                _ => {
+                                    return Err(GoblinError::CompileError {
+                                        message: "'update!' target must start with a variable".into(),
+                                        span_debug: String::new(),
+                                    });
+                                }
+                            }
+                        };
+                        segs.reverse();
+                        if segs.len() > 16 {
                             return Err(GoblinError::CompileError {
-                                message: "'update!' index target must be a plain variable".into(),
+                                message: "'update!' target path is too deep (max 16 segments)".into(),
                                 span_debug: String::new(),
                             });
                         }
+                        let load_op = self.resolve_load(&root_name)
+                            .map_err(|e| self.locate_err(e))?;
+                        self.emit(load_op);
+                        let mut mask: u16 = 0;
+                        for (i, (seg, is_field)) in segs.iter().enumerate() {
+                            if *is_field {
+                                mask |= 1 << i;
+                                let Expr::Member(_, field, _) = seg else { unreachable!() };
+                                let kidx = self.add_constant(Value::Str(field.clone()));
+                                self.emit(Opcode::LoadConst(kidx));
+                            } else {
+                                self.compile_expr(seg)?;
+                            }
+                        }
+                        self.compile_expr(&args[1])?;
+                        if segs.len() == 1 && mask == 0 {
+                            self.emit(Opcode::CallBuiltin(BuiltinId::UpdateAt, 3));
+                        } else {
+                            self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
+                        }
+                        let store_op = self.resolve_store(&root_name)
+                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
+                        self.emit(store_op);
+                        self.emit(Opcode::LoadNil);
                     }
                     _ => {
                         return Err(GoblinError::CompileError {
@@ -2839,6 +2893,11 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "http_put"     => BuiltinId::HttpPut,
         "http_delete"  => BuiltinId::HttpDelete,
         "http_request" => BuiltinId::HttpRequest,
+
+        // Postgres
+        "db_query"     => BuiltinId::DbQuery,
+        "db_query_one" => BuiltinId::DbQueryOne,
+        "db_exec"      => BuiltinId::DbExec,
 
         // Render mode
         "render_template" => BuiltinId::RenderTemplate,

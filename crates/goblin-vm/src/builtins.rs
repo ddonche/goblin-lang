@@ -4583,6 +4583,23 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             http_call("DELETE", &url, None, "", &headers)
         }
 
+        BuiltinId::DbQuery | BuiltinId::DbQueryOne | BuiltinId::DbExec => {
+            let fn_name = match id { BuiltinId::DbQuery => "db_query", BuiltinId::DbQueryOne => "db_query_one", _ => "db_exec" };
+            if args.len() != 2 {
+                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: fn_name.into() });
+            }
+            let sql = match read(0)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), fn_name)),
+            };
+            let params = match read(1)? {
+                v @ (Value::Array(_) | Value::Collection(_)) => value_to_items(v, "db params")?,
+                Value::Seq(s) => s.items,
+                _ => return Err(GoblinError::Runtime(format!("{fn_name} params argument must be an array"))),
+            };
+            db_call(id, &sql, &params, fn_name)
+        }
+
         BuiltinId::HttpRequest => {
             if args.len() != 5 {
                 return Err(GoblinError::Runtime(format!("http_request: expected 5 args (method, url, body, content_type, headers), got {}", args.len())));
@@ -5869,4 +5886,47 @@ fn http_call(method: &str, url: &str, body: Option<&str>, content_type: &str, he
 #[cfg(target_arch = "wasm32")]
 fn http_call(_method: &str, _url: &str, _body: Option<&str>, _content_type: &str, _headers: &[(String, String)]) -> Result<Value, GoblinError> {
     Err(GoblinError::Runtime("outbound HTTP is not available in WASM builds".into()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn db_call(id: BuiltinId, sql: &str, params: &[Value], fn_name: &str) -> Result<Value, GoblinError> {
+    use goblin_db::DbValue;
+    let mut ps = Vec::with_capacity(params.len());
+    for v in params {
+        ps.push(match v {
+            Value::Str(s) => DbValue::Str(s.clone()),
+            Value::Int(n) => DbValue::Int(*n),
+            Value::Float(x) => DbValue::Float(*x),
+            Value::Bool(b) => DbValue::Bool(*b),
+            Value::Nil => DbValue::Null,
+            _ => return Err(GoblinError::Runtime(format!(
+                "{fn_name} got an unsupported parameter type (supported: str, int, float, bool, nil)"))),
+        });
+    }
+    let row_to_value = |row: goblin_db::DbRow| -> Value {
+        Value::MapOrd(row.into_iter().map(|(k, c)| (k, match c {
+            DbValue::Null => Value::Nil,
+            DbValue::Bool(b) => Value::Bool(b),
+            DbValue::Int(n) => Value::Int(n),
+            DbValue::Float(x) => Value::Float(x),
+            DbValue::Str(s) => Value::Str(s),
+        })).collect())
+    };
+    let err = |e: goblin_db::DbError| GoblinError::Runtime(e.to_string());
+    match id {
+        BuiltinId::DbQuery => Ok(Value::Array(goblin_db::query(sql, &ps).map_err(err)?.into_iter().map(row_to_value).collect())),
+        BuiltinId::DbQueryOne => Ok(goblin_db::query_one(sql, &ps).map_err(err)?.map(row_to_value).unwrap_or(Value::Nil)),
+        _ => {
+            let n = goblin_db::exec(sql, &ps).map_err(err)?;
+            let mut m = indexmap::IndexMap::new();
+            m.insert("ok".to_string(), Value::Bool(true));
+            m.insert("rows_affected".to_string(), Value::Int(n as i64));
+            Ok(Value::MapOrd(m))
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn db_call(_id: BuiltinId, _sql: &str, _params: &[Value], fn_name: &str) -> Result<Value, GoblinError> {
+    Err(GoblinError::Runtime(format!("{fn_name}: databases are not available in WASM builds")))
 }

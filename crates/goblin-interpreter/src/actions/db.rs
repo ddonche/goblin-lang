@@ -3,7 +3,6 @@ use crate::actions::utils::want_str;
 use crate::diagnostics::rtcode;
 use goblin_diagnostics::{Diagnostic, Severity};
 use indexmap::IndexMap;
-use sqlx::{Column, PgPool, Row};
 
 fn want_params_array<'a>(v: &'a Value, sp: &Span, fn_name: &str) -> Result<&'a [Value], Diag> {
     match v {
@@ -22,20 +21,14 @@ fn want_params_array<'a>(v: &'a Value, sp: &Span, fn_name: &str) -> Result<&'a [
     }
 }
 
-fn bind_query_param<'q>(
-    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
-    v: &Value,
-    sp: &Span,
-    fn_name: &str,
-) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, Diag> {
-    let q = match v {
-        Value::Str(s) => query.bind(s.clone()),
-        Value::Int(n) => query.bind(*n),
-        Value::Float(x) => query.bind(*x),
-        Value::Bool(b) => query.bind(*b),
-        Value::Nil => query.bind(Option::<String>::None),
-        other => {
-            let _ = other;
+fn to_db_params(params: &[Value], sp: &Span, fn_name: &str) -> Result<Vec<goblin_db::DbValue>, Diag> {
+    params.iter().map(|v| Ok(match v {
+        Value::Str(s) => goblin_db::DbValue::Str(s.clone()),
+        Value::Int(n) => goblin_db::DbValue::Int(*n),
+        Value::Float(x) => goblin_db::DbValue::Float(*x),
+        Value::Bool(b) => goblin_db::DbValue::Bool(*b),
+        Value::Nil => goblin_db::DbValue::Null,
+        _ => {
             return Err(
                 Diagnostic::new_with_code(
                     Severity::Error,
@@ -48,251 +41,82 @@ fn bind_query_param<'q>(
                 .with_link("https://goblinlang.org/docs/errors#DB0003"),
             );
         }
+    })).collect()
+}
+
+fn row_to_value(row: goblin_db::DbRow) -> Value {
+    let mut map = IndexMap::new();
+    for (name, cell) in row {
+        map.insert(name, match cell {
+            goblin_db::DbValue::Null => Value::Nil,
+            goblin_db::DbValue::Bool(b) => Value::Bool(b),
+            goblin_db::DbValue::Int(n) => Value::Int(n),
+            goblin_db::DbValue::Float(x) => Value::Float(x),
+            goblin_db::DbValue::Str(s) => Value::Str(s),
+        });
+    }
+    Value::MapOrd(map)
+}
+
+fn db_error(e: goblin_db::DbError, sp: &Span) -> Diag {
+    use goblin_db::DbError;
+    let (code, kind, help, link) = match &e {
+        DbError::MissingUrl => (rtcode::DB_MISSING_URL, "db-missing-url",
+            "Set DATABASE_URL in the environment before calling a database action.", "DB0004"),
+        DbError::Connect(_) => (rtcode::DB_CONNECT_FAILED, "db-connect-failed",
+            "Verify DATABASE_URL and make sure the database is reachable.", "DB0001"),
+        DbError::Query(_) => (rtcode::DB_QUERY_FAILED, "db-query-failed",
+            "Check SQL syntax and parameter bindings.", "DB0002"),
+        DbError::Exec(_) => (rtcode::DB_EXEC_FAILED, "db-exec-failed",
+            "Check SQL syntax and parameter bindings.", "DB0005"),
+        DbError::Runtime(_) => (rtcode::INTERNAL, "db-runtime-failed",
+            "The database runtime failed; this is an internal error.", "R0000"),
     };
-    Ok(q)
+    Diagnostic::new_with_code(Severity::Error, code, kind, &e.to_string(), sp.clone())
+        .with_help(help)
+        .with_link(&format!("https://goblinlang.org/docs/errors#{link}"))
 }
 
-fn sql_cell_to_value(row: &sqlx::postgres::PgRow, col_name: &str) -> Value {
-    if let Ok(v) = row.try_get::<String, _>(col_name) {
-        return Value::Str(v);
+fn want_two_args(args: &[Value], sp: &Span, usage: &str) -> Result<(), Diag> {
+    if args.len() != 2 {
+        return Err(
+            Diagnostic::new_with_code(
+                Severity::Error,
+                rtcode::WRONG_ARITY,
+                "wrong-arity",
+                &format!("Wrong number of arguments (expected 2, got {})", args.len()),
+                sp.clone(),
+            )
+            .with_help(usage)
+            .with_link("https://goblinlang.org/docs/errors#R0301"),
+        );
     }
-    if let Ok(v) = row.try_get::<i64, _>(col_name) {
-        return Value::Int(v);
-    }
-    if let Ok(v) = row.try_get::<i32, _>(col_name) {
-        return Value::Int(v as i64);
-    }
-    if let Ok(v) = row.try_get::<f64, _>(col_name) {
-        return Value::Float(v);
-    }
-    if let Ok(v) = row.try_get::<bool, _>(col_name) {
-        return Value::Bool(v);
-    }
-
-    Value::Nil
-}
-
-fn db_url(sp: &Span) -> Result<String, Diag> {
-    std::env::var("DATABASE_URL").map_err(|_| {
-        Diagnostic::new_with_code(
-            Severity::Error,
-            rtcode::DB_MISSING_URL,
-            "db-missing-url",
-            "DATABASE_URL is not set",
-            sp.clone(),
-        )
-        .with_help("Set DATABASE_URL in the environment before calling a database action.")
-        .with_link("https://goblinlang.org/docs/errors#DB0004")
-    })
-}
-
-fn runtime(sp: &Span) -> Result<tokio::runtime::Runtime, Diag> {
-    tokio::runtime::Runtime::new().map_err(|e| {
-        Diagnostic::new_with_code(
-            Severity::Error,
-            rtcode::INTERNAL,
-            "tokio-runtime-failed",
-            &format!("failed to create tokio runtime: {e}"),
-            sp.clone(),
-        )
-        .with_help("Check that Tokio is available and configured in this interpreter crate.")
-        .with_link("https://goblinlang.org/docs/errors#R0000")
-    })
+    Ok(())
 }
 
 pub fn db_query(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
-    if args.len() != 2 {
-        return Err(
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::WRONG_ARITY,
-                "wrong-arity",
-                &format!("Wrong number of arguments (expected 2, got {})", args.len()),
-                sp.clone(),
-            )
-            .with_help("Usage: db_query(sql, params)")
-            .with_link("https://goblinlang.org/docs/errors#R0301"),
-        );
-    }
-
+    want_two_args(args, sp, "Usage: db_query(sql, params)")?;
     let sql = want_str(&args[0], "db_query sql", sp)?.to_string();
-    let params = want_params_array(&args[1], sp, "db_query")?;
-    let db_url = db_url(sp)?;
-    let rt = runtime(sp)?;
-
-    let rows = rt.block_on(async {
-        let pool = PgPool::connect(&db_url).await.map_err(|e| {
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::DB_CONNECT_FAILED,
-                "db-connect-failed",
-                &format!("failed to connect to database: {e}"),
-                sp.clone(),
-            )
-            .with_help("Verify DATABASE_URL and make sure the database is reachable.")
-            .with_link("https://goblinlang.org/docs/errors#DB0001")
-        })?;
-
-        let mut query = sqlx::query(&sql);
-
-        for param in params {
-            query = bind_query_param(query, param, sp, "db_query")?;
-        }
-
-        query.fetch_all(&pool).await.map_err(|e| {
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::DB_QUERY_FAILED,
-                "db-query-failed",
-                &format!("database query failed: {e}"),
-                sp.clone(),
-            )
-            .with_help("Check SQL syntax and parameter bindings.")
-            .with_link("https://goblinlang.org/docs/errors#DB0002")
-        })
-    })?;
-
-    let mut out = Vec::with_capacity(rows.len());
-
-    for row in rows {
-        let mut map = IndexMap::new();
-
-        for col in row.columns() {
-            let name = col.name().to_string();
-            let value = sql_cell_to_value(&row, &name);
-            map.insert(name, value);
-        }
-
-        out.push(Value::MapOrd(map));
-    }
-
-    Ok(Value::Array(out))
+    let params = to_db_params(want_params_array(&args[1], sp, "db_query")?, sp, "db_query")?;
+    let rows = goblin_db::query(&sql, &params).map_err(|e| db_error(e, sp))?;
+    Ok(Value::Array(rows.into_iter().map(row_to_value).collect()))
 }
 
 pub fn db_query_one(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
-    if args.len() != 2 {
-        return Err(
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::WRONG_ARITY,
-                "wrong-arity",
-                &format!("Wrong number of arguments (expected 2, got {})", args.len()),
-                sp.clone(),
-            )
-            .with_help("Usage: db_query_one(sql, params)")
-            .with_link("https://goblinlang.org/docs/errors#R0301"),
-        );
-    }
-
+    want_two_args(args, sp, "Usage: db_query_one(sql, params)")?;
     let sql = want_str(&args[0], "db_query_one sql", sp)?.to_string();
-    let params = want_params_array(&args[1], sp, "db_query_one")?;
-    let db_url = db_url(sp)?;
-    let rt = runtime(sp)?;
-
-    let maybe_row = rt.block_on(async {
-        let pool = PgPool::connect(&db_url).await.map_err(|e| {
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::DB_CONNECT_FAILED,
-                "db-connect-failed",
-                &format!("failed to connect to database: {e}"),
-                sp.clone(),
-            )
-            .with_help("Verify DATABASE_URL and make sure the database is reachable.")
-            .with_link("https://goblinlang.org/docs/errors#DB0001")
-        })?;
-
-        let mut query = sqlx::query(&sql);
-
-        for param in params {
-            query = bind_query_param(query, param, sp, "db_query_one")?;
-        }
-
-        query.fetch_optional(&pool).await.map_err(|e| {
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::DB_QUERY_FAILED,
-                "db-query-failed",
-                &format!("database query failed: {e}"),
-                sp.clone(),
-            )
-            .with_help("Check SQL syntax and parameter bindings.")
-            .with_link("https://goblinlang.org/docs/errors#DB0002")
-        })
-    })?;
-
-    let Some(row) = maybe_row else {
-        return Ok(Value::Nil);
-    };
-
-    let mut map = IndexMap::new();
-
-    for col in row.columns() {
-        let name = col.name().to_string();
-        let value = sql_cell_to_value(&row, &name);
-        map.insert(name, value);
-    }
-
-    Ok(Value::MapOrd(map))
+    let params = to_db_params(want_params_array(&args[1], sp, "db_query_one")?, sp, "db_query_one")?;
+    let row = goblin_db::query_one(&sql, &params).map_err(|e| db_error(e, sp))?;
+    Ok(row.map(row_to_value).unwrap_or(Value::Nil))
 }
 
 pub fn db_exec(_sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value, Diag> {
-    if args.len() != 2 {
-        return Err(
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::WRONG_ARITY,
-                "wrong-arity",
-                &format!("Wrong number of arguments (expected 2, got {})", args.len()),
-                sp.clone(),
-            )
-            .with_help("Usage: db_exec(sql, params)")
-            .with_link("https://goblinlang.org/docs/errors#R0301"),
-        );
-    }
-
+    want_two_args(args, sp, "Usage: db_exec(sql, params)")?;
     let sql = want_str(&args[0], "db_exec sql", sp)?.to_string();
-    let params = want_params_array(&args[1], sp, "db_exec")?;
-    let db_url = db_url(sp)?;
-    let rt = runtime(sp)?;
-
-    let rows_affected = rt.block_on(async {
-        let pool = PgPool::connect(&db_url).await.map_err(|e| {
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::DB_CONNECT_FAILED,
-                "db-connect-failed",
-                &format!("failed to connect to database: {e}"),
-                sp.clone(),
-            )
-            .with_help("Verify DATABASE_URL and make sure the database is reachable.")
-            .with_link("https://goblinlang.org/docs/errors#DB0001")
-        })?;
-
-        let mut query = sqlx::query(&sql);
-
-        for param in params {
-            query = bind_query_param(query, param, sp, "db_exec")?;
-        }
-
-        let result = query.execute(&pool).await.map_err(|e| {
-            Diagnostic::new_with_code(
-                Severity::Error,
-                rtcode::DB_EXEC_FAILED,
-                "db-exec-failed",
-                &format!("database exec failed: {e}"),
-                sp.clone(),
-            )
-            .with_help("Check SQL syntax and parameter bindings.")
-            .with_link("https://goblinlang.org/docs/errors#DB0005")
-        })?;
-
-        Ok::<u64, Diag>(result.rows_affected())
-    })?;
-
+    let params = to_db_params(want_params_array(&args[1], sp, "db_exec")?, sp, "db_exec")?;
+    let rows_affected = goblin_db::exec(&sql, &params).map_err(|e| db_error(e, sp))?;
     let mut out = IndexMap::new();
     out.insert("ok".to_string(), Value::Bool(true));
     out.insert("rows_affected".to_string(), Value::Int(rows_affected as i64));
-
     Ok(Value::MapOrd(out))
 }

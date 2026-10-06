@@ -825,6 +825,11 @@ pub enum BuiltinId {
     HttpDelete,
     HttpRequest,
 
+    // Postgres (shared goblin-db crate, same as the interpreter)
+    DbQuery,
+    DbQueryOne,
+    DbExec,
+
     // Render mode
     RenderTemplate,
 }

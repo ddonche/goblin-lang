@@ -1171,11 +1171,14 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         }
     };
 
-    let project_root = path.parent()
+    // Imports resolve from the working directory, exactly as the interpreter
+    // does (`ImportBaseMode::ProjectRoot`); `box.toml` sits next to the script.
+    let script_dir = path.parent()
         .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
-    let box_toml_path = project_root.join("box.toml");
+    let box_toml_path = script_dir.join("box.toml");
+    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     let mut session = Session::new(GcMode::Auto);
     session.global_names = compiled.global_names;

@@ -900,6 +900,17 @@ impl Vm {
                 // Push ref back so caller can chain / store back.
                 self.stack.push(Operand::Val(Value::Ref(uuid)));
             }
+            Opcode::UpdatePath(n, mask) => {
+                let new_val = self.pop_value()?;
+                let mut keys = Vec::with_capacity(n as usize);
+                for _ in 0..n { keys.push(self.pop_value()?); }
+                keys.reverse();
+                let root = self.pop_value()?;
+                let segs: Vec<(Value, bool)> = keys.into_iter().enumerate()
+                    .map(|(i, k)| (k, mask & (1 << i) != 0)).collect();
+                let updated = self.update_path(root, &segs, new_val)?;
+                self.stack.push(Operand::Val(updated));
+            }
             Opcode::ClassInstantiate(idx) => {
                 let class_name = {
                     let frame = self.call_stack.last().unwrap();
@@ -3373,6 +3384,46 @@ fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
         Expr::Str(s, _)     => Value::Str(s.clone()),
         Expr::Char(c, _)    => Value::Char(*c),
         _                   => Value::Nil,
+    }
+}
+
+impl Vm {
+    /// Functional nested update used by `update!(a[i] >> f [j], v)`: rebuilds
+    /// each container on the path with its child replaced. Objects are shared
+    /// references, so a field write mutates the object in place (as SetField
+    /// does) and the reference itself is returned unchanged.
+    fn update_path(&mut self, container: Value, segs: &[(Value, bool)], new_val: Value) -> Result<Value, GoblinError> {
+        let (key, is_field) = &segs[0];
+        let replacement = if segs.len() == 1 {
+            new_val
+        } else {
+            let child = if *is_field {
+                let Value::Str(name) = key else { unreachable!("field segment key is a string") };
+                member_dispatch(&container, name, &mut self.session)?
+            } else {
+                crate::collections::get_index(&container, key)?
+            };
+            self.update_path(child, &segs[1..], new_val)?
+        };
+        match &container {
+            Value::Ref(uuid) | Value::Object { uuid, .. } => {
+                let uuid = uuid.clone();
+                let Value::Str(field) = key else {
+                    return Err(GoblinError::Runtime(format!("update!: object field name must be a string, got {}", key.type_name())));
+                };
+                match self.session.object_store.get_mut(&uuid) {
+                    Some(Value::Object { fields, .. }) => { std::rc::Rc::make_mut(fields).insert(field.clone(), replacement); }
+                    _ => return Err(GoblinError::Runtime(format!("update!: object {} not found", uuid))),
+                }
+                Ok(Value::Ref(uuid))
+            }
+            _ => crate::collections::collection_operation(
+                &container,
+                crate::collections::Position::At(key.clone()),
+                crate::collections::Operation::Update(replacement),
+                &mut self.session,
+            ),
+        }
     }
 }
 

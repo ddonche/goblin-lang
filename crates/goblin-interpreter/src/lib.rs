@@ -21080,8 +21080,16 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for a in args { arg_vals.push(eval_expr(a, sess)?); }
 
-                    if let Some(v) = eval_builtin(&other_name, &arg_vals, sess, &sp)? {
-                        return Ok(v);
+                    // Builtins are shadowable (docs/language-spec.md §4): a user
+                    // action of the same name wins, here as in call_action_by_name.
+                    let user_defined = sess.actions.contains_key(other_name)
+                        || sess.current_module.as_ref().is_some_and(|m| matches!(
+                            sess.modules.get_export(m, other_name),
+                            Some(crate::modules::ExportedItem::Action(_))));
+                    if !user_defined {
+                        if let Some(v) = eval_builtin(&other_name, &arg_vals, sess, &sp)? {
+                            return Ok(v);
+                        }
                     }
 
                     call_action_by_name(sess, other_name, arg_vals, sp.clone())
