@@ -1,2 +1,2 @@
-/// undecided: D-sqrt-negative
+/// Decided 2026-10-06 (D-sqrt-negative): the interpreter's behavior is canonical.
 say(:sqrt(-1))

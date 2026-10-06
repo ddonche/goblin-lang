@@ -1,4 +1,4 @@
-/// undecided: D-fallthrough-return-value
+/// Decided 2026-10-06 (D-fallthrough-return-value): the interpreter's behavior is canonical.
 act fx(x)
     if x > 0
         return "pos"

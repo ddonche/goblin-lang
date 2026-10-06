@@ -1,4 +1,4 @@
-/// undecided: D-block-scope
+/// Decided 2026-10-06 (D-block-scope): the interpreter's behavior is canonical.
 x | 1
 for x in [7, 8]
     say(x)

@@ -1,2 +1,2 @@
-/// undecided: D-slice-builtin-end
+/// Decided 2026-10-06 (D-slice-builtin-end): the interpreter's behavior is canonical.
 say(:slice([1, 2, 3, 4], 1, 3))

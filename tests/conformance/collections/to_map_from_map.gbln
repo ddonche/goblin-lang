@@ -1,2 +1,2 @@
-/// undecided: D-to-map
+/// Decided 2026-10-06 (D-to-map): the interpreter's behavior is canonical.
 say(:to_map({"a": 1}))

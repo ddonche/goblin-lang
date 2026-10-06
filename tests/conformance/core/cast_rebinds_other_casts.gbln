@@ -1,4 +1,4 @@
-/// undecided: D-cast-rebinds
+/// Decided 2026-10-06 (D-cast-rebinds): the interpreter's behavior is canonical.
 a | 5
 t1 | :big(a)
 say(:valtype(a))

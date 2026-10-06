@@ -1,4 +1,4 @@
-/// undecided: D-imm
+/// Decided 2026-10-06 (D-imm): the interpreter's behavior is canonical.
 imm x | 1
 say(x)
 x |= 2

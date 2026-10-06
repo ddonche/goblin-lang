@@ -1677,72 +1677,50 @@ impl Compiler {
         Ok(())
     }
 
+    /// Expression-form `judge`: arms are conditions and the first true one
+    /// gives the value; `else` applies only when none matched, wherever it
+    /// sits; with no match and no `else` the value is nil. `judge return <h>`
+    /// makes `h` the value of arms written without one. The parser has
+    /// already expanded `using` into each condition. (Matches the
+    /// interpreter's `Expr::Judge`.)
     fn compile_judge_expr(
         &mut self,
-        using: Option<&Expr>,
+        _using: Option<&Expr>,
         header: Option<&Expr>,
         arms: &[JudgeArm],
         all: bool,
     ) -> Result<(), GoblinError> {
-        // Extract enum name from `using` clause (e.g., `judge x using Status` → "Status")
-        let using_name: Option<String> = using.and_then(|e| match e {
-            Expr::Ident(n, _) => Some(n.clone()),
-            _ => None,
-        });
-
         if all {
-            return self.compile_judge_all_expr(using_name.as_deref(), header, arms);
+            return self.compile_judge_all_expr(header, arms);
         }
-
-        // judge expression evaluates to the value of the first matching arm.
         let mut end_jumps: Vec<usize> = Vec::new();
-
-        // If there's a header, compile it and store for comparison.
-        let header_slot: Option<u8> = if let Some(h) = header {
-            self.compile_expr(h)?;
-            let s = self.scope_mut().declare_local("__judge_header__");
-            self.emit(Opcode::StoreLocal(s));
-            Some(s)
-        } else {
-            None
-        };
-
         for arm in arms.iter() {
-            if let Some(cond) = &arm.condition {
-                if let Some(hslot) = header_slot {
-                    self.emit(Opcode::LoadLocal(hslot));
-                    if let Some(ref en) = using_name {
-                        if let Expr::Ident(variant, sp) = cond.as_ref() {
-                            let qualified = Expr::NsCall(en.clone(), variant.clone(), vec![], sp.clone());
-                            self.compile_expr(&qualified)?;
-                        } else {
-                            self.compile_expr(cond)?;
-                        }
-                    } else {
-                        self.compile_expr(cond)?;
-                    }
-                    self.emit(Opcode::Eq);
-                } else {
-                    self.compile_expr(cond)?;
-                }
-                let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
-                let end = self.scope_mut().emit_jump(Opcode::Jump);
-                end_jumps.push(end);
-                self.scope_mut().patch_jump(skip);
-            } else {
-                // else arm
-                if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
-            }
+            let Some(cond) = &arm.condition else { continue };
+            self.compile_expr(cond)?;
+            let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+            self.compile_judge_arm_value(arm, header)?;
+            end_jumps.push(self.scope_mut().emit_jump(Opcode::Jump));
+            self.scope_mut().patch_jump(skip);
         }
-
+        match arms.iter().find(|a| a.condition.is_none()) {
+            Some(else_arm) => self.compile_judge_arm_value(else_arm, header)?,
+            None => { self.emit(Opcode::LoadNil); }
+        }
         for j in end_jumps { self.scope_mut().patch_jump(j); }
         Ok(())
     }
 
+    /// An arm's value: its own expression, else the `judge return` header, else nil.
+    fn compile_judge_arm_value(&mut self, arm: &JudgeArm, header: Option<&Expr>) -> Result<(), GoblinError> {
+        match (&arm.value, header) {
+            (Some(v), _) => self.compile_expr(v),
+            (None, Some(h)) => self.compile_expr(h),
+            (None, None) => { self.emit(Opcode::LoadNil); Ok(()) }
+        }
+    }
+
     fn compile_judge_all_expr(
         &mut self,
-        using_name: Option<&str>,
         header: Option<&Expr>,
         arms: &[JudgeArm],
     ) -> Result<(), GoblinError> {
@@ -1754,33 +1732,13 @@ impl Compiler {
         // Separate else arm from non-else arms.
         let (cond_arms, else_arms): (Vec<_>, Vec<_>) = arms.iter().partition(|a| a.condition.is_some());
 
-        let header_slot: Option<u8> = if let Some(h) = header {
-            self.compile_expr(h)?;
-            let s = self.scope_mut().declare_local("__judge_all_hdr__");
-            self.emit(Opcode::StoreLocal(s));
-            Some(s)
-        } else {
-            None
-        };
-
         for arm in &cond_arms {
             let cond = arm.condition.as_ref().unwrap();
-            if let Some(hslot) = header_slot {
-                self.emit(Opcode::LoadLocal(hslot));
-                if let Some(en) = using_name {
-                    if let Expr::Ident(variant, sp) = cond.as_ref() {
-                        let qualified = Expr::NsCall(en.to_string(), variant.clone(), vec![], sp.clone());
-                        self.compile_expr(&qualified)?;
-                    } else { self.compile_expr(cond)?; }
-                } else { self.compile_expr(cond)?; }
-                self.emit(Opcode::Eq);
-            } else {
-                self.compile_expr(cond)?;
-            }
+            self.compile_expr(cond)?;
             let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
             // acc = acc.put_last(value)
             self.emit(Opcode::LoadLocal(acc_slot));
-            if let Some(v) = &arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
+            self.compile_judge_arm_value(arm, header)?;
             self.emit(Opcode::CallBuiltin(BuiltinId::PutLast, 2));
             self.emit(Opcode::StoreLocal(acc_slot));
             self.scope_mut().patch_jump(skip);
@@ -1790,11 +1748,13 @@ impl Compiler {
         self.emit(Opcode::LoadLocal(acc_slot));
         self.emit(Opcode::CallBuiltin(BuiltinId::IsEmpty, 1));
         let not_empty_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-        // Empty: emit else value
+        // Empty: the else arm's value in a one-element list, else an empty list.
         if let Some(else_arm) = else_arms.first() {
-            if let Some(v) = &else_arm.value { self.compile_expr(v)?; } else { self.emit(Opcode::LoadNil); }
+            self.emit(Opcode::LoadLocal(acc_slot));
+            self.compile_judge_arm_value(else_arm, header)?;
+            self.emit(Opcode::CallBuiltin(BuiltinId::PutLast, 2));
         } else {
-            self.emit(Opcode::LoadNil);
+            self.emit(Opcode::LoadLocal(acc_slot));
         }
         let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
         self.scope_mut().patch_jump(not_empty_jump);

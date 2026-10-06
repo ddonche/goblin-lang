@@ -1,2 +1,2 @@
-/// undecided: D-find-on-array
+/// Decided 2026-10-06 (D-find-on-array): the interpreter's behavior is canonical.
 say(:find([5, 6, 7], 6))

@@ -1,2 +1,2 @@
-/// undecided: D-join-non-strings
+/// Decided 2026-10-06 (D-join-non-strings): the interpreter's behavior is canonical.
 say(:join([1, 2], ","))

@@ -1,4 +1,3 @@
-/// known-gap: vm judge with no matching arm and no else crashes ("RegisterAction: empty stack"); spec: result is nil
 x | 2
 r |
     judge

@@ -1,2 +1,2 @@
-/// undecided: D-format-info-no-thousands
+/// Decided 2026-10-06 (D-format-info-no-thousands): the interpreter's behavior is canonical.
 say(:format_info(:format(2.5, 2)))

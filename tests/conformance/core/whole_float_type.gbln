@@ -1,4 +1,4 @@
-/// undecided: D-whole-float-type
+/// Decided 2026-10-06 (D-whole-float-type): the interpreter's behavior is canonical.
 say(:valtype(:float(3)))
 say(:valtype(1.5 + 1.5))
 say(:is_float(2.5 * 2))

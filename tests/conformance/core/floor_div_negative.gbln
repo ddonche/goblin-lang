@@ -1,2 +1,2 @@
-/// undecided: D-negative-int-division
+/// Decided 2026-10-06 (D-negative-int-division): the interpreter's behavior is canonical.
 say(-7 // 2)

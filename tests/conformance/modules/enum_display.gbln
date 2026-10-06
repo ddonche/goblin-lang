@@ -1,4 +1,4 @@
-/// undecided: D-enum-display
+/// Decided 2026-10-06 (D-enum-display): the interpreter's behavior is canonical.
 enum Status
     Idle
     Busy

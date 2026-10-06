@@ -1,4 +1,4 @@
-/// undecided: D-missing-key-read
+/// Decided 2026-10-06 (D-missing-key-read): the interpreter's behavior is canonical.
 m | {"a": 1}
 say "before"
 say(m.zz)

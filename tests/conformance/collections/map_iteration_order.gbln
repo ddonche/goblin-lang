@@ -1,4 +1,4 @@
-/// undecided: D-map-key-order
+/// Decided 2026-10-06 (D-map-key-order): the interpreter's behavior is canonical.
 for p in {"b": 1, "a": 2}
     say(p[0])
 xx

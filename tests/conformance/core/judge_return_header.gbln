@@ -1,4 +1,3 @@
-/// known-gap: vm 'judge return <fallback>' ignores the fallback and empty arms (tests/judge-return.gbln EXPECT comments)
 x | 9
 r |
     judge return "fb"

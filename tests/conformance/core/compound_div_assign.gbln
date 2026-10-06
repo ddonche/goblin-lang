@@ -1,4 +1,4 @@
-/// undecided: D-int-division
+/// Decided 2026-10-06 (D-int-division): the interpreter's behavior is canonical.
 x | 10
 x /= 4
 say(x)

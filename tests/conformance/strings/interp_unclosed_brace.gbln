@@ -1,2 +1,2 @@
-/// undecided: D-unclosed-interp-brace
+/// Decided 2026-10-06 (D-unclosed-interp-brace): the interpreter's behavior is canonical.
 say("a{bad")

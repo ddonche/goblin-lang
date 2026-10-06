@@ -1,2 +1,2 @@
-/// undecided: D-float-div-zero
+/// Decided 2026-10-06 (D-float-div-zero): the interpreter's behavior is canonical.
 say(5.0 / 0)

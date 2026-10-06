@@ -1,4 +1,4 @@
-/// undecided: D-redeclare
+/// Decided 2026-10-06 (D-redeclare): the interpreter's behavior is canonical.
 x | 1
 x | 2
 say(x)
