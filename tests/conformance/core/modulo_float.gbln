@@ -1,3 +1,2 @@
-/// known-gap: vm '%' with a float operand is a type error
 say(7.5 % 2)
 say(10 % 3.0)

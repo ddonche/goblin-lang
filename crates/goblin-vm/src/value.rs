@@ -1213,3 +1213,80 @@ pub enum BackendHint {
 impl Default for BackendHint {
     fn default() -> Self { BackendHint::Auto }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Numeric binary operators shared by the VM's generic arithmetic opcodes
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `+ - * %` on int / float / big operands. Ints that overflow promote to big
+/// (exactly); any operation with a big is done in exact decimal arithmetic and
+/// yields a big (spec: "any with big -> big"); a float with an int yields a
+/// float. Returns None for operand kinds this does not cover (pct, strings…),
+/// which the caller handles itself.
+pub fn numeric_binop(op: &str, a: &Value, b: &Value) -> Option<Result<Value, crate::error::GoblinError>> {
+    use crate::error::GoblinError;
+    use rust_decimal::Decimal;
+    use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+
+    fn to_dec(v: &Value) -> Option<Decimal> {
+        match v {
+            Value::Big(d)   => Some(*d),
+            Value::Int(n)   => Some(Decimal::from(*n)),
+            Value::Float(f) => Decimal::from_f64(*f),
+            _ => None,
+        }
+    }
+    fn to_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(n)   => Some(*n as f64),
+            Value::Float(f) => Some(*f),
+            Value::Big(d)   => d.to_f64(),
+            _ => None,
+        }
+    }
+    let float_op = |x: f64, y: f64| -> Value {
+        Value::Float(match op { "add" => x + y, "sub" => x - y, "mul" => x * y, _ => x % y })
+    };
+
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            let r = match op {
+                "add" => x.checked_add(*y),
+                "sub" => x.checked_sub(*y),
+                "mul" => x.checked_mul(*y),
+                _ => {
+                    if *y == 0 { return Some(Err(GoblinError::DivisionByZero)); }
+                    x.checked_rem(*y)
+                }
+            };
+            Some(Ok(match r {
+                Some(n) => Value::Int(n),
+                // Overflow: redo exactly in decimal (falls back to float only
+                // beyond the decimal range).
+                None => big_op(op, Decimal::from(*x), Decimal::from(*y))
+                    .map(Value::Big)
+                    .unwrap_or_else(|| float_op(*x as f64, *y as f64)),
+            }))
+        }
+        (Value::Big(_), Value::Int(_) | Value::Big(_) | Value::Float(_))
+        | (Value::Int(_) | Value::Float(_), Value::Big(_)) => {
+            let (x, y) = (to_dec(a)?, to_dec(b)?);
+            if op == "rem" && y.is_zero() { return Some(Err(GoblinError::DivisionByZero)); }
+            Some(Ok(big_op(op, x, y).map(Value::Big)
+                .unwrap_or_else(|| float_op(to_f64(a).unwrap_or(f64::NAN), to_f64(b).unwrap_or(f64::NAN)))))
+        }
+        (Value::Float(_), Value::Float(_) | Value::Int(_)) | (Value::Int(_), Value::Float(_)) => {
+            Some(Ok(float_op(to_f64(a)?, to_f64(b)?)))
+        }
+        _ => None,
+    }
+}
+
+fn big_op(op: &str, x: rust_decimal::Decimal, y: rust_decimal::Decimal) -> Option<rust_decimal::Decimal> {
+    match op {
+        "add" => x.checked_add(y),
+        "sub" => x.checked_sub(y),
+        "mul" => x.checked_mul(y),
+        _     => x.checked_rem(y),
+    }
+}

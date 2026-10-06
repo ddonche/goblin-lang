@@ -1,2 +1,1 @@
-/// known-gap: vm big + float is a type error (spec: any with big -> big)
 say(:big(1) + 1.5)

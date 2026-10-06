@@ -581,6 +581,8 @@ impl Vm {
                     (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
                     (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
                     (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
+                    (Value::Big(_), Value::Float(_)) | (Value::Float(_), Value::Big(_)) =>
+                        crate::value::numeric_binop("add", &a_inner, &b_inner).expect("numeric")?,
                     (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
                     (Value::Pct(x), Value::Float(y))   => Value::Pct(x + y),
                     (Value::Float(x), Value::Pct(y))   => Value::Pct(x + y),
@@ -677,13 +679,9 @@ impl Vm {
             Opcode::Rem => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
-                let result = match (&a, &b) {
-                    (Value::Int(x), Value::Int(y)) => {
-                        if *y == 0 { return Err(GoblinError::DivisionByZero); }
-                        Value::Int(x % y)
-                    }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
-                    _ => return Err(GoblinError::type_error("number", b.type_name(), "%")),
+                let result = match crate::value::numeric_binop("rem", &a, &b) {
+                    Some(r) => r?,
+                    None => return Err(GoblinError::type_error("number", b.type_name(), "%")),
                 };
                 self.stack.push(Operand::Val(result));
             }
@@ -3314,6 +3312,8 @@ impl Vm {
         int_fn: fn(i64, i64) -> i64,
         flt_fn: fn(f64, f64) -> f64,
     ) -> Result<Value, GoblinError> {
+        // int/float/big: exact, overflow promotes to big (value.rs).
+        if let Some(r) = crate::value::numeric_binop(op, &a, &b) { return r; }
         match (&a, &b) {
             (Value::Int(x), Value::Int(y))     => Ok(Value::Int(int_fn(*x, *y))),
             (Value::Float(x), Value::Float(y)) => Ok(Value::Float(flt_fn(*x, *y))),
