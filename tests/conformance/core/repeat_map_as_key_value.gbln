@@ -1,4 +1,3 @@
-/// known-gap: vm 'repeat map as k, v' does not bind k/v
 repeat {"a": 1} as k, v
     say(k)
     say(v)

@@ -400,7 +400,17 @@ impl Compiler {
             self.emit(Opcode::StoreLocal(slot));
         }
         for stmt in &module.items {
-            self.compile_stmt(stmt)?;
+            match stmt {
+                // In the entry script, a top-level expression's value is offered
+                // to the API response (GOBLIN_NONINTERACTIVE=1), as the
+                // interpreter's runner does; imported modules never echo.
+                Stmt::Expr(e) if self.global_prefix.is_none() => {
+                    self.compile_expr(e)?;
+                    self.emit(Opcode::CallBuiltin(BuiltinId::ApiEcho, 1));
+                    self.emit(Opcode::Pop);
+                }
+                _ => self.compile_stmt(stmt)?,
+            }
         }
         // Return nil at end of module.
         let scope = self.scopes.last_mut().unwrap();
@@ -1912,6 +1922,8 @@ impl Compiler {
                 }
                 self.compile_expr(&args[0])?;
                 let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                // Loop context so `skip`/`stop` in the body target this loop.
+                self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::Pop); // discard body result
                 // Jump back to loop start
@@ -1919,6 +1931,10 @@ impl Compiler {
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
                 self.scope_mut().patch_jump(exit_jump);
+                let exit_ip = self.scope_mut().bytecode.len();
+                let ctx = self.loop_stack.pop().unwrap();
+                for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
+                for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, loop_start); }
                 self.emit(Opcode::LoadNil);
                 Ok(true)
             }
@@ -1948,92 +1964,114 @@ impl Compiler {
                 } else {
                     self.compile_expr(&args[0])?;
                 }
-                let n_slot = self.scope_mut().declare_local("__repeat_n__");
-                self.emit(Opcode::StoreLocal(n_slot));
-                // Determine at runtime if it's an array (for element iteration)
-                self.emit(Opcode::LoadLocal(n_slot));
-                self.emit(Opcode::CallBuiltin(BuiltinId::IsArray, 1));
-                let is_arr_slot = self.scope_mut().declare_local("__repeat_is_arr__");
-                self.emit(Opcode::StoreLocal(is_arr_slot));
-                // counter = 0
+                // RepeatPrep(n) → [mode, iterable, limit]; mode 0 = count (int),
+                // 1 = items (array/collection), 2 = map (iterable of [k, v]),
+                // 3 = forever (nil), 4 = condition (bool; re-evaluated each pass),
+                // matching the interpreter's `repeat` dispatch.
+                self.emit(Opcode::CallBuiltin(BuiltinId::RepeatPrep, 1));
+                let prep_slot = self.scope_mut().declare_local("__repeat_prep__");
+                self.emit(Opcode::StoreLocal(prep_slot));
+                let get = |c: &mut Self, slot: u8, i: i64| {
+                    let k = c.scope_mut().add_constant(Value::Int(i));
+                    c.emit(Opcode::LoadLocal(slot));
+                    c.emit(Opcode::LoadConst(k));
+                    c.emit(Opcode::GetIndex);
+                };
+                let mode_slot = self.scope_mut().declare_local("__repeat_mode__");
+                get(self, prep_slot, 0);
+                self.emit(Opcode::StoreLocal(mode_slot));
+                let iter_slot = self.scope_mut().declare_local("__repeat_iter__");
+                get(self, prep_slot, 1);
+                self.emit(Opcode::StoreLocal(iter_slot));
+                let limit_slot = self.scope_mut().declare_local("__repeat_limit__");
+                get(self, prep_slot, 2);
+                self.emit(Opcode::StoreLocal(limit_slot));
+
                 let zero = self.scope_mut().add_constant(Value::Int(0));
+                let one = self.scope_mut().add_constant(Value::Int(1));
+                let two = self.scope_mut().add_constant(Value::Int(2));
+                let four = self.scope_mut().add_constant(Value::Int(4));
                 self.emit(Opcode::LoadConst(zero));
                 let counter_slot = self.scope_mut().declare_local("__repeat_i__");
                 self.emit(Opcode::StoreLocal(counter_slot));
-                // optional as_name binding (or 'it' for array mode)
-                let as_name = if args.len() >= 3 {
-                    match &args[2] {
-                        Expr::Str(s, _) => s.clone(),
-                        Expr::Ident(s, _) => s.clone(),
-                        _ => "it".into(),
-                    }
-                } else { "it".into() };
-                let it_slot = self.scope_mut().declare_local(&as_name);
-                self.emit(Opcode::LoadConst(zero));
-                self.emit(Opcode::StoreLocal(it_slot));
-                // idx slot (separate from 'it' for int mode, same semantics as counter)
+
+                let name_arg = |e: Option<&Expr>| match e {
+                    Some(Expr::Str(s, _)) | Some(Expr::Ident(s, _)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                };
+                let as_name = name_arg(args.get(2));
+                let val_name = name_arg(args.get(3));
+                let item_slot = self.scope_mut().declare_local(as_name.as_deref().unwrap_or("it"));
+                // With an `as` name, items mode and map-key mode bind the same name,
+                // so they share one slot.
+                let key_slot = if as_name.is_some() {
+                    item_slot
+                } else {
+                    self.scope_mut().declare_local("key")
+                };
+                let val_slot = self.scope_mut().declare_local(val_name.as_deref().unwrap_or("val"));
                 let idx_slot = self.scope_mut().declare_local("idx");
                 self.emit(Opcode::LoadConst(zero));
                 self.emit(Opcode::StoreLocal(idx_slot));
 
-                // LOOP START: check exit condition (dispatch on type)
+                // LOOP START: counter < limit
                 let loop_start = self.scope_mut().bytecode.len();
-                // push counter
                 self.emit(Opcode::LoadLocal(counter_slot));
-                // push limit depending on is_arr
-                self.emit(Opcode::LoadLocal(is_arr_slot));
-                let not_arr_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // array: limit = count(arr)
-                self.emit(Opcode::LoadLocal(n_slot));
-                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
-                let skip_int_jump = self.scope_mut().emit_jump(Opcode::Jump);
-                // int: limit = n (or handle nil/bool below)
-                self.scope_mut().patch_jump(not_arr_jump);
-                self.emit(Opcode::LoadLocal(n_slot));
-                self.scope_mut().patch_jump(skip_int_jump);
-                // compare: counter < limit
+                self.emit(Opcode::LoadLocal(limit_slot));
                 self.emit(Opcode::Lt);
                 let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-
-                // If array mode: bind it_slot = arr[counter], idx = counter
-                self.emit(Opcode::LoadLocal(is_arr_slot));
-                let skip_bind_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                self.emit(Opcode::LoadLocal(n_slot));
+                // condition mode: re-evaluate the header expression
+                self.emit(Opcode::LoadLocal(mode_slot));
+                self.emit(Opcode::LoadConst(four));
+                self.emit(Opcode::Eq);
+                let not_cond = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.compile_expr(&args[0])?;
+                let cond_exit = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.scope_mut().patch_jump(not_cond);
+                // items mode: bind the element
+                self.emit(Opcode::LoadLocal(mode_slot));
+                self.emit(Opcode::LoadConst(one));
+                self.emit(Opcode::Eq);
+                let not_items = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.emit(Opcode::LoadLocal(iter_slot));
                 self.emit(Opcode::LoadLocal(counter_slot));
                 self.emit(Opcode::GetIndex);
-                self.emit(Opcode::StoreLocal(it_slot));
-                self.scope_mut().patch_jump(skip_bind_jump);
-                // always update idx = counter
+                self.emit(Opcode::StoreLocal(item_slot));
+                self.scope_mut().patch_jump(not_items);
+                // map mode: bind key and value
+                self.emit(Opcode::LoadLocal(mode_slot));
+                self.emit(Opcode::LoadConst(two));
+                self.emit(Opcode::Eq);
+                let not_map = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                for (slot, k) in [(key_slot, zero), (val_slot, one)] {
+                    self.emit(Opcode::LoadLocal(iter_slot));
+                    self.emit(Opcode::LoadLocal(counter_slot));
+                    self.emit(Opcode::GetIndex);
+                    self.emit(Opcode::LoadConst(k));
+                    self.emit(Opcode::GetIndex);
+                    self.emit(Opcode::StoreLocal(slot));
+                }
+                self.scope_mut().patch_jump(not_map);
                 self.emit(Opcode::LoadLocal(counter_slot));
                 self.emit(Opcode::StoreLocal(idx_slot));
 
-                // push loop context for stop/skip
                 self.loop_stack.push(LoopCtx::default());
-                // body
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::Pop);
-                // increment position (skip jumps here)
                 let increment_ip = self.scope_mut().bytecode.len();
-                let one = self.scope_mut().add_constant(Value::Int(1));
                 self.emit(Opcode::LoadLocal(counter_slot));
                 self.emit(Opcode::LoadConst(one));
                 self.emit(Opcode::Add);
                 self.emit(Opcode::StoreLocal(counter_slot));
-                // back-jump
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
-                // exit position
                 let exit_ip = self.scope_mut().bytecode.len();
                 self.scope_mut().patch_jump(exit_jump);
-                // patch stop/skip jumps
+                self.scope_mut().patch_jump(cond_exit);
                 let ctx = self.loop_stack.pop().unwrap();
-                for idx in ctx.break_patches {
-                    self.scope_mut().patch_jump_to(idx, exit_ip);
-                }
-                for idx in ctx.continue_patches {
-                    self.scope_mut().patch_jump_to(idx, increment_ip);
-                }
+                for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
+                for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, increment_ip); }
                 self.emit(Opcode::LoadNil);
                 Ok(true)
             }
@@ -2366,11 +2404,7 @@ impl Compiler {
                             }
                         }
                         self.compile_expr(&args[1])?;
-                        if segs.len() == 1 && mask == 0 {
-                            self.emit(Opcode::CallBuiltin(BuiltinId::UpdateAt, 3));
-                        } else {
-                            self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
-                        }
+                        self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
                         let store_op = self.resolve_store(&root_name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
                         self.emit(store_op);

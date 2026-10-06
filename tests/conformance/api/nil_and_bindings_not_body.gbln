@@ -1,0 +1,7 @@
+/// env: GOBLIN_NONINTERACTIVE=1
+/// Bindings, nil values and statements emit nothing; only the final string does.
+x | 1
+x |= 2
+nil
+if x == 2 => y | 3
+"done"

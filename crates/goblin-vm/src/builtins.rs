@@ -2125,6 +2125,18 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             session.write_output(&parts?.join(" "), false);
             Ok(Value::Nil)
         }
+        BuiltinId::ApiEcho => {
+            // A top-level expression statement in API mode: its value becomes
+            // response output, unless it is nil or prints as nothing.
+            let v = read(0)?;
+            if std::env::var("GOBLIN_NONINTERACTIVE").as_deref() == Ok("1")
+                && !matches!(v, Value::Nil | Value::Unit)
+            {
+                let s = value_to_str(&v);
+                if !s.is_empty() && s != "nil" { session.write_output(&s, true); }
+            }
+            Ok(Value::Nil)
+        }
         BuiltinId::Println => {
             let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
             session.write_output(&parts?.join(" "), true);
@@ -2875,6 +2887,32 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
+        BuiltinId::RepeatPrep => {
+            let v = read(0)?;
+            let plan = |mode: i64, iter: Value, limit: i64| Ok(Value::Array(vec![Value::Int(mode), iter, Value::Int(limit)]));
+            match v {
+                Value::Int(n) if n >= 0 => plan(0, Value::Nil, n),
+                Value::Int(n) => Err(GoblinError::Runtime(format!("'repeat' count must be >= 0 (got {n})"))),
+                Value::Nil => plan(3, Value::Nil, i64::MAX),
+                Value::Bool(_) => plan(4, Value::Nil, i64::MAX),
+                Value::Map(_) | Value::MapOrd(_) => {
+                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+                    let n = collections::element_count(&it) as i64;
+                    plan(2, it, n)
+                }
+                Value::Collection(ref c) if collections::is_map_collection(c) => {
+                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+                    let n = collections::element_count(&it) as i64;
+                    plan(2, it, n)
+                }
+                Value::Array(_) | Value::Collection(_) | Value::Seq(_) => {
+                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+                    let n = collections::element_count(&it) as i64;
+                    plan(1, it, n)
+                }
+                other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
+            }
+        }
         BuiltinId::ToForIter => {
             // The loop reads `iter[i]` each pass, so the iterable must be cheap to
             // clone: an Rc-backed Collection, never a Vec-backed Value::Array

@@ -1,4 +1,3 @@
-/// known-gap: vm bare 'repeat' with an inline stop fails ("expected comparable, got nil")
 i | 0
 repeat
     i |= i + 1
