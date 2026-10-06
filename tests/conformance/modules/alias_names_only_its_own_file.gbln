@@ -1,0 +1,6 @@
+/// `import f as a` gives `a::` names to f's own actions only, not to the
+/// actions of other files in the same directory.
+import _support/modules/mathy as m
+import _support/modules/left as l
+say(l::name())
+say(l::double(2))

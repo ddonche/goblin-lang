@@ -1694,18 +1694,19 @@ impl Vm {
                 self.session.current_glam_ns = prev_ns;
                 r?;
 
-                // Retroactively register qualified names in case the import guard fired.
-                let module_dir = full_path.parent()
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                // Retroactively register qualified names in case the import guard
+                // fired. Only the imported file's own actions get the alias: this
+                // used to take every file under the module's directory, which
+                // gave `alias::` names to sibling files' actions and, run for
+                // every import, was a large part of a request's time.
+                let own = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+                let targets = [own(&full_path), own(&full_path.with_extension("gbln"))];
+                let pairs: Vec<(String, Value)> = targets.iter()
+                    .filter_map(|t| self.session.action_file_map.iter()
+                        .find(|(file, _)| file.replace('\\', "/") == *t)
+                        .map(|(_, pairs)| pairs.clone()))
+                    .next()
                     .unwrap_or_default();
-                let pairs: Vec<(String, Value)> = self.session.action_file_map
-                    .iter()
-                    .filter(|(file, _)| {
-                        let f = file.replace('\\', "/");
-                        f.contains(&module_dir) || f == full_path.to_string_lossy().replace('\\', "/")
-                    })
-                    .flat_map(|(_, pairs)| pairs.iter().cloned())
-                    .collect();
                 for (bare_name, val) in pairs {
                     let qualified = format!("{}::{}", ns, bare_name);
                     self.session.named_values.entry(qualified).or_insert(val);
