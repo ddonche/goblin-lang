@@ -17,7 +17,36 @@ pub fn call_builtin(
     args: Vec<Value>,
     session: &mut Session,
 ) -> Result<Value, GoblinError> {
+    let args = if takes_legacy_args(id) { args.into_iter().map(legacy_arg).collect() } else { args };
     dispatch(id, args, session)
+}
+
+/// Builtins whose arms are written against the legacy `Value::Map` /
+/// `Value::Array` shapes and only read their arguments (config / option maps,
+/// small source arrays). Their collection arguments are rewritten to legacy
+/// form on entry, so map and array literals are accepted.
+fn takes_legacy_args(id: BuiltinId) -> bool {
+    matches!(id,
+        BuiltinId::Roll | BuiltinId::RollDetail | BuiltinId::SampleWeighted
+        | BuiltinId::SecurePick | BuiltinId::SecureShuffle | BuiltinId::ReapSample
+        | BuiltinId::RunCmd | BuiltinId::SetCookie | BuiltinId::DtAddDuration
+        | BuiltinId::IgnoreBetween | BuiltinId::IgnoreBlocks | BuiltinId::IgnoreBlocksFirst
+        | BuiltinId::KeepBetween)
+}
+
+/// A collection argument in legacy form: a map collection (or MapOrd) becomes
+/// a `Value::Map` whose collection values are legacy too (one level, e.g. a
+/// config's `src` array); an array collection becomes a `Value::Array`.
+fn legacy_arg(v: Value) -> Value {
+    match v {
+        Value::Collection(ref c) if c.is_map() => {
+            let m = v.to_btree_map().unwrap_or_default();
+            Value::Map(m.into_iter().map(|(k, x)| (k, x.into_legacy())).collect())
+        }
+        Value::Collection(_) => v.into_legacy(),
+        Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (k, x.into_legacy())).collect()),
+        other => other,
+    }
 }
 
 fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
@@ -213,6 +242,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             Ok(match (read(0)?, read(1)?) {
                 (Value::Int(b), Value::Int(e)) if e >= 0 => Value::Int(b.pow(e as u32)),
+                // A negative integer exponent gives a fraction: 2 ** -1 = 0.5.
+                (Value::Int(b), Value::Int(e)) => Value::Float((b as f64).powi(e as i32)),
                 (Value::Int(b), Value::Float(e)) => Value::Float((b as f64).powf(e)),
                 (Value::Float(b), Value::Float(e)) => Value::Float(b.powf(e)),
                 (Value::Float(b), Value::Int(e)) => Value::Float(b.powi(e as i32)),
@@ -2302,10 +2333,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let env_vars: Vec<(String, String)> = if args.len() == 3 {
                 match read(2)? {
                     Value::Map(map) => map.into_iter().map(|(k, v)| (k, match v {
-                        Value::Str(s) => s, other => format!("{:?}", other),
+                        Value::Str(s) => s, other => value_to_str(&other),
                     })).collect(),
                     Value::MapOrd(map) => map.into_iter().map(|(k, v)| (k, match v {
-                        Value::Str(s) => s, other => format!("{:?}", other),
+                        Value::Str(s) => s, other => value_to_str(&other),
                     })).collect(),
                     _ => return Err(GoblinError::Runtime("run_cmd: env argument must be a map".into())),
                 }
@@ -2340,8 +2371,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::RandSeed => {
             expect_n(1)?;
-            // interpreter just seeds the RNG — in VM we ignore since session handles it
-            Ok(Value::Nil)
+            // Reseed the session RNG like the interpreter does, so a seed
+            // repeats the same sequence. (|1: the VM's MCG needs an odd state.)
+            let n = match read(0)? {
+                Value::Int(i) => i as f64,
+                Value::Float(f) | Value::Pct(f) => f,
+                other => return Err(GoblinError::type_error("number", other.type_name(), "rand_seed")),
+            };
+            session.rng_state = ((n.to_bits() as u128) ^ 0x9E37_79B9_7F4A_7C15u128) | 1;
+            Ok(Value::Unit)
         }
         BuiltinId::Roll => {
             expect_n(1)?;
@@ -3097,6 +3135,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let val = read(1)?;
             match arr {
                 Value::Array(mut v) => { v.push(val); Ok(Value::Array(v)) }
+                Value::Collection(c) if !c.is_map() => collections::put_last(&c, val),
                 other => Err(GoblinError::type_error("array", other.type_name(), "array_push")),
             }
         }
@@ -4665,20 +4704,20 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 }
 
 fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Result<Value, GoblinError> {
-    fn want_idx(v: Value, label: &str) -> Result<isize, GoblinError> {
+    // None = bound omitted. Negative indices count from the end (spec §14).
+    fn want_idx(v: Value, label: &str) -> Result<Option<isize>, GoblinError> {
         match v {
-            Value::Nil => Ok(-1), // sentinel: use default
-            Value::Int(n) if n >= 0 => Ok(n as isize),
-            Value::Float(f) if f.is_finite() && f.fract() == 0.0 && f >= 0.0 => Ok(f as isize),
-            _ => Err(GoblinError::Runtime(format!("{} must be a non-negative integer index", label))),
+            Value::Nil => Ok(None),
+            Value::Int(n) => Ok(Some(n as isize)),
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => Ok(Some(f as isize)),
+            _ => Err(GoblinError::Runtime(format!("{} must be an integer index", label))),
         }
     }
-    fn clamp(mut s: isize, mut e: isize, len: usize) -> (usize, usize) {
+    fn clamp(s: Option<isize>, e: Option<isize>, len: usize) -> (usize, usize) {
         let l = len as isize;
-        if s < 0 { s = 0; }
-        if e < 0 { e = l; } // -1 sentinel → default to len
-        if s > l { s = l; }
-        if e > l { e = l; }
+        let norm = |i: isize| if i < 0 { (l + i).max(0) } else { i.min(l) };
+        let s = s.map(norm).unwrap_or(0);
+        let e = e.map(norm).unwrap_or(l);
         (s as usize, e as usize)
     }
 
@@ -4740,6 +4779,13 @@ fn zip_directory(src: &str, dest: &str) -> Result<(), GoblinError> {
         return Err(GoblinError::Runtime(format!("zip_dir: source '{}' does not exist", src)));
     }
 
+    // Like copy_file!, create the destination's missing parent directories.
+    if let Some(parent) = std::path::Path::new(dest).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: cannot create '{}': {}", parent.display(), e)))?;
+        }
+    }
     let dest_file = File::create(dest)
         .map_err(|e| GoblinError::Runtime(format!("zip_dir: cannot create '{}': {}", dest, e)))?;
     let mut zip = zip::ZipWriter::new(BufWriter::new(dest_file));
@@ -5638,11 +5684,9 @@ fn lexical_path_normalize(path: &str) -> String {
 
 fn regex_with_flags(pattern: &str, flags_val: &Value) -> String {
     let mut f_i = false; let mut f_m = false; let mut f_s = false;
-    if let Value::Map(m) = flags_val {
-        if let Some(Value::Bool(b)) = m.get("i") { f_i = *b; }
-        if let Some(Value::Bool(b)) = m.get("m") { f_m = *b; }
-        if let Some(Value::Bool(b)) = m.get("s") { f_s = *b; }
-    }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("i") { f_i = b; }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("m") { f_m = b; }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("s") { f_s = b; }
     let mut f = String::new();
     if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
     if f.is_empty() { pattern.to_string() } else { format!("(?{}){}", f, pattern) }

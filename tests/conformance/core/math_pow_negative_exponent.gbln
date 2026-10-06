@@ -1,2 +1,1 @@
-/// known-gap: vm pow with a negative int exponent is a type error ("got mixed")
 say(:pow(2, -1))

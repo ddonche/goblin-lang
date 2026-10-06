@@ -1,2 +1,1 @@
-/// known-gap: vm overflowing int multiplication loses precision
 say(9223372036854775807 * 2)

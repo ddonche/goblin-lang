@@ -581,6 +581,8 @@ impl Vm {
                     (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
                     (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
                     (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
+                    (Value::Big(_), Value::Float(_)) | (Value::Float(_), Value::Big(_)) =>
+                        crate::value::numeric_binop("add", &a_inner, &b_inner).expect("numeric")?,
                     (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
                     (Value::Pct(x), Value::Float(y))   => Value::Pct(x + y),
                     (Value::Float(x), Value::Pct(y))   => Value::Pct(x + y),
@@ -677,13 +679,9 @@ impl Vm {
             Opcode::Rem => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
-                let result = match (&a, &b) {
-                    (Value::Int(x), Value::Int(y)) => {
-                        if *y == 0 { return Err(GoblinError::DivisionByZero); }
-                        Value::Int(x % y)
-                    }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
-                    _ => return Err(GoblinError::type_error("number", b.type_name(), "%")),
+                let result = match crate::value::numeric_binop("rem", &a, &b) {
+                    Some(r) => r?,
+                    None => return Err(GoblinError::type_error("number", b.type_name(), "%")),
                 };
                 self.stack.push(Operand::Val(result));
             }
@@ -2692,6 +2690,8 @@ impl Vm {
             Value::Str(_) => Err(GoblinError::Runtime(
                 "get/reap/put with 'where' is not supported for strings; use update_where!/delete_where! instead".into()
             )),
+            // A map collection keeps map semantics (insertion-ordered map).
+            Value::Collection(col) if col.is_map() => self.vm_where_get(Value::Collection(col).into_legacy(), pred),
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
                 let mut out = Vec::new();
@@ -2732,6 +2732,8 @@ impl Vm {
                 // delete_where on a string: always literal substring removal, pred is the needle
                 Ok(Value::Str(s.replace(pred, "")))
             }
+            // A map collection keeps map semantics (insertion-ordered map).
+            Value::Collection(col) if col.is_map() => self.vm_where_delete(Value::Collection(col).into_legacy(), pred),
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
                 let mut out = Vec::new();
@@ -2781,6 +2783,8 @@ impl Vm {
                 };
                 Ok(Value::Str(s.replace(pred, &repl)))
             }
+            // A map collection keeps map semantics (insertion-ordered map).
+            Value::Collection(col) if col.is_map() => self.vm_where_update(Value::Collection(col).into_legacy(), pred, new_val),
             Value::Collection(col) => {
                 let xs = crate::collections::to_vec(&col);
                 let mut out = Vec::new();
@@ -2932,12 +2936,13 @@ impl Vm {
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array", other.type_name(), "sort_by")),
         };
-        let mut keyed: Vec<(String, Value)> = Vec::with_capacity(elems.len());
+        let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(elems.len());
         for v in elems {
             let k = self.call_callable(func.clone(), vec![v.clone()])?;
-            keyed.push((crate::builtins::fmt_value_raw(&k), v));
+            keyed.push((k, v));
         }
-        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        // Same ordering as sort: numbers by value, strings lexically.
+        keyed.sort_by(|a, b| crate::collections::compare_for_sort(&a.0, &b.0));
         Ok(Value::Array(keyed.into_iter().map(|(_, v)| v).collect()))
     }
 
@@ -3320,6 +3325,8 @@ impl Vm {
         int_fn: fn(i64, i64) -> i64,
         flt_fn: fn(f64, f64) -> f64,
     ) -> Result<Value, GoblinError> {
+        // int/float/big: exact, overflow promotes to big (value.rs).
+        if let Some(r) = crate::value::numeric_binop(op, &a, &b) { return r; }
         match (&a, &b) {
             (Value::Int(x), Value::Int(y))     => Ok(Value::Int(int_fn(*x, *y))),
             (Value::Float(x), Value::Float(y)) => Ok(Value::Float(flt_fn(*x, *y))),
