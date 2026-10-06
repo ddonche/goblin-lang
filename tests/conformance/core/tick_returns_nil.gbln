@@ -1,0 +1,5 @@
+/// known-gap: interp tick()/tick_db() return unit (prints an empty line) instead of nil
+/// tick() and its alias tick_db() advance the simulation one step and return nil.
+say(:tick())
+say(:tick_db())
+say("ok")

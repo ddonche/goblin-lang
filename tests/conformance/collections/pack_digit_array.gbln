@@ -1,0 +1,5 @@
+/// pack(array) of single digits 0-9 folds them into an int; [] packs to 0.
+say(:pack([1, 2, 3]))
+say(:valtype(:pack([1, 2, 3])))
+say(:pack([0, 0, 7]))
+say(:pack([]))

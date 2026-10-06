@@ -1,0 +1,27 @@
+/// :overlays() lists every overlay instance as an object with overlay_name, host_var, strength,
+/// age and ticks_remaining; :overlays(pred) filters with `it` bound to each instance.
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+overlay Plague |
+    modifies:
+        stability - .5
+    end
+rome <> Polity | stability: .8
+athens <> Polity | stability: .8
+overlay Stunned on rome at .5 for 3 ticks
+overlay Plague on athens at .2
+say(:len(:overlays()))
+strong | :overlays(it >> strength > .3)
+say(:len(strong))
+say(strong[0] >> overlay_name)
+say(strong[0] >> host_var)
+say(strong[0] >> strength)
+say(strong[0] >> ticks_remaining)
+say(strong[0] >> age)
+say(:overlays(it >> host_var == "athens")[0] >> ticks_remaining)
+say(:len(:overlays(it >> strength > 5)))

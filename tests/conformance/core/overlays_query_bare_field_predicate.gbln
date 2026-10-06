@@ -1,0 +1,13 @@
+/// known-gap: vm a bare field name in the predicate is an "undefined variable" (only `it >> field` works)
+/// Inside an :overlays(...) predicate the instance's fields are in scope by name.
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+rome <> Polity | stability: .8
+overlay Stunned on rome at .5
+say(:len(:overlays(strength > .3)))
+say(:len(:overlays(overlay_name == "Plague")))

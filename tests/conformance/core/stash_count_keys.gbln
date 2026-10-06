@@ -1,0 +1,6 @@
+/// known-gap: interp stash_count is VM-only (unknown action)
+/// stash_count() returns a map {total, live, abandoned} with total = live + abandoned (values are engine-specific).
+s | :stash_count()
+say(:valtype(s))
+say(:sort(:keys(s)))
+say(s{"total"} == s{"live"} + s{"abandoned"})

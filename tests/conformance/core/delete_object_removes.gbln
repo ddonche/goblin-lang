@@ -1,0 +1,11 @@
+/// known-gap: vm delete_object! rejects an object ("expected str, got object")
+/// delete_object!(obj) erases the object: it no longer appears in :objects().
+<>Unit |
+    name: ""
+xx
+a <> Unit | name: "a"
+b <> Unit | name: "b"
+say(:len(:objects()))
+delete_object!(a)
+say(:len(:objects()))
+say(:objects()[0] >> name)

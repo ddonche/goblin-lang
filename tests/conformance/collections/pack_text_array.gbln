@@ -1,0 +1,5 @@
+/// pack(array) of strings concatenates them; a mixed array is stringified and concatenated.
+say(:pack(["a", "b", "c"]))
+say(:pack(["x", 1, true]))
+say(:pack([12, 3]))
+say(:valtype(:pack([12, 3])))

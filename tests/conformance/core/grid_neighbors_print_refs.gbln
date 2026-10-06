@@ -1,0 +1,5 @@
+/// known-gap: interp prints a grid ref as GridRef(m, 1, 0) instead of <gridref m[1,0]>
+/// grid_neighbors returns grid refs (row-major order); this pins how a ref prints.
+m | :grid("m", 3, 2)
+say(:grid_neighbors("m", 0, 0))
+say(m[2, 1])

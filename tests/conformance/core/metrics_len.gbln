@@ -1,0 +1,5 @@
+/// metrics(coll) returns a map whose "len" is the collection's length (other keys are engine-specific).
+m | :metrics([1, 2, 3])
+say(:valtype(m))
+say(m{"len"})
+say(:metrics([]){"len"})

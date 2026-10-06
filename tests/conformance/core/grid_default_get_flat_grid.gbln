@@ -1,0 +1,8 @@
+/// Defaults work on a grid without a hierarchy too.
+w | :grid("w", 3, 3)
+:grid_default_set("w", "terrain", "plain")
+say(:grid_get("w", 2, 2, "terrain"))
+:grid_set("w", 2, 2, "terrain", "hill")
+say(:grid_get("w", 2, 2, "terrain"))
+say(:grid_get("w", 0, 0, "terrain"))
+say(:grid_default_get("w", "owner"))

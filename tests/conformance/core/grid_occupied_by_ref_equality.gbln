@@ -1,0 +1,10 @@
+/// A grid ref returned by grid_occupied_by equals the ref written m[x, y].
+m | :grid("m", 3, 2)
+:grid_set("m", 1, 1, "owner", "red")
+r | :grid_occupied_by("m", "red")
+say(r[0] == r[0])
+say(r[0] == m[1, 1])
+say(r[0] == m[0, 1])
+a | m[2, 0]
+b | m[2, 0]
+say(a == b)

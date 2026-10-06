@@ -1,0 +1,13 @@
+/// summon passes each action's result on to the next; a context map is a typical payload.
+act step_one(ctx)
+    :put_at!(ctx, "step1", "ran")
+    return ctx
+xx
+act step_two(ctx)
+    :put_at!(ctx, "step2", 222)
+    return ctx
+xx
+out | :summon({"initial": "hello"}, ["step_one", "step_two"])
+say(out{"initial"})
+say(out{"step1"})
+say(out{"step2"})

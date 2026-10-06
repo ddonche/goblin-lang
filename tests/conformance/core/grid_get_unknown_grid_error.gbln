@@ -1,0 +1,3 @@
+/// grid_get on a grid name that was never created is an error.
+say("start")
+say(:grid_get("nope", 0, 0, "owner"))

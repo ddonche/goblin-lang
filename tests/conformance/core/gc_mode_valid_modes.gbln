@@ -1,0 +1,5 @@
+/// known-gap: interp gc_mode is VM-only (unknown action)
+/// gc_mode accepts "off", "manual" and "auto" and returns nil.
+say(:gc_mode("manual"))
+say(:gc_mode("off"))
+say(:gc_mode("auto"))

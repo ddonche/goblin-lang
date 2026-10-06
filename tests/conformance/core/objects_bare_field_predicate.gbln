@@ -1,0 +1,16 @@
+/// known-gap: vm a bare field name in the predicate is an "undefined variable" (only `it >> field` works)
+/// Inside an :objects(...) predicate the object's fields are in scope by name.
+<>Unit |
+    name: ""
+    hp: 10
+xx
+a <> Unit | name: "a", hp: 7
+b <> Unit | name: "b", hp: 12
+c <> Unit | name: "c", hp: 3
+weak | :objects(hp < 10)
+say(:len(weak))
+names | []
+for u in weak
+    :put_last!(names, u >> name)
+xx
+say(:sort(names))

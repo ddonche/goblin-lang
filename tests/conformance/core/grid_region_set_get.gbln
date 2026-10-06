@@ -1,0 +1,13 @@
+/// grid_region_set / grid_region_get store a value on a region; a tile value overrides it for grid_get.
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 4
+say(:grid_region_get("h", 1, 1, "temp"))
+:grid_region_set("h", 1, 1, "temp", 20)
+say(:grid_region_get("h", 1, 1, "temp"))
+say(:grid_region_get("h", 0, 0, "temp"))
+say(:grid_get("h", 4, 4, "temp"))
+say(:grid_get("h", 3, 3, "temp"))
+:grid_tile_set("h", 3, 3, "temp", 30)
+say(:grid_get("h", 7, 7, "temp"))
+say(:grid_get("h", 4, 4, "temp"))

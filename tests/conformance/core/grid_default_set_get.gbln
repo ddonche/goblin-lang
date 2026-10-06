@@ -1,0 +1,16 @@
+/// grid_default_set gives a layer a world-wide default; grid_get falls back to it when
+/// neither the cell, its tile nor its region has a value.
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 4
+say(:grid_default_get("h", "temp"))
+:grid_default_set("h", "temp", 10)
+say(:grid_default_get("h", "temp"))
+say(:grid_get("h", 0, 0, "temp"))
+:grid_region_set("h", 0, 0, "temp", 20)
+say(:grid_get("h", 0, 0, "temp"))
+:grid_tile_set("h", 0, 0, "temp", 30)
+say(:grid_get("h", 0, 0, "temp"))
+:grid_set("h", 0, 0, "temp", 40)
+say(:grid_get("h", 0, 0, "temp"))
+say(:grid_get("h", 7, 7, "temp"))

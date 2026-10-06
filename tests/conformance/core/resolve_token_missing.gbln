@@ -1,0 +1,5 @@
+/// known-gap: interp a missing token is an error (R0301 token-not-found) instead of nil
+/// resolve_token on an unregistered token (or namespace) gives nil.
+:register_token("THEME", "ACCENT", "purple")
+say(:resolve_token("THEME", "MISSING"))
+say(:resolve_token("NOPE", "ACCENT"))

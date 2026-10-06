@@ -3739,7 +3739,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 3 {
                 return Err(GoblinError::Runtime(format!("register_token: expected 3 args, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "register_token key")) };
             let value = read(2)?;
             session.token_store.entry(ns).or_default().insert(key, value);
@@ -3749,7 +3749,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("resolve_token: expected 2 args, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token key")) };
             match session.token_store.get(&ns).and_then(|m| m.get(&key)) {
                 Some(v) => Ok(v.clone()),
@@ -3760,7 +3760,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("clear_token: expected 2 args, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_token key")) };
             if let Some(m) = session.token_store.get_mut(&ns) { m.remove(&key); }
             Ok(Value::Nil)
@@ -3769,7 +3769,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 1 {
                 return Err(GoblinError::Runtime(format!("clear_tokens: expected 1 arg, got {}", args.len())));
             }
-            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_tokens ns")) };
+            let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clear_tokens ns")) }.to_ascii_uppercase();
             session.token_store.remove(&ns);
             Ok(Value::Nil)
         }
@@ -3778,14 +3778,19 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Nil)
         }
         BuiltinId::ListTokens => {
+            // {id: value} for one namespace ({} when unknown); {namespace: {id: value}} for all.
+            fn ns_map(m: &std::collections::BTreeMap<String, Value>) -> Value {
+                Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
+                    m.iter().map(|(k, v)| (Value::Str(k.clone()), v.clone())).collect())))
+            }
             if args.is_empty() {
-                let names: Vec<Value> = session.token_store.keys().cloned().map(Value::Str).collect();
-                Ok(Value::Array(names))
+                let all = session.token_store.iter().map(|(ns, m)| (Value::Str(ns.clone()), ns_map(m))).collect();
+                Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(all))))
             } else {
-                let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "list_tokens ns")) };
+                let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "list_tokens ns")) }.to_ascii_uppercase();
                 match session.token_store.get(&ns) {
-                    Some(m) => Ok(Value::Array(m.keys().cloned().map(Value::Str).collect())),
-                    None => Ok(Value::Array(vec![])),
+                    Some(m) => Ok(ns_map(m)),
+                    None => Ok(ns_map(&Default::default())),
                 }
             }
         }
@@ -3857,8 +3862,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 {
                 return Err(GoblinError::Runtime(format!("overlay_strength: expected 2 args, got {}", args.len())));
             }
-            let host_var = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
-            let overlay = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
+            let overlay = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
+            let host_var = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
             match session.overlay_instances.iter().find(|oi| oi.host_var == host_var && oi.overlay_name == overlay) {
                 Some(oi) => Ok(Value::Float(oi.strength)),
                 None => Ok(Value::Nil),
@@ -3896,6 +3901,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 let tile_w = match read(4)? { Value::Int(n) => n as i32, _ => 32 };
                 let tile_h = match read(5)? { Value::Int(n) => n as i32, _ => 32 };
                 let regions = match read(6)? { Value::Int(n) => n as i32, _ => 16 };
+                if tile_w == -1 && tile_h == -1 && regions == -1 {
+                    crate::grid::HierarchyConfig::try_default(width, height)
+                } else {
                 let (tw, th, rc) = (
                     if tile_w == -1 { 32 } else { tile_w },
                     if tile_h == -1 { 32 } else { tile_h },
@@ -3904,6 +3912,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 match crate::grid::HierarchyConfig::try_new(width, height, tw, th, rc) {
                     Ok(h) => Some(h),
                     Err(msg) => return Err(GoblinError::Runtime(format!("grid: invalid hierarchy: {}", msg))),
+                }
                 }
             } else {
                 crate::grid::HierarchyConfig::try_default(width, height)
@@ -4297,7 +4306,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let module = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token module")) };
             let ident  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token ident")) };
-            match session.token_store.get(&module).and_then(|m| m.get(&ident)) {
+            match session.token_store.get(&module)
+                .or_else(|| session.token_store.get(&module.to_ascii_uppercase()))
+                .and_then(|m| m.get(&ident)) {
                 Some(Value::Str(s)) if s.contains("{#") => {
                     let resolved = resolve_box_template_vm(s, &session.box_store);
                     Ok(Value::Str(resolved))
@@ -5505,6 +5516,10 @@ fn regex_with_flags(pattern: &str, flags_val: &Value) -> String {
 }
 
 fn pack_value(v: Value) -> Value {
+    if !matches!(v, Value::Array(_)) && v.is_seq_like() {
+        let items = v.seq_items().map(|c| c.into_owned()).unwrap_or_default();
+        return pack_value(Value::Array(items));
+    }
     match v {
         Value::Array(xs) if xs.is_empty() => Value::Int(0),
         Value::Array(xs) => {

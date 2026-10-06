@@ -1,0 +1,7 @@
+/// The statement form of grid(...) without a tile/regions block makes a grid with no hierarchy when the default 32x32 tiling does not fit.
+grid("w", 10, 10)
+say(:grid_info("w"){"has_hierarchy"})
+say(:len(:grid_neighbors("w", 0, 0)))
+grid("f", 4, 4, 4)
+say(:grid_info("f"){"mode"})
+say(:len(:grid_neighbors("f", 1, 1)))

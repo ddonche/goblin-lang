@@ -1,0 +1,3 @@
+/// backend(coll) names a collection's storage as a string (engine-specific value; only the type is pinned).
+say(:valtype(:backend([1, 2, 3])))
+say(:valtype(:backend([])))

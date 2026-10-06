@@ -1,0 +1,8 @@
+/// A provoke block with a false condition is an error.
+x | 25
+say("start")
+provoke
+    x > 0
+    x !== 25
+xx
+say("unreachable")

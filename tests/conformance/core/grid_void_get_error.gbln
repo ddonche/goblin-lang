@@ -1,0 +1,5 @@
+/// grid_void marks a cell void; reading a void cell is an error.
+m | :grid("m", 3, 2)
+:grid_void("m", 1, 1)
+say(:grid_get("m", 1, 0, "owner"))
+say(:grid_get("m", 1, 1, "owner"))

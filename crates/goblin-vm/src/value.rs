@@ -217,6 +217,8 @@ impl PartialEq for Value {
             (Value::CtrlStop,         Value::CtrlStop)         => true,
             (Value::CtrlReturn(a),    Value::CtrlReturn(b))    => a == b,
             (Value::Ref(a),           Value::Ref(b))           => a == b,
+            (Value::GridRef { grid_id: ga, x: xa, y: ya },
+             Value::GridRef { grid_id: gb, x: xb, y: yb }) => ga == gb && xa == xb && ya == yb,
             (Value::Collection(a),    Value::Collection(b)) if Rc::ptr_eq(a, b) => true,
             // Containers compare structurally, whatever their representation
             // (legacy Array/Map/MapOrd/Seq or an Rc-backed Collection).

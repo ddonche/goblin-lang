@@ -1,0 +1,15 @@
+/// grid_region_info describes one region: its first tile and cell and its layers.
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 4
+r | :grid_region_info("h", 1, 1)
+say(r{"rx"})
+say(r{"ry"})
+say(r{"tile_x"})
+say(r{"tile_y"})
+say(r{"cell_x"})
+say(r{"cell_y"})
+say(r{"tiles_per_edge"})
+say(r{"layers"})
+:grid_region_set("h", 1, 1, "temp", 20)
+say(:grid_region_info("h", 1, 1){"layers"})

@@ -2,63 +2,6 @@
 # (crates/outputs/VM_PARITY_TODO.md) lists them as untested. Remove a line
 # when a case covers the builtin.
 
-# Grid, DES, ownership and token subsystems (simulation/game features, not
-# reached by Campfire; untested in this pass):
-grid_count
-grid_default_get
-grid_default_set
-grid_get
-grid_has
-grid_info
-grid_neighbors
-grid_occupied
-grid_occupied_by
-grid_occupied_count
-grid_region_get
-grid_region_info
-grid_region_set
-grid_set
-grid_tile_get
-grid_tile_info
-grid_tile_set
-grid_unoccupied
-grid_unoccupied_count
-grid_void
-tick
-tick_db
-link_score
-overlay_strength
-overlays
-overlays_of
-delete_overlays_on
-objects
-delete_object
-clone_object
-owned_by
-owns_tree
-decision_debug
-clear_all_tokens
-clear_token
-clear_tokens
-list_tokens
-register_token
-resolve_token
-pack
-unpack
-
-# Dynamic dispatch by name (invoke/summon/provoke): untested in this pass
-invoke
-summon
-provoke
-
-# Memory/runtime introspection: output is engine-specific by nature
-backend
-gc
-gc_mode
-mem_addr
-mem_human
+# VM-only, and always an error there (no arena address for a stack value),
+# so there is no output to encode yet:
 mem_id
-mem_total
-metrics
-stash_count
-tether_count

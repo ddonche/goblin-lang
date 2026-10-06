@@ -1,0 +1,15 @@
+/// known-gap: vm clone_object rejects an object ("expected str, got object")
+/// clone_object(obj) returns a new object with the same fields and its own identity.
+<>Unit |
+    name: ""
+    hp: 10
+xx
+a <> Unit | name: "a", hp: 7
+b | :clone_object(a)
+say(:valtype(b))
+say(b >> name)
+say(b >> hp)
+say(b >> uuid == a >> uuid)
+b >> hp |= 3
+say(a >> hp)
+say(b >> hp)

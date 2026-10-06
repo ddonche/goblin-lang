@@ -1,0 +1,14 @@
+/// grid_tile_info describes one tile: its coordinates, first cell, region and layers.
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 4
+t | :grid_tile_info("h", 3, 1)
+say(t{"tx"})
+say(t{"ty"})
+say(t{"cell_x"})
+say(t{"cell_y"})
+say(t{"region_x"})
+say(t{"region_y"})
+say(t{"layers"})
+:grid_tile_set("h", 3, 1, "temp", 5)
+say(:grid_tile_info("h", 3, 1){"layers"})

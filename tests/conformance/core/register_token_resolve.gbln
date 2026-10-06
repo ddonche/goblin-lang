@@ -1,0 +1,9 @@
+/// register_token(namespace, id, value) stores a token; resolve_token(namespace, id) reads it back.
+:register_token("SITE", "TITLE", "Goblin Journal")
+:register_token("ARTICLE", "TITLE", "A Night in the Library")
+:register_token("SITE", "YEAR", 2026)
+say(:resolve_token("SITE", "TITLE"))
+say(:resolve_token("ARTICLE", "TITLE"))
+say(:resolve_token("SITE", "YEAR") + 1)
+:register_token("SITE", "TITLE", "Renamed")
+say(:resolve_token("SITE", "TITLE"))

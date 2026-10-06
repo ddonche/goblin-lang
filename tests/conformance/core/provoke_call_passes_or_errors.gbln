@@ -1,0 +1,7 @@
+/// provoke(cond) / provoke(cond, msg) returns true when cond holds and is an error otherwise.
+x | 50
+say(:provoke(x > 0))
+say(:provoke(x < 100, "too big"))
+say("checking")
+r | :provoke(x == 25, "x must be 25")
+say("unreachable")

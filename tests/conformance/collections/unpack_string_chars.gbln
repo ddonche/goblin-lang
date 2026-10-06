@@ -1,0 +1,7 @@
+/// unpack(s) splits a string into one-character strings; other types give nil.
+say(:unpack("abc"))
+say(:unpack(""))
+say(:valtype(:unpack("héllo")[1]))
+say(:len(:unpack("héllo")))
+say(:unpack(1.5))
+say(:unpack([1, 2]))

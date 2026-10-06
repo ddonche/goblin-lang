@@ -1,0 +1,14 @@
+/// overlay_strength(overlay_name, host_name) gives the strength the overlay was applied at, or nil.
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+rome <> Polity | stability: .8
+athens <> Polity | stability: .8
+overlay Stunned on rome at .5
+say(:overlay_strength("Stunned", "rome"))
+say(:overlay_strength("Stunned", "athens"))
+say(:overlay_strength("Plague", "rome"))

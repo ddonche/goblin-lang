@@ -1,0 +1,16 @@
+/// known-gap: vm owned_by rejects an object ("expected str, got object"), and obj >> uuid is nil
+/// owned_by(owner) lists the objects whose owner_id is owner's uuid (direct children only).
+<>Unit |
+    name: ""
+    owner_id: ""
+xx
+king <> Unit | name: "king"
+knight <> Unit | name: "knight"
+squire <> Unit | name: "squire"
+knight >> owner_id |= king >> uuid
+squire >> owner_id |= knight >> uuid
+o | :owned_by(king)
+say(:len(o))
+say(o[0] >> name)
+say(:owned_by(knight)[0] >> name)
+say(:len(:owned_by(squire)))

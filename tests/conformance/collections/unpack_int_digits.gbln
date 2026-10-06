@@ -1,0 +1,6 @@
+/// unpack(n) splits a non-negative int into its decimal digits; 0 gives [0], a negative int gives nil.
+say(:unpack(1234))
+say(:unpack(1000))
+say(:unpack(7))
+say(:unpack(0))
+say(:unpack(-5))

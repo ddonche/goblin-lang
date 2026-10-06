@@ -1,0 +1,4 @@
+/// grid_tile_info on a grid without a hierarchy is an error.
+m | :grid("m", 3, 2)
+say("start")
+say(:grid_tile_info("m", 0, 0))

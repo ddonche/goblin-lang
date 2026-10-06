@@ -1,0 +1,6 @@
+/// pack(unpack(x)) gives x back for a non-negative int or a string; pack of a scalar returns it unchanged.
+say(:pack(:unpack(9081)))
+say(:valtype(:pack(:unpack(9081))))
+say(:pack(:unpack("goblin")))
+say(:pack(42))
+say(:pack("hi"))

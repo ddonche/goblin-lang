@@ -1,0 +1,12 @@
+/// clear_token(ns, id) removes one token and leaves the rest; clearing a missing token is not an error.
+:register_token("THEME", "ACCENT", "purple")
+:register_token("THEME", "BG", "black")
+:register_token("SITE", "ACCENT", "red")
+:clear_token("THEME", "ACCENT")
+say(:len(:list_tokens("THEME")))
+say(:has(:list_tokens("THEME"), "BG"))
+say(:has(:list_tokens("THEME"), "ACCENT"))
+say(:resolve_token("SITE", "ACCENT"))
+:clear_token("THEME", "MISSING")
+:clear_token("UNKNOWN", "MISSING")
+say(:len(:list_tokens("THEME")))

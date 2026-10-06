@@ -1,0 +1,6 @@
+/// known-gap: interp register_token/clear_token/clear_tokens/clear_all_tokens return unit (print an empty line) instead of nil
+/// The token-store mutators are called for their effect and return nil.
+say(:register_token("THEME", "ACCENT", "purple"))
+say(:clear_token("THEME", "ACCENT"))
+say(:clear_tokens("THEME"))
+say(:clear_all_tokens())
