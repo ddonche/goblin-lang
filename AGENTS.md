@@ -205,6 +205,11 @@
 
 - [x] `tick` / `tick_db` — full DES tick in `tick.rs`: 9 passes (link offset decay, spread × 4 modes, decay, conflict, spawn, overlay transitions × 8 kinds, dead/orphan removal, decision tick, object transition tick); object_store maintained on StoreLocal/StoreGlobal; expression eval via compile_tick_expr / eval_tick_expr / run_until_depth
 
+## Engine selection (owner, 2026-10-06)
+The VM is the default engine for `goblin run`, `goblin repl` and `goblin start`.
+`--interp` (or `--int`, or `GOBLIN_ENGINE=interp`) selects the interpreter, which is
+kept as a reference until it is deleted; `--vm` is still accepted.
+
 ## Tested status (conformance suite, 2026-10-06)
 
 The checklist above records what was implemented. What is *tested* is generated

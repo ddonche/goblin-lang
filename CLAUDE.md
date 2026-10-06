@@ -236,6 +236,11 @@ These are HARD CONSTRAINTS — violating any of them is forbidden regardless of 
 - [x] Fixed pre-existing VM bug: `import_file` (used by both `ImportFile` and `UseGlam`) now pushes a frame and calls `run_until_depth` instead of `self.execute()` — the old code shared `call_stack`/`stack` with the caller but ran a fresh `run_loop()` that only stopped when the ENTIRE call stack was empty, so a second `use`/`import` statement after the first would execute while `base_dir` was still pointed at the first import's directory (or worse, silently execute the rest of the caller's bytecode from inside the nested call). This blocked any script doing more than one `use`/`import`.
 - [x] VM limitation (not fixed, out of scope): `ns::action(...)` (`Expr::NsCall`) resolves at compile time per-compilation-unit and does not see cross-glam exports, so `:need()`'s provider action is invoked via `invoke`'s `named_values` mechanism instead, not via qualified-name dispatch like the interpreter. `session.named_values` is a flat bare-action-name registry, so two GLAMs declaring an action with the same bare name collide (pre-existing limitation shared with `invoke`/`summon`/`provoke`).
 
+## Engine selection (owner, 2026-10-06)
+The VM is the default engine for `goblin run`, `goblin repl` and `goblin start`.
+`--interp` (or `--int`, or `GOBLIN_ENGINE=interp`) selects the interpreter, which is
+kept as a reference until it is deleted; `--vm` is still accepted.
+
 ## Tested status (conformance suite, 2026-10-06)
 
 The checklist above records what was implemented. What is *tested* is generated

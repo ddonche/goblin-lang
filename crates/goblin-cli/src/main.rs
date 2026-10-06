@@ -155,7 +155,7 @@ fn main() {
              \n  goblin lex --check\n\
              \n  goblin parse <file>\n\
              \n  goblin gql-parse <file|->\n\
-             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version\n  --vm             Use the VM engine (run/repl) instead of the interpreter"
+             \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version\n  --interp         Use the interpreter instead of the VM (run/repl/start; the VM is the default)"
         );
         return;
     }
@@ -177,17 +177,18 @@ fn main() {
         let mut host = String::from("0.0.0.0");
         let mut port: u16 = 5173;
         let mut proxies: Vec<(String, String)> = Vec::new();
-        let mut start_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "vm";
+        // The VM is the default engine; `--interp` (or GOBLIN_ENGINE=interp) selects the interpreter.
+        let mut start_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() != "interp";
 
         let mut i = 0;
         while i < args.len() {
             match args[i].as_str() {
                 "--host" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]"); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]"); std::process::exit(2); }
                     host = args[i + 1].clone(); i += 2;
                 }
                 "--port" | "-p" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]"); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]"); std::process::exit(2); }
                     port = args[i + 1].parse().unwrap_or_else(|_| { eprintln!("invalid port: {}", args[i + 1]); std::process::exit(2); });
                     i += 2;
                 }
@@ -207,9 +208,10 @@ fn main() {
                     i += 2;
                 }
                 "--vm" => { start_vm = true; i += 1; }
+                "--interp" | "--int" => { start_vm = false; i += 1; }
                 other => {
                     eprintln!("unknown start option: {}", other);
-                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--vm]");
+                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]");
                     std::process::exit(2);
                 }
             }
@@ -218,11 +220,13 @@ fn main() {
         std::process::exit(run_devserver_with_proxies(host, port, proxies, start_vm));
     }
 
-    // Detect --vm flag or GOBLIN_ENGINE=vm env var anywhere in args.
-    let use_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "vm"
-        || args.iter().any(|a| a == "--vm");
-    // Strip --vm from args so subcommand parsers don't see it.
-    args.retain(|a| a != "--vm");
+    // The VM is the default engine. `--interp` (or `--int`, or GOBLIN_ENGINE=interp)
+    // selects the interpreter; `--vm` is still accepted.
+    let use_interp = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "interp"
+        || args.iter().any(|a| a == "--interp" || a == "--int");
+    let use_vm = !use_interp;
+    // Strip engine flags from args so subcommand parsers don't see them.
+    args.retain(|a| a != "--vm" && a != "--interp" && a != "--int");
 
     // REPL when no args
     if args.is_empty() {
@@ -1210,7 +1214,7 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "goblin run --vm {} → exit {} in {}ms ({}.{:03}s)",
+        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
         path.display(), code,
         elapsed.as_millis(), elapsed.as_secs(), elapsed.subsec_millis(),
     );
@@ -1879,7 +1883,7 @@ fn run_run(path: &std::path::Path) -> i32 {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
+        "goblin run --interp {} → exit {} in {}ms ({}.{:03}s)",
         path.display(),
         code,
         elapsed.as_millis(),
@@ -2013,7 +2017,7 @@ fn run_run_with_args(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 
     let elapsed = start.elapsed();
     eprintln!(
-        "goblin run {} → exit {} in {}ms ({}.{:03}s)",
+        "goblin run --interp {} → exit {} in {}ms ({}.{:03}s)",
         path.display(),
         code,
         elapsed.as_millis(),

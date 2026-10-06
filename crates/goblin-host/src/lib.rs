@@ -1182,7 +1182,10 @@ async fn exec_goblin_script_via_cli_timeout(
 
     let mut cmd = Command::new("goblin");
     cmd.kill_on_drop(true);
-    cmd.arg(script_path.as_os_str())
+    // This path is the interpreter host (`goblin start --interp`): the VM is
+    // the CLI's default engine, so the child is asked for the interpreter.
+    cmd.arg("--interp")
+       .arg(script_path.as_os_str())
        .env("GOBLIN_NONINTERACTIVE", "1")
        .env("GOBLIN_QUERY_STRING", query_string)
        .env("GOBLIN_METHOD", method)

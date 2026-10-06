@@ -1,8 +1,8 @@
 //! Interpreter/VM conformance suite.
 //!
 //! Every `tests/conformance/**/*.gbln` case is run twice through the real
-//! `goblin` binary: once with the tree-walking interpreter (`goblin run`) and
-//! once with the VM (`goblin run --vm`). Each run's observable result is its
+//! `goblin` binary: once with the tree-walking interpreter (`goblin run --interp`) and
+//! once with the VM (`goblin run`, the default engine). Each run's observable result is its
 //! stdout, plus a final `<error>` line when the process exits non-zero (error
 //! *messages* go to stderr and differ in wording between engines, so only the
 //! fact of failure is compared).
@@ -186,7 +186,7 @@ fn run_case(bin: &Path, root: &Path, rel: &str, engine: Engine, env: &[(String, 
 
     let mut cmd = Command::new(bin);
     cmd.arg("run");
-    if engine == Engine::Vm { cmd.arg("--vm"); }
+    cmd.arg(if engine == Engine::Vm { "--vm" } else { "--interp" });
     cmd.arg(rel).current_dir(root)
         .env("GOBLIN_CONF_TMP", &tmp)
         .env_remove("GOBLIN_ENGINE")
