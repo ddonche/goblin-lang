@@ -242,8 +242,8 @@ impl Seq {
         }
     }
 
-    pub fn metrics_map(&self) -> BTreeMap<String, Value> {
-        let mut m = BTreeMap::new();
+    pub fn metrics_map(&self) -> IndexMap<String, Value> {
+        let mut m = IndexMap::new();
         m.insert("len".into(), Value::Int(self.metrics.len as i64));
         m.insert("ops_push_back".into(), Value::Int(self.metrics.ops_push_back as i64));
         m.insert("ops_push_front".into(), Value::Int(self.metrics.ops_push_front as i64));
@@ -288,7 +288,7 @@ pub enum Value {
     DateTime(GoblinDateTime),
     Formatted(Box<Value>, FormatSpec),
     Array(Vec<Value>),
-    Map(BTreeMap<String, Value>),
+    Map(IndexMap<String, Value>),
     MapOrd(IndexMap<String, Value>),
     Pair(Box<Value>, Box<Value>), // for >< (divmod)
     Seq(Seq),
@@ -529,7 +529,7 @@ pub struct LinkOffset {
 
 pub struct Session {
     history: Vec<Value>,                               // v(n)
-    pub env: Vec<BTreeMap<String, Value>>,             // scope stack (globals at [0])
+    pub env: Vec<IndexMap<String, Value>>,             // scope stack (globals at [0])
     pub actions: BTreeMap<String, ast::ActionDecl>,    // free actions by name
     pub classes: BTreeMap<String, ast::ClassDecl>,
     pub enums: BTreeMap<String, ast::EnumDecl>,
@@ -544,7 +544,7 @@ pub struct Session {
     pub modules: crate::modules::ModuleCache,
     pub current_module: Option<String>,
     regex_cache: RegexCache,
-    token_store: BTreeMap<String, BTreeMap<String, Value>>,
+    token_store: BTreeMap<String, IndexMap<String, Value>>,
 
     // ==== IMPORT CONTEXT (NEW) ====
     pub import_base_mode: ImportBaseMode,
@@ -940,7 +940,7 @@ impl Session {
             halted: false,
             block_marks: Vec::new(),
             history: Vec::new(),
-            env: vec![BTreeMap::new()],
+            env: vec![IndexMap::new()],
             actions: BTreeMap::new(),
             classes: BTreeMap::new(),
             enums: BTreeMap::new(),
@@ -1028,7 +1028,7 @@ impl Session {
 
     pub fn register_token_value(&mut self, module: &str, ident: &str, value: Value) {
         let m = self.normalize_module_name(module);
-        let entry = self.token_store.entry(m).or_insert_with(BTreeMap::new);
+        let entry = self.token_store.entry(m).or_insert_with(IndexMap::new);
         entry.insert(ident.to_string(), value);
     }
 
@@ -1044,7 +1044,7 @@ impl Session {
         if let Some(global) = self.env.first_mut() {
             global.insert(name.to_string(), val);
         } else {
-            let mut map = std::collections::BTreeMap::new();
+            let mut map = indexmap::IndexMap::new();
             map.insert(name.to_string(), val);
             self.env.push(map);
         }
@@ -1154,7 +1154,7 @@ impl Session {
     pub fn pop_block(&mut self) { self.pop_frame(); }
 
     fn push_frame(&mut self) {
-        self.env.push(BTreeMap::new());
+        self.env.push(IndexMap::new());
         self.consts.push(BTreeMap::new());
         self.type_locks.push(BTreeMap::new());
         self.hard_type_locks.push(BTreeMap::new());
@@ -1805,6 +1805,80 @@ fn to_json(v: &Value) -> sj::Value {
     }
 }
 
+/// D-map-key-order (B): serialize a Value to JSON keeping map insertion order
+/// (serde_json's own Map is sorted without the preserve_order feature).
+struct OrdJson<'a>(&'a Value);
+
+impl<'a> serde::Serialize for OrdJson<'a> {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        let v = if let Value::Formatted(inner, _) = self.0 { &**inner } else { self.0 };
+        match v {
+            Value::Map(m) | Value::MapOrd(m) => {
+                let mut mp = ser.serialize_map(Some(m.len()))?;
+                for (k, x) in m { mp.serialize_entry(k, &OrdJson(x))?; }
+                mp.end()
+            }
+            Value::Object { class_name, fields, .. } => {
+                let mut mp = ser.serialize_map(Some(fields.len() + 1))?;
+                mp.serialize_entry("__class", class_name)?;
+                for (k, x) in fields { mp.serialize_entry(k, &OrdJson(x))?; }
+                mp.end()
+            }
+            Value::Array(xs) => {
+                let mut sq = ser.serialize_seq(Some(xs.len()))?;
+                for x in xs { sq.serialize_element(&OrdJson(x))?; }
+                sq.end()
+            }
+            Value::Pair(a, b) => {
+                let mut sq = ser.serialize_seq(Some(2))?;
+                sq.serialize_element(&OrdJson(a))?;
+                sq.serialize_element(&OrdJson(b))?;
+                sq.end()
+            }
+            other => serde::Serialize::serialize(&to_json(other), ser),
+        }
+    }
+}
+
+/// D-map-key-order (B): parse JSON text straight into a Value, keeping object key order.
+struct OrdJsonDe(Value);
+
+impl<'de> serde::Deserialize<'de> for OrdJsonDe {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = OrdJsonDe;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { f.write_str("JSON") }
+            fn visit_unit<E>(self) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Nil)) }
+            fn visit_none<E>(self) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Nil)) }
+            fn visit_bool<E>(self, b: bool) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Bool(b))) }
+            fn visit_i64<E>(self, n: i64) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Int(n))) }
+            fn visit_u64<E>(self, n: u64) -> Result<OrdJsonDe, E> {
+                Ok(OrdJsonDe(if n <= i64::MAX as u64 { Value::Int(n as i64) } else { Value::Float(n as f64) }))
+            }
+            fn visit_f64<E>(self, n: f64) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Float(n))) }
+            fn visit_str<E>(self, s: &str) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Str(s.to_string()))) }
+            fn visit_string<E>(self, s: String) -> Result<OrdJsonDe, E> { Ok(OrdJsonDe(Value::Str(s))) }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<OrdJsonDe, A::Error> {
+                let mut out = Vec::new();
+                while let Some(OrdJsonDe(x)) = a.next_element()? { out.push(x); }
+                Ok(OrdJsonDe(Value::Array(out)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut a: A) -> Result<OrdJsonDe, A::Error> {
+                let mut m = IndexMap::new();
+                while let Some((k, OrdJsonDe(x))) = a.next_entry::<String, OrdJsonDe>()? { m.insert(k, x); }
+                Ok(OrdJsonDe(Value::Map(m)))
+            }
+        }
+        de.deserialize_any(V)
+    }
+}
+
+fn json_parse_ordered(s: &str) -> Result<Value, serde_json::Error> {
+    sj::from_str::<OrdJsonDe>(s).map(|v| v.0)
+}
+
 fn from_json(v: &sj::Value) -> Value {
     match v {
         sj::Value::Null        => Value::Nil,
@@ -1817,7 +1891,7 @@ fn from_json(v: &sj::Value) -> Value {
         sj::Value::String(s)   => Value::Str(s.clone()),
         sj::Value::Array(xs)   => Value::Array(xs.iter().map(from_json).collect()),
         sj::Value::Object(obj) => {
-            let mut m = BTreeMap::new();
+            let mut m = IndexMap::new();
             for (k, v) in obj { m.insert(k.clone(), from_json(v)); }
             Value::Map(m)
         }
@@ -2177,7 +2251,7 @@ fn cast_to_map(val: Value) -> Result<Value, Diag> {
         }
     };
     
-    let mut map = BTreeMap::new();
+    let mut map = IndexMap::new();
     
     for line in s.lines() {
         let trimmed = line.trim();
@@ -3046,11 +3120,11 @@ fn clamp_range(mut start: isize, mut end: isize, len: usize) -> (usize, usize) {
     (start as usize, end as usize)
 }
 
-fn parse_dice_string(s: &str, sp: Span) -> Result<BTreeMap<String, Value>, Diag> {
+fn parse_dice_string(s: &str, sp: Span) -> Result<IndexMap<String, Value>, Diag> {
     use std::collections::BTreeMap;
 
     let s = s.trim();
-    let mut cfg = BTreeMap::new();
+    let mut cfg = IndexMap::new();
 
     let d_pos = s.find('d').ok_or_else(|| {
         Diagnostic::new_with_code(
@@ -3565,7 +3639,7 @@ fn cast_value_to_lock(v: Value, lock: &str, at: &Span) -> Result<Value, Diag> {
             return Ok(Value::Array(results));
         }
         Value::Map(map) => {
-            let mut results = BTreeMap::new();
+            let mut results = IndexMap::new();
             for (k, val) in map {
                 results.insert(k, cast_value_to_lock(val, lock, at)?);
             }
@@ -5190,7 +5264,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                 _ => {
                     // If ALL are labeled (identifiers), return a Map keyed by names (back-compat)
                     if labels.iter().all(|l| l.is_some()) {
-                        let mut map = BTreeMap::new();
+                        let mut map = IndexMap::new();
                         for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                             map.insert(lab.unwrap(), v);
                         }
@@ -5199,7 +5273,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         // Mixed/literal returns: build a Map
                         // - Identifiers keep their real names
                         // - Unlabeled expressions get positional keys: "_1", "_2", ...
-                        let mut map = BTreeMap::new();
+                        let mut map = IndexMap::new();
                         let mut idx = 1usize;
                         for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                             if let Some(name) = lab {
@@ -6568,7 +6642,7 @@ fn eval_builtin(
             
             let m = sess.normalize_module_name(&module);
             if let Some(inner) = sess.token_store.get_mut(&m) {
-                inner.remove(&ident.to_string());
+                inner.shift_remove(&ident.to_string());
             }
             Value::Unit
         },
@@ -6629,20 +6703,20 @@ fn eval_builtin(
                 let module = want_str(&args[0], "list_tokens.module")?; // uses your local want_str closure
                 let m = sess.normalize_module_name(&module);
                 if let Some(inner) = sess.token_store.get(&m) {
-                    let mut out = BTreeMap::new();
+                    let mut out = IndexMap::new();
                     for (k, v) in inner {
                         out.insert(k.clone(), v.clone());
                     }
                     Value::Map(out)
                 } else {
                     // Unknown module -> empty map (read-only introspection, non-fatal)
-                    Value::Map(BTreeMap::new())
+                    Value::Map(IndexMap::new())
                 }
             } else {
                 // All modules
-                let mut top = BTreeMap::new();
+                let mut top = IndexMap::new();
                 for (m, inner) in &sess.token_store {
-                    let mut mm = BTreeMap::new();
+                    let mut mm = IndexMap::new();
                     for (k, v) in inner {
                         mm.insert(k.clone(), v.clone());
                     }
@@ -7557,7 +7631,7 @@ fn eval_builtin(
                 return Err(Diagnostic::new_with_code(Severity::Error, rtcode::WRONG_ARITY, "wrong-arity", format!("add_duration: expected 2 args, got {}", args.len()), sp.clone()));
             }
             let gdt = match &args[0] { Value::DateTime(d) => d.clone(), other => return Err(Diagnostic::new_with_code(Severity::Error, rtcode::TYPE_MISMATCH, "type-mismatch", format!("add_duration: expected datetime, got {}", value_kind_str(other)), sp.clone())) };
-            fn get_map_int(m: &BTreeMap<String, Value>, key: &str) -> i64 {
+            fn get_map_int(m: &IndexMap<String, Value>, key: &str) -> i64 {
                 match m.get(key) { Some(Value::Int(i)) => *i, Some(Value::Float(f)) => *f as i64, _ => 0 }
             }
             fn get_map_int_ord(m: &IndexMap<String, Value>, key: &str) -> i64 {
@@ -9015,7 +9089,7 @@ fn erase_var(sess: &mut Session, var_name: &str) {
 
     // Remove env bindings
     for frame in sess.env.iter_mut() {
-        frame.remove(var_name);
+        frame.shift_remove(var_name);
     }
 
     // Remove const bindings
@@ -9456,7 +9530,7 @@ fn eval_link_score(
     sp: &goblin_diagnostics::Span,
 ) -> Result<f64, Diag> {
     // Push a temporary scope with self and target bound
-    sess.env.push(BTreeMap::new());
+    sess.env.push(IndexMap::new());
     sess.consts.push(BTreeMap::new());
     sess.type_locks.push(BTreeMap::new());
     sess.hard_type_locks.push(BTreeMap::new());
@@ -9557,7 +9631,7 @@ fn collection_operation(
                         }
                         Operation::Delete => {
                             let mut out = map.clone();
-                            out.remove(&rand_key);
+                            out.shift_remove(&rand_key);
                             Ok(Value::Map(out))
                         }
                     }
@@ -9631,7 +9705,7 @@ fn collection_operation(
                                 })?
                                 .clone();
                             let mut out = map.clone();
-                            out.remove(&first_key);
+                            out.shift_remove(&first_key);
                             Ok(Value::Map(out))
                         }
                     }
@@ -9723,7 +9797,7 @@ fn collection_operation(
                         }
                         Operation::Delete => {
                             let mut out = map.clone();
-                            out.remove(&key);
+                            out.shift_remove(&key);
                             Ok(Value::Map(out))
                         }
                     }
@@ -9749,7 +9823,7 @@ fn collection_operation(
                     match &op {
                         // get_where / reap_where on a map → filter entries by *value* predicate
                         Operation::Get | Operation::Reap => {
-                            let mut out_map = BTreeMap::new();
+                            let mut out_map = IndexMap::new();
                             for (k, v) in map {
                                 if matches_pred(v.clone())? {
                                     out_map.insert(k.clone(), v.clone());
@@ -9783,7 +9857,7 @@ fn collection_operation(
                             }
 
                             for k in to_remove {
-                                out_map.remove(&k);
+                                out_map.shift_remove(&k);
                             }
 
                             Ok(Value::Map(out_map))
@@ -9828,7 +9902,7 @@ fn collection_operation(
                     match &op {
                         Operation::Get | Operation::Reap => {
                             // Return a new map with only the entries whose keys match the pattern
-                            let mut result_map = BTreeMap::new();
+                            let mut result_map = IndexMap::new();
                             
                             for (key, value) in map {
                                 if regex.is_match(key) {
@@ -9863,7 +9937,7 @@ fn collection_operation(
                                 .collect();
                             
                             for key in keys_to_remove {
-                                result_map.remove(&key);
+                                result_map.shift_remove(&key);
                             }
                             
                             Ok(Value::Map(result_map))
@@ -10001,7 +10075,7 @@ fn collection_operation(
 
                     match &op {
                         Operation::Get | Operation::Reap => {
-                            let mut result_map = BTreeMap::new();
+                            let mut result_map = IndexMap::new();
                             for key in &between_keys {
                                 result_map.insert(key.clone(), map.get(key).unwrap().clone());
                             }
@@ -10010,7 +10084,7 @@ fn collection_operation(
                         Operation::Delete => {
                             let mut result_map = map.clone();
                             for key in &between_keys {
-                                result_map.remove(key);
+                                result_map.shift_remove(key);
                             }
                             Ok(Value::Map(result_map))
                         }
@@ -10040,7 +10114,7 @@ fn collection_operation(
                 Position::All => {
                     match &op {
                         Operation::Get | Operation::Reap => Ok(Value::Map(map.clone())),
-                        Operation::Delete => Ok(Value::Map(BTreeMap::new())),
+                        Operation::Delete => Ok(Value::Map(IndexMap::new())),
                         Operation::Update(v) | Operation::Put(v) => {
                             match v {
                                 Value::Map(m2) => Ok(Value::Map(m2.clone())),
@@ -10066,7 +10140,7 @@ fn collection_operation(
         // Delegate to the Map arm by converting IndexMap -> BTreeMap, running the op,
         // then converting any Map result back to MapOrd to preserve the type.
         Value::MapOrd(mo) => {
-            let as_btree: BTreeMap<String, Value> = mo.iter()
+            let as_btree: IndexMap<String, Value> = mo.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             let result = collection_operation(
@@ -12150,7 +12224,7 @@ fn call_action_by_name(
                     }
 
                     // New scope
-                    sess.env.push(std::collections::BTreeMap::new());
+                    sess.env.push(indexmap::IndexMap::new());
                     sess.consts.push(std::collections::BTreeMap::new());
                     sess.type_locks.push(std::collections::BTreeMap::new());
                     sess.hard_type_locks.push(std::collections::BTreeMap::new());
@@ -13281,7 +13355,7 @@ fn call_action_by_name(
             }
             match &args[0] {
                 Value::Formatted(_, spec) => {
-                    let mut m = BTreeMap::new();
+                    let mut m = IndexMap::new();
                     m.insert("dec".to_string(), Value::Int(spec.decimals as i64));
                     let th = match spec.sep_thousands {
                         Some(',') => ",".to_string(),
@@ -13292,8 +13366,9 @@ fn call_action_by_name(
                         _ => "?".to_string(),
                     };
                     let dm = match spec.sep_decimal { '.' => ".", ',' => ",", _ => "?" }.to_string();
-                    m.insert("th".to_string(), Value::Str(th));
+                    // Key order: dec, decmark, th (maps keep insertion order, D-map-key-order).
                     m.insert("decmark".to_string(), Value::Str(dm));
+                    m.insert("th".to_string(), Value::Str(th));
                     Value::Map(m)
                 }
                 _ => Value::Nil,
@@ -13602,10 +13677,10 @@ fn call_action_by_name(
             };
 
             // ---- small getters (accept Int or Float; Str optional) ----
-            let get_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+            let get_bool = |m: &IndexMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
-            let get_num = |m: &BTreeMap<String, Value>, k: &str| -> Option<f64> {
+            let get_num = |m: &IndexMap<String, Value>, k: &str| -> Option<f64> {
                 match m.get(k)? {
                     Value::Float(n) => Some(*n),
                     Value::Int(i)   => Some(*i as f64),
@@ -13661,7 +13736,7 @@ fn call_action_by_name(
             enum CollectionSource {
                 Array(Vec<Value>),
                 Seq(Vec<Value>),
-                Map(BTreeMap<String, Value>),
+                Map(IndexMap<String, Value>),
             }
 
             let src_collection: Option<CollectionSource> = if let Some(Value::Array(arr)) = cfg.get("src") {
@@ -13785,7 +13860,7 @@ fn call_action_by_name(
                             let mut out = Vec::with_capacity(n_out);
                             for _ in 0..n_out {
                                 let idx = rng_index(sess, entries.len());
-                                let mut pair = BTreeMap::new();
+                                let mut pair = IndexMap::new();
                                 pair.insert(entries[idx].0.clone(), entries[idx].1.clone());
                                 out.push(Value::Map(pair));
                             }
@@ -13796,7 +13871,7 @@ fn call_action_by_name(
                             for i in 0..n_out {
                                 let j = i + rng_index(sess, entries.len() - i);
                                 idxs.swap(i, j);
-                                let mut pair = BTreeMap::new();
+                                let mut pair = IndexMap::new();
                                 pair.insert(entries[idxs[i]].0.clone(), entries[idxs[i]].1.clone());
                                 out.push(Value::Map(pair));
                             }
@@ -14162,7 +14237,7 @@ fn call_action_by_name(
                     _ => None,
                 }
             };
-            let req_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+            let req_i64 = |m: &IndexMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
                     Some(v) => cast_i64_from_value(v).ok_or_else(|| {
                         Diagnostic::new_with_code(
@@ -14188,10 +14263,10 @@ fn call_action_by_name(
                     ),
                 }
             };
-            let opt_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+            let opt_i64 = |m: &IndexMap<String, Value>, k: &str| -> Option<i64> {
                 m.get(k).and_then(|v| cast_i64_from_value(v))
             };
-            let opt_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+            let opt_bool = |m: &IndexMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
 
@@ -14367,7 +14442,7 @@ fn call_action_by_name(
                     _ => None,
                 }
             };
-            let req_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Result<i64, Diag> {
+            let req_i64 = |m: &IndexMap<String, Value>, k: &str| -> Result<i64, Diag> {
                 match m.get(k) {
                     Some(v) => cast_i64_from_value(v).ok_or_else(|| {
                         Diagnostic::new_with_code(
@@ -14393,10 +14468,10 @@ fn call_action_by_name(
                     ),
                 }
             };
-            let opt_i64 = |m: &BTreeMap<String, Value>, k: &str| -> Option<i64> {
+            let opt_i64 = |m: &IndexMap<String, Value>, k: &str| -> Option<i64> {
                 m.get(k).and_then(|v| cast_i64_from_value(v))
             };
-            let opt_bool = |m: &BTreeMap<String, Value>, k: &str| -> Option<bool> {
+            let opt_bool = |m: &IndexMap<String, Value>, k: &str| -> Option<bool> {
                 m.get(k).and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
             };
 
@@ -14498,7 +14573,7 @@ fn call_action_by_name(
                     if total > hi { total = hi; }
                 }
 
-                let mut out = BTreeMap::<String, Value>::new();
+                let mut out = IndexMap::<String, Value>::new();
                 out.insert("count".into(),    Value::Int(1));
                 out.insert("sides".into(),    Value::Int(sides));
                 out.insert("modifier".into(), Value::Int(modifier));
@@ -14547,7 +14622,7 @@ fn call_action_by_name(
                     if total > hi { total = hi; }
                 }
 
-                let mut out = BTreeMap::<String, Value>::new();
+                let mut out = IndexMap::<String, Value>::new();
                 out.insert("count".into(),    Value::Int(count));
                 out.insert("sides".into(),    Value::Int(sides));
                 out.insert("modifier".into(), Value::Int(modifier));
@@ -15308,7 +15383,7 @@ fn call_action_by_name(
             let v0 = args[0].clone();
             let s  = want_str(&v0, "json_parse")?; // emits T0205 with link
 
-            let vj: sj::Value = sj::from_str(&s).map_err(|e| {
+            let vj: Value = json_parse_ordered(&s).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
@@ -15320,7 +15395,7 @@ fn call_action_by_name(
                 .with_link("https://goblinlang.org/docs/errors#J0001")
             })?;
 
-            from_json(&vj)
+            vj
         }
 
         "json_stringify" => {
@@ -15339,7 +15414,7 @@ fn call_action_by_name(
             }
 
             let v0 = args[0].clone();
-            let s = sj::to_string(&to_json(&v0)).map_err(|e| {
+            let s = sj::to_string(&OrdJson(&v0)).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
@@ -15370,7 +15445,7 @@ fn call_action_by_name(
             }
 
             let v0 = args[0].clone();
-            let s = sj::to_string_pretty(&to_json(&v0)).map_err(|e| {
+            let s = sj::to_string_pretty(&OrdJson(&v0)).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_STRINGIFY_FAILED, // J0002 (NEW)
@@ -15429,7 +15504,7 @@ fn call_action_by_name(
                 .with_link("https://goblinlang.org/docs/errors#J0003")
             })?;
 
-            let vj: sj::Value = sj::from_str(&txt).map_err(|e| {
+            let vj: Value = json_parse_ordered(&txt).map_err(|e| {
                 Diagnostic::new_with_code(
                     Severity::Error,
                     crate::diagnostics::rtcode::JSON_PARSE_FAILED, // J0001 (NEW)
@@ -15441,7 +15516,7 @@ fn call_action_by_name(
                 .with_link("https://goblinlang.org/docs/errors#J0001")
             })?;
 
-            from_json(&vj)
+            vj
         }
 
         // ===== Replace & remove =====
@@ -15610,7 +15685,7 @@ fn call_action_by_name(
 
                     let mut items: Vec<Value> = Vec::with_capacity(n_out);
                     for &i in &idxs[..n_out] {
-                        let mut pair = BTreeMap::new();
+                        let mut pair = IndexMap::new();
                         pair.insert(entries[i].0.clone(), entries[i].1.clone());
                         items.push(Value::Map(pair));
                     }
@@ -16254,7 +16329,7 @@ fn call_action_by_name(
                 Value::Seq(xs) => Value::Map(xs.metrics_map()),
                 Value::Array(xs) => {
                     // legacy metrics for plain arrays
-                    let mut m = BTreeMap::new();
+                    let mut m = IndexMap::new();
                     m.insert("len".into(), Value::Int(xs.len() as i64));
                     m.insert("backend".into(), Value::Str("array(legacy)".into()));
                     Value::Map(m)
@@ -17888,7 +17963,7 @@ fn mutate_via_call_name(
                 as_bool(vpretty, sp.clone(), "write_json! pretty")?
             } else { false };
 
-            let j = to_json(&vval);
+            let j = OrdJson(&vval);
             let out = (if pretty { sj::to_string_pretty(&j) } else { sj::to_string(&j) })
                 .map_err(|e| {
                     Diagnostic::new_with_code(
@@ -18986,7 +19061,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
 
                         // New scope for parameters
-                        sess.env.push(BTreeMap::new());
+                        sess.env.push(IndexMap::new());
                         sess.consts.push(BTreeMap::new());
                         sess.type_locks.push(BTreeMap::new());
     sess.hard_type_locks.push(BTreeMap::new());
@@ -19380,7 +19455,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
         }
 
         ast::Expr::Object(kvs, _sp) => {
-            let mut m = BTreeMap::new();
+            let mut m = IndexMap::new();
             for (k, vexpr) in kvs {
                 let v = sess.with_eval_depth(|s| eval_expr(vexpr, s))?;
                 m.insert(k.clone(), v);
@@ -19821,7 +19896,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     // 1) If it's a method name on this class, return a bound-method wrapper
                     if let Some(class) = sess.classes.get(&class_name) {
                         if class.actions.iter().any(|a| a.name == *name) {
-                            let mut m = BTreeMap::new();
+                            let mut m = IndexMap::new();
                             m.insert("__kind__".to_string(), Value::Str("__bound_action__".to_string()));
                             m.insert("__name__".to_string(), Value::Str(name.to_string()));
                             // If the receiver is an identifier, capture its var name so mutations persist
@@ -20999,13 +21074,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         1 => vals.into_iter().next().unwrap(),
                         _ => {
                             if labels.iter().all(|l| l.is_some()) {
-                                let mut map = BTreeMap::new();
+                                let mut map = IndexMap::new();
                                 for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                                     map.insert(lab.unwrap(), v);
                                 }
                                 Value::Map(map)
                             } else {
-                                let mut map = BTreeMap::new();
+                                let mut map = IndexMap::new();
                                 let mut idx = 1usize;
                                 for (lab, v) in labels.into_iter().zip(vals.into_iter()) {
                                     if let Some(name) = lab {
@@ -21584,7 +21659,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     match v {
                         Value::Object { fields, .. } => {
                             // move fields into a plain map; optionally hide ids
-                            let mut out = std::collections::BTreeMap::new();
+                            let mut out = indexmap::IndexMap::new();
                             for (k, val) in fields {
                                 if !show_ids && (k == "id" || k.ends_with("_id")) { continue; }
                                 out.insert(k, val);
@@ -21593,7 +21668,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         Value::Map(m) => {
                             if show_ids { Ok(Value::Map(m)) } else {
-                                let mut out = std::collections::BTreeMap::new();
+                                let mut out = indexmap::IndexMap::new();
                                 for (k, v) in m {
                                     if k == "id" || k.ends_with("_id") { continue; }
                                     out.insert(k, v);
@@ -23462,7 +23537,7 @@ fn sweep_run_arm_on_scope(
     if let Some(frame) = sess.env.last_mut() {
         match old_self {
             Some(v) => { frame.insert("self".into(), v); }
-            None    => { frame.remove("self"); }
+            None    => { frame.shift_remove("self"); }
         }
     }
 

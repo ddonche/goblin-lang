@@ -617,7 +617,7 @@ pub fn grid_info(sess: &mut Session, args: &[Value], sp: &Span) -> Result<Value,
     };
 
     let layer_arr = Value::Array(world.layer_names().into_iter().map(Value::Str).collect());
-    let mut map = std::collections::BTreeMap::new();
+    let mut map = indexmap::IndexMap::new();
     map.insert("name".into(),         Value::Str(world.name.clone()));
     map.insert("width".into(),        Value::Int(world.width as i64));
     map.insert("height".into(),       Value::Int(world.height as i64));
@@ -656,7 +656,7 @@ pub fn grid_tile_info(sess: &mut Session, args: &[Value], sp: &Span) -> Result<V
     let h = world.hierarchy.as_ref().unwrap();
     let tile = world.tile_at(tx, ty).unwrap();
     let (rx, ry) = h.tile_to_region(tx, ty);
-    let mut map = std::collections::BTreeMap::new();
+    let mut map = indexmap::IndexMap::new();
     map.insert("tx".into(),       Value::Int(tx as i64));
     map.insert("ty".into(),       Value::Int(ty as i64));
     map.insert("cell_x".into(),   Value::Int((tx * h.tile_w) as i64));
@@ -683,7 +683,7 @@ pub fn grid_region_info(sess: &mut Session, args: &[Value], sp: &Span) -> Result
     let region = world.region_at(rx, ry).unwrap();
     let tile_x = rx * h.tiles_per_region_edge;
     let tile_y = ry * h.tiles_per_region_edge;
-    let mut map = std::collections::BTreeMap::new();
+    let mut map = indexmap::IndexMap::new();
     map.insert("rx".into(),             Value::Int(rx as i64));
     map.insert("ry".into(),             Value::Int(ry as i64));
     map.insert("cell_x".into(),         Value::Int((tile_x * h.tile_w) as i64));
