@@ -1,2 +1,0 @@
-/// known-gap: interp has no zip builtin (unknown action)
-say(:zip([1, 2], ["a", "b"]))

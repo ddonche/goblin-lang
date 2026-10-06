@@ -1,2 +1,0 @@
-/// known-gap: interp has no grab_between builtin (unknown action)
-say(:grab_between(["a", "m", "b"], "a", "b"))

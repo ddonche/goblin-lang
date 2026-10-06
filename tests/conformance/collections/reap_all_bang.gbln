@@ -1,5 +1,0 @@
-/// known-gap: interp has no reap_all builtin (unknown action)
-l | [1, 2]
-x | :reap_all!(l)
-say x
-say l

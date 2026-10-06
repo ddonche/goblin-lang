@@ -1,2 +1,0 @@
-/// known-gap: interp has no grab builtin (unknown action)
-say(:grab([1, 2, 3]))

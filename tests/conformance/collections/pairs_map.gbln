@@ -1,2 +1,0 @@
-/// known-gap: interp has no pairs builtin (unknown action); undocumented, so the VM shape is the reference
-say(:pairs({"a": 1, "b": 2}))

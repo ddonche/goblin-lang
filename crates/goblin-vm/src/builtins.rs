@@ -415,20 +415,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             Ok(Value::Str(value_to_str(&read(0)?)))
         }
-        BuiltinId::ToUpperCase => {
-            expect_n(1)?;
-            match read(0)? {
-                Value::Str(s) => Ok(Value::Str(s.to_uppercase())),
-                other => Err(GoblinError::type_error("str", other.type_name(), "to_uppercase")),
-            }
-        }
-        BuiltinId::ToLowerCase => {
-            expect_n(1)?;
-            match read(0)? {
-                Value::Str(s) => Ok(Value::Str(s.to_lowercase())),
-                other => Err(GoblinError::type_error("str", other.type_name(), "to_lowercase")),
-            }
-        }
         BuiltinId::Split => {
             if args.len() != 2 {
                 return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "split".into() });
@@ -484,18 +470,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 other => Err(GoblinError::type_error("str, array or collection", other.type_name(), "join")),
             }
         }
-        BuiltinId::Contains => {
-            if args.len() != 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "contains".into() });
-            }
-            let haystack = read(0)?; let needle = read(1)?;
-            Ok(match (haystack, needle) {
-                (Value::Str(s), Value::Str(n)) => Value::Bool(s.contains(n.as_str())),
-                (Value::Array(arr), v)         => Value::Bool(arr.iter().any(|x| x == &v)),
-                (Value::Collection(c), v)      => Value::Bool(collections::to_vec(&c).iter().any(|x| x == &v)),
-                _ => Value::Bool(false),
-            })
-        }
         BuiltinId::StartsWith => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "starts_with".into() }); }
             let text = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "starts_with")) };
@@ -515,15 +489,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(p) => text.ends_with(p.as_str()),
                 _ => false,
             }))
-        }
-        BuiltinId::Replace => {
-            if args.len() != 3 {
-                return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "replace".into() });
-            }
-            match (read(0)?, read(1)?, read(2)?) {
-                (Value::Str(s), Value::Str(from), Value::Str(to)) => Ok(Value::Str(s.replace(from.as_str(), &to))),
-                _ => Err(GoblinError::type_error("str", "mixed", "replace")),
-            }
         }
 
         BuiltinId::Before => {
@@ -1512,46 +1477,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── Collections grab (legacy) ─────────────────────────────────────────
-        BuiltinId::Grab => {
-            expect_n(1)?;
-            Ok(collections::grab(&*require_collection(read(0)?, "grab")?))
-        }
-        BuiltinId::GrabFirst => {
-            expect_n(1)?;
-            collections::grab_first(&*require_collection(read(0)?, "grab_first")?)
-        }
-        BuiltinId::GrabLast => {
-            expect_n(1)?;
-            collections::grab_last(&*require_collection(read(0)?, "grab_last")?)
-        }
-        BuiltinId::GrabAt => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "grab_at".into() }); }
-            let coll = require_collection(read(0)?, "grab_at")?;
-            let idx = require_int(read(1)?, "grab_at index")?;
-            collections::grab_at(&coll, idx)
-        }
-        BuiltinId::GrabBetween => {
-            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "grab_between".into() }); }
-            let coll = require_collection(read(0)?, "grab_between")?;
-            let start = require_int(read(1)?, "grab_between start")?;
-            let end   = require_int(read(2)?, "grab_between end")?;
-            collections::grab_between(&coll, start, end)
-        }
-        BuiltinId::GrabAll => {
-            expect_n(1)?;
-            Ok(collections::grab_all(&*require_collection(read(0)?, "grab_all")?))
-        }
-        BuiltinId::GrabRandom => {
-            expect_n(1)?;
-            let coll = require_collection(read(0)?, "grab_random")?;
-            let items = collections::to_vec(&coll);
-            if items.is_empty() { return Ok(Value::Nil); }
-            let idx = rng_bounded(session, items.len() as u64) as usize;
-            Ok(items[idx].clone())
-        }
-        BuiltinId::GrabWhere | BuiltinId::GrabMatching => {
-            Err(GoblinError::NotImplemented { feature: "grab_where / grab_matching require VM predicate callback" })
-        }
 
         // ── Collections put ───────────────────────────────────────────────────
         BuiltinId::Put => {
@@ -1673,21 +1598,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let coll = read(0)?; let key = read(1)?;
             collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Reap, session)
         }
-        BuiltinId::ReapRandom => {
-            expect_n(1)?;
-            let coll = read(0)?;
-            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Reap, session)
-        }
         BuiltinId::ReapWhere => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "reap_where".into() }); }
             let coll = read(0)?;
             let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where pred")) };
             collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Reap, session)
-        }
-        BuiltinId::ReapAll => {
-            expect_n(1)?;
-            let coll = read(0)?;
-            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Reap, session)
         }
 
         BuiltinId::ReapSample => {
@@ -1843,13 +1758,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // Put family (new)
-        BuiltinId::PutWhere => {
-            if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "put_where".into() }); }
-            let coll = read(0)?;
-            let pred = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "put_where predicate")) };
-            let val = read(2)?;
-            collections::collection_operation(&coll, collections::Position::Where(pred), collections::Operation::Put(val), session)
-        }
         BuiltinId::PutMatching => {
             if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "put_matching".into() }); }
             let coll = read(0)?;
@@ -1870,12 +1778,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let coll = read(0)?;
             let val = read(1)?;
             collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Put(val), session)
-        }
-        BuiltinId::PutAll => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "put_all".into() }); }
-            let coll = read(0)?;
-            let val = read(1)?;
-            collections::collection_operation(&coll, collections::Position::All, collections::Operation::Put(val), session)
         }
 
         // Update family (new)
@@ -1970,18 +1872,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let end   = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("string", other.type_name(), "reap_between end")) };
             collections::collection_operation(&coll, collections::Position::Between(start, end), collections::Operation::Reap, session)
         }
-        BuiltinId::ReapRandom2 => {
-            expect_n(1)?;
-            let coll = read(0)?;
-            collections::collection_operation(&coll, collections::Position::Random, collections::Operation::Reap, session)
-        }
 
         // ── Collections query (legacy) ─────────────────────────────────────────
-        BuiltinId::Pairs => {
-            expect_n(1)?;
-            let coll = require_collection(read(0)?, "pairs")?;
-            Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::pairs_vec(&*coll)))))
-        }
         BuiltinId::IsEmpty => {
             expect_n(1)?;
             match read(0)? {
@@ -2030,50 +1922,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 _ => Err(GoblinError::Runtime(format!("parse_bool: expected \"true\" or \"false\", got \"{}\"", s))),
             }
         }
-        BuiltinId::SortBy | BuiltinId::Filter | BuiltinId::Reduce
-        | BuiltinId::Any | BuiltinId::All | BuiltinId::FindIndex => {
+        BuiltinId::SortBy | BuiltinId::Filter | BuiltinId::Reduce | BuiltinId::Any | BuiltinId::All => {
             Err(GoblinError::NotImplemented { feature: "higher-order collection ops require VM predicate callback" })
-        }
-        BuiltinId::Zip => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "zip".into() }); }
-            match (read(0)?, read(1)?) {
-                (Value::Array(a), Value::Array(b)) => {
-                    let pairs: Vec<Value> = a.into_iter().zip(b.into_iter())
-                        .map(|(x, y)| Value::Pair(Box::new(x), Box::new(y)))
-                        .collect();
-                    Ok(collections::into_collection(Value::Array(pairs)))
-                }
-                (a, b) => { let ca = require_collection(a, "zip")?; let cb = require_collection(b, "zip")?; Ok(collections::zip_collections(&*ca, &*cb)) }
-            }
-        }
-        BuiltinId::Flatten => {
-            expect_n(1)?;
-            match read(0)? {
-                Value::Array(items) => {
-                    let mut result = Vec::new();
-                    for item in items {
-                        match item {
-                            Value::Array(inner) => result.extend(inner),
-                            Value::Collection(c) => result.extend(crate::collections::to_vec(&c)),
-                            other => result.push(other),
-                        }
-                    }
-                    Ok(collections::into_collection(Value::Array(result)))
-                }
-                Value::Collection(c) => {
-                    let items = crate::collections::to_vec(&c);
-                    let mut result = Vec::new();
-                    for item in items {
-                        match item {
-                            Value::Array(inner) => result.extend(inner),
-                            Value::Collection(ic) => result.extend(crate::collections::to_vec(&ic)),
-                            other => result.push(other),
-                        }
-                    }
-                    Ok(collections::into_collection(Value::Array(result)))
-                }
-                other => { let c = require_collection(other, "flatten")?; Ok(collections::flatten(&*c)) }
-            }
         }
         BuiltinId::Slice => {
             if args.len() != 3 { return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "slice".into() }); }
@@ -2113,27 +1963,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── I/O ───────────────────────────────────────────────────────────────
-        BuiltinId::Print => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
-            session.write_output(&parts?.join(" "), false);
-            Ok(Value::Nil)
-        }
-        BuiltinId::ReapSplit => {
-            // reap_random!: [picked, rest] from one random position.
-            let coll = read(0)?;
-            let key = if let Some(entries) = coll.map_entries() {
-                if entries.is_empty() { return Err(GoblinError::Runtime("reap_random!: collection is empty".into())); }
-                Value::Str(entries[collections::rng_bounded(session, entries.len())].0.clone())
-            } else {
-                let n = coll.seq_items().map(|v| v.len())
-                    .ok_or_else(|| GoblinError::type_error("array or map", coll.type_name(), "reap_random!"))?;
-                if n == 0 { return Err(GoblinError::Runtime("reap_random!: collection is empty".into())); }
-                Value::Int(collections::rng_bounded(session, n) as i64)
-            };
-            let picked = collections::collection_operation(&coll, collections::Position::At(key.clone()), collections::Operation::Reap, session)?;
-            let rest = collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Delete, session)?;
-            Ok(Value::Array(vec![picked, rest]))
-        }
         BuiltinId::StrictEq => Ok(Value::Bool(read(0)? == read(1)?)),
         BuiltinId::ApiEcho => {
             // A top-level expression statement in API mode: its value becomes
@@ -2152,16 +1981,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             session.write_output(&parts?.join(" "), true);
             Ok(Value::Nil)
         }
-        BuiltinId::Eprint => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
-            eprint!("{}", parts?.join(" "));
-            Ok(Value::Nil)
-        }
-        BuiltinId::Eprintln => {
-            let parts: Result<Vec<String>, _> = args.iter().map(|v| Ok::<String, GoblinError>(value_to_str(v))).collect();
-            eprintln!("{}", parts?.join(" "));
-            Ok(Value::Nil)
-        }
 
         // ── Type checks ───────────────────────────────────────────────────────
         BuiltinId::IsNil        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Nil))) }
@@ -2171,7 +1990,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::IsStr        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Str(_)))) }
         BuiltinId::IsArray      => { expect_n(1)?; let v = read(0)?; Ok(Value::Bool(v.is_seq_like() && !matches!(v, Value::Seq(_)))) }
         BuiltinId::IsMap        => { expect_n(1)?; Ok(Value::Bool(read(0)?.is_map_like())) }
-        BuiltinId::IsCollection => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Collection(_) | Value::Array(_) | Value::Map(_) | Value::MapOrd(_) | Value::Seq(_)))) }
         BuiltinId::IsFunction   => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Function(_) | Value::Closure(_)))) }
         BuiltinId::IsBig        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Big(_)))) }
         BuiltinId::IsPct        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Pct(_)))) }
@@ -2305,26 +2123,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             Ok(Value::Str(read(0)?.type_name().to_string()))
         }
-        BuiltinId::Assert => {
-            if args.is_empty() { return Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: "assert".into() }); }
-            if !read(0)?.is_truthy() {
-                let msg = if args.len() > 1 {
-                    match read(1)? { Value::Str(s) => s, v => value_to_str(&v) }
-                } else { "assertion failed".to_string() };
-                return Err(GoblinError::Runtime(msg));
-            }
-            Ok(Value::Nil)
-        }
         BuiltinId::Panic => {
             let msg = if args.is_empty() { "panic!".to_string() } else {
                 match args[0].clone() { Value::Str(s) => s, v => value_to_str(&v) }
             };
             Err(GoblinError::Runtime(msg))
-        }
-
-        // ── Lorem ipsum (stub) ────────────────────────────────────────────────
-        BuiltinId::Ipsum | BuiltinId::IpsumSentences | BuiltinId::IpsumParagraphs | BuiltinId::IpsumFull => {
-            Ok(Value::Str("Lorem ipsum dolor sit amet.".into()))
         }
 
         // ── Process ───────────────────────────────────────────────────────────
@@ -2885,24 +2688,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             Ok(Value::Formatted(Box::new(inner_v), spec))
         }
-        BuiltinId::Pad | BuiltinId::PadLeft => {
-            if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let width = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
-            Ok(Value::Str(format!("{:>width$}", s)))
-        }
-        BuiltinId::PadRight => {
-            if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let width = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
-            Ok(Value::Str(format!("{:<width$}", s)))
-        }
-        BuiltinId::Repeat => {
-            if args.len() < 2 { return Ok(Value::Nil); }
-            let s = match args[0].clone() { Value::Str(s) => s, v => fmt_value_raw(&v) };
-            let n = match args[1].clone() { Value::Int(n) => n as usize, _ => 0 };
-            Ok(Value::Str(s.repeat(n)))
-        }
 
         // ── Higher-order (stub — need VM callback) ────────────────────────────
         BuiltinId::MapFn | BuiltinId::FilterFn | BuiltinId::ReduceFn | BuiltinId::ForEachFn => {
@@ -3145,16 +2930,6 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Map(map))
         }
 
-        BuiltinId::ArrayPush => {
-            if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "array_push".into() }); }
-            let arr = read(0)?;
-            let val = read(1)?;
-            match arr {
-                Value::Array(mut v) => { v.push(val); Ok(Value::Array(v)) }
-                Value::Collection(c) if !c.is_map() => collections::put_last(&c, val),
-                other => Err(GoblinError::type_error("array", other.type_name(), "array_push")),
-            }
-        }
 
         BuiltinId::CastI8 => {
             expect_n(1)?;

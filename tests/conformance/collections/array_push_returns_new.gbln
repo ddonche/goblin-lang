@@ -1,5 +1,0 @@
-/// known-gap: interp has no array_push builtin (unknown action)
-l | [1]
-r | :array_push(l, 2)
-say r
-say l

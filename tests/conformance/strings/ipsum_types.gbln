@@ -1,6 +1,0 @@
-/// known-gap: interp lacks ipsum builtins
-say(:is_str(:ipsum(5)))
-say(:len(:ipsum(5)) > 0)
-say(:is_str(:ipsum_sentences(2)))
-say(:is_str(:ipsum_paragraphs(2)))
-say(:is_str(:ipsum_full()))

@@ -1,4 +1,0 @@
-/// known-gap: interp has no put_all builtin (unknown action)
-l | [1, 2]
-:put_all!(l, [3, 4])
-say l

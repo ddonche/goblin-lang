@@ -1429,45 +1429,13 @@ pub fn set_index(coll_val: Value, key: &Value, new_val: Value) -> Result<Value, 
 
 // ── Legacy grab family ────────────────────────────────────────────────────────
 
-pub fn grab(coll: &CollectionValue) -> Value {
-    Value::Collection(Rc::new(coll.clone()))
-}
-
-pub fn grab_first(coll: &CollectionValue) -> Result<Value, GoblinError> {
-    if is_map(coll) {
-        return Err(GoblinError::Runtime("grab_first not supported on maps".into()));
-    }
-    let items = to_vec(coll);
-    if items.is_empty() { return Ok(Value::Nil); }
-    Ok(items[0].clone())
-}
-
-pub fn grab_last(coll: &CollectionValue) -> Result<Value, GoblinError> {
-    if is_map(coll) {
-        return Err(GoblinError::Runtime("grab_last not supported on maps".into()));
-    }
-    let items = to_vec(coll);
-    if items.is_empty() { return Ok(Value::Nil); }
-    Ok(items[items.len() - 1].clone())
-}
-
-pub fn grab_at(coll: &CollectionValue, idx: i64) -> Result<Value, GoblinError> {
-    let items = to_vec(coll);
-    let i = resolve_seq_index(idx, items.len())?;
-    Ok(items[i].clone())
-}
-
-pub fn grab_between(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
+fn slice_between(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
     let items = to_vec(coll);
     let len = items.len();
     let s = resolve_seq_index(start, len)?;
     let e = resolve_seq_index(end, len)? + 1;
     let slice = items[s..e].to_vec();
     Ok(Value::Collection(Rc::new(CollectionValue::from_flat(slice))))
-}
-
-pub fn grab_all(coll: &CollectionValue) -> Value {
-    Value::Collection(Rc::new(coll.clone()))
 }
 
 // ── Legacy put family ─────────────────────────────────────────────────────────
@@ -1766,30 +1734,10 @@ pub fn unique(coll: &CollectionValue) -> Value {
     Value::Collection(Rc::new(build_seq(items, meta)))
 }
 
-pub fn flatten(coll: &CollectionValue) -> Value {
-    let mut result = Vec::new();
-    for v in to_vec(coll) {
-        match v {
-            Value::Collection(c) => result.extend(to_vec(&c)),
-            other => result.push(other),
-        }
-    }
-    let meta = CollectionMeta { len: result.len(), ..Default::default() };
-    Value::Collection(Rc::new(build_seq(result, meta)))
-}
 
-pub fn zip_collections(a: &CollectionValue, b: &CollectionValue) -> Value {
-    let av = to_vec(a);
-    let bv = to_vec(b);
-    let pairs: Vec<Value> = av.into_iter().zip(bv.into_iter()).map(|(x, y)| {
-        Value::Collection(Rc::new(CollectionValue::from_flat(vec![x, y])))
-    }).collect();
-    let meta = CollectionMeta { len: pairs.len(), ..Default::default() };
-    Value::Collection(Rc::new(build_seq(pairs, meta)))
-}
 
 pub fn slice_collection(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
-    grab_between(coll, start, end)
+    slice_between(coll, start, end)
 }
 
 // ── In-place writes ───────────────────────────────────────────────────────────

@@ -1,0 +1,2 @@
+/// `grab_at` was removed from the VM on 2026-10-06 (owner ruling); neither engine has it.
+say(:grab_at([1, 2], 0))

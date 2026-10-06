@@ -1,6 +1,0 @@
-/// known-gap: interp eprint/eprintln are not builtins on the interpreter
-/// eprint / eprintln write to stderr, so nothing reaches stdout.
-say("before")
-eprint("e1")
-eprintln("e2")
-say("after")

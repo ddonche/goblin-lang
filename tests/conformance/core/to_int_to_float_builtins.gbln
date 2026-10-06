@@ -1,3 +1,0 @@
-/// known-gap: interp to_int/to_float are VM-only (interp: unknown action)
-say(:to_int("42") + 1)
-say(:to_float("2.5") * 2)

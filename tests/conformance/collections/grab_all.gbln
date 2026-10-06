@@ -1,2 +1,0 @@
-/// known-gap: interp has no grab_all builtin (unknown action)
-say(:grab_all([1, 2]))

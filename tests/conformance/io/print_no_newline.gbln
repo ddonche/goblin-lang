@@ -1,6 +1,0 @@
-/// known-gap: interp print/println are not builtins on the interpreter ("unknown action 'print'")
-/// print writes without a trailing newline; println adds one.
-print("a")
-print("b")
-println("c")
-say("d")

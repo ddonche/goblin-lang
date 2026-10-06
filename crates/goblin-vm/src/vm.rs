@@ -1364,35 +1364,6 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
-                    BuiltinId::PutWhere => {
-                        if arg_vals.len() != 3 {
-                            return Err(GoblinError::ArityMismatch { expected: 3, got: arg_vals.len(), name: "put_where".into() });
-                        }
-                        let mut it = arg_vals.into_iter();
-                        let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "put_where predicate")),
-                        };
-                        let new_val = it.next().unwrap();
-                        let result = self.vm_where_put(coll, &pred, new_val)?;
-                        self.stack.push(Operand::Val(result));
-                        return Ok(());
-                    }
-                    BuiltinId::GrabWhere => {
-                        if arg_vals.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "grab_where".into() });
-                        }
-                        let mut it = arg_vals.into_iter();
-                        let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "grab_where predicate")),
-                        };
-                        let result = self.vm_where_get(coll, &pred)?;
-                        self.stack.push(Operand::Val(result));
-                        return Ok(());
-                    }
 
                     // ── Higher-order collection ops ───────────────────────────
                     BuiltinId::Filter => {
@@ -1437,17 +1408,6 @@ impl Vm {
                         let coll = it.next().unwrap();
                         let func = it.next().unwrap();
                         let result = self.vm_all_inner(coll, func)?;
-                        self.stack.push(Operand::Val(result));
-                        return Ok(());
-                    }
-                    BuiltinId::FindIndex => {
-                        if arg_vals.len() != 2 {
-                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "find_index".into() });
-                        }
-                        let mut it = arg_vals.into_iter();
-                        let coll = it.next().unwrap();
-                        let func = it.next().unwrap();
-                        let result = self.vm_find_index_inner(coll, func)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -2911,33 +2871,6 @@ impl Vm {
         }
     }
 
-    fn vm_where_put(&mut self, coll: Value, pred: &str, new_val: Value) -> Result<Value, GoblinError> {
-        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
-        match coll {
-            Value::Array(xs) => {
-                let mut out = Vec::new();
-                for v in xs {
-                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
-                    out.push(v);
-                }
-                Ok(Value::Array(out))
-            }
-            Value::Collection(col) => {
-                let xs = crate::collections::to_vec(&col);
-                let mut out = Vec::new();
-                for v in xs {
-                    if self.vm_where_match(pred, is_literal, &v)? { out.push(new_val.clone()); }
-                    out.push(v);
-                }
-                Ok(Value::Array(out))
-            }
-            Value::Map(_) | Value::MapOrd(_) => Err(GoblinError::Runtime("put_where is not meaningful for maps".into())),
-            Value::Str(_) => Err(GoblinError::Runtime(
-                "get/reap/put with 'where' is not supported for strings; use update_where!/delete_where! instead".into()
-            )),
-            other => Err(GoblinError::type_error("array", other.type_name(), "put_where")),
-        }
-    }
 
     // ── Higher-order collection helpers ──────────────────────────────────────
 
@@ -3026,19 +2959,6 @@ impl Vm {
         Ok(Value::Bool(true))
     }
 
-    fn vm_find_index_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
-        let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
-            Value::Collection(col) => crate::collections::to_vec(&col),
-            other => return Err(GoblinError::type_error("array", other.type_name(), "find_index")),
-        };
-        for (i, v) in elems.into_iter().enumerate() {
-            if matches!(self.call_callable(func.clone(), vec![v])?, Value::Bool(true)) {
-                return Ok(Value::Int(i as i64));
-            }
-        }
-        Ok(Value::Nil)
-    }
 
     fn vm_sort_by_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
@@ -3599,7 +3519,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "floor"            => Some(BuiltinId::Floor),
         "ceil"             => Some(BuiltinId::Ceil),
         "round"            => Some(BuiltinId::Round),
-        "type_of"          => Some(BuiltinId::TypeOf),
         "pct"              => Some(BuiltinId::Pct),
         "is_big"           => Some(BuiltinId::IsBig),
         "is_pct"           => Some(BuiltinId::IsPct),
@@ -3617,7 +3536,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "is_positive"      => Some(BuiltinId::IsPositive),
         "is_negative"      => Some(BuiltinId::IsNegative),
         "is_nix"           => Some(BuiltinId::IsNix),
-        "is_empty"         => Some(BuiltinId::IsEmpty),
         "is_matching"      => None,  // needs arg; handled below
         "before"           => None,  // needs arg; handled below
         "after"            => None,  // needs arg; handled below
@@ -3629,8 +3547,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "normalize_newlines" => Some(BuiltinId::NormalizeNewlines),
         "json_stringify"   => Some(BuiltinId::JsonStringify),
         "json_stringify_pretty" => Some(BuiltinId::JsonStringifyPretty),
-        "flatten"          => Some(BuiltinId::Flatten),
-        "pairs"            => Some(BuiltinId::Pairs),
         "is_nil"           => Some(BuiltinId::IsNil),
         "is_bool"          => Some(BuiltinId::IsBool),
         "is_int"           => Some(BuiltinId::IsInt),
@@ -3649,7 +3565,6 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "delete_all"       => Some(BuiltinId::DeleteAll),
         "reap_first"       => Some(BuiltinId::ReapFirst2),
         "reap_last"        => Some(BuiltinId::ReapLast2),
-        "reap_random"      => Some(BuiltinId::ReapRandom2),
         "sum"              => Some(BuiltinId::Sum),
         "avg"              => Some(BuiltinId::Avg),
         "min"              => Some(BuiltinId::Min),

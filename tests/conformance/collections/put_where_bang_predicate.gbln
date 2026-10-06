@@ -1,7 +1,0 @@
-/// known-gap: interp has no put_where builtin (unknown action)
-act above_two(n)
-    return n > 2
-xx
-l | [1, 3, 2]
-:put_where!(l, "above_two", 0)
-say l

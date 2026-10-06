@@ -1060,6 +1060,20 @@ In these cases both engines agree and the docs say something else. For each one:
 
 ## VM-only builtins
 
+**Decided by the owner, 2026-10-06.** The interpreter will be removed once the VM works, so nothing is added to it.
+- Removed from the VM (cases in `removed/` check that neither engine has them):
+  - to_int, to_float, to_str, to_string, to_bool, to_upper, to_lower (use int, float, str, bool, upper, lower);
+  - the grab* family (use get*);
+  - find_index, flatten, zip, is_empty, pairs, put_all, put_where, reap_all, reap_random, is_collection, array_push, contains;
+  - replace, pad, pad_left, pad_right, repeat_str;
+  - print, println, eprint, eprintln, panic, assert;
+  - ipsum*;
+  - type_of (use valtype).
+- Kept on the VM: filter, filter_fn, map_fn, reduce, reduce_fn, for_each_fn, sort_by, any, all, range, slice, url_encode, url_decode, http_*, render_template, is_function, and the VM-internals group.
+
+The analysis below is what the ruling was made from.
+
+
 All 69 names below give `A0401 unknown action` on the interpreter and are recognised by the VM. I checked each one with `say(:name([1]))` on both builds. The question for each group: should it be added to the interpreter, or declared VM-only / deprecated?
 
 | Group | Names | Documented? | Use in apps | Rec |

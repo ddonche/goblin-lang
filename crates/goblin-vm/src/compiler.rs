@@ -1279,24 +1279,10 @@ impl Compiler {
                 // value = reap_X(…), rest = delete_X(…).
                 if let Some(pos_name) = reap_bang_position(bare_name) {
                     if let Some(target) = args.first().filter(|t| is_lvalue(t)) {
-                        if pos_name == "random" {
-                            // One random pick for both halves.
-                            self.compile_expr(target)?;
-                            self.emit(Opcode::CallBuiltin(BuiltinId::ReapSplit, 1));
-                            let one = self.add_constant(Value::Int(1));
-                            let zero = self.add_constant(Value::Int(0));
-                            self.emit(Opcode::Dup);
-                            self.emit(Opcode::LoadConst(one));
-                            self.emit(Opcode::GetIndex);
-                            self.compile_store_from_stack(target)?;
-                            self.emit(Opcode::LoadConst(zero));
-                            self.emit(Opcode::GetIndex);
-                        } else {
-                            let sp = target.span().clone();
-                            self.compile_expr(&Expr::FreeCall(format!("reap_{pos_name}"), args.clone(), sp.clone()))?;
-                            self.compile_expr(&Expr::FreeCall(format!("delete_{pos_name}"), args.clone(), sp))?;
-                            self.compile_store_from_stack(target)?;
-                        }
+                        let sp = target.span().clone();
+                        self.compile_expr(&Expr::FreeCall(format!("reap_{pos_name}"), args.clone(), sp.clone()))?;
+                        self.compile_expr(&Expr::FreeCall(format!("delete_{pos_name}"), args.clone(), sp))?;
+                        self.compile_store_from_stack(target)?;
                         return Ok(());
                     }
                 }
@@ -2416,13 +2402,6 @@ impl Compiler {
                 Ok(true)
             }
 
-            // print(val) — no newline
-            "print" => {
-                for arg in args { self.compile_expr(arg)?; }
-                self.emit(Opcode::CallBuiltin(BuiltinId::Print, args.len() as u8));
-                Ok(true)
-            }
-
             // skip / stop — loop control
             "skip" => {
                 let patch_idx = self.scope_mut().bytecode.len();
@@ -2822,9 +2801,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "clamp"                         => BuiltinId::Clamp,
         "pow"                           => BuiltinId::Pow,
         "len"          | "count"        => BuiltinId::Len,
-        "to_string"    | "str" | "string" => BuiltinId::ToStr,
-        "to_upper"                      => BuiltinId::ToUpperCase,
-        "to_lower"                      => BuiltinId::ToLowerCase,
+        "str" | "string"  => BuiltinId::ToStr,
         "trim"                          => BuiltinId::Trim,
         "trim_lead"                     => BuiltinId::TrimLead,
         "trim_trail"                    => BuiltinId::TrimTrail,
@@ -2838,10 +2815,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "ord"                           => BuiltinId::Ord,
         "split"                         => BuiltinId::Split,
         "join"                          => BuiltinId::Join,
-        "contains"                      => BuiltinId::Contains,
         "starts_with"                   => BuiltinId::StartsWith,
         "ends_with"                     => BuiltinId::EndsWith,
-        "replace"                       => BuiltinId::Replace,
         "before"                        => BuiltinId::Before,
         "after"                         => BuiltinId::After,
         "before_last"                   => BuiltinId::BeforeLast,
@@ -2875,10 +2850,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "is_map"                        => BuiltinId::IsMap,
         "mem_total"     | ":mem_total"  => BuiltinId::MemTotal,
         "mem_human"     | ":mem_human"  => BuiltinId::MemHuman,
-        "ipsum"                         => BuiltinId::Ipsum,
-        "ipsum_sentences"               => BuiltinId::IpsumSentences,
-        "ipsum_paragraphs"              => BuiltinId::IpsumParagraphs,
-        "ipsum_full"                    => BuiltinId::IpsumFull,
         "run_cmd"                       => BuiltinId::RunCmd,
 
         // Request (HTTP context)
@@ -2897,15 +2868,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "roll"                          => BuiltinId::Roll,
         "roll_detail"                   => BuiltinId::RollDetail,
         "rand_seed"                     => BuiltinId::RandSeed,
-        "grab"                          => BuiltinId::Get,
-        "grab_first"                    => BuiltinId::GetFirst,
-        "grab_last"                     => BuiltinId::GetLast,
-        "grab_at"                       => BuiltinId::GetAt,
-        "grab_random"                   => BuiltinId::GetRandom,
-        "grab_where"                    => BuiltinId::GetWhere,
-        "grab_all"                      => BuiltinId::GetAll,
-        "grab_between"                  => BuiltinId::GetBetween,
-        "grab_matching"                 => BuiltinId::GetMatching,
         "put"                           => BuiltinId::Put,
         "put_first"                     => BuiltinId::PutFirst,
         "put_last"                      => BuiltinId::PutLast,
@@ -2924,9 +2886,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "reap_first"                    => BuiltinId::ReapFirst,
         "reap_last"                     => BuiltinId::ReapLast,
         "reap_at"                       => BuiltinId::ReapAt,
-        "reap_random"                   => BuiltinId::ReapRandom,
         "reap_where"                    => BuiltinId::ReapWhere,
-        "reap_all"                      => BuiltinId::ReapAll,
         // New Position×Operation matrix
         "get_first"    | ":get_first"    => BuiltinId::GetFirst,
         "get_last"     | ":get_last"     => BuiltinId::GetLast,
@@ -2936,11 +2896,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "get_matching" | ":get_matching" => BuiltinId::GetMatching,
         "get_between"  | ":get_between"  => BuiltinId::GetBetween,
         "get_random"   | ":get_random"   => BuiltinId::GetRandom,
-        "put_where"    | ":put_where"    => BuiltinId::PutWhere,
         "put_matching" | ":put_matching" => BuiltinId::PutMatching,
         "put_between"  | ":put_between"  => BuiltinId::PutBetween,
         "put_random"   | ":put_random"   => BuiltinId::PutRandom,
-        "put_all"      | ":put_all"      => BuiltinId::PutAll,
         "update_all"      | ":update_all"      => BuiltinId::UpdateAll,
         "update_where"    | ":update_where"    => BuiltinId::UpdateWhere,
         "update_matching" | ":update_matching" => BuiltinId::UpdateMatching,
@@ -2954,8 +2912,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "has"                           => BuiltinId::Has,
         "keys"                          => BuiltinId::Keys,
         "values"                        => BuiltinId::Values,
-        "pairs"                         => BuiltinId::Pairs,
-        "is_empty"                      => BuiltinId::IsEmpty,
         "reverse"                       => BuiltinId::Reverse,
         "reverse_chars"                 => BuiltinId::ReverseChars,
         "minimize"                      => BuiltinId::Minimize,
@@ -2972,21 +2928,13 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "any"                           => BuiltinId::Any,
         "all"                           => BuiltinId::All,
         "find"                          => BuiltinId::Find,
-        "find_index"                    => BuiltinId::FindIndex,
-        "zip"                           => BuiltinId::Zip,
-        "flatten"                       => BuiltinId::Flatten,
         "unique"                        => BuiltinId::Unique,
         "slice"                         => BuiltinId::Slice,
-        "print"                         => BuiltinId::Print,
-        "println"                       => BuiltinId::Println,
-        "eprint"                        => BuiltinId::Eprint,
-        "eprintln"                      => BuiltinId::Eprintln,
         "is_nil"                        => BuiltinId::IsNil,
         "is_bool"                       => BuiltinId::IsBool,
         "is_int"                        => BuiltinId::IsInt,
         "is_float"                      => BuiltinId::IsFloat,
         "is_str"                        => BuiltinId::IsStr,
-        "is_collection"                 => BuiltinId::IsCollection,
         "is_function"                   => BuiltinId::IsFunction,
         "is_big"                        => BuiltinId::IsBig,
         "is_pct"                        => BuiltinId::IsPct,
@@ -3005,13 +2953,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "is_positive"                   => BuiltinId::IsPositive,
         "is_negative"                   => BuiltinId::IsNegative,
         "is_nix"                        => BuiltinId::IsNix,
-        "to_int"                        => BuiltinId::ToInt,
-        "to_float"                      => BuiltinId::ToFloat,
-        "to_str"                        => BuiltinId::ToStr,
-        "to_bool"                       => BuiltinId::ToBool,
-        "type_of"                       => BuiltinId::TypeOf,
-        "assert"                        => BuiltinId::Assert,
-        "panic"                         => BuiltinId::Panic,
         "secure_pick"    | ":secure_pick"    => BuiltinId::SecurePick,
         "secure_random"  | ":secure_random"  => BuiltinId::SecureRandom,
         "secure_shuffle" | ":secure_shuffle" => BuiltinId::SecureShuffle,
@@ -3021,10 +2962,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "words"        | ":words"         => BuiltinId::Words,
         "chars"        | ":chars"         => BuiltinId::Chars,
         "format"       | ":format"        => BuiltinId::Format,
-        "pad"          | ":pad"           => BuiltinId::Pad,
-        "pad_left"     | ":pad_left"      => BuiltinId::PadLeft,
-        "pad_right"    | ":pad_right"     => BuiltinId::PadRight,
-        "repeat_str"   | ":repeat_str"    => BuiltinId::Repeat,
         "pct"          | "percent"       => BuiltinId::Pct,
         "between"                        => BuiltinId::Between,
         "is_control"                     => BuiltinId::IsControl,
@@ -3059,7 +2996,6 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "big"  | "b"                     => BuiltinId::ToBig,
         "to_map" | "m"                   => BuiltinId::ToMap,
         "read_text"                      => BuiltinId::ReadText,
-        "array_push"                     => BuiltinId::ArrayPush,
         "i8"                             => BuiltinId::CastI8,
         "i16"                            => BuiltinId::CastI16,
         "i32"                            => BuiltinId::CastI32,
@@ -3203,11 +3139,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "put_first!"                     => BuiltinId::PutFirst,
         "put_last!"                      => BuiltinId::PutLast,
         "put_at!"                        => BuiltinId::PutAt,
-        "put_where!"                     => BuiltinId::PutWhere,
         "put_matching!"                  => BuiltinId::PutMatching,
         "put_between!"                   => BuiltinId::PutBetween,
         "put_random!"                    => BuiltinId::PutRandom,
-        "put_all!"                       => BuiltinId::PutAll,
         "update_first!"                  => BuiltinId::UpdateFirst,
         "update_last!"                   => BuiltinId::UpdateLast,
         "update_at!"                     => BuiltinId::UpdateAt,
@@ -3228,9 +3162,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "reap_first!"                    => BuiltinId::ReapFirst,
         "reap_last!"                     => BuiltinId::ReapLast,
         "reap_at!"                       => BuiltinId::ReapAt,
-        "reap_random!"                   => BuiltinId::ReapRandom,
         "reap_where!"                    => BuiltinId::ReapWhere,
-        "reap_all!"                      => BuiltinId::ReapAll,
         "reap_matching!"                 => BuiltinId::ReapMatching,
         "reap_between!"                  => BuiltinId::ReapBetween,
 
@@ -3388,14 +3320,12 @@ fn is_lvalue(e: &Expr) -> bool {
     }
 }
 
-/// The position a `reap_*!` call removes from, for ReapSplit.
+/// The position a `reap_*!` call removes from.
 fn reap_bang_position(name: &str) -> Option<&'static str> {
     Some(match name {
         "reap_first!" => "first",
         "reap_last!" => "last",
         "reap_at!" => "at",
-        "reap_random!" => "random",
-        "reap_all!" => "all",
         "reap_where!" => "where",
         "reap_matching!" => "matching",
         "reap_between!" => "between",

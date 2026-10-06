@@ -1,5 +1,0 @@
-/// known-gap: interp has no is_empty builtin (unknown action)
-say(:is_empty([]))
-say(:is_empty([1]))
-say(:is_empty({}))
-say(:is_empty(""))

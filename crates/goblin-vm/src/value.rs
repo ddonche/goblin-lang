@@ -551,14 +551,10 @@ pub enum BuiltinId {
     // String ops
     Len,
     ToString,
-    ToUpperCase,
-    ToLowerCase,
     Split,
     Join,
-    Contains,
     StartsWith,
     EndsWith,
-    Replace,
     Before,
     After,
     BeforeLast,
@@ -599,17 +595,6 @@ pub enum BuiltinId {
     Unique,
     Dups,
 
-    // Collections — grab family (legacy)
-    Grab,
-    GrabFirst,
-    GrabLast,
-    GrabAt,
-    GrabRandom,
-    GrabWhere,
-    GrabAll,
-    GrabBetween,
-    GrabMatching,
-
     // Collections — put family (legacy)
     Put,
     PutFirst,
@@ -635,24 +620,22 @@ pub enum BuiltinId {
     ReapFirst,
     ReapLast,
     ReapAt,
-    ReapRandom,
     ReapWhere,
-    ReapAll,
 
     // Collections — new Position×Operation matrix (interpreter-aligned)
     // Get family
     GetFirst, GetLast, GetAt, GetWhere, GetAll, GetMatching, GetBetween, GetRandom,
     // Put family (new)
-    PutWhere, PutMatching, PutBetween, PutRandom, PutAll,
+     PutMatching, PutBetween, PutRandom,
     // Update family (new)
     UpdateAll, UpdateWhere, UpdateMatching, UpdateBetween, UpdateRandom,
     // Delete family (new)
     DeleteMatching, DeleteBetween, DeleteRandom,
     // Reap family (new — avoid name collision with legacy ReapFirst etc.)
-    ReapFirst2, ReapLast2, ReapAt2, ReapWhere2, ReapMatching, ReapBetween, ReapRandom2,
+    ReapFirst2, ReapLast2, ReapAt2, ReapWhere2, ReapMatching, ReapBetween,
 
     // Collections — query (legacy)
-    Pairs,
+    
     IsEmpty,
     Reverse,
     ReverseChars,
@@ -663,16 +646,11 @@ pub enum BuiltinId {
     Reduce,
     Any,
     All,
-    FindIndex,
-    Zip,
-    Flatten,
     Slice,
 
     // I/O
-    Print,
+    
     Println,
-    Eprint,
-    Eprintln,
 
     // Type checks
     IsNil,
@@ -682,7 +660,6 @@ pub enum BuiltinId {
     IsStr,
     IsArray,
     IsMap,
-    IsCollection,
     IsFunction,
     IsBig,
     IsPct,
@@ -710,17 +687,10 @@ pub enum BuiltinId {
 
     // Meta
     TypeOf,
-    Assert,
     Panic,
 
     // Range
     Range,
-
-    // Lorem ipsum
-    Ipsum,
-    IpsumSentences,
-    IpsumParagraphs,
-    IpsumFull,
 
     // Process
     RunCmd,
@@ -759,17 +729,12 @@ pub enum BuiltinId {
     RepeatPrep,
     ApiEcho,
     StrictEq,
-    ReapSplit,
 
     // String extras
     Lines,
     Words,
     Chars,
     Format,
-    Pad,
-    PadLeft,
-    PadRight,
-    Repeat,
 
     // Missing builtins
     Pct,
@@ -803,8 +768,6 @@ pub enum BuiltinId {
     ToBig,
     ToMap,
     ReadText,
-
-    ArrayPush,
     CastI8,
     CastI16,
     CastI32,

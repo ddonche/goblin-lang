@@ -1,5 +1,0 @@
-/// known-gap: interp has no is_collection builtin (unknown action)
-say(:is_collection([1]))
-say(:is_collection({"a": 1}))
-say(:is_collection("x"))
-say(:is_collection(5))

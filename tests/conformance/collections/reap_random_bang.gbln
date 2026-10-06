@@ -1,5 +1,0 @@
-/// known-gap: interp has no reap_random builtin (unknown action)
-l | [7, 7, 7]
-x | :reap_random!(l)
-say x
-say(:len(l))

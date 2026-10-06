@@ -1,4 +1,0 @@
-/// known-gap: interp assert is VM-only (interp: unknown action)
-:assert(1 == 1)
-:assert(true, "msg")
-say("ok")

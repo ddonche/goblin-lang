@@ -1,4 +1,0 @@
-/// known-gap: interp lacks pad/pad_left
-say("[" + :pad("ab", 6) + "]")
-say("[" + :pad_left("7", 3) + "]")
-say("[" + :pad_left("toolong", 3) + "]")

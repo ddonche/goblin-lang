@@ -1,5 +1,0 @@
-/// known-gap: interp has no grab_where builtin (unknown action)
-act over_one(n)
-    return n > 1
-xx
-say(:grab_where([1, 2, 3], "over_one"))

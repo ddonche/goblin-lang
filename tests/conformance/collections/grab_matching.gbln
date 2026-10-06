@@ -1,2 +1,0 @@
-/// known-gap: interp has no grab_matching builtin (unknown action)
-say(:grab_matching(["a1", "b"], "[0-9]"))

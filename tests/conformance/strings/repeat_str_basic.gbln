@@ -1,4 +1,0 @@
-/// known-gap: interp lacks repeat_str
-say(:repeat_str("ab", 3))
-r | :repeat_str("x", 0)
-say("[{r}]")
