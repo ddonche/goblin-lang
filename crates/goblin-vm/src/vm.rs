@@ -2137,7 +2137,6 @@ impl Vm {
             func.bytecode[i] = match &func.bytecode[i] {
                 Opcode::Add if a_is_int   && b_is_int   => Opcode::AddInt,
                 Opcode::Add if a_is_float && b_is_float => Opcode::AddFloat,
-                Opcode::Add if a_is_str   && b_is_str   => Opcode::Concat,
                 Opcode::Sub if a_is_int   && b_is_int   => Opcode::SubInt,
                 Opcode::Sub if a_is_float && b_is_float => Opcode::SubFloat,
                 Opcode::Mul if a_is_int   && b_is_int   => Opcode::MulInt,

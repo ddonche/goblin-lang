@@ -913,6 +913,22 @@ say(:to_map({"a": 1}))
 
 ---
 
+## D30 · D-interp-backslash (found running Campfire on the VM; open)
+
+```
+x | 1
+say("a\\\\b {x}")        /// interp: a\b 1    VM: a\\b 1
+say("a\\\\b")            /// both:   a\\b
+say("""p="\\S" {x}""")  /// interp: p="\S" 1  VM: p="\\S" 1
+```
+
+The interpreter runs the escape `\\` a second time when a string has a `{placeholder}`, so the same backslashes print differently depending on whether a placeholder is present. The VM processes escapes once, in the lexer. Triple-quoted strings take no escapes in the lexer (`goblin-lexer/src/lib.rs:989`, "No transforms, no escape handling"; language-spec.md:404 "preserves newlines & indentation literally"), but the interpreter unescapes `\\` in them when they contain a placeholder.
+
+- **A. Once (VM).** A backslash prints the same with or without a placeholder. Campfire's boost form (`lib/views/message_edit.gbln:89`, `pattern="\\S+.*"` inside a `"""` template) then has to write `\S`, the way Rails does. Interpreter change: the placeholder renderer stops turning `\\` into `\` (it keeps `\{` and `\}`).
+- **B. Twice (interpreter).** Campfire stays as it is. The VM's renderer has to unescape `\\` too.
+
+Recommended: **A**. Case: `strings/interp_backslash_same_with_placeholder` (undecided). It is the only Campfire page that still differs between the engines.
+
 ## Docs vs both engines (`known-gap: both`)
 
 In these cases both engines agree and the docs say something else. For each one: is the doc or the implementation canonical? They are lower priority than D1-D29. "Rec" is my recommendation. Outputs are the same on base and cur unless noted.

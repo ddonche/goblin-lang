@@ -1,0 +1,6 @@
+/// `+` on two string literals joins them with nothing in between, the same as
+/// on string variables (the VM's literal fast path used to emit `++`).
+say("a" + "b")
+id | "x"
+say("edit_" + "message_" + id)
+say("a" ++ "b")

@@ -1,0 +1,9 @@
+/// undecided: D-interp-backslash
+/// Whether a string that contains a {placeholder} processes `\\` a second
+/// time. The interpreter does (so a backslash prints differently depending on
+/// whether the string has a placeholder); the VM does not.
+x | 1
+say("a\\\\b {x}")
+say("a\\\\b")
+say("""p="\\S" {x}""")
+say("""p="\\S" """)
