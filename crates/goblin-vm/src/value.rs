@@ -1059,39 +1059,44 @@ impl RingBuf {
         RingBuf { buf: v, head: 0, len }
     }
 
+    /// Copies the elements, in order, into a buffer twice the size (padded
+    /// with nil so `buf.len()` is the capacity), with `extra` slots free.
+    fn grow(&mut self) -> Vec<Value> {
+        let new_cap = (self.buf.len() * 2).max(4);
+        let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
+        let cap = self.buf.len().max(1);
+        for i in 0..self.len {
+            let src = (self.head + i) % cap;
+            new_buf.push(std::mem::replace(&mut self.buf[src], Value::Nil));
+        }
+        new_buf
+    }
+
     pub fn push_back(&mut self, v: Value) {
         if self.len == self.buf.len() {
-            let new_cap = (self.buf.len() * 2).max(4);
-            let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
-            for i in 0..self.len {
-                let src = (self.head + i) % self.buf.len().max(1);
-                new_buf.push(self.buf[src].clone());
-            }
+            // `buf.len()` is the capacity: padding the new buffer keeps the
+            // next pushes from regrowing (and copying) every time.
+            let mut new_buf = self.grow();
+            let new_cap = new_buf.capacity().max(self.len + 1);
             new_buf.push(v);
+            new_buf.resize(new_cap, Value::Nil);
             self.buf = new_buf;
             self.head = 0;
             self.len += 1;
         } else {
             let tail = (self.head + self.len) % self.buf.len();
-            if tail < self.buf.len() {
-                self.buf[tail] = v;
-            } else {
-                self.buf.push(v);
-            }
+            self.buf[tail] = v;
             self.len += 1;
         }
     }
 
     pub fn push_front(&mut self, v: Value) {
         if self.len == self.buf.len() {
-            let new_cap = (self.buf.len() * 2).max(4);
-            let mut new_buf: Vec<Value> = Vec::with_capacity(new_cap);
-            new_buf.push(v);
-            for i in 0..self.len {
-                let src = (self.head + i) % self.buf.len().max(1);
-                new_buf.push(self.buf[src].clone());
-            }
-            self.buf = new_buf;
+            let mut items = self.grow();
+            let new_cap = items.capacity().max(self.len + 1);
+            items.insert(0, v);
+            items.resize(new_cap, Value::Nil);
+            self.buf = items;
             self.head = 0;
             self.len += 1;
         } else {
@@ -1119,6 +1124,12 @@ impl RingBuf {
     pub fn get(&self, i: usize) -> Option<&Value> {
         if i >= self.len || self.buf.is_empty() { return None; }
         Some(&self.buf[(self.head + i) % self.buf.len()])
+    }
+
+    pub fn get_mut(&mut self, i: usize) -> Option<&mut Value> {
+        if i >= self.len || self.buf.is_empty() { return None; }
+        let cap = self.buf.len();
+        Some(&mut self.buf[(self.head + i) % cap])
     }
 
     pub fn to_vec(&self) -> Vec<Value> {
@@ -1154,6 +1165,17 @@ impl ChunkedSeq {
         for chunk in &self.chunks {
             if rem < chunk.len() {
                 return Some(&chunk[rem]);
+            }
+            rem -= chunk.len();
+        }
+        None
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> Option<&mut Value> {
+        let mut rem = idx;
+        for chunk in &mut self.chunks {
+            if rem < chunk.len() {
+                return Some(&mut chunk[rem]);
             }
             rem -= chunk.len();
         }

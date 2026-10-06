@@ -1755,3 +1755,161 @@ pub fn zip_collections(a: &CollectionValue, b: &CollectionValue) -> Value {
 pub fn slice_collection(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
     grab_between(coll, start, end)
 }
+
+// ── In-place writes ───────────────────────────────────────────────────────────
+//
+// `name!(x, …)` and `:update!(x[k]…, v)` build a new collection and store it
+// back into `x`, which copies the whole backing store on every call and made
+// building or updating a list in a loop quadratic. When the VM holds the only
+// reference to x's stash it calls these instead. `Rc::make_mut` still copies
+// any backing store another value shares, so they are only an optimisation:
+// each one returns false, having changed nothing, whenever the general path
+// has to run (another builtin or layout, an error for it to report, or a
+// layout change it would make).
+
+/// Whether `build_seq` would keep this layout for a collection with `meta`.
+fn keeps_seq_layout(layout: &CollectionLayout, meta: &CollectionMeta) -> bool {
+    match (layout, meta.choose_layout()) {
+        (CollectionLayout::RingBuf(_), BackendHint::RingBuf) => true,
+        (CollectionLayout::ChunkedSeq(_), BackendHint::ChunkedSeq) => true,
+        (CollectionLayout::FlatArray(_), hint) =>
+            !matches!(hint, BackendHint::RingBuf | BackendHint::ChunkedSeq),
+        _ => false,
+    }
+}
+
+/// Whether a write at `key` (Put on a map, Update on a sequence, as
+/// `update!` does) can be done in place; `must_exist` also requires the key
+/// to be present already (a path step that descends into it, or `update_at`).
+fn can_write_key(c: &CollectionValue, key: &Value, must_exist: bool) -> bool {
+    match &c.layout {
+        CollectionLayout::SmallMap(pairs) => {
+            // The general path re-keys every entry with value_to_map_key, so
+            // only maps whose keys are all strings are unchanged by it.
+            let Value::Str(k) = key else { return false };
+            if !pairs.iter().all(|(pk, _)| matches!(pk, Value::Str(_))) { return false; }
+            let present = pairs.iter().any(|(pk, _)| matches!(pk, Value::Str(s) if s == k));
+            // A 17th entry moves the map to the large-map backend.
+            present || (!must_exist && pairs.len() < 16)
+        }
+        // Built only by build_map from string-keyed pairs.
+        CollectionLayout::HashMapBackend(m) => {
+            if !matches!(key, Value::Str(_)) { return false; }
+            !must_exist || m.contains_key(key)
+        }
+        layout => {
+            let Value::Int(idx) = key else { return false };
+            if resolve_seq_index(*idx, c.len()).is_err() { return false; }
+            let meta = update_meta_for_op(&c.meta, &Position::At(key.clone()), &Operation::Get);
+            keeps_seq_layout(layout, &meta)
+        }
+    }
+}
+
+/// The slot at `key`, inserting a nil one for a new map key, after
+/// can_write_key has said yes.
+fn slot_for_key<'a>(rc: &'a mut Rc<CollectionValue>, key: &Value) -> &'a mut Value {
+    let c = Rc::make_mut(rc);
+    let mut meta = update_meta_for_op(&c.meta, &Position::At(key.clone()), &Operation::Get);
+    match &mut c.layout {
+        CollectionLayout::SmallMap(pairs) => {
+            let pairs = Rc::make_mut(pairs);
+            let i = match pairs.iter().position(|(pk, _)| pk == key) {
+                Some(i) => i,
+                None => { pairs.push((key.clone(), Value::Nil)); pairs.len() - 1 }
+            };
+            meta.len = pairs.len();
+            c.meta = meta;
+            &mut pairs[i].1
+        }
+        CollectionLayout::HashMapBackend(m) => {
+            let m = Rc::make_mut(m);
+            let i = m.get_index_of(key).unwrap_or_else(|| m.insert_full(key.clone(), Value::Nil).0);
+            meta.len = m.len();
+            c.meta = meta;
+            m.get_index_mut(i).unwrap().1
+        }
+        layout => {
+            let Value::Int(idx) = key else { unreachable!("checked by can_write_key") };
+            let i = resolve_seq_index(*idx, meta.len).expect("checked by can_write_key");
+            c.meta = meta;
+            let slot = match layout {
+                CollectionLayout::FlatArray(v) => Rc::make_mut(v).get_mut(i),
+                CollectionLayout::RingBuf(rb) => Rc::make_mut(rb).get_mut(i),
+                CollectionLayout::ChunkedSeq(cs) => Rc::make_mut(cs).get_mut(i),
+                _ => None,
+            };
+            slot.expect("index checked by can_write_key")
+        }
+    }
+}
+
+fn path_writable(target: &Value, keys: &[Value]) -> bool {
+    let Value::Collection(c) = target else { return false };
+    let last = keys.len() == 1;
+    // A step that descends needs the child to exist (the general path reads
+    // nil for a missing key and then fails on it).
+    if !can_write_key(c, &keys[0], !last && c.is_map()) { return false; }
+    if last { return true; }
+    match get_index(target, &keys[0]) {
+        Ok(child) => path_writable(&child, &keys[1..]),
+        Err(_) => false,
+    }
+}
+
+fn write_path(target: &mut Value, keys: &[Value], val: Value) {
+    let Value::Collection(rc) = target else { unreachable!("checked by path_writable") };
+    let slot = slot_for_key(rc, &keys[0]);
+    if keys.len() == 1 { *slot = val } else { write_path(slot, &keys[1..], val) }
+}
+
+/// `:update!(x[k1][k2]…, val)` in place: inserts or overwrites a map key,
+/// overwrites an in-range sequence element (as VM::update_path does).
+pub fn update_path_in_place(target: &mut Value, keys: &[Value], val: Value) -> bool {
+    if keys.is_empty() || !path_writable(target, keys) { return false; }
+    write_path(target, keys, val);
+    true
+}
+
+/// `name!(x, args…)` in place for the single-element writes.
+pub fn mutate_in_place(target: &mut Value, id: crate::value::BuiltinId, args: &[Value]) -> bool {
+    use crate::value::BuiltinId;
+    let Value::Collection(rc) = target else { return false };
+    match (id, args) {
+        (BuiltinId::PutLast, [v]) | (BuiltinId::PutFirst, [v]) => {
+            let pos = if id == BuiltinId::PutLast { Position::Last } else { Position::First };
+            let c = &**rc;
+            let ok = match (&c.layout, &pos) {
+                (CollectionLayout::FlatArray(_), Position::Last) => true,
+                (CollectionLayout::RingBuf(_), _) => true,
+                _ => false,
+            };
+            let mut meta = update_meta_for_op(&c.meta, &pos, &Operation::Get);
+            meta.len = c.len() + 1;
+            if !ok || !keeps_seq_layout(&c.layout, &meta) { return false; }
+            let c = Rc::make_mut(rc);
+            match (&mut c.layout, pos) {
+                (CollectionLayout::FlatArray(xs), _) => Rc::make_mut(xs).push(v.clone()),
+                (CollectionLayout::RingBuf(rb), Position::Last) => Rc::make_mut(rb).push_back(v.clone()),
+                (CollectionLayout::RingBuf(rb), _) => Rc::make_mut(rb).push_front(v.clone()),
+                _ => unreachable!(),
+            }
+            c.meta = meta;
+            true
+        }
+        // put/put_at on a map inserts or overwrites (on a sequence it inserts,
+        // which is not a single-slot write).
+        (BuiltinId::Put | BuiltinId::PutAt, [k, v]) if rc.is_map() => {
+            if !can_write_key(rc, k, false) { return false; }
+            *slot_for_key(rc, k) = v.clone();
+            true
+        }
+        // update/update_at need the key or index to exist already.
+        (BuiltinId::Update | BuiltinId::UpdateAt, [k, v]) => {
+            if !can_write_key(rc, k, true) { return false; }
+            *slot_for_key(rc, k) = v.clone();
+            true
+        }
+        _ => false,
+    }
+}

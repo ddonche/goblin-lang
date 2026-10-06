@@ -279,6 +279,16 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreLocal(slot) => {
+                // Storing a variable's own stash back into it (after an
+                // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
+                if let Some(Operand::Ref(t)) = self.stack.last() {
+                    let frame = self.call_stack.last().unwrap();
+                    if frame.locals.get(slot as usize).and_then(|o| o.as_ref()) == Some(t)
+                        && frame.get_hard_type_lock(slot).is_none() {
+                        self.stack.pop();
+                        return Ok(());
+                    }
+                }
                 let val = self.stack_pop()?;
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
@@ -332,6 +342,13 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreGlobal(idx) => {
+                if let Some(Operand::Ref(t)) = self.stack.last() {
+                    if self.session.get_global(idx as usize) == Some(t)
+                        && !self.session.global_hard_type_locks.contains_key(&(idx as u32)) {
+                        self.stack.pop();
+                        return Ok(());
+                    }
+                }
                 let val = self.stack_pop()?;
                 // Retether: if a hard type lock exists for this global, auto-cast the incoming value.
                 let val = if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
@@ -1117,6 +1134,37 @@ impl Vm {
             }
 
             // ── Builtins ──────────────────────────────────────────────────────
+            Opcode::CallBuiltinMut(id, argc) => {
+                if let Some(t) = self.sole_ref_target(argc as usize) {
+                    let start = self.stack.len() - (argc as usize - 1);
+                    let args = self.drain_operands(start)?;
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if crate::collections::mutate_in_place(&mut stash.value, id, &args) {
+                        // The target's Ref stays on the stack as the call's value.
+                        return Ok(());
+                    }
+                    self.stack.extend(args.into_iter().map(Operand::Val));
+                }
+                return self.execute_op(Opcode::CallBuiltin(id, argc));
+            }
+            Opcode::UpdatePathMut(n, mask) => {
+                // Stack: [root, key1, …, keyN, new_val]. Field segments go
+                // through member dispatch, so only index paths are done here.
+                if mask == 0 {
+                    if let Some(t) = self.sole_ref_target(n as usize + 2) {
+                        let start = self.stack.len() - (n as usize + 1);
+                        let mut vals = self.drain_operands(start)?;
+                        let new_val = vals.pop().unwrap();
+                        let stash = self.session.resolve_mut(t.addr)?;
+                        if crate::collections::update_path_in_place(&mut stash.value, &vals, new_val.clone()) {
+                            return Ok(());
+                        }
+                        self.stack.extend(vals.into_iter().map(Operand::Val));
+                        self.stack.push(Operand::Val(new_val));
+                    }
+                }
+                return self.execute_op(Opcode::UpdatePath(n, mask));
+            }
             Opcode::CallBuiltin(id, argc) => {
                 let arg_count = argc as usize;
                 if self.stack.len() < arg_count {
@@ -1479,6 +1527,9 @@ impl Vm {
                                 .get()
                         }
                     };
+                    // A captured stash has a second holder, so it is never
+                    // changed in place (see sole_ref_target).
+                    self.session.inc_tether(&tether)?;
                     upvalues.push(UpvalueCell::new(tether));
                 }
 
@@ -2246,6 +2297,22 @@ impl Vm {
     }
 
     /// Drain operands from `start..` and resolve each to a Value.
+    /// The stash of the operand `depth` slots from the top of the stack, when
+    /// it is a variable's Ref holding a collection that nothing else can
+    /// observe: no closure captured it and no other pending operand reads it.
+    /// Changing such a stash in place is indistinguishable from storing a
+    /// new collection into the variable.
+    fn sole_ref_target(&self, depth: usize) -> Option<Tether> {
+        if depth == 0 || self.stack.len() < depth { return None; }
+        let at = self.stack.len() - depth;
+        let Operand::Ref(t) = &self.stack[at] else { return None };
+        let stash = self.session.resolve(t.addr).ok()?;
+        if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return None; }
+        let shared = self.stack.iter().enumerate()
+            .any(|(i, op)| i != at && matches!(op, Operand::Ref(u) if u == t));
+        if shared { None } else { Some(t.clone()) }
+    }
+
     fn drain_operands(&mut self, start: usize) -> Result<Vec<Value>, GoblinError> {
         let ops: Vec<Operand> = self.stack.drain(start..).collect();
         let mut vals = Vec::with_capacity(ops.len());

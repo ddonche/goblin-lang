@@ -115,6 +115,10 @@ pub enum Opcode {
     /// Bit i of the mask marks segment i as a `>>` field access (key is a
     /// field-name string) rather than an index.
     UpdatePath(u8, u16),
+    /// UpdatePath whose root was loaded from a variable that the result is
+    /// stored back into: writes through in place when the VM holds the only
+    /// reference to the root's stash, and otherwise acts as UpdatePath.
+    UpdatePathMut(u8, u16),
     /// Jump by the offset when local slot `slot` already holds a value; used by
     /// parameter defaults, whose slots stay unset when the caller omits them.
     JumpIfLocalSet(u8, i16),
@@ -138,6 +142,11 @@ pub enum Opcode {
     /// Call a builtin function with argc args.
     /// Args are popped; result is pushed.
     CallBuiltin(BuiltinId, u8),
+    /// CallBuiltin for `name!(x, …)` where `x` is a variable the result is
+    /// stored back into: changes x's collection in place when the VM holds
+    /// the only reference to its stash (leaving x's operand as the result),
+    /// and otherwise acts as CallBuiltin.
+    CallBuiltinMut(BuiltinId, u8),
 
     // ── Closures ──────────────────────────────────────────────────────────────
     /// Create a closure from constants[func_idx] (a FunctionObject).
@@ -318,6 +327,8 @@ impl Opcode {
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",
             Opcode::UpdatePath(..)  => "UpdatePath",
+            Opcode::UpdatePathMut(..) => "UpdatePathMut",
+            Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
             Opcode::StringInterpVals(..) => "StringInterpVals",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",

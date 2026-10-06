@@ -1314,8 +1314,20 @@ impl Compiler {
                     if bare.ends_with('!') && !IO_BANG_NO_WRITEBACK.contains(&bare) {
                         if let Some(target) = args.first() {
                             if is_lvalue(target) {
-                                self.emit(Opcode::Dup);
+                                // The result goes back into the variable the
+                                // first argument was loaded from, so the call
+                                // may change that variable's collection in place.
+                                if matches!(target, Expr::Ident(..)) {
+                                    if let Some(Opcode::CallBuiltin(id, n)) = self.scope().bytecode.last().cloned() {
+                                        if n as usize == args.len() {
+                                            *self.scope_mut().bytecode.last_mut().unwrap() = Opcode::CallBuiltinMut(id, n);
+                                        }
+                                    }
+                                }
+                                // D13: the call itself gives nil, as in the
+                                // interpreter; the result went into the target.
                                 self.compile_store_from_stack(target)?;
+                                self.emit(Opcode::LoadNil);
                             }
                         }
                     }
@@ -1963,7 +1975,7 @@ impl Compiler {
             }
         }
         self.emit(Opcode::LoadLocal(tmp));
-        self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
+        self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
         let store_op = self.resolve_store(&root_name)
             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
         self.emit(store_op);
@@ -2637,7 +2649,7 @@ impl Compiler {
                             }
                         }
                         self.compile_expr(&args[1])?;
-                        self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
+                        self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
                         let store_op = self.resolve_store(&root_name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
                         self.emit(store_op);
