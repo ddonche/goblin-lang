@@ -1108,7 +1108,17 @@ fn vm_error_to_diagnostic(
         }
     }
     let (inner, line, err_file) = peel(e);
-    let message = inner.to_string();
+    // The diagnostic code already says "runtime-error", so a runtime error's
+    // message is shown without the "runtime error: " prefix (also when a
+    // re-raised error carries it again).
+    let message = match inner {
+        GoblinError::Runtime(msg) => {
+            let mut m = msg.as_str();
+            while let Some(rest) = m.strip_prefix("runtime error: ") { m = rest; }
+            m.to_string()
+        }
+        other => other.to_string(),
+    };
 
     // Use the file from WithLocation if it differs from the entry-point file.
     let (display_file, display_src_owned);
