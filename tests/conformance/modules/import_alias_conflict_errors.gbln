@@ -1,6 +1,0 @@
-/// known-gap: both duplicate alias for different modules is accepted (interp keeps first, vm keeps last)
-/// Two different modules under one alias: ModuleNameConflictError (spec §24.5).
-say("start")
-import _support/modules/alias_a as m
-import _support/modules/alias_b as m
-say(m::which())

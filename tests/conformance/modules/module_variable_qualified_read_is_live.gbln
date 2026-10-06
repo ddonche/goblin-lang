@@ -1,4 +1,4 @@
-/// known-gap: both interp has no m::var export; vm loses module-global writes made inside actions
+/// known-gap: interp has no m::var read; owner 2026-10-06: m::var reads the module global live (VM)
 import _support/modules/state as st
 say(st::counter)
 st::bump()

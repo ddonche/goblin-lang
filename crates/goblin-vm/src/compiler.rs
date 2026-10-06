@@ -1274,6 +1274,15 @@ impl Compiler {
                     self.emit(Opcode::Call(args.len() as u8));
                     return Ok(());
                 }
+                // `raw "…"`: the literal is kept exactly as written, so it is
+                // loaded as a constant and never interpolated.
+                if bare_name == "raw" && args.len() == 1 {
+                    if let Expr::Str(s, _) = &args[0] {
+                        let idx = self.add_constant(Value::Str(s.clone()));
+                        self.emit(Opcode::LoadConst(idx));
+                        return Ok(());
+                    }
+                }
                 // reap_*!(target, …): the call's value is what was reaped, and
                 // the target is left holding the rest (as in the interpreter):
                 // value = reap_X(…), rest = delete_X(…).
@@ -1549,10 +1558,14 @@ impl Compiler {
                     }
                     "//" => { self.emit(Opcode::CallBuiltin(BuiltinId::Sqrt, 1)); }
                     "++" | "--" => {
-                        // x++ compiles to x + 1 (non-mutating form; mutation via |! is separate)
+                        // x++ / x-- store x ± 1 back into x and evaluate to the new value.
                         let one = self.scope_mut().add_constant(Value::Int(1));
                         self.emit(Opcode::LoadConst(one));
                         if op == "++" { self.emit(Opcode::Add); } else { self.emit(Opcode::Sub); }
+                        if is_lvalue(inner) {
+                            self.emit(Opcode::Dup);
+                            self.compile_store_from_stack(inner)?;
+                        }
                     }
                     _ => { /* other postfix ops: compile inner value, no transform */ }
                 }
@@ -2558,7 +2571,16 @@ impl Compiler {
                         self.emit(Opcode::Pop);
                     }
                 } else {
-                    self.emit(Opcode::Pop); // no rescue block, discard error
+                    // No rescue: run the ensure block, then raise the error again.
+                    let err_slot = self.scope_mut().declare_local("__attempt_error__");
+                    self.emit(Opcode::StoreLocal(err_slot));
+                    if args.len() > 2 {
+                        let ensure_body = args[2].clone();
+                        self.compile_expr(&ensure_body)?;
+                        self.emit(Opcode::Pop);
+                    }
+                    self.emit(Opcode::LoadLocal(err_slot));
+                    self.emit(Opcode::CallBuiltin(BuiltinId::Panic, 1));
                 }
 
                 // end label

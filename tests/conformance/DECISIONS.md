@@ -1060,6 +1060,26 @@ In these cases both engines agree and the docs say something else. For each one:
 - Engines: the interpreter gives `{2: 2}`. The VM gave `[2]` on base and gives `{2: 2}` on cur, so cur changed the VM to match the interpreter and away from the doc.
 - **Rec:** the doc is canonical ("most common value(s)").
 
+## Owner rulings, 2026-10-06 20:35
+
+Remaining VM gaps after the docs were set aside. Implemented on the VM (and in the shared lexer/parser where noted); where the interpreter differs the case is a `known-gap: interp`, since the interpreter is going away.
+
+| case | ruling | change |
+|---|---|---|
+| `strings/raw_single_no_escapes`, `strings/raw_no_interpolation` | "Raw literally means keep what's in there." | Lexer: the literal after `raw` takes no escapes. VM: `raw "…"` loads the literal as written (no interpolation); `:raw(x)` returns x unchanged (it used to double braces). |
+| `collections/reap_sentence_from`, `collections/reap_sentence_count` | "Fix reap from." | Parser: `reap [n] from var` lowers to the destructive `reap!`, so the taken items leave the source. |
+| `core/attempt_ensure_without_rescue_propagates` | "Give an error." | VM: with no rescue, the ensure block runs and the error is raised again. |
+| `core/judge_using_value` | "Judge is supposed to pick the first true arm. Judge all picks all true arms." | Parser: under `judge using x`, a literal arm `"go":` means `x == "go"`; judge takes the first true arm. |
+| `strings/chars_element_as_needle` | "Chars. Do whatever you want." | VM: string-only builtins accept a char as a one-character string. |
+| `strings/float_large_not_saturated` | "Fix big." | VM: whole floats past i64 print all their digits instead of 9223372036854775807. |
+| `core/postfix_increment` | "Fix increment." | VM: `x++` / `x--` store the new value and evaluate to it (as the interpreter did). |
+| `core/pow_overflow` | "Do what's best for exponent." | VM: an integer power past i64 is promoted to big, like `+` and `*`. |
+| `modules/import_alias_conflict_keeps_first` | "Import the first and provide a warning." | VM: a second module under an alias already used in the file is skipped with a warning on stderr. |
+| `modules/module_variable_qualified_read_is_live` | (approved with the batch) | VM: `alias::var` reads the module's global as it is now. |
+| `collections/slice_builtin` | D24 A | VM: `:slice(a, s, e)` excludes the end for arrays as for strings. |
+
+Still open: variables named like builtins (7 `builtin_named_var_*` / `builtin_name_variable_*` cases) — waiting on whether such names are allowed (variable wins) or an error.
+
 ## VM-only builtins
 
 **Decided by the owner, 2026-10-06.** The interpreter will be removed once the VM works, so nothing is added to it.

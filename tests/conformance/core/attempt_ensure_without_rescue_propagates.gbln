@@ -1,4 +1,4 @@
-/// known-gap: both spec: with no matching rescue the error propagates after ensure; both swallow it
+/// known-gap: interp swallows the error; owner 2026-10-06: with no rescue the error propagates after ensure (VM)
 attempt
     say("a")
     q | 1 / 0

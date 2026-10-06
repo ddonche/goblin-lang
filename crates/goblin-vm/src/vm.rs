@@ -1217,6 +1217,21 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    // `alias::var` (no enum of that name): the imported module's
+                    // global as it is now, not a copy taken at import time.
+                    BuiltinId::EnumVariantExpr if matches!(arg_vals.get(2), Some(Value::Nil)) => {
+                        if let (Some(Value::Str(ns)), Some(Value::Str(var))) = (arg_vals.get(0), arg_vals.get(1)) {
+                            if !self.session.enums.contains_key(ns) {
+                                if let Some(v) = self.module_var(ns, var)? {
+                                    self.stack.push(Operand::Val(v));
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        let result = crate::builtins::call_builtin(id, arg_vals, &mut self.session)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
                     BuiltinId::Need => {
                         let result = self.vm_need(arg_vals)?;
                         self.stack.push(Operand::Val(result));
@@ -1672,6 +1687,26 @@ impl Vm {
                 } else {
                     self.session.project_root.join(&path_str)
                 };
+
+                // Remember which module this alias names in the importing file
+                // (the first import under an alias wins).
+                let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+                let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+                    let p = full_path.with_extension("gbln");
+                    if p.exists() { p } else { full_path.clone() }
+                } else { full_path.clone() };
+                let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
+                match self.session.module_aliases.get(&(importer.clone(), ns.clone())) {
+                    Some(first) if *first != prefix => {
+                        // A second module under an alias this file already uses:
+                        // keep the first one and skip this import.
+                        eprintln!("warning: import of '{}' as '{}' skipped: '{}' already names '{}' in this file",
+                            path_str, ns, ns, first.trim_end_matches("::"));
+                        return Ok(());
+                    }
+                    Some(_) => {}
+                    None => { self.session.module_aliases.insert((importer, ns.clone()), prefix); }
+                }
 
                 // Run with current_glam_ns = Some(alias) so RegisterAction registers
                 // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
@@ -2646,6 +2681,18 @@ impl Vm {
         let op = self.stack.pop()
             .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?;
         self.resolve_op(op)
+    }
+
+    /// The current value of `var` in the module the running file imported as `ns`.
+    fn module_var(&self, ns: &str, var: &str) -> Result<Option<Value>, GoblinError> {
+        let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+        let Some(prefix) = self.session.module_aliases.get(&(importer, ns.to_string())) else { return Ok(None) };
+        let full = format!("{prefix}{var}");
+        let Some(idx) = self.session.global_names.iter().position(|g| *g == full) else { return Ok(None) };
+        match self.session.get_global(idx) {
+            Some(t) => Ok(Some(self.session.read_value(t)?)),
+            None => Ok(None),
+        }
     }
 
     /// Call a named function from session.named_values and return its result.

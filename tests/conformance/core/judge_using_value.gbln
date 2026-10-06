@@ -1,4 +1,4 @@
-/// known-gap: both 'judge using <value>' (tests/judge-repeat.gbln): interp rejects non-boolean arms, vm picks the first arm
+/// Owner ruling 2026-10-06: judge picks the first true arm; under `using`, a literal arm is true when it equals the subject.
 c | "go"
 judge using c
     "look": say("L")

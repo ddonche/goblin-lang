@@ -598,7 +598,13 @@ impl<'t> Parser<'t> {
                     Box::new(enum_variant)
                 )
             }
-            
+
+            // Bare literal with a subject: "go"  =>  subject == "go"
+            PExpr::Str(_) | PExpr::StrInterp(_) | PExpr::Int(_) | PExpr::Float(_)
+            | PExpr::Bool(_) | PExpr::Char(_) | PExpr::Nil => {
+                PExpr::Binary(Box::new(subject.clone()), "==".to_string(), Box::new(cond.clone()))
+            }
+
             // Already has LHS or else: just return as-is
             _ => cond.clone()
         }
@@ -10605,6 +10611,20 @@ impl<'t> Parser<'t> {
                                 ));
                             }
                         }
+                    }
+                }
+
+                // `reap [n] from xs` on a variable removes what it takes from xs:
+                // lower to the destructive FreeCall("reap!", [Ident(xs), (count)?]).
+                if verb == "reap" {
+                    if let Some(PExpr::Ident(src_name)) = &src_expr {
+                        let mut args = vec![PExpr::Ident(src_name.clone())];
+                        if let Some(expr) = count_expr {
+                            args.push(expr);
+                        } else if !count_txt.is_empty() {
+                            args.push(PExpr::Int(count.to_string()));
+                        }
+                        return Ok(self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args)));
                     }
                 }
 

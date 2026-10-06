@@ -1430,11 +1430,13 @@ pub fn set_index(coll_val: Value, key: &Value, new_val: Value) -> Result<Value, 
 // ── Legacy grab family ────────────────────────────────────────────────────────
 
 fn slice_between(coll: &CollectionValue, start: i64, end: i64) -> Result<Value, GoblinError> {
+    // End-exclusive, as for strings (D24 A): negative indices count from the
+    // end, and out-of-range bounds are clamped.
     let items = to_vec(coll);
-    let len = items.len();
-    let s = resolve_seq_index(start, len)?;
-    let e = resolve_seq_index(end, len)? + 1;
-    let slice = items[s..e].to_vec();
+    let len = items.len() as i64;
+    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+    let e = if end < 0 { (len + end).max(0) } else { end.min(len) } as usize;
+    let slice = items[s..e.max(s)].to_vec();
     Ok(Value::Collection(Rc::new(CollectionValue::from_flat(slice))))
 }
 

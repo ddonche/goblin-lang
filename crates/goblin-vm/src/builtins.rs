@@ -49,7 +49,23 @@ fn legacy_arg(v: Value) -> Value {
     }
 }
 
+/// Builtins that only take strings: a char argument (e.g. an element of
+/// `chars(s)`) is accepted as the one-character string.
+fn takes_strings(id: BuiltinId) -> bool {
+    matches!(id,
+        BuiltinId::Lower | BuiltinId::Upper | BuiltinId::Title | BuiltinId::Slug | BuiltinId::Mixed
+        | BuiltinId::Raw | BuiltinId::Trim | BuiltinId::TrimLead | BuiltinId::TrimTrail
+        | BuiltinId::Find | BuiltinId::FindAll | BuiltinId::Split
+        | BuiltinId::StartsWith | BuiltinId::EndsWith
+        | BuiltinId::Before | BuiltinId::After | BuiltinId::BeforeLast | BuiltinId::AfterLast
+        | BuiltinId::KeepBefore | BuiltinId::KeepAfter | BuiltinId::KeepBetween
+        | BuiltinId::EscapeHtml | BuiltinId::UrlEncode | BuiltinId::UrlDecode)
+}
+
 fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+    let args: Vec<Value> = if takes_strings(id) && args.iter().any(|a| matches!(a, Value::Char(_))) {
+        args.into_iter().map(|a| match a { Value::Char(c) => Value::Str(c.to_string()), other => other }).collect()
+    } else { args };
     let read = |i: usize| -> Result<Value, GoblinError> {
         args.get(i).cloned().ok_or_else(|| GoblinError::Runtime(
             format!("builtin {:?}: expected arg {i}", id)
@@ -247,7 +263,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "pow".into() });
             }
             Ok(match (read(0)?, read(1)?) {
-                (Value::Int(b), Value::Int(e)) if e >= 0 => Value::Int(b.pow(e as u32)),
+                // Exact; a result past i64 is promoted to big.
+                (Value::Int(b), Value::Int(e)) if e >= 0 => match u32::try_from(e).ok().and_then(|e| b.checked_pow(e)) {
+                    Some(r) => Value::Int(r),
+                    None => Value::Big(big_pow(rust_decimal::Decimal::from(b), e)?),
+                },
+                (Value::Big(b), Value::Int(e)) if e >= 0 => Value::Big(big_pow(b, e)?),
                 // A negative integer exponent gives a fraction: 2 ** -1 = 0.5.
                 (Value::Int(b), Value::Int(e)) => Value::Float((b as f64).powi(e as i32)),
                 (Value::Int(b), Value::Float(e)) => Value::Float((b as f64).powf(e)),
@@ -310,13 +331,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Raw => {
             expect_n(1)?;
-            map_str_1(&read(0)?, &|s: &str| {
-                let mut out = String::with_capacity(s.len());
-                for ch in s.chars() {
-                    match ch { '{' => { out.push('{'); out.push('{'); } '}' => { out.push('}'); out.push('}'); } _ => out.push(ch) }
-                }
-                out
-            })
+            map_str_1(&read(0)?, &|s: &str| s.to_string())
         }
         BuiltinId::Trim => {
             expect_n(1)?;
@@ -2127,6 +2142,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let msg = if args.is_empty() { "panic!".to_string() } else {
                 match args[0].clone() { Value::Str(s) => s, v => value_to_str(&v) }
             };
+            // A re-raised error (attempt without rescue) already carries the prefix.
+            let msg = msg.strip_prefix("runtime error: ").map(str::to_string).unwrap_or(msg);
             Err(GoblinError::Runtime(msg))
         }
 
@@ -5031,11 +5048,12 @@ fn numeric_max(a: Value, b: Value) -> Result<Value, GoblinError> {
 }
 
 fn fmt_num_trim(f: f64) -> String {
-    if f.is_finite() && f.fract() == 0.0 {
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 9.2e18 {
         format!("{}", f as i64)
     } else {
+        // Whole floats past i64 print all their digits (no saturation).
         let s = format!("{}", f);
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
     }
 }
 
@@ -5913,4 +5931,18 @@ impl serde::Serialize for JsonOut<'_> {
         }
         value_to_json(v).serialize(ser)
     }
+}
+
+/// Exact `b ** e` for a big base; errors when the result does not fit a big.
+fn big_pow(b: rust_decimal::Decimal, e: i64) -> Result<rust_decimal::Decimal, GoblinError> {
+    let mut acc = rust_decimal::Decimal::ONE;
+    let mut base = b;
+    let mut e = e;
+    let overflow = || GoblinError::Runtime("pow: result is too large for a big number".into());
+    while e > 0 {
+        if e & 1 == 1 { acc = acc.checked_mul(base).ok_or_else(overflow)?; }
+        e >>= 1;
+        if e > 0 { base = base.checked_mul(base).ok_or_else(overflow)?; }
+    }
+    Ok(acc)
 }

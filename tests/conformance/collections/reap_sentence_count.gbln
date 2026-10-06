@@ -1,5 +1,4 @@
-/// known-gap: interp `reap n from` does not remove elements from the source; spec §14
-/// known-gap: vm `reap n from <array literal var>` fails ("expected map, got collection")
+/// Owner ruling 2026-10-06 ("fix reap from"): reap removes what it takes from the source variable.
 d | ["a", "b", "c"]
 x | reap 2 from d
 say(:len(x))

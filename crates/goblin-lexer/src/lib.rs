@@ -973,6 +973,18 @@ fn lex_escape_sequence(state: &mut LexerState) -> Result<char, Diagnostic> {
     ))
 }
 
+/// `raw "…"` (or `raw("…")`) keeps its literal exactly as written: the
+/// string right after the `raw` call takes no escapes.
+fn raw_call_precedes(state: &LexerState) -> bool {
+    let n = state.tokens.len();
+    let is_raw_ident = |t: &Token| t.kind == TokenKind::Ident && t.value.as_deref() == Some("raw");
+    match state.tokens.last() {
+        Some(t) if is_raw_ident(t) => true,
+        Some(t) if t.kind == TokenKind::Op("(".to_string()) && n >= 2 => is_raw_ident(&state.tokens[n - 2]),
+        _ => false,
+    }
+}
+
 fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Result<(), Vec<Diagnostic>> {
     let quote = state.current().unwrap();
     let start_i = state.i;
@@ -1833,7 +1845,7 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     }
                 } else {
                     // Double-quoted string
-                    let this_raw = state.pending_raw;
+                    let this_raw = state.pending_raw || raw_call_precedes(&state);
                     let this_trim = state.pending_trim_lead;
                     state.pending_raw = false;
                     state.pending_trim_lead = false;

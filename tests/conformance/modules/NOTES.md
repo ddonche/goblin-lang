@@ -36,9 +36,8 @@ Columns are baseline interp / baseline VM / wip1 interp / wip1 VM. "path" means 
 - Results: interp error R0111 duplicate-local (it re-runs the top level in the shared frame) / path / same / VM prints `0`, from the global-write bug below.
 - Spec §24.4 again: there is one cached instance.
 
-**import_alias_conflict_errors** (known-gap both)
-- Results: interp keeps the first module (`alias_a`) and the VM keeps the last (`alias_b`). Neither errors.
-- Spec §24.5: "Duplicate import … as Alias within one file → ModuleNameConflictError."
+**import_alias_conflict_keeps_first** (was import_alias_conflict_errors)
+- Owner ruling 2026-10-06: import the first module and warn. The VM skips the second import and prints a warning to stderr; the interpreter keeps the first without a warning.
 
 **import_cycle_errors** (known-gap both)
 - Results: both engines accept A→B→A silently. Mutual calls across the cycle even work: I checked `c(3)` → `cdcd` on both.
