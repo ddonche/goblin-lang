@@ -94,6 +94,7 @@ fn pooled() -> Result<&'static Pooled, DbError> {
 fn run<T: Send + 'static>(
     f: impl FnOnce(PgPool) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, DbError>> + Send>>,
 ) -> Result<T, DbError> {
+    let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Db);
     let p = pooled()?;
     let fut = f(p.pool.clone());
     let (tx, rx) = mpsc::sync_channel(1);

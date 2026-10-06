@@ -1125,7 +1125,13 @@ async fn exec_goblin_script_via_vm(
             response.headers.insert("Content-Type".to_string(), "text/html; charset=utf-8".to_string());
             Ok((html_str, response))
         } else {
-            goblin_vm::exec::execute_source_api(&src, &script_path_str)
+            let started = std::time::Instant::now();
+            let result = goblin_vm::exec::execute_source_api(&src, &script_path_str);
+            if goblin_diagnostics::phase::enabled() {
+                eprintln!("{} total={:.2}ms", goblin_diagnostics::phase::take_report(),
+                    started.elapsed().as_secs_f64() * 1e3);
+            }
+            result
         }
     });
 

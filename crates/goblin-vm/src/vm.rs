@@ -2017,6 +2017,7 @@ impl Vm {
     }
 
     fn render_string_interp(&mut self, s: &str) -> Result<String, GoblinError> {
+        let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Interp);
         const RAW_SENTINEL: &str = "\u{001E}RAW:";
         if let Some(rest) = s.strip_prefix(RAW_SENTINEL) {
             return Ok(rest.to_string());
@@ -2415,6 +2416,7 @@ impl Vm {
     /// `owner_glam`, when Some, is stamped onto the top-level actions compiled
     /// from this file (so `:need()` can later identify their owning GLAM).
     fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
+        let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Import);
         let canonical = full_path.to_string_lossy().to_string();
         if self.session.imported.contains(&canonical) {
             return Ok(());

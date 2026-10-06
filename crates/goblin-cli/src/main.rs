@@ -121,6 +121,14 @@ fn read_module_paths_from_yaml(cwd: &Path) -> BTreeMap<String, PathBuf> {
     out
 }
 
+/// Exits with `code`, first printing `GOBLIN_PHASE_TIMES` totals when on.
+fn exit_with_phase_times(code: i32) -> ! {
+    if goblin_diagnostics::phase::enabled() {
+        eprintln!("{}", goblin_diagnostics::phase::take_report());
+    }
+    std::process::exit(code)
+}
+
 fn main() {
     #[cfg(windows)]
         enable_utf8_console();
@@ -372,17 +380,17 @@ fn main() {
         // Capture anything after the filename as extra args
         let extra_args: Vec<String> = args.iter().skip(1).cloned().collect();
         if use_vm {
-            std::process::exit(run_run_vm(target.as_path(), extra_args));
+            exit_with_phase_times(run_run_vm(target.as_path(), extra_args));
         }
-        std::process::exit(run_run_with_args(target.as_path(), extra_args));
+        exit_with_phase_times(run_run_with_args(target.as_path(), extra_args));
     }
 
     // Run script file if a single path argument is provided
     if args.len() == 1 && is_probable_file(&args[0]) {
         if use_vm {
-            std::process::exit(run_run_vm(Path::new(&args[0]), vec![]));
+            exit_with_phase_times(run_run_vm(Path::new(&args[0]), vec![]));
         }
-        std::process::exit(run_run(Path::new(&args[0])));
+        exit_with_phase_times(run_run(Path::new(&args[0])));
     }
 
     eprintln!(

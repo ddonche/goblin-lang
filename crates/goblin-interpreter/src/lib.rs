@@ -3320,6 +3320,7 @@ fn parse_dice_string(s: &str, sp: Span) -> Result<IndexMap<String, Value>, Diag>
 // NEW: Supports "\{" -> "{" and "\}" -> "}", and resolves triple-brace tokens.
 // Legacy "{{" / "}}" escapes have been removed.
 fn render_interpolated(s: &str, sess: &mut Session, sp: &Span) -> Result<String, Diag> {
+    let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Interp);
     // ---- RAW BYPASS: if string came from raw(), return it literally (no changes)
     if let Some(rest) = s.strip_prefix(RAW_SENTINEL) {
         return Ok(rest.to_string());
@@ -4616,6 +4617,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
         }
 
         ast::Stmt::Import(import_stmt) => {
+            let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Import);
             use std::path::{Path, PathBuf};
             use goblin_diagnostics::{Diagnostic, Severity};
             use crate::diagnostics::{rtcode, import_failed_focus_inner};
