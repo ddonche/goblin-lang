@@ -1,2 +1,1 @@
-/// known-gap: vm get(<array>) fails ("expected collection, got collection")
 say(:get([1, 2]))

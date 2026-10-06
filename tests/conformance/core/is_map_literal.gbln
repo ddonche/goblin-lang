@@ -1,3 +1,2 @@
-/// known-gap: vm is_map is false for a map literal (Value::Collection not matched)
 say(:is_map({"a": 1}))
 say(:is_map([1]))

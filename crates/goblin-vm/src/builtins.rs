@@ -373,6 +373,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── String legacy ─────────────────────────────────────────────────────
         BuiltinId::Len => {
+            // `count` resolves to Len; `count(s, sub)` is the occurrence count.
+            if args.len() == 2 { return dispatch(BuiltinId::Count, args, session); }
             expect_n(1)?;
             Ok(match read(0)? {
                 Value::Str(s)        => Value::Int(s.chars().count() as i64),
@@ -440,21 +442,19 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     }).collect();
                     Ok(Value::Str(out))
                 }
-                Value::Array(items) => {
+                v if v.is_seq_like() => {
+                    // Like the interpreter: only strings and chars can be joined.
+                    let items = v.seq_items().unwrap_or_default();
                     let mut out = String::new();
-                    for (i, v) in items.iter().enumerate() {
+                    for (i, x) in items.iter().enumerate() {
                         if i > 0 { out.push_str(&sep); }
-                        match v {
+                        match x {
                             Value::Str(s)  => out.push_str(s),
                             Value::Char(c) => out.push(*c),
-                            other => out.push_str(&value_to_str(other)),
+                            other => return Err(GoblinError::type_error("str or char element", other.type_name(), "join")),
                         }
                     }
                     Ok(Value::Str(out))
-                }
-                Value::Collection(c) => {
-                    let parts: Vec<String> = collections::to_vec(&c).iter().map(value_to_str).collect();
-                    Ok(Value::Str(parts.join(&sep)))
                 }
                 other => Err(GoblinError::type_error("str, array or collection", other.type_name(), "join")),
             }
@@ -1125,20 +1125,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Items => {
             expect_n(1)?;
-            match read(0)? {
-                Value::Map(m) => {
-                    let pairs: Vec<Value> = m.iter()
-                        .map(|(k, v)| Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())))
+            match read(0)?.map_entries() {
+                Some(entries) => {
+                    let pairs: Vec<Value> = entries.into_iter()
+                        .map(|(k, v)| Value::Pair(Box::new(Value::Str(k)), Box::new(v)))
                         .collect();
                     Ok(collections::into_collection(Value::Array(pairs)))
                 }
-                Value::MapOrd(m) => {
-                    let pairs: Vec<Value> = m.iter()
-                        .map(|(k, v)| Value::Pair(Box::new(Value::Str(k.clone())), Box::new(v.clone())))
-                        .collect();
-                    Ok(collections::into_collection(Value::Array(pairs)))
-                }
-                other => Err(GoblinError::type_error("map", other.type_name(), "items")),
+                None => Err(GoblinError::type_error("map", read(0)?.type_name(), "items")),
             }
         }
 
@@ -1282,7 +1276,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     Ok(Value::Int(acc as i64))
                 }
                 Value::Array(mut items) => {
-                    items.sort_by(|a, b| fmt_value_raw(a).cmp(&fmt_value_raw(b)));
+                    items.sort_by(collections::compare_for_sort);
                     Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
                 }
                 Value::Collection(c) => Ok(collections::sort_values(&c)),
@@ -2136,11 +2130,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::IsInt        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Int(_)))) }
         BuiltinId::IsFloat      => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Float(_)))) }
         BuiltinId::IsStr        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Str(_)))) }
-        BuiltinId::IsArray      => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Array(_) | Value::Collection(_)))) }
-        BuiltinId::IsMap        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Map(_) | Value::MapOrd(_)))) }
+        BuiltinId::IsArray      => { expect_n(1)?; let v = read(0)?; Ok(Value::Bool(v.is_seq_like() && !matches!(v, Value::Seq(_)))) }
+        BuiltinId::IsMap        => { expect_n(1)?; Ok(Value::Bool(read(0)?.is_map_like())) }
         BuiltinId::IsCollection => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Collection(_) | Value::Array(_) | Value::Map(_) | Value::MapOrd(_) | Value::Seq(_)))) }
         BuiltinId::IsFunction   => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Function(_) | Value::Closure(_)))) }
-        BuiltinId::IsBig        => { expect_n(1)?; Ok(Value::Bool(false)) } // no Big in VM
+        BuiltinId::IsBig        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Big(_)))) }
         BuiltinId::IsPct        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Pct(_)))) }
         BuiltinId::IsNum        => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Int(_) | Value::Float(_) | Value::Pct(_)))) }
         BuiltinId::IsChar       => { expect_n(1)?; Ok(Value::Bool(matches!(read(0)?, Value::Char(_)))) }
@@ -2231,9 +2225,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Bool(match read(0)? {
                 Value::Nil => true,
                 Value::Str(s) => s.is_empty() || s.chars().all(|c| c.is_whitespace()),
-                Value::Array(a) => a.is_empty(),
-                Value::Map(m) => m.is_empty(),
-                Value::MapOrd(m) => m.is_empty(),
+                v if v.is_container() => v.container_len() == 0,
                 _ => false,
             }))
         }
@@ -2241,22 +2233,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── Conversions ───────────────────────────────────────────────────────
         BuiltinId::ToInt => {
             expect_n(1)?;
-            Ok(match read(0)? {
-                Value::Int(n)   => Value::Int(n),
-                Value::Float(f) | Value::Pct(f) => Value::Int(f.trunc() as i64),
-                Value::Bool(b)  => Value::Int(b as i64),
-                Value::Char(c)  => Value::Int(c as u32 as i64),
-                Value::Str(s)   => {
-                    let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
-                    cleaned.parse::<i64>()
-                        .map(Value::Int)
-                        .unwrap_or_else(|_| cleaned.parse::<f64>()
-                            .map(|f| Value::Int(f.trunc() as i64))
-                            .unwrap_or(Value::Nil))
-                }
-                Value::Nil => Value::Nil,
-                other => return Err(GoblinError::type_error("number or str", other.type_name(), "to_int")),
-            })
+            // Same conversion as the `:int` lock: an unparsable string is an error.
+            lock_to_int(read(0)?)
         }
         BuiltinId::ToFloat => {
             expect_n(1)?;
@@ -4558,6 +4536,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(s) => Ok(Value::Array(s.chars().map(|c| Value::Char(c)).collect())),
                 Value::Map(m) => Ok(Value::Array(m.into_values().collect())),
                 Value::MapOrd(m) => Ok(Value::Array(m.into_values().collect())),
+                Value::Collection(c) if c.is_map() => Ok(Value::Array(collections::values(&c))),
+                v @ Value::Collection(_) => Ok(v),
+                Value::Seq(s) => Ok(Value::Array(s.items)),
                 Value::Nil => Ok(Value::Array(vec![])),
                 other => Err(GoblinError::type_error("collection", other.type_name(), "get")),
             }

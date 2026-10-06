@@ -1,4 +1,3 @@
-/// known-gap: vm put! with a literal array value fails ("expected array, got collection")
 l | [1, 2]
 :put!(l, [7, 8])
 say l

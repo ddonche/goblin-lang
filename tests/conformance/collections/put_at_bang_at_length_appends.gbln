@@ -1,4 +1,3 @@
-/// known-gap: vm put_at at index == len errors "index out of bounds"; interpreter (reference) inserts at the end
 l | [1, 2, 3]
 :put_at!(l, 3, 9)
 say l
