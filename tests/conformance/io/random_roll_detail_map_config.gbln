@@ -1,4 +1,3 @@
-/// known-gap: vm map literal is a Collection, and roll_detail rejects it
 /// roll_detail takes the same config map and returns the detail map.
 d | :roll_detail({"count": 2, "sides": 6})
 say(:len(d["values"]))

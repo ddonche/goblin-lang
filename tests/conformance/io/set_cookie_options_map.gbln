@@ -1,4 +1,3 @@
-/// known-gap: vm map literal is a Collection, and set_cookie rejects it ("options must be a map")
 /// set_cookie accepts an options map as third argument.
 :set_cookie("sid", "abc", {"http_only": true, "path": "/"})
 say("ok")

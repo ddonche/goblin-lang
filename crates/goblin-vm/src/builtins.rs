@@ -17,7 +17,36 @@ pub fn call_builtin(
     args: Vec<Value>,
     session: &mut Session,
 ) -> Result<Value, GoblinError> {
+    let args = if takes_legacy_args(id) { args.into_iter().map(legacy_arg).collect() } else { args };
     dispatch(id, args, session)
+}
+
+/// Builtins whose arms are written against the legacy `Value::Map` /
+/// `Value::Array` shapes and only read their arguments (config / option maps,
+/// small source arrays). Their collection arguments are rewritten to legacy
+/// form on entry, so map and array literals are accepted.
+fn takes_legacy_args(id: BuiltinId) -> bool {
+    matches!(id,
+        BuiltinId::Roll | BuiltinId::RollDetail | BuiltinId::SampleWeighted
+        | BuiltinId::SecurePick | BuiltinId::SecureShuffle | BuiltinId::ReapSample
+        | BuiltinId::RunCmd | BuiltinId::SetCookie | BuiltinId::DtAddDuration
+        | BuiltinId::IgnoreBetween | BuiltinId::IgnoreBlocks | BuiltinId::IgnoreBlocksFirst
+        | BuiltinId::KeepBetween)
+}
+
+/// A collection argument in legacy form: a map collection (or MapOrd) becomes
+/// a `Value::Map` whose collection values are legacy too (one level, e.g. a
+/// config's `src` array); an array collection becomes a `Value::Array`.
+fn legacy_arg(v: Value) -> Value {
+    match v {
+        Value::Collection(ref c) if c.is_map() => {
+            let m = v.to_btree_map().unwrap_or_default();
+            Value::Map(m.into_iter().map(|(k, x)| (k, x.into_legacy())).collect())
+        }
+        Value::Collection(_) => v.into_legacy(),
+        Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (k, x.into_legacy())).collect()),
+        other => other,
+    }
 }
 
 fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
@@ -2290,10 +2319,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let env_vars: Vec<(String, String)> = if args.len() == 3 {
                 match read(2)? {
                     Value::Map(map) => map.into_iter().map(|(k, v)| (k, match v {
-                        Value::Str(s) => s, other => format!("{:?}", other),
+                        Value::Str(s) => s, other => value_to_str(&other),
                     })).collect(),
                     Value::MapOrd(map) => map.into_iter().map(|(k, v)| (k, match v {
-                        Value::Str(s) => s, other => format!("{:?}", other),
+                        Value::Str(s) => s, other => value_to_str(&other),
                     })).collect(),
                     _ => return Err(GoblinError::Runtime("run_cmd: env argument must be a map".into())),
                 }
@@ -3059,6 +3088,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let val = read(1)?;
             match arr {
                 Value::Array(mut v) => { v.push(val); Ok(Value::Array(v)) }
+                Value::Collection(c) if !c.is_map() => collections::put_last(&c, val),
                 other => Err(GoblinError::type_error("array", other.type_name(), "array_push")),
             }
         }
@@ -5600,11 +5630,9 @@ fn lexical_path_normalize(path: &str) -> String {
 
 fn regex_with_flags(pattern: &str, flags_val: &Value) -> String {
     let mut f_i = false; let mut f_m = false; let mut f_s = false;
-    if let Value::Map(m) = flags_val {
-        if let Some(Value::Bool(b)) = m.get("i") { f_i = *b; }
-        if let Some(Value::Bool(b)) = m.get("m") { f_m = *b; }
-        if let Some(Value::Bool(b)) = m.get("s") { f_s = *b; }
-    }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("i") { f_i = b; }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("m") { f_m = b; }
+    if let Some(Value::Bool(b)) = flags_val.map_lookup("s") { f_s = b; }
     let mut f = String::new();
     if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
     if f.is_empty() { pattern.to_string() } else { format!("(?{}){}", f, pattern) }
