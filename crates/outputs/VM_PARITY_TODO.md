@@ -195,7 +195,7 @@ Summary: interp gap 47, interp only 3, parity 214, untested 54, vm only 20
 | `local_now` | vm+interp | parity | 1/1 | 1/1 |
 | `lower` | vm+interp | parity | 6/6 | 6/6 |
 | `m` | vm+interp | interp gap | 71/77 | 77/77 |
-| `map` | vm+interp | interp gap | 24/31 | 31/31 |
+| `map` | vm+interp | interp gap | 25/32 | 32/32 |
 | `map_fn` | vm | vm only | 0/1 | 1/1 |
 | `max` | vm+interp | interp gap | 4/5 | 5/5 |
 | `md_to_html` | vm+interp | parity | 1/1 | 1/1 |

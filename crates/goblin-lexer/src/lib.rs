@@ -90,6 +90,9 @@ struct LexerState<'a> {
     tokens: Vec<Token>,
     pending_raw: bool,
     pending_trim_lead: bool,
+    /// Open `{{{` literal tokens; `}}}` closes one only while one is open, so
+    /// `{"u": {"n": c{"k"}}}` ends with three plain braces.
+    triple_open: usize,
 }
 
 impl<'a> LexerState<'a> {
@@ -106,6 +109,7 @@ impl<'a> LexerState<'a> {
             tokens: Vec::new(),
             pending_raw: false,
             pending_trim_lead: false,
+            triple_open: 0,
         }
     }
 
@@ -1881,12 +1885,14 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance_by(3); // do NOT touch state.nest
+                state.triple_open += 1;
                 let span = state.span(start_i, start_col);
                 state.tokens.push(Token { kind: TokenKind::TripleBraceOpen, span, value: None });
             }
 
             // "}}}" → TripleBraceClose (must be before single '}')
-            b'}' if state.peek(1) == Some(b'}') && state.peek(2) == Some(b'}') => {
+            b'}' if state.triple_open > 0 && state.peek(1) == Some(b'}') && state.peek(2) == Some(b'}') => {
+                state.triple_open -= 1;
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance_by(3); // do NOT touch state.nest
