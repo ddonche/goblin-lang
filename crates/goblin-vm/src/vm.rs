@@ -211,21 +211,8 @@ impl Vm {
             match self.execute_op(op) {
                 Ok(()) => {}
                 Err(e) => {
-                    if let Some(handler) = self.catch_stack.pop() {
-                        // Unwind call stack to catch frame's depth
-                        while self.call_stack.len() > handler.call_depth {
-                            self.call_stack.pop();
-                        }
-                        // Restore operand stack
-                        self.stack.truncate(handler.stack_depth);
-                        // Push error message as a string
-                        let err_str = e.to_string();
-                        self.stack.push(Operand::Val(Value::Str(err_str)));
-                        // Jump to catch block
-                        if let Some(frame) = self.call_stack.last_mut() {
-                            frame.ip = handler.catch_ip;
-                        }
-                    } else {
+                    let e = match self.catch_error(e, 0) { Ok(()) => continue, Err(e) => e };
+                    {
                         let (line, file) = self.call_stack.last()
                             .map(|f| (
                                 f.func.line_numbers.get(f.ip.saturating_sub(1)).copied().unwrap_or(0),
@@ -2389,6 +2376,28 @@ impl Vm {
     // ── invoke / summon / provoke ────────────────────────────────────────────
 
     /// Execute instructions until call_stack depth drops back to `target_depth`.
+    /// Hand `e` to the innermost `attempt` handler opened deeper than
+    /// `min_depth` frames, unwinding to it and jumping to its rescue block.
+    /// Handlers whose frame has already gone are discarded.
+    fn catch_error(&mut self, e: GoblinError, min_depth: usize) -> Result<(), GoblinError> {
+        while let Some(h) = self.catch_stack.last() {
+            if h.call_depth > self.call_stack.len() { self.catch_stack.pop(); continue; }
+            break;
+        }
+        let Some(handler) = self.catch_stack.last() else { return Err(e) };
+        if handler.call_depth <= min_depth { return Err(e); }
+        let handler = self.catch_stack.pop().unwrap();
+        while self.call_stack.len() > handler.call_depth {
+            self.call_stack.pop();
+        }
+        self.stack.truncate(handler.stack_depth);
+        self.stack.push(Operand::Val(Value::Str(e.to_string())));
+        if let Some(frame) = self.call_stack.last_mut() {
+            frame.ip = handler.catch_ip;
+        }
+        Ok(())
+    }
+
     pub(crate) fn run_until_depth(&mut self, target_depth: usize) -> Result<(), GoblinError> {
         while self.call_stack.len() > target_depth {
             let op = {
@@ -2407,7 +2416,12 @@ impl Vm {
                 frame.ip += 1;
                 op
             };
-            self.execute_op(op).map_err(|e| {
+            let result = match self.execute_op(op) {
+                Ok(()) => Ok(()),
+                // An `attempt` opened inside this nested run catches the error here.
+                Err(e) => self.catch_error(e, target_depth),
+            };
+            result.map_err(|e| {
                 // Attach innermost location BEFORE unwinding so the error
                 // shows where it actually occurred, not the outer call site.
                 let located = if matches!(e, GoblinError::WithLocation { .. }) {
