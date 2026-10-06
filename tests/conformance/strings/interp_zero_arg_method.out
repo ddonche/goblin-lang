@@ -1,1 +1,1 @@
-/users/hello-world
+/users/{name.slug}

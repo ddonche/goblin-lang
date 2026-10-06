@@ -1,4 +1,4 @@
-/// known-gap: both cheat-sheet/spec: 'a..b' is inclusive
+/// Docs disagree; decided 2026-10-06 that the implementation is canonical (DECISIONS.md, "Docs vs both engines"). The docs need updating.
 a | 1
 b | 3
 s | 0
