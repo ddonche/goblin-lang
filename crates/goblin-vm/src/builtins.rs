@@ -242,6 +242,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             Ok(match (read(0)?, read(1)?) {
                 (Value::Int(b), Value::Int(e)) if e >= 0 => Value::Int(b.pow(e as u32)),
+                // A negative integer exponent gives a fraction: 2 ** -1 = 0.5.
+                (Value::Int(b), Value::Int(e)) => Value::Float((b as f64).powi(e as i32)),
                 (Value::Int(b), Value::Float(e)) => Value::Float((b as f64).powf(e)),
                 (Value::Float(b), Value::Float(e)) => Value::Float(b.powf(e)),
                 (Value::Float(b), Value::Int(e)) => Value::Float(b.powi(e as i32)),
@@ -2369,8 +2371,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::RandSeed => {
             expect_n(1)?;
-            // interpreter just seeds the RNG — in VM we ignore since session handles it
-            Ok(Value::Nil)
+            // Reseed the session RNG like the interpreter does, so a seed
+            // repeats the same sequence. (|1: the VM's MCG needs an odd state.)
+            let n = match read(0)? {
+                Value::Int(i) => i as f64,
+                Value::Float(f) | Value::Pct(f) => f,
+                other => return Err(GoblinError::type_error("number", other.type_name(), "rand_seed")),
+            };
+            session.rng_state = ((n.to_bits() as u128) ^ 0x9E37_79B9_7F4A_7C15u128) | 1;
+            Ok(Value::Unit)
         }
         BuiltinId::Roll => {
             expect_n(1)?;
@@ -4770,6 +4779,13 @@ fn zip_directory(src: &str, dest: &str) -> Result<(), GoblinError> {
         return Err(GoblinError::Runtime(format!("zip_dir: source '{}' does not exist", src)));
     }
 
+    // Like copy_file!, create the destination's missing parent directories.
+    if let Some(parent) = std::path::Path::new(dest).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| GoblinError::Runtime(format!("zip_dir: cannot create '{}': {}", parent.display(), e)))?;
+        }
+    }
     let dest_file = File::create(dest)
         .map_err(|e| GoblinError::Runtime(format!("zip_dir: cannot create '{}': {}", dest, e)))?;
     let mut zip = zip::ZipWriter::new(BufWriter::new(dest_file));
