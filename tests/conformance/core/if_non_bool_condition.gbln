@@ -1,5 +1,4 @@
 /// Decided 2026-10-06 (D-truthiness, option B; see DECISIONS.md).
-/// known-gap: interp decision D-truthiness (option B) not implemented yet
 if 1 => say("one")
 if "" => say("empty")
 if nil => say("nil")

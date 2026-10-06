@@ -1,4 +1,3 @@
-/// known-gap: interp casting a counter inside a while body crashes with "const table missing entry"
 act probe(n)
     i | 0
     c | 0

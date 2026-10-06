@@ -1,4 +1,3 @@
-/// known-gap: interp if requires a bool (docs: "" is falsy, " " truthy)
 if ""
     say("truthy")
 else

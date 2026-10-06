@@ -558,6 +558,13 @@ pub struct Session {
 
     pub response: ResponseState,
 
+    /// D-toplevel-return (B): set when a top-level `return` runs; later
+    /// top-level statements are skipped so the script ends there.
+    pub halted: bool,
+
+    /// Env indexes of frames pushed for blocks (if/loop/attempt bodies), innermost last.
+    block_marks: Vec<usize>,
+
     // ==== OVERLAY SYSTEM ====
     pub overlay_defs: HashMap<String, OverlayDef>,
     pub overlay_instances: Vec<OverlayInstance>,
@@ -930,6 +937,8 @@ impl Session {
         let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         Self {
+            halted: false,
+            block_marks: Vec::new(),
             history: Vec::new(),
             env: vec![BTreeMap::new()],
             actions: BTreeMap::new(),
@@ -1106,9 +1115,37 @@ impl Session {
         F: FnMut(&mut Session) -> Result<T, Diagnostic>,
     {
         sess.push_frame();
+        sess.block_marks.push(sess.env.len() - 1);
         let r = f(sess);
+        sess.block_marks.pop();
         sess.pop_frame();
         r
+    }
+
+    /// D-block-scope (C): inside an `if`/loop/attempt block, `x | v` is an error
+    /// when `x` is already bound in an enclosing block of the same action (its
+    /// parameters and top-level body included) or, at the script's top level,
+    /// earlier in the top-level code. Module globals seen from inside an action
+    /// do not count, and neither do sibling blocks that already closed.
+    fn check_outer_tether(&self, name: &str, at: &Span) -> Result<(), Diagnostic> {
+        let mut i = self.env.len() - 1;
+        while i > 0 && self.block_marks.contains(&i) {
+            i -= 1;
+            if self.env[i].contains_key(name) {
+                return Err(
+                    Diagnostic::new_with_code(
+                        Severity::Error,
+                        crate::diagnostics::rtcode::DUPLICATE_LOCAL, // R0111
+                        "outer-redeclare",
+                        format!("'{}' is already declared in an enclosing block", name),
+                        at.clone(),
+                    )
+                    .with_help("Use '|=' to update it, or '[=' to shadow it in this block.")
+                    .with_link("https://goblinlang.org/docs/errors#R0111"),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Block scope ≙ a regular frame layered on top of the current one.
@@ -1339,7 +1376,18 @@ impl Session {
     }
 
     pub fn eval_stmt(&mut self, s: &ast::Stmt) -> Result<Option<Value>, Diag> {
-        eval_stmt(s, self)
+        // D-toplevel-return (B): once a top-level `return` ran, the script is over.
+        if self.halted {
+            return Ok(None);
+        }
+        let out = eval_stmt(s, self)?;
+        if self.env.len() == 1 {
+            if let Some(Value::CtrlReturn(_)) = &out {
+                self.halted = true;
+                return Ok(None);
+            }
+        }
+        Ok(out)
     }
 
     // Evaluate a whole module (returns last expression value if any).
@@ -1347,6 +1395,11 @@ impl Session {
         let mut last = None;
         for stmt in &m.items {
             if let Some(v) = eval_stmt(stmt, self)? {
+                if let Value::CtrlReturn(inner) = v {
+                    // D-toplevel-return (B): a top-level `return` ends the module.
+                    last = Some(*inner);
+                    break;
+                }
                 last = Some(v);
             }
         }
@@ -1408,7 +1461,17 @@ impl Session {
 
     // Evaluate a single expression node and push it to history.
     pub fn eval_expr(&mut self, e: &ast::Expr) -> Result<Value, Diag> {
-        let v = eval_expr(e, self)?;
+        if self.halted {
+            return Ok(Value::Nil);
+        }
+        let mut v = eval_expr(e, self)?;
+        if self.env.len() == 1 {
+            if let Value::CtrlReturn(_) = v {
+                // D-toplevel-return (B): e.g. `if c => return` at the top level.
+                self.halted = true;
+                v = Value::Nil;
+            }
+        }
         self.history.push(v.clone());
         Ok(v)
     }
@@ -2091,6 +2154,10 @@ fn cast_to_str(v: Value) -> Result<Value, Diag> {
 }
 
 fn cast_to_map(val: Value) -> Result<Value, Diag> {
+    // D-to-map (B): a map cast to a map is returned unchanged.
+    if matches!(val, Value::Map(_) | Value::MapOrd(_)) {
+        return Ok(val);
+    }
     let text = cast_to_str(val)?;
     
     let s = match text {
@@ -2561,6 +2628,38 @@ fn span_of_expr(e: &ast::Expr) -> Span {
         | ast::Expr::LiteralToken { span: sp, .. }
         | ast::Expr::BoxVar { namespace: _, name: _, span: sp } => sp.clone(),
     }
+}
+
+/// D-truthiness (B): falsy values are false, 0, 0.0, "", [], {}, nil.
+/// Everything else is truthy.
+/// D-whole-float-type (B): floor/ceil/round give an int (a float only when out of i64 range).
+fn whole_to_int(f: f64) -> Value {
+    if f.is_finite() && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+        Value::Int(f as i64)
+    } else {
+        Value::Float(f)
+    }
+}
+
+pub(crate) fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Nil | Value::Unit => false,
+        Value::Int(n) => *n != 0,
+        Value::Float(f) | Value::Pct(f) => *f != 0.0,
+        Value::Big(d) => !d.is_zero(),
+        Value::Str(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Map(m) => !m.is_empty(),
+        Value::MapOrd(m) => !m.is_empty(),
+        Value::Formatted(inner, _) => truthy(inner),
+        _ => true,
+    }
+}
+
+/// Condition test for if / elif / while / judge arms: truthiness (D-truthiness B).
+fn cond_truthy(v: Value, _at: Span, _label: &str) -> Result<bool, Diag> {
+    Ok(truthy(&v))
 }
 
 fn as_bool(v: Value, at: Span, label: &str) -> Result<bool, Diag> {
@@ -3755,6 +3854,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                             .with_link("https://goblinlang.org/docs/errors#R0111"),
                                         );
                                     }
+                                    sess.check_outer_tether(&name, &name_span)?;
                                     sess.define_local(name, val, false);
                                 }
 
@@ -3890,6 +3990,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         .with_link("https://goblinlang.org/docs/errors#R0111"),
                                     );
                                 }
+                                sess.check_outer_tether(&name, &name_span)?;
                                 sess.define_local(name, val, false);
                             }
 
@@ -4015,6 +4116,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                                         .with_link("https://goblinlang.org/docs/errors#R0111"),
                                     );
                                 }
+                                sess.check_outer_tether(&name, &name_span)?;
                                 sess.define_local(name, val, false);
                             }
 
@@ -4672,6 +4774,21 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                         return Ok(None);
                     }
 
+                    // D-import-without-alias (C): importing a module file needs `as <alias>`
+                    // (only `.imports` manifests are imported without one).
+                    if import_stmt.alias.is_none() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO, // R0501
+                                "import-alias-required",
+                                format!("import of '{}' needs an alias", path),
+                                import_stmt.span.clone(),
+                            )
+                            .with_help("Write: import <path> as <alias>, then use <alias>::name.")
+                            .with_link("https://goblinlang.org/docs/errors#R0501"),
+                        );
+                    }
                     // Normal path import (existing behavior)
                     let (namespace, maybe_ast) = sess
                         .modules
@@ -4999,6 +5116,22 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
 
                     // Normal path import (existing behavior)
+                    // D-import-without-alias (C): importing a module file needs `as <alias>`
+                    // (only `.imports` manifests are imported without one).
+                    if import_stmt.alias.is_none() {
+                        return Err(
+                            Diagnostic::new_with_code(
+                                Severity::Error,
+                                rtcode::IMPORT_IO, // R0501
+                                "import-alias-required",
+                                format!("import of '{}' needs an alias", path_str),
+                                import_stmt.span.clone(),
+                            )
+                            .with_help("Write: import <path> as <alias>, then use <alias>::name.")
+                            .with_link("https://goblinlang.org/docs/errors#R0501"),
+                        );
+                    }
+                    
                     let (namespace, maybe_ast) = sess
                         .modules
                         .load_module(&path_str, import_stmt.alias.as_deref(), &base_dir)
@@ -5616,7 +5749,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     }
                     Some(cond) => {
                         let v = eval_expr(cond.as_ref(), sess)?;
-                        if as_bool(v, arm.span.clone(), "judge condition")? {
+                        if cond_truthy(v, arm.span.clone(), "judge condition")? {
                             match &arm.body {
                                 ast::JudgeArmBody::Expr(e) => {
                                     let v = eval_expr(e, sess)?;
@@ -5670,7 +5803,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                     None => { else_arm = Some(arm); }
                     Some(cond) => {
                         let v = eval_expr(cond.as_ref(), sess)?;
-                        if as_bool(v, arm.span.clone(), "judge_all condition")? {
+                        if cond_truthy(v, arm.span.clone(), "judge_all condition")? {
                             hits.push(arm);
                         }
                     }
@@ -5932,6 +6065,7 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
                             .with_link("https://goblinlang.org/docs/errors#R0111"),
                         );
                     }
+                    sess.check_outer_tether(name, &name_span)?;
 
                     // Not present in current frame -> declare here (shadows outer if it exists there).
                     // If a type lock was declared (name.TYPE | value), cast and record it.
@@ -6538,8 +6672,8 @@ fn eval_builtin(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)    => Value::Int(*i),                  // already integral
-                Value::Float(f)  => Value::Float(f.round()),
-                Value::Pct(p)    => Value::Float(p.round()),
+                Value::Float(f)  => whole_to_int(f.round()),
+                Value::Pct(p)    => whole_to_int(p.round()),
                 Value::Big(d)    => Value::Big(d.round_dp(0)),
                 _ => return Err(
                     Diagnostic::new_with_code(
@@ -6558,8 +6692,8 @@ fn eval_builtin(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)    => Value::Int(*i),                  // already integral
-                Value::Float(f)  => Value::Float(f.floor()),
-                Value::Pct(p)    => Value::Float(p.floor()),
+                Value::Float(f)  => whole_to_int(f.floor()),
+                Value::Pct(p)    => whole_to_int(p.floor()),
                 Value::Big(d)    => Value::Big(d.floor()),
                 _ => return Err(
                     Diagnostic::new_with_code(
@@ -6578,8 +6712,8 @@ fn eval_builtin(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)    => Value::Int(*i),
-                Value::Float(f)  => Value::Float(f.ceil()),
-                Value::Pct(p)    => Value::Float(p.ceil()),
+                Value::Float(f)  => whole_to_int(f.ceil()),
+                Value::Pct(p)    => whole_to_int(p.ceil()),
                 Value::Big(d)    => Value::Big(d.ceil()),
                 _ => return Err(
                     Diagnostic::new_with_code(
@@ -9702,7 +9836,8 @@ fn collection_operation(
                                 }
                             }
                             
-                            if result_map.is_empty() {
+                            // D-get-matching-empty (B): get_matching with no match gives an empty result; reap still errors.
+                            if result_map.is_empty() && matches!(op, Operation::Reap) {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -10393,7 +10528,8 @@ fn collection_operation(
                                 .map(|m| Value::Str(m.as_str().to_string()))
                                 .collect();
                             
-                            if matches.is_empty() {
+                            // D-get-matching-empty (B): get_matching with no match gives an empty result; reap still errors.
+                            if matches.is_empty() && matches!(op, Operation::Reap) {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -11054,7 +11190,8 @@ fn collection_operation(
                                 .cloned()
                                 .collect();
 
-                            if matches.is_empty() {
+                            // D-get-matching-empty (B): get_matching with no match gives an empty result; reap still errors.
+                            if matches.is_empty() && matches!(op, Operation::Reap) {
                                 return Err(
                                     Diagnostic::new_with_code(
                                         Severity::Error,
@@ -11384,7 +11521,8 @@ fn call_action_by_name(
                                         }
                                     }
                                 }
-                                last
+                                // D-fallthrough-return-value (B): no value means nil, not unit.
+                                if matches!(last, Value::Unit) { Value::Nil } else { last }
                             }
                             ast::ActionBody::Expr(expr) => {
                                 // single-line action: implicit return
@@ -11514,7 +11652,8 @@ fn call_action_by_name(
                                 }
                             }
                         }
-                        last
+                        // D-fallthrough-return-value (B): no value means nil, not unit.
+                        if matches!(last, Value::Unit) { Value::Nil } else { last }
                     }
                     ast::ActionBody::Expr(expr) => {
                         eval_expr(expr, sess)?
@@ -11587,7 +11726,8 @@ fn call_action_by_name(
                             }
                         }
                     }
-                    last
+                    // D-fallthrough-return-value (B): no value means nil, not unit.
+                    if matches!(last, Value::Unit) { Value::Nil } else { last }
                 }
                 ast::ActionBody::Expr(expr) => {
                     // single-line action (`=> expr`) — implicit return value
@@ -12365,7 +12505,7 @@ fn call_action_by_name(
             let kind = match recv {
                 Value::Nil => "nil",
                 Value::Bool(_) => "bool",
-                Value::Float(n) if n.is_finite() && n.fract() == 0.0 => "int",
+                // D-whole-float-type (B): a whole float is still a float.
                 Value::Big(_) => "big",
                 Value::Float(_) => "float",
                 Value::Int(_) => "int",
@@ -12411,11 +12551,8 @@ fn call_action_by_name(
                 Value::Formatted(inner, _) => &**inner,
                 other => other,
             };
-            let is_int_like_float = match v {
-                Value::Float(n) => n.is_finite() && n.fract() == 0.0,
-                _ => false,
-            };
-            Value::Bool(matches!(v, Value::Int(_)) || is_int_like_float)
+            // D-whole-float-type (B): only ints are ints.
+            Value::Bool(matches!(v, Value::Int(_)))
         }
 
         "is_float" => {
@@ -12425,11 +12562,8 @@ fn call_action_by_name(
                 other => other,
             };
             // float but NOT "int-like" (to mirror valtype -> "int" classification)
-            let is_proper_float = match v {
-                Value::Float(n) => !(n.is_finite() && n.fract() == 0.0),
-                _ => false,
-            };
-            Value::Bool(is_proper_float)
+            // D-whole-float-type (B): every float is a float, whole or not.
+            Value::Bool(matches!(v, Value::Float(_)))
         }
 
         "is_big" => {
@@ -13209,8 +13343,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)   => Value::Int(*i),                // already integral
-                Value::Float(f) => Value::Float(f.round()),
-                Value::Pct(p)   => Value::Float(p.round()),
+                Value::Float(f) => whole_to_int(f.round()),
+                Value::Pct(p)   => whole_to_int(p.round()),
                 Value::Big(d)   => Value::Big(d.round_dp(0)),
                 _ => {
                     return Err(
@@ -13231,8 +13365,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)   => Value::Int(*i),            // already integral
-                Value::Float(f) => Value::Float(f.floor()),
-                Value::Pct(p)   => Value::Float(p.floor()),
+                Value::Float(f) => whole_to_int(f.floor()),
+                Value::Pct(p)   => whole_to_int(p.floor()),
                 Value::Big(d)   => Value::Big(d.floor()),
                 _ => {
                     return Err(
@@ -13253,8 +13387,8 @@ fn call_action_by_name(
             arity(1)?;
             match &args[0] {
                 Value::Int(i)   => Value::Int(*i),            // already integral
-                Value::Float(f) => Value::Float(f.ceil()),
-                Value::Pct(p)   => Value::Float(p.ceil()),
+                Value::Float(f) => whole_to_int(f.ceil()),
+                Value::Pct(p)   => whole_to_int(p.ceil()),
                 Value::Big(d)   => Value::Big(d.ceil()),
                 _ => {
                     return Err(
@@ -17781,7 +17915,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#J0004")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "create_dir" => {
@@ -17817,7 +17951,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "zip_dir" => {
@@ -17981,7 +18115,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "delete_path" => {
@@ -18044,7 +18178,7 @@ fn mutate_via_call_name(
                 })?;
             }
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         // write_text!(path, text)
@@ -18080,7 +18214,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         "append_file" => {
@@ -18133,7 +18267,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
             
-            return Ok(Value::Unit);
+            return Ok(Value::Nil) /* D-bang-io-return (B) */;
         }
 
         // copy_file!(src, dst)
@@ -18176,7 +18310,7 @@ fn mutate_via_call_name(
                 .with_link("https://goblinlang.org/docs/errors#FS0001")
             })?;
 
-            return Ok(Value::Unit)
+            return Ok(Value::Nil) /* D-bang-io-return (B) */
         }
 
         _ => {}
@@ -18473,7 +18607,7 @@ fn mutate_via_call_name(
     if let Some(path) = target_path_opt {
         let slot = get_lvalue_mut(&path, sess, &sp)?;
         *slot = updated;
-        Ok(Value::Unit)
+        Ok(Value::Nil) /* D-bang-io-return (B) */
     } else {
         Ok(updated)
     }
@@ -19163,7 +19297,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         Some(cond) => {
                             let v = eval_expr(cond.as_ref(), sess)?;
-                            if as_bool(v, arm.span.clone(), "judge_all condition")? {
+                            if cond_truthy(v, arm.span.clone(), "judge_all condition")? {
                                 // Use explicit value if present, otherwise header, otherwise nil
                                 let val = if let Some(expr) = &arm.value {
                                     eval_expr(expr.as_ref(), sess)?
@@ -19205,7 +19339,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         }
                         Some(cond) => {
                             let v = eval_expr(cond.as_ref(), sess)?;
-                            if as_bool(v, arm.span.clone(), "judge condition")? {
+                            if cond_truthy(v, arm.span.clone(), "judge condition")? {
                                 let val = if let Some(expr) = &arm.value {
                                     eval_expr(expr.as_ref(), sess)?
                                 } else if let Some(h) = header {
@@ -19289,31 +19423,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                    // Any scalar key for maps (string, int, float, bool, char)
                 (Value::Map(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                            "no-such-field",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
                 (Value::MapOrd(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                            "no-such-field",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
 
                 (Value::Map(_), other_idx) | (Value::MapOrd(_), other_idx) => Err(
@@ -19350,31 +19466,13 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             match (b, k) {
                 (Value::Map(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD,
-                            "no-such-key",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
                 (Value::MapOrd(map), key_val) if value_to_map_key(&key_val).is_some() => {
                     let key = value_to_map_key(&key_val).unwrap();
-                    map.get(&key).cloned().ok_or_else(|| {
-                        Diagnostic::new_with_code(
-                            Severity::Error,
-                            crate::diagnostics::rtcode::NO_SUCH_FIELD,
-                            "no-such-key",
-                            &format!("missing key '{}'", key),
-                            sp.clone(),
-                        )
-                        .with_help("Check the key exists in the map.")
-                        .with_link("https://goblinlang.org/docs/errors#R0403")
-                    })
+                    // D-missing-key-read (B): a missing key reads as nil.
+                    Ok(map.get(&key).cloned().unwrap_or(Value::Nil))
                 }
                 (Value::Array(_), _) => Err(Diagnostic::new_with_code(
                     Severity::Error,
@@ -19715,22 +19813,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
             }
 
             match base_v {
-                Value::Map(map) => {
-                    match map.get(name) {
-                        Some(v) => Ok(v.clone()),
-                        None => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::NO_SUCH_FIELD, // R0403
-                                "missing-key",
-                                &format!("missing key ‘{}’", name),
-                                sp.clone(),
-                            )
-                            .with_help("Ensure the key exists before accessing it.")
-                            .with_link("https://goblinlang.org/docs/errors#R0403"),
-                        ),
-                    }
-                }
+                // D-missing-key-read (B): a missing key reads as nil.
+                Value::Map(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
+                Value::MapOrd(map) => Ok(map.get(name).cloned().unwrap_or(Value::Nil)),
 
                 Value::Object { class_name, fields, readonly_fields: _, uuid, .. } => {
                     // 1) If it's a method name on this class, return a bound-method wrapper
@@ -20162,17 +20247,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
 
             // ============ END BOUND METHOD DISPATCH ============
 
-            // ---- Mutating casts for function form when arg is a plain identifier ----
-            if matches!(name, "float" | "int" | "big" | "str" | "pct" | "f" | "i" | "b" | "string" | "percent")
-               && args.len() == 1
-            {
-                if let ast::Expr::Ident(var_name, _) = &args[0] {
-                    let cur = eval_expr(&args[0], sess)?;
-                    let out = call_action_by_name(sess, &name, vec![cur], sp.clone())?;
-                    sess.set_var(var_name.clone(), out.clone());
-                    return Ok(out);
-                }
-            }
+            // D-cast-rebinds (A): casts are pure; they never rebind their argument.
 
             // ---- bang builtins: put_at!(), delete_all!(), reap!(), ... ----
             if name.ends_with('!') {
@@ -20199,7 +20274,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     }
 
                     let cond_v = eval_expr(&args[0], sess)?;
-                    let result = if as_bool(cond_v, sp.clone(), "if condition")? {
+                    let result = if cond_truthy(cond_v, sp.clone(), "if condition")? {
                         Session::with_block(sess, |sess| eval_expr(&args[1], sess))?
                     } else if args.len() == 3 {
                         Session::with_block(sess, |sess| eval_expr(&args[2], sess))?
@@ -20234,7 +20309,7 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     sess.loop_depth += 1;
                     'outer: loop {
                         let c = eval_expr(&args[0], sess)?;
-                        if !as_bool(c, sp.clone(), "while condition")? { break; }
+                        if !cond_truthy(c, sp.clone(), "while condition")? { break; }
 
                         let v = Session::with_block(sess, |sess| eval_expr(&args[1], sess))?;
                         match v {
@@ -21214,21 +21289,9 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 "!" | "not" => {
+                    // D-truthiness (B): `not` takes any value and returns a bool.
                     let v = eval_expr(expr, sess)?;
-                    match v {
-                        Value::Bool(b) => Ok(Value::Bool(!b)),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                "boolean-expected",
-                                "logical ‘not’ requires a boolean.",
-                                sp.clone(),
-                            )
-                            .with_help("Use true/false, or an expression that evaluates to a boolean.")
-                            .with_link("https://goblinlang.org/docs/errors#T0203"),
-                        ),
-                    }
+                    Ok(Value::Bool(!truthy(&v)))
                 }
 
                 _ => Err(
@@ -21513,8 +21576,8 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                     for i in 2..=k { acc = acc.saturating_mul(i); }
                     Ok(Value::Float(acc as f64))
                 }
-                "^" => Ok(Value::Float(as_num(v, sp.clone(), "ceil")?.ceil())),
-                "_" => Ok(Value::Float(as_num(v, sp.clone(), "floor")?.floor())),
+                "^" => Ok(whole_to_int(as_num(v, sp.clone(), "ceil")?.ceil())),
+                "_" => Ok(whole_to_int(as_num(v, sp.clone(), "floor")?.floor())),
                 "?" => Ok(Value::Bool(!matches!(v, Value::Nil))),
                 "*>>" | "*>>:show_ids" => {
                     let show_ids = op.ends_with(":show_ids");
@@ -22034,9 +22097,14 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 .with_link("https://goblinlang.org/docs/errors#R0206")
                             );
                         }
-                        let q = (a / b).floor();
-                        let r = a - q * b;
-                        Value::Float(r)
+                        // D-whole-float-type (B): int % int stays an int (floor modulo).
+                        if let (Value::Int(x), Value::Int(y)) = (&lu, &ru) {
+                            Value::Int(x.rem_euclid(*y) + if *y < 0 && x.rem_euclid(*y) != 0 { *y } else { 0 })
+                        } else {
+                            let q = (a / b).floor();
+                            let r = a - q * b;
+                            Value::Float(r)
+                        }
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
@@ -22081,7 +22149,12 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                                 .with_link("https://goblinlang.org/docs/errors#R0206")
                             );
                         }
-                        Value::Float((a / b).floor())
+                        // D-whole-float-type (B): int // int stays an int (floor division).
+                        if let (Value::Int(x), Value::Int(y)) = (&lu, &ru) {
+                            Value::Int(x.div_euclid(*y) - if *y < 0 && x.rem_euclid(*y) != 0 { 1 } else { 0 })
+                        } else {
+                            Value::Float((a / b).floor())
+                        }
                     };
                     Ok(reapply_format(out, lspec, rspec))
                 },
@@ -22396,79 +22469,22 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                 }
 
                 // logical ops + coalesce
+                // D-truthiness (B): and / or take any values and return a bool.
                 "and" | "&&" => {
                     let lv = eval_expr(lhs, sess)?;
-                    match lv {
-                        Value::Bool(false) => return Ok(Value::Bool(false)), // short-circuit
-                        Value::Bool(true)  => { /* evaluate rhs */ }
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                    "boolean-expected",
-                                    "boolean expected",
-                                    sp.clone(),
-                                )
-                                .with_help("Logical ‘and’ (and/&&) requires a boolean on the left side.")
-                                .with_help("Cast or convert the left operand to Bool before using ‘and’/‘&&’.")
-                                .with_link("https://goblinlang.org/docs/errors#T0203")
-                            );
-                        }
+                    if !truthy(&lv) {
+                        return Ok(Value::Bool(false)); // short-circuit
                     }
                     let rv = eval_expr(rhs, sess)?;
-                    match rv {
-                        Value::Bool(b) => Ok(Value::Bool(b)),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                "boolean-expected",
-                                "boolean expected",
-                                sp.clone(),
-                            )
-                            .with_help("Logical ‘and’ (and/&&) requires a boolean on the right side.")
-                            .with_help("Cast or convert the right operand to Bool before using ‘and’/‘&&’.")
-                            .with_link("https://goblinlang.org/docs/errors#T0203")
-                        ),
-                    }
+                    Ok(Value::Bool(truthy(&rv)))
                 }
                 "or" | "<>" => {
                     let lv = eval_expr(lhs, sess)?;
-                    match lv {
-                        Value::Bool(true)  => return Ok(Value::Bool(true)), // short-circuit
-                        Value::Bool(false) => { /* evaluate rhs */ }
-                        _ => {
-                            return Err(
-                                Diagnostic::new_with_code(
-                                    Severity::Error,
-                                    crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                    "boolean-expected",
-                                    "boolean expected",
-                                    sp.clone(),
-                                )
-                                .with_help("Logical ‘or’ (or/<>) requires a boolean on the left side.")
-                                .with_help("Cast or convert the left operand to Bool before using ‘or’/‘<>’.")
-                                .with_link("https://goblinlang.org/docs/errors#T0203")
-                            );
-                        }
+                    if truthy(&lv) {
+                        return Ok(Value::Bool(true)); // short-circuit
                     }
                     let rv = eval_expr(rhs, sess)?;
-                    match rv {
-                        Value::Bool(b) => Ok(Value::Bool(b)),
-                        _ => Err(
-                            Diagnostic::new_with_code(
-                                Severity::Error,
-                                crate::diagnostics::rtcode::BOOLEAN_EXPECTED, // T0203
-                                "boolean-expected",
-                                "boolean expected",
-                                sp.clone(),
-                            )
-                            .with_help("Logical ‘or’ (or/<>) requires a boolean on the right side.")
-                            .with_help("Cast or convert the right operand to Bool before using ‘or’/‘<>’.")
-                            .with_link("https://goblinlang.org/docs/errors#T0203")
-                        ),
-                    }
+                    Ok(Value::Bool(truthy(&rv)))
                 }
 
                 // nix coalesce, works for nil or empty
@@ -22759,7 +22775,9 @@ fn call_object_method_with_values(
                     }
                 }
 
-                last
+                // D-fallthrough-return-value (B): no value means nil, not unit.
+
+                if matches!(last, Value::Unit) { Value::Nil } else { last }
             }
             ast::ActionBody::Expr(expr) => {
                 // single-line action (`=> expr`) — implicit return of the expr value
@@ -22881,7 +22899,8 @@ fn call_object_method(
                         }
                     }
                 }
-                last
+                // D-fallthrough-return-value (B): no value means nil, not unit.
+                if matches!(last, Value::Unit) { Value::Nil } else { last }
             }
             ast::ActionBody::Expr(expr) => {
                 // single-line action (`=> expr`) — implicit return of the expr value
