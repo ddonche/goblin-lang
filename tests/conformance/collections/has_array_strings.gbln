@@ -1,0 +1,3 @@
+/// known-gap: vm has() on an array of strings returns false for a present element
+say(:has(["a", "b"], "a"))
+say(:has(["a", "b"], "z"))

@@ -1,0 +1,7 @@
+repeat 3
+    say("r")
+xx
+n | 2
+repeat n
+    say(n)
+xx

@@ -1,0 +1,4 @@
+/// known-gap: interp negative indices rejected ("index must be a non-negative integer"); spec §14 "negative indices count from the end"
+l | [10, 20, 30]
+say(l[-1])
+say(l[-2])

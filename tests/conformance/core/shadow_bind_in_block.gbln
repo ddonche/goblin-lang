@@ -1,0 +1,7 @@
+/// undecided: D-block-scope
+x | 1
+if true
+    x [= 2
+    say(x)
+xx
+say(x)

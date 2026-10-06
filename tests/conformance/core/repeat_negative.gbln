@@ -1,0 +1,5 @@
+/// undecided: D-repeat-negative
+repeat -1
+    say("no")
+xx
+say("done")

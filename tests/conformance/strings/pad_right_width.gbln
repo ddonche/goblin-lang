@@ -1,0 +1,2 @@
+/// known-gap: interp lacks pad_right
+say("[" + :pad_right("ab", 5) + "]")

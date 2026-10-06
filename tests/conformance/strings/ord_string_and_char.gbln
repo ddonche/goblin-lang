@@ -1,0 +1,4 @@
+say(:ord("A"))
+say(:ord("é"))
+say(:ord('A'))
+say(:ord("\u{2019}"))

@@ -1,0 +1,2 @@
+/// known-gap: vm sample_weighted rejects a config-map literal ("expected map config, got collection")
+say(:sample_weighted({"src": ["only"], "weights": [1.0]}))

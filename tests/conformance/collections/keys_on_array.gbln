@@ -1,0 +1,3 @@
+/// undecided: D-keys-on-array
+say "before"
+say(:keys([1, 2]))

@@ -1,0 +1,2 @@
+/// known-gap: both cheat-sheet says nil.str is "" (both print "nil")
+say("[" + :str(nil) + "]")

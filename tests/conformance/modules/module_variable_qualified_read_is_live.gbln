@@ -1,0 +1,5 @@
+/// known-gap: both interp has no m::var export; vm loses module-global writes made inside actions
+import _support/modules/state as st
+say(st::counter)
+st::bump()
+say(st::counter)

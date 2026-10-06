@@ -1,0 +1,2 @@
+/// undecided: D-to-map
+say(:to_map({"a": 1}))

@@ -1,0 +1,2 @@
+/// known-gap: vm count is an alias of len and rejects the needle argument (arity mismatch); cheat-sheet "count "needle" in s → occurrence count"
+say(:count("banana", "a"))

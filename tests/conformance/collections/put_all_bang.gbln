@@ -1,0 +1,5 @@
+/// known-gap: interp has no put_all builtin (unknown action)
+/// known-gap: vm put_all with a literal array value fails ("expected array, got collection")
+l | [1, 2]
+:put_all!(l, [3, 4])
+say l

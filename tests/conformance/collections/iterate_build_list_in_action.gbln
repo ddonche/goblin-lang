@@ -1,0 +1,10 @@
+act build(n)
+    out | []
+    i | 0
+    while i < n
+        :put_last!(out, i * 2)
+        i |= i + 1
+    xx
+    return out
+xx
+say(build(3))

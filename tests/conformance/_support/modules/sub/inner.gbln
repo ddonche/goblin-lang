@@ -1,0 +1,5 @@
+/// helper in a subdirectory; imports relative to the project root (cwd)
+import _support/modules/mathy as mm
+act triple_add(a, b)
+    return mm::add(a, b) * 3
+xx

@@ -1,0 +1,5 @@
+/// helper: diamond right side
+import _support/modules/loud as loud
+act name()
+    return "right+" + loud::hi()
+xx

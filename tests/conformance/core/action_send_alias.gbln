@@ -1,0 +1,4 @@
+act dbl(a)
+    send a * 2
+xx
+say(dbl(4))

@@ -1,0 +1,2 @@
+/// undecided: D-format-info-no-thousands
+say(:format_info(:format(2.5, 2)))

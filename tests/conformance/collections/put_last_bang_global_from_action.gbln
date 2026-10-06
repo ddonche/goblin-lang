@@ -1,0 +1,7 @@
+log | []
+act note(x)
+    :put_last!(log, x)
+xx
+note("a")
+note("b")
+say log

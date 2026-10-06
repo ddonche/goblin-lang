@@ -1,0 +1,4 @@
+say(:big("123.450"))
+say(:big("10") / :big("4"))
+say(:big(1) / :big(3))
+say(:big(5))

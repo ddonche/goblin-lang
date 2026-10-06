@@ -1,0 +1,7 @@
+say("42".int + 1)
+say(3.9.int)
+say(true.str)
+x | "8"
+y | x.int
+say(:valtype(x))
+say(y + 1)

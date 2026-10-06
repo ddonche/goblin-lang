@@ -1,0 +1,7 @@
+/// undecided: D-enum-display
+enum Status
+    Idle
+    Busy
+xx
+say(Status::Idle)
+say(:str(Status::Busy))

@@ -1,0 +1,8 @@
+items | []
+act push_item(x)
+    :put_last!(items, x)
+    return :len(items)
+xx
+say(push_item("a"))
+say(push_item("b"))
+say(:len(items))

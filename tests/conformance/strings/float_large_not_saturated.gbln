@@ -1,0 +1,3 @@
+/// known-gap: both whole floats beyond i64 print as 9223372036854775807 (fmt_num_trim casts to i64)
+say(:str(1e20) == "9223372036854775807")
+say(:str(1.5e300) == "9223372036854775807")

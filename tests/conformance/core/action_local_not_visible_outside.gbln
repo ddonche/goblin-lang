@@ -1,0 +1,6 @@
+act fx()
+    loc | 3
+    return loc
+xx
+say(fx())
+say(loc)

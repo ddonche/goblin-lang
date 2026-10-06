@@ -1,0 +1,3 @@
+/// known-gap: vm != on equal arrays returns true; cheat-sheet: "containers compare structurally"
+say([1, 2] != [1, 2])
+say([1, 2] != [1, 3])

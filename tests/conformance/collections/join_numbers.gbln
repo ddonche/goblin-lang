@@ -1,0 +1,2 @@
+/// undecided: D-join-non-strings
+say(:join([1, 2], ","))

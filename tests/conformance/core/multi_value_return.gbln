@@ -1,0 +1,5 @@
+/// undecided: D-multi-return
+act fx()
+    return 1, 2
+xx
+say(fx())

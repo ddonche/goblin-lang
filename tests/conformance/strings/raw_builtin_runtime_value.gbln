@@ -1,0 +1,4 @@
+x | "a\tb"
+r | :raw(x)
+say(r == x)
+say(:len(r))

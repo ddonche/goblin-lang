@@ -1,0 +1,3 @@
+/// known-gap: both {{ }} is not turned into literal braces (docs: use {{ and }} for literal braces)
+score | 15
+say("body {{font-size:{score}px;}}")

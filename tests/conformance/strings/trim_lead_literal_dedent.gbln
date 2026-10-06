@@ -1,0 +1,6 @@
+/// known-gap: both trim_lead """...""" strips all leading whitespace instead of the common indent
+t | trim_lead """
+    Hello
+      World
+"""
+say(:trim(t))

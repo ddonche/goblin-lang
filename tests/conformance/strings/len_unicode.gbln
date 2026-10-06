@@ -1,0 +1,5 @@
+say(:len(""))
+say(:len("héllo"))
+say(:len("✓✓"))
+say(:len("👍🏽"))
+say("é".len)

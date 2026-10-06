@@ -1,0 +1,14 @@
+act classify(x)
+    if x > 5 => return "big"
+    if x == 5
+        return "five"
+    elif x > 2
+        return "mid"
+    else
+        return "small"
+    xx
+xx
+say(classify(9))
+say(classify(5))
+say(classify(3))
+say(classify(1))

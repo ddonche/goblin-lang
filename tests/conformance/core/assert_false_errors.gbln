@@ -1,0 +1,3 @@
+say("start")
+:assert(1 == 2, "msg")
+say("after")

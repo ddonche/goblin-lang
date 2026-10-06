@@ -1,0 +1,6 @@
+/// known-gap: interp has no reap_random builtin (unknown action)
+/// known-gap: vm reap_*! writes the reaped value back into the variable instead of the shrunken collection
+l | [7, 7, 7]
+x | :reap_random!(l)
+say x
+say(:len(l))

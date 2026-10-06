@@ -1,0 +1,2 @@
+src | "{\"a\":1,\"b\":[true,null,2.5],\"c\":{\"d\":\"x\"}}"
+say(:json_stringify(:json_parse(src)))

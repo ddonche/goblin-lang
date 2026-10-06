@@ -1,0 +1,6 @@
+/// undecided: D-cast-rebinds
+i | 5
+s | :str(i)
+say(s)
+say(i + 1)
+say(:valtype(i))

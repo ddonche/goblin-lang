@@ -1,0 +1,4 @@
+repeat 0
+    say("no")
+xx
+say("done")

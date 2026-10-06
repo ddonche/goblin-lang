@@ -1,0 +1,2 @@
+say("start")
+say(:parse_bool("maybe"))

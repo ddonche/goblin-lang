@@ -1,0 +1,12 @@
+act all(x)
+    return "all-mine"
+xx
+act str(x)
+    return "str-mine"
+xx
+act f(x)
+    return "f-mine"
+xx
+say(all(2))
+say(str(2))
+say(f(2))

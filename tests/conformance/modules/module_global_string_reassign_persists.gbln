@@ -1,0 +1,3 @@
+import _support/modules/state as st
+st::set_label("changed")
+say(st::get_label())

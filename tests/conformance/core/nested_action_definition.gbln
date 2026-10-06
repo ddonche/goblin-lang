@@ -1,0 +1,7 @@
+act outer()
+    act inner()
+        return 5
+    xx
+    return inner() + 1
+xx
+say(outer())

@@ -1,0 +1,3 @@
+/// known-gap: interp lacks to_upper/to_lower
+say(:to_upper("john DOE"))
+say(:to_lower("john DOE"))

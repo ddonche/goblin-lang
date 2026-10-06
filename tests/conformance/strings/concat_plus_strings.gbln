@@ -1,0 +1,8 @@
+x | "ab"
+x |= x + "cd"
+say(x)
+s | ""
+for w in ["a", "b", "c"]
+    s |= s + w
+xx
+say(s)

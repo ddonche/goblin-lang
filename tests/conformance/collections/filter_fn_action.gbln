@@ -1,0 +1,5 @@
+/// known-gap: interp has no filter_fn builtin (unknown action)
+act over_one(n)
+    return n > 1
+xx
+say(:filter_fn([1, 2, 3], "over_one"))

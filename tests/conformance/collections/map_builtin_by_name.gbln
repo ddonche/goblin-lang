@@ -1,0 +1,1 @@
+say(:map(["a", "b"], "upper"))

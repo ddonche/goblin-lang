@@ -1,0 +1,5 @@
+/// known-gap: interp has no for_each_fn builtin (unknown action)
+act shout(x)
+    say x
+xx
+:for_each_fn([1, 2], "shout")

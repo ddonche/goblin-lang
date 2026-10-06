@@ -1,0 +1,5 @@
+/// known-gap: vm is_big returns false for a big value even though valtype says big
+b | :big(1)
+say(:valtype(b))
+say(:is_big(b))
+say(:is_big(1))

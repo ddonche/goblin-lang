@@ -1,0 +1,1 @@
+say(:get_matching("a1b22", "[0-9]+"))

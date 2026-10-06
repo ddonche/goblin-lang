@@ -1,0 +1,5 @@
+/// undecided: D-block-scope
+for i in [1, 2]
+    w | i * 10
+xx
+say(w)

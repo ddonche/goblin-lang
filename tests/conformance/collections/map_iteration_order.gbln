@@ -1,0 +1,4 @@
+/// undecided: D-map-key-order
+for p in {"b": 1, "a": 2}
+    say(p[0])
+xx

@@ -1,0 +1,6 @@
+for i in [1, 2]
+    for j in [1, 2, 3]
+        if j == 2 => stop
+        say(i * 10 + j)
+    xx
+xx

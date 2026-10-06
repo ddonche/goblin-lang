@@ -1,0 +1,13 @@
+/// undecided: D-cast-rebinds
+a | 5
+t1 | :big(a)
+say(:valtype(a))
+b | "5"
+t2 | :i(b)
+say(:valtype(b))
+c | 5
+t3 | :string(c)
+say(:valtype(c))
+d | 5
+t4 | :percent(d)
+say(:valtype(d))

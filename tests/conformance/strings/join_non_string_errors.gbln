@@ -1,0 +1,3 @@
+/// known-gap: vm join silently stringifies non-string elements (docs: TypeError)
+say("start")
+say(:join([1, 2], ","))

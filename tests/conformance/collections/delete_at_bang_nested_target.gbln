@@ -1,0 +1,4 @@
+/// known-gap: vm bang call on an indexed target (m["k"]) silently does not write back
+m | {"k": [1, 2]}
+:delete_at!(m["k"], 0)
+say(m["k"])

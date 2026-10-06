@@ -1,0 +1,3 @@
+l | [1, 2]
+:put_first!(l, 0)
+say l

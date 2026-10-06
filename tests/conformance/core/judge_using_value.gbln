@@ -1,0 +1,7 @@
+/// known-gap: both 'judge using <value>' (tests/judge-repeat.gbln): interp rejects non-boolean arms, vm picks the first arm
+c | "go"
+judge using c
+    "look": say("L")
+    "go": say("G")
+    else: say("?")
+xx

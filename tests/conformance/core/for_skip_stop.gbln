@@ -1,0 +1,7 @@
+total | 0
+for k in [1, 2, 3, 4]
+    if k == 2 => skip
+    if k == 4 => stop
+    total |= total + k
+xx
+say(total)

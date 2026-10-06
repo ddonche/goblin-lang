@@ -1,0 +1,2 @@
+say(:json_stringify("he said \"hi\"\n"))
+say(:json_stringify("é✓"))

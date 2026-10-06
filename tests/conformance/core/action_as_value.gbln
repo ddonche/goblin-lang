@@ -1,0 +1,6 @@
+/// known-gap: interp an action name cannot be used as a value
+act ident(x)
+    return x
+xx
+g | ident
+say(g(3))

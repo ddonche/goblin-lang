@@ -1,0 +1,3 @@
+/// known-gap: interp to_str/to_string are VM-only (interp: unknown action)
+say(:to_str(42) + "!")
+say(:to_string(7) + "!")

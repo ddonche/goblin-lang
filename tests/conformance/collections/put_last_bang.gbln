@@ -1,0 +1,3 @@
+l | [1, 2]
+:put_last!(l, 3)
+say l

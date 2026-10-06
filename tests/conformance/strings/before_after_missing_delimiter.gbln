@@ -1,0 +1,4 @@
+a | :before("abc", "z")
+b | :after("abc", "z")
+say("[{a}]")
+say("[{b}]")

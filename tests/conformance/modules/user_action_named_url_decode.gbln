@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act url_decode(x)
+    return "user-url_decode"
+xx
+say(url_decode("a%20b"))

@@ -1,0 +1,6 @@
+/// known-gap: interp `reap from` does not remove the element from the source; spec §14 "reap mirrors pick but removes selected elements"
+/// known-gap: vm `reap from <array literal var>` fails ("expected map, got collection")
+d | [1, 2, 3]
+x | reap from d
+say(:len(d))
+say(:sum(d) + x)

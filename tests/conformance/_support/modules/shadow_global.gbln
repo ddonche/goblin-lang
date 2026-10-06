@@ -1,0 +1,8 @@
+/// helper: module global `x` and an action parameter also named `x`
+x | 100
+act echo(x)
+    return x
+xx
+act read_x()
+    return x
+xx

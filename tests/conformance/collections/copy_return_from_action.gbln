@@ -1,0 +1,8 @@
+act addone(xs)
+    :put_last!(xs, 99)
+    return xs
+xx
+a | [1, 2]
+b | addone(a)
+say a
+say b

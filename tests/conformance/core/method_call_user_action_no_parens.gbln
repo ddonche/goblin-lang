@@ -1,0 +1,5 @@
+/// known-gap: both spec: zero-arg method calls may omit parens (10.double); both reject 4.inc
+act inc(x)
+    return x + 1
+xx
+say(4.inc)

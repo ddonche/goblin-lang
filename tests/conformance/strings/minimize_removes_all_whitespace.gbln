@@ -1,0 +1,3 @@
+/// known-gap: both minimize collapses whitespace runs to one space (docs: removes ALL whitespace)
+s | "  Hello   World  "
+say(:minimize(s))

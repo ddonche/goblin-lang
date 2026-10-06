@@ -1,0 +1,10 @@
+/// known-gap: interp a cast of an outer variable inside a loop body corrupts the binding ("const table missing entry")
+i | 0
+n | 0
+while n < 3
+    part | :str(i)
+    i |= 5
+    n |= n + 1
+xx
+say(i)
+say(n)

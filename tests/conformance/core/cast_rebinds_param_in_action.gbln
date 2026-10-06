@@ -1,0 +1,6 @@
+/// undecided: D-cast-rebinds
+act fx(v)
+    t | :str(v)
+    return v + 1
+xx
+say(fx(1))

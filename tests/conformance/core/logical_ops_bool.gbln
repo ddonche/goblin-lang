@@ -1,0 +1,8 @@
+say(true and false)
+say(true or false)
+say(true && true)
+say(not true)
+say(!false)
+x | 5
+say(x > 3 and x < 10)
+say(not (x > 3))

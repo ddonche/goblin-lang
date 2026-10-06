@@ -1,0 +1,4 @@
+/// undecided: D-update-missing-key
+m | {"a": 1}
+:update!(m["z"], 2)
+say(m["z"])

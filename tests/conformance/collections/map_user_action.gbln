@@ -1,0 +1,4 @@
+act dbl(n)
+    return n * 2
+xx
+say(:map([1, 2], "dbl"))

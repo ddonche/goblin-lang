@@ -1,0 +1,6 @@
+log | [1]
+act reset()
+    :update!(log, [9])
+xx
+reset()
+say log

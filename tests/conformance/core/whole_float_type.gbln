@@ -1,0 +1,7 @@
+/// undecided: D-whole-float-type
+say(:valtype(:float(3)))
+say(:valtype(1.5 + 1.5))
+say(:is_float(2.5 * 2))
+say(:valtype(3.0))
+say(:valtype(:f64(1)))
+say(:valtype(5.float))

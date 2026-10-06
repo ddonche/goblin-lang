@@ -1,0 +1,4 @@
+/// known-gap: vm is_bound_name does not see a top-level binding
+x | 1
+say(:is_bound_name("x"))
+say(:is_bound_name("nope_not_bound"))

@@ -1,0 +1,2 @@
+say(:count_matching("a1b22c3", "[0-9]+"))
+say(:keep_matching("a1b22c3", "[0-9]+"))

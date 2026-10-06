@@ -1,0 +1,3 @@
+d | {"users": [{"name": "a"}, {"name": "b"}]}
+say(d["users"][1]["name"])
+say(:len(d["users"]))

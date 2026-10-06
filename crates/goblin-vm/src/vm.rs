@@ -2316,8 +2316,11 @@ impl Vm {
         // this module's new globals get non-overlapping indices. Without this,
         // every module starts at index 0 and clobbers earlier modules' slots.
         let globals_before = self.session.global_names.clone();
+        let module_prefix = format!("{}::",
+            actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone()).display());
         let compiled = crate::compiler::Compiler::new()
             .with_initial_globals(globals_before.clone())
+            .with_global_prefix(Some(module_prefix.clone()))
             .with_glam_namespace(owner_glam)
             .for_file(&actual_path.to_string_lossy())
             .compile_module(&module)
@@ -2344,7 +2347,9 @@ impl Vm {
         // via bare name (e.g. `output_dir`). Must happen after compilation so we
         // know the correct global indices from compiled.global_names.
         for (name, val) in pre_globals {
-            if let Some(idx) = compiled.global_names.iter().position(|g| g == &name) {
+            let own = format!("{module_prefix}{name}");
+            if let Some(idx) = compiled.global_names.iter().position(|g| *g == own)
+                .or_else(|| compiled.global_names.iter().position(|g| g == &name)) {
                 let t = self.session.alloc_value(val);
                 self.session.set_global(idx, t);
             }

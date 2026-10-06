@@ -1,0 +1,7 @@
+act dbl(n)
+    return n * 2
+xx
+l | [1, 2]
+r | :map(l, "dbl")
+say l
+say r

@@ -1,0 +1,2 @@
+say(:words("  a b\t c\nd  "))
+say(:words(""))

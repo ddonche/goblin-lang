@@ -1,0 +1,8 @@
+/// known-gap: both cheat-sheet/spec: 'a..b' is inclusive
+a | 1
+b | 3
+s | 0
+for i in a..b
+    s |= s + i
+xx
+say(s)

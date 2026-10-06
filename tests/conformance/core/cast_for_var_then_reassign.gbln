@@ -1,0 +1,6 @@
+/// known-gap: interp casting the for variable then reassigning it fails with "const table missing entry"
+for k in [1, 2, 3]
+    part | :str(k)
+    k |= 0
+xx
+say("ok")

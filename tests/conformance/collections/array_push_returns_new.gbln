@@ -1,0 +1,6 @@
+/// known-gap: interp has no array_push builtin (unknown action)
+/// known-gap: vm array_push rejects an array literal ("expected array, got collection")
+l | [1]
+r | :array_push(l, 2)
+say r
+say l

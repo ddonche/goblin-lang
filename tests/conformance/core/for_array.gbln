@@ -1,0 +1,6 @@
+total | 0
+for x in [1, 2, 3]
+    say(x)
+    total |= total + x
+xx
+say(total)

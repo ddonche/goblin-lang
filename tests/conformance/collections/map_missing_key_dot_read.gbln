@@ -1,0 +1,5 @@
+/// undecided: D-missing-key-read
+m | {"a": 1}
+say "before"
+say(m.zz)
+say "after"

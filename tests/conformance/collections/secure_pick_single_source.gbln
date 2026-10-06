@@ -1,0 +1,2 @@
+/// known-gap: vm secure_pick rejects a config-map literal ("expected map, got collection")
+say(:secure_pick({"src": ["z"]}))

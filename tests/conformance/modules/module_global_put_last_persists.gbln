@@ -1,0 +1,6 @@
+import _support/modules/state as st
+say(st::push("x"))
+say(st::push("y"))
+got | st::get_items()
+say(:len(got))
+say(got[1])

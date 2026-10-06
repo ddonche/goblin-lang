@@ -1,0 +1,6 @@
+n.int | 5
+say(n)
+n |= 7
+say(n)
+m.int | "5"
+say(m + 1)

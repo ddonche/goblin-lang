@@ -1,0 +1,5 @@
+say("apple" < "banana")
+say("Zebra" < "apple")
+say("a" <= "a")
+say("b" > "a")
+say("10" < "9")

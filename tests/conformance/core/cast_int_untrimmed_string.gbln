@@ -1,0 +1,4 @@
+/// known-gap: both cheat-sheet says "  7 ".int is a ValueError (no auto-trim); both return 7
+say("start")
+n | :int(" 7 ")
+say(n)

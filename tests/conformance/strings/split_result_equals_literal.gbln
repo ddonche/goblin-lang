@@ -1,0 +1,2 @@
+/// known-gap: vm split result never == an array literal
+say(:split("a b", " ") == ["a", "b"])

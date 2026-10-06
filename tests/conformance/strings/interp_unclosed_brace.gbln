@@ -1,0 +1,2 @@
+/// undecided: D-unclosed-interp-brace
+say("a{bad")

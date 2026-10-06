@@ -1,0 +1,5 @@
+/// known-gap: interp has no find_index builtin (unknown action)
+act over_five(n)
+    return n > 5
+xx
+say(:find_index([5, 6, 7], "over_five"))

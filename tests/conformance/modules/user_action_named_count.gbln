@@ -1,0 +1,5 @@
+/// A user action named like a builtin shadows the builtin (spec §4).
+act count(x)
+    return "user-count"
+xx
+say(count([1, 2]))

@@ -1,0 +1,4 @@
+h | :highlight_code("let x = 1;", "rs", "base16-ocean.dark", "InspiredGitHub")
+say(:is_str(h))
+say(:starts_with(h, "<"))
+say(:len(h) > 20)

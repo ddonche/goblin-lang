@@ -1,0 +1,3 @@
+/// known-gap: vm ignores a flags map literal (case-insensitive flag dropped)
+r | :ignore_matching("ABC abc", "abc", {"i": true})
+say("[{r}]")

@@ -1,0 +1,4 @@
+import _support/modules/mathy as m
+say(m::double(m::double(3)))
+x | m::scaled(2) + 1
+say(x)

@@ -1,0 +1,3 @@
+import _support/modules/loud as a
+import _support/modules/loud as a
+say(a::hi())

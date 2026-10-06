@@ -1,0 +1,6 @@
+/// known-gap: vm is_array is true for a map literal and is_map is false for it
+say(:is_array([1]))
+say(:is_array({"a": 1}))
+say(:is_map({"a": 1}))
+say(:is_map([1]))
+say(:is_array("x"))

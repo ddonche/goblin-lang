@@ -1,0 +1,4 @@
+/// known-gap: both a variable named like a builtin is parsed as a prefix call `len [1]`
+/// A variable shadows the builtin, so `len[1]` indexes the variable.
+len | [7, 8]
+say(len[1])

@@ -1,0 +1,14 @@
+/// helper: simple pure actions and a constant
+SCALE | 10
+act add(a, b)
+    return a + b
+xx
+act double(x)
+    return x * 2
+xx
+act scaled(x)
+    return x * SCALE
+xx
+act twice_add(a, b)
+    return double(add(a, b))
+xx

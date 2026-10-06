@@ -1,0 +1,5 @@
+c | 'a'
+say(c)
+say(:is_char(c))
+say(:is_str(c))
+say(:is_char("a"))

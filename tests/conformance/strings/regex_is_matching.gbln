@@ -1,0 +1,3 @@
+say(:is_matching("abc123", "[0-9]+"))
+say(:is_matching("abc", "^[a-z]+$"))
+say(:is_matching("abc1", "^[a-z]+$"))

@@ -1,0 +1,6 @@
+<>Pet |
+    name: "x"
+xx
+p <> Pet | name: "Rex"
+p >> name |= "Max"
+say(p >> name)

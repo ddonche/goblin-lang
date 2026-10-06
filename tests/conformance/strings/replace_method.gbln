@@ -1,0 +1,4 @@
+/// known-gap: interp lacks replace
+s | "cats and cats"
+say(s.replace("cats", "dogs"))
+say(s)

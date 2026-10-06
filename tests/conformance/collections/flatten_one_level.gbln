@@ -1,0 +1,2 @@
+/// known-gap: interp has no flatten builtin (unknown action)
+say(:flatten([[1, 2], [3], 4]))

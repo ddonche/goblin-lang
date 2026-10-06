@@ -1,0 +1,3 @@
+import _support/modules/state as st
+say(st::bump())
+say(st::bump())

@@ -1,0 +1,3 @@
+l | [1, 1, 1]
+:update_random!(l, 1)
+say l

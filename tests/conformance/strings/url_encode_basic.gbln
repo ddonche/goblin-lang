@@ -1,0 +1,3 @@
+/// known-gap: interp lacks url_encode
+say(:url_encode("a b&c=d/é"))
+say(:url_encode("safe-_.~"))

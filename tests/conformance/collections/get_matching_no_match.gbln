@@ -1,0 +1,3 @@
+/// undecided: D-get-matching-empty
+say "before"
+say(:get_matching(["a", "b"], "[0-9]"))

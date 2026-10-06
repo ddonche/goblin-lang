@@ -1,0 +1,5 @@
+/// known-gap: interp Char + Int is a numeric-expected error
+c | '\u{0}' + 8217
+say(c)
+say(:is_char(c))
+say(:ord(c))

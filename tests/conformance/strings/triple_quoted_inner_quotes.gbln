@@ -1,0 +1,2 @@
+say("""a "quoted" b""")
+say('''alt form''')

@@ -1,0 +1,8 @@
+act round(x)
+    return "round-mine"
+xx
+act abs(x)
+    return "abs-mine"
+xx
+say(round(2.4))
+say(abs(2))

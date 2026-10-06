@@ -1,0 +1,2 @@
+/// known-gap: vm has() does not find an array element that is itself an array
+say(:has([[1], [2]], [2]))

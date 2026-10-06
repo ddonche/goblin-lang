@@ -1,0 +1,2 @@
+say(:title("john DOE"))
+say(:title("hello-world foo_bar"))

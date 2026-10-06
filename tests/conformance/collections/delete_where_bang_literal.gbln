@@ -1,0 +1,3 @@
+l | ["a", "b-c", "d"]
+:delete_where!(l, "b-c")
+say l

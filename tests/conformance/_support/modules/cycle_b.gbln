@@ -1,0 +1,5 @@
+/// helper: imports cycle_a, which imports this file back
+import _support/modules/cycle_a as ca
+act b()
+    return "b"
+xx

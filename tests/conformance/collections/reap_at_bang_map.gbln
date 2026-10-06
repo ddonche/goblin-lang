@@ -1,0 +1,5 @@
+/// known-gap: vm reap_*! writes the reaped value back into the variable instead of the shrunken collection
+m | {"a": 1, "b": 2}
+x | :reap_at!(m, "a")
+say x
+say(:keys(m))

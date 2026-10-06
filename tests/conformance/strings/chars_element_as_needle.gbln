@@ -1,0 +1,3 @@
+/// known-gap: both find rejects a char from chars() as needle (docs: chars "abc" gives ["a","b","c"])
+c | :chars("1f")
+say(:find("0123456789abcdef", c[1]))

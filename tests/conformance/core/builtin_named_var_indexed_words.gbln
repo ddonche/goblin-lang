@@ -1,0 +1,3 @@
+/// known-gap: both 'words[1]' parses as the builtin words applied to [1] instead of indexing the variable
+words | [7, 8]
+say(words[1])

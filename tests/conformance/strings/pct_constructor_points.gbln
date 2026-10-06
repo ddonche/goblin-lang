@@ -1,0 +1,3 @@
+/// known-gap: both :pct(25) is not equal to 25% (docs: "pct 25 /// 25% (constructor from percentage points)")
+say(:pct(25) == (25%))
+say(:percent(25) == (25%))

@@ -1,0 +1,12 @@
+/// known-gap: interp casting a counter inside a while body crashes with "const table missing entry"
+act probe(n)
+    i | 0
+    c | 0
+    while c < n
+        part | :str(i)
+        i |= 9
+        c |= c + 1
+    xx
+    return c
+xx
+say(probe(3))

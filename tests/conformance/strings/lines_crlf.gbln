@@ -1,0 +1,4 @@
+/// known-gap: both lines() does not treat \r\n as a newline (docs: universal newlines)
+parts | :lines("x\ny\r\nz")
+say(:len(parts))
+say(:len(parts[1]))

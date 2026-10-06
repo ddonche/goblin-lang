@@ -1,0 +1,3 @@
+/// known-gap: interp :bool rejects strings (docs: "".bool is false, " ".bool is true)
+say(:bool(""))
+say(:bool(" "))

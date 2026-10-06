@@ -1,0 +1,2 @@
+/// undecided: D-int-cast-nonnumeric
+say(:int(nil))

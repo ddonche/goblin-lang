@@ -1,0 +1,5 @@
+c | 0
+for x in []
+    c |= c + 1
+xx
+say(c)

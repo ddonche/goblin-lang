@@ -1,0 +1,4 @@
+act add2(a, b)
+    return a + b
+xx
+say(add2(2, 3))

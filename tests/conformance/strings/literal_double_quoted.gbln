@@ -1,0 +1,4 @@
+s | "hello"
+say(s)
+say("")
+say(:len(""))

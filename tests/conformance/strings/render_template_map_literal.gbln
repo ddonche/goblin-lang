@@ -1,0 +1,4 @@
+/// known-gap: interp lacks render_template
+/// known-gap: vm rejects a map literal as data ("data must be a map, got collection")
+out | :render_template("_support/strings/greet.html", {"name": "Gob"})
+say(out)

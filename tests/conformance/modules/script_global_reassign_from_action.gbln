@@ -1,0 +1,8 @@
+n | 0
+act inc_n()
+    n |= n + 1
+    return n
+xx
+say(inc_n())
+say(inc_n())
+say(n)

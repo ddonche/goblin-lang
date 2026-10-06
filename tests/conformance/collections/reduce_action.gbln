@@ -1,0 +1,5 @@
+/// known-gap: interp has no reduce builtin (unknown action)
+act add2(a, b)
+    return a + b
+xx
+say(:reduce([1, 2, 3], 0, "add2"))

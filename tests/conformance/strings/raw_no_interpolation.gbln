@@ -1,0 +1,4 @@
+/// known-gap: vm raw literal is still interpolated
+x | 5
+q | raw "c {x}"
+say(q)

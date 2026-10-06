@@ -1,0 +1,14 @@
+attempt
+    say("a")
+rescue err
+    say("r")
+ensure
+    say("e1")
+xx
+attempt
+    x | 1 / 0
+rescue
+    say("r")
+ensure
+    say("e2")
+xx

@@ -1,0 +1,3 @@
+/// known-gap: interp lacks replace
+say(:replace("cats and cats", "cats", "dogs"))
+say(:replace("aaa", "a", "b"))

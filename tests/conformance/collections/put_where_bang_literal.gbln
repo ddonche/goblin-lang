@@ -1,0 +1,4 @@
+/// known-gap: interp has no put_where builtin (unknown action)
+l | ["a", "b-c", "d"]
+:put_where!(l, "b-c", "x")
+say l

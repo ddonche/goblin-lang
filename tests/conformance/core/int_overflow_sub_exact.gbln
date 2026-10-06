@@ -1,0 +1,2 @@
+/// known-gap: vm overflowing int subtraction saturates
+say(-9223372036854775807 - 10)

@@ -1,0 +1,2 @@
+/// known-gap: both reverse rejects strings (docs: "daniel".reverse is "leinad")
+say("daniel".reverse)

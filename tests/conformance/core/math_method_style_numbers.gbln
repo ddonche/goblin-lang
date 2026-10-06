@@ -1,0 +1,5 @@
+say(3.7.round)
+say(16.sqrt)
+say((-5).abs)
+say(-5.abs)
+say(:abs(-3).str)

@@ -1,0 +1,5 @@
+/// known-gap: interp module globals share the importer's top frame (duplicate-local)
+import _support/modules/shadow_global as sg
+x | 1
+say(x)
+say(sg::read_x())

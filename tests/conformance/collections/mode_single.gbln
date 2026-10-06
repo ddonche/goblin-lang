@@ -1,0 +1,2 @@
+/// known-gap: both mode returns a map {value: count} on both engines; spec "mode [1, 2, 2, 3] /// [2]"
+say(:mode([1, 2, 2, 3]))

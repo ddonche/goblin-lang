@@ -1,0 +1,5 @@
+m | :json_parse("{\"a\":1,\"b\":[true,null,2.5],\"c\":{\"d\":\"x\"}}")
+say(m["a"])
+say(m["b"])
+say(:is_nil(m["b"][1]))
+say(m["c"]["d"])

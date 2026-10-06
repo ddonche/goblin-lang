@@ -1,0 +1,16 @@
+<>Point |
+    x: 0
+    y: 0
+    act sum_xy()
+        return self >> x + self >> y
+    xx
+    act plus(n)
+        return self >> x + n
+    xx
+xx
+p <> Point | x: 3, y: 4
+say(p >> x)
+say(p >> y)
+q <> Point | x: 1
+say(q >> y)
+say(p.x)

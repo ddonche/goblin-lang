@@ -1,0 +1,2 @@
+say(:has("hello", "ell"))
+say(:has("hello", "xyz"))

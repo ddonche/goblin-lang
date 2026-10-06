@@ -1,0 +1,10 @@
+n | 0
+act inc_n()
+    n |= n + 1
+xx
+act read_n()
+    return n
+xx
+inc_n()
+inc_n()
+say(read_n())

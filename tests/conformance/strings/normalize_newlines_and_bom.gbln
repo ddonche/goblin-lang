@@ -1,0 +1,7 @@
+n | :normalize_newlines("a\r\nb\rc")
+say(n)
+say(:len(n))
+b | :sanitize_bom("\u{FEFF}hi")
+say(b)
+say(:len(b))
+say(:sanitize_bom("plain"))

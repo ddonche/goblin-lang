@@ -1,0 +1,4 @@
+/// known-gap: both docs say x++ returns the old value then increments; interp returns the new value, vm does not increment
+x | 3
+say(x++)
+say(x)

@@ -1,0 +1,5 @@
+/// known-gap: vm has() on an array tests whether the needle is a valid index, not whether it is an element
+w | [4, 5, 6]
+say(:has(w, 5))
+say(:has(w, 1))
+say(:has([1, 2, 3], 3))

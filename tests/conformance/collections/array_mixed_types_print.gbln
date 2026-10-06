@@ -1,0 +1,2 @@
+mx | [1, "two", true, nil, 2.5, 'c']
+say mx

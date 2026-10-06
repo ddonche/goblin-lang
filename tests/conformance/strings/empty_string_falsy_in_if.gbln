@@ -1,0 +1,9 @@
+/// known-gap: interp if requires a bool (docs: "" is falsy, " " truthy)
+if ""
+    say("truthy")
+else
+    say("falsy")
+xx
+if " "
+    say("truthy")
+xx

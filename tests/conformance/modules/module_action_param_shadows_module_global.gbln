@@ -1,0 +1,3 @@
+import _support/modules/shadow_global as sg
+say(sg::echo(7))
+say(sg::read_x())

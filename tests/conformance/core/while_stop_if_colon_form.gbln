@@ -1,0 +1,7 @@
+/// known-gap: vm 'stop if:' inside while crashes with "stack underflow"
+i | 0
+while true
+    i |= i + 1
+    stop if: i > 4
+xx
+say(i)

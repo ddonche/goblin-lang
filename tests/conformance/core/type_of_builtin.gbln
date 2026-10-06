@@ -1,0 +1,6 @@
+/// known-gap: interp type_of is VM-only (interp: unknown action)
+say(:type_of(1))
+say(:type_of(1.5))
+say(:type_of("s"))
+say(:type_of(nil))
+say(:type_of(true))

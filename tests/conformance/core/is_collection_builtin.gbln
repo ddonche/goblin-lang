@@ -1,0 +1,3 @@
+/// known-gap: interp is_collection is VM-only (interp: unknown action)
+say(:is_collection([1]))
+say(:is_collection(5))

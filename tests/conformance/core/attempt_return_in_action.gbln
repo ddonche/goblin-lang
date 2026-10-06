@@ -1,0 +1,17 @@
+act ok()
+    attempt
+        return 1
+    rescue err
+        return 2
+    xx
+xx
+act bad()
+    attempt
+        y | 1 / 0
+    rescue err
+        return 2
+    xx
+    return 3
+xx
+say(ok())
+say(bad())

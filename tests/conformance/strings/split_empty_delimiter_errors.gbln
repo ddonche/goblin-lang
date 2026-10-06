@@ -1,0 +1,3 @@
+/// known-gap: both empty delimiter splits into characters (docs: empty delimiter is a ValueError)
+say("start")
+say(:split("a,b", ""))

@@ -1,0 +1,5 @@
+/// undecided: D-truthiness
+if 1 => say("one")
+if "" => say("empty")
+if nil => say("nil")
+say("end")

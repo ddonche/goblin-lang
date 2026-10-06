@@ -1,0 +1,3 @@
+l | ["a1", "b", "c2"]
+:delete_matching!(l, "[0-9]")
+say l

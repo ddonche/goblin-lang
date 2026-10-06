@@ -1,0 +1,3 @@
+c | :chars("19")
+say(c)
+say(:is_char(c[0]))

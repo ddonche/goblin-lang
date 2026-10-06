@@ -1,0 +1,6 @@
+act over_one(n)
+    return n > 1
+xx
+l | [1, 2, 3, 1]
+:delete_where!(l, "over_one")
+say l

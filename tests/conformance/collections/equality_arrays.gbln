@@ -1,0 +1,3 @@
+/// known-gap: vm == on arrays is never true (no structural comparison of Value::Collection); cheat-sheet: "containers compare structurally"
+say([1, 2] == [1, 2])
+say([1, 2] == [2, 1])

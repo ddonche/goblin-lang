@@ -1,0 +1,3 @@
+say(:find_all("banana", "ana"))
+say(:find_all("banana", "a"))
+say(:find_all("banana", "z"))

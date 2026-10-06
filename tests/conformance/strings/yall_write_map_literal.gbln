@@ -1,0 +1,3 @@
+v | {"a": 1, "b": [true, "x"]}
+say(:yall_write(v))
+say(:yall_pretty(v))

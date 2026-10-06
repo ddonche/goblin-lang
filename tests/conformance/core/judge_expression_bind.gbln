@@ -1,0 +1,15 @@
+x | 7
+r |
+    judge
+        x > 5: "big"
+        else: "small"
+    xx
+say(r)
+y | 2
+s |
+    judge
+        y > 5: "big"
+        y > 1: "mid"
+        else: "small"
+    xx
+say(s)

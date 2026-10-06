@@ -1,0 +1,2 @@
+/// undecided: D-find-on-array
+say(:find([5, 6, 7], 6))

@@ -1,0 +1,7 @@
+say(:is_alpha("abc"))
+say(:is_digit("123"))
+say(:is_alnum("a1"))
+say(:is_whitespace(" \t"))
+say(:is_alpha('x'))
+say(:is_digit("12a"))
+say(:is_alpha(""))

@@ -1,0 +1,4 @@
+/// known-gap: both raw "..." still processes escapes (docs: raw = no escapes)
+p | raw "a\tb"
+say(p)
+say(:len(p))

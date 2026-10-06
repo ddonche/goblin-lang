@@ -1,0 +1,3 @@
+/// known-gap: both spec says '/' always yields float (15 / 3 -> 5.0); both give int
+say(10 / 5)
+say(:valtype(10 / 5))

@@ -1,0 +1,5 @@
+/// undecided: D-block-scope
+if true
+    z | 2
+xx
+say(z)

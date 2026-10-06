@@ -1,0 +1,1 @@
+say(:get_random([4, 4]))

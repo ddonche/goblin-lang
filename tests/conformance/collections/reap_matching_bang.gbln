@@ -1,0 +1,5 @@
+/// known-gap: vm reap_*! writes the reaped value back into the variable instead of the shrunken collection
+l | ["a1", "b", "c2"]
+x | :reap_matching!(l, "[0-9]")
+say x
+say l

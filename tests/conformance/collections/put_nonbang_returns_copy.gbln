@@ -1,0 +1,4 @@
+l | [1, 2]
+r | :put_last(l, 3)
+say l
+say r

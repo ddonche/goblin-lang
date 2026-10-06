@@ -1,0 +1,7 @@
+/// undecided: D-fallthrough-return-value
+act fx(x)
+    if x > 0
+        return "pos"
+    xx
+xx
+say(:valtype(fx(-1)))

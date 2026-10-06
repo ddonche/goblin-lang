@@ -1,0 +1,4 @@
+say(:parse_bool("true"))
+say(:parse_bool("false"))
+say(:parse_bool("TRUE"))
+say(:parse_bool("False"))

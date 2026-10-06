@@ -1,0 +1,4 @@
+/// known-gap: vm '==' on array/map literals is not structural (cheat-sheet: containers compare structurally)
+say([1, 2] == [1, 2])
+say([1, 2] == [2, 1])
+say({"a": 1} == {"a": 1})

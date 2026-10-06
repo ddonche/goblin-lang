@@ -1,0 +1,5 @@
+/// undecided: D-imm
+imm x | 1
+say(x)
+x |= 2
+say(x)

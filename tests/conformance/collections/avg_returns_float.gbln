@@ -1,0 +1,2 @@
+/// known-gap: interp avg of ints with an exact mean returns an int; spec §14 "avg_v = scores.avg /// 1000.0"
+say(:is_float(:avg([800, 1200, 600, 1500, 900])))

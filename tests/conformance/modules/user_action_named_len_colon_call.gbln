@@ -1,0 +1,5 @@
+/// The leading `:` on a call does not bypass a user action of that name.
+act len(x)
+    return "user-len"
+xx
+say(:len([1, 2, 3]))

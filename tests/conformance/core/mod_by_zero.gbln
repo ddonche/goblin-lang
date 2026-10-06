@@ -1,0 +1,2 @@
+say("start")
+say(5 % 0)

@@ -1,0 +1,4 @@
+act fx(a, b)
+    return :len(b)
+xx
+say(fx(1, ..))

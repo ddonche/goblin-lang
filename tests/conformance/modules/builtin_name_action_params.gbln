@@ -1,0 +1,16 @@
+act loop_keys(keys)
+    total | 0
+    for k in keys
+        total |= total + k
+    xx
+    return total
+xx
+act twice_len(len)
+    return len * 2
+xx
+act echo_join(join)
+    return join
+xx
+say(loop_keys([1, 2, 3]))
+say(twice_len(4))
+say(echo_join("j"))

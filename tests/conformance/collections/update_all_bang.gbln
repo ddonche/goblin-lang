@@ -1,0 +1,4 @@
+/// known-gap: vm update_all with a literal array value fails ("expected array, got collection")
+l | [1, 2]
+:update_all!(l, [7, 8, 9])
+say l

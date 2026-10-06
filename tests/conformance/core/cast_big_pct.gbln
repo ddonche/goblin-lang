@@ -1,0 +1,6 @@
+say(:big(10))
+say(:big("12.50"))
+say(:b(3))
+say(:percent(0.5))
+say(:valtype(:b(3)))
+say(:valtype(:percent(0.5)))

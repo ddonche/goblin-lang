@@ -1,0 +1,3 @@
+p | "/a/b/file.txt"
+say(:before_last(p, "/"))
+say(:after_last(p, "/"))

@@ -1,0 +1,7 @@
+/// known-gap: interp panic is VM-only and 'rescue err' does not bind err
+attempt
+    :panic("boom")
+    say("not reached")
+rescue err
+    say(:is_nix(err))
+xx

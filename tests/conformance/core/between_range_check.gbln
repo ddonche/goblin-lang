@@ -1,0 +1,6 @@
+/// known-gap: both cheat-sheet: 'x between a..b' is inclusive; both treat the upper bound as exclusive
+x | 3
+say(x between 1..5)
+say(5 between 1..5)
+say(0 between 1..5)
+if x between 1..5 => say("in")

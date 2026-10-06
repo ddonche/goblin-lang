@@ -1,0 +1,4 @@
+/// known-gap: vm valtype of array/map literals reports the internal 'collection' representation
+say(:valtype([1, 2]))
+say(:valtype({"a": 1}))
+say(:valtype([]) == "array")

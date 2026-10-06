@@ -1,0 +1,10 @@
+x | 4
+if x > 0
+    if x % 2 == 0
+        say("pos-even")
+    else
+        say("pos-odd")
+    xx
+else
+    say("non-pos")
+xx

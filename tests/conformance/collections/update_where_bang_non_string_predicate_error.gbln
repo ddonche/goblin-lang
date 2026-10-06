@@ -1,0 +1,4 @@
+l | [1, 2, 3, 2]
+say "before"
+:update_where!(l, 2, 9)
+say "after"

@@ -1,0 +1,6 @@
+/// known-gap: interp interp re-runs the module and fails with duplicate-local; vm loses module-global writes made inside actions
+/// Both aliases name the same cached module instance (spec §24.4).
+import _support/modules/state as s1
+import _support/modules/state as s2
+s1::bump()
+say(s2::get_counter())

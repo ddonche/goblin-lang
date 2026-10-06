@@ -1,0 +1,3 @@
+/// Module actions are reached only through the alias (Alias::name).
+import _support/modules/mathy as m
+say(add(2, 3))

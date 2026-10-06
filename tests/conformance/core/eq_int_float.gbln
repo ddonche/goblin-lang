@@ -1,0 +1,3 @@
+/// undecided: D-int-float-equality
+say(1 == 1.0)
+say(2 != 2.0)

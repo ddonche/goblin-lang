@@ -1,0 +1,4 @@
+/// helper: sibling of sib_user.gbln
+act v()
+    return "sib"
+xx

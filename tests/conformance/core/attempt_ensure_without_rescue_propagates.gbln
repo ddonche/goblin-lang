@@ -1,0 +1,8 @@
+/// known-gap: both spec: with no matching rescue the error propagates after ensure; both swallow it
+attempt
+    say("a")
+    q | 1 / 0
+ensure
+    say("e")
+xx
+say("after")

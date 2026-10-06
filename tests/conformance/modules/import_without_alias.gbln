@@ -1,0 +1,3 @@
+/// undecided: D-import-without-alias
+import _support/modules/mathy
+say(mathy::add(2, 3))

@@ -1,0 +1,3 @@
+m | {"a": 1}
+say(:has(m, "a"))
+say(:has(m, "z"))

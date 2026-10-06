@@ -1,0 +1,6 @@
+/// undecided: D-block-scope
+x | 1
+for x in [7, 8]
+    say(x)
+xx
+say(x)

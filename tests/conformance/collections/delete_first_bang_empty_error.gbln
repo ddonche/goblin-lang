@@ -1,0 +1,5 @@
+/// known-gap: vm delete_first! on an empty array silently succeeds; interpreter (reference) raises empty-array
+l | []
+say "before"
+:delete_first!(l)
+say "after"

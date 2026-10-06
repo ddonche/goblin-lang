@@ -1,0 +1,4 @@
+/// known-gap: vm :int("abc") returns nil instead of failing (cheat-sheet: int "12a" -> ValueError)
+say("start")
+n | :int("abc")
+say(n)

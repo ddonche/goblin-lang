@@ -1,0 +1,4 @@
+l | [1, 2, 3]
+r | :delete_first(l)
+say l
+say r

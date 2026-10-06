@@ -1,0 +1,6 @@
+/// known-gap: interp `reap n from` does not remove elements from the source; spec §14
+/// known-gap: vm `reap n from <array literal var>` fails ("expected map, got collection")
+d | ["a", "b", "c"]
+x | reap 2 from d
+say(:len(x))
+say(:len(d))

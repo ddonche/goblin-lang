@@ -197,6 +197,18 @@ fn collect_action_names(stmts: &[Stmt], out: &mut Vec<String>) {
     }
 }
 
+/// Names bound with `x | v` directly at module top level (not inside blocks,
+/// loops or actions): these become module globals.
+fn collect_global_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
+    for stmt in stmts {
+        if let Stmt::Bind(b) = stmt {
+            if matches!(b.mode, BindMode::Tether) && !out.contains(&b.name.0) {
+                out.push(b.name.0.clone());
+            }
+        }
+    }
+}
+
 /// Recursively collect bind variable names declared at module level so they can
 /// be pre-hoisted as locals in __main__ before the main compilation pass.
 /// Does NOT collect action names (those are pre-registered as globals separately)
@@ -272,6 +284,10 @@ pub struct Compiler {
     /// so a free call to one of these names calls the user's action, never the
     /// builtin of the same name.
     user_actions: std::collections::HashSet<String>,
+    /// Imported modules get their own global namespace: names they declare are
+    /// stored as `<prefix><name>` so they cannot collide with the importer's
+    /// (or another module's) globals and actions. None for the entry script.
+    global_prefix: Option<String>,
 }
 
 #[derive(Default)]
@@ -286,7 +302,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -314,6 +330,30 @@ impl Compiler {
         self
     }
 
+    /// Give this module its own global namespace (see `global_prefix`).
+    pub fn with_global_prefix(mut self, prefix: Option<String>) -> Self {
+        self.global_prefix = prefix;
+        self
+    }
+
+    /// Slot of a global visible from this module: its own name first, then a
+    /// shared (unprefixed) one such as `args`.
+    fn global_index(&self, name: &str) -> Option<usize> {
+        if let Some(p) = &self.global_prefix {
+            let own = format!("{p}{name}");
+            if let Some(i) = self.globals.iter().position(|g| *g == own) { return Some(i); }
+        }
+        self.globals.iter().position(|g| g == name)
+    }
+
+    /// Declare a global owned by this module (prefixed in imported modules).
+    fn declare_global(&mut self, name: &str) -> usize {
+        let full = match &self.global_prefix { Some(p) => format!("{p}{name}"), None => name.to_string() };
+        if let Some(i) = self.globals.iter().position(|g| *g == full) { return i; }
+        self.globals.push(full);
+        self.globals.len() - 1
+    }
+
     /// Mark this compilation as a GLAM's entry module, so its top-level actions
     /// get `owner_glam` stamped for `:need()` resolution.
     pub fn with_glam_namespace(mut self, ns: Option<String>) -> Self {
@@ -336,17 +376,25 @@ impl Compiler {
             collect_action_names(&module.items, &mut module_action_names);
             for name in module_action_names {
                 self.user_actions.insert(name.clone());
-                if !self.globals.contains(&name) {
-                    self.globals.push(name);
-                }
+                self.declare_global(&name);
             }
         }
         self.push_scope("__main__", 0);
         // Pre-hoist bind variable names as nil locals so forward bind references work.
         // Action names are NOT hoisted here — they live in globals (pre-registered above).
+        // Top-level `x | v` bindings are module globals: every action reads and
+        // writes the same slot (as locals captured by upvalue, each action got
+        // its own copy and writes were lost). Shadow and tuple binds stay locals.
+        let mut global_binds: Vec<String> = Vec::new();
+        collect_global_bind_names(&module.items, &mut global_binds);
+        for name in &global_binds {
+            let pos = self.declare_global(name);
+            self.emit(Opcode::LoadNil);
+            self.emit(Opcode::StoreGlobal(pos as u16));
+        }
         let mut hoisted: Vec<String> = Vec::new();
         collect_bind_names(&module.items, &mut hoisted);
-        for name in &hoisted {
+        for name in hoisted.iter().filter(|n| !global_binds.contains(n)) {
             let slot = self.scope_mut().declare_local(name);
             self.emit(Opcode::LoadNil);
             self.emit(Opcode::StoreLocal(slot));
@@ -381,9 +429,7 @@ impl Compiler {
                 let mut nested_action_names: Vec<String> = Vec::new();
                 collect_action_names(stmts, &mut nested_action_names);
                 for name in &nested_action_names {
-                    if !self.globals.contains(name) {
-                        self.globals.push(name.clone());
-                    }
+                    self.declare_global(name);
                 }
 
                 let mut hoisted: Vec<String> = Vec::new();
@@ -486,7 +532,7 @@ impl Compiler {
         }
 
         // 3. Check globals.
-        if let Some(pos) = self.globals.iter().position(|g| g == name) {
+        if let Some(pos) = self.global_index(name) {
             return Ok(Opcode::LoadGlobal(pos as u16));
         }
 
@@ -538,7 +584,7 @@ impl Compiler {
                 return Some(Opcode::StoreUpvalue(uv_idx));
             }
         }
-        if let Some(pos) = self.globals.iter().position(|g| g == name) {
+        if let Some(pos) = self.global_index(name) {
             return Some(Opcode::StoreGlobal(pos as u16));
         }
         None
@@ -567,7 +613,7 @@ impl Compiler {
                     BindMode::Tether => {
                         // In REPL mode at top scope: use globals so state persists.
                         if self.repl_mode && self.scopes.len() == 1 {
-                            if let Some(pos) = self.globals.iter().position(|g| g == name) {
+                            if let Some(pos) = self.global_index(name) {
                                 if pos < self.repl_known_globals_count {
                                     return Err(GoblinError::CompileError {
                                         message: format!("duplicate-local: '{}' is already bound", name),
@@ -593,6 +639,19 @@ impl Compiler {
                                 }
                             }
                         } else {
+                            // Top-level binding of a module global (see compile_module).
+                            if self.scopes.len() == 1 && self.scope().find_local(name).is_none() {
+                                if let Some(pos) = self.global_index(name) {
+                                    let name_idx = self.add_constant(Value::Str(name.clone()));
+                                    self.emit(Opcode::RegisterAction(name_idx));
+                                    if let Some(ref lock) = bind.lock_type {
+                                        self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                                    } else {
+                                        self.emit(Opcode::StoreGlobal(pos as u16));
+                                    }
+                                    return Ok(());
+                                }
+                            }
                             // x | expr — initial binding. Reuse pre-declared slot if
                             // present (hoisted from module pre-pass), else declare new.
                             let slot = self.scope_mut().find_local(name)
@@ -663,13 +722,7 @@ impl Compiler {
                 // from collection builtins (grab_where, map, etc.) at any nesting level.
                 let name_idx = self.add_constant(Value::Str(action.name.clone()));
                 self.emit(Opcode::RegisterAction(name_idx));
-                let pos = if let Some(p) = self.globals.iter().position(|g| g == &action.name) {
-                    p
-                } else {
-                    let p = self.globals.len();
-                    self.globals.push(action.name.clone());
-                    p
-                };
+                let pos = self.declare_global(&action.name);
                 self.emit(Opcode::StoreGlobal(pos as u16));
             }
 
@@ -1045,7 +1098,7 @@ impl Compiler {
                             self.emit(Opcode::GetTypeLockLocal(slot));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::GetTypeLockGlobal(pos as u16));
                             return Ok(());
                         }
@@ -1058,7 +1111,7 @@ impl Compiler {
                             self.emit(Opcode::CastMemberLocal(slot, name.clone()));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::CastMemberGlobal(pos as u16, name.clone()));
                             return Ok(());
                         }
@@ -1100,7 +1153,7 @@ impl Compiler {
                             self.emit(Opcode::Dup);
                             if let Some(slot) = self.scope().find_local(var_name) {
                                 self.emit(Opcode::StoreLocal(slot));
-                            } else if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                            } else if let Some(pos) = self.global_index(var_name) {
                                 self.emit(Opcode::StoreGlobal(pos as u16));
                             }
                         }
@@ -1121,7 +1174,7 @@ impl Compiler {
                             self.emit(Opcode::GetTypeLockLocal(slot));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::GetTypeLockGlobal(pos as u16));
                             return Ok(());
                         }
@@ -1138,7 +1191,7 @@ impl Compiler {
                             self.emit(Opcode::CastMemberLocal(slot, method.clone()));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == var_name) {
+                        if let Some(pos) = self.global_index(var_name) {
                             self.emit(Opcode::CastMemberGlobal(pos as u16, method.clone()));
                             return Ok(());
                         }
@@ -1153,7 +1206,7 @@ impl Compiler {
                         let idx = self.scopes.len() - 1;
                         self.resolve_upvalue(idx, method).is_some()
                     })
-                    || self.globals.iter().any(|g| g == method);
+                    || self.global_index(method).is_some();
                 if is_var {
                     let load_op = self.resolve_load(method).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
@@ -1281,7 +1334,7 @@ impl Compiler {
                             self.emit(Opcode::CastBangLocal(slot, type_name));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == &var_name) {
+                        if let Some(pos) = self.global_index(&var_name) {
                             self.emit(Opcode::CastBangGlobal(pos as u16, type_name));
                             return Ok(());
                         }
@@ -1305,7 +1358,7 @@ impl Compiler {
                             self.emit(Opcode::StoreLocal(slot));
                             return Ok(());
                         }
-                        if let Some(pos) = self.globals.iter().position(|g| g == &var_name) {
+                        if let Some(pos) = self.global_index(&var_name) {
                             self.emit(Opcode::StoreGlobal(pos as u16));
                             return Ok(());
                         }
@@ -1754,9 +1807,7 @@ impl Compiler {
                 let mut nested_action_names: Vec<String> = Vec::new();
                 collect_action_names(stmts, &mut nested_action_names);
                 for name in &nested_action_names {
-                    if !self.globals.contains(name) {
-                        self.globals.push(name.clone());
-                    }
+                    self.declare_global(name);
                 }
 
                 let mut hoisted: Vec<String> = Vec::new();
@@ -1884,7 +1935,7 @@ impl Compiler {
                 if let Expr::Ident(name, _) = &args[0] {
                     // Check if name resolves as a local/global variable
                     let has_local = self.scope().find_local(name).is_some()
-                        || self.globals.iter().any(|g| g == name.as_str());
+                        || self.global_index(name.as_str()).is_some();
                     if !has_local {
                         // Emit as class/overlay query by name string
                         let name_str = Value::Str(name.clone());

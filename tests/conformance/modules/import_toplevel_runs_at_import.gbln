@@ -1,0 +1,4 @@
+say("before import")
+import _support/modules/loud as l
+say("after import")
+say(l::hi())

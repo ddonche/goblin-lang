@@ -1,0 +1,4 @@
+c | :trim("\t\n hi \n")
+say("[{c}]")
+d | " x ".trim
+say("[{d}]")

@@ -1,0 +1,4 @@
+/// known-gap: interp module loader exports only actions/classes/enums, so m::CONST is 'unknown enum'
+import _support/modules/mathy as m
+say(m::SCALE)
+say(m::SCALE + 1)

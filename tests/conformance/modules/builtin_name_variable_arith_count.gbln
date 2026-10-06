@@ -1,0 +1,3 @@
+/// known-gap: both a variable named like a builtin is parsed as a prefix call `count (+1)`
+count | 5
+say(count + 1)

@@ -1,0 +1,3 @@
+v | :json_parse("\"\\u00e9\\u2713\"")
+say(v)
+say(:len(v))

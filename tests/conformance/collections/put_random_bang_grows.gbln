@@ -1,0 +1,4 @@
+l | [1, 2]
+:put_random!(l, 9)
+say(:len(l))
+say(:sort(l))

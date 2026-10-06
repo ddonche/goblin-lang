@@ -1,0 +1,3 @@
+/// known-gap: interp lacks to_str/to_string
+say(:to_str(42))
+say(:to_string(1.5))

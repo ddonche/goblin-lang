@@ -1,0 +1,6 @@
+say(:is_type(1, "int"))
+say(:is_type("a", "str"))
+say(:is_type(1.5, "float"))
+say(:is_pair(1))
+say(:is_seq([1]))
+say(:is_unit(nil))

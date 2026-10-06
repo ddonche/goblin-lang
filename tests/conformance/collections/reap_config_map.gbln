@@ -1,0 +1,3 @@
+/// known-gap: vm reap with a config-map literal fails ("expected map, got collection")
+d | [9, 9, 9]
+say(:reap({"src": d, "count": 2}))

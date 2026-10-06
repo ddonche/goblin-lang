@@ -1,0 +1,2 @@
+say(:ignore_where("a-b-c", "-"))
+say(:ignore_lines_where("# x\nkeep\n# y\nend", "#"))

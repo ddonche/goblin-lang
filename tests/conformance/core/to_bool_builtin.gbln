@@ -1,0 +1,3 @@
+/// known-gap: interp to_bool is VM-only (interp: unknown action)
+say(:to_bool(0))
+say(:to_bool(1))

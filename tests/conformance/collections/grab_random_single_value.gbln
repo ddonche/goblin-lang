@@ -1,0 +1,2 @@
+/// known-gap: interp has no grab_random builtin (unknown action)
+say(:grab_random([3, 3]))

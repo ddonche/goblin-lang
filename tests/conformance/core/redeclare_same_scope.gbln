@@ -1,0 +1,4 @@
+/// undecided: D-redeclare
+x | 1
+x | 2
+say(x)

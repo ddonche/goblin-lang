@@ -1,0 +1,4 @@
+/// known-gap: interp has no contains builtin (unknown action)
+say(:contains([1, 2, 3], 2))
+say(:contains([1, 2, 3], 9))
+say(:contains("hello", "ell"))

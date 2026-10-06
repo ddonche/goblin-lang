@@ -1,0 +1,5 @@
+/// known-gap: both spec: descending ranges iterate downward (5..3 -> 5,4,3); both produce nothing
+for i in 5..3
+    say(i)
+xx
+say("done")

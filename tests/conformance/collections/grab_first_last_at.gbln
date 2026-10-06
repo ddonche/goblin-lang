@@ -1,0 +1,6 @@
+/// known-gap: interp has no grab_* builtins (unknown action); VM treats them as aliases of get_*
+l | [1, 2, 3]
+say(:grab_first(l))
+say(:grab_last(l))
+say(:grab_at(l, 1))
+say l

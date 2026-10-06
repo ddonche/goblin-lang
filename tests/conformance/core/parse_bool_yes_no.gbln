@@ -1,0 +1,5 @@
+/// known-gap: both cheat-sheet/spec: parse_bool also accepts yes/no/1/0 (both reject)
+say(:parse_bool("yes"))
+say(:parse_bool("no"))
+say(:parse_bool("1"))
+say(:parse_bool("0"))

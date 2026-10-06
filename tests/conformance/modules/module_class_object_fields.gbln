@@ -1,0 +1,4 @@
+import _support/modules/shapes as sh
+b | sh::make_box(2, 3)
+say(b >> w)
+say(b >> h)

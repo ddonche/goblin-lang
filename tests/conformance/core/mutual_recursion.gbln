@@ -1,0 +1,10 @@
+act is_ev(n)
+    if n == 0 => return true
+    return is_od(n - 1)
+xx
+act is_od(n)
+    if n == 0 => return false
+    return is_ev(n - 1)
+xx
+say(is_ev(10))
+say(is_od(7))

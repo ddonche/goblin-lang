@@ -1,0 +1,2 @@
+say(:reverse_chars("héllo"))
+say(:reverse_chars(""))

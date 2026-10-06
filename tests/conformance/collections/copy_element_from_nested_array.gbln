@@ -1,0 +1,5 @@
+a | [[1], [2]]
+b | a[0]
+:put_last!(b, 5)
+say a
+say b

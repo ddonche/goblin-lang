@@ -1,0 +1,2 @@
+/// undecided: D-float-div-zero
+say(5.0 / 0)

@@ -1,0 +1,5 @@
+/// undecided: D-truthiness
+say(nil or 5)
+say(0 or 5)
+say(2 and 3)
+say(not nil)

@@ -1,0 +1,4 @@
+/// undecided: D-toplevel-return
+say("x")
+return 5
+say("y")

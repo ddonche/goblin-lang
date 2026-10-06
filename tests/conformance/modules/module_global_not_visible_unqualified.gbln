@@ -1,0 +1,5 @@
+/// known-gap: both module globals leak into the importer's scope
+/// No implicit merges: a module global is not a name in the importer.
+import _support/modules/state as st
+say("start")
+say(counter)

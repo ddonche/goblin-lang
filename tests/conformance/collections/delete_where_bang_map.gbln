@@ -1,0 +1,7 @@
+/// known-gap: vm delete_where on a map turns it into an array of values
+act over_one(n)
+    return n > 1
+xx
+m | {"a": 1, "b": 2}
+:delete_where!(m, "over_one")
+say(:keys(m))

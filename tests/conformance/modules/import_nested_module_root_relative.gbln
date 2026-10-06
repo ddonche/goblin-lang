@@ -1,0 +1,3 @@
+/// sub/inner.gbln imports _support/modules/mathy relative to the project root.
+import _support/modules/sub/inner as inn
+say(inn::triple_add(1, 2))

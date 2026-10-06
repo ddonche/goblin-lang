@@ -1,0 +1,5 @@
+/// known-gap: both builtin-named parameter indexed with [0] calls the builtin
+act probe(lines)
+    return lines[0]
+xx
+say(probe([7, 8]))

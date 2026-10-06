@@ -1,0 +1,5 @@
+l | []
+:put_last!(l, "a")
+:put_last!(l, "b")
+say l
+say(:len(l))

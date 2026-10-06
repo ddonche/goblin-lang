@@ -1,0 +1,6 @@
+/// known-gap: interp .sum/.min/.max/.avg are unknown postfix actions; cheat-sheet "nums.sum nums.avg nums.min nums.max nums.len"
+l | [1, 5, 3]
+say(l.sum)
+say(l.min)
+say(l.max)
+say(l.avg)

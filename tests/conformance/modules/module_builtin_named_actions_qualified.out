@@ -1,0 +1,12 @@
+mod-all:1
+mod-find:1
+mod-join
+mod-round
+mod-update
+mod-enc
+mod-dec
+mod-pct
+mod-count
+mod-len
+mod-sum
+mod-keys

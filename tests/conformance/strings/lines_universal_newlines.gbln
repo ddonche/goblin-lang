@@ -1,0 +1,3 @@
+say(:lines("x\ny\nz"))
+say(:lines("x\n"))
+say("Hello\nWorld".lines)

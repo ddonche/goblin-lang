@@ -1,0 +1,4 @@
+/// known-gap: vm secure_shuffle rejects an array literal ("expected array or string, got collection")
+s | :secure_shuffle([1, 2, 3])
+say(:len(s))
+say(:sort(s))

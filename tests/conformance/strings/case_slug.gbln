@@ -1,0 +1,3 @@
+say(:slug("Hello, World!"))
+say(:slug("  Many   Spaces here "))
+say("Goblin Lang".slug)

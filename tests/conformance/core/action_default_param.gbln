@@ -1,0 +1,6 @@
+/// known-gap: vm parameter defaults ('b | 10') are not applied (arity mismatch)
+act fx(a, b | 10)
+    return a + b
+xx
+say(fx(1))
+say(fx(1, 2))

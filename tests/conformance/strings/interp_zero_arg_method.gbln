@@ -1,0 +1,3 @@
+/// known-gap: both "{name.slug}" is not interpolated (docs: zero-arg methods allowed)
+name | "Hello World"
+say("/users/{name.slug}")

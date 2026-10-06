@@ -1,0 +1,4 @@
+l | [1, 2, 3]
+r | :reverse(l)
+say r
+say l

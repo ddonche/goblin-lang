@@ -1,0 +1,3 @@
+/// known-gap: interp lacks contains (has works)
+say(:contains("goblin", "bli"))
+say(:contains("goblin", "x"))
