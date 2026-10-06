@@ -1,0 +1,11 @@
+/// walk(dir, "**/*") lists every file below dir (recursively, no directories); order is unspecified so it is sorted.
+d | :env("GOBLIN_CONF_TMP")
+root | "{d}/w"
+:create_dir!("{root}/a/b")
+:write_text!("{root}/one.md", "1")
+:write_text!("{root}/a/two.txt", "2")
+:write_text!("{root}/a/b/three.gbln", "3")
+:write_text!("{root}/noext", "4")
+for f in :sort(:walk(root, "**/*"))
+    say(:path_relative_to(f, root))
+xx

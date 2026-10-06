@@ -1,0 +1,7 @@
+/// known-gap: vm zip_dir! does not create the destination's parent directory (interp does, like copy_file!)
+/// zip_dir! creates missing parent directories of the destination archive.
+d | :env("GOBLIN_CONF_TMP")
+:create_dir!("{d}/src")
+:write_text!("{d}/src/a.txt", "hello")
+:zip_dir!("{d}/src", "{d}/out/nested/a.zip")
+say(:is_file("{d}/out/nested/a.zip"))

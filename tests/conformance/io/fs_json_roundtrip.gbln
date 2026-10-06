@@ -1,0 +1,12 @@
+/// write_json! then read_json gives back nested maps, arrays, numbers, bools and nil.
+d | :env("GOBLIN_CONF_TMP")
+data | {"a": 1, "b": [1, 2.5, true, nil], "c": {"k": "v"}, "d": "text"}
+:write_json!("{d}/data.json", data)
+back | :read_json("{d}/data.json")
+say(back["a"] + 1)
+say(back["b"][1])
+say(back["b"][2])
+say(:is_nil(back["b"][3]))
+say(back["c"]["k"])
+say(back["d"])
+say(:len(back["b"]))

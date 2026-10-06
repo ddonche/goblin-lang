@@ -1,0 +1,7 @@
+/// known-gap: interp print/println are not builtins on the interpreter
+/// println formats non-string values like say does; several print arguments are separated by a space.
+println(5)
+println(true)
+println([1, 2])
+print(1, 2)
+println("")

@@ -1,0 +1,6 @@
+/// create_dir! on a directory that already exists succeeds and keeps its contents.
+d | :env("GOBLIN_CONF_TMP")
+:create_dir!("{d}/a")
+:write_text!("{d}/a/keep.txt", "k")
+:create_dir!("{d}/a")
+say(:read_text("{d}/a/keep.txt"))

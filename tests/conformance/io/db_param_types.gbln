@@ -1,0 +1,8 @@
+/// requires: db
+/// Parameters bind str, int, float, bool and nil.
+r | :db_query_one("SELECT $1::text AS s, $2::bigint AS i, $3::float8 AS f, $4::bool AS b, $5::text AS n", ["s", 7, 1.25, false, nil])
+say(r["s"])
+say(r["i"])
+say(r["f"])
+say(r["b"])
+say(:is_nil(r["n"]))

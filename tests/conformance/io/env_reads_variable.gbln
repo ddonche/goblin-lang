@@ -1,0 +1,4 @@
+/// env(name) returns the value of an environment variable as a string.
+base | :env("GOBLIN_CONF_HTTP")
+say(:is_str(base))
+say(:starts_with(base, "http://"))

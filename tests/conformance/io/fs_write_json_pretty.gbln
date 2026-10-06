@@ -1,0 +1,4 @@
+/// write_json!(path, value, true) pretty-prints with two-space indentation.
+d | :env("GOBLIN_CONF_TMP")
+:write_json!("{d}/p.json", [1, 2], true)
+say(:read_text("{d}/p.json"))

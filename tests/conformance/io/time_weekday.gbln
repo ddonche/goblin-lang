@@ -1,0 +1,3 @@
+/// weekday returns the English day name.
+say(:weekday(:from_iso("2025-03-04T10:20:30Z")))
+say(:weekday(:from_epoch_ms(0)))

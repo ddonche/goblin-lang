@@ -1,0 +1,6 @@
+/// file_exists is true for files and directories, false for missing paths.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/f.txt", "x")
+say(:file_exists("{d}/f.txt"))
+say(:file_exists(d))
+say(:file_exists("{d}/missing.txt"))

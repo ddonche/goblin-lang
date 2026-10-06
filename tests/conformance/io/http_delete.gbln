@@ -1,0 +1,7 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// http_delete sends DELETE without a body.
+base | :env("GOBLIN_CONF_HTTP")
+r | :http_delete("{base}/echo")
+say(r["body"])
+say(r["ok"])

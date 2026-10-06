@@ -1,0 +1,7 @@
+/// Non-ASCII text round-trips through write_text!/read_text unchanged.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/u.txt"
+:write_text!(p, "héllo wörld ✓")
+s | :read_text(p)
+say(s)
+say(s == "héllo wörld ✓")

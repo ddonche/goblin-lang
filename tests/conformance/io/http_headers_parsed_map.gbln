@@ -1,0 +1,7 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// Request headers can be passed as a map (here a map built by json_parse).
+base | :env("GOBLIN_CONF_HTTP")
+h | :json_parse(:json_stringify({"X-Test": "parsed"}))
+r | :http_get("{base}/echo", h)
+say(r["body"])

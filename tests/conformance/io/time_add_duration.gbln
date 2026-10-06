@@ -1,0 +1,7 @@
+/// known-gap: vm map literal is a Collection, and add_duration rejects it ("expected map, got collection")
+/// add_duration adds a map of units (years, months, weeks, days, hours, minutes, seconds).
+/// (The free-standing duration(n_seconds) constructor from the cheat sheet errors "not yet implemented" on both engines, so it is spec-only.)
+dt | :from_iso("2025-03-04T10:20:30Z")
+say(:add_duration(dt, {"days": 1, "hours": 2}))
+say(:add_duration(dt, {"minutes": -30}))
+say(:add_duration(dt, {"weeks": 1}))

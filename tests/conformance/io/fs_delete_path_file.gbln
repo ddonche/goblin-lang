@@ -1,0 +1,7 @@
+/// delete_path! removes a file.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/gone.txt"
+:write_text!(p, "x")
+say(:file_exists(p))
+:delete_path!(p)
+say(:file_exists(p))

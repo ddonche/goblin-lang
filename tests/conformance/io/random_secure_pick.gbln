@@ -1,0 +1,6 @@
+/// known-gap: vm the config map literal is a Collection, and secure_pick rejects it ("expected map, got collection")
+/// secure_pick({count, src}) picks count distinct elements from src.
+xs | [10, 20, 30, 40]
+p | :secure_pick({"count": 2, "src": xs})
+say(:len(p))
+say(p[0] != p[1])

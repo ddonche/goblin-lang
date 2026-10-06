@@ -1,0 +1,7 @@
+/// append_file! adds to the end of an existing file.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/log.txt"
+:write_text!(p, "a\n")
+:append_file!(p, "b\n")
+:append_file!(p, "c\n")
+say(:read_text(p))

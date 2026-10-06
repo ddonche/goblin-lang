@@ -1,0 +1,8 @@
+/// Outside `goblin start` the request builtins see no request: strings are "", header/cookie lookups are nil.
+m | :req_method()
+p | :req_path()
+q | :req_query()
+b | :req_body()
+say("[{m}][{p}][{q}][{b}]")
+say(:is_nil(:req_header("X-Test")))
+say(:is_nil(:cookie("sid")))

@@ -1,0 +1,10 @@
+/// walk(dir, "**/*.gbln") returns only .gbln files.
+d | :env("GOBLIN_CONF_TMP")
+root | "{d}/w"
+:create_dir!("{root}/sub")
+:write_text!("{root}/main.gbln", "1")
+:write_text!("{root}/sub/lib.gbln", "2")
+:write_text!("{root}/sub/readme.md", "3")
+for f in :sort(:walk(root, "**/*.gbln"))
+    say(:path_relative_to(f, root))
+xx

@@ -1,0 +1,8 @@
+/// epoch_ms and epoch_s are ints counting from 1970; they agree with each other.
+ms | :epoch_ms()
+s | :epoch_s()
+say(:is_int(ms))
+say(:is_int(s))
+say(s > 1700000000)
+diff | s * 1000 - ms
+say(diff > -5000 and diff < 5000)

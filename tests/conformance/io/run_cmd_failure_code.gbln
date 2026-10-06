@@ -1,0 +1,7 @@
+/// A failing command is not an error: ok is false and code is the exit status.
+f | :json_parse(:run_cmd("false"))
+say(f["ok"])
+say(f["code"])
+e | :json_parse(:run_cmd("exit 7"))
+say(e["ok"])
+say(e["code"])

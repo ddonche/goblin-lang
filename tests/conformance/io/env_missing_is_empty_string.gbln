@@ -1,0 +1,5 @@
+/// env of an unset variable returns "" (not nil, not an error); Sheriff relies on :trim(:env(...)).
+v | :env("GOBLIN_CONF_SURELY_NOT_SET_42")
+say("[{v}]")
+say(:is_str(v))
+say(:is_nil(v))

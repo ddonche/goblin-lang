@@ -1,0 +1,5 @@
+/// read_json of a missing file is an error.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+v | :read_json("{d}/missing.json")
+say("unreachable")

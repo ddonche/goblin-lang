@@ -1,0 +1,5 @@
+/// delete_path! on a missing path is an error.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+:delete_path!("{d}/missing")
+say("unreachable")

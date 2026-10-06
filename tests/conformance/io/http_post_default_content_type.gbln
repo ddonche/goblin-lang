@@ -1,0 +1,6 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// http_post without a content type sends application/json.
+base | :env("GOBLIN_CONF_HTTP")
+r | :http_post("{base}/echo", "[1,2]")
+say(r["body"])

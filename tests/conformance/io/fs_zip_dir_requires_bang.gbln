@@ -1,0 +1,6 @@
+/// Plain zip_dir(...) without the bang is an error.
+d | :env("GOBLIN_CONF_TMP")
+:create_dir!("{d}/src")
+say("start")
+:zip_dir("{d}/src", "{d}/out.zip")
+say("unreachable")

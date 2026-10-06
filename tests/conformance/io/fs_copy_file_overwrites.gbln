@@ -1,0 +1,6 @@
+/// copy_file! replaces an existing destination file.
+d | :env("GOBLIN_CONF_TMP")
+:write_text!("{d}/src.txt", "new")
+:write_text!("{d}/dst.txt", "old contents")
+:copy_file!("{d}/src.txt", "{d}/dst.txt")
+say(:read_text("{d}/dst.txt"))

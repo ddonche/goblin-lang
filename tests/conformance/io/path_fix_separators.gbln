@@ -1,0 +1,3 @@
+/// path_fix_separators turns backslashes into forward slashes.
+say(:path_fix_separators("a\\b\\c.txt"))
+say(:path_fix_separators("already/fine"))

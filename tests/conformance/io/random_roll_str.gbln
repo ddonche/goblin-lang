@@ -1,0 +1,9 @@
+/// roll_str("NdS") rolls N S-sided dice and returns the int total.
+ok | true
+for i in 1..30
+    n | :roll_str("2d6")
+    if :is_int(n) == false or n < 2 or n > 12
+        ok |= false
+    xx
+xx
+say(ok)

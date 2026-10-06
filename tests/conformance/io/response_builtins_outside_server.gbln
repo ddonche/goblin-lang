@@ -1,0 +1,6 @@
+/// Outside `goblin start`, set_status / set_header / set_cookie only record response state; nothing is printed.
+say("before")
+:set_status(201)
+:set_header("X-Conf", "yes")
+:set_cookie("sid", "abc")
+say("after")

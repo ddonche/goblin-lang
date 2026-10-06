@@ -1,0 +1,7 @@
+/// requires: db
+/// db_query with no matching rows returns an empty array.
+sfx | :keep_before(:uuid_v4(), "-")
+t | "io_db_query_empty_{sfx}"
+:db_exec("CREATE TABLE {t} (id bigint)", [])
+say(:db_query("SELECT id FROM {t}", []))
+:db_exec("DROP TABLE {t}", [])

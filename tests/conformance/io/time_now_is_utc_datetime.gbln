@@ -1,0 +1,7 @@
+/// now() and utc_now() are UTC datetimes; to_iso renders ISO-8601 with a "T" and a +00:00 offset.
+a | :to_iso(:now())
+b | :to_iso(:utc_now())
+say(:is_str(a))
+say(:len(:split(a, "T")))
+say(:ends_with(a, "+00:00"))
+say(:ends_with(b, "+00:00"))

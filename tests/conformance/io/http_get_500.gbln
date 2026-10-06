@@ -1,0 +1,8 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// A 500 is not an error: status 500, body returned, ok false.
+base | :env("GOBLIN_CONF_HTTP")
+r | :http_get("{base}/fail")
+say(r["status"])
+say(r["body"])
+say(r["ok"])

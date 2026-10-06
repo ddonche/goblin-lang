@@ -1,0 +1,9 @@
+/// walk returns paths that start with the directory it was given.
+d | :env("GOBLIN_CONF_TMP")
+root | "{d}/w"
+:create_dir!(root)
+:write_text!("{root}/x.md", "1")
+found | :walk(root)
+say(:len(found))
+say(:starts_with(found[0], root))
+say(:basename(found[0]))

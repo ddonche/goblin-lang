@@ -1,0 +1,4 @@
+/// set_status requires an integer status code.
+say("start")
+:set_status("201")
+say("unreachable")

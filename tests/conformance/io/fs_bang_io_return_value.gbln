@@ -1,0 +1,6 @@
+/// undecided: D-bang-io-return
+/// What a filesystem bang call evaluates to: interp returns unit, VM returns nil.
+d | :env("GOBLIN_CONF_TMP")
+r | :write_text!("{d}/f.txt", "x")
+say(:is_nil(r))
+say(:vt(r))

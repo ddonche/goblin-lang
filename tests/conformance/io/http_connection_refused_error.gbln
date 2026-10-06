@@ -1,0 +1,7 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// A transport failure (nothing listening) is a runtime error, unlike HTTP error statuses.
+base | :env("GOBLIN_CONF_HTTP")
+say(:http_get("{base}/text")["status"])
+r | :http_get("http://127.0.0.1:1/nothing")
+say("unreachable")

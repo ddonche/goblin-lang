@@ -1,0 +1,9 @@
+/// from_iso parses RFC 3339; year/month/day/hour/minute/second read the fields back as ints.
+dt | :from_iso("2025-03-04T10:20:30Z")
+say(:year(dt))
+say(:month(dt))
+say(:day(dt))
+say(:hour(dt))
+say(:minute(dt))
+say(:second(dt))
+say(:is_int(:year(dt)))

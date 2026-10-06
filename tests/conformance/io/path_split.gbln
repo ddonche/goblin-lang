@@ -1,0 +1,4 @@
+/// path_split returns the path components; an absolute path starts with "/".
+say(:path_split("a/b/c.txt"))
+say(:path_split("/a/b"))
+say(:len(:path_split("x")))

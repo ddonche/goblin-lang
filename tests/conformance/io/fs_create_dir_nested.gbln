@@ -1,0 +1,8 @@
+/// create_dir! creates every missing parent directory.
+d | :env("GOBLIN_CONF_TMP")
+:create_dir!("{d}/a/b/c")
+say(:is_dir("{d}/a"))
+say(:is_dir("{d}/a/b"))
+say(:is_dir("{d}/a/b/c"))
+:write_text!("{d}/a/b/c/f.txt", "deep")
+say(:read_text("{d}/a/b/c/f.txt"))

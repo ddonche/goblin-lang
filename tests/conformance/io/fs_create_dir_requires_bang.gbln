@@ -1,0 +1,5 @@
+/// Plain create_dir(...) without the bang is an error.
+d | :env("GOBLIN_CONF_TMP")
+say("start")
+:create_dir("{d}/x")
+say("unreachable")

@@ -1,0 +1,5 @@
+/// known-gap: vm map literal is a Collection, and roll rejects it ("expected map config, got collection")
+/// roll takes a config map {count, sides}.
+n | :roll({"count": 3, "sides": 6})
+say(:is_int(n))
+say(n >= 3 and n <= 18)

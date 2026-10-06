@@ -1,0 +1,5 @@
+/// requires: http
+/// known-gap: interp http_* builtins exist only on the VM ("unknown action")
+/// http_get sends GET with no body and no Content-Type.
+base | :env("GOBLIN_CONF_HTTP")
+say(:http_get("{base}/echo")["body"])
