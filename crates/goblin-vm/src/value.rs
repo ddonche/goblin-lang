@@ -1038,7 +1038,7 @@ pub enum CollectionLayout {
     RingBuf(Rc<RingBuf>),
     ChunkedSeq(Rc<ChunkedSeq>),
     SmallMap(Rc<Vec<(Value, Value)>>),
-    HashMapBackend(Rc<HashMap<Value, Value>>),
+    HashMapBackend(Rc<indexmap::IndexMap<Value, Value>>),
 }
 
 /// Ring buffer for queue/stack semantics.
