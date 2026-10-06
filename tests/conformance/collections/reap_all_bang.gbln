@@ -1,5 +1,4 @@
 /// known-gap: interp has no reap_all builtin (unknown action)
-/// known-gap: vm reap_all! leaves the source unchanged
 l | [1, 2]
 x | :reap_all!(l)
 say x

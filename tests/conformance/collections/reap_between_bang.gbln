@@ -1,4 +1,3 @@
-/// known-gap: vm reap_*! writes the reaped value back into the variable instead of the shrunken collection
 l | ["a", "m", "n", "b"]
 x | :reap_between!(l, "a", "b")
 say x

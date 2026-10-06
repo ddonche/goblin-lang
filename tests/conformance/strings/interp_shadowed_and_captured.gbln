@@ -1,0 +1,16 @@
+/// Interpolation reads the binding visible where the string is written:
+/// a shadow inside a block, the outer one after it, and a captured variable.
+x | 1
+if true
+    x [= 2
+    say("in {x}")
+xx
+say("out {x}")
+act outer()
+    n | 5
+    act inner()
+        return "n={n}"
+    xx
+    return inner()
+xx
+say(outer())

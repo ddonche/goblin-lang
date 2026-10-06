@@ -1,4 +1,3 @@
-/// known-gap: vm reap_*! writes the reaped value back into the variable instead of the shrunken collection
 act over_one(n)
     return n > 1
 xx

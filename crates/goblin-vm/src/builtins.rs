@@ -2122,6 +2122,22 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             session.write_output(&parts?.join(" "), false);
             Ok(Value::Nil)
         }
+        BuiltinId::ReapSplit => {
+            // reap_random!: [picked, rest] from one random position.
+            let coll = read(0)?;
+            let key = if let Some(entries) = coll.map_entries() {
+                if entries.is_empty() { return Err(GoblinError::Runtime("reap_random!: collection is empty".into())); }
+                Value::Str(entries[collections::rng_bounded(session, entries.len())].0.clone())
+            } else {
+                let n = coll.seq_items().map(|v| v.len())
+                    .ok_or_else(|| GoblinError::type_error("array or map", coll.type_name(), "reap_random!"))?;
+                if n == 0 { return Err(GoblinError::Runtime("reap_random!: collection is empty".into())); }
+                Value::Int(collections::rng_bounded(session, n) as i64)
+            };
+            let picked = collections::collection_operation(&coll, collections::Position::At(key.clone()), collections::Operation::Reap, session)?;
+            let rest = collections::collection_operation(&coll, collections::Position::At(key), collections::Operation::Delete, session)?;
+            Ok(Value::Array(vec![picked, rest]))
+        }
         BuiltinId::StrictEq => Ok(Value::Bool(read(0)? == read(1)?)),
         BuiltinId::ApiEcho => {
             // A top-level expression statement in API mode: its value becomes

@@ -1,4 +1,3 @@
-/// known-gap: vm bang call on an indexed target (m["k"]) silently does not write back
 m | {"k": [1]}
 :put_last!(m["k"], 2)
 say(m["k"])

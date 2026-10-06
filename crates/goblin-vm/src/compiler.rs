@@ -1146,7 +1146,32 @@ impl Compiler {
             Expr::Str(s, _) => {
                 let idx = self.add_constant(Value::Str(s.clone()));
                 if s.as_bytes().contains(&b'{') && !s.starts_with('\u{001E}') {
-                    self.emit(Opcode::StringInterp(idx));
+                    // Resolve `{name}` placeholders to the variables in scope here
+                    // (locals, captured upvalues, globals) so shadowed and
+                    // block-local names interpolate the right binding.
+                    let mut names: Vec<String> = Vec::new();
+                    for name in interp_placeholder_names(s) {
+                        let ok = match self.scope().find_local_entry(&name) {
+                            Some((i, _)) => self.scope().local_meta[i].bound,
+                            None => true,
+                        };
+                        if !ok { continue; }
+                        match self.resolve_load(&name) {
+                            Ok(op @ (Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_))) => {
+                                self.emit(op);
+                                names.push(name);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if names.is_empty() {
+                        self.emit(Opcode::StringInterp(idx));
+                    } else {
+                        let mut parts = vec![Value::Str(s.clone())];
+                        parts.extend(names.iter().cloned().map(Value::Str));
+                        let tidx = self.add_constant(Value::Array(parts));
+                        self.emit(Opcode::StringInterpVals(tidx, names.len() as u8));
+                    }
                 } else {
                     self.emit(Opcode::LoadConst(idx));
                 }
@@ -1249,6 +1274,32 @@ impl Compiler {
                     self.emit(Opcode::Call(args.len() as u8));
                     return Ok(());
                 }
+                // reap_*!(target, …): the call's value is what was reaped, and
+                // the target is left holding the rest (as in the interpreter):
+                // value = reap_X(…), rest = delete_X(…).
+                if let Some(pos_name) = reap_bang_position(bare_name) {
+                    if let Some(target) = args.first().filter(|t| is_lvalue(t)) {
+                        if pos_name == "random" {
+                            // One random pick for both halves.
+                            self.compile_expr(target)?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::ReapSplit, 1));
+                            let one = self.add_constant(Value::Int(1));
+                            let zero = self.add_constant(Value::Int(0));
+                            self.emit(Opcode::Dup);
+                            self.emit(Opcode::LoadConst(one));
+                            self.emit(Opcode::GetIndex);
+                            self.compile_store_from_stack(target)?;
+                            self.emit(Opcode::LoadConst(zero));
+                            self.emit(Opcode::GetIndex);
+                        } else {
+                            let sp = target.span().clone();
+                            self.compile_expr(&Expr::FreeCall(format!("reap_{pos_name}"), args.clone(), sp.clone()))?;
+                            self.compile_expr(&Expr::FreeCall(format!("delete_{pos_name}"), args.clone(), sp))?;
+                            self.compile_store_from_stack(target)?;
+                        }
+                        return Ok(());
+                    }
+                }
                 // Check if it's a known builtin call pattern.
                 if let Some(_) = self.try_compile_builtin_call(name, args)? {
                     // Mutation-bang free call: name!(collection, ...) stores result back.
@@ -1261,12 +1312,10 @@ impl Compiler {
                     ];
                     let bare = name.trim_start_matches(':');
                     if bare.ends_with('!') && !IO_BANG_NO_WRITEBACK.contains(&bare) {
-                        if let Some(Expr::Ident(var_name, _)) = args.first() {
-                            self.emit(Opcode::Dup);
-                            if let Some(slot) = self.scope().find_local(var_name) {
-                                self.emit(Opcode::StoreLocal(slot));
-                            } else if let Some(pos) = self.global_index(var_name) {
-                                self.emit(Opcode::StoreGlobal(pos as u16));
+                        if let Some(target) = args.first() {
+                            if is_lvalue(target) {
+                                self.emit(Opcode::Dup);
+                                self.compile_store_from_stack(target)?;
                             }
                         }
                     }
@@ -1877,6 +1926,50 @@ impl Compiler {
 
     // ── Nested action / closure compilation ───────────────────────────────────
 
+    /// Stores the value on top of the stack into an lvalue: a variable, or a
+    /// path of indexes and `>>` fields below one (rebuilt with UpdatePath,
+    /// like `update!`). Consumes the value.
+    fn compile_store_from_stack(&mut self, target: &Expr) -> Result<(), GoblinError> {
+        if let Expr::Ident(var_name, _) = target {
+            let op = self.resolve_store(var_name)
+                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+            self.emit(op);
+            return Ok(());
+        }
+        let mut segs: Vec<(&Expr, bool)> = Vec::new();
+        let mut cur = target;
+        let root_name = loop {
+            match cur {
+                Expr::Index(base, key, _) | Expr::IndexMap(base, key, _) => { segs.push((key.as_ref(), false)); cur = base.as_ref(); }
+                Expr::Member(base, _, _) => { segs.push((cur, true)); cur = base.as_ref(); }
+                Expr::Ident(name, _) => break name.clone(),
+                _ => unreachable!("is_lvalue checked the target"),
+            }
+        };
+        segs.reverse();
+        let tmp = self.scope_mut().declare_local("__store_tmp__");
+        self.emit(Opcode::StoreLocal(tmp));
+        let load_op = self.resolve_load(&root_name).map_err(|e| self.locate_err(e))?;
+        self.emit(load_op);
+        let mut mask: u16 = 0;
+        for (i, (seg, is_field)) in segs.iter().enumerate() {
+            if *is_field {
+                mask |= 1 << i;
+                let Expr::Member(_, field, _) = seg else { unreachable!() };
+                let kidx = self.add_constant(Value::Str(field.clone()));
+                self.emit(Opcode::LoadConst(kidx));
+            } else {
+                self.compile_expr(seg)?;
+            }
+        }
+        self.emit(Opcode::LoadLocal(tmp));
+        self.emit(Opcode::UpdatePath(segs.len() as u8, mask));
+        let store_op = self.resolve_store(&root_name)
+            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
+        self.emit(store_op);
+        Ok(())
+    }
+
     /// Compiles to an error raised when execution reaches this point, so
     /// output before it still happens, as with the interpreter's runtime
     /// errors.
@@ -2001,6 +2094,22 @@ impl Compiler {
     fn try_compile_special_form(&mut self, name: &str, args: &[Expr]) -> Result<bool, GoblinError> {
         let bare = name.trim_start_matches(':');
         match bare {
+            // is_bound_name("x") with a literal name: whether `x` is bound where
+            // the call is written (local, captured or module global).
+            "is_bound_name" if args.len() == 1 && matches!(&args[0], Expr::Str(..)) && !self.user_actions.contains(bare) => {
+                let Expr::Str(var, _) = &args[0] else { unreachable!() };
+                let bound = match self.scope().find_local_entry(var) {
+                    Some((i, _)) => self.scope().local_meta[i].bound,
+                    None => {
+                        (self.scopes.len() > 1 && self.resolve_upvalue(self.scopes.len() - 1, var).is_some())
+                            || (self.global_index(var).is_some()
+                                && (self.scopes.len() > 1 || self.bound_globals.contains(var.as_str())))
+                    }
+                };
+                let idx = self.add_constant(Value::Bool(bound));
+                self.emit(Opcode::LoadConst(idx));
+                Ok(true)
+            }
             // if(cond, then [, else])
             "if" | "unless" => {
                 let invert = bare == "unless";
@@ -3205,4 +3314,69 @@ impl Compiler {
             global_names: self.globals.clone(),
         })
     }
+}
+
+/// A variable, or indexes / `>>` fields below one (at most 16 segments).
+fn is_lvalue(e: &Expr) -> bool {
+    let mut cur = e;
+    let mut depth = 0;
+    loop {
+        match cur {
+            Expr::Ident(..) => return true,
+            Expr::Index(base, _, _) | Expr::IndexMap(base, _, _) | Expr::Member(base, _, _) => {
+                depth += 1;
+                if depth > 16 { return false; }
+                cur = base.as_ref();
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// The position a `reap_*!` call removes from, for ReapSplit.
+fn reap_bang_position(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "reap_first!" => "first",
+        "reap_last!" => "last",
+        "reap_at!" => "at",
+        "reap_random!" => "random",
+        "reap_all!" => "all",
+        "reap_where!" => "where",
+        "reap_matching!" => "matching",
+        "reap_between!" => "between",
+        _ => return None,
+    })
+}
+
+/// The `{name}` placeholders of an interpolated string, in order, without
+/// duplicates (escaped `\{`, `{{{…}}}` tokens and `{#…}` box keys skipped).
+fn interp_placeholder_names(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' { i += 2; continue; }
+        if chars[i] == '{' {
+            if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
+                let mut j = i + 3;
+                while j + 2 < chars.len() && !(chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}') { j += 1; }
+                i = j + 3;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '}' { j += 1; }
+            if j >= chars.len() { break; }
+            let inner: String = chars[i + 1..j].iter().collect();
+            let inner = inner.trim();
+            if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && !out.iter().any(|n| n == inner)
+            {
+                out.push(inner.to_string());
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
 }

@@ -759,6 +759,7 @@ pub enum BuiltinId {
     RepeatPrep,
     ApiEcho,
     StrictEq,
+    ReapSplit,
 
     // String extras
     Lines,

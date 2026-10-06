@@ -122,11 +122,13 @@ pub struct Vm {
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
     gc_op_counter: u32,
+    /// Placeholder values for the string being interpolated (StringInterpVals).
+    interp_overrides: Vec<(String, Value)>,
 }
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0 }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0, interp_overrides: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1869,6 +1871,28 @@ impl Vm {
                 self.stack.push(Operand::Val(value));
             }
 
+            Opcode::StringInterpVals(idx, n) => {
+                let parts = {
+                    let frame = self.call_stack.last().unwrap();
+                    match frame.func.constants.get(idx as usize).cloned() {
+                        Some(Value::Array(p)) => p,
+                        _ => return Err(GoblinError::Runtime("StringInterpVals: bad constant".into())),
+                    }
+                };
+                let mut vals: Vec<(String, Value)> = Vec::with_capacity(n as usize);
+                for i in (0..n as usize).rev() {
+                    let v = self.pop_value()?;
+                    let Value::Str(name) = &parts[i + 1] else { continue };
+                    vals.push((name.clone(), v));
+                }
+                let Value::Str(template) = &parts[0] else {
+                    return Err(GoblinError::Runtime("StringInterpVals: bad template".into()));
+                };
+                let saved = std::mem::replace(&mut self.interp_overrides, vals);
+                let result = self.render_string_interp(template);
+                self.interp_overrides = saved;
+                self.stack.push(Operand::Val(Value::Str(result?)));
+            }
             Opcode::StringInterp(idx) => {
                 let template = {
                     let frame = self.call_stack.last().unwrap();
@@ -2025,6 +2049,10 @@ impl Vm {
     }
 
     fn lookup_interp_var(&mut self, name: &str) -> String {
+        // 0. Values resolved at compile time (StringInterpVals).
+        if let Some((_, v)) = self.interp_overrides.iter().find(|(n, _)| n == name) {
+            return crate::builtins::fmt_value_raw(v);
+        }
         // 1. Check locals in current frame by name
         let local_tether = self.call_stack.last().and_then(|frame| {
             frame.func.local_names.iter().position(|n| n == name)

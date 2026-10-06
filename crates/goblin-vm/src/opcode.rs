@@ -214,6 +214,10 @@ pub enum Opcode {
     /// Interpolate a string constant: constants[idx] is a raw template string.
     /// Looks up {ident} placeholders in the current locals/globals scope at runtime.
     StringInterp(u16),
+    /// Like StringInterp, with the values of n placeholders resolved at
+    /// compile time: constants[idx] = [template, name1, …, nameN] and the
+    /// stack holds the N values (last on top).
+    StringInterpVals(u16, u8),
 
     /// Load a field from self (locals[0], which is the receiver object in a class method).
     /// constants[idx] is the field name string. Pushes nil if self is not an Object or field absent.
@@ -315,6 +319,7 @@ impl Opcode {
             Opcode::SetField(_)     => "SetField",
             Opcode::UpdatePath(..)  => "UpdatePath",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
+            Opcode::StringInterpVals(..) => "StringInterpVals",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",
             Opcode::CallMethod(_, _)    => "CallMethod",
             Opcode::Call(_)         => "Call",
