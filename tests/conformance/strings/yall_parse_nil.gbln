@@ -1,2 +1,2 @@
 v | :yall_parse("a: 1\nb: nil\n", "n.yall")
-say(:is_nil(v["b"]))
+say(:is_nil(v{"b"}))

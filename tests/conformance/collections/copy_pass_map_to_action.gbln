@@ -1,7 +1,7 @@
 m | {"a": 1}
 act tweak(mm)
-    :update!(mm["a"], 99)
-    return mm["a"]
+    :update!(mm{"a"}, 99)
+    return mm{"a"}
 xx
 say(tweak(m))
-say(m["a"])
+say(m{"a"})

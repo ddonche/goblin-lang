@@ -1,4 +1,4 @@
 /// requires: db
 /// A non-NULL numeric column does not read as nil (its exact Goblin type is not pinned down here).
 r | :db_query_one("SELECT 12.34::numeric(10,2) AS n", [])
-say(:is_nil(r["n"]))
+say(:is_nil(r{"n"}))

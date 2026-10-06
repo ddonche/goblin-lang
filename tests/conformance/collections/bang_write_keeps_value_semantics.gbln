@@ -7,8 +7,8 @@ b | a
 say(b)
 say(a)
 m | {"k": [1]}
-row | m["k"]
-:update!(m["k"][0], 5)
+row | m{"k"}
+:update!(m{"k"}[0], 5)
 say(row)
 say(m)
 act grow(xs)

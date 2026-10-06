@@ -1,5 +1,5 @@
 /// Decided 2026-10-06 (D-update-missing-key, option A; see DECISIONS.md).
 res | {"status": 200, "headers": {"a": "1"}}
-:update!(res["headers"]["b"], "2")
-say(res["headers"]["b"])
-say(res["headers"].len)
+:update!(res{"headers"}{"b"}, "2")
+say(res{"headers"}{"b"})
+say(res{"headers"}.len)

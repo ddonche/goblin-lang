@@ -1,4 +1,4 @@
 m | {"a": {"b": 1}}
 k | "b"
-:update!(m["a"][k], 6)
-say(m["a"][k])
+:update!(m{"a"}{k}, 6)
+say(m{"a"}{k})

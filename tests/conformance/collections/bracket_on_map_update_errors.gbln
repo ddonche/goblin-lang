@@ -1,0 +1,6 @@
+/// Owner ruling 2026-10-06: arrays and strings take [], maps take {}; the wrong one is an error.
+/// known-gap: interp still accepts [] on maps
+m | {"a": [1]}
+:update!(m{"a"}[0], 5)
+say(m)
+:update!(m["a"][0], 6)

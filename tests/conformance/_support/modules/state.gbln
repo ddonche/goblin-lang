@@ -18,8 +18,8 @@ act get_items()
     return items
 xx
 act inc_tally(k)
-    :update!(tally[k], tally[k] + 1)
-    return tally[k]
+    :update!(tally{k}, tally{k} + 1)
+    return tally{k}
 xx
 act get_tally()
     return tally
@@ -31,5 +31,5 @@ act get_label()
     return label
 xx
 act get_tally_a()
-    return tally["a"]
+    return tally{"a"}
 xx

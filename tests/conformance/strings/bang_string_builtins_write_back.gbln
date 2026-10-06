@@ -7,5 +7,5 @@ say(s)
 :lower!(s)
 say(s)
 m | {"t": " x "}
-:trim!(m["t"])
+:trim!(m{"t"})
 say(m)

@@ -106,6 +106,17 @@ pub enum Opcode {
     /// Pop new_val, pop key, pop collection → push updated collection (|! semantics).
     SetIndex,
 
+    /// `x[k]` in source: GetIndex that errors when x is a map (maps take `{}`).
+    /// constants[idx] = how x reads in the source, for the message.
+    IndexGet(u16),
+    /// `x{k}` in source: GetIndex that errors when x is an array or string.
+    KeyGet(u16),
+    /// Before a write through `root[k1]{k2}…` (n segments): checks each level
+    /// takes the bracket the source used, without consuming anything.
+    /// Stack: [root, key1, …, keyN]. constants[idx] = array of strings, one
+    /// per segment: "[" or "{" followed by the level's source text, or "."
+    /// for a `>>` field.
+    CheckPath(u8, u16),
     /// Like GetIndex but key is constants[idx] (string member access).
     GetMember(u16),
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
@@ -330,6 +341,9 @@ impl Opcode {
             Opcode::MakeArray(_)    => "MakeArray",
             Opcode::MakeMap(_)      => "MakeMap",
             Opcode::GetIndex        => "GetIndex",
+            Opcode::IndexGet(_)     => "IndexGet",
+            Opcode::KeyGet(_)       => "KeyGet",
+            Opcode::CheckPath(..)   => "CheckPath",
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",

@@ -1,8 +1,8 @@
 /// env: GOBLIN_NONINTERACTIVE=1
 /// The body comes from a top-level call, the way an app's front controller ends.
 act emit(res)
-    :set_status(res["status"])
+    :set_status(res{"status"})
     :set_cookie("sid", "abc")
-    return res["body"]
+    return res{"body"}
 xx
 emit({"status": 404, "body": "<p>missing</p>"})

@@ -1,3 +1,3 @@
 /// The optional third argument is a map of extra environment variables.
 r | :json_parse(:run_cmd("printf '[%s]' \"$GOB_CONF_X\"", "", {"GOB_CONF_X": "val"}))
-say(:ends_with(r["stdout"], "[val]"))
+say(:ends_with(r{"stdout"}, "[val]"))

@@ -3,4 +3,4 @@
 /// http_post's fourth argument is a headers map.
 base | :env("GOBLIN_CONF_HTTP")
 r | :http_post("{base}/echo", "[]", "application/json", {"X-Test": "p"})
-say(r["body"])
+say(r{"body"})

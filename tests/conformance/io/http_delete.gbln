@@ -3,5 +3,5 @@
 /// http_delete sends DELETE without a body.
 base | :env("GOBLIN_CONF_HTTP")
 r | :http_delete("{base}/echo")
-say(r["body"])
-say(r["ok"])
+say(r{"body"})
+say(r{"ok"})

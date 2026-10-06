@@ -1,0 +1,4 @@
+/// Owner ruling 2026-10-06: arrays and strings take [], maps take {}; the wrong one is an error.
+cfg | {"r": [1, 2]}
+say(cfg{"r"}[1])
+say(cfg{"r"}{1})

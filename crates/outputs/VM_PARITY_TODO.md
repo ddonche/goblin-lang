@@ -9,7 +9,7 @@ against the engine. `parity` means every such case passes on both engines; `vm o
 `interp only` mean one engine lacks the builtin (see tests/conformance/DECISIONS.md);
 `untested` means no case mentions it yet. Details of each gap are in the suite report.
 
-Summary: interp gap 45, interp only 3, parity 216, untested 54, vm only 20
+Summary: interp gap 47, interp only 3, parity 214, untested 54, vm only 20
 
 | builtin | defined by | status | interp | vm |
 |---|---|---|---|---|
@@ -194,7 +194,7 @@ Summary: interp gap 45, interp only 3, parity 216, untested 54, vm only 20
 | `list_tokens` | vm+interp | untested | 0/0 | 0/0 |
 | `local_now` | vm+interp | parity | 1/1 | 1/1 |
 | `lower` | vm+interp | parity | 6/6 | 6/6 |
-| `m` | vm+interp | interp gap | 71/74 | 74/74 |
+| `m` | vm+interp | interp gap | 71/77 | 77/77 |
 | `map` | vm+interp | interp gap | 24/31 | 31/31 |
 | `map_fn` | vm | vm only | 0/1 | 1/1 |
 | `max` | vm+interp | interp gap | 4/5 | 5/5 |
@@ -238,7 +238,7 @@ Summary: interp gap 45, interp only 3, parity 216, untested 54, vm only 20
 | `put_at` | vm+interp | parity | 4/4 | 4/4 |
 | `put_between` | vm+interp | parity | 1/1 | 1/1 |
 | `put_first` | vm+interp | parity | 4/4 | 4/4 |
-| `put_last` | vm+interp | parity | 20/20 | 20/20 |
+| `put_last` | vm+interp | interp gap | 20/21 | 21/21 |
 | `put_matching` | vm+interp | parity | 1/1 | 1/1 |
 | `put_random` | vm+interp | parity | 1/1 | 1/1 |
 | `rand_seed` | vm+interp | interp gap | 1/2 | 2/2 |
@@ -319,7 +319,7 @@ Summary: interp gap 45, interp only 3, parity 216, untested 54, vm only 20
 | `unique` | vm+interp | parity | 4/4 | 4/4 |
 | `unpack` | vm+interp | untested | 0/0 | 0/0 |
 | `until` | vm+interp | parity | 1/1 | 1/1 |
-| `update` | vm+interp | parity | 23/23 | 23/23 |
+| `update` | vm+interp | interp gap | 23/24 | 24/24 |
 | `update_all` | vm+interp | parity | 1/1 | 1/1 |
 | `update_at` | vm+interp | parity | 5/5 | 5/5 |
 | `update_between` | vm+interp | parity | 1/1 | 1/1 |

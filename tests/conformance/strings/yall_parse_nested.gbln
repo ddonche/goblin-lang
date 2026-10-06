@@ -1,7 +1,7 @@
 src | "name: Goblin\nversion: 1\nsite:\n  title: Hi\nroutes:\n  - /\n  - /docs\n"
 v | :yall_parse(src, "t.yall")
-say(v["name"])
-say(v["version"] + 1)
-say(v["site"]["title"])
-say(v["routes"][1])
-say(:len(v["routes"]))
+say(v{"name"})
+say(v{"version"} + 1)
+say(v{"site"}{"title"})
+say(v{"routes"}[1])
+say(:len(v{"routes"}))

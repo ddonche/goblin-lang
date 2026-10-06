@@ -807,6 +807,40 @@ impl Vm {
                 let result = crate::collections::get_index(&coll_val, &key)?;
                 self.stack.push(Operand::Val(result));
             }
+            Opcode::IndexGet(label_idx) | Opcode::KeyGet(label_idx) => {
+                let brace = matches!(op, Opcode::KeyGet(_));
+                let key = self.pop_value()?;
+                let coll_val = self.pop_value()?;
+                self.check_bracket(&coll_val, brace, label_idx)?;
+                let result = crate::collections::get_index(&coll_val, &key)?;
+                self.stack.push(Operand::Val(result));
+            }
+            Opcode::CheckPath(n, info_idx) => {
+                let n = n as usize;
+                let info: Vec<String> = match self.call_stack.last().and_then(|f| f.func.constants.get(info_idx as usize)) {
+                    Some(Value::Array(items)) => items.iter().map(|v| match v { Value::Str(s) => s.clone(), _ => String::new() }).collect(),
+                    _ => return Err(GoblinError::Runtime("CheckPath: bad info constant".into())),
+                };
+                if self.stack.len() < n + 1 {
+                    return Err(GoblinError::Runtime("stack underflow on CheckPath".into()));
+                }
+                let base = self.stack.len() - n - 1;
+                let mut cur = self.resolve_op(self.stack[base].clone())?;
+                for (i, seg) in info.iter().enumerate() {
+                    let key = self.resolve_op(self.stack[base + 1 + i].clone())?;
+                    let next = if seg == "." {
+                        crate::collections::get_index(&cur, &key)
+                    } else {
+                        let brace = seg.starts_with('{');
+                        bracket_error(&cur, brace, &seg[1..]).map_or(Ok(()), Err)?;
+                        crate::collections::get_index(&cur, &key)
+                    };
+                    match next {
+                        Ok(v) if !matches!(v, Value::Nil) => cur = v,
+                        _ => break, // the write creates the rest of the path
+                    }
+                }
+            }
             Opcode::SetIndex => {
                 let new_val = self.pop_value()?;
                 let key = self.pop_value()?;
@@ -2695,6 +2729,14 @@ impl Vm {
         }
     }
 
+    fn check_bracket(&self, v: &Value, brace: bool, label_idx: u16) -> Result<(), GoblinError> {
+        let label = match self.call_stack.last().and_then(|f| f.func.constants.get(label_idx as usize)) {
+            Some(Value::Str(s)) => s.clone(),
+            _ => "this value".into(),
+        };
+        match bracket_error(v, brace, &label) { Some(e) => Err(e), None => Ok(()) }
+    }
+
     /// Call a named function from session.named_values and return its result.
     pub(crate) fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, GoblinError> {
         // 1. Try exact qualified name ("stagehand::copy_assets").
@@ -3893,5 +3935,30 @@ fn floor_mod_adjust(r: Value, divisor: &Value) -> Value {
         (Value::Big(x), Value::Big(y)) if !x.is_zero() && x.is_sign_negative() != y.is_sign_negative() => Value::Big(x + y),
         (Value::Big(x), Value::Int(y)) if !x.is_zero() && x.is_sign_negative() != (*y < 0) => Value::Big(x + rust_decimal::Decimal::from(*y)),
         _ => r,
+    }
+}
+
+/// Arrays and strings are indexed with `[]`, maps with `{}` (owner ruling
+/// 2026-10-06). The error for using the other one, if `v` is of a kind that
+/// takes a particular bracket.
+fn bracket_error(v: &Value, brace: bool, label: &str) -> Option<GoblinError> {
+    let is_map = match v {
+        Value::Map(_) | Value::MapOrd(_) => true,
+        Value::Collection(c) => c.is_map(),
+        _ => false,
+    };
+    let is_seq = match v {
+        Value::Array(_) => true,
+        Value::Collection(c) => !c.is_map(),
+        _ => false,
+    };
+    if !brace && is_map {
+        Some(GoblinError::Runtime(format!("`{label}` is a map. Use {{}} for maps: {label}{{\"key\"}}")))
+    } else if brace && is_seq {
+        Some(GoblinError::Runtime(format!("`{label}` is an array. Use [] for arrays: {label}[0]")))
+    } else if brace && matches!(v, Value::Str(_)) {
+        Some(GoblinError::Runtime(format!("`{label}` is a string. Use [] for strings: {label}[0]")))
+    } else {
+        None
     }
 }

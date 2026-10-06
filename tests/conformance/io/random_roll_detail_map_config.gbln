@@ -1,4 +1,4 @@
 /// roll_detail takes the same config map and returns the detail map.
 d | :roll_detail({"count": 2, "sides": 6})
-say(:len(d["values"]))
-say(d["sides"])
+say(:len(d{"values"}))
+say(d{"sides"})

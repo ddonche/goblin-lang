@@ -1,2 +1,2 @@
 p | {"special-ability": "fireball"}
-say(p["special-ability"])
+say(p{"special-ability"})

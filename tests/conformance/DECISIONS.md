@@ -1080,6 +1080,15 @@ Remaining VM gaps after the docs were set aside. Implemented on the VM (and in t
 
 Variables named like builtins (owner, 21:03: "Good. Allow the : on all builtin functions."): a bound variable wins (`count[0]`, `count + 1` use the variable; parser `bound_names`), and `:name(...)` always reaches the builtin. Cases: `builtin_named_var_*`, `builtin_name_variable_*`, `builtin_named_var_colon_calls_builtin`.
 
+## Brackets for arrays, braces for maps (owner, 2026-10-06 21:08)
+
+"We need to do brackets for arrays and braces for maps … Give an easy error if you use the wrong one."
+- Arrays and strings are indexed with `[]`, maps with `{}`, for reads and for writes through a path (`update!`, `name!(x{k}…)`, `|=` targets).
+- The other bracket is a runtime error naming the value: `` `m` is a map. Use {} for maps: m{"key"} ``, `` `a` is an array. Use [] for arrays: a[0] ``.
+- VM opcodes `IndexGet` / `KeyGet` (reads) and `CheckPath` (writes). The interpreter still accepts `[]` on maps (known-gap: interp).
+- Cases: `collections/bracket_on_map_*`, `collections/brace_on_*`. 74 existing case files (including _support modules) were rewritten from `m["k"]` to `m{"k"}`.
+- Sheriff (about 384 `m["key"]` sites) is to be refactored later; Campfire uses `m["key"]` throughout.
+
 ## VM-only builtins
 
 **Decided by the owner, 2026-10-06.** The interpreter will be removed once the VM works, so nothing is added to it.

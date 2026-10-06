@@ -1,14 +1,14 @@
 /// Decided 2026-10-06 (D-map-key-order, option B: insertion order; see DECISIONS.md).
 m | {"b": 1, "z": 3}
-:update!(m["c"], 9)
+:update!(m{"c"}, 9)
 say(m)
 :put_at!(m, "a", 2)
 say(m)
 n | {}
 i | 0
 while i < 20
-    :update!(n["k" + :str(20 - i)], i)
+    :update!(n{"k" + :str(20 - i)}, i)
     i |= i + 1
 xx
 say(:keys(n))
-say(n["k7"])
+say(n{"k7"})

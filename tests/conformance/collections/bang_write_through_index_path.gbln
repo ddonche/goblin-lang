@@ -2,11 +2,11 @@
 /// bound to the same values alone.
 m | {"rows": [1], "tags": {"a": " x "}}
 keep | m
-rows | m["rows"]
-:put_last!(m["rows"], 2)
-:put_first!(m["rows"], 0)
-:trim!(m["tags"]["a"])
-:update_at!(m["rows"], 0, 9)
+rows | m{"rows"}
+:put_last!(m{"rows"}, 2)
+:put_first!(m{"rows"}, 0)
+:trim!(m{"tags"}{"a"})
+:update_at!(m{"rows"}, 0, 9)
 say(m)
 say(keep)
 say(rows)

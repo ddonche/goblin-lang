@@ -1,6 +1,6 @@
 act go()
     m | {"a": {"b": 1}}
-    :update!(m["a"]["b"], 4)
-    return m["a"]["b"]
+    :update!(m{"a"}{"b"}, 4)
+    return m{"a"}{"b"}
 xx
 say(go())

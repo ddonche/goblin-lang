@@ -103,7 +103,7 @@ fn map_update_is_linear() {
     check_scaling(
         "map",
         5_000,
-        "m | {}\ni | 0\nwhile i < N\n    :update!(m[\"k\" + :str(i)], i)\n    i |= i + 1\nxx\nsay(:len(:keys(m)))\n",
+        "m | {}\ni | 0\nwhile i < N\n    :update!(m{\"k\" + :str(i)}, i)\n    i |= i + 1\nxx\nsay(:len(:keys(m)))\n",
     );
 }
 
@@ -112,7 +112,7 @@ fn nested_update_is_linear() {
     check_scaling(
         "nested",
         10_000,
-        "rows | []\ni | 0\nwhile i < N\n    :put_last!(rows, 0)\n    i |= i + 1\nxx\nm | {\"rows\": rows}\nrows |= []\nj | 0\nwhile j < N\n    :update!(m[\"rows\"][j], j)\n    j |= j + 1\nxx\nsay(m[\"rows\"][N - 1])\n",
+        "rows | []\ni | 0\nwhile i < N\n    :put_last!(rows, 0)\n    i |= i + 1\nxx\nm | {\"rows\": rows}\nrows |= []\nj | 0\nwhile j < N\n    :update!(m{\"rows\"}[j], j)\n    j |= j + 1\nxx\nsay(m{\"rows\"}[N - 1])\n",
     );
 }
 
@@ -121,7 +121,7 @@ fn nested_push_is_linear() {
     check_scaling(
         "nested_push",
         10_000,
-        "m | {\"rows\": []}\ni | 0\nwhile i < N\n    :put_last!(m[\"rows\"], i)\n    i |= i + 1\nxx\nsay(:len(m[\"rows\"]))\n",
+        "m | {\"rows\": []}\ni | 0\nwhile i < N\n    :put_last!(m{\"rows\"}, i)\n    i |= i + 1\nxx\nsay(:len(m{\"rows\"}))\n",
     );
 }
 

@@ -3,8 +3,8 @@
 /// The body is raw text; json_parse turns a JSON body into values.
 base | :env("GOBLIN_CONF_HTTP")
 r | :http_get("{base}/json")
-say(:is_str(r["body"]))
-j | :json_parse(r["body"])
-say(j["a"])
-say(j["b"][0])
-say(:is_nil(j["b"][1]))
+say(:is_str(r{"body"}))
+j | :json_parse(r{"body"})
+say(j{"a"})
+say(j{"b"}[0])
+say(:is_nil(j{"b"}[1]))

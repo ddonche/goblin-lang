@@ -3,6 +3,6 @@
 /// http_request(method, url, body, content_type, headers) sends any method; nil headers means none.
 base | :env("GOBLIN_CONF_HTTP")
 r | :http_request("PATCH", "{base}/echo", "b", "text/plain", nil)
-say(r["body"])
+say(r{"body"})
 g | :http_request("GET", "{base}/text", nil, nil, nil)
-say(g["body"])
+say(g{"body"})

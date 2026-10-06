@@ -3,5 +3,5 @@
 /// http_post(url, body, content_type) sends the body with that Content-Type.
 base | :env("GOBLIN_CONF_HTTP")
 r | :http_post("{base}/echo", "hello", "text/plain")
-say(r["body"])
-say(r["status"])
+say(r{"body"})
+say(r{"status"})

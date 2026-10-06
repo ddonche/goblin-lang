@@ -1211,16 +1211,19 @@ impl Compiler {
             }
 
             // ── Indexing ──────────────────────────────────────────────────────
+            // Arrays and strings take `[]`, maps take `{}` (owner, 2026-10-06).
             Expr::Index(obj, idx, _) => {
                 self.compile_expr(obj)?;
                 self.compile_expr(idx)?;
-                self.emit(Opcode::GetIndex);
+                let label = self.add_constant(Value::Str(source_text(obj)));
+                self.emit(Opcode::IndexGet(label));
             }
 
             Expr::IndexMap(obj, key, _) => {
                 self.compile_expr(obj)?;
                 self.compile_expr(key)?;
-                self.emit(Opcode::GetIndex);
+                let label = self.add_constant(Value::Str(source_text(obj)));
+                self.emit(Opcode::KeyGet(label));
             }
 
             Expr::Member(obj, name, _) => {
@@ -1301,6 +1304,7 @@ impl Compiler {
                     let load_op = self.resolve_load(&root).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
                     for k in &keys { self.compile_expr(k)?; }
+                    self.emit_check_path(&args[0])?;
                     for a in &args[1..] { self.compile_expr(a)?; }
                     self.emit(Opcode::CallBuiltinMutPath(bid, args.len() as u8, keys.len() as u8));
                     let store_op = self.resolve_store(&root)
@@ -1954,6 +1958,27 @@ impl Compiler {
     /// Stores the value on top of the stack into an lvalue: a variable, or a
     /// path of indexes and `>>` fields below one (rebuilt with UpdatePath,
     /// like `update!`). Consumes the value.
+    /// Emits CheckPath for the lvalue path `target` (root and keys already on
+    /// the stack), so a write through the wrong bracket errors.
+    fn emit_check_path(&mut self, target: &Expr) -> Result<(), GoblinError> {
+        let mut info: Vec<Value> = Vec::new();
+        let mut cur = target;
+        loop {
+            match cur {
+                Expr::Index(base, _, _) => { info.push(Value::Str(format!("[{}", source_text(base)))); cur = base.as_ref(); }
+                Expr::IndexMap(base, _, _) => { info.push(Value::Str(format!("{{{}", source_text(base)))); cur = base.as_ref(); }
+                Expr::Member(base, _, _) => { info.push(Value::Str(".".into())); cur = base.as_ref(); }
+                _ => break,
+            }
+        }
+        if info.is_empty() { return Ok(()); }
+        info.reverse();
+        let n = info.len() as u8;
+        let idx = self.add_constant(Value::Array(info));
+        self.emit(Opcode::CheckPath(n, idx));
+        Ok(())
+    }
+
     fn compile_store_from_stack(&mut self, target: &Expr) -> Result<(), GoblinError> {
         if let Expr::Ident(var_name, _) = target {
             let op = self.resolve_store(var_name)
@@ -1987,6 +2012,7 @@ impl Compiler {
                 self.compile_expr(seg)?;
             }
         }
+        self.emit_check_path(target)?;
         self.emit(Opcode::LoadLocal(tmp));
         self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
         let store_op = self.resolve_store(&root_name)
@@ -2663,6 +2689,7 @@ impl Compiler {
                                 self.compile_expr(seg)?;
                             }
                         }
+                        self.emit_check_path(&args[0])?;
                         self.compile_expr(&args[1])?;
                         self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
                         let store_op = self.resolve_store(&root_name)
@@ -3386,4 +3413,24 @@ fn interp_placeholder_names(s: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+/// How an indexed expression reads in the source, for bracket errors.
+fn source_text(e: &Expr) -> String {
+    match e {
+        Expr::Ident(n, _) => n.clone(),
+        Expr::Index(b, k, _) => format!("{}[{}]", source_text(b), key_text(k)),
+        Expr::IndexMap(b, k, _) => format!("{}{{{}}}", source_text(b), key_text(k)),
+        Expr::Member(b, f, _) => format!("{}.{}", source_text(b), f),
+        _ => "this value".into(),
+    }
+}
+
+fn key_text(e: &Expr) -> String {
+    match e {
+        Expr::Str(s, _) => format!("\"{s}\""),
+        Expr::Ident(n, _) => n.clone(),
+        Expr::Number(n, _) => n.clone(),
+        _ => "…".into(),
+    }
 }
