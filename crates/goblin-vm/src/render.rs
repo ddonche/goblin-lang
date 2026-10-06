@@ -121,9 +121,8 @@ fn transpile(body: &str) -> String {
 
 fn map_to_pairs(data: Value) -> Result<Vec<(String, Value)>, GoblinError> {
     match data {
-        Value::Map(m) => Ok(m.into_iter().collect()),
-        Value::MapOrd(m) => Ok(m.into_iter().collect()),
         Value::Nil => Ok(vec![]),
+        ref m if m.is_map_like() => Ok(m.map_entries().unwrap_or_default()),
         other => Err(GoblinError::Runtime(format!(
             "render_template: data must be a map, got {}",
             other.type_name()
