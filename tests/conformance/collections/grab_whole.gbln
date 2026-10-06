@@ -1,3 +1,2 @@
 /// known-gap: interp has no grab builtin (unknown action)
-/// known-gap: vm grab(<array>) fails ("expected collection, got collection")
 say(:grab([1, 2, 3]))

@@ -1,2 +1,1 @@
-/// known-gap: vm == on maps is never true; cheat-sheet: "containers compare structurally"
 say({"a": [1]} == {"a": [1]})

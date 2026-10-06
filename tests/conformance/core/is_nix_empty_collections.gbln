@@ -1,4 +1,3 @@
-/// known-gap: vm is_nix is false for empty array/map literals (Value::Collection not matched)
 say(:is_nix([]))
 say(:is_nix({}))
 say(:is_nix([1]))

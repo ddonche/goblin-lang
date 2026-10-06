@@ -1,3 +1,2 @@
-/// known-gap: vm count with 2 args is routed to len (arity mismatch)
 say(:count("banana", "a"))
 say("banana".count("an"))

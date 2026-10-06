@@ -1,2 +1,1 @@
-/// known-gap: vm sort leaves an int/float mix unsorted
 say(:sort([2.5, 1, 3]))

@@ -214,7 +214,8 @@ fn array_op(
                 Value::Int(n) => n,
                 other => return Err(GoblinError::type_error("int", other.type_name(), "array index")),
             };
-            let i = resolve_seq_index(idx, xs.len())?;
+            // Inserting at index == len appends (positions 0..=len are valid).
+            let i = if idx == xs.len() as i64 { xs.len() } else { resolve_seq_index(idx, xs.len())? };
             let mut new_xs = xs.clone();
             new_xs.insert(i, v);
             Ok(Value::Array(new_xs))
@@ -226,9 +227,9 @@ fn array_op(
             Ok(Value::Array(new_xs))
         }
         (Position::All, Operation::Put(v)) => {
-            match v {
-                Value::Array(arr) => Ok(Value::Array(arr)),
-                _ => Err(GoblinError::type_error("array", v.type_name(), "put-all on array expects array value")),
+            match v.seq_items() {
+                Some(items) => Ok(Value::Array(items.into_owned())),
+                None => Err(GoblinError::type_error("array", v.type_name(), "put-all on array expects array value")),
             }
         }
         (Position::Where(pred), Operation::Put(v)) => {
@@ -305,9 +306,9 @@ fn array_op(
             Ok(Value::Array(new_xs))
         }
         (Position::All, Operation::Update(v)) => {
-            match v {
-                Value::Array(arr) => Ok(Value::Array(arr)),
-                _ => Err(GoblinError::type_error("array", v.type_name(), "update-all on array expects array value")),
+            match v.seq_items() {
+                Some(items) => Ok(Value::Array(items.into_owned())),
+                None => Err(GoblinError::type_error("array", v.type_name(), "update-all on array expects array value")),
             }
         }
         (Position::Where(pred), Operation::Update(v)) => {
@@ -340,11 +341,11 @@ fn array_op(
 
         // ── Delete ──────────────────────────────────────────────────────────
         (Position::First, Operation::Delete) => {
-            if xs.is_empty() { return Ok(Value::Array(xs.clone())); }
+            if xs.is_empty() { return Err(GoblinError::Runtime("delete_first: empty array".into())); }
             Ok(Value::Array(xs[1..].to_vec()))
         }
         (Position::Last, Operation::Delete) => {
-            if xs.is_empty() { return Ok(Value::Array(xs.clone())); }
+            if xs.is_empty() { return Err(GoblinError::Runtime("delete_last: empty array".into())); }
             Ok(Value::Array(xs[..xs.len()-1].to_vec()))
         }
         (Position::At(idx_val), Operation::Delete) => {
@@ -529,9 +530,9 @@ fn map_op_btree(
         }
         // All + Put/Update: replace entire map (v must be a Map)
         (Position::All, Operation::Put(v)) | (Position::All, Operation::Update(v)) => {
-            match v {
-                Value::Map(m2) => Ok(Value::Map(m2)),
-                _ => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
+            match v.to_btree_map() {
+                Some(m2) => Ok(Value::Map(m2)),
+                None => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
             }
         }
         // Random + Put: update a random key's value (same as Random + Update)
@@ -1430,16 +1431,15 @@ pub fn reap(coll: &CollectionValue, key: &Value) -> Result<(Value, Value), Gobli
 
 // ── Legacy query operations ───────────────────────────────────────────────────
 
-pub fn has(coll: &CollectionValue, key: &Value) -> bool {
-    if is_map(coll) {
-        to_pairs(coll).iter().any(|(k, _)| k == key)
-    } else {
-        match key {
-            Value::Int(i) => {
-                let len = coll.meta.len as i64;
-                *i >= -len && *i < len
-            }
-            _ => false,
+/// Membership: a key of a map, an element (structurally compared) of a sequence.
+pub fn has(coll: &CollectionValue, needle: &Value) -> bool {
+    match &coll.layout {
+        CollectionLayout::FlatArray(v)   => v.iter().any(|x| x == needle),
+        CollectionLayout::RingBuf(rb)    => (0..rb.len).any(|i| rb.get(i) == Some(needle)),
+        CollectionLayout::ChunkedSeq(cs) => cs.chunks.iter().flatten().any(|x| x == needle),
+        CollectionLayout::SmallMap(_) | CollectionLayout::HashMapBackend(_) => {
+            let key = crate::value::map_key_text(needle);
+            to_pairs(coll).iter().any(|(k, _)| k == needle || crate::value::map_key_text(k) == key)
         }
     }
 }
@@ -1481,12 +1481,31 @@ pub fn sort_values(coll: &CollectionValue) -> Value {
     Value::Collection(Rc::new(build_seq(items, meta)))
 }
 
-fn compare_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
+/// Ordering used by sort / sort_by: numbers (int, float, big, pct) compare by
+/// value across kinds, strings and chars lexically; anything else is left in
+/// place (stable sort).
+pub fn compare_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn num(v: &Value) -> Option<f64> {
+        use rust_decimal::prelude::ToPrimitive;
+        match v {
+            Value::Int(n) => Some(*n as f64),
+            Value::Float(f) | Value::Pct(f) => Some(*f),
+            Value::Big(d) => d.to_f64(),
+            Value::Formatted(inner, _) => num(inner),
+            _ => None,
+        }
+    }
     match (a, b) {
         (Value::Int(x), Value::Int(y))     => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Big(x), Value::Big(y))     => x.cmp(y),
         (Value::Str(x), Value::Str(y))     => x.cmp(y),
-        _ => std::cmp::Ordering::Equal,
+        (Value::Char(x), Value::Char(y))   => x.cmp(y),
+        (Value::Bool(x), Value::Bool(y))   => x.cmp(y),
+        _ => match (num(a), num(b)) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            _ => Ordering::Equal,
+        },
     }
 }
 

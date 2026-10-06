@@ -153,7 +153,9 @@ impl Value {
             Value::GridRef { .. } => "grid_ref",
             Value::Enum { .. }   => "enum",
             Value::Class { .. }  => "class",
-            Value::Collection(_) => "collection",
+            // Collections are the VM's representation of array/map literals;
+            // user-visible type names match the interpreter.
+            Value::Collection(c) => if c.is_map() { "map" } else { "array" },
             Value::Function(_)   => "function",
             Value::Closure(_)    => "closure",
             Value::Builtin(_)    => "builtin",
@@ -210,14 +212,15 @@ impl PartialEq for Value {
             (Value::DateTime(a),      Value::DateTime(b))      => a == b,
             (Value::Array(a),         Value::Array(b))         => a == b,
             (Value::Map(a),           Value::Map(b))           => a == b,
-            (Value::MapOrd(a),        Value::MapOrd(b))        => a == b,
             (Value::Pair(ak, av),     Value::Pair(bk, bv))     => ak == bk && av == bv,
-            (Value::Seq(a),           Value::Seq(b))           => a == b,
             (Value::CtrlSkip,         Value::CtrlSkip)         => true,
             (Value::CtrlStop,         Value::CtrlStop)         => true,
             (Value::CtrlReturn(a),    Value::CtrlReturn(b))    => a == b,
             (Value::Ref(a),           Value::Ref(b))           => a == b,
-            (Value::Collection(a),    Value::Collection(b))    => Rc::ptr_eq(a, b),
+            (Value::Collection(a),    Value::Collection(b)) if Rc::ptr_eq(a, b) => true,
+            // Containers compare structurally, whatever their representation
+            // (legacy Array/Map/MapOrd/Seq or an Rc-backed Collection).
+            (a, b) if a.is_container() && b.is_container() => containers_eq(a, b),
             (Value::Function(a),      Value::Function(b))      => Rc::ptr_eq(a, b),
             (Value::Closure(a),       Value::Closure(b))       => Rc::ptr_eq(a, b),
             (Value::Builtin(a),       Value::Builtin(b))       => a == b,
@@ -229,8 +232,146 @@ impl PartialEq for Value {
 }
 impl Eq for Value {}
 
+/// Key text used to compare map keys across representations (legacy maps have
+/// String keys, map collections have Value keys).
+pub fn map_key_text(k: &Value) -> String {
+    match k {
+        Value::Str(s)   => s.clone(),
+        Value::Int(n)   => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b)  => b.to_string(),
+        Value::Char(c)  => c.to_string(),
+        Value::Nil      => "nil".into(),
+        other           => format!("{:?}", other),
+    }
+}
+
+fn containers_eq(a: &Value, b: &Value) -> bool {
+    if a.is_seq_like() && b.is_seq_like() {
+        let (Some(x), Some(y)) = (a.seq_items(), b.seq_items()) else { return false };
+        return x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| p == q);
+    }
+    if a.is_map_like() && b.is_map_like() {
+        if a.container_len() != b.container_len() { return false; }
+        let Some(entries) = a.map_entries() else { return false };
+        return entries.iter().all(|(k, v)| b.map_lookup(k).map_or(false, |w| &w == v));
+    }
+    false
+}
+
+// ── Representation-independent views of array-like and map-like values ─────
+
+impl Value {
+    /// Array-like: legacy Array, Seq, or a non-map Collection.
+    pub fn is_seq_like(&self) -> bool {
+        match self {
+            Value::Array(_) | Value::Seq(_) => true,
+            Value::Collection(c) => !c.is_map(),
+            _ => false,
+        }
+    }
+
+    /// Map-like: legacy Map / MapOrd, or a map Collection.
+    pub fn is_map_like(&self) -> bool {
+        match self {
+            Value::Map(_) | Value::MapOrd(_) => true,
+            Value::Collection(c) => c.is_map(),
+            _ => false,
+        }
+    }
+
+    pub fn is_container(&self) -> bool { self.is_seq_like() || self.is_map_like() }
+
+    /// Element count of an array-like or map-like value (0 otherwise). O(1).
+    pub fn container_len(&self) -> usize {
+        match self {
+            Value::Array(xs)     => xs.len(),
+            Value::Seq(s)        => s.len(),
+            Value::Map(m)        => m.len(),
+            Value::MapOrd(m)     => m.len(),
+            Value::Collection(c) => c.len(),
+            _ => 0,
+        }
+    }
+
+    /// The elements of an array-like value; borrowed when the backing store is
+    /// already contiguous (Array, Seq, FlatArray), so no copy on the hot path.
+    pub fn seq_items(&self) -> Option<std::borrow::Cow<'_, [Value]>> {
+        use std::borrow::Cow;
+        match self {
+            Value::Array(xs) => Some(Cow::Borrowed(xs.as_slice())),
+            Value::Seq(s)    => Some(Cow::Borrowed(s.items.as_slice())),
+            Value::Collection(c) => match &c.layout {
+                CollectionLayout::FlatArray(v)   => Some(Cow::Borrowed(v.as_slice())),
+                CollectionLayout::RingBuf(r)     => Some(Cow::Owned(r.to_vec())),
+                CollectionLayout::ChunkedSeq(cs) => Some(Cow::Owned(cs.to_flat())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The entries of a map-like value as (key text, value), in the map's own
+    /// order (insertion order for MapOrd / SmallMap, sorted for Map).
+    pub fn map_entries(&self) -> Option<Vec<(String, Value)>> {
+        match self {
+            Value::Map(m)    => Some(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Value::MapOrd(m) => Some(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Value::Collection(c) => match &c.layout {
+                CollectionLayout::SmallMap(p) =>
+                    Some(p.iter().map(|(k, v)| (map_key_text(k), v.clone())).collect()),
+                CollectionLayout::HashMapBackend(m) =>
+                    Some(m.iter().map(|(k, v)| (map_key_text(k), v.clone())).collect()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Look up a key (by its text) in a map-like value.
+    pub fn map_lookup(&self, key: &str) -> Option<Value> {
+        match self {
+            Value::Map(m)    => m.get(key).cloned(),
+            Value::MapOrd(m) => m.get(key).cloned(),
+            Value::Collection(c) => match &c.layout {
+                CollectionLayout::SmallMap(p) =>
+                    p.iter().find(|(k, _)| map_key_text(k) == key).map(|(_, v)| v.clone()),
+                CollectionLayout::HashMapBackend(m) => m.get(&Value::Str(key.to_string())).cloned()
+                    .or_else(|| m.iter().find(|(k, _)| map_key_text(k) == key).map(|(_, v)| v.clone())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A map-like value as an insertion-ordered legacy map (for builtins that
+    /// take option/config maps).
+    pub fn to_index_map(&self) -> Option<indexmap::IndexMap<String, Value>> {
+        self.map_entries().map(|e| e.into_iter().collect())
+    }
+
+    /// A map-like value as a sorted legacy map.
+    pub fn to_btree_map(&self) -> Option<std::collections::BTreeMap<String, Value>> {
+        self.map_entries().map(|e| e.into_iter().collect())
+    }
+
+    /// Rewrite a Collection into its legacy equivalent (Array / MapOrd); other
+    /// values pass through. For builtins that only understand legacy shapes.
+    pub fn into_legacy(self) -> Value {
+        match &self {
+            Value::Collection(c) if c.is_map() => Value::MapOrd(self.to_index_map().unwrap_or_default()),
+            Value::Collection(_) => Value::Array(self.seq_items().map(|x| x.into_owned()).unwrap_or_default()),
+            _ => self,
+        }
+    }
+}
+
 impl std::hash::Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Containers are equal across representations (see PartialEq), so they
+        // hash by kind and length only, never by variant or pointer.
+        if self.is_seq_like() { 0xA5u8.hash(state); self.container_len().hash(state); return; }
+        if self.is_map_like() { 0x5Au8.hash(state); self.container_len().hash(state); return; }
         std::mem::discriminant(self).hash(state);
         match self {
             Value::Nil           => {}
@@ -876,6 +1017,11 @@ impl CollectionValue {
 
     pub fn is_empty(&self) -> bool {
         self.meta.len == 0
+    }
+
+    /// True for the map layouts (SmallMap / HashMapBackend).
+    pub fn is_map(&self) -> bool {
+        matches!(self.layout, CollectionLayout::SmallMap(_) | CollectionLayout::HashMapBackend(_))
     }
 }
 
