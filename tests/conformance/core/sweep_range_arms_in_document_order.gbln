@@ -1,0 +1,11 @@
+/// A range arm runs once per "start" ... "end" span, in document order; `self`
+/// is the span including both markers.
+text | "a <b>one</b> c <b>two</b> d <i>x</i> <b>three</b>"
+seen | []
+sweep text
+    "<b>" ... "</b>" :
+        :put_last!(seen, self)
+    "<i>" ... "</i>" :
+        :put_last!(seen, "italic " + self)
+xx
+say(seen)

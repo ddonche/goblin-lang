@@ -712,12 +712,14 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Float(-a)));
             }
             Opcode::Concat => {
-                // ++ operator: stringify both sides and join with a space
+                // ++ operator: stringify both sides and join them with a space
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
-                let result = Value::Str(format!("{} {}", a_str, b_str));
+                // An empty side adds no space; surrounding quote marks are dropped.
+                let joined = if a_str.is_empty() { b_str } else if b_str.is_empty() { a_str } else { format!("{} {}", a_str, b_str) };
+                let result = Value::Str(joined.trim_matches('"').to_string());
                 self.stack.push(Operand::Val(result));
             }
 

@@ -1,0 +1,10 @@
+/// `return` inside an arm returns from the enclosing action.
+act first_tag(text)
+    sweep text
+        "<" ... ">" :
+            return self
+    xx
+    return "none"
+xx
+say(first_tag("a <b> <c>"))
+say(first_tag("plain"))

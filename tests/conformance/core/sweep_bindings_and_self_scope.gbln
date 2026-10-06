@@ -1,0 +1,14 @@
+/// `self` belongs to the sweep: a nested sweep has its own `self`, and the
+/// outer arm's `self` is back after it.
+act f(text)
+    sweep text
+        "(" ... ")" :
+            sweep self
+                "x" :
+                    say("inner self: " + self)
+            xx
+            say("outer self: " + self)
+    xx
+    return "done"
+xx
+say(f("a (x) b"))

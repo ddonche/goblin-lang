@@ -1,0 +1,12 @@
+/// `skip` moves on to the next match; `stop` ends the whole sweep.
+text | "<a>1</a><a>skip</a><a>2</a><a>end</a><a>3</a>"
+got | []
+inner | ""
+sweep text
+    "<a>" ... "</a>" :
+        inner |= :keep_between(self, "<a>", "</a>")
+        if inner == "skip" => skip
+        if inner == "end" => stop
+        :put_last!(got, inner)
+xx
+say(got)

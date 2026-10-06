@@ -130,6 +130,13 @@ impl FunctionScope {
         self.block_marks.push(self.locals.len());
     }
 
+    /// Stop resolving names to this slot (the slot itself stays allocated).
+    fn hide_local(&mut self, slot: u8) {
+        if let Some(e) = self.locals.iter_mut().rev().find(|(_, s)| *s == slot) {
+            e.0 = String::from("\u{0}hidden");
+        }
+    }
+
     fn end_block(&mut self) {
         if let Some(mark) = self.block_marks.pop() {
             self.locals.truncate(mark);
@@ -1034,8 +1041,22 @@ impl Compiler {
 
     fn compile_judge_stmt(&mut self, arms: &[goblin_ast::JudgeArmStmt]) -> Result<(), GoblinError> {
         let mut end_jumps: Vec<usize> = Vec::new();
+        // Only one arm runs, so each arm is compiled as if the others had not
+        // bound anything; after the judge a name counts as bound if any arm
+        // bound it (arms share the enclosing block, as in the interpreter).
+        let before: Vec<bool> = self.scope().local_meta.iter().map(|m| m.bound).collect();
+        let mut bound_after: Vec<bool> = before.clone();
+        let reset = |c: &mut Self, bound_after: &mut Vec<bool>| {
+            let meta = &mut c.scopes.last_mut().unwrap().local_meta;
+            for (i, m) in meta.iter_mut().enumerate() {
+                if i >= bound_after.len() { bound_after.push(false); }
+                bound_after[i] |= m.bound;
+                m.bound = before.get(i).copied().unwrap_or(false);
+            }
+        };
 
         for (i, arm) in arms.iter().enumerate() {
+            if i > 0 { reset(self, &mut bound_after); }
             let is_last = i == arms.len() - 1;
             if let Some(cond) = &arm.condition {
                 self.compile_expr(cond)?;
@@ -1055,55 +1076,110 @@ impl Compiler {
         for j in end_jumps {
             self.scope_mut().patch_jump(j);
         }
+        reset(self, &mut bound_after);
+        let meta = &mut self.scopes.last_mut().unwrap().local_meta;
+        for (i, m) in meta.iter_mut().enumerate() {
+            m.bound = bound_after.get(i).copied().unwrap_or(m.bound);
+        }
         Ok(())
     }
 
     fn compile_sweep(&mut self, sweep: &goblin_ast::SweepStmt) -> Result<(), GoblinError> {
-        // sweep compiles each target and runs arm matching.
-        // For now: compile each target and apply arms sequentially.
-        // Full pattern matching (regex, range) is deferred.
-        use goblin_ast::{SweepArmKind, SweepMode};
+        // A sweep is a loop driven by the sweep runtime (sweep.rs): it finds
+        // each match, the arm's body runs with `self` bound to the matched
+        // text, and the arm's `self` is spliced back. Like the interpreter, the
+        // body runs in the enclosing block (its bindings stay visible after
+        // the sweep); `self` is visible only inside the sweep. `skip` keeps the
+        // text unchanged and moves on, `stop` ends the whole sweep.
+        use goblin_ast::{SweepArmKind, SweepArmRepeat, SweepMode};
 
-        for target_expr in &sweep.targets {
-            self.compile_expr(target_expr)?;
-            let target_slot = self.scope_mut().declare_local("__sweep_target__");
-            self.emit(Opcode::StoreLocal(target_slot));
+        let spec: Vec<Value> = sweep.arms.iter().map(|arm| {
+            let s = |x: &str| Value::Str(x.to_string());
+            let fields = match &arm.kind {
+                SweepArmKind::Pattern(p) => vec![s("pattern"), s(p), s(""), s("all")],
+                SweepArmKind::Range { start, end } => vec![s("range"), s(start), s(end), s(match arm.repeat {
+                    SweepArmRepeat::All => "all", SweepArmRepeat::First => "first", SweepArmRepeat::Last => "last",
+                })],
+                SweepArmKind::AllBody => vec![s("all"), s(""), s(""), s("all")],
+            };
+            Value::Array(fields)
+        }).collect();
+        let spec_idx = self.add_constant(Value::Array(spec));
+        self.emit(Opcode::LoadConst(spec_idx));
+        self.emit(if matches!(sweep.mode, SweepMode::All) { Opcode::LoadTrue } else { Opcode::LoadFalse });
+        for t in &sweep.targets { self.compile_expr(t)?; }
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepBegin, (2 + sweep.targets.len()) as u8));
+        let id_slot = self.scope_mut().declare_local("__sweep_id__");
+        self.emit(Opcode::StoreLocal(id_slot));
+        let arm_slot = self.scope_mut().declare_local("__sweep_arm__");
+        let self_slot = self.scope_mut().declare_local("self");
+        self.emit(Opcode::LoadNil);
+        self.emit(Opcode::StoreLocal(self_slot));
 
-            for arm in &sweep.arms {
-                match &arm.kind {
-                    SweepArmKind::Pattern(pat) => {
-                        // Emit: target == pat → run body
-                        self.emit(Opcode::LoadLocal(target_slot));
-                        let idx = self.add_constant(Value::Str(pat.clone()));
-                        self.emit(Opcode::LoadConst(idx));
-                        self.emit(Opcode::Eq);
-                        let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                        for s in &arm.body { self.compile_stmt(s)?; }
-                        self.scope_mut().patch_jump(skip);
-                        if matches!(sweep.mode, SweepMode::Match) { break; }
-                    }
-                    SweepArmKind::AllBody => {
-                        for s in &arm.body { self.compile_stmt(s)?; }
-                    }
-                    SweepArmKind::Range { start, end } => {
-                        // target >= start && target <= end
-                        self.emit(Opcode::LoadLocal(target_slot));
-                        let si = self.add_constant(Value::Str(start.clone()));
-                        self.emit(Opcode::LoadConst(si));
-                        self.emit(Opcode::Ge);
-                        let skip1 = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                        self.emit(Opcode::LoadLocal(target_slot));
-                        let ei = self.add_constant(Value::Str(end.clone()));
-                        self.emit(Opcode::LoadConst(ei));
-                        self.emit(Opcode::Le);
-                        let skip2 = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                        for s in &arm.body { self.compile_stmt(s)?; }
-                        self.scope_mut().patch_jump(skip1);
-                        self.scope_mut().patch_jump(skip2);
-                    }
-                }
-            }
+        // loop: arm = next(id); done when -1
+        let loop_top = self.scope_mut().bytecode.len();
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepNext, 1));
+        self.emit(Opcode::StoreLocal(arm_slot));
+        self.emit(Opcode::LoadLocal(arm_slot));
+        let minus_one = self.add_constant(Value::Int(-1));
+        self.emit(Opcode::LoadConst(minus_one));
+        self.emit(Opcode::Eq);
+        let done_jump = self.scope_mut().emit_jump(Opcode::JumpIfTrue);
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepSelf, 1));
+        self.emit(Opcode::StoreLocal(self_slot));
+
+        let mut to_apply: Vec<usize> = Vec::new();
+        let mut to_skip: Vec<usize> = Vec::new();
+        let mut to_stop: Vec<usize> = Vec::new();
+        for (i, arm) in sweep.arms.iter().enumerate() {
+            self.emit(Opcode::LoadLocal(arm_slot));
+            let k = self.add_constant(Value::Int(i as i64));
+            self.emit(Opcode::LoadConst(k));
+            self.emit(Opcode::Eq);
+            let next_arm = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+            self.loop_stack.push(LoopCtx::default());
+            for st in &arm.body { self.compile_stmt(st)?; }
+            let ctx = self.loop_stack.pop().unwrap();
+            to_skip.extend(ctx.continue_patches);
+            to_stop.extend(ctx.break_patches);
+            to_apply.push(self.scope_mut().emit_jump(Opcode::Jump));
+            self.scope_mut().patch_jump(next_arm);
         }
+
+        // apply(id, self, false); then the next match
+        let apply_ip = self.scope_mut().bytecode.len();
+        for j in to_apply { self.scope_mut().patch_jump_to(j, apply_ip); }
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::LoadLocal(self_slot));
+        self.emit(Opcode::LoadFalse);
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepApply, 3));
+        self.emit(Opcode::Pop);
+        let cur = self.scope_mut().bytecode.len();
+        self.emit(Opcode::Jump(-(((cur - loop_top) as i16) + 1)));
+
+        // skip: apply(id, self, true)
+        let skip_ip = self.scope_mut().bytecode.len();
+        for j in to_skip { self.scope_mut().patch_jump_to(j, skip_ip); }
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::LoadLocal(self_slot));
+        self.emit(Opcode::LoadTrue);
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepApply, 3));
+        self.emit(Opcode::Pop);
+        let cur = self.scope_mut().bytecode.len();
+        self.emit(Opcode::Jump(-(((cur - loop_top) as i16) + 1)));
+
+        // stop: end(id)
+        let stop_ip = self.scope_mut().bytecode.len();
+        for j in to_stop { self.scope_mut().patch_jump_to(j, stop_ip); }
+        self.emit(Opcode::LoadLocal(id_slot));
+        self.emit(Opcode::CallBuiltin(BuiltinId::SweepEnd, 1));
+        self.emit(Opcode::Pop);
+
+        self.scope_mut().patch_jump(done_jump);
+        // `self` goes out of view after the sweep (an outer `self` is visible again).
+        self.scope_mut().hide_local(self_slot);
         Ok(())
     }
 
@@ -1614,7 +1690,20 @@ impl Compiler {
                             self.compile_store_from_stack(inner)?;
                         }
                     }
-                    _ => { /* other postfix ops: compile inner value, no transform */ }
+                    "^" => { self.emit(Opcode::CallBuiltin(BuiltinId::PostfixCeil, 1)); }
+                    "_" => { self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFloor, 1)); }
+                    "!" => { self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFactorial, 1)); }
+                    "?" => {
+                        self.emit(Opcode::LoadNil);
+                        self.emit(Opcode::Ne);
+                    }
+                    "*>>" | "*>>:show_ids" => {
+                        self.emit(if op == "*>>" { Opcode::LoadFalse } else { Opcode::LoadTrue });
+                        self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFieldsMap, 2));
+                    }
+                    other => {
+                        return Err(self.locate_err(GoblinError::Runtime(format!("unknown postfix operator '{other}'"))));
+                    }
                 }
             }
 

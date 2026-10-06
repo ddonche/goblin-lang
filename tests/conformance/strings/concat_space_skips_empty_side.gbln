@@ -1,0 +1,10 @@
+/// `++` joins with one space, but adds none when either side is empty.
+say("[" + ("" ++ "a") + "]")
+say("[" + ("a" ++ "") + "]")
+say("[" + ("a" ++ "b") + "]")
+say("[" + (" " ++ "b") + "]")
+say("[" + ("" ++ "") + "]")
+v | ""
+v |= v ++ "x"
+v |= v ++ "y"
+say(v)

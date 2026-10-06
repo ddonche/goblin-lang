@@ -1,0 +1,15 @@
+/// A file target is edited in place: each arm's `self` is spliced back and the
+/// file is written once its arms are done. sweep_all sees the whole file.
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/sweep.txt"
+:write_text!(p, "Title: beleive\nSTART\nline 1\nline 2\nEND\nTail\n")
+sweep_all p
+    :update_where!(self, "beleive", "believe")
+xx
+sweep p
+    "START" ... "END" :
+        :update_where!(self, "line", "LINE")
+    "Tail" :
+        :update_where!(self, "Tail", "TAIL")
+xx
+say(:read_text(p))

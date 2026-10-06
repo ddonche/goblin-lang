@@ -921,6 +921,22 @@ pub enum BuiltinId {
     GridRegionInfo,
 
     // Compiler-synthesized builtins for AST nodes
+    // postfix operators: x^ (ceil), x_ (floor), n! (factorial), x *>> (fields as a map)
+    PostfixCeil,
+    PostfixFloor,
+    PostfixFactorial,
+    // (value, show_ids_bool)
+    PostfixFieldsMap,
+    // sweep statement steps (see sweep.rs): (arms_spec, all_mode, targets...) → id
+    SweepBegin,
+    // (id) → index of the arm to run, or -1 when done
+    SweepNext,
+    // (id) → the text the pending arm sees as `self`
+    SweepSelf,
+    // (id, self, skip_bool) → nil
+    SweepApply,
+    // (id) → nil (stop)
+    SweepEnd,
     // slice expr: (recv, start_or_nil, end_or_nil) → array/str
     SliceExpr,
     // slice3 expr: (recv, start_or_nil, end_or_nil, step_or_nil) → array/str

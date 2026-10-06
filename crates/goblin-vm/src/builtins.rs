@@ -4225,6 +4225,68 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── Compiler-synthesized builtins ─────────────────────────────────────
 
+        BuiltinId::PostfixCeil | BuiltinId::PostfixFloor | BuiltinId::PostfixFactorial => {
+            let label = match id { BuiltinId::PostfixCeil => "ceil", BuiltinId::PostfixFloor => "floor", _ => "factorial" };
+            let n = match read(0)? {
+                Value::Int(i) => i as f64,
+                Value::Float(f) => f,
+                Value::Pct(p) => p,
+                Value::Big(d) => rust_decimal::prelude::ToPrimitive::to_f64(&d)
+                    .ok_or_else(|| GoblinError::Runtime(format!("{label}: Big value cannot be represented as a float")))?,
+                other => return Err(GoblinError::type_error("number", other.type_name(), "postfix operator")),
+            };
+            let whole = |f: f64| if f.is_finite() && f >= i64::MIN as f64 && f <= i64::MAX as f64 { Value::Int(f as i64) } else { Value::Float(f) };
+            match id {
+                BuiltinId::PostfixCeil => Ok(whole(n.ceil())),
+                BuiltinId::PostfixFloor => Ok(whole(n.floor())),
+                _ => {
+                    if n < 0.0 { return Err(GoblinError::Runtime("factorial requires a non-negative integer (n ≥ 0).".into())); }
+                    if n.fract() != 0.0 { return Err(GoblinError::Runtime("factorial requires an integer value.".into())); }
+                    let mut acc: u128 = 1;
+                    for i in 2..=(n as u128) { acc = acc.saturating_mul(i); }
+                    Ok(Value::Float(acc as f64))
+                }
+            }
+        }
+        BuiltinId::PostfixFieldsMap => {
+            let show_ids = matches!(read(1)?, Value::Bool(true));
+            let keep = |k: &str| show_ids || !(k == "id" || k.ends_with("_id"));
+            match read(0)? {
+                Value::Object { fields, .. } => Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
+                    fields.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (Value::Str(k.clone()), v.clone())).collect())))),
+                m if m.is_map_like() => {
+                    if show_ids { return Ok(m); }
+                    let pairs = m.map_entries().unwrap_or_default();
+                    Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
+                        pairs.into_iter().filter(|(k, _)| keep(k)).map(|(k, v)| (Value::Str(k), v)).collect()))))
+                }
+                other => Err(GoblinError::type_error("object or map", other.type_name(), "*>>")),
+            }
+        }
+        BuiltinId::SweepBegin => {
+            let arms = crate::sweep::parse_arms(&read(0)?);
+            let all_mode = matches!(read(1)?, Value::Bool(true));
+            let targets = (2..args.len()).map(|i| read(i)).collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Int(session.sweeps.begin(arms, all_mode, targets)?))
+        }
+        BuiltinId::SweepNext => {
+            let Value::Int(id) = read(0)? else { return Err(GoblinError::Runtime("sweep: bad id".into())) };
+            Ok(Value::Int(session.sweeps.next(id)?))
+        }
+        BuiltinId::SweepSelf => {
+            let Value::Int(id) = read(0)? else { return Err(GoblinError::Runtime("sweep: bad id".into())) };
+            Ok(Value::Str(session.sweeps.self_text(id)?))
+        }
+        BuiltinId::SweepApply => {
+            let Value::Int(id) = read(0)? else { return Err(GoblinError::Runtime("sweep: bad id".into())) };
+            let skip = matches!(read(2)?, Value::Bool(true));
+            session.sweeps.apply(id, read(1)?, skip)?;
+            Ok(Value::Nil)
+        }
+        BuiltinId::SweepEnd => {
+            if let Value::Int(id) = read(0)? { session.sweeps.end(id); }
+            Ok(Value::Nil)
+        }
         // SliceExpr(recv, start_or_nil, end_or_nil)
         BuiltinId::SliceExpr => {
             if args.len() != 3 {

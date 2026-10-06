@@ -116,6 +116,8 @@ pub struct Session {
 
     /// Token store: namespace → key → value.
     pub token_store: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Sweeps in progress (see sweep.rs).
+    pub sweeps: crate::sweep::Sweeps,
 
     /// Object store: uuid → Value (for DES/overlay system).
     pub object_store: HashMap<String, Value>,
@@ -221,6 +223,7 @@ impl Session {
             gc_watermark: 10_000,
             rng_state: seed,
             token_store: BTreeMap::new(),
+            sweeps: Default::default(),
             object_store: HashMap::new(),
             overlay_instances: Vec::new(),
             response: ResponseState::default(),

@@ -1,0 +1,8 @@
+/// Editing `self` on an in-memory target does not change the variable swept.
+text | "aaa [x] bbb"
+sweep text
+    "[" ... "]" :
+        :update_where!(self, "x", "y")
+        say(self)
+xx
+say(text)

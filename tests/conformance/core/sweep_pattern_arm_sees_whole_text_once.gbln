@@ -1,0 +1,11 @@
+/// A pattern arm fires at most once per target, with `self` the whole text.
+text | "x needle y needle z"
+hits | 0
+whole | ""
+sweep text
+    "needle" :
+        hits += 1
+        :update!(whole, self)
+xx
+say(hits)
+say(whole)
