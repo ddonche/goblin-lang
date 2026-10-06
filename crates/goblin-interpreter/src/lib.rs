@@ -22338,7 +22338,16 @@ fn eval_expr(e: &ast::Expr, sess: &mut Session) -> Result<Value, Diag> {
                         // pure float
                         let a = to_f64_for_math(&lu, sp.clone(), "power: base")?;
                         let b = to_f64_for_math(&ru, sp.clone(), "power: exponent")?;
-                        Value::Float(a.powf(b))
+                        // D-whole-float-type (B): int ** non-negative int stays an int when it fits.
+                        match (&lu, &ru) {
+                            (Value::Int(x), Value::Int(y)) if *y >= 0 && *y <= u32::MAX as i64 => {
+                                match x.checked_pow(*y as u32) {
+                                    Some(n) => Value::Int(n),
+                                    None => Value::Float(a.powf(b)),
+                                }
+                            }
+                            _ => Value::Float(a.powf(b)),
+                        }
                     };
 
                     Ok(reapply_format(out, lspec, rspec))
