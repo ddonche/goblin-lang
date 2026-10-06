@@ -9,7 +9,7 @@ against the engine. `parity` means every such case passes on both engines; `vm o
 `interp only` mean one engine lacks the builtin (see tests/conformance/DECISIONS.md);
 `untested` means no case mentions it yet. Details of each gap are in the suite report.
 
-Summary: gaps on both 6, interp gap 41, interp only 3, parity 214, untested 54, vm only 20
+Summary: interp gap 45, interp only 3, parity 216, untested 54, vm only 20
 
 | builtin | defined by | status | interp | vm |
 |---|---|---|---|---|
@@ -40,7 +40,7 @@ Summary: gaps on both 6, interp gap 41, interp only 3, parity 214, untested 54, 
 | `clone_object` | vm+interp | untested | 0/0 | 0/0 |
 | `cookie` | vm+interp | parity | 1/1 | 1/1 |
 | `copy_file` | vm+interp | parity | 5/5 | 5/5 |
-| `count` | vm+interp | gaps on both | 16/19 | 17/19 |
+| `count` | vm+interp | interp gap | 19/20 | 20/20 |
 | `count_matching` | vm+interp | parity | 2/2 | 2/2 |
 | `create_dir` | vm+interp | parity | 13/13 | 13/13 |
 | `date` | vm+interp | parity | 1/1 | 1/1 |
@@ -123,7 +123,7 @@ Summary: gaps on both 6, interp gap 41, interp only 3, parity 214, untested 54, 
 | `grid_unoccupied` | vm+interp | untested | 0/0 | 0/0 |
 | `grid_unoccupied_count` | vm+interp | untested | 0/0 | 0/0 |
 | `grid_void` | vm+interp | untested | 0/0 | 0/0 |
-| `has` | vm+interp | interp gap | 55/68 | 68/68 |
+| `has` | vm+interp | interp gap | 56/69 | 69/69 |
 | `highlight_code` | vm+interp | parity | 1/1 | 1/1 |
 | `hour` | vm+interp | parity | 3/3 | 3/3 |
 | `http_delete` | vm | vm only | 0/1 | 1/1 |
@@ -186,9 +186,9 @@ Summary: gaps on both 6, interp gap 41, interp only 3, parity 214, untested 54, 
 | `keep_before` | vm+interp | parity | 6/6 | 6/6 |
 | `keep_between` | vm+interp | parity | 1/1 | 1/1 |
 | `keep_matching` | vm+interp | parity | 1/1 | 1/1 |
-| `keys` | vm+interp | gaps on both | 18/21 | 19/21 |
-| `len` | vm+interp | gaps on both | 69/74 | 72/74 |
-| `lines` | vm+interp | gaps on both | 3/4 | 3/4 |
+| `keys` | vm+interp | interp gap | 20/21 | 21/21 |
+| `len` | vm+interp | interp gap | 72/75 | 75/75 |
+| `lines` | vm+interp | parity | 4/4 | 4/4 |
 | `link_score` | vm+interp | untested | 0/0 | 0/0 |
 | `list_dirs` | vm+interp | parity | 2/2 | 2/2 |
 | `list_tokens` | vm+interp | untested | 0/0 | 0/0 |
@@ -335,11 +335,11 @@ Summary: gaps on both 6, interp gap 41, interp only 3, parity 214, untested 54, 
 | `uuid_v4` | vm+interp | parity | 7/7 | 7/7 |
 | `uuid_v7` | vm+interp | parity | 1/1 | 1/1 |
 | `valtype` | vm+interp | interp gap | 17/18 | 18/18 |
-| `values` | vm+interp | gaps on both | 12/15 | 14/15 |
+| `values` | vm+interp | interp gap | 13/15 | 15/15 |
 | `vt` | vm+interp | interp gap | 3/4 | 4/4 |
 | `walk` | vm+interp | parity | 5/5 | 5/5 |
 | `weekday` | vm+interp | parity | 1/1 | 1/1 |
-| `words` | vm+interp | gaps on both | 2/3 | 2/3 |
+| `words` | vm+interp | parity | 3/3 | 3/3 |
 | `write_json` | vm+interp | parity | 4/4 | 4/4 |
 | `write_text` | vm+interp | parity | 31/31 | 31/31 |
 | `yall_minify` | vm+interp | parity | 1/1 | 1/1 |

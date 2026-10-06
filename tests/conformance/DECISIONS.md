@@ -1078,7 +1078,7 @@ Remaining VM gaps after the docs were set aside. Implemented on the VM (and in t
 | `modules/module_variable_qualified_read_is_live` | (approved with the batch) | VM: `alias::var` reads the module's global as it is now. |
 | `collections/slice_builtin` | D24 A | VM: `:slice(a, s, e)` excludes the end for arrays as for strings. |
 
-Still open: variables named like builtins (7 `builtin_named_var_*` / `builtin_name_variable_*` cases) — waiting on whether such names are allowed (variable wins) or an error.
+Variables named like builtins (owner, 21:03: "Good. Allow the : on all builtin functions."): a bound variable wins (`count[0]`, `count + 1` use the variable; parser `bound_names`), and `:name(...)` always reaches the builtin. Cases: `builtin_named_var_*`, `builtin_name_variable_*`, `builtin_named_var_colon_calls_builtin`.
 
 ## VM-only builtins
 

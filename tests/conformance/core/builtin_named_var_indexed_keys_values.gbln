@@ -1,4 +1,4 @@
-/// known-gap: both 'keys[0]' / 'values[0]' call the builtin instead of indexing the variable
+/// Owner ruling 2026-10-06: a bound variable named like a builtin is the variable; `:name(...)` calls the builtin.
 keys | [7, 8]
 say(keys[0])
 values | [5, 6]

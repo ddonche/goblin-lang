@@ -1,4 +1,4 @@
-/// known-gap: both builtin-named parameter indexed with [0] calls the builtin
+/// Owner ruling 2026-10-06: a bound variable named like a builtin is the variable; `:name(...)` calls the builtin.
 act probe(lines)
     return lines[0]
 xx

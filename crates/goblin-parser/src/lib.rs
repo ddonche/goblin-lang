@@ -281,6 +281,46 @@ pub struct Parser<'t> {
     rec_depth: usize,
     suspend_colon_call: usize,
     in_object_construction: bool,
+    /// Names this file binds anywhere (`name |`, `name |=`, action parameters,
+    /// loop variables). A bare builtin name that is bound here is the
+    /// variable when followed by `[`, `+` or `-` (owner ruling 2026-10-06:
+    /// variables win; `:name(...)` always reaches the builtin).
+    bound_names: std::collections::HashSet<String>,
+}
+
+/// Names bound anywhere in the token stream (see `Parser::bound_names`).
+fn scan_bound_names(toks: &[Token]) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let ident = |t: &Token| if t.kind == TokenKind::Ident { t.value.clone() } else { None };
+    let op = |t: &Token, o: &str| matches!(&t.kind, TokenKind::Op(s) if s == o);
+    let mut collect = |mut j: usize, out: &mut std::collections::HashSet<String>| {
+        let mut expect_name = true;
+        while let Some(t) = toks.get(j) {
+            if op(t, ")") || matches!(t.kind, TokenKind::Newline) || ident(t).as_deref() == Some("in") { break; }
+            if op(t, ",") { expect_name = true; }
+            else if expect_name { if let Some(n) = ident(t) { out.insert(n); } expect_name = false; }
+            j += 1;
+        }
+    };
+    for i in 0..toks.len() {
+        // act name(p1, p2 = default, …)
+        if matches!(toks[i].kind, TokenKind::Act | TokenKind::Action) {
+            if toks.get(i + 2).map_or(false, |t| op(t, "(")) { collect(i + 3, &mut out); }
+            continue;
+        }
+        let Some(name) = ident(&toks[i]) else { continue };
+        // for x[, y] in …
+        if name == "for" { collect(i + 1, &mut out); continue; }
+        if name.starts_with(':') { continue; }
+        // name | expr, name |= expr
+        if let Some(n) = toks.get(i + 1) {
+            if op(n, "|") || op(n, "|=") {
+                let at_stmt_start = i == 0 || matches!(toks[i - 1].kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent);
+                if at_stmt_start { out.insert(name.clone()); }
+            }
+        }
+    }
+    out
 }
 
 fn is_block_starter_name(name: &str) -> bool {
@@ -297,6 +337,7 @@ impl<'t> Parser<'t> {
             rec_depth: 0,
             suspend_colon_call: 0,
             in_object_construction: false,
+            bound_names: scan_bound_names(toks),
         }
     } 
 
@@ -8655,7 +8696,11 @@ impl<'t> Parser<'t> {
                     self.toks.get(self.i + 1),
                     Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "(")
                 );
-                if is_no_parens_freecall(bare) && !bang_call {
+                // A bound variable named like a builtin is the variable: `count[0]`,
+                // `count + 1` (the `:count` form always calls the builtin).
+                let bound_var = !name.starts_with(':') && self.bound_names.contains(bare)
+                    && matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Op(o)) if o == "[" || o == "+" || o == "-");
+                if is_no_parens_freecall(bare) && !bang_call && !bound_var {
                     self.skip_newlines();
 
                     // Inline: does the next token start an expression?
