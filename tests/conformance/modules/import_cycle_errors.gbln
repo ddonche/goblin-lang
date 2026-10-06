@@ -1,5 +1,0 @@
-/// known-gap: both import cycles are accepted silently
-/// cycle_a imports cycle_b which imports cycle_a: ModuleCycleError (spec §24.6).
-say("start")
-import _support/modules/cycle_a as ca
-say(ca::a())

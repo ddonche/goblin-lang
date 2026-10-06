@@ -931,6 +931,8 @@ The interpreter runs the escape `\\` a second time when a string has a `{placeho
 
 ## Docs vs both engines (`known-gap: both`)
 
+**Owner ruling, 2026-10-06:** the docs predate Goblin and are not canonical. Where both engines agree, their current behaviour is what Goblin does, and the cases now expect it. These were re-encoded: mode, between, `"  7 ".int`, `nil.str`, descending ranges, `-2 ** 2`, `lines` with CRLF, `pct`, `raw` escapes, `split` with "", `trim_lead`, `{{ }}`, `4.inc`, `parse_bool` yes/no, string `reverse`, import cycles, and unqualified module globals. The items below that are still open are ones where the engines disagree, or where both give an error or a wrong value.
+
 In these cases both engines agree and the docs say something else. For each one: is the doc or the implementation canonical? They are lower priority than D1-D29. "Rec" is my recommendation. Outputs are the same on base and cur unless noted.
 
 **Ranges and `between`.** Cases: `for_range_inclusive`, `for_range_exclusive`, `for_range_variable_bounds`, `for_range_descending`, `range_literal_as_array`, `between_range_check`.

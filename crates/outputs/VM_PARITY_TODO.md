@@ -9,7 +9,7 @@ against the engine. `parity` means every such case passes on both engines; `vm o
 `interp only` mean one engine lacks the builtin (see tests/conformance/DECISIONS.md);
 `untested` means no case mentions it yet. Details of each gap are in the suite report.
 
-Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54, vm only 20
+Summary: gaps on both 20, interp gap 29, interp only 3, parity 212, untested 54, vm only 20
 
 | builtin | defined by | status | interp | vm |
 |---|---|---|---|---|
@@ -17,17 +17,17 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `add_duration` | vm+interp | parity | 3/3 | 3/3 |
 | `after` | vm+interp | gaps on both | 16/17 | 16/17 |
 | `after_last` | vm+interp | parity | 1/1 | 1/1 |
-| `all` | vm | vm only | 5/7 | 6/7 |
+| `all` | vm | vm only | 6/7 | 7/7 |
 | `any` | vm | vm only | 0/2 | 2/2 |
 | `append_file` | vm+interp | parity | 3/3 | 3/3 |
 | `ask` | vm+interp | parity | 1/1 | 1/1 |
 | `avg` | vm+interp | interp gap | 3/4 | 4/4 |
-| `b` | vm+interp | gaps on both | 152/162 | 158/162 |
+| `b` | vm+interp | gaps on both | 154/162 | 160/162 |
 | `backend` | vm+interp | untested | 0/0 | 0/0 |
 | `basename` | vm+interp | parity | 2/2 | 2/2 |
 | `before` | vm+interp | interp gap | 25/26 | 26/26 |
 | `before_last` | vm+interp | parity | 1/1 | 1/1 |
-| `between` | vm+interp | gaps on both | 3/4 | 3/4 |
+| `between` | vm+interp | parity | 4/4 | 4/4 |
 | `big` | vm+interp | gaps on both | 13/14 | 13/14 |
 | `bool` | vm+interp | interp gap | 2/5 | 5/5 |
 | `ceil` | vm+interp | parity | 1/1 | 1/1 |
@@ -40,7 +40,7 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `clone_object` | vm+interp | untested | 0/0 | 0/0 |
 | `cookie` | vm+interp | parity | 1/1 | 1/1 |
 | `copy_file` | vm+interp | parity | 5/5 | 5/5 |
-| `count` | vm+interp | gaps on both | 15/19 | 16/19 |
+| `count` | vm+interp | gaps on both | 16/19 | 17/19 |
 | `count_matching` | vm+interp | parity | 2/2 | 2/2 |
 | `create_dir` | vm+interp | parity | 13/13 | 13/13 |
 | `date` | vm+interp | parity | 1/1 | 1/1 |
@@ -131,7 +131,7 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `http_post` | vm | vm only | 0/3 | 3/3 |
 | `http_put` | vm | vm only | 0/1 | 1/1 |
 | `http_request` | vm | vm only | 0/1 | 1/1 |
-| `i` | vm+interp | gaps on both | 27/29 | 28/29 |
+| `i` | vm+interp | interp gap | 28/29 | 29/29 |
 | `i16` | vm+interp | parity | 2/2 | 2/2 |
 | `i32` | vm+interp | parity | 1/1 | 1/1 |
 | `i64` | vm+interp | gaps on both | 1/3 | 1/3 |
@@ -144,7 +144,7 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `ignore_matching` | vm+interp | parity | 2/2 | 2/2 |
 | `ignore_where` | vm+interp | parity | 1/1 | 1/1 |
 | `input` | vm+interp | parity | 2/2 | 2/2 |
-| `int` | vm+interp | gaps on both | 19/22 | 21/22 |
+| `int` | vm+interp | interp gap | 20/22 | 22/22 |
 | `invoke` | vm+interp | untested | 0/0 | 0/0 |
 | `is_alnum` | vm+interp | parity | 2/2 | 2/2 |
 | `is_alpha` | vm+interp | parity | 2/2 | 2/2 |
@@ -187,15 +187,15 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `keep_between` | vm+interp | parity | 1/1 | 1/1 |
 | `keep_matching` | vm+interp | parity | 1/1 | 1/1 |
 | `keys` | vm+interp | gaps on both | 18/21 | 19/21 |
-| `len` | vm+interp | gaps on both | 65/74 | 68/74 |
-| `lines` | vm+interp | gaps on both | 2/4 | 2/4 |
+| `len` | vm+interp | gaps on both | 67/74 | 70/74 |
+| `lines` | vm+interp | gaps on both | 3/4 | 3/4 |
 | `link_score` | vm+interp | untested | 0/0 | 0/0 |
 | `list_dirs` | vm+interp | parity | 2/2 | 2/2 |
 | `list_tokens` | vm+interp | untested | 0/0 | 0/0 |
 | `local_now` | vm+interp | parity | 1/1 | 1/1 |
 | `lower` | vm+interp | parity | 6/6 | 6/6 |
 | `m` | vm+interp | gaps on both | 70/74 | 72/74 |
-| `map` | vm+interp | gaps on both | 23/33 | 30/33 |
+| `map` | vm+interp | gaps on both | 24/33 | 31/33 |
 | `map_fn` | vm | vm only | 0/1 | 1/1 |
 | `max` | vm+interp | interp gap | 4/5 | 5/5 |
 | `md_to_html` | vm+interp | parity | 1/1 | 1/1 |
@@ -208,7 +208,7 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `minimize` | vm+interp | parity | 1/1 | 1/1 |
 | `minute` | vm+interp | parity | 2/2 | 2/2 |
 | `mixed` | vm+interp | parity | 1/1 | 1/1 |
-| `mode` | vm+interp | gaps on both | 2/3 | 2/3 |
+| `mode` | vm+interp | parity | 3/3 | 3/3 |
 | `month` | vm+interp | parity | 2/2 | 2/2 |
 | `need` | vm+interp | parity | 7/7 | 7/7 |
 | `none` | interp | interp only | 2/3 | 3/3 |
@@ -222,15 +222,15 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `owned_by` | vm+interp | untested | 0/0 | 0/0 |
 | `owns_tree` | vm+interp | untested | 0/0 | 0/0 |
 | `pack` | vm+interp | untested | 0/0 | 0/0 |
-| `parse_bool` | vm+interp | gaps on both | 3/4 | 3/4 |
+| `parse_bool` | vm+interp | parity | 4/4 | 4/4 |
 | `path_fix_separators` | vm+interp | parity | 1/1 | 1/1 |
 | `path_join` | vm+interp | parity | 1/1 | 1/1 |
 | `path_normalize` | vm+interp | parity | 1/1 | 1/1 |
 | `path_relative_to` | vm+interp | parity | 4/4 | 4/4 |
 | `path_split` | vm+interp | parity | 1/1 | 1/1 |
 | `pathfind` | vm+interp | parity | 1/1 | 1/1 |
-| `pct` | vm+interp | gaps on both | 5/6 | 5/6 |
-| `percent` | vm+interp | gaps on both | 2/3 | 2/3 |
+| `pct` | vm+interp | parity | 6/6 | 6/6 |
+| `percent` | vm+interp | parity | 3/3 | 3/3 |
 | `pick` | vm+interp | gaps on both | 6/7 | 6/7 |
 | `pow` | vm+interp | parity | 2/2 | 2/2 |
 | `provoke` | vm+interp | untested | 0/0 | 0/0 |
@@ -243,7 +243,7 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `put_random` | vm+interp | parity | 1/1 | 1/1 |
 | `rand_seed` | vm+interp | interp gap | 1/2 | 2/2 |
 | `range` | vm | vm only | 2/3 | 3/3 |
-| `raw` | vm+interp | gaps on both | 3/5 | 3/5 |
+| `raw` | vm+interp | gaps on both | 4/5 | 4/5 |
 | `read_json` | vm+interp | parity | 4/4 | 4/4 |
 | `read_text` | vm+interp | parity | 16/16 | 16/16 |
 | `reap` | vm+interp | gaps on both | 3/5 | 3/5 |
@@ -263,7 +263,7 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `req_path` | vm+interp | parity | 1/1 | 1/1 |
 | `req_query` | vm+interp | parity | 1/1 | 1/1 |
 | `resolve_token` | vm+interp | untested | 0/0 | 0/0 |
-| `reverse` | vm+interp | gaps on both | 2/3 | 2/3 |
+| `reverse` | vm+interp | parity | 3/3 | 3/3 |
 | `reverse_chars` | vm+interp | parity | 1/1 | 1/1 |
 | `roll` | vm+interp | parity | 2/2 | 2/2 |
 | `roll_detail` | vm+interp | parity | 1/1 | 1/1 |
@@ -286,12 +286,12 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `slug` | vm+interp | parity | 2/2 | 2/2 |
 | `sort` | vm+interp | interp gap | 16/17 | 17/17 |
 | `sort_by` | vm | vm only | 0/2 | 2/2 |
-| `split` | vm+interp | gaps on both | 9/10 | 9/10 |
+| `split` | vm+interp | parity | 10/10 | 10/10 |
 | `sqrt` | vm+interp | parity | 3/3 | 3/3 |
 | `starts_with` | vm+interp | parity | 4/4 | 4/4 |
 | `stash_count` | vm | untested | 0/0 | 0/0 |
 | `stem` | vm+interp | parity | 1/1 | 1/1 |
-| `str` | vm+interp | gaps on both | 20/23 | 21/23 |
+| `str` | vm+interp | gaps on both | 21/23 | 22/23 |
 | `string` | vm+interp | interp gap | 18/20 | 20/20 |
 | `sum` | vm+interp | gaps on both | 8/11 | 10/11 |
 | `summon` | vm+interp | untested | 0/0 | 0/0 |
@@ -308,8 +308,8 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `today` | vm+interp | parity | 1/1 | 1/1 |
 | `tokenize` | vm+interp | parity | 1/1 | 1/1 |
 | `tomorrow` | vm+interp | parity | 1/1 | 1/1 |
-| `trim` | vm+interp | gaps on both | 5/7 | 5/7 |
-| `trim_lead` | vm+interp | gaps on both | 1/2 | 1/2 |
+| `trim` | vm+interp | parity | 7/7 | 7/7 |
+| `trim_lead` | vm+interp | parity | 2/2 | 2/2 |
 | `trim_trail` | vm+interp | parity | 1/1 | 1/1 |
 | `true` | interp | interp only | 48/49 | 49/49 |
 | `u16` | vm+interp | parity | 1/1 | 1/1 |
@@ -328,7 +328,7 @@ Summary: gaps on both 32, interp gap 27, interp only 3, parity 202, untested 54,
 | `update_matching` | vm+interp | parity | 1/1 | 1/1 |
 | `update_random` | vm+interp | parity | 1/1 | 1/1 |
 | `update_where` | vm+interp | parity | 4/4 | 4/4 |
-| `upper` | vm+interp | gaps on both | 6/7 | 6/7 |
+| `upper` | vm+interp | parity | 7/7 | 7/7 |
 | `url_decode` | vm | vm only | 2/4 | 4/4 |
 | `url_encode` | vm | vm only | 2/4 | 4/4 |
 | `utc_now` | vm+interp | parity | 2/2 | 2/2 |
