@@ -8644,7 +8644,12 @@ impl<'t> Parser<'t> {
                 }
 
                 let bare = name.strip_prefix(':').unwrap_or(&name);
-                if is_no_parens_freecall(bare) {
+                // `trim!(s)` is the bang call, not `trim` applied to `!(s)`.
+                let bang_call = self.peek_op("!") && matches!(
+                    self.toks.get(self.i + 1),
+                    Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "(")
+                );
+                if is_no_parens_freecall(bare) && !bang_call {
                     self.skip_newlines();
 
                     // Inline: does the next token start an expression?

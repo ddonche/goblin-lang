@@ -2716,7 +2716,10 @@ impl Compiler {
         args: &[Expr],
     ) -> Result<Option<()>, GoblinError> {
         let bare = name.trim_start_matches(':');
-        let bid = match builtin_by_name(bare).or_else(|| builtin_by_name(name)) {
+        // `name!(x, …)` is `name(x, …)` written back into x (the caller does
+        // the write-back), as in the interpreter, which strips the `!`.
+        let bid = match builtin_by_name(bare).or_else(|| builtin_by_name(name))
+            .or_else(|| bare.strip_suffix('!').and_then(builtin_by_name)) {
             Some(b) => b,
             None    => return Ok(None),
         };
