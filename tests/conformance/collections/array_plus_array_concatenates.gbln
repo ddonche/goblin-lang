@@ -1,0 +1,9 @@
+/// array + array is a new array holding both in order; the operands are unchanged
+/// (owner ruling 2026-10-06).
+a | [1, 2]
+b | [3]
+c | a + b
+say(c)
+say(a)
+say([] + ["x"])
+say(:len(c))

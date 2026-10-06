@@ -1,2 +1,2 @@
-[<gridref m[1,0]>, <gridref m[0,1]>, <gridref m[1,1]>]
-<gridref m[2,1]>
+[GridRef(m, 1, 0), GridRef(m, 0, 1), GridRef(m, 1, 1)]
+GridRef(m, 2, 1)

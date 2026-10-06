@@ -1,5 +1,5 @@
 /// known-gap: interp valtype of a grid ref is "unknown"
-/// The elements returned by grid_neighbors are grid refs.
+/// The elements returned by grid_neighbors are grid refs; valtype says grid_ref (owner ruling 2026-10-06).
 m | :grid("m", 3, 2)
 say(:valtype(:grid_neighbors("m", 0, 0)[0]))
 say(:valtype(m[1, 1]))

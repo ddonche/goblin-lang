@@ -9,7 +9,7 @@ against the engine. `parity` means every such case passes on both engines; `vm o
 `interp only` mean one engine lacks the builtin (see tests/conformance/DECISIONS.md);
 `untested` means no case mentions it yet. Details of each gap are in the suite report.
 
-Summary: gaps on both 2, interp gap 59, interp only 3, parity 247, untested 1, vm gap 2, vm only 24
+Summary: gaps on both 2, interp gap 55, interp only 3, parity 251, untested 1, vm gap 2, vm only 24
 
 | builtin | defined by | status | interp | vm |
 |---|---|---|---|---|
@@ -22,8 +22,8 @@ Summary: gaps on both 2, interp gap 59, interp only 3, parity 247, untested 1, v
 | `append_file` | vm+interp | parity | 3/3 | 3/3 |
 | `ask` | vm+interp | parity | 1/1 | 1/1 |
 | `avg` | vm+interp | interp gap | 3/4 | 4/4 |
-| `b` | vm+interp | interp gap | 163/169 | 169/169 |
-| `backend` | vm+interp | interp gap | 1/2 | 2/2 |
+| `b` | vm+interp | interp gap | 164/170 | 170/170 |
+| `backend` | vm+interp | parity | 2/2 | 2/2 |
 | `basename` | vm+interp | parity | 2/2 | 2/2 |
 | `before` | vm+interp | interp gap | 26/27 | 27/27 |
 | `before_last` | vm+interp | parity | 1/1 | 1/1 |
@@ -102,27 +102,27 @@ Summary: gaps on both 2, interp gap 59, interp only 3, parity 247, untested 1, v
 | `get_matching` | vm+interp | parity | 4/4 | 4/4 |
 | `get_random` | vm+interp | parity | 1/1 | 1/1 |
 | `get_where` | vm+interp | parity | 1/1 | 1/1 |
-| `grid` | vm+interp | interp gap | 22/25 | 25/25 |
+| `grid` | vm+interp | interp gap | 24/25 | 25/25 |
 | `grid_count` | vm+interp | parity | 1/1 | 1/1 |
 | `grid_default_get` | vm+interp | parity | 2/2 | 2/2 |
 | `grid_default_set` | vm+interp | parity | 2/2 | 2/2 |
 | `grid_get` | vm+interp | parity | 9/9 | 9/9 |
 | `grid_has` | vm+interp | parity | 1/1 | 1/1 |
 | `grid_info` | vm+interp | parity | 3/3 | 3/3 |
-| `grid_neighbors` | vm+interp | interp gap | 3/5 | 5/5 |
+| `grid_neighbors` | vm+interp | interp gap | 4/5 | 5/5 |
 | `grid_occupied` | vm+interp | parity | 1/1 | 1/1 |
 | `grid_occupied_by` | vm+interp | parity | 2/2 | 2/2 |
 | `grid_occupied_count` | vm+interp | parity | 1/1 | 1/1 |
 | `grid_region_get` | vm+interp | parity | 1/1 | 1/1 |
 | `grid_region_info` | vm+interp | parity | 1/1 | 1/1 |
 | `grid_region_set` | vm+interp | parity | 3/3 | 3/3 |
-| `grid_set` | vm+interp | interp gap | 10/11 | 11/11 |
+| `grid_set` | vm+interp | parity | 11/11 | 11/11 |
 | `grid_tile_get` | vm+interp | parity | 1/1 | 1/1 |
 | `grid_tile_info` | vm+interp | parity | 2/2 | 2/2 |
 | `grid_tile_set` | vm+interp | parity | 4/4 | 4/4 |
-| `grid_unoccupied` | vm+interp | interp gap | 1/2 | 2/2 |
+| `grid_unoccupied` | vm+interp | parity | 2/2 | 2/2 |
 | `grid_unoccupied_count` | vm+interp | parity | 2/2 | 2/2 |
-| `grid_void` | vm+interp | interp gap | 3/4 | 4/4 |
+| `grid_void` | vm+interp | parity | 4/4 | 4/4 |
 | `has` | vm+interp | interp gap | 59/72 | 72/72 |
 | `highlight_code` | vm+interp | parity | 1/1 | 1/1 |
 | `hour` | vm+interp | parity | 3/3 | 3/3 |
@@ -187,14 +187,14 @@ Summary: gaps on both 2, interp gap 59, interp only 3, parity 247, untested 1, v
 | `keep_between` | vm+interp | parity | 1/1 | 1/1 |
 | `keep_matching` | vm+interp | parity | 1/1 | 1/1 |
 | `keys` | vm+interp | interp gap | 21/23 | 23/23 |
-| `len` | vm+interp | interp gap | 92/95 | 95/95 |
+| `len` | vm+interp | interp gap | 93/96 | 96/96 |
 | `lines` | vm+interp | parity | 4/4 | 4/4 |
 | `link_score` | vm+interp | parity | 1/1 | 1/1 |
 | `list_dirs` | vm+interp | parity | 2/2 | 2/2 |
 | `list_tokens` | vm+interp | parity | 4/4 | 4/4 |
 | `local_now` | vm+interp | parity | 1/1 | 1/1 |
 | `lower` | vm+interp | parity | 6/6 | 6/6 |
-| `m` | vm+interp | interp gap | 79/88 | 88/88 |
+| `m` | vm+interp | interp gap | 81/88 | 88/88 |
 | `map` | vm+interp | interp gap | 29/37 | 37/37 |
 | `map_fn` | vm | vm only | 0/1 | 1/1 |
 | `max` | vm+interp | interp gap | 4/5 | 5/5 |

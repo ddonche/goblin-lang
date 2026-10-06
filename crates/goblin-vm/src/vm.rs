@@ -596,6 +596,12 @@ impl Vm {
                         let new_cp = (*c as i64).wrapping_add(*n) as u32;
                         Value::Char(char::from_u32(new_cp).unwrap_or(*c))
                     }
+                    // array + array → a new array holding both in order
+                    (x, y) if x.is_seq_like() && y.is_seq_like() => {
+                        let mut items = x.seq_items().map(|c| c.into_owned()).unwrap_or_default();
+                        items.extend(y.seq_items().map(|c| c.into_owned()).unwrap_or_default());
+                        Value::Collection(Rc::new(crate::value::CollectionValue::from_flat(items)))
+                    }
                     // Formatted + Str / Str + Formatted → string concat
                     (a2, Value::Str(y)) => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
                     (Value::Str(x), b2) => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2))),

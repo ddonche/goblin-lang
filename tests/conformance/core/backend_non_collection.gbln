@@ -1,4 +1,2 @@
-/// known-gap: interp backend of a non-collection is a type error (T0205) instead of nil
-/// backend of a value that is not a collection gives nil.
+/// backend of a value that is not a collection is a type error (owner ruling 2026-10-06).
 say(:backend(5))
-say(:backend("abc"))

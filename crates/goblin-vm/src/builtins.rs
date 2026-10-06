@@ -3377,7 +3377,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     };
                     Ok(Value::Str(name.into()))
                 }
-                _ => Ok(Value::Nil),
+                other => Err(GoblinError::type_error("collection", other.type_name(), "backend")),
             }
         }
         BuiltinId::Metrics => {
@@ -5145,7 +5145,7 @@ pub fn value_to_str(v: &Value) -> String {
             s
         }
         Value::Ref(s)        => format!("<ref {}>", s),
-        Value::GridRef { grid_id, x, y } => format!("<gridref {}[{},{}]>", grid_id, x, y),
+        Value::GridRef { grid_id, x, y } => format!("GridRef({}, {}, {})", grid_id, x, y),
         Value::Enum { enum_name, variant_name, .. } => format!("{}::{}", enum_name, variant_name),
         Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) if collections::is_map_collection(c) => {

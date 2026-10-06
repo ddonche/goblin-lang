@@ -1124,3 +1124,10 @@ All 69 names below give `A0401 unknown action` on the interpreter and are recogn
 The interpreter also has three builtins the VM lacks:
 - `db_exec`, `db_query` and `db_query_one` are interpreter-only at base. The io NOTES say cur adds pooled `db_*` to the VM.
 - `none` is interpreter-only too (see D27).
+
+## Owner rulings, 2026-10-06 23:04
+
+- A grid ref prints as `GridRef(grid, x, y)`; `valtype` of a grid ref is `grid_ref`.
+- `resolve_token` on a missing token or namespace gives `nil`.
+- `backend` of a value that is not a collection is a type error.
+- `array + array` is a new array holding both operands in order.
