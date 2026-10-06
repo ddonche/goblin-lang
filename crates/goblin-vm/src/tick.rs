@@ -905,7 +905,50 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn eval_link_score(
+/// The range a link/decision formula can take, used to normalise its score to
+/// 0..1. Ported from the interpreter's `derive_link_formula_range`.
+pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
+    use goblin_ast::Expr;
+    match expr {
+        Expr::Number(s, _) => {
+            let v = s.parse::<f64>().unwrap_or(0.0);
+            (v, v)
+        }
+        // self >> field or target >> field — trait value, range 0..1
+        Expr::Binary(_, op, _, _) if op == ">>" => (0.0, 1.0),
+        Expr::Binary(lhs, op, rhs, _) => {
+            let (lmin, lmax) = derive_link_formula_range(lhs);
+            let (rmin, rmax) = derive_link_formula_range(rhs);
+            match op.as_str() {
+                "+" => (lmin + rmin, lmax + rmax),
+                "-" => (lmin - rmax, lmax - rmin),
+                "*" => {
+                    let products = [lmin * rmin, lmin * rmax, lmax * rmin, lmax * rmax];
+                    (products.iter().cloned().fold(f64::INFINITY, f64::min),
+                     products.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                }
+                _ => (0.0, 1.0),
+            }
+        }
+        Expr::Prefix(op, inner, _) if op == "-" => {
+            let (imin, imax) = derive_link_formula_range(inner);
+            (-imax, -imin)
+        }
+        Expr::FreeCall(name, args, _) if name == "abs" => {
+            if let Some(arg) = args.first() {
+                let (amin, amax) = derive_link_formula_range(arg);
+                let abs_min = if amin <= 0.0 && amax >= 0.0 { 0.0 } else { amin.abs().min(amax.abs()) };
+                let abs_max = amin.abs().max(amax.abs());
+                (abs_min, abs_max)
+            } else {
+                (0.0, 1.0)
+            }
+        }
+        _ => (0.0, 1.0),
+    }
+}
+
+pub(crate) fn eval_link_score(
     vm: &mut Vm,
     self_val: Value,
     target_val: Value,

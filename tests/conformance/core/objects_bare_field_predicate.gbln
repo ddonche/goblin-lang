@@ -1,4 +1,3 @@
-/// known-gap: vm a bare field name in the predicate is an "undefined variable" (only `it >> field` works)
 /// Inside an :objects(...) predicate the object's fields are in scope by name.
 <>Unit |
     name: ""

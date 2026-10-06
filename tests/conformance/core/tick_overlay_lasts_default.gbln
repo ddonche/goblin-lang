@@ -1,4 +1,3 @@
-/// known-gap: vm the overlay's own "lasts N ticks" duration is ignored; the overlay never expires
 /// An overlay declared with "lasts N ticks" expires after N ticks when applied without "for".
 <>Polity |
     stability: .8

@@ -934,6 +934,26 @@ impl Vm {
                     frame.ip = (frame.ip as isize + offset as isize) as usize;
                 }
             }
+            Opcode::LoadItFieldOrJump(idx, offset) => {
+                let (it, field) = {
+                    let frame = self.call_stack.last().unwrap();
+                    let field = match &frame.func.constants[idx as usize] {
+                        Value::Str(s) => s.clone(),
+                        _ => return Ok(()),
+                    };
+                    (frame.locals.first().cloned().flatten(), field)
+                };
+                let Some(t) = it else { return Ok(()) };
+                let found = match self.deref_value(&t)? {
+                    Value::Object { fields, .. } => fields.get(&field).cloned(),
+                    _ => None,
+                };
+                if let Some(v) = found {
+                    self.stack.push(Operand::Val(v));
+                    let frame = self.call_stack.last_mut().unwrap();
+                    frame.ip = (frame.ip as isize + offset as isize) as usize;
+                }
+            }
             Opcode::UpdatePath(n, mask) => {
                 let new_val = self.pop_value()?;
                 let mut keys = Vec::with_capacity(n as usize);
@@ -993,6 +1013,8 @@ impl Vm {
                     };
                     fields.insert(field.name.clone(), value);
                 }
+                // As in the interpreter, the object's uuid is also its `uuid` field.
+                fields.insert("uuid".to_string(), Value::Str(uuid.clone()));
 
                 let obj = Value::Object { class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid };
                 self.stack.push(Operand::Val(obj));
@@ -1255,6 +1277,21 @@ impl Vm {
                     }
                     BuiltinId::Need => {
                         let result = self.vm_need(arg_vals)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::LinkScore => {
+                        let result = self.vm_link_score(arg_vals)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::DecisionDebug => {
+                        self.vm_decision_debug();
+                        self.stack.push(Operand::Val(Value::Nil));
+                        return Ok(());
+                    }
+                    BuiltinId::CloneObject => {
+                        let result = self.vm_clone_object(arg_vals)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -1836,7 +1873,9 @@ impl Vm {
                 let def = self.session.overlay_defs.get(overlay_name.as_str())
                     .ok_or_else(|| GoblinError::Runtime(format!("unknown overlay '{}'", overlay_name)))?
                     .clone();
-                let is_temporary = def.default_duration.is_some() || duration_override.is_some();
+                // The overlay's own `lasts N ticks` applies when the statement has no `for`.
+                let duration = duration_override.or(def.default_duration);
+                let is_temporary = duration.is_some();
                 let original_values: Vec<(String, Value)> = if is_temporary {
                     if let Some(Value::Object { fields, .. }) = self.session.object_store.get(&host_uuid) {
                         def.modifiers.iter().filter_map(|(fname, _)| {
@@ -1852,7 +1891,7 @@ impl Vm {
                     host_uuid: host_uuid.clone(),
                     strength,
                     age: 0,
-                    ticks_remaining: duration_override,
+                    ticks_remaining: duration,
                     count: 1,
                     original_values,
                     extra_fields: indexmap::IndexMap::new(),
@@ -1872,12 +1911,13 @@ impl Vm {
             Opcode::LinkDef(def) => {
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
+                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
                 let link_def = LinkDef {
                     class_name: def.class_name.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min: 0.0,
-                    formula_max: 1.0,
+                    formula_min,
+                    formula_max,
                 };
                 self.session.link_defs.insert((def.class_name.clone(), channel), link_def);
             }
@@ -1885,12 +1925,13 @@ impl Vm {
             Opcode::ObjectLinkDef(def) => {
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
+                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
                 let link_def = LinkDef {
                     class_name: def.object_var.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min: 0.0,
-                    formula_max: 1.0,
+                    formula_min,
+                    formula_max,
                 };
                 self.session.object_link_defs.insert((def.object_var.clone(), channel), link_def);
             }
@@ -1919,7 +1960,11 @@ impl Vm {
             }
 
             Opcode::ObjectDecision { var_name, def } => {
-                self.session.object_decisions.insert(var_name.clone(), *def.clone());
+                let mut d = *def.clone();
+                let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
+                d.formula_min = min;
+                d.formula_max = max;
+                self.session.object_decisions.insert(var_name.clone(), d);
             }
 
             Opcode::UnitDecl(decl) => {
@@ -3439,6 +3484,105 @@ impl Vm {
             if include { results.push(obj); }
         }
         Ok(Value::Array(results))
+    }
+
+    /// A variable's value by name (objects dereferenced), as the interpreter's
+    /// `get_var`: the current frame's locals, then the globals.
+    fn lookup_var(&self, name: &str) -> Option<Value> {
+        let frame = self.call_stack.last()?;
+        let local = frame.func.local_names.iter().position(|n| n == name)
+            .and_then(|slot| frame.locals.get(slot).cloned().flatten());
+        let t = local
+            .or_else(|| frame.func.global_names().iter().position(|n| n == name)
+                .and_then(|slot| self.session.globals.get(slot).cloned().flatten()))
+            .or_else(|| self.session.global_names.iter().position(|n| n == name)
+                .and_then(|slot| self.session.globals.get(slot).cloned().flatten()))?;
+        self.session.read_value(&t).ok()
+    }
+
+    /// link_score(class, [channel,] a_var, b_var): the link formula for the pair,
+    /// normalised to 0..1, plus the pair's offsets (the interpreter's `link_score`).
+    fn vm_link_score(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        if args.len() < 3 { return Ok(Value::Nil); }
+        let s = |i: usize| -> Result<String, GoblinError> {
+            match &args[i] {
+                Value::Str(s) => Ok(s.clone()),
+                other => Err(GoblinError::type_error("str", other.type_name(), "link_score")),
+            }
+        };
+        let (class_name, channel, a_var, b_var) = if args.len() >= 4 {
+            (s(0)?, s(1)?, s(2)?, s(3)?)
+        } else {
+            (s(0)?, "default".to_string(), s(1)?, s(2)?)
+        };
+        let (self_val, target_val) = match (self.lookup_var(&a_var), self.lookup_var(&b_var)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Ok(Value::Nil),
+        };
+        let def = self.session.object_link_defs.get(&(a_var.clone(), channel.clone())).cloned()
+            .or_else(|| self.session.link_defs.get(&(class_name.clone(), channel.clone())).cloned());
+        let Some(d) = def else { return Ok(Value::Nil) };
+        let mut score = crate::tick::eval_link_score(self, self_val, target_val, &d.formula, d.formula_min, d.formula_max)?;
+        if let Some(offsets) = self.session.link_offsets.get(&(a_var, b_var, channel)) {
+            for o in offsets { score += o.value; }
+        }
+        Ok(Value::Float(score.clamp(0.0, 1.0)))
+    }
+
+    /// decision_debug(): one line per object variable saying whether its class
+    /// has a decision and a judge (the interpreter's `decision_debug`).
+    fn vm_decision_debug(&mut self) {
+        let mut bindings: Vec<(String, Tether)> = Vec::new();
+        for (slot, name) in self.session.global_names.iter().enumerate() {
+            if let Some(Some(t)) = self.session.globals.get(slot) {
+                bindings.push((name.clone(), t.clone()));
+            }
+        }
+        for frame in &self.call_stack {
+            for (slot, name) in frame.func.local_names.iter().enumerate() {
+                if name.is_empty() { continue; }
+                if let Some(Some(t)) = frame.locals.get(slot) {
+                    bindings.push((name.clone(), t.clone()));
+                }
+            }
+        }
+        for (var_name, t) in bindings {
+            if let Ok(Value::Object { class_name, .. }) = self.session.read_value(&t) {
+                let class = self.session.classes.get(&class_name);
+                let has_decision = class.map(|c| c.decision.is_some()).unwrap_or(false);
+                let has_judge = class.map(|c| c.judge.is_some()).unwrap_or(false);
+                let line = format!("  var={} class={} has_decision={} has_judge={}",
+                    var_name, class_name, has_decision, has_judge);
+                self.session.write_output(&line, true);
+            }
+        }
+    }
+
+    /// clone_object(obj or var name): a copy of the object with its own uuid and
+    /// no owner (the interpreter's `clone_object`).
+    fn vm_clone_object(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        let source_uuid = match args.first() {
+            Some(Value::Object { uuid, .. }) => uuid.clone(),
+            Some(Value::Str(s)) => match self.lookup_var(s) {
+                Some(Value::Object { uuid, .. }) => uuid,
+                _ => s.clone(),
+            },
+            _ => return Err(GoblinError::Runtime("A0414: clone-object-bad-source: clone_object() argument must be an object".into())),
+        };
+        match self.session.object_store.get(&source_uuid).cloned() {
+            Some(Value::Object { class_name, fields, readonly_fields, trait_fields, .. }) => {
+                let mut fields = (*fields).clone();
+                fields.insert("owner_id".to_string(), Value::Str(String::new()));
+                let new_uuid = uuid::Uuid::new_v4().to_string();
+                fields.insert("uuid".to_string(), Value::Str(new_uuid.clone()));
+                let cloned = Value::Object {
+                    class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid: new_uuid.clone(),
+                };
+                self.session.object_store.insert(new_uuid, cloned.clone());
+                Ok(cloned)
+            }
+            _ => Err(GoblinError::Runtime("A0416: clone-object-not-found: clone_object() source object not found".into())),
+        }
     }
 
     fn vm_tick(&mut self) -> Result<(), GoblinError> {

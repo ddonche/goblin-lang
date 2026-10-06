@@ -1,4 +1,3 @@
-/// known-gap: vm delete_overlays_on! rejects an object ("expected str, got object")
 /// delete_overlays_on!(host) removes every overlay instance on that host and leaves others alone.
 <>Polity |
     stability: .8

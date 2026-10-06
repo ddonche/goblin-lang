@@ -1,4 +1,3 @@
-/// known-gap: vm delete_object! rejects an object ("expected str, got object")
 /// delete_object!(obj) erases the object: it no longer appears in :objects().
 <>Unit |
     name: ""

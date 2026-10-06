@@ -54,6 +54,9 @@ struct FunctionScope {
     line_numbers: Vec<u32>,
     /// Current source line to attach to emitted opcodes.
     current_line: u32,
+    /// An `:objects(…)` / `:overlays(…)` predicate body: the fields of `it`
+    /// are in scope by name, as in the interpreter.
+    pred_fields: bool,
 }
 
 impl FunctionScope {
@@ -75,6 +78,7 @@ impl FunctionScope {
             loop_start: None,
             line_numbers: Vec::new(),
             current_line: 0,
+            pred_fields: false,
         }
     }
 
@@ -167,7 +171,7 @@ impl FunctionScope {
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
             Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
-            | Opcode::JumpIfLocalSet(_, o) => *o = offset,
+            | Opcode::JumpIfLocalSet(_, o) | Opcode::LoadItFieldOrJump(_, o) => *o = offset,
             _ => panic!("patch_jump on non-jump opcode"),
         }
     }
@@ -177,7 +181,7 @@ impl FunctionScope {
         let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
             Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
-            | Opcode::JumpIfLocalSet(_, o) => *o = offset,
+            | Opcode::JumpIfLocalSet(_, o) | Opcode::LoadItFieldOrJump(_, o) => *o = offset,
             _ => panic!("patch_jump_to on non-jump opcode"),
         }
     }
@@ -1194,6 +1198,12 @@ impl Compiler {
 
             // ── Variables ─────────────────────────────────────────────────────
             Expr::Ident(name, _) => {
+                // In a query predicate, a field of `it` shadows the name.
+                let field_jump = if self.scope().pred_fields && name != "it"
+                    && self.scope().find_local(name).is_none() {
+                    let idx = self.add_constant(Value::Str(name.clone()));
+                    Some(self.emit(Opcode::LoadItFieldOrJump(idx, 0)))
+                } else { None };
                 match self.resolve_load(name) {
                     Ok(op) => { self.emit(op); }
                     Err(_) => {
@@ -1203,6 +1213,7 @@ impl Compiler {
                         self.emit(Opcode::LoadNamed(name_idx));
                     }
                 }
+                if let Some(j) = field_jump { self.scope_mut().patch_jump(j); }
             }
 
             // ── Collections ───────────────────────────────────────────────────
@@ -1295,6 +1306,28 @@ impl Compiler {
                         self.emit(Opcode::LoadConst(idx));
                         return Ok(());
                     }
+                }
+                // delete_object!(x) / delete_overlays_on!(x) act on the variable
+                // itself and write nothing back (as in the interpreter). The
+                // builtin gets [x's value, "x", 1]; a wrong arity or a non-variable
+                // argument is passed as [nil, nil, argc] so it raises at run time.
+                if bare_name == "delete_object!" || bare_name == "delete_overlays_on!" {
+                    let bid = if bare_name == "delete_object!" { BuiltinId::DeleteObject } else { BuiltinId::DeleteOverlaysOn };
+                    match args.as_slice() {
+                        [Expr::Ident(var, _)] => {
+                            self.compile_expr(&args[0])?;
+                            let idx = self.add_constant(Value::Str(var.clone()));
+                            self.emit(Opcode::LoadConst(idx));
+                        }
+                        _ => {
+                            self.emit(Opcode::LoadNil);
+                            self.emit(Opcode::LoadNil);
+                        }
+                    }
+                    let n = self.add_constant(Value::Int(args.len() as i64));
+                    self.emit(Opcode::LoadConst(n));
+                    self.emit(Opcode::CallBuiltin(bid, 3));
+                    return Ok(());
                 }
                 // reap_*!(target, …): the call's value is what was reaped, and
                 // the target is left holding the rest (as in the interpreter):
@@ -2789,6 +2822,7 @@ impl Compiler {
     fn compile_predicate_lambda(&mut self, expr: &Expr) -> Result<(), GoblinError> {
         self.push_scope("__pred__", 1);
         self.scope_mut().declare_params(&["it".to_string()]);
+        self.scope_mut().pred_fields = true;
         self.compile_expr(expr)?;
         self.scope_mut().emit(Opcode::Return);
         let func_obj = self.pop_scope();

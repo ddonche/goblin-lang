@@ -1,4 +1,3 @@
-/// known-gap: vm clone_object rejects an object ("expected str, got object")
 /// clone_object(obj) returns a new object with the same fields and its own identity.
 <>Unit |
     name: ""

@@ -133,6 +133,10 @@ pub enum Opcode {
     /// Jump by the offset when local slot `slot` already holds a value; used by
     /// parameter defaults, whose slots stay unset when the caller omits them.
     JumpIfLocalSet(u8, i16),
+    /// Inside an `:objects(…)` / `:overlays(…)` predicate: when local 0 (`it`)
+    /// is an object with the field constants[idx], push that field's value and
+    /// jump by the offset (past the name's ordinary load); otherwise fall through.
+    LoadItFieldOrJump(u16, i16),
     /// Pop a map value, instantiate a class object from it. constants[idx] = class name string.
     ClassInstantiate(u16),
     /// Stack: [recv, arg0..arg_{argc-1}]. constants[name_idx] = method name. Pop all, push result.
@@ -352,6 +356,7 @@ impl Opcode {
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
+            Opcode::LoadItFieldOrJump(..) => "LoadItFieldOrJump",
             Opcode::StringInterpVals(..) => "StringInterpVals",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",
             Opcode::CallMethod(_, _)    => "CallMethod",

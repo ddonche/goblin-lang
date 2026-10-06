@@ -3797,45 +3797,76 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── DES / Overlay builtins ─────────────────────────────────────────────
         BuiltinId::OwnedBy => {
-            expect_n(1)?;
-            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "owned_by")) };
-            let owned: Vec<Value> = session.object_store.iter()
-                .filter_map(|(k, v)| {
-                    if let Value::Object { fields, .. } = v {
-                        if fields.get("owner").map(|o| matches!(o, Value::Str(u) if u == &uuid)).unwrap_or(false) {
-                            return Some(Value::Str(k.clone()));
-                        }
-                    }
-                    None
-                })
+            // owned_by(owner): the objects whose owner_id is owner's uuid
+            // (direct children only), as the interpreter's object_store scan.
+            let owner_uuid = match args.first() {
+                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Str(s)) => s.clone(),
+                _ => return Err(GoblinError::Runtime("A0412: owned-by-bad-arg: owned_by() argument must be an object".into())),
+            };
+            let owned: Vec<Value> = session.object_store.values()
+                .filter(|v| matches!(v, Value::Object { fields, .. }
+                    if matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)))
+                .cloned()
                 .collect();
             Ok(Value::Array(owned))
         }
         BuiltinId::OwnsTree => {
-            expect_n(1)?;
-            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "owns_tree")) };
-            Ok(Value::Str(format!("owns_tree({})", uuid)))
-        }
-        BuiltinId::CloneObject => {
-            expect_n(1)?;
-            let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "clone_object")) };
-            if let Some(obj) = session.object_store.get(&uuid).cloned() {
-                let new_uuid = uuid::Uuid::new_v4().to_string();
-                if let Value::Object { class_name, fields, readonly_fields, trait_fields, .. } = obj {
-                    let cloned = Value::Object { class_name, fields, readonly_fields, trait_fields, uuid: new_uuid.clone() };
-                    session.object_store.insert(new_uuid.clone(), cloned);
-                    Ok(Value::Str(new_uuid))
+            // owns_tree(root): one "{Class: id}" line per object, children
+            // (sorted) indented two spaces per level.
+            fn build_tree(owner_uuid: &str, object_store: &std::collections::HashMap<String, Value>, depth: usize) -> String {
+                let indent = "  ".repeat(depth);
+                let label = if let Some(Value::Object { class_name, fields, .. }) = object_store.get(owner_uuid) {
+                    let id = fields.get("id")
+                        .map(fmt_value_raw)
+                        .unwrap_or_else(|| owner_uuid.to_string());
+                    format!("{}{{{}: {}}}", indent, class_name, id)
                 } else {
-                    Ok(Value::Nil)
-                }
-            } else {
-                Ok(Value::Nil)
+                    format!("{}{}", indent, owner_uuid)
+                };
+                let mut children: Vec<String> = object_store.iter()
+                    .filter(|(_, v)| matches!(v, Value::Object { fields, .. } if
+                        matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner_uuid)))
+                    .map(|(child_uuid, _)| build_tree(child_uuid, object_store, depth + 1))
+                    .collect();
+                children.sort();
+                if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
             }
+            let root_uuid = match args.first() {
+                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Str(s)) => s.clone(),
+                _ => return Err(GoblinError::Runtime("A0413: owns-tree-bad-arg: owns_tree() argument must be an object".into())),
+            };
+            Ok(Value::Str(build_tree(&root_uuid, &session.object_store, 0)))
+        }
+        // clone_object resolves a variable name, so the VM handles it.
+        BuiltinId::CloneObject => {
+            Err(GoblinError::Runtime("clone_object: must be called through VM dispatch".to_string()))
+        }
+        BuiltinId::DeleteObject if args.len() == 3 => {
+            // delete_object!(x): [x's value, "x", argc] from the compiler.
+            let var_name = bang_object_target(&args, "delete_object!")?;
+            let uuid = match read(0)? {
+                Value::Object { uuid, .. } => uuid,
+                _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_object! can only delete objects".into())),
+            };
+            erase_object(session, &var_name, &uuid);
+            Ok(Value::Nil)
         }
         BuiltinId::DeleteObject => {
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             session.object_store.remove(&uuid);
+            Ok(Value::Nil)
+        }
+        BuiltinId::DeleteOverlaysOn if args.len() == 3 => {
+            // delete_overlays_on!(x): [x's value, "x", argc] from the compiler.
+            let host_var = bang_object_target(&args, "delete_overlays_on!")?;
+            let host_uuid = match read(0)? {
+                Value::Object { uuid, .. } => uuid,
+                _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_overlays_on! can only target object instances".into())),
+            };
+            drop_overlays_for(session, &host_var, &host_uuid);
             Ok(Value::Nil)
         }
         BuiltinId::DeleteOverlaysOn => {
@@ -3844,10 +3875,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             session.overlay_instances.retain(|oi| oi.host_var != host_var);
             Ok(Value::Nil)
         }
+        // decision_debug reads every variable, so the VM handles it.
         BuiltinId::DecisionDebug => {
-            expect_n(1)?;
-            let v = read(0)?;
-            Ok(Value::Str(format!("decision_debug: {:?}", v.type_name())))
+            Err(GoblinError::Runtime("decision_debug: must be called through VM dispatch".to_string()))
         }
         BuiltinId::OverlaysOf => {
             expect_n(1)?;
@@ -3869,9 +3899,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 None => Ok(Value::Nil),
             }
         }
+        // link_score reads variables by name and evaluates code, so the VM handles it.
         BuiltinId::LinkScore => {
-            // Stub: not fully specified
-            Ok(Value::Nil)
+            Err(GoblinError::Runtime("link_score: must be called through VM dispatch".to_string()))
         }
 
         // ── Grid builtins ─────────────────────────────────────────────────────
@@ -5222,6 +5252,70 @@ fn value_to_map_key(v: &Value) -> String {
         Value::Bool(b)  => b.to_string(),
         other           => fmt_value_raw(other),
     }
+}
+
+/// The variable name of a `delete_object!(x)` / `delete_overlays_on!(x)` call,
+/// whose args the compiler passes as [x's value, "x", argc] (or [nil, nil,
+/// argc] when the call does not name exactly one variable).
+fn bang_object_target(args: &[Value], name: &str) -> Result<String, GoblinError> {
+    let argc = match args.get(2) { Some(Value::Int(n)) => *n, _ => 1 };
+    if argc != 1 {
+        return Err(GoblinError::Runtime(format!(
+            "R0301: wrong-arity: Wrong number of arguments (expected 1, got {})", argc)));
+    }
+    match args.get(1) {
+        Some(Value::Str(s)) => Ok(s.clone()),
+        _ => Err(GoblinError::Runtime(if name == "delete_object!" {
+            "P0802: lvalue-expected: delete_object! expects a plain object variable".to_string()
+        } else {
+            "P0802: lvalue-expected: delete_overlays_on! expects a plain host object variable".to_string()
+        })),
+    }
+}
+
+/// Remove every overlay instance on the host (the interpreter's `drop_overlays_for`).
+fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
+    let to_remove: Vec<(String, crate::session::OverlayInstanceId)> = session.overlay_instances.iter()
+        .filter(|i| i.host_uuid == host_uuid)
+        .map(|i| (i.overlay_name.clone(), i.des_id))
+        .collect();
+    if let Some(host_handle) = session.des_store.handle_for_name(host_var) {
+        for (overlay_name, id) in &to_remove {
+            session.des_index.remove_overlay(host_handle, overlay_name, *id);
+        }
+    }
+    session.overlay_instances.retain(|inst| inst.host_uuid != host_uuid);
+}
+
+/// Erase an object and the runtime state attached to it (the interpreter's
+/// `erase_var`). The variable keeps a dangling reference, so reading it
+/// afterwards is an error.
+fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
+    drop_overlays_for(session, var_name, uuid);
+    session.object_store.remove(uuid);
+    if let Some(handle) = session.des_store.handle_for_name(var_name) {
+        if let Some(entity) = session.des_store.get(handle) {
+            let class = entity.class_name.clone();
+            session.des_index.remove_all(handle, &class, None);
+        }
+        session.des_store.erase(handle);
+    }
+    session.object_decisions.remove(var_name);
+    session.object_link_defs.retain(|(obj, _), _| obj != var_name);
+    let dropped_keys: Vec<(String, String, String)> = session.link_offsets.keys()
+        .filter(|(from, to, _)| from == var_name || to == var_name)
+        .cloned()
+        .collect();
+    for key in &dropped_keys {
+        if let Some(link_id) = session.des_link_ids.remove(key) {
+            let from_h = session.des_store.handle_for_name(&key.0);
+            let to_h = session.des_store.handle_for_name(&key.1);
+            if let (Some(fh), Some(th)) = (from_h, to_h) {
+                session.des_index.remove_link(fh, th, link_id);
+            }
+        }
+    }
+    session.link_offsets.retain(|(from, to, _), _| from != var_name && to != var_name);
 }
 
 pub fn fmt_value_raw(v: &Value) -> String {

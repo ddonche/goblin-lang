@@ -1,4 +1,3 @@
-/// known-gap: vm link_score is a stub that always returns nil
 /// link_score(class, channel, a, b) evaluates the class's link formula for the pair (normalised to 0..1);
 /// an undefined channel or an unknown object gives nil.
 <>Nation |

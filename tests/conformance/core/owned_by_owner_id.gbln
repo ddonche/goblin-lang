@@ -1,4 +1,3 @@
-/// known-gap: vm owned_by rejects an object ("expected str, got object"), and obj >> uuid is nil
 /// owned_by(owner) lists the objects whose owner_id is owner's uuid (direct children only).
 <>Unit |
     name: ""

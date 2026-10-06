@@ -1,4 +1,3 @@
-/// known-gap: vm owns_tree rejects an object and otherwise returns the placeholder "owns_tree(<arg>)"
 /// owns_tree(root) renders the ownership tree, one "{Class: id}" line per object, children indented two spaces.
 <>Unit |
     name: ""
