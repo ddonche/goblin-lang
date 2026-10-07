@@ -44,7 +44,14 @@ fn unit_word(unit: &str) -> &'static str {
 /// Nanoseconds in one `unit`: fixed for s/m/h/d/w, otherwise looked up in the
 /// unit declarations the program has run so far.
 pub fn unit_ns(unit: &str, session: &Session) -> Result<i128, GoblinError> {
-    resolve(unit, session, 0).ok_or_else(|| GoblinError::Runtime(format!(
+    if let Some(n) = resolve(unit, session, 0) { return Ok(n); }
+    let declared = session.unit_registry.values()
+        .any(|d| d.conversions.iter().any(|(from, _, to, _)| from == unit || to == unit));
+    if declared {
+        return Err(GoblinError::Runtime(format!(
+            "R0505: duration-overflow: unit '{unit}' is declared, but its length is too long to represent or is not defined from s, m, h, d or w")));
+    }
+    Err(GoblinError::Runtime(format!(
         "R0101: unknown-unit: duration unit '{unit}' is not declared. {} vary in length, so declare it before use, e.g. unit calendar | 1mo == 30d; 1y == 365d xx",
         unit_word(unit))))
 }
@@ -65,16 +72,26 @@ fn resolve(unit: &str, session: &Session, depth: usize) -> Option<i128> {
             if per == 0.0 { continue; }
             let Some(base_ns) = resolve(base, session, depth + 1) else { continue };
             // one `unit` = count/per `base`
-            let exact = count.fract() == 0.0 && per.fract() == 0.0;
-            let ns = if exact && (count as i128 * base_ns) % per as i128 == 0 {
-                count as i128 * base_ns / per as i128
-            } else {
-                (count / per * base_ns as f64).round() as i128
+            let exact = count.fract() == 0.0 && per.fract() == 0.0 && count.abs() < 1.0e30 && per.abs() < 1.0e30;
+            let whole = if exact { (count as i128).checked_mul(base_ns) } else { None };
+            let ns = match whole {
+                Some(n) if n % per as i128 == 0 => n / per as i128,
+                _ => {
+                    let f = (count / per * base_ns as f64).round();
+                    // too long to represent: treat the unit as unusable
+                    if !f.is_finite() || f.abs() >= 1.0e38 { continue; }
+                    f as i128
+                }
             };
             if ns > 0 { return Some(ns); }
         }
     }
     None
+}
+
+fn big_f(d: &rust_decimal::Decimal) -> f64 {
+    use rust_decimal::prelude::ToPrimitive;
+    d.to_f64().unwrap_or(f64::NAN)
 }
 
 fn make(ns: i128, unit: String, unit_ns: i128) -> Value {
@@ -151,6 +168,7 @@ pub fn binop(op: &str, a: &Value, b: &Value) -> Result<Value, GoblinError> {
             let ns = match n {
                 Value::Int(i) => x.ns.checked_mul(*i as i128).ok_or_else(overflow)?,
                 Value::Float(f) => scale_f(x.ns, *f)?,
+                Value::Big(d) => scale_f(x.ns, big_f(d))?,
                 _ => return Err(mismatch(op, a, b)),
             };
             Ok(make(ns, x.unit.clone(), x.unit_ns))
@@ -174,9 +192,11 @@ pub fn binop(op: &str, a: &Value, b: &Value) -> Result<Value, GoblinError> {
                     let r = x.ns % i;
                     if 2 * r.abs() >= i.abs() { q + if (x.ns < 0) == (i < 0) { 1 } else { -1 } } else { q }
                 }
+                Value::Big(d) if d.is_zero() => return Err(GoblinError::DivisionByZero),
                 Value::Float(f) if *f == 0.0 => return Err(GoblinError::DivisionByZero),
-                Value::Float(f) => {
-                    let r = (x.ns as f64 / *f).round();
+                Value::Float(_) | Value::Big(_) => {
+                    let f = match n { Value::Big(d) => big_f(d), Value::Float(f) => *f, _ => unreachable!() };
+                    let r = (x.ns as f64 / f).round();
                     if !r.is_finite() || r.abs() >= 1.0e38 { return Err(overflow()); }
                     r as i128
                 }

@@ -1,0 +1,5 @@
+/// known-gap: interp the interpreter drops the unit from a duration literal (2h is 2)
+/// A declared unit too long to represent is an error, not a wrapped length.
+unit calendar | 1mo == 1e30d xx
+say(1d)
+say(1mo)
