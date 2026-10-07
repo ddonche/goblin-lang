@@ -602,9 +602,17 @@ impl Vm {
                         items.extend(y.seq_items().map(|c| c.into_owned()).unwrap_or_default());
                         Value::Collection(Rc::new(crate::value::CollectionValue::from_flat(items)))
                     }
-                    // Formatted + Str / Str + Formatted → string concat
-                    (a2, Value::Str(y)) => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
-                    (Value::Str(x), b2) => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2))),
+                    // Text joins only with text (owner, 2026-10-07): str + char, or a
+                    // formatted value's text. `"a" + 3` is an error: convert explicitly.
+                    (Value::Char(c), Value::Str(y)) => Value::Str(format!("{}{}", c, y)),
+                    (Value::Str(x), Value::Char(c)) => Value::Str(format!("{}{}", x, c)),
+                    (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
+                    (Value::Str(x), b2) if b_spec.is_some() => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2))),
+                    (other, Value::Str(_)) | (Value::Str(_), other) => {
+                        let t = other.type_name();
+                        return Err(GoblinError::Runtime(format!(
+                            "T0205: type-mismatch: cannot add str and {t} with '+'; convert explicitly, e.g. \"total: \" + :str(n)")));
+                    }
                     _ => return Err(GoblinError::type_error("number or str", b_inner.type_name(), "+")),
                 };
                 let result = if let Some(spec) = a_spec.or(b_spec) {

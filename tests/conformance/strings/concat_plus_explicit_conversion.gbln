@@ -1,0 +1,5 @@
+/// Converting explicitly joins text with numbers and bools; str + char joins too.
+say("a" + :str(1))
+say("n=" + :str(2.5))
+say("b" + :str(true))
+say("x" + 'y')

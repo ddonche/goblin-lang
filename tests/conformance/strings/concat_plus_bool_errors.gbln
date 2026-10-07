@@ -1,0 +1,4 @@
+/// known-gap: interp still coerces the other side to text (D12 was reversed 2026-10-07)
+/// `"b" + true` is an error: + does not mix str and bool (D12, owner 2026-10-07).
+say("before")
+say("b" + true)

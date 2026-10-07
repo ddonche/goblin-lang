@@ -25,7 +25,7 @@ Reply in the form "D1 A, D2 B, …". Decisions are ordered by how much they matt
 | D9 (D-redeclare) | `x \| 1` then `x \| 2` in the same scope | A error R0111 · B rebind | **A** |
 | D10 (D-get-matching-empty) | `:get_matching` with no match | A error R0701 · B `[]` | **B** |
 | D11 (D-negative-int-division) | `-7 // 2` and `-7 % 3` | A floor (`-4`, `2`) · B truncate (`-3`, `-1`) | **A** |
-| D12 (D-string-plus-nonstring) | `"a" + 1` (the engines agree on `a1`; the docs say TypeError) | A keep coercion, fix the docs · B TypeError | **A** |
+| D12 (D-string-plus-nonstring) | `"a" + 1` (the engines agree on `a1`; the docs say TypeError) | A keep coercion, fix the docs · B TypeError | **B** (owner reversed it 2026-10-07: "You should not mix types like that. You should error. Tell people to convert explicitly." VM only; the interpreter keeps coercing, known-gap) |
 | D13 (D-fallthrough-return-value + D-bang-io-return) | Value of an action that falls off the end, and of `write_text!` etc. | A `unit` · B `nil` | **B** |
 | D14 (D-whole-float-type) | `:valtype(3.0)` | A `int` · B `float` | **B** |
 | D15 (D-import-without-alias) | `import a/b/mathy` with no `as` | A namespace `mathy` · B file merge · C error (except `.imports` manifests) | **C** |

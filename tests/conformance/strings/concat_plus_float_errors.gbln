@@ -1,0 +1,4 @@
+/// known-gap: interp still coerces the other side to text (D12 was reversed 2026-10-07)
+/// `"n=" + 2.5` is an error: + does not mix str and float (D12, owner 2026-10-07).
+say("before")
+say("n=" + 2.5)
