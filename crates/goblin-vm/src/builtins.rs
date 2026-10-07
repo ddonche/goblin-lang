@@ -5171,10 +5171,12 @@ fn fmt_num_trim(f: f64) -> String {
 }
 
 /// A percent prints as a percent (owner, 2026-10-07): 0.25 is `25%`.
-/// Rounded to 10 decimals so float noise (0.07 → 7.000000000000001) never shows.
+/// Shown to 15 significant digits, so the noise of scaling by 100
+/// (0.07 → 7.000000000000001) never shows but real digits are kept.
 fn fmt_pct(p: f64) -> String {
     let v = p * 100.0;
-    let v = if v.is_finite() { (v * 1e10).round() / 1e10 } else { v };
+    if !v.is_finite() || v == 0.0 { return format!("{}%", fmt_num_trim(v)); }
+    let v = format!("{:.14e}", v).parse::<f64>().unwrap_or(v);
     format!("{}%", fmt_num_trim(v))
 }
 
@@ -5447,10 +5449,13 @@ fn fmt_formatted_value(inner: &Value, spec: &FormatSpec) -> String {
             let rounded = round_to(*x, spec.decimals);
             render_with_spec(&fmt_num_trim(rounded), spec)
         }
+        // A formatted percent is still a percent: the decimals apply to the
+        // points, so `:format(12.5%, 1)` is `12.5%`.
         Value::Pct(p) => {
-            if !p.is_finite() { return p.to_string(); }
-            let rounded = round_to(*p, spec.decimals);
-            render_with_spec(&fmt_num_trim(rounded), spec)
+            let v = p * 100.0;
+            if !v.is_finite() { return format!("{}%", v); }
+            let rounded = round_to(v, spec.decimals);
+            format!("{}%", render_with_spec(&fmt_num_trim(rounded), spec))
         }
         other => fmt_value_raw(other),
     }
