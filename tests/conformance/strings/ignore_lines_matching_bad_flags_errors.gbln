@@ -1,0 +1,3 @@
+/// ignore_lines_matching: flags must be a map or nil.
+say(:ignore_lines_matching("Ab\ncd", "a", {"i": true}))
+say(:ignore_lines_matching("abc", "a", 5))

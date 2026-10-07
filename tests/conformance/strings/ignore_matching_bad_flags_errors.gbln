@@ -1,0 +1,3 @@
+/// ignore_matching: flags must be a map or nil.
+say(:ignore_matching("abc", "a", nil))
+say(:ignore_matching("abc", "a", 5))

@@ -1,0 +1,3 @@
+/// pack takes exactly 1 argument.
+say("before")
+say(:pack())

@@ -1,0 +1,3 @@
+/// pick range bounds must be numbers or single characters.
+say("before")
+say(:pick({"range_start": "ab", "range_end": 4}))

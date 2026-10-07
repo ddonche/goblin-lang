@@ -1,0 +1,4 @@
+/// ask under GOBLIN_NONINTERACTIVE=1 is an error instead of reading stdin. (That mode also wraps output in the API envelope.)
+/// env: GOBLIN_NONINTERACTIVE=1
+say("before")
+say(:ask("name? "))

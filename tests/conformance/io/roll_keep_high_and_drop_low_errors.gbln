@@ -1,0 +1,3 @@
+/// roll: keep_high and drop_low cannot be combined.
+say("before")
+say(:roll({"count": 3, "sides": 6, "keep_high": 1, "drop_low": 1}))

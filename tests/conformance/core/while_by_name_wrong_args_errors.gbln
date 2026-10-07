@@ -1,0 +1,3 @@
+/// Calling the lowered while form by name with the wrong arguments is an arity error.
+say("before")
+say(:while(true))

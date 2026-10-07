@@ -1,0 +1,4 @@
+/// ends_with: a needle that is neither a string nor an array is a type error; non-string elements of an array needle just do not match.
+say(:ends_with("abc", [1, "c"]))
+say(:ends_with("abc", [1]))
+say(:ends_with("a", 1))

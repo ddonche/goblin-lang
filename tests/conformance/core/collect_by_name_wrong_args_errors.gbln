@@ -1,0 +1,3 @@
+/// Calling the lowered collect form by name with the wrong arguments is an arity error.
+say("before")
+say(:collect(1))

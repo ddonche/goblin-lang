@@ -1,0 +1,4 @@
+/// grid_tile_get with a tile index outside the hierarchy is an error.
+say(:grid("m", 128, 128))
+say(:grid_tile_get("m", 0, 0, "x"))
+say(:grid_tile_get("m", 99, 0, "x"))

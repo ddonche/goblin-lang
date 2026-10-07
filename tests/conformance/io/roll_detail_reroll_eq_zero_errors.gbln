@@ -1,0 +1,3 @@
+/// roll_detail: reroll_eq must be between 1 and sides.
+say("before")
+say(:roll_detail({"count": 1, "sides": 6, "reroll_eq": 0}))

@@ -1,0 +1,3 @@
+/// roll: adv needs a single die (count 1).
+say("before")
+say(:roll({"count": 2, "sides": 6, "adv": true}))
