@@ -1,0 +1,4 @@
+/// A Box write outside the GLAM's namespace fails before its value is evaluated (B0102).
+say("before")
+use _conf_boxrhs
+say("after")

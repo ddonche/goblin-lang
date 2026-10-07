@@ -291,6 +291,9 @@ pub enum Opcode {
     /// Pop value from stack top and write it to session.box_store["{ns}::{name}"].
     /// ns_idx and name_idx are constant-pool indices into the enclosing function.
     StoreBox(u16, u16, bool),
+    /// Before `#ns::name | v` evaluates v: the GLAM namespace/[provides]
+    /// check. constants[ns_idx], constants[name_idx] are strings.
+    BoxCheck(u16, u16),
 
     /// Collect-loop accumulator append: pops the top-of-stack element and appends
     /// it to the array in locals[slot] without a full clone.
@@ -401,6 +404,7 @@ impl Opcode {
             Opcode::CastMemberGlobal(..) => "CastMemberGlobal",
             Opcode::TupleSplit(_)        => "TupleSplit",
             Opcode::StoreBox(..)         => "StoreBox",
+            Opcode::BoxCheck(..)         => "BoxCheck",
             Opcode::ArrayPushToLocal(_)  => "ArrayPushToLocal",
         }
     }

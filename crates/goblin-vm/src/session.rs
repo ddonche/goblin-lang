@@ -211,6 +211,19 @@ impl Session {
     /// and only names its `[provides]` lists (B0105); a tether to a name
     /// already set is B0103.
     pub fn box_write(&mut self, ns: &str, name: &str, val: Value, tether: bool) -> Result<(), GoblinError> {
+        self.box_check(ns, name)?;
+        let key = format!("{ns}::{name}");
+        if tether && self.box_store.contains_key(&key) {
+            return Err(GoblinError::Runtime(format!(
+                "B0103: box-already-set: Box variable '#{key}' is already set — use '|=' to reassign")));
+        }
+        self.box_store.insert(key, val);
+        Ok(())
+    }
+
+    /// The namespace/[provides] half of `box_write`, which a `#ns::x | v`
+    /// statement checks before evaluating v (as the interpreter does).
+    pub fn box_check(&self, ns: &str, name: &str) -> Result<(), GoblinError> {
         if let Some(cur) = &self.box_namespace {
             if cur != ns {
                 return Err(GoblinError::Runtime(format!(
@@ -223,12 +236,6 @@ impl Session {
                 }
             }
         }
-        let key = format!("{ns}::{name}");
-        if tether && self.box_store.contains_key(&key) {
-            return Err(GoblinError::Runtime(format!(
-                "B0103: box-already-set: Box variable '#{key}' is already set — use '|=' to reassign")));
-        }
-        self.box_store.insert(key, val);
         Ok(())
     }
 

@@ -932,6 +932,14 @@ impl Vm {
                 self.session.box_write(&ns, &name, val, tether)?;
             }
 
+            Opcode::BoxCheck(ns_idx, name_idx) => {
+                let frame = self.call_stack.last().unwrap();
+                let (Value::Str(ns), Value::Str(name)) = (&frame.func.constants[ns_idx as usize], &frame.func.constants[name_idx as usize]) else {
+                    return Err(GoblinError::Runtime("BoxCheck: constants are not strings".into()));
+                };
+                self.session.box_check(ns, name)?;
+            }
+
             Opcode::SetField(idx) => {
                 let new_val = self.pop_value()?;
                 let key = {
@@ -1846,7 +1854,16 @@ impl Vm {
                 let prev_box_ns = self.session.box_namespace.take();
                 let prev_provides = self.session.box_provides.take();
                 let value_needs = if toml_path.exists() {
-                    self.load_glam_action_needs(&toml_path, &ns)?
+                    match self.load_glam_action_needs(&toml_path, &ns) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // A caught manifest error must not leave the outer
+                            // GLAM without its Box context.
+                            self.session.box_namespace = prev_box_ns;
+                            self.session.box_provides = prev_provides;
+                            return Err(e);
+                        }
+                    }
                 } else {
                     std::collections::HashMap::new()
                 };

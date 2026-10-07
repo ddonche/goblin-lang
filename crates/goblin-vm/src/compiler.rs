@@ -1002,6 +1002,7 @@ impl Compiler {
                 // Push namespace string, name string, value, is-tether → BoxBindExpr
                 let ns_idx = self.add_constant(Value::Str(namespace.clone()));
                 let nm_idx = self.add_constant(Value::Str(name.clone()));
+                self.emit(Opcode::BoxCheck(ns_idx as u16, nm_idx as u16));
                 self.emit(Opcode::LoadConst(ns_idx as u16));
                 self.emit(Opcode::LoadConst(nm_idx as u16));
                 self.compile_expr(expr)?;
