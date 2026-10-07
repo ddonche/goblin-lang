@@ -577,31 +577,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between")) };
             let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between open")) };
             let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between close")) };
-            let mut include_delims = false;
-            let mut allow_eof_close = true;
-            if args.len() == 4 {
-                if let Value::Map(m) = read(3)? {
-                    if let Some(Value::Bool(b)) = m.get("include_delims") { include_delims = *b; }
-                    if let Some(Value::Bool(b)) = m.get("allow_eof_close") { allow_eof_close = *b; }
-                }
-            }
+            let o = FenceOpts::read(if args.len() == 4 { Some(read(3)?) } else { None }, false, false, false, "keep_between opts")?;
             if open.is_empty() || close.is_empty() { return Ok(Value::Str(String::new())); }
-            let open_pos = match text.find(open.as_str()) {
-                Some(p) => p,
-                None => return Ok(Value::Str(String::new())),
-            };
-            let search_start = open_pos + open.len();
-            let close_pos = match text[search_start..].find(close.as_str()) {
-                Some(p) => search_start + p,
-                None => if allow_eof_close { text.len() } else { return Ok(Value::Str(String::new())); }
-            };
-            let out = if include_delims {
-                let end = if close_pos < text.len() { close_pos + close.len() } else { text.len() };
-                text.get(open_pos..end).unwrap_or("").to_string()
-            } else {
-                text.get(search_start..close_pos).unwrap_or("").to_string()
-            };
-            Ok(Value::Str(out))
+            let Some(start) = find_fence(&text, 0, &open, &o) else { return Ok(Value::Str(String::new())) };
+            let Some((cs, ce)) = find_close(&text, start + open.len(), &close, &o) else { return Ok(Value::Str(String::new())) };
+            Ok(Value::Str(if o.include_delims { text[start..ce].to_string() } else { text[start + open.len()..cs].to_string() }))
         }
         BuiltinId::SanitizeBom => {
             expect_n(1)?;
@@ -713,64 +693,38 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between")) };
             let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between open")) };
             let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_between close")) };
-            let mut include_delims = true;
-            let mut allow_nested = false;
-            let mut allow_eof_close = true;
-            if args.len() == 4 {
-                match read(3)? {
-                    Value::Nil => {}
-                    Value::Map(m) => {
-                        if let Some(Value::Bool(b)) = m.get("include_delims") { include_delims = *b; }
-                        if let Some(Value::Bool(b)) = m.get("allow_nested") { allow_nested = *b; }
-                        if let Some(Value::Bool(b)) = m.get("allow_eof_close") { allow_eof_close = *b; }
-                    }
-                    other => return Err(GoblinError::type_error("map or nil", other.type_name(), "ignore_between opts")),
-                }
-            }
+            let o = FenceOpts::read(if args.len() == 4 { Some(read(3)?) } else { None }, true, false, false, "ignore_between opts")?;
             if open.is_empty() || close.is_empty() { return Ok(Value::Str(text)); }
             let mut out = String::with_capacity(text.len());
             let mut i = 0usize;
-            while i < text.len() {
-                if let Some(rel) = text[i..].find(open.as_str()) {
-                    let start = i + rel;
-                    out.push_str(&text[i..start]);
-                    let mut k = start + open.len();
-                    let mut depth = 1usize;
-                    let mut close_pos: Option<usize> = None;
-                    while k <= text.len() {
-                        let next_open  = text[k..].find(open.as_str()).map(|r| k + r);
-                        let next_close = text[k..].find(close.as_str()).map(|r| k + r);
-                        match (next_open, next_close) {
-                            (_, None) => { if allow_eof_close { close_pos = Some(text.len()); } break; }
-                            (None, Some(c)) => { close_pos = Some(c); break; }
-                            (Some(o), Some(c)) => {
-                                if allow_nested && o < c { depth += 1; k = o + open.len(); }
-                                else { close_pos = Some(c); break; }
-                            }
-                        }
-                        if close_pos.is_some() && allow_nested && depth > 1 {
+            while let Some(rel) = text[i..].find(open.as_str()) {
+                let start = i + rel;
+                out.push_str(&text[i..start]);
+                // Find the matching close; with allow_nested, inner opens must be closed first.
+                let mut k = start + open.len();
+                let mut depth = 1usize;
+                let span = loop {
+                    let next_close = text[k..].find(close.as_str()).map(|r| k + r);
+                    let next_open = if o.allow_nested { text[k..].find(open.as_str()).map(|r| k + r) } else { None };
+                    match (next_open, next_close) {
+                        (Some(op), Some(c)) if op < c => { depth += 1; k = op + open.len(); }
+                        (_, Some(c)) => {
                             depth -= 1;
-                            k = close_pos.unwrap() + close.len();
-                            close_pos = None;
+                            if depth == 0 { break Some((c, c + close.len())); }
+                            k = c + close.len();
                         }
+                        (_, None) => break if o.allow_eof_close { Some((text.len(), text.len())) } else { None },
                     }
-                    if let Some(cpos) = close_pos {
-                        if include_delims {
-                            i = cpos + close.len();
-                        } else {
-                            out.push_str(&text[start..start + open.len()]);
-                            out.push_str(&text[cpos..cpos + close.len()]);
-                            i = cpos + close.len();
-                        }
-                    } else {
-                        out.push_str(&text[start..]);
-                        break;
+                };
+                match span {
+                    Some((cs, ce)) => {
+                        if !o.include_delims { out.push_str(&open); out.push_str(&text[cs..ce]); }
+                        i = ce;
                     }
-                } else {
-                    out.push_str(&text[i..]);
-                    break;
+                    None => { i = start; break; }
                 }
             }
+            out.push_str(&text[i..]);
             Ok(Value::Str(out))
         }
         BuiltinId::IgnoreBlocks => {
@@ -779,75 +733,21 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks")) };
             let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks open")) };
             let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks close")) };
-            let mut include_delims  = true;
-            let mut require_bol     = true;
-            let mut leading_blanks  = true;
-            let mut allow_eof_close = true;
-            if n == 4 {
-                match read(3)? {
-                    Value::Nil => {}
-                    Value::Map(m) => {
-                        if let Some(Value::Bool(b)) = m.get("include_delims")    { include_delims  = *b; }
-                        if let Some(Value::Bool(b)) = m.get("require_bol")       { require_bol     = *b; }
-                        if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { leading_blanks  = *b; }
-                        if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { allow_eof_close = *b; }
-                    }
-                    other => return Err(GoblinError::type_error("map or nil", other.type_name(), "ignore_blocks opts")),
-                }
-            }
+            let o = FenceOpts::read(if n == 4 { Some(read(3)?) } else { None }, true, true, true, "ignore_blocks opts")?;
             if open.is_empty() || close.is_empty() { return Ok(Value::Str(text)); }
-            let bytes = text.as_bytes();
             let mut out = String::with_capacity(text.len());
-            let mut i: usize = 0;
-            while i < text.len() {
-                if let Some(rel) = text[i..].find(&*open) {
-                    let abs = i + rel;
-                    let at_bol = if abs == 0 { true } else {
-                        let mut k = abs;
-                        if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
-                        k == 0 || bytes[k-1] == b'\n'
-                    };
-                    if !require_bol || at_bol {
-                        let mut j = abs + open.len();
-                        let mut close_pos: Option<usize> = None;
-                        while j <= text.len() {
-                            if let Some(relc) = text[j..].find(&*close) {
-                                let cabs = j + relc;
-                                let c_at_bol = if cabs == 0 { true } else {
-                                    let mut k = cabs;
-                                    if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
-                                    k == 0 || bytes[k-1] == b'\n'
-                                };
-                                if !require_bol || c_at_bol { close_pos = Some(cabs); break; } else { j = cabs + 1; }
-                            } else {
-                                if allow_eof_close { close_pos = Some(text.len()); }
-                                break;
-                            }
-                        }
-                        out.push_str(&text[i..abs]);
-                        if let Some(cpos) = close_pos {
-                            if include_delims {
-                                i = cpos + close.len();
-                            } else {
-                                out.push_str(&text[abs..abs+open.len()]);
-                                out.push_str(&text[cpos..cpos+close.len()]);
-                                i = cpos + close.len();
-                            }
-                        } else {
-                            out.push_str(&text[abs..]);
-                            break;
-                        }
-                        continue;
-                    } else {
-                        out.push_str(&text[i..abs]);
-                        i = abs + 1;
-                        continue;
+            let mut i = 0usize;
+            while let Some(start) = find_fence(&text, i, &open, &o) {
+                out.push_str(&text[i..start]);
+                match find_close(&text, start + open.len(), &close, &o) {
+                    Some((cs, ce)) => {
+                        if !o.include_delims { out.push_str(&open); out.push_str(&text[cs..ce]); }
+                        i = ce;
                     }
-                } else {
-                    out.push_str(&text[i..]);
-                    break;
+                    None => { i = start; break; }
                 }
             }
+            out.push_str(&text[i..]);
             Ok(Value::Str(out))
         }
         BuiltinId::Env => {
@@ -905,57 +805,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks_first")) };
             let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks_first open")) };
             let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_blocks_first close")) };
-            let mut include_delims  = true;
-            let mut require_bol     = true;
-            let mut leading_blanks  = true;
-            let mut allow_eof_close = true;
-            if n == 4 {
-                if let Value::Map(m) = read(3)? {
-                    if let Some(Value::Bool(b)) = m.get("include_delims")    { include_delims  = *b; }
-                    if let Some(Value::Bool(b)) = m.get("require_bol")       { require_bol     = *b; }
-                    if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { leading_blanks  = *b; }
-                    if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { allow_eof_close = *b; }
-                }
-            }
+            let o = FenceOpts::read(if n == 4 { Some(read(3)?) } else { None }, true, true, true, "ignore_blocks_first opts")?;
             if open.is_empty() || close.is_empty() { return Ok(Value::Str(text)); }
-            let bytes = text.as_bytes();
-            let mut i = 0usize;
-            let mut open_pos: Option<usize> = None;
-            while i < text.len() {
-                if let Some(rel) = text[i..].find(&*open) {
-                    let abs = i + rel;
-                    let at_bol = if abs == 0 { true } else {
-                        let mut k = abs;
-                        if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
-                        k == 0 || bytes[k-1] == b'\n'
-                    };
-                    if !require_bol || at_bol { open_pos = Some(abs); break; } else { i = abs + 1; }
-                } else { break; }
-            }
-            let abs = match open_pos { Some(v) => v, None => return Ok(Value::Str(text)) };
-            let mut j = abs + open.len();
-            let mut close_pos: Option<usize> = None;
-            while j <= text.len() {
-                if let Some(relc) = text[j..].find(&*close) {
-                    let cabs = j + relc;
-                    let c_at_bol = if cabs == 0 { true } else {
-                        let mut k = cabs;
-                        if leading_blanks { while k > 0 && bytes[k-1] != b'\n' && (bytes[k-1] == b' ' || bytes[k-1] == b'\t') { k -= 1; } }
-                        k == 0 || bytes[k-1] == b'\n'
-                    };
-                    if !require_bol || c_at_bol { close_pos = Some(cabs); break; } else { j = cabs + 1; }
-                } else { if allow_eof_close { close_pos = Some(text.len()); } break; }
-            }
-            let cpos = match close_pos { Some(v) => v, None => return Ok(Value::Str(text)) };
+            let Some(start) = find_fence(&text, 0, &open, &o) else { return Ok(Value::Str(text)) };
+            let Some((cs, ce)) = find_close(&text, start + open.len(), &close, &o) else { return Ok(Value::Str(text)) };
             let mut out = String::with_capacity(text.len());
-            out.push_str(&text[..abs]);
-            if include_delims {
-                out.push_str(&text[cpos + close.len()..]);
-            } else {
-                out.push_str(&text[abs..abs+open.len()]);
-                out.push_str(&text[cpos..cpos+close.len()]);
-                out.push_str(&text[cpos+close.len()..]);
-            }
+            out.push_str(&text[..start]);
+            if !o.include_delims { out.push_str(&open); out.push_str(&text[cs..ce]); }
+            out.push_str(&text[ce..]);
             Ok(Value::Str(out))
         }
 
@@ -4614,6 +4471,56 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let data = read(1)?;
             crate::render::render_template(&path, data)
         }
+    }
+}
+
+/// Options shared by keep_between / ignore_between / ignore_blocks / ignore_blocks_first.
+struct FenceOpts { include_delims: bool, require_bol: bool, leading_blanks: bool, allow_eof_close: bool, allow_nested: bool }
+
+impl FenceOpts {
+    fn read(v: Option<Value>, include_delims: bool, require_bol: bool, leading_blanks: bool, op: &'static str) -> Result<FenceOpts, GoblinError> {
+        let mut o = FenceOpts { include_delims, require_bol, leading_blanks, allow_eof_close: true, allow_nested: false };
+        match v {
+            None | Some(Value::Nil) => {}
+            Some(Value::Map(m)) => {
+                if let Some(Value::Bool(b)) = m.get("include_delims")    { o.include_delims  = *b; }
+                if let Some(Value::Bool(b)) = m.get("require_bol")       { o.require_bol     = *b; }
+                if let Some(Value::Bool(b)) = m.get("leading_blanks_ok") { o.leading_blanks  = *b; }
+                if let Some(Value::Bool(b)) = m.get("allow_eof_close")   { o.allow_eof_close = *b; }
+                if let Some(Value::Bool(b)) = m.get("allow_nested")      { o.allow_nested    = *b; }
+            }
+            Some(other) => return Err(GoblinError::type_error("map or nil", other.type_name(), op)),
+        }
+        Ok(o)
+    }
+}
+
+/// Whether `pos` starts a line (optionally after spaces/tabs).
+fn fence_at_bol(text: &str, pos: usize, leading_blanks: bool) -> bool {
+    let bytes = text.as_bytes();
+    let mut k = pos;
+    if leading_blanks { while k > 0 && (bytes[k - 1] == b' ' || bytes[k - 1] == b'\t') { k -= 1; } }
+    k == 0 || bytes[k - 1] == b'\n'
+}
+
+/// First occurrence of `pat` at or after `from` that satisfies the BOL rule.
+fn find_fence(text: &str, from: usize, pat: &str, o: &FenceOpts) -> Option<usize> {
+    let mut i = from;
+    while i <= text.len() {
+        let abs = i + text[i..].find(pat)?;
+        if !o.require_bol || fence_at_bol(text, abs, o.leading_blanks) { return Some(abs); }
+        // Step past the first char of this occurrence (char-boundary safe).
+        i = abs + text[abs..].chars().next().map_or(1, |c| c.len_utf8());
+    }
+    None
+}
+
+/// The closing fence as (start, end); an implicit close at end of text is (len, len).
+fn find_close(text: &str, from: usize, close: &str, o: &FenceOpts) -> Option<(usize, usize)> {
+    match find_fence(text, from, close, o) {
+        Some(c) => Some((c, c + close.len())),
+        None if o.allow_eof_close => Some((text.len(), text.len())),
+        None => None,
     }
 }
 

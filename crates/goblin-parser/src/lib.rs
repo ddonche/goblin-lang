@@ -1195,7 +1195,7 @@ impl<'t> Parser<'t> {
         Ok(vec![dec_lit, sep_th, sep_dec])
     }
 
-    fn apply_postfix_ops(&mut self, mut expr: PExpr) -> PExpr {
+    fn apply_postfix_ops(&mut self, mut expr: PExpr) -> Result<PExpr, String> {
         // decide if token after an op starts an expression; keeps "**" and "//" postfix
         // from stealing binary uses like `a ** 2` or `a // 2` on the SAME line.
         // Newlines terminate a statement, so we do NOT skip them here — a line break
@@ -1218,10 +1218,11 @@ impl<'t> Parser<'t> {
         loop {
             iterations += 1;
             if iterations > 1000 {
-                panic!(
-                    "P1002: I hit my safety limit while parsing this really long chain of operations at token {}.\n\nhelp: Break the chain into steps: temp = obj()[0]; result = temp.call()",
-                    self.i
-                );
+                return Err(s_help_site!(
+                    "P0714",
+                    "This chain of postfix operations is too long (more than 1000)",
+                    "Break the chain into steps: temp = obj()[0]; result = temp.call()"
+                ));
             }
 
             let start_i = self.i;
@@ -1259,10 +1260,11 @@ impl<'t> Parser<'t> {
                         expr = PExpr::Member(obj, new_prop);
                     }
                     _ => {
-                        panic!(
-                            "P0XXX: The '?' postfix only works on member access like .string?\n\
-                             help: Use '&variable' to check if a variable is defined, or '.property?' to check type"
-                        );
+                        return Err(s_help_site!(
+                            "P0713",
+                            "The '?' postfix only works on member access like .string?",
+                            "Use '&variable' to check if a variable is defined, or '.property?' to check type"
+                        ));
                     }
                 }
                 continue;
@@ -1279,7 +1281,7 @@ impl<'t> Parser<'t> {
                     while !self.peek_op(")") && !self.is_eof() {
                         match self.parse_coalesce() {
                             Ok(arg) => call_args.push(arg),
-                            Err(e) => panic!("P0XXX: error parsing argument to bang call: {}", e),
+                            Err(e) => return Err(e),
                         }
                         self.skip_layout_inline();
                         if !self.eat_op(",") { break; }
@@ -1297,7 +1299,7 @@ impl<'t> Parser<'t> {
 
             if self.i == start_i { break; }
         }
-        expr
+        Ok(expr)
     }
 
     fn parse_interpolation_lvalue(&self, src: &str) -> Result<StrPart, String> {
@@ -8511,7 +8513,7 @@ impl<'t> Parser<'t> {
                     }
                 };
 
-                return Ok(self.apply_postfix_ops(expr));
+                return self.apply_postfix_ops(expr);
             }
         }
 
@@ -8543,7 +8545,7 @@ impl<'t> Parser<'t> {
                     "Add the closing ')': (a + b)",
                 ));
             }
-            return Ok(self.apply_postfix_ops(expr));
+            return self.apply_postfix_ops(expr);
         }
 
         // --- Array literal ---
@@ -8581,7 +8583,7 @@ impl<'t> Parser<'t> {
                     "Add the closing ']': [1, 2, 3]",
                 ));
             }
-            return Ok(self.apply_postfix_ops(PExpr::Array(elems)));
+            return self.apply_postfix_ops(PExpr::Array(elems));
         }
 
         // --- Identifier (name, keywords; forbid legacy `Type: ...`) ---
@@ -8602,12 +8604,12 @@ impl<'t> Parser<'t> {
                 if name == "skip" {
                     // no args
                     let span = self.toks[self.i - 1].span.clone();
-                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("skip".to_string(), vec![])));
+                    return self.apply_postfix_ops(PExpr::FreeCall("skip".to_string(), vec![]));
                 }
                 if name == "stop" {
                     // no args
                     let span = self.toks[self.i - 1].span.clone();
-                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("stop".to_string(), vec![])));
+                    return self.apply_postfix_ops(PExpr::FreeCall("stop".to_string(), vec![]));
                 }
 
                 // ---- Special no-parens grammar: "reap [count] from <src>" and "reap! [count] from <ident>" ----
@@ -8670,7 +8672,7 @@ impl<'t> Parser<'t> {
                     args.push(PExpr::Ident(src_ident));
                     if let Some(c) = count_opt { args.push(c); }
 
-                    return Ok(self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args)));
+                    return self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args));
                 }
 
                 // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
@@ -8740,7 +8742,7 @@ impl<'t> Parser<'t> {
 
                         // All other bare calls keep the existing behavior.
                         let arg = self.parse_coalesce()?;
-                        return Ok(self.apply_postfix_ops(PExpr::FreeCall(bare.to_string(), vec![arg])));
+                        return self.apply_postfix_ops(PExpr::FreeCall(bare.to_string(), vec![arg]));
                     }
                     // else: fall through to ident handling below
                 }
@@ -8753,7 +8755,7 @@ impl<'t> Parser<'t> {
                     _ => PExpr::Ident(name),
                 };
 
-                return Ok(self.apply_postfix_ops(base));
+                return self.apply_postfix_ops(base);
             }
         }
 
@@ -8817,7 +8819,7 @@ impl<'t> Parser<'t> {
                 ));
             }
 
-            return Ok(self.apply_postfix_ops(PExpr::Object(props)));
+            return self.apply_postfix_ops(PExpr::Object(props));
         }
 
         // --- Lit / other dispatch (ident handled above) ---
@@ -9036,7 +9038,7 @@ impl<'t> Parser<'t> {
             _ => return Err(self.err_expected_expr("at start of primary")),
         };
 
-        Ok(self.apply_postfix_ops(expr))
+        self.apply_postfix_ops(expr)
     }
 
     #[inline]
@@ -10669,7 +10671,7 @@ impl<'t> Parser<'t> {
                         } else if !count_txt.is_empty() {
                             args.push(PExpr::Int(count.to_string()));
                         }
-                        return Ok(self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args)));
+                        return self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args));
                     }
                 }
 
@@ -10700,7 +10702,7 @@ impl<'t> Parser<'t> {
                 }
 
                 let cfg = PExpr::Object(props);
-                return Ok(self.apply_postfix_ops(PExpr::FreeCall(verb, vec![cfg])));
+                return self.apply_postfix_ops(PExpr::FreeCall(verb, vec![cfg]));
             }
 
             // ---- roll / roll_detail (syntax-only; contiguous dice + extras) ----
@@ -11040,7 +11042,7 @@ impl<'t> Parser<'t> {
                         if is_detail { "roll_detail".to_string() } else { "roll".to_string() },
                         vec![cfg],
                     );
-                    return Ok(self.apply_postfix_ops(call));
+                    return self.apply_postfix_ops(call);
                 }
             }
 
@@ -11198,7 +11200,7 @@ impl<'t> Parser<'t> {
                     }
                     _ => {
                         return Err(s_help_site!(
-                            "P0XXX",
+                            "P0713",
                             "The '?' postfix only works on member access like .string?",
                             "Use '&variable' to check if a variable is defined, or '.property?' to check type"
                         ));
@@ -11580,10 +11582,11 @@ impl<'t> Parser<'t> {
                             lhs = PExpr::Member(obj, new_prop);
                         }
                         _ => {
-                            panic!(
-                                "P0XXX: The '?' postfix only works on member access like .string?\n\
-                                 help: Current lhs: {:?}", lhs
-                            );
+                            return Err(s_help_site!(
+                                "P0713",
+                                "The '?' postfix only works on member access like .string?",
+                                "Use '&variable' to check if a variable is defined, or '.property?' to check type"
+                            ));
                         }
                     }
                 }

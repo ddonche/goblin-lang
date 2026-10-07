@@ -5,7 +5,8 @@
 //! once with the VM (`goblin run`, the default engine). Each run's observable result is its
 //! stdout, plus a final `<error>` line when the process exits non-zero (error
 //! *messages* go to stderr and differ in wording between engines, so only the
-//! fact of failure is compared).
+//! fact of failure is compared). A Rust panic or a signal shows as `<crash>`,
+//! which no `.out` file may contain.
 //!
 //! The observed result must equal the case's `.out` file. That file records the
 //! *intended* Goblin behaviour, not whatever an engine happens to do today.
@@ -212,6 +213,12 @@ fn run_case(bin: &Path, root: &Path, rel: &str, engine: Engine, env: &[(String, 
     let mut observed = stdout;
     match status {
         Some(st) if st.success() => {}
+        // A Rust panic (exit code 101) or a signal (e.g. abort on native stack
+        // overflow) is a crash, never a Goblin error, so it can't match `<error>`.
+        Some(st) if st.code().is_none() || st.code() == Some(101) => {
+            if !observed.is_empty() && !observed.ends_with('\n') { observed.push('\n'); }
+            observed.push_str("<crash>\n");
+        }
         Some(_) => { if !observed.is_empty() && !observed.ends_with('\n') { observed.push('\n'); } observed.push_str("<error>\n"); }
         None => { if !observed.is_empty() && !observed.ends_with('\n') { observed.push('\n'); } observed.push_str("<timeout>\n"); }
     }

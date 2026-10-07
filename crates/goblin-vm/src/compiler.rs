@@ -332,6 +332,9 @@ pub struct Compiler {
     /// Stack of loop contexts: (break_patch_indices, continue_ip).
     /// Innermost loop is at the back.
     loop_stack: Vec<LoopCtx>,
+    /// `loop_stack.len()` when each open function scope began: loops outside
+    /// the current function are not targets for its `skip` / `stop`.
+    loop_floors: Vec<usize>,
     /// When compiling a GLAM's entry module (via `use <namespace>`), the namespace
     /// to stamp onto its top-level actions' `owner_glam`, for `:need()` resolution.
     glam_namespace: Option<String>,
@@ -374,7 +377,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -567,9 +570,11 @@ impl Compiler {
 
     fn push_scope(&mut self, name: &str, params: usize) {
         self.scopes.push(FunctionScope::new(name, params));
+        self.loop_floors.push(self.loop_stack.len());
     }
 
     fn pop_scope(&mut self) -> FunctionObject {
+        self.loop_floors.pop();
         let names = self.unit_globals.clone();
         self.scopes.pop().unwrap().finish(self.source_file.clone(), names)
     }
@@ -864,17 +869,34 @@ impl Compiler {
             }
 
             Stmt::JudgeAll(judge_all) => {
-                // Execute every matching arm (no short-circuit).
+                // Execute every matching arm (no short-circuit); `else` runs only
+                // when no arm matched, tracked in a hidden local.
+                let has_else = judge_all.arms.iter().any(|a| a.condition.is_none());
+                let matched = if has_else {
+                    self.emit(Opcode::LoadFalse);
+                    let slot = self.scope_mut().declare_local("\u{0}judge_all_matched");
+                    self.emit(Opcode::StoreLocal(slot));
+                    Some(slot)
+                } else { None };
                 for arm in &judge_all.arms {
                     if let Some(cond) = &arm.condition {
                         self.compile_expr(cond)?;
                         let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                        if let Some(slot) = matched {
+                            self.emit(Opcode::LoadTrue);
+                            self.emit(Opcode::StoreLocal(slot));
+                        }
                         self.compile_arm_body(&arm.body)?;
                         self.scope_mut().patch_jump(skip);
                     } else {
+                        let slot = matched.expect("else arm implies a matched flag");
+                        self.emit(Opcode::LoadLocal(slot));
+                        let skip = self.scope_mut().emit_jump(Opcode::JumpIfTrue);
                         self.compile_arm_body(&arm.body)?;
+                        self.scope_mut().patch_jump(skip);
                     }
                 }
+                if let Some(slot) = matched { self.scope_mut().hide_local(slot); }
             }
 
             Stmt::Block { stmts, .. } => {
@@ -2574,20 +2596,20 @@ impl Compiler {
             }
 
             // skip / stop — loop control
-            "skip" => {
-                let patch_idx = self.scope_mut().bytecode.len();
-                self.emit(Opcode::Jump(0)); // patched when loop compiles continue_ip
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.continue_patches.push(patch_idx);
+            "skip" | "stop" => {
+                // Outside a loop of the current action this is a runtime error
+                // (R0405), raised when the statement is reached.
+                if self.loop_stack.len() <= self.loop_floors.last().copied().unwrap_or(0) {
+                    let msg = format!("R0405: '{name}' used outside of a loop");
+                    let idx = self.add_constant(Value::Str(msg));
+                    self.emit(Opcode::LoadConst(idx));
+                    self.emit(Opcode::CallBuiltin(BuiltinId::Panic, 1));
+                    return Ok(true);
                 }
-                Ok(true)
-            }
-            "stop" => {
                 let patch_idx = self.scope_mut().bytecode.len();
-                self.emit(Opcode::Jump(0)); // patched when loop compiles exit
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.break_patches.push(patch_idx);
-                }
+                self.emit(Opcode::Jump(0)); // patched when the loop compiles continue/exit
+                let ctx = self.loop_stack.last_mut().unwrap();
+                if name == "skip" { ctx.continue_patches.push(patch_idx); } else { ctx.break_patches.push(patch_idx); }
                 Ok(true)
             }
 
