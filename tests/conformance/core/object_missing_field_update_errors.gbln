@@ -1,0 +1,8 @@
+/// `update!` cannot add a field the class does not declare (R0403).
+<>Hero |
+    hp: 10
+xx
+h <> Hero | hp: 3
+say("before")
+:update!(h.mana, 4)
+say(h >> hp)
