@@ -1,0 +1,9 @@
+/// known-gap: interp the interpreter drops the unit from a duration literal (2h is 2)
+/// A duration prints in the unit it was written in (owner ruling 2026-10-07).
+say(90s)
+say(5m)
+say(2h)
+say(3d)
+say(1w)
+say(1.5h)
+say(:valtype(2h))

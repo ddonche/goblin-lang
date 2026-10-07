@@ -1686,6 +1686,12 @@ impl Compiler {
                 }
                 self.compile_expr(inner)?;
                 match op.as_str() {
+                    // `90s`: the parser hands the unit over as `dur:<unit>`.
+                    unit_op if unit_op.starts_with("dur:") => {
+                        let unit = self.scope_mut().add_constant(Value::Str(unit_op[4..].to_string()));
+                        self.emit(Opcode::LoadConst(unit));
+                        self.emit(Opcode::CallBuiltin(BuiltinId::DurationLiteral, 2));
+                    }
                     "%" => { self.emit(Opcode::ToPct); }
                     "**" => {
                         // x ** postfix = x^2 → Pow(x, 2)

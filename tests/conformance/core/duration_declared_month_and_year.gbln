@@ -1,0 +1,8 @@
+/// known-gap: interp the interpreter drops the unit from a duration literal (2h is 2)
+/// A unit declaration gives mo and y their lengths; after that they behave like any other unit.
+unit calendar | 1mo == 30d; 1y == 365d xx
+say(1mo == 2592000s)
+say(6mo)
+say(1y / 1d)
+say(1y > 12mo)
+say(1mo + 2d)

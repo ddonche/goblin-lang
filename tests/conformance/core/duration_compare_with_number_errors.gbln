@@ -1,0 +1,5 @@
+/// known-gap: interp the interpreter drops the unit from a duration literal (2h is 2)
+/// Ordering a duration against a plain number is an error.
+t | 2h
+say(t > 1h)
+say(t > 1)

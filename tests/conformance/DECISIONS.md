@@ -1131,3 +1131,4 @@ The interpreter also has three builtins the VM lacks:
 - `resolve_token` on a missing token or namespace gives `nil`.
 - `backend` of a value that is not a collection is a type error.
 - `array + array` is a new array holding both operands in order.
+- Durations (owner, 2026-10-07): a duration is a whole number of nanoseconds that keeps the unit it was written in (`90s` prints `90s`). `s`, `m`, `h`, `d`, `w` are fixed; `mo` and `y` must be declared first (`unit calendar | 1mo == 30d; 1y == 365d xx`), otherwise using them is an error. Durations add and subtract with durations (the result keeps the smaller unit: `2h + 30m` is `150m`), multiply or divide by a number, and duration / duration is a plain number. A duration plus or compared with a plain number is an error; `2h == 2` is false. `:int(2h)` is `2`. VM only (interpreter known-gap).

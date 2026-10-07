@@ -613,6 +613,7 @@ impl Vm {
                         return Err(GoblinError::Runtime(format!(
                             "T0205: type-mismatch: cannot add str and {t} with '+'; convert explicitly, e.g. \"total: \" + :str(n)")));
                     }
+                    (Value::Duration(_), _) | (_, Value::Duration(_)) => crate::duration::binop("add", &a_inner, &b_inner)?,
                     _ => return Err(GoblinError::type_error("number or str", b_inner.type_name(), "+")),
                 };
                 let result = if let Some(spec) = a_spec.or(b_spec) {
@@ -663,6 +664,7 @@ impl Vm {
                 let a = self.pop_value()?;
                 let result = match (&a, &b) {
                     (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => num_div(&a, &b)?,
+                    (Value::Duration(_), _) | (_, Value::Duration(_)) => crate::duration::binop("div", &a, &b)?,
                     (Value::Big(x), Value::Big(y)) => {
                         if y.is_zero() { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / y)
@@ -688,6 +690,9 @@ impl Vm {
             Opcode::Rem => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                if matches!(a, Value::Duration(_)) || matches!(b, Value::Duration(_)) {
+                    return Err(crate::duration::binop("rem", &a, &b).err().unwrap_or(GoblinError::Runtime("rem".into())));
+                }
                 let result = match crate::value::numeric_binop("rem", &a, &b) {
                     Some(r) => floor_mod_adjust(r?, &b),
                     None => return Err(GoblinError::type_error("number", b.type_name(), "%")),
@@ -707,6 +712,7 @@ impl Vm {
                     Value::Float(x) => Value::Float(-x),
                     Value::Big(x)   => Value::Big(-x),
                     Value::Pct(x)   => Value::Pct(-x),
+                    Value::Duration(d) => crate::duration::neg(d),
                     _ => return Err(GoblinError::type_error("number", a.type_name(), "neg")),
                 };
                 self.stack.push(Operand::Val(result));
@@ -3701,6 +3707,9 @@ impl Vm {
         int_fn: fn(i64, i64) -> i64,
         flt_fn: fn(f64, f64) -> f64,
     ) -> Result<Value, GoblinError> {
+        if matches!(a, Value::Duration(_)) || matches!(b, Value::Duration(_)) {
+            return crate::duration::binop(op, &a, &b);
+        }
         // int/float/big: exact, overflow promotes to big (value.rs).
         if let Some(r) = crate::value::numeric_binop(op, &a, &b) { return r; }
         match (&a, &b) {
@@ -3743,6 +3752,7 @@ impl Vm {
         use std::cmp::Ordering;
         let ord_to_i32 = |o: Ordering| match o { Ordering::Less => -1, Ordering::Equal => 0, Ordering::Greater => 1 };
         match (a, b) {
+            (Value::Duration(x), Value::Duration(y)) => Ok(ord_to_i32(x.ns.cmp(&y.ns))),
             (Value::Int(x), Value::Int(y))     => Ok(ord_to_i32(x.cmp(y))),
             (Value::Float(x), Value::Float(y)) => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
             (Value::Int(x), Value::Float(y))   => Ok((*x as f64).partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
@@ -3754,6 +3764,9 @@ impl Vm {
             (Value::Int(x), Value::Big(y))     => Ok(ord_to_i32(rust_decimal::Decimal::from(*x).cmp(y))),
             (Value::Pct(x), Value::Pct(y))     => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
             (Value::DateTime(a), Value::DateTime(b)) => Ok(ord_to_i32(a.utc.cmp(&b.utc))),
+            (Value::Duration(_), _) | (_, Value::Duration(_)) => Err(GoblinError::Runtime(format!(
+                "T0205: type-mismatch: cannot compare {} and {}; compare a duration with a duration, e.g. t > 2h",
+                a.type_name(), b.type_name()))),
             _ => Err(GoblinError::type_error("comparable", b.type_name(), op)),
         }
     }

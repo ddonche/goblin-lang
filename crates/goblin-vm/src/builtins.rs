@@ -1997,6 +1997,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // error, and so are bool and nil (D18).
             match read(0)? {
                 v @ (Value::Bool(_) | Value::Nil) => Err(GoblinError::type_error("number or str", v.type_name(), "int")),
+                // `:int(2h)` is 2, the count in the duration's own unit.
+                Value::Duration(d) => Ok(crate::duration::count_int(&d)),
                 v => lock_to_int(v),
             }
         }
@@ -2006,6 +2008,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Float(f) => Value::Float(f),
                 Value::Pct(f)   => Value::Float(f),
                 Value::Int(n)   => Value::Float(n as f64),
+                Value::Duration(d) => crate::duration::count_float(&d),
                 // bool is not a number (D18, as for `:int`).
                 v @ Value::Bool(_) => return Err(GoblinError::type_error("number or str", v.type_name(), "float")),
                 Value::Str(s)   => {
@@ -4329,6 +4332,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
+        // DurationLiteral(number, unit_str) → Duration
+        BuiltinId::DurationLiteral => {
+            let unit = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "duration unit")) };
+            crate::duration::literal(&read(0)?, &unit, session)
+        }
+
         // LiteralTokenExpr(module_str, ident_str) → Value from token_store
         BuiltinId::LiteralTokenExpr => {
             if args.len() != 2 {
@@ -5139,7 +5148,7 @@ fn numeric_max(a: Value, b: Value) -> Result<Value, GoblinError> {
     })
 }
 
-fn fmt_num_trim(f: f64) -> String {
+pub(crate) fn fmt_num_trim(f: f64) -> String {
     if f.is_finite() && f.fract() == 0.0 && f.abs() < 9.2e18 {
         format!("{}", f as i64)
     } else {
@@ -5157,6 +5166,7 @@ pub fn value_to_str(v: &Value) -> String {
         Value::Int(n)          => n.to_string(),
         Value::Float(f)        => fmt_num_trim(*f),
         Value::Pct(p)          => fmt_num_trim(*p),
+        Value::Duration(d)     => crate::duration::display(d),
         Value::Big(d)          => d.to_string(),
         Value::Char(c)         => c.to_string(),
         Value::Str(s)          => s.clone(),
@@ -5435,6 +5445,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
         Value::Int(n)   => n.to_string(),
         Value::Float(f) => fmt_num_trim(*f),
         Value::Pct(p)   => fmt_num_trim(*p),
+        Value::Duration(d) => crate::duration::display(d),
         Value::Bool(b)  => if *b { "true".into() } else { "false".into() },
         Value::Nil      => "nil".into(),
         Value::Unit     => String::new(),

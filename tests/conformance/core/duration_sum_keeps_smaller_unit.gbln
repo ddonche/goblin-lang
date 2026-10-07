@@ -1,0 +1,6 @@
+/// known-gap: interp the interpreter drops the unit from a duration literal (2h is 2)
+/// Adding or subtracting durations keeps the smaller of the two units.
+say(2h + 30m)
+say(1m - 15s)
+say(1d + 1h)
+say(-5m)

@@ -1,0 +1,8 @@
+/// known-gap: interp the interpreter drops the unit from a duration literal (2h is 2)
+/// :int gives the count in the duration's own unit, :str its printed form.
+n | :int(2h)
+say(n)
+say(:int(90m))
+say(:int(1.5h))
+say(:float(1.5h))
+say(:str(45s) + " left")
