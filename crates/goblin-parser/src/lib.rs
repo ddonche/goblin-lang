@@ -11185,7 +11185,17 @@ impl<'t> Parser<'t> {
             if self.peek_op("**") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("**"); lhs = PExpr::Postfix(Box::new(lhs), "**".to_string()); continue; }
             if self.peek_op("//") && !lookahead_starts_expr(self.i + 1) { let _ = self.eat_op("//"); lhs = PExpr::Postfix(Box::new(lhs), "//".to_string()); continue; }
 
-            if self.peek_op("++") && !lookahead_starts_expr(self.i + 1) {
+            // `a ++ :str(3)`, `a ++ 'c'`, `a ++ #ns::v`: with a space before it,
+            // ++ followed by a builtin call, char or box variable is the binary
+            // join, not a postfix increment.
+            let spaced_join = self.peek_op("++") && self.i > 0
+                && self.toks[self.i - 1].span.end != self.toks[self.i].span.start
+                && matches!(self.toks.get(self.i + 1).map(|t| &t.kind),
+                    Some(goblin_lexer::TokenKind::Char) | Some(goblin_lexer::TokenKind::HashIdent))
+                    || (self.peek_op("++") && self.i > 0
+                        && self.toks[self.i - 1].span.end != self.toks[self.i].span.start
+                        && matches!(self.toks.get(self.i + 1).map(|t| &t.kind), Some(goblin_lexer::TokenKind::Op(s)) if s == ":"));
+            if self.peek_op("++") && !spaced_join && !lookahead_starts_expr(self.i + 1) {
                 self.i += 1;
                 lhs = PExpr::Postfix(Box::new(lhs), "++".to_string());
                 continue;

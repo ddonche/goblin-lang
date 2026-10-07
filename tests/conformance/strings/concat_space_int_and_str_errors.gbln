@@ -1,0 +1,4 @@
+/// known-gap: interp still turns the other side into text (owner ruling 2026-10-07)
+/// `3 ++ "a"` is an error: ++ follows the type rules of + (owner, 2026-10-07).
+say("before")
+say(3 ++ "a")

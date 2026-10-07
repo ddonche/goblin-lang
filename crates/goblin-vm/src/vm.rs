@@ -720,9 +720,18 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Float(-a)));
             }
             Opcode::Concat => {
-                // ++ operator: stringify both sides and join them with a space
+                // ++ operator: concatenate with a single space. Same type rules as
+                // `+` (owner, 2026-10-07): text never joins a non-text value.
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let is_text = |v: &Value| matches!(v, Value::Str(_) | Value::Char(_));
+                let is_fmt = |v: &Value| matches!(v, Value::Formatted(..));
+                if is_text(&a) != is_text(&b) && !is_fmt(&a) && !is_fmt(&b) {
+                    let other = if is_text(&a) { &b } else { &a };
+                    let t = other.type_name();
+                    return Err(GoblinError::Runtime(format!(
+                        "T0205: type-mismatch: cannot join str and {t} with '++'; convert explicitly, e.g. \"total\" ++ :str(n)")));
+                }
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 // An empty side adds no space; surrounding quote marks are dropped.

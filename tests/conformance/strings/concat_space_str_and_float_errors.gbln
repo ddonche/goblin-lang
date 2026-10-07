@@ -1,0 +1,4 @@
+/// known-gap: interp still turns the other side into text (owner ruling 2026-10-07)
+/// `"n" ++ 2.5` is an error: ++ follows the type rules of + (owner, 2026-10-07).
+say("before")
+say("n" ++ 2.5)
