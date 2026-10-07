@@ -1552,6 +1552,30 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
                 } else {
+                    // `Shape::Circle({"r": 3})` builds a variant when `Shape` is a
+                    // declared enum (known only at run time: enums can come from
+                    // imports); otherwise `Ns::f(args)` is a module call.
+                    let enum_branch = if ns_is_enum {
+                        let en_idx = self.add_constant(Value::Str(ns.clone()));
+                        self.emit(Opcode::LoadConst(en_idx));
+                        self.emit(Opcode::CallBuiltin(BuiltinId::EnumDeclared, 1));
+                        let to_call = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                        if args.len() == 1 {
+                            let vn_idx = self.add_constant(Value::Str(name.clone()));
+                            self.emit(Opcode::LoadConst(en_idx));
+                            self.emit(Opcode::LoadConst(vn_idx));
+                            self.compile_expr(&args[0])?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantCall, 3));
+                        } else {
+                            self.emit_runtime_error(&format!(
+                                "R0301: wrong-arity: enum variant '{ns}::{name}' takes 0 arguments or 1 map of fields, got {}",
+                                args.len()))?;
+                            self.emit(Opcode::LoadNil);
+                        }
+                        let to_end = self.scope_mut().emit_jump(Opcode::Jump);
+                        self.scope_mut().patch_jump(to_call);
+                        Some(to_end)
+                    } else { None };
                     // Namespace call: try full_name as a compile-time global/local.
                     // Do NOT fall back to bare name — a bare local named `foo` must not
                     // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
@@ -1567,6 +1591,7 @@ impl Compiler {
                     }
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call(args.len() as u8));
+                    if let Some(to_end) = enum_branch { self.scope_mut().patch_jump(to_end); }
                 }
             }
 

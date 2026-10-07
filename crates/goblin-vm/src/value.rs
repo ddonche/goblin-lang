@@ -226,8 +226,9 @@ impl PartialEq for Value {
             (Value::Function(a),      Value::Function(b))      => Rc::ptr_eq(a, b),
             (Value::Closure(a),       Value::Closure(b))       => Rc::ptr_eq(a, b),
             (Value::Builtin(a),       Value::Builtin(b))       => a == b,
-            (Value::Enum { enum_name: en_a, variant_name: vn_a, .. },
-             Value::Enum { enum_name: en_b, variant_name: vn_b, .. }) => en_a == en_b && vn_a == vn_b,
+            // Variants with fields are equal only when their fields are too.
+            (Value::Enum { enum_name: en_a, variant_name: vn_a, fields: fa },
+             Value::Enum { enum_name: en_b, variant_name: vn_b, fields: fb }) => en_a == en_b && vn_a == vn_b && fa == fb,
             _ => false,
         }
     }
@@ -945,6 +946,10 @@ pub enum BuiltinId {
     Index2Expr,
     // EnumVariant expr: (enum_name_str, variant_name_str, fields_map_or_nil) → Enum
     EnumVariantExpr,
+    // `Enum::Variant(map)`: (enum_name_str, variant_name_str, map) → Enum
+    EnumVariantCall,
+    // (name_str) → bool: is an enum of this name declared?
+    EnumDeclared,
     // LiteralToken expr: (module_str, ident_str) → Value from token store
     LiteralTokenExpr,
     // BoxVar expr: (namespace_str, name_str) → Value from box_store

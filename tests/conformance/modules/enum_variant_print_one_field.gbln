@@ -1,0 +1,9 @@
+/// A variant with one field prints it, also inside a string.
+enum Shape
+    Circle { r: int }
+    Rect { w: int, h: int }
+    Dot
+xx
+c | Shape::Circle { r: 3 }
+say(c)
+say("got {c}")

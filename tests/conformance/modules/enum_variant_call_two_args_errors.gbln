@@ -1,0 +1,9 @@
+/// The call form takes one map, not several arguments (R0301).
+enum Shape
+    Circle { r: int }
+    Rect { w: int, h: int }
+    Dot
+xx
+say("before")
+c | Shape::Rect(2, 3)
+say(c)

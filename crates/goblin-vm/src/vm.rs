@@ -3821,6 +3821,22 @@ impl Vm {
             self.update_path(child, &segs[1..], new_val)?
         };
         match &container {
+            // A variant's fields are part of its value: `update!(c.r, 5)` rebinds
+            // `c` to the variant with that field replaced.
+            Value::Enum { enum_name, variant_name, fields } => {
+                let Value::Str(field) = key else {
+                    return Err(GoblinError::Runtime(format!("update!: variant field name must be a string, got {}", key.type_name())));
+                };
+                match fields {
+                    Some(f) if f.contains_key(field) => {
+                        let mut f = f.clone();
+                        f.insert(field.clone(), replacement);
+                        Ok(Value::Enum { enum_name: enum_name.clone(), variant_name: variant_name.clone(), fields: Some(f) })
+                    }
+                    _ => Err(GoblinError::Runtime(format!(
+                        "R0403: no-such-field: variant '{variant_name}' has no field '{field}'"))),
+                }
+            }
             Value::Ref(uuid) | Value::Object { uuid, .. } => {
                 let uuid = uuid.clone();
                 let Value::Str(field) = key else {
