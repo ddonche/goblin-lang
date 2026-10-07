@@ -1,0 +1,5 @@
+/// helper: an action with a default parameter and a one-line `=>` action
+act add(a, b | 10)
+    return a + b
+xx
+act dbl(x) => x * 2

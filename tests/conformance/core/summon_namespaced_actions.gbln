@@ -1,0 +1,4 @@
+/// summon accepts "mod::action" names and threads the value through module exports in order.
+import _support/core/pipe_steps as ps
+c | :summon({"n": 1}, ["ps::tag", "ps::bump", "ps::bump"])
+say(c)

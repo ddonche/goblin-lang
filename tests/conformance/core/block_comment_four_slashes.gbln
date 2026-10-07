@@ -1,0 +1,7 @@
+/// a `////` … `////` block comment is skipped, including code-like lines inside it
+say("before")
+////
+this is a block comment
+say("not run")
+////
+say("after")

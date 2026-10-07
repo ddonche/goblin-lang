@@ -1,0 +1,7 @@
+/// get_first, get_matching, values, items and count work on a yall-parsed map in its parsed order.
+m | :yall_parse("b: 2\na: 1\nc: 3\n", "t")
+say(:get_first(m))
+say(:get_matching(m, "^[ab]$"))
+say(:values(m))
+say(:items(m))
+say(:count(m))

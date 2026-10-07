@@ -1,0 +1,13 @@
+/// `end` closes an `if`/`elif`/`else` chain and an action body
+act size(x)
+    if x > 1
+        return "big"
+    elif x == 1
+        return "one"
+    else
+        return "small"
+    end
+end
+say(size(5))
+say(size(1))
+say(size(0))

@@ -1,0 +1,5 @@
+/// `n.str!` casts and rebinds n
+n | 42
+s | n.str!
+say(s)
+say(:valtype(n))

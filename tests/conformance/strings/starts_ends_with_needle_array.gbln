@@ -1,0 +1,5 @@
+/// starts_with/ends_with with an array of needles is true if any string needle matches; non-strings and [] never match.
+say(:starts_with("goblin", ["x", "go"]))
+say(:ends_with("goblin", ["gob", "lin"]))
+say(:ends_with("goblin", [1, "q"]))
+say(:starts_with("goblin", []))

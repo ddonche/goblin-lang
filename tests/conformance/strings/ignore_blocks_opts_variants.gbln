@@ -1,0 +1,11 @@
+/// ignore_blocks options: include_delims false keeps the fences, require_bol false matches mid-line, unclosed blocks run to EOF unless allow_eof_close is false.
+r | :ignore_blocks("x\n---\nhidden\n---\ny\n", "---", "---", {"include_delims": false})
+say("[{r}]")
+r |= :ignore_blocks("ab---c\n---\nd", "---", "---", {"require_bol": false})
+say("[{r}]")
+r |= :ignore_blocks("x\n  ---\nh\n  ---\ny", "---", "---")
+say("[{r}]")
+r |= :ignore_blocks("x\n---\nh", "---", "---")
+say("[{r}]")
+r |= :ignore_blocks("x\n---\nh", "---", "---", {"allow_eof_close": false})
+say("[{r}]")

@@ -1,0 +1,4 @@
+/// an integer literal larger than i64 is a big
+b | 99999999999999999999
+say(:valtype(b))
+say(b)

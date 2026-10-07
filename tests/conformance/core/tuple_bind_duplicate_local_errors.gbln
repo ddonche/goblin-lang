@@ -1,0 +1,5 @@
+/// A tuple bind of a name already bound in the block is a duplicate local (R0111).
+a | 1
+say("before")
+a, b | [1, 2]
+say(a)

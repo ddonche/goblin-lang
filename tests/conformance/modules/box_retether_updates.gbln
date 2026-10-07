@@ -1,0 +1,4 @@
+/// `#ns::x |= v` updates a Box variable that is already set.
+#app::x | 1
+#app::x |= 2
+say(#app::x)

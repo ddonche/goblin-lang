@@ -1,0 +1,5 @@
+/// `a, b | []` gives each name its own empty array
+chars, cur | []
+:put_last!(chars, 1)
+say(chars)
+say(cur)

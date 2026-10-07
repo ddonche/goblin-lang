@@ -1,0 +1,15 @@
+/// an `if`/`elif`/`elif` chain without `else` runs nothing when no arm is true
+x | 9
+if x == 1
+    say("one")
+elif x == 2
+    say("two")
+elif x == 9
+    say("nine")
+xx
+if x == 1
+    say("one")
+elif x == 2
+    say("two")
+xx
+say("done")

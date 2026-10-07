@@ -1,0 +1,8 @@
+/// an action reads a box variable set at top level, and sees a later change
+act name()
+    return #cfg::name
+xx
+#cfg::name | "n1"
+say(name())
+#cfg::name |= "n2"
+say(name())

@@ -1,0 +1,5 @@
+/// get/delete/update_between on a map act on the entries strictly between two key regexes.
+m | {"a": 1, "b": 2, "c": 3, "d": 4}
+say(:get_between(m, "^a$", "^d$"))
+say(:delete_between(m, "^a$", "^d$"))
+say(:update_between(m, "^a$", "^d$", 0))

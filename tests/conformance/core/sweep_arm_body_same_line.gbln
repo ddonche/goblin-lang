@@ -1,0 +1,6 @@
+/// a sweep arm body may sit on the same line as its pattern
+t | "xay"
+sweep t
+    "a": say("found a")
+    "z": say("found z")
+xx

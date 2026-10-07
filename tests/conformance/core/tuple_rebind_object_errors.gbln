@@ -1,0 +1,9 @@
+/// A tuple `|=` cannot rebind an object variable to a non-object (R1300).
+<>D |
+    n: 1
+xx
+d <> D | n: 1
+q | 0
+say("before")
+d, q |= [5, 6]
+say(d)

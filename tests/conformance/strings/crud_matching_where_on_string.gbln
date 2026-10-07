@@ -1,0 +1,4 @@
+/// delete_matching/put_matching use a regex on a string; delete_where removes a literal substring.
+say(:delete_matching("a1b22c", "[0-9]+"))
+say(:put_matching("a1b2", "[0-9]", "!"))
+say(:delete_where("a--b--c", "--"))

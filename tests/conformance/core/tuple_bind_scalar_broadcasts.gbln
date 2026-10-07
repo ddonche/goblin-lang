@@ -1,0 +1,7 @@
+/// `a, b | ""` (a non-array RHS) binds every name to that value
+kind, typ | ""
+flag, seen | false
+say(kind == "")
+say(typ == "")
+say(flag)
+say(seen)

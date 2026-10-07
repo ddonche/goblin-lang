@@ -1,0 +1,6 @@
+/// A tuple `|=` cannot update an `imm` binding (R0113).
+imm a | 1
+b | 2
+say("before")
+a, b |= [5, 6]
+say(a)

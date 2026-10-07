@@ -1,0 +1,5 @@
+/// `xs.put_last!(3)` is not a method: unknown action (A0401), not a silent no-op.
+xs | [1, 2]
+say("before")
+xs.put_last!(3)
+say(xs)

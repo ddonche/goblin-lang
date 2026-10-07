@@ -1,0 +1,4 @@
+/// get_random gives a char of the string; delete_random and put_random change its length by one.
+say(:valtype(:get_random("abc")))
+say(:len(:delete_random("abc")))
+say(:len(:put_random("abc", "Z")))

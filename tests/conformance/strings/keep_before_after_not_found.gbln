@@ -1,0 +1,6 @@
+/// keep_before gives the whole text and keep_after gives "" when the delimiter is missing or empty.
+a | :keep_before("abc", "z")
+b | :keep_before("abc", "")
+c | :keep_after("abc", "z")
+d | :keep_after("abc", "")
+say("[{a}] [{b}] [{c}] [{d}]")

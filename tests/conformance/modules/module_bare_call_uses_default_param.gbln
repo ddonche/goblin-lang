@@ -1,0 +1,3 @@
+/// A module action calling a sibling by bare name fills the sibling's default parameter.
+import _support/core/defaults_inside as d
+say(d::use_default(1))

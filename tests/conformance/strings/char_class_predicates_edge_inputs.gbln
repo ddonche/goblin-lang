@@ -1,0 +1,12 @@
+/// is_digit/is_alnum/is_whitespace accept chars, are false on "" and on non-strings.
+say(:is_digit('7'))
+say(:is_digit(""))
+say(:is_digit(5))
+say(:is_alnum('a'))
+say(:is_alnum(""))
+say(:is_alnum(1))
+say(:is_whitespace(' '))
+say(:is_whitespace(""))
+say(:is_whitespace(" \t"))
+say(:is_whitespace(1))
+say(:is_alpha(""))

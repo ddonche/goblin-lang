@@ -1,0 +1,4 @@
+/// `s.upper!` (dot form, no parens) rewrites the variable
+s | "hi"
+s.upper!
+say(s)

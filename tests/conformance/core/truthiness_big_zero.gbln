@@ -1,0 +1,6 @@
+/// A Big zero is falsy.
+if :big("0")
+    say("t")
+else
+    say("f")
+xx

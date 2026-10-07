@@ -1,0 +1,4 @@
+/// invoke calls a module export by its qualified "mod::action" string name.
+import _support/core/pipe_steps as ps
+say(:invoke("ps::dbl", 6))
+say(:invoke("ps::add", 2, 3))

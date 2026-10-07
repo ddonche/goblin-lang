@@ -1,0 +1,11 @@
+/// Casts accept underscores and surrounding spaces in numeric strings, exponent floats, and Big inputs to int.
+say(:big(2.5))
+say(:big(" 1_000.25 "))
+say(:float(" 3_000.5 "))
+say(:float("1e3"))
+say(:int(:big("12345678901234567890123")))
+say(:int(:big("42.9")))
+say(:int("12.9"))
+say(:str('c'))
+say(:str(:big("1.50")))
+say(:string(5))

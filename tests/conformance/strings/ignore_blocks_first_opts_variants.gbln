@@ -1,0 +1,14 @@
+/// ignore_blocks_first options: only the first block goes, a non-BOL fence is ignored unless require_bol is false, leading_blanks_ok false, empty open.
+t | "x\n---\nh\n---\ny\n---\nz\n---\n"
+r | :ignore_blocks_first(t, "---", "---", {"include_delims": false})
+say("[{r}]")
+r |= :ignore_blocks_first("ab---c", "---", "---")
+say("[{r}]")
+r |= :ignore_blocks_first("ab---c---d", "---", "---", {"require_bol": false})
+say("[{r}]")
+r |= :ignore_blocks_first("x\n  ---\nh\n  ---\ny", "---", "---", {"leading_blanks_ok": false})
+say("[{r}]")
+r |= :ignore_blocks_first("x\n---\nh", "---", "---", {"allow_eof_close": false})
+say("[{r}]")
+r |= :ignore_blocks_first("x", "", "---", nil)
+say("[{r}]")

@@ -1,0 +1,5 @@
+/// get_at and put_at on a map stringify an int or bool key.
+m | {"1": "one", "true": "t"}
+say(:get_at(m, 1))
+say(:get_at(m, true))
+say(:put_at({}, 2, "x"))

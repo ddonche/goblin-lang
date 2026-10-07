@@ -1,0 +1,3 @@
+/// run_cmd with a missing working directory is an error.
+say("before")
+say(:run_cmd("pwd", "/nonexistent_xyz"))

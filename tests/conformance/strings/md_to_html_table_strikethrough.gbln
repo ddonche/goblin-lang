@@ -1,0 +1,2 @@
+/// md_to_html renders GFM tables and ~~strikethrough~~.
+say(:md_to_html("| a | b |\n|---|---|\n| 1 | 2 |\n\n~~s~~ t"))

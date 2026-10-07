@@ -1,0 +1,4 @@
+/// `r"…"` and `R"…"` are raw strings: escapes stay as written
+say(r"a\tb")
+say(:len(r"a\tb"))
+say(R"x\ny")

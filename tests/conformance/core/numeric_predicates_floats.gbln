@@ -1,0 +1,13 @@
+/// is_even/is_odd/is_multiple_of/is_positive/is_negative work on whole floats; -0.0 is not negative.
+say(:is_even(4.0))
+say(:is_odd(3.0))
+say(:is_even(2.5))
+say(:is_even("4"))
+say(:is_multiple_of(10.0, 5))
+say(:is_multiple_of(10, 5.0))
+say(:is_multiple_of(10, 0))
+say(:is_multiple_of(10.5, 5))
+say(:is_positive(1.5))
+say(:is_positive(0))
+say(:is_negative(-1.5))
+say(:is_negative(-0.0))

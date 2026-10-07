@@ -1,0 +1,7 @@
+/// floor/round/pow/sqrt/abs called as methods or postfix on ints and floats.
+say(3.7.floor())
+say((-3.7).floor)
+say(2.5.round)
+say(2.pow(10))
+say(16.sqrt())
+say((-4).abs())

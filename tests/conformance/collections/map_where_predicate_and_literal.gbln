@@ -1,0 +1,7 @@
+/// get_where/update_where test a map's values with a predicate action; a literal delete_where removes matching values.
+act big(v)
+    return v > 1
+xx
+say(:get_where({"a": 1, "b": 2, "c": 3}, "big"))
+say(:update_where({"a": 1, "b": 2}, "big", 0))
+say(:delete_where({"a": "x-y", "b": "z"}, "x-y"))

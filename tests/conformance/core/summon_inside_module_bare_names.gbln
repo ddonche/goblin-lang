@@ -1,0 +1,3 @@
+/// A module action summoning its sibling actions by bare name resolves them inside the module.
+import _support/core/pipe_steps as ps
+say(ps::chain({"n": 0}))

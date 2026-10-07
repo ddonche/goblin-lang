@@ -1,0 +1,5 @@
+/// sort, unique, dups and freq on a string work over its chars.
+say(:sort("cab"))
+say(:unique("abcab"))
+say(:dups("abcab"))
+say(:freq("abca"))

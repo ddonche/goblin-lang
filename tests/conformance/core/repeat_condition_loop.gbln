@@ -1,0 +1,7 @@
+/// `repeat cond` loops while the condition is true
+i | 0
+repeat i < 3
+    say(i)
+    i |= i + 1
+xx
+say("done")

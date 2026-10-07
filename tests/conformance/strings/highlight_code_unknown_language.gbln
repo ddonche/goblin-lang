@@ -1,0 +1,2 @@
+/// highlight_code with an unknown language renders the code as plain text in both theme blocks.
+say(:highlight_code("x | 1", "nosuchlang", "base16-ocean.dark", "InspiredGitHub"))

@@ -1,0 +1,13 @@
+act add(a, b | 10)
+    return a + b
+xx
+act use_default(x)
+    return add(x)
+xx
+act inc(ctx)
+    :put_at!(ctx, "n", ctx{"n"} + 1)
+    return ctx
+xx
+act chain(ctx)
+    return :summon(ctx, ["inc", "inc"])
+xx

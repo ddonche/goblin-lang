@@ -1,0 +1,3 @@
+/// put (whole) on a string with a non-string value is an error.
+say("before")
+say(:put("abc", 5))

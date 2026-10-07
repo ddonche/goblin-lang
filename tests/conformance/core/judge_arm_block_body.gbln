@@ -1,0 +1,10 @@
+/// an expression judge arm can have an indented multi-statement body; its last expression is the value
+x | 7
+r |
+    judge
+        x > 5:
+            say("side")
+            x + 1
+        else: 0
+    xx
+say(r)

@@ -1,0 +1,4 @@
+/// update_first/delete_first/get_last on a map act on its first or last entry in insertion order.
+say(:update_first({"a": 1, "b": 2}, 9))
+say(:delete_first({"a": 1, "b": 2}))
+say(:get_last({"a": 1, "b": 2}))

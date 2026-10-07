@@ -1,0 +1,4 @@
+/// `:put_last!(m.xs, v)` (dot path into a map) changes the map's entry
+m | {"xs": [1]}
+:put_last!(m.xs, 2)
+say(m)

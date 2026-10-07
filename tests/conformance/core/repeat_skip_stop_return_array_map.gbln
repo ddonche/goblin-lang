@@ -1,0 +1,22 @@
+/// `skip`/`stop` in `repeat … as` over an array and a map, and `return` from inside one
+repeat [1, 2, 3, 4] as x
+    if x == 2
+        skip
+    xx
+    if x == 4
+        stop
+    xx
+    say(x)
+xx
+repeat {"a": 1, "b": 2} as k, v
+    if k == "b"
+        stop
+    xx
+    say(k)
+xx
+act f()
+    repeat [5, 6] as y
+        return y
+    xx
+xx
+say(f())

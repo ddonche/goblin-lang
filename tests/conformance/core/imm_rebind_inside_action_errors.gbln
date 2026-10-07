@@ -1,0 +1,8 @@
+/// An action cannot update an `imm` module binding with `|=` (R0113).
+imm n | 3
+act f()
+    n |= 4
+xx
+say("before")
+f()
+say(n)

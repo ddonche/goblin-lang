@@ -1,0 +1,4 @@
+/// update_matching! on a string variable writes the replaced text back.
+s | "a1b2"
+:update_matching!(s, "[0-9]", "")
+say(s)

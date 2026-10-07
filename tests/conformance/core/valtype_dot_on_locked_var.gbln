@@ -1,0 +1,8 @@
+/// `.vt` / `.vt()` on a type-locked variable name its type
+n.int | 5
+say(n.vt)
+say(n.vt())
+a.int | [1, 2]
+say(a.vt)
+s | "x"
+say(s.vt)

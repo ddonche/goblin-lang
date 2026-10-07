@@ -1,0 +1,4 @@
+/// `ns::f: a, b` calls a module action with colon-style arguments
+import _support/modules/mathy as m
+r | m::add: 1, 2
+say(r)

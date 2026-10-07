@@ -1,0 +1,3 @@
+/// `x?` is a parse error (P0713), not a crash.
+x | 1
+say(x?)

@@ -1,0 +1,10 @@
+/// is_type checks whether a string parses as int or float, and checks other values by type.
+say(:is_type(" 1_000 ", "int"))
+say(:is_type("abc", "int"))
+say(:is_type("1e3", "float"))
+say(:is_type(true, "bool"))
+say(:is_type(:big(5), "big"))
+say(:is_type(1, "big"))
+say(:is_type(1, "str"))
+say(:is_type(true, "int"))
+say(:is_type(1, "nonsense"))

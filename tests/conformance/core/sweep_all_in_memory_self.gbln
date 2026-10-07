@@ -1,0 +1,9 @@
+/// `sweep_all t` runs its body once with `self` the whole in-memory text, leaving t unchanged
+text | "hello world"
+n | 0
+sweep_all text
+    n += :len(self)
+    say(self)
+xx
+say(n)
+say(text)

@@ -1,0 +1,15 @@
+/// Truthiness: 0.0, [] and {} are false; 0.5, [0], a non-empty map and a char are true.
+for v in [0.0, 0.5, [], [0], {}, {"a": 1}, 'a']
+    if v
+        say("t")
+    else
+        say("f")
+    xx
+xx
+say(not [])
+say([] or 5)
+x | 0.0
+while x
+    say("loop")
+xx
+say("done")

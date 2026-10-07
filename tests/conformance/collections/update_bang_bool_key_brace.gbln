@@ -1,0 +1,5 @@
+/// update! through m{true} writes the entry stored under the bool key.
+m | {}
+:put_at!(m, true, "a")
+:update!(m{true}, 5)
+say(m)

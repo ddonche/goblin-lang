@@ -1,0 +1,3 @@
+/// split with an "r/<regex>" separator splits on the regex; a bare "r/" is a literal separator.
+say(:split("a1b22c", "r/[0-9]+"))
+say(:split("a r/ b", "r/"))

@@ -1,0 +1,4 @@
+/// `{{{NS::ID}}}` in expression position evaluates to the registered token's value
+:register_token("SITE", "NAME", "Goblin")
+x | {{{SITE::NAME}}}
+say(x)

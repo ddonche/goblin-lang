@@ -1,0 +1,5 @@
+/// known-gap: interp casts whole floats >= 2^63 to i64 when printing, so they show as 9223372036854775807
+/// say and interpolation print a whole float at or above 2^63 in full.
+say(1e20)
+x | -1e20
+say("{x}")

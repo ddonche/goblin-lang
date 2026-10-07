@@ -1,0 +1,7 @@
+/// GLAM fixture (conformance): reads a needed value and calls a needed action
+act where()
+    return "out=" + #need::out
+end
+act run(x)
+    return :need("store", x)
+end

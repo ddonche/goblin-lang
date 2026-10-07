@@ -1,0 +1,12 @@
+/// Type locks cast the bound value: str, uint, f32, float from a string, big from a string.
+a.str | 5
+say(:valtype(a))
+b.uint | 5
+say(b)
+c.f32 | 2
+say(c)
+d.float | "2.5"
+say(d)
+e.big | "1.25"
+say(e)
+say(:valtype(e))

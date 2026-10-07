@@ -1,0 +1,4 @@
+/// a `u16` lock rejects 70000
+say("before")
+x.u16 | 70000
+say(x)

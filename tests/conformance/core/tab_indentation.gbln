@@ -1,0 +1,6 @@
+/// tab indentation works for block bodies
+x | 1
+if x == 1
+	say("tab")
+	say("two")
+xx

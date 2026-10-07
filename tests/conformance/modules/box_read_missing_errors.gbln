@@ -1,0 +1,3 @@
+/// Reading a Box variable that was never set raises B0101.
+say("before")
+say(#app::nope)

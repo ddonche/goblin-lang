@@ -1,0 +1,20 @@
+/// `skip` in a pattern arm moves to the next arm; `stop` ends the sweep
+got | []
+t | "a b c"
+sweep t
+    "b":
+        :put_last!(got, "b")
+        if true => skip
+    "c":
+        :put_last!(got, "c")
+xx
+say(got)
+got2 | []
+sweep t
+    "a":
+        :put_last!(got2, "a")
+        if true => stop
+    "c":
+        :put_last!(got2, "c")
+xx
+say(got2)

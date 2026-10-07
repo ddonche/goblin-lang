@@ -1,0 +1,12 @@
+/// known-gap: interp ignores `stop` in an action called from a loop and returns nil
+/// `stop` does not reach a loop in the caller: it raises R0405.
+act halt(i)
+    if i == 2
+        stop
+    xx
+    return i
+xx
+for i in [1, 2, 3]
+    say(halt(i))
+xx
+say("after")

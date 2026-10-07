@@ -1,0 +1,2 @@
+/// keep_between with require_bol only opens on a fence at the start of a line.
+say("[" + :keep_between("x[a]\n[b\n]", "[", "]", {"require_bol": true}) + "]")

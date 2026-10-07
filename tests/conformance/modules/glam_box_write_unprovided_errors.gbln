@@ -1,0 +1,4 @@
+/// A GLAM's top-level code can publish only names its [provides] lists (B0105).
+say("before")
+use _conf_boxprov
+say("after")

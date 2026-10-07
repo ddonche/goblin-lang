@@ -1,0 +1,4 @@
+/// env of an unset variable is the empty string, not an error.
+e | :env("GOBLIN_DEFINITELY_UNSET_XYZ")
+say("[{e}]")
+say(:valtype(e))

@@ -1,0 +1,5 @@
+/// get/delete/put_between on an array handle every start..end range and keep non-string elements inside.
+say(:get_between(["s", "x", "e", "s", "y", "e"], "s", "e"))
+say(:delete_between(["s", "x", "e", "s", "y", "e"], "s", "e"))
+say(:put_between(["s", "x", "e", "s", "y", "e"], "s", "e", "!"))
+say(:get_between(["a", 1, 2, "b"], "a", "b"))

@@ -1,0 +1,2 @@
+/// freq counts values by their display text, so 1 and "1" share a bucket.
+say(:freq([1, "1", 2]))

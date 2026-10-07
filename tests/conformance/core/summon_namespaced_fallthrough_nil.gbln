@@ -1,0 +1,7 @@
+/// known-gap: interp namespaced invoke/summon returns unit instead of nil (D13) when the action falls off the end
+/// A namespaced invoke/summon whose action falls off the end yields nil (D13).
+import _support/core/pipe_steps as ps
+say(:valtype(:invoke("ps::maybe", 1)))
+say(:valtype(:summon(1, ["ps::maybe"])))
+r | :summon(1, ["ps::maybe"])
+say(r.nix?)

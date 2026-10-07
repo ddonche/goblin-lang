@@ -1,0 +1,5 @@
+/// `m.keys()`, `m.values()` and `m.items()` with parentheses
+m | {"a": 1, "b": 2}
+say(m.keys())
+say(m.values())
+say(m.items())

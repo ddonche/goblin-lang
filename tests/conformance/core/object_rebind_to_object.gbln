@@ -1,0 +1,8 @@
+/// An object variable can be rebound to another object.
+<>Dog |
+    name: "r"
+xx
+d <> Dog | name: "x"
+e <> Dog | name: "y"
+d |= e
+say(d >> name)

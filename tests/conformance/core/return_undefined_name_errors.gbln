@@ -1,0 +1,7 @@
+/// known-gap: interp `return <undefined name>` gives nil instead of an unknown-name error (lib.rs:5220 get_var.unwrap_or(Nil))
+act f()
+    return nosuchname
+end
+say("before")
+say(f())
+say("after")

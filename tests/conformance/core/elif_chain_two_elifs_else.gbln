@@ -1,0 +1,16 @@
+/// an `if` with two `elif` arms and an `else` runs only the first true arm
+act f(x)
+    if x == 1
+        return "one"
+    elif x == 2
+        return "two"
+    elif x == 3
+        return "three"
+    else
+        return "other"
+    xx
+xx
+say(f(1))
+say(f(2))
+say(f(3))
+say(f(4))

@@ -1,0 +1,4 @@
+/// keep_between gives "" when the delimiters are missing or the open delimiter is empty.
+a | :keep_between("abc", "[", "]")
+b | :keep_between("abc", "", "]")
+say("[{a}] [{b}]")

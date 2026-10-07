@@ -1,0 +1,3 @@
+/// `<---` and `<----` start a trailing comment
+x | 1 <--- trailing note
+say(x) <---- another note

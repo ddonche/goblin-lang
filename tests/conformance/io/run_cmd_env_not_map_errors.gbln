@@ -1,0 +1,3 @@
+/// run_cmd with an env argument that is not a map is an error.
+say("before")
+say(:run_cmd("echo hi", ".", [1]))

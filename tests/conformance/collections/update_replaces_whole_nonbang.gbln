@@ -1,0 +1,6 @@
+/// update(coll, value) returns a whole replacement and leaves the original untouched.
+a | [1, 2, 3]
+say(:update(a, [7, 8]))
+say(a)
+say(:update({"x": 1}, {"y": 2}))
+say(:update("abc", "z"))

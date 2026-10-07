@@ -1,0 +1,10 @@
+/// `:put_last!(obj >> field, v)` and a keyed path under a field change the object's field
+<>Bag |
+    stuff: []
+    meta: {}
+xx
+b <> Bag | stuff: [1], meta: {"k": [1]}
+:put_last!(b >> stuff, 2)
+say(b >> stuff)
+:put_last!(b >> meta{"k"}, 5)
+say(b >> meta)

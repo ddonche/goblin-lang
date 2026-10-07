@@ -1,0 +1,3 @@
+/// A GLAM publishes a [provides] name into its own Box namespace.
+use _conf_boxok
+say(#_conf_boxok::greeting)

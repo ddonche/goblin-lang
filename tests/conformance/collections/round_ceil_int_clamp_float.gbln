@@ -1,0 +1,5 @@
+/// round and ceil of an int return it; clamp accepts a float value.
+say(:round(7))
+say(:ceil(7))
+say(:clamp(5.5, 0, 3))
+say(:clamp(-1, 0, 3))

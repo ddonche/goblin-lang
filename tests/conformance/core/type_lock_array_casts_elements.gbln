@@ -1,0 +1,4 @@
+/// `xs.int | [...]` casts every array element to int.
+xs.int | ["1", "2"]
+say(xs)
+say(:valtype(xs[0]))

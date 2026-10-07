@@ -1,0 +1,3 @@
+/// count of a string counts chars; counting an empty substring gives 0.
+say(:count("héllo"))
+say(:count("abc", ""))

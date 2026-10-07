@@ -1,0 +1,4 @@
+/// provoke with a non-string message passes when the condition holds and raises when it does not.
+say(:provoke(true, 42))
+say(:provoke(false, 42))
+say("not reached")

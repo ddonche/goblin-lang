@@ -1,0 +1,8 @@
+/// `:int!(x)` and `:str!(x)` cast and rebind the variable
+age | "42"
+:int!(age)
+say(age + 1)
+say(:valtype(age))
+x | 3
+:str!(x)
+say(:valtype(x))

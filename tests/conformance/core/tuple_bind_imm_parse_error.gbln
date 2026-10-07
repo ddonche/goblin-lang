@@ -1,0 +1,3 @@
+/// `imm` is not allowed on a tuple bind (P0405).
+imm a, b | [1, 2]
+say(a + b)

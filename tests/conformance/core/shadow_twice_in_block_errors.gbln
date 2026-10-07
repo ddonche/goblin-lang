@@ -1,0 +1,7 @@
+/// `a [= …` twice in one block is a duplicate local (R0111).
+if true
+    a [= 1
+    say(a)
+    a [= 2
+    say(a)
+end

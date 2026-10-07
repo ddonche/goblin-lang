@@ -1,0 +1,9 @@
+/// get_all, delete, put and update_all on a whole map.
+m | {"a": 1}
+say(:get_all(m))
+say(:delete(m))
+say(:put(m, {"z": 2}))
+say(:update_all(m, {"q": 3}))
+n | {"a": 1}
+:update_all!(n, {"b": 2})
+say(n)

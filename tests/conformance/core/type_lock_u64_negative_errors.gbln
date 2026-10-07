@@ -1,0 +1,4 @@
+/// a `u64` lock rejects a negative value
+say("before")
+x.u64 | -1
+say(x)

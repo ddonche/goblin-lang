@@ -1,0 +1,9 @@
+/// map over a string gives a string when every result is text, otherwise an array.
+act up(c)
+    return :upper(c)
+xx
+act one(c)
+    return 1
+xx
+say(:map("ab", "up"))
+say(:map("ab", "one"))

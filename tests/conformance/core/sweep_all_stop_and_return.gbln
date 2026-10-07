@@ -1,0 +1,14 @@
+/// `stop` ends a `sweep_all`; `return` inside it returns from the action
+t | "abc"
+sweep_all t
+    say(self)
+    if true => stop
+    say("not reached")
+xx
+act f(s)
+    sweep_all s
+        return "got " + self
+    xx
+    return "none"
+end
+say(f("xyz"))

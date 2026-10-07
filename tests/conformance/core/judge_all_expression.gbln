@@ -1,0 +1,16 @@
+/// expression `judge_all` collects the values of every true arm, in order
+x | 15
+r |
+    judge_all
+        x > 10: "big"
+        x > 5: "mid"
+        else: "small"
+    xx
+say(r)
+y | 1
+s |
+    judge_all
+        y > 10: "big"
+        else: "small"
+    xx
+say(s)

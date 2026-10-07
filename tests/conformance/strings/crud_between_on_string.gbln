@@ -1,0 +1,5 @@
+/// get/delete/update/put_between on a string use regex markers around the span.
+say(:get_between("a[x]b", "\\[", "\\]"))
+say(:delete_between("a[x]b", "\\[", "\\]"))
+say(:update_between("a[x]b", "\\[", "\\]", "Q"))
+say(:put_between("a[x]b", "\\[", "\\]", "!"))

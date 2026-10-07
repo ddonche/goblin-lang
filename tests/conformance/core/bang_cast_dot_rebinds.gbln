@@ -1,0 +1,5 @@
+/// `x.int!` casts and rebinds x
+age | "42"
+age.int!
+say(age + 1)
+say(:valtype(age))

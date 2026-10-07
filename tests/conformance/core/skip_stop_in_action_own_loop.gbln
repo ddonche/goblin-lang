@@ -1,0 +1,17 @@
+/// `skip` and `stop` act on the innermost loop, including one inside an action.
+for i in [1, 2, 3]
+    if i == 2
+        skip
+    xx
+    say(i)
+xx
+act f(xs)
+    for x in xs
+        if x == 2
+            stop
+        xx
+        say(x)
+    xx
+    return "done"
+xx
+say(f([1, 2, 3]))

@@ -1,0 +1,3 @@
+/// `??` inside a bind RHS uses the right side when the left is nil
+x | nil ?? 5
+say(x)

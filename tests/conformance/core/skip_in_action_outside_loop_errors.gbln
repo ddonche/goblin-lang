@@ -1,0 +1,7 @@
+/// `skip` in an action body with no loop of its own raises R0405.
+act f()
+    skip
+    return 1
+xx
+say("before")
+say(f())

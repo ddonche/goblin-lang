@@ -1,0 +1,4 @@
+/// an `f32` lock rejects a float past the f32 range
+say("before")
+x.f32 | 1e300
+say(x)

@@ -1,0 +1,6 @@
+/// `repeat m as (k, v)` destructures each entry like `as k, v`
+m | {a: 1}
+repeat m as (k, v)
+    say(k)
+    say(v)
+xx

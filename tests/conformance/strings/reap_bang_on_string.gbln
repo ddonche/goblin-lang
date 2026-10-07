@@ -1,0 +1,10 @@
+/// reap!, reap!(s, n) and reap_first! take chars out of a string variable.
+s | "aaa"
+say(:reap!(s))
+say(s)
+t | "aaaa"
+say(:reap!(t, 2))
+say(t)
+u | "abc"
+say(:reap_first!(u))
+say(u)

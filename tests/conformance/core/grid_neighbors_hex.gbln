@@ -1,0 +1,4 @@
+/// A "hex" grid gives six neighbours per inner cell, offset by row.
+m | :grid("m", 4, 4, "hex")
+say(:grid_neighbors("m", 1, 1))
+say(:len(:grid_neighbors("m", 1, 2)))

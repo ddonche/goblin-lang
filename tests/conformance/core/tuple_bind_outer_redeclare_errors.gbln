@@ -1,0 +1,7 @@
+/// A tuple bind in a block of a name bound outside it raises (D3).
+a | 1
+if true
+    say("before")
+    a, b | [5, 6]
+    say(a)
+end

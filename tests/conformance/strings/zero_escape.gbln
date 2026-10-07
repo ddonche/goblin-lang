@@ -1,0 +1,2 @@
+/// `\0` is a one-character escape
+say(:len("a\0b"))

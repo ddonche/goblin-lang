@@ -1,0 +1,11 @@
+[glam]
+name = "_conf_use"
+version = "0.1.0"
+description = "Conformance fixture: needs a value and an action from _conf_base."
+entry = "_conf_use.gbln"
+
+[needs.values]
+out = "#_conf_base::dir"
+
+[needs.actions]
+store = "_conf_base::save"

@@ -1,0 +1,5 @@
+/// shuffle of an int gives an int with the same digits; shuffle of a string keeps its length.
+say(:valtype(:shuffle(123)))
+say(:sort(:str(:shuffle(312))))
+say(:valtype(:shuffle("abc")))
+say(:len(:shuffle("abc")))

@@ -1,0 +1,5 @@
+/// a trailing comma in call arguments is allowed
+act add(a, b)
+    return a + b
+xx
+say(add(1, 2,))
