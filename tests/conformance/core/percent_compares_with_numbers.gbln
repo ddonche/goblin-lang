@@ -1,0 +1,5 @@
+/// A percent compares with a plain number by its fraction.
+say(25% == 0.25)
+say(25% < 0.5)
+say(50% > 1)
+say(100% == 1)

@@ -1,0 +1,8 @@
+/// known-gap: interp makes pct(25) the percent 2500% (owner's percent spec, 2026-10-07: pct(25) is 25%)
+/// `pct(25)` is 25%, `pct(0.5)` is 0.5%, and `pct(E)` takes any expression.
+say(:pct(25) == (25%))
+say(:pct(0.5))
+say(:pct(10 + 5))
+say(8 * :pct(25))
+say(:pct("25"))
+say(:pct("25%"))

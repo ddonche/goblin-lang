@@ -1,0 +1,5 @@
+/// Two percents: + - * give a percent; / gives their ratio.
+say(:valtype(20% + 5%))
+say(20% + 5%)
+say(50% * 50%)
+say(50% / 25%)
