@@ -1,0 +1,7 @@
+/// statement `judge_all` runs every true arm in order
+x | 15
+judge_all
+    x > 10: say("big")
+    x > 5: say("mid")
+    x > 20: say("huge")
+xx

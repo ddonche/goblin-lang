@@ -1,0 +1,3 @@
+/// A parse error inside a bang call's arguments is a diagnostic, not a crash.
+x | [1]
+:update!(x, *)

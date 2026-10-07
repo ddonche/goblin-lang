@@ -1,0 +1,5 @@
+/// `#ns::x | v` sets a box variable, `#ns::x |= v` changes it, `#ns::x` reads it
+#app::x | 1
+say(#app::x)
+#app::x |= 2
+say(#app::x)

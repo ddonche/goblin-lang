@@ -1,0 +1,7 @@
+/// `a [= …` in an inner block shadows the outer `a` until the block ends.
+a | 1
+if true
+    a [= 5
+    say(a)
+end
+say(a)

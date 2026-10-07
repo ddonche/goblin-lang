@@ -1,0 +1,4 @@
+/// known-gap: interp packs digits into an integer, which wraps past the largest int
+/// pack always gives text, so a long digit array packs without overflowing (owner, 2026-10-07).
+say(:pack([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]))
+say(:valtype(:pack([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])))

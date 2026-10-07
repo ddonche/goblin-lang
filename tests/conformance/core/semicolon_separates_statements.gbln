@@ -1,0 +1,3 @@
+/// `;` separates statements on one line
+x | 1; say(x)
+y | 2; z | 3; say(y + z)

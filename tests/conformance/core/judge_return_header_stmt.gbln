@@ -1,0 +1,9 @@
+/// statement-form `judge return v`: an arm with no body returns v from the action
+act f(x)
+    judge return "dflt"
+        x > 5:
+        else: return "small"
+    xx
+xx
+say(f(9))
+say(f(1))

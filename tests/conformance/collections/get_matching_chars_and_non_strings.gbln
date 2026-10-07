@@ -1,0 +1,4 @@
+/// get_matching works over :chars elements and never matches non-string elements.
+say(:get_matching(:chars("a1b"), "[0-9]"))
+say(:get_matching([1, "a1", 22], "[0-9]"))
+say(:delete_matching([1, "a1"], "[0-9]"))

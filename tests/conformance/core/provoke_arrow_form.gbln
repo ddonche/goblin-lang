@@ -1,0 +1,6 @@
+/// `provoke => cond` passes when cond is true and raises when it is false
+x | 5
+provoke => x > 1
+say("passed")
+provoke => x > 10
+say("unreachable")

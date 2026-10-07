@@ -1,0 +1,4 @@
+/// `a, b | [1, 2, 3]` is an error (wrong number of values)
+say("before")
+a, b | [1, 2, 3]
+say("after")

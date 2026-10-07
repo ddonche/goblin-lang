@@ -1,0 +1,4 @@
+/// `a >< b` gives the quotient and remainder as a pair
+say(7 >< 2)
+q | 17 >< 5
+say(q)

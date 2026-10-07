@@ -1,0 +1,6 @@
+/// `x | e ?? => return v` returns v from the action when e is nil
+act f(v)
+    x | v ?? => return "early"
+    return "late"
+xx
+say(f(nil))

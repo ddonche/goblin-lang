@@ -1,0 +1,8 @@
+/// An object variable cannot be rebound to a non-object value (R1300).
+<>Dog |
+    name: "r"
+xx
+d <> Dog | name: "x"
+say(d >> name)
+d |= 5
+say(d)

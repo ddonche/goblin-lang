@@ -1,0 +1,7 @@
+/// `m *>>` evaluates to the map without its id fields; `m *>> show_ids` keeps them; m itself is unchanged
+m | {"id": 1, "name": "x", "owner_id": 4}
+x | m *>>
+say(x)
+y | m *>> show_ids
+say(y)
+say(m)

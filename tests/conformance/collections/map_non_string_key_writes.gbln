@@ -1,0 +1,6 @@
+/// put_at! with bool, float and char keys stores them as text keys.
+m | {}
+:put_at!(m, true, "a")
+:put_at!(m, 1.5, "b")
+:put_at!(m, 'c', "c")
+say(m)

@@ -1,0 +1,3 @@
+/// ask: the prompt must be a string.
+say("before")
+say(:ask(5))

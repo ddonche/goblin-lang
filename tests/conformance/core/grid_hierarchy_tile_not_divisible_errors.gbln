@@ -1,0 +1,6 @@
+/// A grid whose height is not divisible by the tile height is an error.
+say("before")
+grid("h", 8, 6)
+    tile 2 by 4
+    regions 4
+say("after")

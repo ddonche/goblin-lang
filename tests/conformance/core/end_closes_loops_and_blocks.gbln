@@ -1,0 +1,20 @@
+/// `end` closes `for`, `while`, `repeat`, `unless` and `attempt` like `xx`
+for i in [1, 2]
+    say(i)
+end
+n | 0
+while n < 2
+    n |= n + 1
+end
+say(n)
+repeat 2
+    say("r")
+end
+unless false
+    say("u")
+end
+attempt
+    say("a")
+rescue
+    say("rescued")
+end

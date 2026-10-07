@@ -1,0 +1,3 @@
+/// A u32 cast call with an int above the u32 range is an error.
+say("before")
+say(:u32(5000000000))

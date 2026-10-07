@@ -1,0 +1,4 @@
+/// ignore_where and ignore_lines_where with an empty needle return the text unchanged.
+say(:ignore_where("aXbX", ""))
+r | :ignore_lines_where("a\n#b\n", "")
+say("[{r}]")

@@ -1,0 +1,10 @@
+/// `sweep a, b` runs the arms over each target in turn
+got | []
+act f(a, b)
+    sweep a, b
+        "x":
+            :put_last!(got, self)
+    xx
+xx
+f("x1", "yx")
+say(got)

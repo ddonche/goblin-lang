@@ -1,0 +1,8 @@
+/// GLAM fixture (conformance): sets a provided box value and defines actions
+#_conf_base::result | "computed"
+act save(x)
+    return "saved " + x
+end
+act greet(n)
+    return "hello " + n
+end

@@ -1,0 +1,4 @@
+/// known-gap: interp panics on an unclosed block
+/// An unclosed block runs to the end of the text and is removed.
+say("[" + :ignore_blocks_first("x\n---\nh", "---", "---") + "]")
+say("[" + :ignore_blocks_first("x\n---\nh", "---", "---", {"include_delims": false}) + "]")

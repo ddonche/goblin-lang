@@ -1,0 +1,7 @@
+/// `end` closes a sweep block
+t | "a"
+sweep t
+    "a":
+        say("found")
+end
+say("after")

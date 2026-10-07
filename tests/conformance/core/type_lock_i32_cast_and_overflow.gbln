@@ -1,0 +1,6 @@
+/// an `i32` lock casts a rebound string and rejects a value past i32
+age.i32 | 46
+age |= "47"
+say(age + 1)
+age |= 3000000000
+say(age)

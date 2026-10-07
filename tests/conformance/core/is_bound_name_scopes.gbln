@@ -1,0 +1,14 @@
+/// is_bound_name sees globals, params and locals inside an action, but not action locals or block locals outside.
+g | 1
+act f(p)
+    loc | 2
+    say(:is_bound_name("g"))
+    say(:is_bound_name("p"))
+    say(:is_bound_name("loc"))
+xx
+f(0)
+say(:is_bound_name("loc"))
+if true
+    inner | 3
+xx
+say(:is_bound_name("inner"))

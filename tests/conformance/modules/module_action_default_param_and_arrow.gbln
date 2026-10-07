@@ -1,0 +1,5 @@
+/// `m::f` reaches a module action with a default parameter and one with an `=> expr` body
+import _support/modules/defaults_arrow as m
+say(m::add(1))
+say(m::add(1, 2))
+say(m::dbl(4))

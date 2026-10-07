@@ -1,0 +1,4 @@
+/// to_map (and its alias m) parses "key: value" lines of a string; a non-string gives an empty map.
+say(:to_map("a: 1\nb: two"))
+say(:m("x:1"))
+say(:to_map(5))

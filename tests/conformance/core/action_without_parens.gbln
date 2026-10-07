@@ -1,0 +1,5 @@
+/// `act name` with no parameter list declares a zero-argument action
+act hi
+    say("hi")
+xx
+hi()

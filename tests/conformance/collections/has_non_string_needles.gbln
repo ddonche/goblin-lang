@@ -1,0 +1,5 @@
+/// has stringifies non-string map keys, accepts a char needle on a string, and is false on nil.
+say(:has({"1": 2}, 1))
+say(:has({"true": 2}, true))
+say(:has(nil, 1))
+say(:has("abc", :get_first("b")))

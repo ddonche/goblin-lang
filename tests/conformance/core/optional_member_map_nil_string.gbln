@@ -1,0 +1,7 @@
+/// `x ?>> name` reads a map field, gives nil on nil, and calls a no-arg string method
+m | {"a": 1}
+say(m?>>a)
+n | nil
+say(n?>>a)
+say(n?>>count)
+say("hi"?>>upper)

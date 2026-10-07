@@ -1,0 +1,3 @@
+/// float minus int and float minus float
+say(5.5 - 2)
+say(5.5 - 0.25)

@@ -117,6 +117,9 @@ pub enum Opcode {
     /// per segment: "[" or "{" followed by the level's source text, or "."
     /// for a `>>` field.
     CheckPath(u8, u16),
+    /// Before `name |= v`: stack [v, old]. Pops old; errors (R1300) when old
+    /// is a live object and v is not one. constants[idx] = the name.
+    GuardObjRebind(u16),
     /// Like GetIndex but key is constants[idx] (string member access).
     GetMember(u16),
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
@@ -287,7 +290,10 @@ pub enum Opcode {
 
     /// Pop value from stack top and write it to session.box_store["{ns}::{name}"].
     /// ns_idx and name_idx are constant-pool indices into the enclosing function.
-    StoreBox(u16, u16),
+    StoreBox(u16, u16, bool),
+    /// Before `#ns::name | v` evaluates v: the GLAM namespace/[provides]
+    /// check. constants[ns_idx], constants[name_idx] are strings.
+    BoxCheck(u16, u16),
 
     /// Collect-loop accumulator append: pops the top-of-stack element and appends
     /// it to the array in locals[slot] without a full clone.
@@ -348,6 +354,7 @@ impl Opcode {
             Opcode::IndexGet(_)     => "IndexGet",
             Opcode::KeyGet(_)       => "KeyGet",
             Opcode::CheckPath(..)   => "CheckPath",
+            Opcode::GuardObjRebind(_) => "GuardObjRebind",
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",
@@ -396,7 +403,8 @@ impl Opcode {
             Opcode::CastMemberLocal(..)  => "CastMemberLocal",
             Opcode::CastMemberGlobal(..) => "CastMemberGlobal",
             Opcode::TupleSplit(_)        => "TupleSplit",
-            Opcode::StoreBox(_, _)       => "StoreBox",
+            Opcode::StoreBox(..)         => "StoreBox",
+            Opcode::BoxCheck(..)         => "BoxCheck",
             Opcode::ArrayPushToLocal(_)  => "ArrayPushToLocal",
         }
     }

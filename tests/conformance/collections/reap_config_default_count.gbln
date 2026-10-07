@@ -1,0 +1,3 @@
+/// reap with a config map and no count returns one element, not an array; count equal to the size takes all.
+say(:reap({"src": [7]}))
+say(:len(:reap({"src": [1, 2, 3], "count": 3})))

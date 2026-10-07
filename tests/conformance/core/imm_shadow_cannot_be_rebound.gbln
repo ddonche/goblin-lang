@@ -1,0 +1,6 @@
+/// `imm a [= 1` makes the shadow immutable: `a |= 2` raises R0113.
+if true
+    imm a [= 1
+    say(a)
+    a |= 2
+end

@@ -1,0 +1,10 @@
+/// pack joins chars, floats and bools as text, gives nil when an element is nil or nested, and passes scalars through.
+say(:pack(['a', 'b']))
+say(:pack(["a", 1.5]))
+say(:pack(["a", true]))
+say(:pack(["a", nil]))
+say(:pack([[1], 2]))
+say(:pack([1, 12]))
+say(:pack(7))
+say(:pack("s"))
+say(:pack(nil))

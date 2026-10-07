@@ -1,0 +1,13 @@
+/// Setting a tile, region or default value to nil removes it.
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 4
+:grid_tile_set("h", 0, 0, "t", 5)
+:grid_tile_set("h", 0, 0, "t", nil)
+say(:grid_tile_get("h", 0, 0, "t"))
+:grid_region_set("h", 0, 0, "t", 5)
+:grid_region_set("h", 0, 0, "t", nil)
+say(:grid_region_get("h", 0, 0, "t"))
+:grid_default_set("h", "t", 5)
+:grid_default_set("h", "t", nil)
+say(:grid_default_get("h", "t"))

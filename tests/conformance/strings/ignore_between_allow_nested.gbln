@@ -1,0 +1,4 @@
+/// known-gap: interp ignores allow_nested
+/// allow_nested removes up to the matching close; without it, the first close ends the span.
+say("[" + :ignore_between("a(b(c)d)e", "(", ")", {"allow_nested": true}) + "]")
+say("[" + :ignore_between("a(b(c)d)e", "(", ")") + "]")

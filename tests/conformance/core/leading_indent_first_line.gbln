@@ -1,0 +1,2 @@
+  /// indentation before the first line of a file is accepted
+  say("leading indent")

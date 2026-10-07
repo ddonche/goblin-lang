@@ -602,9 +602,17 @@ impl Vm {
                         items.extend(y.seq_items().map(|c| c.into_owned()).unwrap_or_default());
                         Value::Collection(Rc::new(crate::value::CollectionValue::from_flat(items)))
                     }
-                    // Formatted + Str / Str + Formatted → string concat
-                    (a2, Value::Str(y)) => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
-                    (Value::Str(x), b2) => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2))),
+                    // Text joins only with text (owner, 2026-10-07): str + char, or a
+                    // formatted value's text. `"a" + 3` is an error: convert explicitly.
+                    (Value::Char(c), Value::Str(y)) => Value::Str(format!("{}{}", c, y)),
+                    (Value::Str(x), Value::Char(c)) => Value::Str(format!("{}{}", x, c)),
+                    (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
+                    (Value::Str(x), b2) if b_spec.is_some() => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2))),
+                    (other, Value::Str(_)) | (Value::Str(_), other) => {
+                        let t = other.type_name();
+                        return Err(GoblinError::Runtime(format!(
+                            "T0205: type-mismatch: cannot add str and {t} with '+'; convert explicitly, e.g. \"total: \" + :str(n)")));
+                    }
                     _ => return Err(GoblinError::type_error("number or str", b_inner.type_name(), "+")),
                 };
                 let result = if let Some(spec) = a_spec.or(b_spec) {
@@ -712,9 +720,18 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Float(-a)));
             }
             Opcode::Concat => {
-                // ++ operator: stringify both sides and join them with a space
+                // ++ operator: concatenate with a single space. Same type rules as
+                // `+` (owner, 2026-10-07): text never joins a non-text value.
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let is_text = |v: &Value| matches!(v, Value::Str(_) | Value::Char(_));
+                let is_fmt = |v: &Value| matches!(v, Value::Formatted(..));
+                if is_text(&a) != is_text(&b) && !is_fmt(&a) && !is_fmt(&b) {
+                    let other = if is_text(&a) { &b } else { &a };
+                    let t = other.type_name();
+                    return Err(GoblinError::Runtime(format!(
+                        "T0205: type-mismatch: cannot join str and {t} with '++'; convert explicitly, e.g. \"total\" ++ :str(n)")));
+                }
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 // An empty side adds no space; surrounding quote marks are dropped.
@@ -807,8 +824,33 @@ impl Vm {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 self.check_bracket(&coll_val, brace, label_idx)?;
+                if brace && !matches!(key, Value::Str(_) | Value::Char(_) | Value::Int(_)
+                        | Value::Float(_) | Value::Big(_) | Value::Bool(_)) {
+                    return Err(GoblinError::Runtime(
+                        "T0205: type-mismatch: map key must be a scalar (string, int, float, bool, char)".into()));
+                }
                 let result = crate::collections::get_index(&coll_val, &key)?;
                 self.stack.push(Operand::Val(result));
+            }
+            Opcode::GuardObjRebind(name_idx) => {
+                let old = self.stack_pop()?;
+                let new = match self.stack.last() {
+                    Some(op) => self.resolve_op(op.clone())?,
+                    None => return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into())),
+                };
+                let is_obj = |v: &Value| match v {
+                    Value::Object { .. } => true,
+                    Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()),
+                    _ => false,
+                };
+                if is_obj(&old) && !is_obj(&new) {
+                    let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    return Err(GoblinError::Runtime(format!(
+                        "R1300: '{name}' is an object and cannot be rebound to a non-object value")));
+                }
             }
             Opcode::CheckPath(n, info_idx) => {
                 let n = n as usize;
@@ -890,7 +932,7 @@ impl Vm {
                 }
             }
 
-            Opcode::StoreBox(ns_idx, name_idx) => {
+            Opcode::StoreBox(ns_idx, name_idx, tether) => {
                 let (ns, name) = {
                     let frame = self.call_stack.last().unwrap();
                     let ns = match &frame.func.constants[ns_idx as usize] {
@@ -904,8 +946,15 @@ impl Vm {
                     (ns, name)
                 };
                 let val = self.pop_value()?;
-                let key = format!("{}::{}", ns, name);
-                self.session.box_store.insert(key, val);
+                self.session.box_write(&ns, &name, val, tether)?;
+            }
+
+            Opcode::BoxCheck(ns_idx, name_idx) => {
+                let frame = self.call_stack.last().unwrap();
+                let (Value::Str(ns), Value::Str(name)) = (&frame.func.constants[ns_idx as usize], &frame.func.constants[name_idx as usize]) else {
+                    return Err(GoblinError::Runtime("BoxCheck: constants are not strings".into()));
+                };
+                self.session.box_check(ns, name)?;
             }
 
             Opcode::SetField(idx) => {
@@ -1059,6 +1108,13 @@ impl Vm {
 
                 // If no compiled method found, try builtin dispatch with recv as first arg.
                 if func_rc.is_none() {
+                    // `xs.put_last!(3)`: a bang builtin is not a method, so this
+                    // would compute a value and leave xs as it was (A0401, as in
+                    // the interpreter). Bang writes take the `:put_last!(xs, 3)` form.
+                    if method_name.ends_with('!') {
+                        return Err(GoblinError::Runtime(format!(
+                            "A0401: unknown-action: unknown action '{method_name}'")));
+                    }
                     if let Some(bid) = crate::compiler::builtin_by_name(&method_name) {
                         let args = self.drain_operands(recv_idx)?;
                         let result = crate::builtins::call_builtin(bid, args, &mut self.session)?;
@@ -1812,8 +1868,19 @@ impl Vm {
 
                 let glam_dir = self.session.project_root.join("glams").join(&ns);
                 let toml_path = glam_dir.join("glam.toml");
+                let prev_box_ns = self.session.box_namespace.take();
+                let prev_provides = self.session.box_provides.take();
                 let value_needs = if toml_path.exists() {
-                    self.load_glam_action_needs(&toml_path, &ns)?
+                    match self.load_glam_action_needs(&toml_path, &ns) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // A caught manifest error must not leave the outer
+                            // GLAM without its Box context.
+                            self.session.box_namespace = prev_box_ns;
+                            self.session.box_provides = prev_provides;
+                            return Err(e);
+                        }
+                    }
                 } else {
                     std::collections::HashMap::new()
                 };
@@ -1824,8 +1891,11 @@ impl Vm {
                 // Save and restore to handle nested `use` statements correctly.
                 let prev_glam_ns = self.session.current_glam_ns.take();
                 self.session.current_glam_ns = Some(ns.clone());
+                self.session.box_namespace = Some(ns.clone());
                 let glam_result = self.import_file(entry_path.clone(), Some(ns.clone()), value_needs);
                 self.session.current_glam_ns = prev_glam_ns;
+                self.session.box_namespace = prev_box_ns;
+                self.session.box_provides = prev_provides;
                 glam_result?;
 
                 // Retroactively register qualified "ns::action" names for any actions that
@@ -2642,6 +2712,32 @@ impl Vm {
                     toml_path.display(), line_num
                 )));
             }
+        }
+
+        // [provides] values = [...] (or a legacy flat `provides = [...]`): the
+        // only names this GLAM may publish into its Box namespace.
+        let provides_list = match table.get("provides") {
+            Some(toml::Value::Table(t)) => match t.get("values") {
+                Some(toml::Value::Array(vals)) => Some((vals, true)),
+                _ => None,
+            },
+            Some(toml::Value::Array(arr)) => Some((arr, false)),
+            _ => None,
+        };
+        if let Some((vals, strip)) = provides_list {
+            let mut set = std::collections::HashSet::new();
+            for item in vals {
+                match item {
+                    toml::Value::String(s) if strip => {
+                        let key = s.trim_start_matches('#');
+                        set.insert(key.find("::").map(|i| &key[i + 2..]).unwrap_or(key).to_string());
+                    }
+                    toml::Value::String(s) => { set.insert(s.clone()); }
+                    other => return Err(GoblinError::Runtime(format!(
+                        "B0105: [provides] values entries must be strings, got: {}", other))),
+                }
+            }
+            self.session.box_provides = Some(set);
         }
 
         // [values] — GLAM-owned defaults, published to box_store under "{ns}::{local_name}"

@@ -1,0 +1,3 @@
+/// known-gap: interp sample_weighted rejects int weights (want_num only accepts floats)
+/// sample_weighted accepts plain int weights.
+say(:sample_weighted({"src": ["a"], "weights": [1]}))

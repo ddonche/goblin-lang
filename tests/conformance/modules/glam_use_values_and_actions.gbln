@@ -1,0 +1,8 @@
+/// `use ns` loads glams/ns: its entry runs, `[values]` become `#ns::*`, its actions are `ns::f`
+use _conf_base
+say(#_conf_base::result)
+say(#_conf_base::dir)
+say(#_conf_base::count + 1)
+say(#_conf_base::ratio)
+say(#_conf_base::on)
+say(_conf_base::greet("dan"))

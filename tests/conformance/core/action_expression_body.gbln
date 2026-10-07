@@ -1,0 +1,7 @@
+/// `act f(x) => expr` defines a single-expression action, callable directly, by invoke, from a module, and as a method.
+import _support/core/pipe_steps as ps
+act tri(x) => x * 3
+say(tri(4))
+say(:invoke("tri", 5))
+say(ps::dbl(7))
+say(4.tri())

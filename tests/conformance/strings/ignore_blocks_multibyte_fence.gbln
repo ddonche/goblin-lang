@@ -1,0 +1,3 @@
+/// known-gap: interp panics on a multibyte fence that is not at the start of a line
+/// A multibyte fence: only fences at the start of a line open a block.
+say("[" + :ignore_blocks("a€b\n€\nc\n€\n", "€", "€") + "]")

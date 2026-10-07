@@ -1,0 +1,6 @@
+/// get_random returns one of a map's values; put_random and update_random overwrite an existing key.
+m | {"a": 1, "b": 2}
+x | :get_random(m)
+say(x == 1 or x == 2)
+say(:count(:put_random(m, 9)))
+say(:values(:update_random({"a": 1}, 7)))

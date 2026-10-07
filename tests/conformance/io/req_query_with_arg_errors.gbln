@@ -1,0 +1,3 @@
+/// req_query takes no arguments.
+say("before")
+say(:req_query(1))

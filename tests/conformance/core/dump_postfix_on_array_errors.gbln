@@ -1,0 +1,5 @@
+/// `*>>` on an array is a type error
+say("before")
+a | [1, 2]
+a *>>
+say("after")

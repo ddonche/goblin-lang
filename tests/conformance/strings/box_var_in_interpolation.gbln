@@ -1,0 +1,5 @@
+/// `{#ns::x}` inside a string interpolates a box variable
+#app::name | "goblin"
+#app::greet | "hi {#app::name}"
+say(#app::greet)
+say("name={#app::name}")

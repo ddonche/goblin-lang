@@ -1,0 +1,4 @@
+/// `x | e ?? => stmt` binds nil, then runs stmt, then continues
+x | nil ?? => say("guard ran")
+say(x)
+say("after")

@@ -1,0 +1,2 @@
+/// Publishes a name its [provides] lists.
+#_conf_boxok::greeting | "hello"

@@ -1,0 +1,7 @@
+/// `x **= n` and `x //= n` rebind x to the power / floor quotient
+x | 3
+x **= 2
+say(x)
+y | 7
+y //= 2
+say(y)

@@ -1,0 +1,4 @@
+/// a `bool` lock accepts a rebind to another bool
+x.bool | true
+x |= false
+say(x)

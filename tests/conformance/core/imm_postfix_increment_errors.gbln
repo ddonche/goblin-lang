@@ -1,0 +1,5 @@
+/// `x++` on an `imm` binding raises R0113 (D16).
+imm x | 1
+say("before")
+x++
+say(x)

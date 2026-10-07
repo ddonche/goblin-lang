@@ -1,0 +1,4 @@
+/// `:upper!(a[i])` rewrites one string element of an array
+a | ["x", "y", "z"]
+:upper!(a[1])
+say(a)

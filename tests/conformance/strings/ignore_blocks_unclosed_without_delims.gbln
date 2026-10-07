@@ -1,0 +1,4 @@
+/// known-gap: interp panics on an unclosed span with include_delims false
+/// include_delims false on an unclosed span, for ignore_blocks and ignore_between.
+say("[" + :ignore_blocks("x\n---\nh", "---", "---", {"include_delims": false}) + "]")
+say("[" + :ignore_between("a(bc", "(", ")", {"include_delims": false}) + "]")

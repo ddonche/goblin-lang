@@ -1,0 +1,8 @@
+/// get/update/delete/put at first and last on a string treat it as a sequence of chars.
+say(:get_first("abc"))
+say(:valtype(:get_last("abc")))
+say(:update_first("abc", "Z"))
+say(:update_last("abc", "Z"))
+say(:delete_first("abc"))
+say(:delete_last("abc"))
+say(:put_last("abc", "Z"))

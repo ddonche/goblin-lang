@@ -1,0 +1,4 @@
+/// starts_with: a needle that is neither a string nor an array is a type error; non-string elements of an array needle just do not match.
+say(:starts_with("abc", [1, "a"]))
+say(:starts_with("abc", [1]))
+say(:starts_with("a", 1))

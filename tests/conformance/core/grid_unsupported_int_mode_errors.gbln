@@ -1,0 +1,3 @@
+/// grid neighbor mode must be 4 or 8 (or -1 for the default).
+say("before")
+say(:grid("m", 4, 4, 6))

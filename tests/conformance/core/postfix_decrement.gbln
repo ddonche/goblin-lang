@@ -1,0 +1,5 @@
+/// `x--` stores the decremented value and evaluates to it
+x | 5
+y | x--
+say(y)
+say(x)

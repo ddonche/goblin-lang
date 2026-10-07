@@ -1,0 +1,6 @@
+/// before_last gives the whole text; after_last and between give "" when a delimiter is missing.
+a | :before_last("abc", "/")
+b | :after_last("abc", "/")
+c | :between("abc", "<", ">")
+d | :between("a<bc", "<", ">")
+say("[{a}] [{b}] [{c}] [{d}]")

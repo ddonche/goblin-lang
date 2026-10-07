@@ -1,0 +1,15 @@
+/// known-gap: interp ignores `stop` in a method called from a loop and returns nil
+/// `stop` in a class method does not reach the caller's loop: R0405, not a crash.
+<>C | n: 0
+    act halt(i)
+        if i == 2
+            stop
+        xx
+        return i
+    xx
+xx
+c <> C | n: 1
+for i in [1, 2, 3]
+    say(c.halt(i))
+xx
+say("after")

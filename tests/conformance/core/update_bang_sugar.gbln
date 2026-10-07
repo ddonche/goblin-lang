@@ -1,0 +1,7 @@
+/// `x |! v` and `a[i] |! v` update a variable or an element in place
+x | 1
+x |! 5
+say(x)
+a | [1, 2]
+a[0] |! 9
+say(a)

@@ -1,0 +1,5 @@
+/// `act f(x) => expr` and `act f(x) => return expr` are one-line actions
+act dbl(x) => x * 2
+act tpl(x) => return x * 3
+say(dbl(4))
+say(tpl(4))

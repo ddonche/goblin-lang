@@ -1,0 +1,2 @@
+/// Writes into a Box namespace that is not its own (B0102).
+#site::title | "x"

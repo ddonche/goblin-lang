@@ -1,0 +1,2 @@
+/// Publishes a name its [provides] does not list (B0105).
+#_conf_boxprov::secret | "x"

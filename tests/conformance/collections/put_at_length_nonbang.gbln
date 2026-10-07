@@ -1,0 +1,2 @@
+/// put_at at index == length appends to an array copy.
+say(:put_at([1, 2], 2, 9))

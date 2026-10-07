@@ -1,0 +1,3 @@
+/// join splits a string argument into its chars, and joins an array of chars.
+say(:join("abc", ","))
+say(:join(:chars("abc"), "-"))

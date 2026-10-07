@@ -1,0 +1,15 @@
+[glam]
+name = "_conf_base"
+version = "0.1.0"
+description = "Conformance fixture: provides a value and an action."
+entry = "_conf_base.gbln"
+
+[values]
+dir = "dist"
+count = 3
+ratio = 1.5
+on = true
+
+[provides]
+actions = ["_conf_base::save"]
+values = ["#_conf_base::result"]

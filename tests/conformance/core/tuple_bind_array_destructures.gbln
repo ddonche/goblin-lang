@@ -1,0 +1,4 @@
+/// `a, b | [1, 2]` binds each name to its element
+a, b | [1, 2]
+say(a)
+say(b)

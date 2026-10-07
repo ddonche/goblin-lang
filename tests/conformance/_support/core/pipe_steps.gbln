@@ -1,0 +1,20 @@
+act tag(ctx)
+    :put_at!(ctx, "tagged", true)
+    return ctx
+xx
+act bump(ctx)
+    :put_at!(ctx, "n", ctx{"n"} + 1)
+    return ctx
+xx
+act add(a, b)
+    return a + b
+xx
+act maybe(x)
+    if x > 5
+        return "big"
+    xx
+xx
+act dbl(x) => x * 2
+act chain(ctx)
+    return :summon(ctx, ["tag", "bump", "bump"])
+xx

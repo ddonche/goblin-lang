@@ -1,0 +1,12 @@
+/// A `judge_all` statement runs every true arm; `else` runs only when none matched.
+x | 7
+judge_all
+    x > 5: say("gt5")
+    x > 6: say("gt6")
+    x > 9: say("gt9")
+    else: say("none")
+xx
+judge_all
+    x > 9: say("gt9")
+    else: say("none")
+xx

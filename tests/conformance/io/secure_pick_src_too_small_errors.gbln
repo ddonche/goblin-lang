@@ -1,0 +1,3 @@
+/// secure_pick without allow_dups cannot pick more distinct items than src has.
+say("before")
+say(:secure_pick({"count": 3, "src": [1, 2]}))

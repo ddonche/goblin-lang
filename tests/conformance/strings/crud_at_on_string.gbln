@@ -1,0 +1,6 @@
+/// get_at/update_at/delete_at on a string index chars, including multibyte ones.
+say(:get_at("abc", 1))
+say(:update_at("abc", 0, "ZZ"))
+say(:delete_at("abc", 2))
+say(:get_at("héllo", 1))
+say(:delete_at("héllo", 1))

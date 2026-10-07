@@ -1,0 +1,8 @@
+/// a line starting with `.method` continues the expression on the line before
+x | "Hello"
+y | x
+    .upper()
+say(y)
+t | "A,B"
+    .lower
+say(t)

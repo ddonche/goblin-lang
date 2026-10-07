@@ -1,0 +1,6 @@
+/// importing a `.imports` manifest runs its `use` and `import … as` lines (Sheriff's form)
+import "_support/modules/conf_manifest.imports"
+say(mm::add(2, 3))
+say(ld::hi())
+say(_conf_base::greet("x"))
+say(_conf_use::run("z"))

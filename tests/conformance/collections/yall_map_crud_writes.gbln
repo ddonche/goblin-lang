@@ -1,0 +1,6 @@
+/// delete_at and put_at! on a yall-parsed map keep it a map in its parsed order.
+m | :yall_parse("b: 2\na: 1\nc: 3\n", "t")
+say(:delete_at(m, "a"))
+:put_at!(m, "z", 9)
+say(m)
+say(:valtype(m))

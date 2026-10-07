@@ -1,0 +1,8 @@
+/// known-gap: interp native stack overflows (process abort) at about 300 frames, before its R0999 depth guard
+act f(n)
+    if n == 0
+        return 0
+    xx
+    return 1 + f(n - 1)
+xx
+say(f(300))

@@ -1,0 +1,3 @@
+/// unpack takes exactly 1 argument.
+say(:unpack(12))
+say(:unpack(1, 2))

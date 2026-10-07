@@ -1,0 +1,3 @@
+/// known-gap: interp deletes one character when a fence is not at the start of a line
+/// A fence in the middle of a line does not open a block.
+say("[" + :ignore_blocks("ab---c\n---\nd", "---", "---") + "]")

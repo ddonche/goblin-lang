@@ -1,0 +1,4 @@
+/// `stop` at the top level, outside any loop, raises R0405.
+say(1)
+stop
+say(2)

@@ -1,0 +1,5 @@
+[glam]
+name = "_conf_boxprov"
+
+[provides]
+values = ["#_conf_boxprov::greeting"]

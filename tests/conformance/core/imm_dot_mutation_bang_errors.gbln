@@ -1,0 +1,5 @@
+/// `k.sort!` cannot rebind an `imm` binding (R0113).
+imm k | [3, 1]
+say("before")
+k.sort!
+say(k)

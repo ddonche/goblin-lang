@@ -1,0 +1,11 @@
+/// statement `judge x` with operator-led arms (`>= 5:`) compares the subject
+act size(x)
+    judge x
+        >= 5: say("big")
+        < 0: say("negative")
+        else: say("small")
+    xx
+xx
+size(7)
+size(-1)
+size(2)

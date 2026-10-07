@@ -1,0 +1,4 @@
+/// ignore_matching flags: s lets . match a newline, m makes ^ match at each line start.
+r | :ignore_matching("a\nb", "a.b", {"s": true})
+say("[{r}]")
+say(:ignore_matching("x\ny", "^y", {"m": true}))

@@ -1,0 +1,3 @@
+/// summon inside a module resolves "inc" to the module's own action, not the builtin of that name.
+import _support/core/defaults_inside as d
+say(d::chain({"n": 5}))

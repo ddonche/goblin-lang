@@ -1,0 +1,4 @@
+/// `:need("name", args)` inside a GLAM calls the action mapped in its `[needs.actions]`
+use _conf_base
+use _conf_use
+say(_conf_use::run("abc"))

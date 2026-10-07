@@ -1,0 +1,5 @@
+/// `:str!(k)` on a variable locked to i32 raises R0215, like `k.str!`.
+k.i32 | 5
+say("before")
+:str!(k)
+say(k)

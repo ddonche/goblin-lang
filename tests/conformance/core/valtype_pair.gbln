@@ -1,0 +1,5 @@
+/// valtype of an items() entry and of a >< pair is pair.
+p | :items({"a": 1})[0]
+say(:valtype(p))
+q | 7.5 >< 2.0
+say(:valtype(q))

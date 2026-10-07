@@ -1,0 +1,5 @@
+/// `for kv in m` over a yall-parsed (ordered) map yields [key, value] pairs
+m | :yall_parse("a: 1\nb: 2", "t")
+for kv in m
+    say(kv)
+xx

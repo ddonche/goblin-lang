@@ -1,0 +1,4 @@
+/// has tests key membership on a yall-parsed map the same as on a map literal.
+m | :yall_parse("b: 2\na: 1\nc: 3\n", "t")
+say(:has(m, "a"))
+say(:has(m, "z"))

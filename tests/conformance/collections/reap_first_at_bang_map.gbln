@@ -1,0 +1,7 @@
+/// reap_first! and reap_at! on a map remove that entry and return its value.
+m | {"a": 1, "b": 2}
+say(:reap_first!(m))
+say(m)
+n | {"a": 1, "b": 2}
+say(:reap_at!(n, "b"))
+say(n)

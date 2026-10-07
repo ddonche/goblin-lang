@@ -332,6 +332,9 @@ pub struct Compiler {
     /// Stack of loop contexts: (break_patch_indices, continue_ip).
     /// Innermost loop is at the back.
     loop_stack: Vec<LoopCtx>,
+    /// `loop_stack.len()` when each open function scope began: loops outside
+    /// the current function are not targets for its `skip` / `stop`.
+    loop_floors: Vec<usize>,
     /// When compiling a GLAM's entry module (via `use <namespace>`), the namespace
     /// to stamp onto its top-level actions' `owner_glam`, for `:need()` resolution.
     glam_namespace: Option<String>,
@@ -374,7 +377,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -567,9 +570,11 @@ impl Compiler {
 
     fn push_scope(&mut self, name: &str, params: usize) {
         self.scopes.push(FunctionScope::new(name, params));
+        self.loop_floors.push(self.loop_stack.len());
     }
 
     fn pop_scope(&mut self) -> FunctionObject {
+        self.loop_floors.pop();
         let names = self.unit_globals.clone();
         self.scopes.pop().unwrap().finish(self.source_file.clone(), names)
     }
@@ -667,6 +672,27 @@ impl Compiler {
         None
     }
 
+    /// D16: the routes the interpreter guards (`|=`, tuple `|=`, `++`/`--`,
+    /// bang casts, `x.method!`) raise R0113 on an `imm` name when reached.
+    fn emit_imm_guard(&mut self, name: &str) -> Result<(), GoblinError> {
+        if self.is_imm_name(name) {
+            let msg = format!("cannot update imm binding '{}' (declared with imm)", name);
+            self.emit_runtime_error(&msg)?;
+        }
+        Ok(())
+    }
+
+    /// Whether `name`, as resolved from the current scope (local, captured
+    /// local of an enclosing action, or module global), was bound with `imm`.
+    fn is_imm_name(&self, name: &str) -> bool {
+        for sc in self.scopes.iter().rev() {
+            if let Some((i, _)) = sc.find_local_entry(name) {
+                return sc.local_meta[i].imm;
+            }
+        }
+        self.imm_globals.contains(name)
+    }
+
     fn resolve_store(&mut self, name: &str) -> Option<Opcode> {
         if let Some(slot) = self.scope().find_local(name) {
             return Some(Opcode::StoreLocal(slot));
@@ -731,91 +757,23 @@ impl Compiler {
                                 }
                             }
                         } else {
-                            // Top-level binding of a module global (see compile_module).
-                            let depth = self.scope().block_marks.len();
-                            let local = self.scope().find_local_entry(name)
-                                .map(|(i, slot)| (slot, self.scope().local_meta[i]));
-                            if self.scopes.len() == 1 && local.is_none() {
-                                if let Some(pos) = self.global_index(name) {
-                                    if self.bound_globals.contains(name.as_str()) {
-                                        // D9 at the top level; D3 inside a top-level block.
-                                        return self.emit_bind_error(name, depth > 0);
-                                    }
-                                    if depth == 0 {
-                                        self.bound_globals.insert(name.clone());
-                                        if bind.is_imm { self.imm_globals.insert(name.clone()); }
-                                        let name_idx = self.add_constant(Value::Str(name.clone()));
-                                        self.emit(Opcode::RegisterAction(name_idx));
-                                        if let Some(ref lock) = bind.lock_type {
-                                            self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
-                                        } else {
-                                            self.emit(Opcode::StoreGlobal(pos as u16));
-                                        }
-                                        return Ok(());
-                                    }
-                                    // Inside a top-level block before the global is
-                                    // bound: a block-local, as in the interpreter.
-                                }
-                            }
-                            // x | expr — initial binding. A hoisted slot at this depth
-                            // is reused; a binding already made in this block is a
-                            // redeclaration (D9), and one made in an enclosing block
-                            // of this action must be updated with |= or shadowed
-                            // with [= (D3).
-                            let slot = match local {
-                                Some((_, meta)) if meta.bound && meta.depth == depth => {
-                                    return self.emit_bind_error(name, false);
-                                }
-                                Some((_, meta)) if meta.bound => {
-                                    return self.emit_bind_error(name, true);
-                                }
-                                Some((slot, meta)) if meta.depth == depth => {
-                                    let (i, _) = self.scope().find_local_entry(name).unwrap();
-                                    self.scope_mut().local_meta[i].bound = true;
-                                    slot
-                                }
-                                _ => self.scopes.last_mut().unwrap().declare_local(name),
-                            };
-                            if bind.is_imm {
-                                let (i, _) = self.scope().find_local_entry(name).unwrap();
-                                self.scope_mut().local_meta[i].imm = true;
-                            }
-                            // At top-level module scope, register in named_values so
-                            // other modules can access this value via LoadNamed after import.
-                            if self.scopes.len() == 1 && depth == 0 {
-                                let name_idx = self.add_constant(Value::Str(name.clone()));
-                                self.emit(Opcode::RegisterAction(name_idx));
-                            }
-                            if let Some(ref lock) = bind.lock_type {
-                                self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
-                            } else {
-                                self.emit(Opcode::StoreLocal(slot));
-                            }
+                            self.compile_tether_store(name, bind.is_imm, &bind.lock_type)?;
                         }
                     }
                     BindMode::Retether => {
                         // x |= expr — rebind existing slot. Lock check handled in StoreLocal/StoreGlobal at runtime.
-                        let is_imm = match self.scope().find_local_entry(name) {
-                            Some((i, _)) => self.scope().local_meta[i].imm,
-                            None => self.imm_globals.contains(name.as_str()),
-                        };
-                        if is_imm {
+                        if self.is_imm_name(name) {
                             // D16: an `imm` binding cannot be updated (R0113).
                             let msg = format!("cannot update imm binding '{}' (declared with imm)", name);
                             return self.emit_runtime_error(&msg);
                         }
+                        self.emit_obj_rebind_guard(name)?;
                         let op = self.resolve_store(name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name.clone() }))?;
                         self.emit(op);
                     }
                     BindMode::Shadow => {
-                        // x[= expr — shadow: always declare a new slot.
-                        let slot = self.scope_mut().declare_local(name);
-                        if let Some(ref lock) = bind.lock_type {
-                            self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
-                        } else {
-                            self.emit(Opcode::StoreLocal(slot));
-                        }
+                        self.compile_shadow_store(name, bind.is_imm, &bind.lock_type)?;
                     }
                 }
             }
@@ -864,17 +822,34 @@ impl Compiler {
             }
 
             Stmt::JudgeAll(judge_all) => {
-                // Execute every matching arm (no short-circuit).
+                // Execute every matching arm (no short-circuit); `else` runs only
+                // when no arm matched, tracked in a hidden local.
+                let has_else = judge_all.arms.iter().any(|a| a.condition.is_none());
+                let matched = if has_else {
+                    self.emit(Opcode::LoadFalse);
+                    let slot = self.scope_mut().declare_local("\u{0}judge_all_matched");
+                    self.emit(Opcode::StoreLocal(slot));
+                    Some(slot)
+                } else { None };
                 for arm in &judge_all.arms {
                     if let Some(cond) = &arm.condition {
                         self.compile_expr(cond)?;
                         let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                        if let Some(slot) = matched {
+                            self.emit(Opcode::LoadTrue);
+                            self.emit(Opcode::StoreLocal(slot));
+                        }
                         self.compile_arm_body(&arm.body)?;
                         self.scope_mut().patch_jump(skip);
                     } else {
+                        let slot = matched.expect("else arm implies a matched flag");
+                        self.emit(Opcode::LoadLocal(slot));
+                        let skip = self.scope_mut().emit_jump(Opcode::JumpIfTrue);
                         self.compile_arm_body(&arm.body)?;
+                        self.scope_mut().patch_jump(skip);
                     }
                 }
+                if let Some(slot) = matched { self.scope_mut().hide_local(slot); }
             }
 
             Stmt::Block { stmts, .. } => {
@@ -899,12 +874,22 @@ impl Compiler {
                         let nm_str = parts.next().unwrap_or("").to_string();
                         let ns_idx = self.add_constant(Value::Str(ns_str)) as u16;
                         let nm_idx = self.add_constant(Value::Str(nm_str)) as u16;
-                        self.emit(Opcode::StoreBox(ns_idx, nm_idx));
+                        self.emit(Opcode::StoreBox(ns_idx, nm_idx, matches!(tb.mode, BindMode::Tether)));
                     } else {
                         let store_op = match tb.mode {
                             BindMode::Retether => {
+                                self.emit_imm_guard(name_str)?;
+                                self.emit_obj_rebind_guard(name_str)?;
                                 self.resolve_store(name_str)
                                     .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name_str.to_string() }))?
+                            }
+                            BindMode::Shadow => {
+                                self.compile_shadow_store(&name.0, tb.is_imm, &None)?;
+                                continue;
+                            }
+                            BindMode::Tether if !(self.repl_mode && self.scopes.len() == 1) => {
+                                self.compile_tether_store(&name.0, tb.is_imm, &None)?;
+                                continue;
                             }
                             _ => {
                                 let slot = self.scope_mut().declare_local(name_str);
@@ -1013,14 +998,17 @@ impl Compiler {
             }
 
             // ── Box store bind: #namespace::name = expr ───────────────────────
-            Stmt::BoxBind { namespace, name, expr, .. } => {
-                // Push namespace string, name string, value → BoxBindExpr
+            Stmt::BoxBind { namespace, name, expr, mode, .. } => {
+                // Push namespace string, name string, value, is-tether → BoxBindExpr
                 let ns_idx = self.add_constant(Value::Str(namespace.clone()));
                 let nm_idx = self.add_constant(Value::Str(name.clone()));
+                self.emit(Opcode::BoxCheck(ns_idx as u16, nm_idx as u16));
                 self.emit(Opcode::LoadConst(ns_idx as u16));
                 self.emit(Opcode::LoadConst(nm_idx as u16));
                 self.compile_expr(expr)?;
-                self.emit(Opcode::CallBuiltin(BuiltinId::BoxBindExpr, 3));
+                self.emit(if matches!(mode, BindMode::Tether) { Opcode::LoadTrue } else { Opcode::LoadFalse });
+                self.emit(Opcode::CallBuiltin(BuiltinId::BoxBindExpr, 4));
+                self.emit(Opcode::Pop);
             }
         }
         Ok(())
@@ -1432,6 +1420,30 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                     return Ok(());
                 }
+                // Bang casts `:int!(k)` recast one plain variable in place,
+                // like `k.int!`: R0802 for anything else, R0113 on `imm`,
+                // R0215 against a type lock.
+                if let Some(base) = bare_name.strip_suffix('!').filter(|b| CAST_BANG_FREE.contains(b)) {
+                    let Some(Expr::Ident(var_name, _)) = args.first().filter(|_| args.len() == 1) else {
+                        return self.emit_runtime_error(&format!(
+                            "R0802: {base}!(name) requires exactly one variable name, not an expression"));
+                    };
+                    let var_name = var_name.clone();
+                    self.emit_imm_guard(&var_name)?;
+                    let cast_op = if let Some(slot) = self.scope().find_local(&var_name) {
+                        Some(Opcode::CastBangLocal(slot, base.to_string()))
+                    } else if self.scopes.len() == 1 || self.resolve_upvalue(self.scopes.len() - 1, &var_name).is_none() {
+                        self.global_index(&var_name).map(|pos| Opcode::CastBangGlobal(pos as u16, base.to_string()))
+                    } else { None };
+                    // A captured variable takes the generic bang path below.
+                    if let Some(op) = cast_op {
+                        self.emit(op);
+                        // D13: the call itself gives nil; the result went into the variable.
+                        self.emit(Opcode::Pop);
+                        self.emit(Opcode::LoadNil);
+                        return Ok(());
+                    }
+                }
                 // Check if it's a known builtin call pattern.
                 if let Some(_) = self.try_compile_builtin_call(name, args)? {
                     // Mutation-bang free call: name!(collection, ...) stores result back.
@@ -1635,6 +1647,7 @@ impl Compiler {
                         _ => None,
                     };
                     if let Some((var_name, type_name)) = cast_bang {
+                        self.emit_imm_guard(&var_name)?;
                         if let Some(slot) = self.scope().find_local(&var_name) {
                             self.emit(Opcode::CastBangLocal(slot, type_name));
                             return Ok(());
@@ -1657,6 +1670,7 @@ impl Compiler {
                         _ => None,
                     };
                     if let Some((var_name, _method_name)) = mutation_bang {
+                        self.emit_imm_guard(&var_name)?;
                         self.compile_expr(inner)?; // pushes method result
                         self.emit(Opcode::Dup);    // duplicate: one to store, one to leave as value
                         if let Some(slot) = self.scope().find_local(&var_name) {
@@ -1686,6 +1700,7 @@ impl Compiler {
                         self.emit(Opcode::LoadConst(one));
                         if op == "++" { self.emit(Opcode::Add); } else { self.emit(Opcode::Sub); }
                         if is_lvalue(inner) {
+                            if let Expr::Ident(n, _) = inner.as_ref() { self.emit_imm_guard(n)?; }
                             self.emit(Opcode::Dup);
                             self.compile_store_from_stack(inner)?;
                         }
@@ -1905,6 +1920,7 @@ impl Compiler {
                 _ => return Err(GoblinError::Runtime(format!("unsupported |= lhs: {:?}", lhs))),
             };
             self.compile_expr(rhs)?;
+            self.emit_obj_rebind_guard(&var_name)?;
             let store_op = self.resolve_store(&var_name)
                 .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
             self.emit(Opcode::Dup);
@@ -2153,6 +2169,114 @@ impl Compiler {
         Ok(())
     }
 
+    /// `name [= v` with the value on the stack: a new local in this block,
+    /// R0111 when this block already bound the name.
+    fn compile_shadow_store(&mut self, name: &String, is_imm: bool, lock_type: &Option<String>) -> Result<(), GoblinError> {
+        // x[= expr — shadow: always declare a new slot, unless this
+        // block already bound the name (R0111, as the interpreter).
+        let depth = self.scope().block_marks.len();
+        let dup = match self.scope().find_local_entry(name) {
+            Some((i, _)) => {
+                let meta = self.scope().local_meta[i];
+                meta.bound && meta.depth == depth
+            }
+            None => self.scopes.len() == 1 && depth == 0
+                && self.bound_globals.contains(name.as_str()),
+        };
+        if dup {
+            return self.emit_runtime_error(&format!(
+                "duplicate-local: '{name}' is already declared in this block"));
+        }
+        let slot = self.scope_mut().declare_local(name);
+        if is_imm {
+            let (i, _) = self.scope().find_local_entry(name).unwrap();
+            self.scope_mut().local_meta[i].imm = true;
+        }
+        if let Some(ref lock) = lock_type {
+            self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
+        } else {
+            self.emit(Opcode::StoreLocal(slot));
+        }
+        Ok(())
+    }
+
+    /// `name | v` (not in the REPL's top scope) with the value on the stack:
+    /// binds a module global or a local, raising D3/D9 errors for names
+    /// already bound. Shared by plain and tuple binds.
+    fn compile_tether_store(&mut self, name: &String, is_imm: bool, lock_type: &Option<String>) -> Result<(), GoblinError> {
+        // Top-level binding of a module global (see compile_module).
+        let depth = self.scope().block_marks.len();
+        let local = self.scope().find_local_entry(name)
+            .map(|(i, slot)| (slot, self.scope().local_meta[i]));
+        if self.scopes.len() == 1 && local.is_none() {
+            if let Some(pos) = self.global_index(name) {
+                if self.bound_globals.contains(name.as_str()) {
+                    // D9 at the top level; D3 inside a top-level block.
+                    return self.emit_bind_error(name, depth > 0);
+                }
+                if depth == 0 {
+                    self.bound_globals.insert(name.clone());
+                    if is_imm { self.imm_globals.insert(name.clone()); }
+                    let name_idx = self.add_constant(Value::Str(name.clone()));
+                    self.emit(Opcode::RegisterAction(name_idx));
+                    if let Some(ref lock) = lock_type {
+                        self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                    } else {
+                        self.emit(Opcode::StoreGlobal(pos as u16));
+                    }
+                    return Ok(());
+                }
+                // Inside a top-level block before the global is
+                // bound: a block-local, as in the interpreter.
+            }
+        }
+        // x | expr — initial binding. A hoisted slot at this depth
+        // is reused; a binding already made in this block is a
+        // redeclaration (D9), and one made in an enclosing block
+        // of this action must be updated with |= or shadowed
+        // with [= (D3).
+        let slot = match local {
+            Some((_, meta)) if meta.bound && meta.depth == depth => {
+                return self.emit_bind_error(name, false);
+            }
+            Some((_, meta)) if meta.bound => {
+                return self.emit_bind_error(name, true);
+            }
+            Some((slot, meta)) if meta.depth == depth => {
+                let (i, _) = self.scope().find_local_entry(name).unwrap();
+                self.scope_mut().local_meta[i].bound = true;
+                slot
+            }
+            _ => self.scopes.last_mut().unwrap().declare_local(name),
+        };
+        if is_imm {
+            let (i, _) = self.scope().find_local_entry(name).unwrap();
+            self.scope_mut().local_meta[i].imm = true;
+        }
+        // At top-level module scope, register in named_values so
+        // other modules can access this value via LoadNamed after import.
+        if self.scopes.len() == 1 && depth == 0 {
+            let name_idx = self.add_constant(Value::Str(name.clone()));
+            self.emit(Opcode::RegisterAction(name_idx));
+        }
+        if let Some(ref lock) = lock_type {
+            self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
+        } else {
+            self.emit(Opcode::StoreLocal(slot));
+        }
+        Ok(())
+    }
+
+    /// Before `name |= v` (v on the stack): an object variable cannot be
+    /// rebound to a non-object value (R1300, as the interpreter).
+    fn emit_obj_rebind_guard(&mut self, name: &str) -> Result<(), GoblinError> {
+        let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+        self.emit(load_op);
+        let idx = self.add_constant(Value::Str(name.to_string()));
+        self.emit(Opcode::GuardObjRebind(idx));
+        Ok(())
+    }
+
     /// Compiles to an error raised when execution reaches this point, so
     /// output before it still happens, as with the interpreter's runtime
     /// errors.
@@ -2326,8 +2450,10 @@ impl Compiler {
             // while(cond, body)
             "while" => {
                 let loop_start = self.scope_mut().bytecode.len();
-                if args.len() < 2 {
-                    self.emit(Opcode::LoadNil);
+                if args.len() != 2 {
+                    // `:while(...)` called by name with the wrong arguments (interp R0301).
+                    self.emit_runtime_error(&format!("wrong number of arguments to while (expected 2, got {})", args.len()))?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 self.compile_expr(&args[0])?;
@@ -2352,8 +2478,10 @@ impl Compiler {
             // repeat(n_or_array, body [, as_name])
             // Supports: count loop (Int), array iteration (Array), infinite loop (Nil), cond loop (Bool)
             "repeat" => {
-                if args.len() < 2 {
-                    self.emit(Opcode::LoadNil);
+                if !(2..=4).contains(&args.len()) {
+                    // `:repeat(...)` called by name with the wrong arguments (interp R0301).
+                    self.emit_runtime_error(&format!("wrong number of arguments to repeat (expected 2-4, got {})", args.len()))?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 // Compile limit/collection, store in hidden local.
@@ -2574,20 +2702,20 @@ impl Compiler {
             }
 
             // skip / stop — loop control
-            "skip" => {
-                let patch_idx = self.scope_mut().bytecode.len();
-                self.emit(Opcode::Jump(0)); // patched when loop compiles continue_ip
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.continue_patches.push(patch_idx);
+            "skip" | "stop" => {
+                // Outside a loop of the current action this is a runtime error
+                // (R0405), raised when the statement is reached.
+                if self.loop_stack.len() <= self.loop_floors.last().copied().unwrap_or(0) {
+                    let msg = format!("R0405: '{name}' used outside of a loop");
+                    let idx = self.add_constant(Value::Str(msg));
+                    self.emit(Opcode::LoadConst(idx));
+                    self.emit(Opcode::CallBuiltin(BuiltinId::Panic, 1));
+                    return Ok(true);
                 }
-                Ok(true)
-            }
-            "stop" => {
                 let patch_idx = self.scope_mut().bytecode.len();
-                self.emit(Opcode::Jump(0)); // patched when loop compiles exit
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.break_patches.push(patch_idx);
-                }
+                self.emit(Opcode::Jump(0)); // patched when the loop compiles continue/exit
+                let ctx = self.loop_stack.last_mut().unwrap();
+                if name == "skip" { ctx.continue_patches.push(patch_idx); } else { ctx.break_patches.push(patch_idx); }
                 Ok(true)
             }
 
@@ -2607,8 +2735,10 @@ impl Compiler {
 
             // collect(count, body) — evaluate body N times, collect results into array
             "collect" => {
-                if args.len() < 2 {
-                    self.emit(Opcode::LoadNil);
+                if args.len() != 2 {
+                    // `:collect(...)` called by name with the wrong arguments (interp R0301).
+                    self.emit_runtime_error(&format!("wrong number of arguments to collect (expected 2, got {})", args.len()))?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 // Compile count, store in __collect_n__
@@ -2653,7 +2783,9 @@ impl Compiler {
             // attempt(try_block, rescues, [ensure_block]) — try/catch/ensure
             "attempt" => {
                 if args.is_empty() {
-                    self.emit(Opcode::LoadNil);
+                    // `:attempt()` called by name with no arguments (interp R0301).
+                    self.emit_runtime_error("attempt requires at least 1 argument")?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 // Extract first rescue block info if present
@@ -3504,6 +3636,13 @@ fn is_lvalue(e: &Expr) -> bool {
 }
 
 /// The position a `reap_*!` call removes from.
+/// Cast names whose bang form recasts a variable in place (`:int!(k)`).
+const CAST_BANG_FREE: &[&str] = &[
+    "str", "bool", "i8", "i16", "i32", "i64",
+    "u8", "u16", "u32", "u64", "f32", "f64",
+    "float", "big", "int", "uint", "pct",
+];
+
 fn reap_bang_position(name: &str) -> Option<&'static str> {
     Some(match name {
         "reap_first!" => "first",

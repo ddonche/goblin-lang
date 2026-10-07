@@ -1,0 +1,6 @@
+/// A region count whose side does not divide the tile columns is an error.
+say("before")
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 9
+say("after")

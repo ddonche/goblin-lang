@@ -1,0 +1,5 @@
+/// ++ joins text with one space; convert other values explicitly first. Text and a char join too.
+say("a" ++ :str(3))
+say("n" ++ :str(2.5))
+say("b" ++ :str(true))
+say("x" ++ 'y')

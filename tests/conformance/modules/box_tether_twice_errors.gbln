@@ -1,0 +1,5 @@
+/// `#ns::x | v` on a Box variable already set raises B0103.
+#app::x | 1
+say(#app::x)
+#app::x | 2
+say(#app::x)

@@ -1,0 +1,7 @@
+/// Shadowing a parameter at the top of its action is a duplicate local (R0111).
+act f(a)
+    a [= 2
+    say(a)
+xx
+say("before")
+f(1)

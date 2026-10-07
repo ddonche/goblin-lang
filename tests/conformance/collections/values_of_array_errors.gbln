@@ -1,0 +1,3 @@
+/// values is for maps only; an array is a type error.
+say(:values({"a": 1}))
+say(:values([1]))

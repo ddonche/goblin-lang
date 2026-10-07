@@ -1,0 +1,6 @@
+/// unpack gives nil for a negative int, a float, nil or an array; 0 unpacks to [0].
+say(:unpack(-12))
+say(:unpack(0))
+say(:unpack(1.5))
+say(:unpack(nil))
+say(:unpack([1, 2]))

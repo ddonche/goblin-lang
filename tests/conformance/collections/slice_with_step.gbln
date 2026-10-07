@@ -1,0 +1,7 @@
+/// `a[s:e:step]` and `a[:e:step]` take every step-th element; strings too
+a | [10, 20, 30, 40, 50]
+say(a[0:5:2])
+say(a[:4:2])
+say(a[1:5:3])
+s | "abcdef"
+say(s[0:6:2])

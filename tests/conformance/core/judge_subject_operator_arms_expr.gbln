@@ -1,0 +1,8 @@
+/// expression `judge x` with operator-led arms yields the first matching arm's value
+x | 7
+r |
+    judge x
+        > 5: "gt5"
+        else: "le5"
+    xx
+say(r)

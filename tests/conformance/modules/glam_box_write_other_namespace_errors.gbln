@@ -1,0 +1,4 @@
+/// A GLAM's top-level code cannot write into another Box namespace (B0102).
+say("before")
+use _conf_boxns
+say("after")

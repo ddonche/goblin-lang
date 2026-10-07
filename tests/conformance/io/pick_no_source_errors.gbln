@@ -1,0 +1,3 @@
+/// pick with no src, range or digits has no source: an error.
+say("before")
+say(:pick({"count": 2}))

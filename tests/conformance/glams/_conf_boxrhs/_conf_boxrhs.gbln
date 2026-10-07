@@ -1,0 +1,6 @@
+/// A rejected Box write must not evaluate its value.
+act noisy()
+    say("rhs ran")
+    return "x"
+xx
+#site::title | noisy()

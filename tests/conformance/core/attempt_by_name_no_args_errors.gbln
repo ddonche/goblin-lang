@@ -1,0 +1,3 @@
+/// Calling the lowered attempt form by name with no arguments is an arity error.
+say("before")
+say(:attempt())

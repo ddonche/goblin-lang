@@ -1,0 +1,5 @@
+/// delete_matching/update_matching match map keys by regex; put_matching adds the key.
+m | {"ab": 1, "ac": 2, "b": 3}
+say(:delete_matching(m, "^a"))
+say(:update_matching(m, "^a", 0))
+say(:put_matching(m, "new", 5))

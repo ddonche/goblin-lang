@@ -1,0 +1,5 @@
+/// ignore_between: an unclosed span runs to the end unless allow_eof_close is false; an empty open or nil opts.
+say(:ignore_between("a(bc", "(", ")"))
+say(:ignore_between("a(bc", "(", ")", {"allow_eof_close": false}))
+say(:ignore_between("a(b)c", "", ")"))
+say(:ignore_between("a(b)c", "(", ")", nil))

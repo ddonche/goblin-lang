@@ -1,0 +1,6 @@
+/// A region count that is not a perfect square is an error.
+say("before")
+grid("h", 8, 8)
+    tile 2 by 2
+    regions 3
+say("after")

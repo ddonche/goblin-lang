@@ -1,0 +1,3 @@
+/// ignore_lines_matching and keep_matching honour the i flag in an options map.
+say(:ignore_lines_matching("Foo\nbar\nFOO\n", "foo", {"i": true}))
+say(:keep_matching("aAbA", "a", {"i": true}))

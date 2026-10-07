@@ -1,0 +1,2 @@
+/// update_matching with an empty regex inserts the replacement at every position.
+say(:update_matching("abc", "", "-"))

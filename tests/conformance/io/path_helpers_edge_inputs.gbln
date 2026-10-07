@@ -1,0 +1,8 @@
+/// pathfind to the same file or from a directory, path_normalize past the start, basename with a trailing slash, dirname of a bare name, path_join with an absolute part.
+say(:pathfind("a/x.html", "a/x.html"))
+say(:pathfind("a/b/", "a/b/c.html"))
+say(:pathfind("a/b/../c/x.html", "a/c/y.html"))
+say(:path_normalize("a/./b/../../../c"))
+say(:basename("a/b/"))
+say("[" + :dirname("x") + "]")
+say(:path_join("a", "/b"))

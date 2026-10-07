@@ -1,0 +1,4 @@
+/// sanitize_bom removes every leading BOM, not just one.
+s | :sanitize_bom("\u{FEFF}\u{FEFF}hi")
+say(s)
+say(:len(s))
