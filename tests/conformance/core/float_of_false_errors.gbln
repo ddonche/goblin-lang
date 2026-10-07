@@ -1,0 +1,3 @@
+/// float of a bool is an error, as for int (D18).
+say("before")
+say(:float(false))

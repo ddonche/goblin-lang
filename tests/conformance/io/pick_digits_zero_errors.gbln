@@ -1,0 +1,3 @@
+/// pick digits must be >= 1.
+say("before")
+say(:pick({"digits": 0}))

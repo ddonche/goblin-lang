@@ -1,0 +1,3 @@
+/// keep_matching: flags must be a map or nil.
+say(:keep_matching("aBc", "b", {"i": true}))
+say(:keep_matching("abc", "a", 5))

@@ -1,0 +1,3 @@
+/// metrics of a value that is not a collection is a type error, as for backend.
+say("before")
+say(:metrics("abc"))

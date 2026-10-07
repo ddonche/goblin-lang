@@ -1,0 +1,4 @@
+/// has on a map needs a scalar key; a map key is a type error.
+m | {"a": 1}
+say(:has(m, "b"))
+say(:has(m, {"a": 1}))

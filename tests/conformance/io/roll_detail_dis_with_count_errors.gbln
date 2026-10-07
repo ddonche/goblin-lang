@@ -1,0 +1,3 @@
+/// roll_detail: dis needs a single die (count 1).
+say("before")
+say(:roll_detail({"count": 2, "sides": 6, "dis": true}))

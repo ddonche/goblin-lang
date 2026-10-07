@@ -1,0 +1,3 @@
+/// lines takes exactly 1 argument; zero is an arity error.
+say("before")
+say(:lines())

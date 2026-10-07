@@ -1,0 +1,3 @@
+/// list_tokens takes 0 or 1 arguments.
+say("before")
+say(:list_tokens("a", "b"))

@@ -1,0 +1,3 @@
+/// Calling the lowered repeat form by name with the wrong arguments is an arity error.
+say("before")
+say(:repeat(1))

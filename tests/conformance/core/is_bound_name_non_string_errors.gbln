@@ -1,0 +1,3 @@
+/// is_bound_name takes a string name; anything else is a type error.
+say("before")
+say(:is_bound_name(1))

@@ -1,0 +1,5 @@
+/// known-gap: interp packs into an i128 and then casts with `as i64`, so a value past i64 wraps to a negative number instead of the intended nil
+/// pack of digits past i64 is nil (the interpreter's documented intent: overflow gives nil).
+say(:pack([9, 2, 2, 3, 3, 7, 2, 0, 3, 6, 8, 5, 4, 7, 7, 5, 8, 0, 7]))
+say(:pack([9, 2, 2, 3, 3, 7, 2, 0, 3, 6, 8, 5, 4, 7, 7, 5, 8, 0, 8]))
+say(:pack([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]))

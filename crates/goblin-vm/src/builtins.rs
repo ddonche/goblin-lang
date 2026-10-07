@@ -492,7 +492,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Array(needles) => needles.iter().any(|n| if let Value::Str(ns) = n { text.starts_with(ns.as_str()) } else { false }),
                 Value::Collection(c) => crate::collections::to_vec(&c).iter().any(|n| if let Value::Str(ns) = n { text.starts_with(ns.as_str()) } else { false }),
                 Value::Str(p) => text.starts_with(p.as_str()),
-                _ => false,
+                other => return Err(GoblinError::type_error("str or array", other.type_name(), "starts_with")),
             }))
         }
         BuiltinId::EndsWith => {
@@ -502,7 +502,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Array(needles) => needles.iter().any(|n| if let Value::Str(ns) = n { text.ends_with(ns.as_str()) } else { false }),
                 Value::Collection(c) => crate::collections::to_vec(&c).iter().any(|n| if let Value::Str(ns) = n { text.ends_with(ns.as_str()) } else { false }),
                 Value::Str(p) => text.ends_with(p.as_str()),
-                _ => false,
+                other => return Err(GoblinError::type_error("str or array", other.type_name(), "ends_with")),
             }))
         }
 
@@ -644,7 +644,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() < 2 || args.len() > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ignore_matching".into() }); }
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_matching pattern")) };
-            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
+            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?, "ignore_matching")? } else { pattern };
             let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_matching: invalid regex: {e}")))?;
             Ok(Value::Str(re.replace_all(&text, "").to_string()))
         }
@@ -652,7 +652,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() < 2 || args.len() > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "ignore_lines_matching".into() }); }
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "ignore_lines_matching pattern")) };
-            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
+            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?, "ignore_lines_matching")? } else { pattern };
             let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("ignore_lines_matching: invalid regex: {e}")))?;
             let mut out = String::with_capacity(text.len());
             for line in text.split_inclusive('\n') {
@@ -665,7 +665,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() < 2 || args.len() > 3 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "keep_matching".into() }); }
             let text    = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching")) };
             let pattern = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_matching pattern")) };
-            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?) } else { pattern };
+            let pat = if args.len() == 3 { regex_with_flags(&pattern, &read(2)?, "keep_matching")? } else { pattern };
             let re = crate::collections::cached_regex(&pat).map_err(|e| GoblinError::Runtime(format!("keep_matching: invalid regex: {e}")))?;
             let mut out = String::new();
             for m in re.find_iter(&text) { out.push_str(m.as_str()); }
@@ -821,11 +821,36 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let cfg: std::collections::BTreeMap<String, Value> = match read(0)? {
                 Value::Map(m) => m,
                 Value::MapOrd(m) => m.into_iter().collect(),
-                Value::Collection(c) => crate::collections::to_pairs(&c).into_iter().filter_map(|(k, v)| if let Value::Str(s) = k { Some((s, v)) } else { None }).collect(),
-                other => return Err(GoblinError::type_error("map", other.type_name(), "pick")),
+                Value::Collection(c) if c.is_map() => crate::collections::to_pairs(&c).into_iter().filter_map(|(k, v)| if let Value::Str(s) = k { Some((s, v)) } else { None }).collect(),
+                other => return Err(GoblinError::type_error("map (pick config)", other.type_name(), "pick")),
             };
             let get_num = |k: &str| -> Option<f64> { match cfg.get(k)? { Value::Float(n) => Some(*n), Value::Int(i) => Some(*i as f64), Value::Str(s) => s.parse::<f64>().ok(), _ => None } };
             let count_f = get_num("count_expr").or_else(|| get_num("count")).unwrap_or(1.0);
+            // Config checks, as in the interpreter: count is a positive integer, digits >= 1,
+            // there is some source, and numeric range bounds are integers.
+            if !count_f.is_finite() || count_f < 1.0 || count_f.fract() != 0.0 {
+                return Err(GoblinError::Runtime("pick: 'count' must be a positive integer".into()));
+            }
+            if let Some(d) = get_num("digits") {
+                if (d as i64) < 1 { return Err(GoblinError::Runtime("pick: 'digits' must be a positive integer (>= 1)".into())); }
+            }
+            let has_src = matches!(cfg.get("src"), Some(Value::Array(_) | Value::Seq(_) | Value::Map(_) | Value::MapOrd(_) | Value::Collection(_) | Value::Str(_)));
+            let has_range = cfg.contains_key("range_start") && cfg.contains_key("range_end");
+            if !has_src && !has_range && get_num("digits").is_none() {
+                return Err(GoblinError::Runtime("pick needs a source: `from <collection>` or a numeric form".into()));
+            }
+            if !has_src && has_range {
+                let one_char = |k: &str| matches!(cfg.get(k), Some(Value::Str(s)) if s.len() == 1);
+                if !(one_char("range_start") && one_char("range_end")) {
+                    for k in ["range_start", "range_end"] {
+                        match get_num(k) {
+                            None => return Err(GoblinError::Runtime("pick: range bounds must be numbers or single characters".into())),
+                            Some(x) if x.fract() != 0.0 => return Err(GoblinError::Runtime("pick: range bounds must be integers".into())),
+                            _ => {}
+                        }
+                    }
+                }
+            }
             let n_out = count_f as usize;
             let allow_dups = match cfg.get("allow_dups") { Some(Value::Bool(b)) => *b, _ => false };
             // collection source
@@ -978,8 +1003,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             match read(0)? {
                 Value::Map(m)    => Ok(collections::into_collection(Value::Array(m.values().cloned().collect()))),
                 Value::MapOrd(m) => Ok(collections::into_collection(Value::Array(m.values().cloned().collect()))),
-                Value::Collection(c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::values(&c))))),
-                other => Err(GoblinError::type_error("map or collection", other.type_name(), "values")),
+                // `values` is for maps only, like `keys` (the interpreter rejects arrays).
+                Value::Collection(c) if collections::is_map_collection(&c) => Ok(Value::Collection(Rc::new(CollectionValue::from_flat(collections::values(&c))))),
+                other => Err(GoblinError::type_error("map", other.type_name(), "values")),
             }
         }
         BuiltinId::Items => {
@@ -1002,6 +1028,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let container = read(0)?;
             let needle = read(1)?;
+            // A map key must be a scalar (str, char, number or bool), as in the interpreter.
+            if container.is_map_like()
+                && !matches!(needle, Value::Str(_) | Value::Char(_) | Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Bool(_)) {
+                return Err(GoblinError::type_error("str, char, number or bool key", needle.type_name(), "has"));
+            }
             let result = match &container {
                 Value::Str(s) => match &needle {
                     Value::Str(sub) => s.contains(sub.as_str()),
@@ -1975,7 +2006,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Float(f) => Value::Float(f),
                 Value::Pct(f)   => Value::Float(f),
                 Value::Int(n)   => Value::Float(n as f64),
-                Value::Bool(b)  => Value::Float(b as i64 as f64),
+                // bool is not a number (D18, as for `:int`).
+                v @ Value::Bool(_) => return Err(GoblinError::type_error("number or str", v.type_name(), "float")),
                 Value::Str(s)   => {
                     let cleaned: String = s.trim().chars().filter(|&c| c != '_').collect();
                     Value::Float(cleaned.parse::<f64>()
@@ -2095,6 +2127,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let clamp_lo   = cfg.get("clamp_min").and_then(|v| cast_i64(v));
             let clamp_hi   = cfg.get("clamp_max").and_then(|v| cast_i64(v));
             if sides < 1 { return Err(GoblinError::Runtime("roll: sides must be >= 1".into())); }
+            if (adv || dis) && count != 1 { return Err(GoblinError::Runtime("roll: adv/dis requires a single die (count=1)".into())); }
+            if keep_high > 0 && drop_low > 0 { return Err(GoblinError::Runtime("roll: cannot combine keep_high and drop_low".into())); }
+            if let Some(x) = reroll_eq { if x < 1 || x > sides { return Err(GoblinError::Runtime("roll: reroll_eq must be between 1 and sides".into())); } }
             let mut roll_one = |s: i64| -> i64 {
                 let mut r = rng_bounded(session, s as u64) as i64 + 1;
                 if let Some(face) = reroll_eq { if r == face { r = rng_bounded(session, s as u64) as i64 + 1; } }
@@ -2149,6 +2184,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if sides < 1 { return Err(GoblinError::Runtime("roll_detail: sides must be >= 1".into())); }
             if (adv || dis) && count != 1 { return Err(GoblinError::Runtime("roll_detail: adv/dis requires count=1".into())); }
             if keep_high > 0 && drop_low > 0 { return Err(GoblinError::Runtime("roll_detail: cannot combine keep_high and drop_low".into())); }
+            if let Some(x) = reroll_eq { if x < 1 || x > sides { return Err(GoblinError::Runtime("roll_detail: reroll_eq must be between 1 and sides".into())); } }
             let mut roll_one = |s: i64| -> i64 {
                 let mut r = rng_bounded(session, s as u64) as i64 + 1;
                 if let Some(face) = reroll_eq { if r == face { r = rng_bounded(session, s as u64) as i64 + 1; } }
@@ -2225,15 +2261,19 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── Request ───────────────────────────────────────────────────────────
         BuiltinId::ReqMethod => {
+            expect_n(0)?;
             Ok(Value::Str(crate::reqenv::var("GOBLIN_METHOD").unwrap_or_default()))
         }
         BuiltinId::ReqPath => {
+            expect_n(0)?;
             Ok(Value::Str(crate::reqenv::var("GOBLIN_PATH").unwrap_or_default()))
         }
         BuiltinId::ReqQuery => {
+            expect_n(0)?;
             Ok(Value::Str(crate::reqenv::var("GOBLIN_QUERY_STRING").unwrap_or_default()))
         }
         BuiltinId::ReqBody => {
+            expect_n(0)?;
             Ok(Value::Str(crate::reqenv::var("GOBLIN_BODY").unwrap_or_default()))
         }
         BuiltinId::ReqHeader => {
@@ -2357,12 +2397,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── pack / unpack ─────────────────────────────────────────────────────
         BuiltinId::Pack => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            expect_n(1)?;
             let v = args[0].clone();
             Ok(pack_value(v))
         }
         BuiltinId::Unpack => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            expect_n(1)?;
             let v = args[0].clone();
             Ok(match v {
                 Value::Int(n) if n < 0 => Value::Nil,
@@ -2381,7 +2421,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── secure_pick / secure_shuffle ──────────────────────────────────────
         BuiltinId::SecurePick => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            expect_n(1)?;
             let cfg = args[0].clone();
             let m = match cfg {
                 Value::Map(ref m) => m.clone(),
@@ -2389,6 +2429,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             // count: prefer count_expr (dynamic), then count (static), default 1
             let count_f = map_get_f64(&m, "count_expr").or_else(|| map_get_f64(&m, "count")).unwrap_or(1.0);
+            if !count_f.is_finite() || count_f < 0.0 || count_f.fract() != 0.0 {
+                return Err(GoblinError::Runtime("secure_pick: 'count' must be a non-negative integer".into()));
+            }
             let n_out = count_f as usize;
             if n_out == 0 { return Ok(Value::Array(vec![])); }
             let finish = |mut items: Vec<Value>| -> Value {
@@ -2411,6 +2454,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 if items.is_empty() {
                     return Err(GoblinError::Runtime("secure_pick: cannot pick from empty collection".into()));
                 }
+                if !allow_dups && n_out > items.len() {
+                    return Err(GoblinError::Runtime(format!("secure_pick: cannot pick {} distinct items from {}", n_out, items.len())));
+                }
                 let out = csprng_pick_from_slice(&items, n_out, allow_dups, session);
                 return Ok(finish(out));
             }
@@ -2426,6 +2472,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         let ec = b_s.chars().next().unwrap();
                         let mut pool: Vec<char> = if incl { (sc..=ec).collect() } else { (sc..ec).collect() };
                         if pool.is_empty() { return Err(GoblinError::Runtime("secure_pick: empty char range".into())); }
+                        if !allow_dups && n_out > pool.len() {
+                            return Err(GoblinError::Runtime(format!("secure_pick: requested sample of {} exceeds available {} characters", n_out, pool.len())));
+                        }
                         let picked: Vec<char> = if allow_dups {
                             (0..n_out).map(|_| pool[rng_bounded(session, pool.len() as u64) as usize]).collect()
                         } else {
@@ -2444,11 +2493,20 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     }
                 }
                 // numeric range
+                // A bound that is neither a number nor numeric text is an error, as in the interpreter.
+                for k in ["range_start", "range_end"] {
+                    let numeric = map_get_f64(&m, k).is_some()
+                        || matches!(m.get(k), Some(Value::Str(t)) if t.parse::<f64>().is_ok());
+                    if !numeric { return Err(GoblinError::Runtime("secure_pick: range bounds must be numbers or single characters".into())); }
+                }
                 let a = map_get_f64(&m, "range_start").unwrap_or(0.0) as i64;
                 let b = map_get_f64(&m, "range_end").unwrap_or(0.0) as i64;
                 let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
                 let pool: Vec<i64> = if incl { (lo..=hi).collect() } else { (lo..hi).collect() };
                 if pool.is_empty() { return Err(GoblinError::Runtime("secure_pick: empty range".into())); }
+                if !allow_dups && n_out > pool.len() {
+                    return Err(GoblinError::Runtime(format!("secure_pick: requested sample of {} exceeds available {} distinct values", n_out, pool.len())));
+                }
                 let out_vals: Vec<Value> = if allow_dups {
                     (0..n_out).map(|_| Value::Int(pool[rng_bounded(session, pool.len() as u64) as usize])).collect()
                 } else {
@@ -2476,7 +2534,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Int(min + offset as i64))
         }
         BuiltinId::SecureShuffle => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            expect_n(1)?;
             let v = args[0].clone();
             match v {
                 Value::Array(mut items) => {
@@ -2498,7 +2556,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── String extras ─────────────────────────────────────────────────────
         BuiltinId::Lines => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            if args.len() != 1 { return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "lines".into() }); }
             let v = args[0].clone();
             match v {
                 Value::Str(s) => Ok(collections::into_collection(Value::Array(s.split('\n').map(|l| Value::Str(l.to_string())).collect()))),
@@ -2506,7 +2564,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
         BuiltinId::Words => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            if args.len() != 1 { return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "words".into() }); }
             let v = args[0].clone();
             match v {
                 Value::Str(s) => Ok(collections::into_collection(Value::Array(s.split_whitespace().map(|w| Value::Str(w.to_string())).collect()))),
@@ -2514,7 +2572,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
         BuiltinId::Chars => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            if args.len() != 1 { return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "chars".into() }); }
             let v = args[0].clone();
             match v {
                 Value::Str(s) => Ok(collections::into_collection(Value::Array(s.chars().map(Value::Char).collect()))),
@@ -2522,7 +2580,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
         BuiltinId::Format => {
-            if args.is_empty() { return Ok(Value::Nil); }
+            // value.format(dec) or value.format(dec, sep_th, sep_dec), as in the interpreter.
+            if args.len() != 2 && args.len() != 4 {
+                return Err(GoblinError::Runtime(format!(
+                    "format expects 1 or 3 arguments: (dec) or (dec, sep_th, sep_dec), got {}",
+                    args.len().saturating_sub(1))));
+            }
             let v = args[0].clone();
             // strip existing format wrapper to get the raw numeric value
             let inner_v = match &v {
@@ -2532,7 +2595,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let decimals: u32 = if args.len() > 1 {
                 match args[1].clone() {
                     Value::Int(n) if n >= 0 => n as u32,
-                    _ => 2,
+                    _ => return Err(GoblinError::Runtime("format decimals must be a non-negative integer".into())),
                 }
             } else { 2 };
             let mut spec = FormatSpec { decimals, sep_thousands: None, sep_decimal: '.' };
@@ -2559,6 +2622,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     },
                     _ => return Err(GoblinError::type_error("string or char", "other", "format")),
                 };
+            }
+            if !matches!(inner_v, Value::Int(_) | Value::Float(_) | Value::Pct(_) | Value::Big(_)) {
+                return Err(GoblinError::type_error("number", inner_v.type_name(), "format"));
             }
             Ok(Value::Formatted(Box::new(inner_v), spec))
         }
@@ -2648,7 +2714,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::IsBoundName => {
             // In the VM there's no dynamic scope lookup by name string; return false
             expect_n(1)?;
-            Ok(Value::Bool(false))
+            match read(0)? {
+                Value::Str(_) => Ok(Value::Bool(false)),
+                other => Err(GoblinError::type_error("str", other.type_name(), "is_bound_name")),
+            }
         }
 
         BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke => {
@@ -3112,9 +3181,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Str(String::from_utf8_lossy(&out_bytes).into_owned()))
         }
         BuiltinId::UuidV4 => {
+            expect_n(0)?;
             Ok(Value::Str(uuid::Uuid::new_v4().to_string()))
         }
         BuiltinId::UuidV7 => {
+            expect_n(0)?;
             Ok(Value::Str(uuid::Uuid::now_v7().to_string()))
         }
         BuiltinId::Pathfind => {
@@ -3160,10 +3231,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── Interactive input ─────────────────────────────────────────────────
 
         BuiltinId::AskInput => {
+            if std::env::var("GOBLIN_NONINTERACTIVE").ok().as_deref() == Some("1") {
+                return Err(GoblinError::Runtime("interactive input is disabled in non-interactive mode (GOBLIN_NONINTERACTIVE=1)".into()));
+            }
             let prompt = if args.is_empty() {
                 String::new()
             } else {
-                match read(0)? { Value::Str(s) => s, _ => String::new() }
+                match read(0)? {
+                    Value::Str(s) => s,
+                    other => return Err(GoblinError::type_error("str (prompt)", other.type_name(), "ask")),
+                }
             };
             if !prompt.is_empty() {
                 use std::io::Write;
@@ -3258,7 +3335,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     map.insert("len".into(), Value::Int(s.len() as i64));
                     Ok(Value::Map(map))
                 }
-                _ => Ok(Value::Nil),
+                other => Err(GoblinError::type_error("collection", other.type_name(), "metrics")),
             }
         }
 
@@ -3640,6 +3717,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
                     m.iter().map(|(k, v)| (Value::Str(k.clone()), v.clone())).collect())))
             }
+            if args.len() > 1 { return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "list_tokens".into() }); }
             if args.is_empty() {
                 let all = session.token_store.iter().map(|(ns, m)| (Value::Str(ns.clone()), ns_map(m))).collect();
                 Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(all))))
@@ -3775,10 +3853,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let mode = if args.len() >= 4 {
                 match read(3)? {
                     Value::Int(-1) => crate::grid::NeighborMode::Eight,
-                    Value::Int(4) => crate::grid::NeighborMode::Four,
-                    Value::Int(8) => crate::grid::NeighborMode::Eight,
+                    Value::Int(n) => crate::grid::NeighborMode::from_int(n).ok_or_else(|| GoblinError::Runtime(format!("grid: unknown neighbor mode {}; use 4 or 8", n)))?,
                     Value::Str(s) => crate::grid::NeighborMode::from_str(&s).ok_or_else(|| GoblinError::Runtime(format!("grid: unknown mode '{}'", s)))?,
-                    _ => crate::grid::NeighborMode::Eight,
+                    other => return Err(GoblinError::type_error("int or str", other.type_name(), "grid neighbor mode")),
                 }
             } else { crate::grid::NeighborMode::Eight };
             if session.grid_store.contains(&name) {
@@ -3861,6 +3938,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let ty = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_tile_get ty")) };
             let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_tile_get layer")) };
             let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_get: no grid named '{}'", grid_id)))?;
+            require_tile_in_bounds(world, tx, ty, "grid_tile_get")?;
             match world.tile_at(tx, ty).and_then(|t| t.get(&layer)) {
                 Some(v) => Ok(v.clone()),
                 None => Ok(Value::Nil),
@@ -3876,6 +3954,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_tile_set layer")) };
             let value = read(4)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: no grid named '{}'", grid_id)))?;
+            require_tile_in_bounds(world, tx, ty, "grid_tile_set")?;
             world.tile_at_mut(tx, ty).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: tile ({},{}) out of bounds", tx, ty)))?.set(&layer, value);
             Ok(Value::Unit)
         }
@@ -3888,6 +3967,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let ry = match read(2)? { Value::Int(n) => n as i32, other => return Err(GoblinError::type_error("int", other.type_name(), "grid_region_get ry")) };
             let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_region_get layer")) };
             let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_region_get: no grid named '{}'", grid_id)))?;
+            require_region_in_bounds(world, rx, ry, "grid_region_get")?;
             match world.region_at(rx, ry).and_then(|r| r.get(&layer)) {
                 Some(v) => Ok(v.clone()),
                 None => Ok(Value::Nil),
@@ -3903,6 +3983,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let layer = match read(3)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_region_set layer")) };
             let value = read(4)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: no grid named '{}'", grid_id)))?;
+            require_region_in_bounds(world, rx, ry, "grid_region_set")?;
             world.region_at_mut(rx, ry).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: region ({},{}) out of bounds", rx, ry)))?.set(&layer, value);
             Ok(Value::Unit)
         }
@@ -5569,14 +5650,39 @@ fn lexical_path_normalize(path: &str) -> String {
     }
 }
 
-fn regex_with_flags(pattern: &str, flags_val: &Value) -> String {
+/// A tile index on a grid with a tile/region hierarchy (the interpreter's G0003 / R0401 checks).
+fn require_tile_in_bounds(world: &crate::grid::GridWorld, tx: i32, ty: i32, op: &str) -> Result<(), GoblinError> {
+    let h = world.hierarchy.as_ref().ok_or_else(|| GoblinError::Runtime(format!(
+        "{op}: grid '{}' has no tile/region hierarchy (G0003)", world.name)))?;
+    if tx < 0 || ty < 0 || tx >= h.tile_cols || ty >= h.tile_rows {
+        return Err(GoblinError::Runtime(format!(
+            "{op}: tile ({tx}, {ty}) is out of bounds ({}x{} tiles)", h.tile_cols, h.tile_rows)));
+    }
+    Ok(())
+}
+
+/// A region index on a grid with a tile/region hierarchy (the interpreter's G0003 / R0401 checks).
+fn require_region_in_bounds(world: &crate::grid::GridWorld, rx: i32, ry: i32, op: &str) -> Result<(), GoblinError> {
+    let h = world.hierarchy.as_ref().ok_or_else(|| GoblinError::Runtime(format!(
+        "{op}: grid '{}' has no tile/region hierarchy (G0003)", world.name)))?;
+    if rx < 0 || ry < 0 || rx >= h.region_dim || ry >= h.region_dim {
+        return Err(GoblinError::Runtime(format!(
+            "{op}: region ({rx}, {ry}) is out of bounds ({}x{} regions)", h.region_dim, h.region_dim)));
+    }
+    Ok(())
+}
+
+fn regex_with_flags(pattern: &str, flags_val: &Value, who: &'static str) -> Result<String, GoblinError> {
+    if !matches!(flags_val, Value::Nil) && !flags_val.is_map_like() {
+        return Err(GoblinError::type_error("map or nil (flags)", flags_val.type_name(), who));
+    }
     let mut f_i = false; let mut f_m = false; let mut f_s = false;
     if let Some(Value::Bool(b)) = flags_val.map_lookup("i") { f_i = b; }
     if let Some(Value::Bool(b)) = flags_val.map_lookup("m") { f_m = b; }
     if let Some(Value::Bool(b)) = flags_val.map_lookup("s") { f_s = b; }
     let mut f = String::new();
     if f_i { f.push('i'); } if f_m { f.push('m'); } if f_s { f.push('s'); }
-    if f.is_empty() { pattern.to_string() } else { format!("(?{}){}", f, pattern) }
+    Ok(if f.is_empty() { pattern.to_string() } else { format!("(?{}){}", f, pattern) })
 }
 
 fn pack_value(v: Value) -> Value {
@@ -5597,7 +5703,8 @@ fn pack_value(v: Value) -> Value {
                         None => return Value::Nil,
                     }
                 }
-                Value::Int(acc as i64)
+                // Past i64 the packed number does not fit: nil, as for any overflow.
+                match i64::try_from(acc) { Ok(n) => Value::Int(n), Err(_) => Value::Nil }
             } else {
                 let mut out = String::new();
                 for e in &xs {

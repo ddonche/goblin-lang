@@ -1,0 +1,3 @@
+/// grid_tile_get on a grid with no tile/region hierarchy is an error (G0003).
+say(:grid("m", 4, 4))
+say(:grid_tile_get("m", 0, 0, "x"))

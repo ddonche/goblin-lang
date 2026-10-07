@@ -2449,8 +2449,10 @@ impl Compiler {
             // while(cond, body)
             "while" => {
                 let loop_start = self.scope_mut().bytecode.len();
-                if args.len() < 2 {
-                    self.emit(Opcode::LoadNil);
+                if args.len() != 2 {
+                    // `:while(...)` called by name with the wrong arguments (interp R0301).
+                    self.emit_runtime_error(&format!("wrong number of arguments to while (expected 2, got {})", args.len()))?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 self.compile_expr(&args[0])?;
@@ -2475,8 +2477,10 @@ impl Compiler {
             // repeat(n_or_array, body [, as_name])
             // Supports: count loop (Int), array iteration (Array), infinite loop (Nil), cond loop (Bool)
             "repeat" => {
-                if args.len() < 2 {
-                    self.emit(Opcode::LoadNil);
+                if !(2..=4).contains(&args.len()) {
+                    // `:repeat(...)` called by name with the wrong arguments (interp R0301).
+                    self.emit_runtime_error(&format!("wrong number of arguments to repeat (expected 2-4, got {})", args.len()))?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 // Compile limit/collection, store in hidden local.
@@ -2730,8 +2734,10 @@ impl Compiler {
 
             // collect(count, body) — evaluate body N times, collect results into array
             "collect" => {
-                if args.len() < 2 {
-                    self.emit(Opcode::LoadNil);
+                if args.len() != 2 {
+                    // `:collect(...)` called by name with the wrong arguments (interp R0301).
+                    self.emit_runtime_error(&format!("wrong number of arguments to collect (expected 2, got {})", args.len()))?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 // Compile count, store in __collect_n__
@@ -2776,7 +2782,9 @@ impl Compiler {
             // attempt(try_block, rescues, [ensure_block]) — try/catch/ensure
             "attempt" => {
                 if args.is_empty() {
-                    self.emit(Opcode::LoadNil);
+                    // `:attempt()` called by name with no arguments (interp R0301).
+                    self.emit_runtime_error("attempt requires at least 1 argument")?;
+                    self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
                 // Extract first rescue block info if present

@@ -1,0 +1,3 @@
+/// pick count must be a positive integer; 0 is an error.
+say("before")
+say(:pick({"count": 0, "src": [1]}))

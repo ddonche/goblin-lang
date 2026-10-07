@@ -1,0 +1,4 @@
+/// grid_region_get with a region index outside the hierarchy is an error.
+say(:grid("m", 128, 128))
+say(:grid_region_get("m", 0, 0, "x"))
+say(:grid_region_get("m", 0, 99, "x"))
