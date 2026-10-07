@@ -180,6 +180,11 @@ pub struct Session {
     /// Set by UseGlam before importing the GLAM entry file; cleared after.
     /// Nested use statements save/restore this so inner GLAMs register correctly.
     pub current_glam_ns: Option<String>,
+    /// While a `use`d GLAM's top-level code runs: its namespace, and the
+    /// names its glam.toml `[provides]` lists (None: no list). Box writes
+    /// outside them raise B0102/B0105, as in the interpreter.
+    pub box_namespace: Option<String>,
+    pub box_provides: Option<std::collections::HashSet<String>>,
     /// `import path as alias`: (importing file, alias) → the module's global-name
     /// prefix, so `alias::var` reads the module's live global.
     pub module_aliases: HashMap<(String, String), String>,
@@ -201,6 +206,32 @@ pub struct Session {
 }
 
 impl Session {
+    /// `#ns::name | v` (tether) or `|= v`: the interpreter's Box write rules.
+    /// A GLAM's top-level code writes only into its own namespace (B0102)
+    /// and only names its `[provides]` lists (B0105); a tether to a name
+    /// already set is B0103.
+    pub fn box_write(&mut self, ns: &str, name: &str, val: Value, tether: bool) -> Result<(), GoblinError> {
+        if let Some(cur) = &self.box_namespace {
+            if cur != ns {
+                return Err(GoblinError::Runtime(format!(
+                    "B0102: box-namespace-violation: GLAM '{cur}' cannot write into namespace '{ns}'")));
+            }
+            if let Some(provides) = &self.box_provides {
+                if !provides.contains(name) {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0105: box-undeclared-provide: GLAM '{cur}' cannot publish '#{ns}::{name}' — '{name}' is not declared in [provides]")));
+                }
+            }
+        }
+        let key = format!("{ns}::{name}");
+        if tether && self.box_store.contains_key(&key) {
+            return Err(GoblinError::Runtime(format!(
+                "B0103: box-already-set: Box variable '#{key}' is already set — use '|=' to reassign")));
+        }
+        self.box_store.insert(key, val);
+        Ok(())
+    }
+
     pub fn new(gc_mode: GcMode) -> Self {
         // Seed from system time if available, else use a fixed constant.
         #[cfg(target_arch = "wasm32")]
@@ -250,6 +281,8 @@ impl Session {
             global_hard_type_locks: HashMap::new(),
             named_values: HashMap::new(),
             current_glam_ns: None,
+            box_namespace: None,
+            box_provides: None,
             module_aliases: HashMap::new(),
             box_store: HashMap::new(),
             action_needs: HashMap::new(),

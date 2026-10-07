@@ -4281,20 +4281,21 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     Ok(Value::Str(resolved))
                 }
                 Some(v) => Ok(v),
-                None => Ok(Value::Nil),
+                None => Err(GoblinError::Runtime(format!(
+                    "B0101: box-value-not-found: Box variable '#{ns}::{name}' does not exist"))),
             }
         }
 
-        // BoxBindExpr(namespace_str, name_str, value) → stores in box_store
+        // BoxBindExpr(namespace_str, name_str, value, is_tether) → stores in box_store
         BuiltinId::BoxBindExpr => {
-            if args.len() != 3 {
-                return Err(GoblinError::Runtime(format!("BoxBind: expected 3 args, got {}", args.len())));
+            if args.len() != 4 {
+                return Err(GoblinError::Runtime(format!("BoxBind: expected 4 args, got {}", args.len())));
             }
             let ns   = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box namespace")) };
             let name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "box name")) };
             let val  = read(2)?;
-            let key = format!("{}::{}", ns, name);
-            session.box_store.insert(key, val);
+            let tether = matches!(read(3)?, Value::Bool(true));
+            session.box_write(&ns, &name, val, tether)?;
             Ok(Value::Nil)
         }
 
