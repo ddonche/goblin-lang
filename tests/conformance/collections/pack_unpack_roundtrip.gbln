@@ -1,6 +1,8 @@
-/// pack(unpack(x)) gives x back for a non-negative int or a string; pack of a scalar returns it unchanged.
+/// known-gap: interp packs digits and a plain int back into an int
+/// pack(unpack(x)) gives x back as text; pack of a scalar gives its text (owner, 2026-10-07).
 say(:pack(:unpack(9081)))
 say(:valtype(:pack(:unpack(9081))))
 say(:pack(:unpack("goblin")))
 say(:pack(42))
+say(:valtype(:pack(42)))
 say(:pack("hi"))

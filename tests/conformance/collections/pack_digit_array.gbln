@@ -1,5 +1,6 @@
-/// pack(array) of single digits 0-9 folds them into an int; [] packs to 0.
+/// known-gap: interp folds an all-digit array into an int and packs [] to 0
+/// pack always gives text (owner, 2026-10-07): digits are joined, leading zeros kept, [] packs to "".
 say(:pack([1, 2, 3]))
 say(:valtype(:pack([1, 2, 3])))
 say(:pack([0, 0, 7]))
-say(:pack([]))
+say("[" + :pack([]) + "]")

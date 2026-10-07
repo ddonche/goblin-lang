@@ -2399,7 +2399,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::Pack => {
             expect_n(1)?;
             let v = args[0].clone();
-            Ok(pack_value(v))
+            pack_value(v)
         }
         BuiltinId::Unpack => {
             expect_n(1)?;
@@ -5685,44 +5685,33 @@ fn regex_with_flags(pattern: &str, flags_val: &Value, who: &'static str) -> Resu
     Ok(if f.is_empty() { pattern.to_string() } else { format!("(?{}){}", f, pattern) })
 }
 
-fn pack_value(v: Value) -> Value {
+/// `:pack` always gives text (owner, 2026-10-07): an array's elements are
+/// joined as text, so `[1, 2, 3]` packs to "123" and never overflows.
+fn pack_value(v: Value) -> Result<Value, GoblinError> {
     if !matches!(v, Value::Array(_)) && v.is_seq_like() {
         let items = v.seq_items().map(|c| c.into_owned()).unwrap_or_default();
         return pack_value(Value::Array(items));
     }
-    match v {
-        Value::Array(xs) if xs.is_empty() => Value::Int(0),
+    Ok(match v {
         Value::Array(xs) => {
-            let all_digits = xs.iter().all(|e| matches!(e, Value::Int(n) if *n >= 0 && *n <= 9));
-            if all_digits {
-                let mut acc: i128 = 0;
-                for e in &xs {
-                    let d = match e { Value::Int(n) => *n as i128, _ => unreachable!() };
-                    match acc.checked_mul(10).and_then(|a| a.checked_add(d)) {
-                        Some(v) => acc = v,
-                        None => return Value::Nil,
-                    }
+            let mut out = String::new();
+            for e in &xs {
+                match e {
+                    Value::Str(s)   => out.push_str(s),
+                    Value::Char(c)  => out.push(*c),
+                    Value::Int(n)   => out.push_str(&n.to_string()),
+                    Value::Float(f) => out.push_str(&f.to_string()),
+                    Value::Bool(b)  => out.push_str(if *b { "true" } else { "false" }),
+                    _ => return Ok(Value::Nil),
                 }
-                // Past i64 the packed number does not fit: nil, as for any overflow.
-                match i64::try_from(acc) { Ok(n) => Value::Int(n), Err(_) => Value::Nil }
-            } else {
-                let mut out = String::new();
-                for e in &xs {
-                    match e {
-                        Value::Str(s)   => out.push_str(s),
-                        Value::Char(c)  => out.push(*c),
-                        Value::Int(n)   => out.push_str(&n.to_string()),
-                        Value::Float(f) => out.push_str(&f.to_string()),
-                        Value::Bool(b)  => out.push_str(if *b { "true" } else { "false" }),
-                        _ => return Value::Nil,
-                    }
-                }
-                Value::Str(out)
             }
+            Value::Str(out)
         }
-        Value::Int(_) | Value::Str(_) | Value::Char(_) => v,
+        Value::Int(n) => Value::Str(n.to_string()),
+        Value::Str(_) => v,
+        Value::Char(c) => Value::Str(c.to_string()),
         _ => Value::Nil,
-    }
+    })
 }
 
 fn csprng_pick_from_slice(items: &[Value], count: usize, allow_dups: bool, session: &mut Session) -> Vec<Value> {
