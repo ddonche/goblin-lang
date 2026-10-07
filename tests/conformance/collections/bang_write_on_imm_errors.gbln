@@ -1,0 +1,6 @@
+/// known-gap: interp lets a bang call change an imm collection
+/// A bang call writes back into its first argument's variable, so on an imm variable it is an error (owner, 2026-10-07).
+imm a | [1]
+say(a)
+:put_last!(a, 2)
+say(a)

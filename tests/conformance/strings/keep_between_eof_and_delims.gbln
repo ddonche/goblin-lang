@@ -1,6 +1,4 @@
-/// keep_between: include_delims keeps the brackets; an unclosed span runs to EOF unless allow_eof_close is false.
+/// keep_between: include_delims keeps the brackets; allow_eof_close: true reads an unclosed span to the end.
 say(:keep_between("a[b]c", "[", "]", {"include_delims": true}))
-r | :keep_between("a[bc", "[", "]")
-say("[{r}]")
-r |= :keep_between("a[bc", "[", "]", {"allow_eof_close": false})
+r | :keep_between("a[bc", "[", "]", {"allow_eof_close": true})
 say("[{r}]")

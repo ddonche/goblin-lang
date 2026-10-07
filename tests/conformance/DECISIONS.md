@@ -1131,3 +1131,9 @@ The interpreter also has three builtins the VM lacks:
 - `resolve_token` on a missing token or namespace gives `nil`.
 - `backend` of a value that is not a collection is a type error.
 - `array + array` is a new array holding both operands in order.
+- Ruled 2026-10-07 (owner), VM only (interpreter known-gap):
+  - `??` falls back on nil, "", [] and {}; 0, false and " " are kept.
+  - A bang call (`:put_last!(a, x)`, `:update!(m{"k"}, v)`, `:int!(k)`, ...) on an `imm` variable is an error, raised before anything changes.
+  - `keep_between` with an open delimiter that is never closed is an error, unless the call passes `allow_eof_close: true`.
+  - `:pack` skips nil elements and packs nested arrays in place: `["a", "b", "c", nil, "d"]` is `"abcd"`.
+  - A percent prints as a percent: `25%`, not `0.25`. `x | 25%` at the end of a line is a percent, not the start of a modulus.

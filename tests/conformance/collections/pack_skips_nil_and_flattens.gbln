@@ -1,0 +1,5 @@
+/// known-gap: interp gives nil for a nil or nested element
+/// pack skips nil elements and packs nested arrays in place (owner, 2026-10-07).
+say(:pack(["a", "b", "c", nil, "d"]))
+say(:pack([1, [2, [3]], nil, 4]))
+say(:valtype(:pack([nil])))

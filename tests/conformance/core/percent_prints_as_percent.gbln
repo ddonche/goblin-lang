@@ -1,0 +1,8 @@
+/// known-gap: interp prints a percent as a fraction (0.25)
+/// A percent prints as a percent (owner, 2026-10-07), including inside text and after arithmetic.
+tax | 8.25%
+say(tax)
+say("tax: {tax}")
+say(10% + 5%)
+say(7%)
+say(:str(50%))

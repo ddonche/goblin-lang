@@ -1,0 +1,5 @@
+/// `x | 25%` at the end of a line is a percent; the next line is a new statement, not a modulus.
+x | 25%
+say(:valtype(x))
+y | 10 % 3
+say(y)

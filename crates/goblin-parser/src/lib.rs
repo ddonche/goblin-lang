@@ -11258,6 +11258,15 @@ impl<'t> Parser<'t> {
             // Try `%`
             let save_i = self.i;
             if self.eat_op("%") {
+                // `x | 25%` at the end of a line is a percent: the next line is
+                // a new statement, never the right side of a modulus. A spaced
+                // `7 %` is still a modulus that may continue on the next line.
+                let tight = self.i >= 2 && self.toks[self.i - 2].span.end == self.toks[self.i - 1].span.start;
+                if tight && matches!(self.toks.get(self.i).map(|t| &t.kind),
+                    None | Some(goblin_lexer::TokenKind::Newline) | Some(goblin_lexer::TokenKind::Dedent)) {
+                    lhs = PExpr::Postfix(Box::new(lhs), "%".to_string());
+                    continue;
+                }
                 self.skip_newlines();
 
                 // If next token is ident 'of', parse:  ( (lhs%) of <rhs> )
