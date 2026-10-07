@@ -1360,6 +1360,20 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    // As in the interpreter, a module alias wins over an enum of
+                    // the same name: `Shape::f(x)` then calls the module's action.
+                    BuiltinId::EnumDeclared => {
+                        let is_enum = match arg_vals.first() {
+                            Some(Value::Str(ns)) => {
+                                let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+                                self.session.enums.contains_key(ns)
+                                    && !self.session.module_aliases.contains_key(&(importer, ns.clone()))
+                            }
+                            _ => false,
+                        };
+                        self.stack.push(Operand::Val(Value::Bool(is_enum)));
+                        return Ok(());
+                    }
                     BuiltinId::Need => {
                         let result = self.vm_need(arg_vals)?;
                         self.stack.push(Operand::Val(result));
@@ -3888,6 +3902,11 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
 fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
     use crate::value::BuiltinId;
     use crate::builtins::call_builtin;
+
+    // A variant's fields, so nested paths such as `update!(w.payload.x, 2)` can descend.
+    if let Value::Enum { fields: Some(f), .. } = v {
+        if let Some(x) = f.get(name) { return Ok(x.clone()); }
+    }
 
     // Try builtin method dispatch first
     let bid = match name {

@@ -1,0 +1,4 @@
+/// helper: a module whose alias matches an enum name in the importer
+act area(w)
+    return w * w
+xx
