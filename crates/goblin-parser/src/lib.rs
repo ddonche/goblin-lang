@@ -8023,12 +8023,25 @@ impl<'t> Parser<'t> {
             self.i += 1;
             self.skip_newlines();
 
-            let Some(source) = self.eat_ident() else {
-                return Err(s_help_site!(
-                    "P1013",
-                    "Expected source path after 'from'",
-                    "import { hero } from game"
-                ));
+            // The source is a path, written like a single import's: game/sub or "game/sub".
+            let source = if let Some(raw) = self.eat_string_lit() {
+                raw
+            } else {
+                let mut parts = Vec::new();
+                loop {
+                    let Some(part) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P1013",
+                            "Expected source path after 'from'",
+                            "import { hero } from game"
+                        ));
+                    };
+                    parts.push(part);
+                    if !self.eat_op("/") {
+                        break;
+                    }
+                }
+                parts.join("/")
             };
 
             return Ok(ast::Stmt::Import(ast::ImportStmt {
