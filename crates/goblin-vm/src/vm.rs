@@ -1075,15 +1075,19 @@ impl Vm {
 
                 for field in &class.fields {
                     if field.readonly { readonly_fields.insert(field.name.clone()); }
+                    // Relation fields (`of X as name`, `with X`, `re X`) keep
+                    // their own handling; the nil and required checks are for
+                    // plain fields.
+                    let plain = field.relation.is_none();
                     let value = if let Some(v) = provided.get(&field.name) {
-                        if matches!(v, Value::Nil) && !field.nullable {
+                        if plain && matches!(v, Value::Nil) && !field.nullable {
                             return Err(GoblinError::Runtime(format!(
                                 "T0207: non-nullable-field-nil: cannot assign nil to non-nullable field '{}'", field.name)));
                         }
                         v.clone()
                     } else if let Some(default_expr) = &field.default {
                         eval_default_expr(default_expr)
-                    } else if field.nullable {
+                    } else if field.nullable || !plain {
                         Value::Nil
                     } else {
                         return Err(GoblinError::Runtime(format!(
@@ -3823,6 +3827,13 @@ impl Vm {
     /// does) and the reference itself is returned unchanged.
     fn update_path(&mut self, container: Value, segs: &[(Value, bool)], new_val: Value) -> Result<Value, GoblinError> {
         let (key, is_field) = &segs[0];
+        // Check an object's field before descending, so a rejected write
+        // (readonly or missing) changes nothing further down the path.
+        if let (Value::Ref(uuid) | Value::Object { uuid, .. }, Value::Str(field)) = (&container, key) {
+            if let Some(obj) = self.session.object_store.get(uuid) {
+                check_field_write(obj, field)?;
+            }
+        }
         let replacement = if segs.len() == 1 {
             new_val
         } else {
