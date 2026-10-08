@@ -1,3 +1,4 @@
+/// known-gap: interp prints a percent as a fraction (0.25); owner 2026-10-07: a percent prints as 25%
 /// Two percents: + - * give a percent; / gives their ratio.
 say(:valtype(20% + 5%))
 say(20% + 5%)
