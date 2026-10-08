@@ -1,0 +1,9 @@
+/// The call form takes a map of fields (T0205).
+enum Shape
+    Circle { r: int }
+    Rect { w: int, h: int }
+    Dot
+xx
+say("before")
+c | Shape::Circle(3)
+say(c)

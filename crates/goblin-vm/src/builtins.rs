@@ -4323,10 +4323,18 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             // Validate against registered enum if known
             if let Some(enum_decl) = session.enums.get(&enum_name) {
-                if !enum_decl.variants.iter().any(|v| v.name == variant_name) {
+                let Some(variant) = enum_decl.variants.iter().find(|v| v.name == variant_name) else {
                     return Err(GoblinError::Runtime(format!(
                         "unknown variant '{}' for enum '{}'", variant_name, enum_name
                     )));
+                };
+                // Given fields must include every field the variant declares.
+                if let (Some(given), Some(declared)) = (&fields, &variant.fields) {
+                    if let Some(missing) = declared.iter().find(|d| !given.contains_key(&d.name)) {
+                        return Err(GoblinError::Runtime(format!(
+                            "R0403: missing-variant-field: missing field '{}' for variant '{}'; give every field, e.g. {}::{} {{ {}: <value> }}",
+                            missing.name, variant_name, enum_name, variant_name, missing.name)));
+                    }
                 }
                 Ok(Value::Enum { enum_name, variant_name, fields })
             } else {
@@ -4339,6 +4347,23 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 }
                 Err(GoblinError::Runtime(format!("unknown enum '{}'", enum_name)))
             }
+        }
+
+        BuiltinId::EnumDeclared => {
+            expect_n(1)?;
+            Ok(Value::Bool(matches!(read(0)?, Value::Str(s) if session.enums.contains_key(&s))))
+        }
+        // `Shape::Circle({"r": 3})`: the call form takes one map of named fields.
+        BuiltinId::EnumVariantCall => {
+            expect_n(3)?;
+            let arg = read(2)?;
+            if arg.map_entries().is_none() {
+                let (en, vn) = (read(0)?, read(1)?);
+                return Err(GoblinError::Runtime(format!(
+                    "T0205: type-mismatch: enum variant '{}::{}' expects a map for named fields, got {}",
+                    crate::builtins::value_to_str(&en), crate::builtins::value_to_str(&vn), arg.type_name())));
+            }
+            call_builtin(BuiltinId::EnumVariantExpr, vec![read(0)?, read(1)?, arg], session)
         }
 
         // LiteralTokenExpr(module_str, ident_str) → Value from token_store
@@ -5209,7 +5234,11 @@ pub fn value_to_str(v: &Value) -> String {
         }
         Value::Ref(s)        => format!("<ref {}>", s),
         Value::GridRef { grid_id, x, y } => format!("GridRef({}, {}, {})", grid_id, x, y),
-        Value::Enum { enum_name, variant_name, .. } => format!("{}::{}", enum_name, variant_name),
+        Value::Enum { enum_name, variant_name, fields: None } => format!("{}::{}", enum_name, variant_name),
+        Value::Enum { enum_name, variant_name, fields: Some(f) } => {
+            let parts: Vec<String> = f.iter().map(|(k, v)| format!("{}: {}", k, value_to_str(v))).collect();
+            format!("{}::{} {{ {} }}", enum_name, variant_name, parts.join(", "))
+        }
         Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) if collections::is_map_collection(c) => {
             let parts: Vec<String> = collections::to_pairs(c).iter()
@@ -5509,6 +5538,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
             s
         }
         Value::DateTime(gdt) => dt_display(gdt),
+        Value::Enum { .. } => value_to_str(v),
         _ => v.type_name().to_string(),
     }
 }

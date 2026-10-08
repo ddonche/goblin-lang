@@ -1,0 +1,4 @@
+Shape::Rect { w: 2, h: 3 }
+Shape::Rect { w: 2, h: 3 }
+Shape::Rect { w: 2, h: 3 }
+Shape::Dot

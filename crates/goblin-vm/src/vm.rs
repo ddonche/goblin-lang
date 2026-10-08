@@ -1370,6 +1370,20 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    // As in the interpreter, a module alias wins over an enum of
+                    // the same name: `Shape::f(x)` then calls the module's action.
+                    BuiltinId::EnumDeclared => {
+                        let is_enum = match arg_vals.first() {
+                            Some(Value::Str(ns)) => {
+                                let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+                                self.session.enums.contains_key(ns)
+                                    && !self.session.module_aliases.contains_key(&(importer, ns.clone()))
+                            }
+                            _ => false,
+                        };
+                        self.stack.push(Operand::Val(Value::Bool(is_enum)));
+                        return Ok(());
+                    }
                     BuiltinId::Need => {
                         let result = self.vm_need(arg_vals)?;
                         self.stack.push(Operand::Val(result));
@@ -3841,6 +3855,22 @@ impl Vm {
             self.update_path(child, &segs[1..], new_val)?
         };
         match &container {
+            // A variant's fields are part of its value: `update!(c.r, 5)` rebinds
+            // `c` to the variant with that field replaced.
+            Value::Enum { enum_name, variant_name, fields } => {
+                let Value::Str(field) = key else {
+                    return Err(GoblinError::Runtime(format!("update!: variant field name must be a string, got {}", key.type_name())));
+                };
+                match fields {
+                    Some(f) if f.contains_key(field) => {
+                        let mut f = f.clone();
+                        f.insert(field.clone(), replacement);
+                        Ok(Value::Enum { enum_name: enum_name.clone(), variant_name: variant_name.clone(), fields: Some(f) })
+                    }
+                    _ => Err(GoblinError::Runtime(format!(
+                        "R0403: no-such-field: variant '{variant_name}' has no field '{field}'"))),
+                }
+            }
             Value::Ref(uuid) | Value::Object { uuid, .. } => {
                 let uuid = uuid.clone();
                 let Value::Str(field) = key else {
@@ -3892,6 +3922,11 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
 fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
     use crate::value::BuiltinId;
     use crate::builtins::call_builtin;
+
+    // A variant's fields, so nested paths such as `update!(w.payload.x, 2)` can descend.
+    if let Value::Enum { fields: Some(f), .. } = v {
+        if let Some(x) = f.get(name) { return Ok(x.clone()); }
+    }
 
     // Try builtin method dispatch first
     let bid = match name {

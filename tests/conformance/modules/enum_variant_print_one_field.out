@@ -1,0 +1,2 @@
+Shape::Circle { r: 3 }
+got Shape::Circle { r: 3 }
