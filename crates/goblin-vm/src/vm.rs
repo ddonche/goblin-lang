@@ -578,6 +578,7 @@ impl Vm {
                 // unwrap Formatted for arithmetic, carry spec forward
                 let (a_inner, a_spec) = match a { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
                 let (b_inner, b_spec) = match b { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
+                let (a_inner, b_inner) = pct_as_number(a_inner, b_inner);
                 let raw = match (&a_inner, &b_inner) {
                     (Value::Int(x), Value::Int(y))     => Value::Int(x.wrapping_add(*y)),
                     (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
@@ -590,8 +591,6 @@ impl Vm {
                     (Value::Big(_), Value::Float(_)) | (Value::Float(_), Value::Big(_)) =>
                         crate::value::numeric_binop("add", &a_inner, &b_inner).expect("numeric")?,
                     (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
-                    (Value::Pct(x), Value::Float(y))   => Value::Pct(x + y),
-                    (Value::Float(x), Value::Pct(y))   => Value::Pct(x + y),
                     (Value::Char(c), Value::Int(n))    => {
                         let new_cp = (*c as i64).wrapping_add(*n) as u32;
                         Value::Char(char::from_u32(new_cp).unwrap_or(*c))
@@ -633,6 +632,7 @@ impl Vm {
             Opcode::Sub => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let (a, b) = pct_as_number(a, b);
                 let result = self.arith_op(a, b, "sub", |x, y| x - y, |x, y| x - y)?;
                 self.stack.push(Operand::Val(result));
             }
@@ -647,6 +647,7 @@ impl Vm {
             Opcode::Mul => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let (a, b) = pct_as_number(a, b);
                 let result = self.arith_op(a, b, "mul", |x, y| x * y, |x, y| x * y)?;
                 self.stack.push(Operand::Val(result));
             }
@@ -661,6 +662,7 @@ impl Vm {
             Opcode::Div => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let (a, b) = pct_as_number(a, b);
                 let result = match (&a, &b) {
                     (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => num_div(&a, &b)?,
                     (Value::Big(x), Value::Big(y)) => {
@@ -671,8 +673,8 @@ impl Vm {
                         if *y == 0 { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / rust_decimal::Decimal::from(*y))
                     }
-                    (Value::Pct(x), Value::Pct(y))     => Value::Pct(x / y),
-                    (Value::Pct(x), Value::Float(y))   => Value::Pct(x / y),
+                    // A ratio of two percents is a plain number: 50% / 25% = 2.
+                    (Value::Pct(x), Value::Pct(y))     => num_div(&Value::Float(*x), &Value::Float(*y))?,
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "/")),
                 };
                 self.stack.push(Operand::Val(result));
@@ -688,6 +690,10 @@ impl Vm {
             Opcode::Rem => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let (a, b) = match pct_as_number(a, b) {
+                    (Value::Pct(x), Value::Pct(y)) => (Value::Float(x), Value::Float(y)),
+                    ab => ab,
+                };
                 let result = match crate::value::numeric_binop("rem", &a, &b) {
                     Some(r) => floor_mod_adjust(r?, &b),
                     None => return Err(GoblinError::type_error("number", b.type_name(), "%")),
@@ -3771,8 +3777,6 @@ impl Vm {
                 Ok(Value::Big(d))
             }
             (Value::Pct(x), Value::Pct(y))     => Ok(Value::Pct(flt_fn(*x, *y))),
-            (Value::Pct(x), Value::Float(y))   => Ok(Value::Pct(flt_fn(*x, *y))),
-            (Value::Float(x), Value::Pct(y))   => Ok(Value::Pct(flt_fn(*x, *y))),
             _ => Err(GoblinError::type_error("number", b.type_name(), op)),
         }
     }
@@ -3792,6 +3796,11 @@ impl Vm {
             (Value::Big(x), Value::Int(y))     => Ok(ord_to_i32(x.cmp(&rust_decimal::Decimal::from(*y)))),
             (Value::Int(x), Value::Big(y))     => Ok(ord_to_i32(rust_decimal::Decimal::from(*x).cmp(y))),
             (Value::Pct(x), Value::Pct(y))     => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
+            (Value::Pct(_), Value::Int(_) | Value::Float(_) | Value::Big(_))
+            | (Value::Int(_) | Value::Float(_) | Value::Big(_), Value::Pct(_)) => {
+                let (a, b) = pct_as_number(a.clone(), b.clone());
+                self.compare_values(&a, &b, op)
+            }
             (Value::DateTime(a), Value::DateTime(b)) => Ok(ord_to_i32(a.utc.cmp(&b.utc))),
             _ => Err(GoblinError::type_error("comparable", b.type_name(), op)),
         }
@@ -4243,9 +4252,23 @@ fn is_map_value(v: &Value) -> bool {
 
 /// `==` (D7): an int and a float are equal when they are the same number;
 /// everything else compares structurally.
+/// A percent mixed with a plain number stands for its fraction (25% is
+/// 0.25), so `8 + 25%` is 8.25 (owner's percent spec, 2026-10-07). Two
+/// percents stay percents; anything else is left alone.
+pub(crate) fn pct_as_number(a: Value, b: Value) -> (Value, Value) {
+    let is_num = |v: &Value| matches!(v, Value::Int(_) | Value::Float(_) | Value::Big(_));
+    match (a, b) {
+        (Value::Pct(p), b) if is_num(&b) => (Value::Float(p), b),
+        (a, Value::Pct(p)) if is_num(&a) => (a, Value::Float(p)),
+        ab => ab,
+    }
+}
+
 fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => (*x as f64) == *y,
+        (Value::Pct(x), Value::Float(y)) | (Value::Float(y), Value::Pct(x)) => *x == *y,
+        (Value::Pct(x), Value::Int(y)) | (Value::Int(y), Value::Pct(x)) => *x == *y as f64,
         _ => a == b,
     }
 }

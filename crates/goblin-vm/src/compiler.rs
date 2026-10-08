@@ -931,11 +931,16 @@ impl Compiler {
                         }
                     }
                     ImportItems::Named { items, source } => {
-                        // import { a, b } from source — import the source file
-                        let resolved = format!("{}.gbln", source.replace('/', std::path::MAIN_SEPARATOR_STR));
-                        let idx = self.add_constant(Value::Str(resolved));
-                        self.emit(Opcode::ImportFile(idx));
-                        let _ = items; // named imports — globals are populated by running the file
+                        // import { a, b as c } from dir — each item is the module
+                        // dir/<name>, imported under its alias (or its own name).
+                        for item in items {
+                            let full = format!("{}/{}", source, item.name);
+                            let resolved = format!("{}.gbln", full.replace('/', std::path::MAIN_SEPARATOR_STR));
+                            let path_idx = self.add_constant(Value::Str(resolved));
+                            let ns = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                            let ns_idx = self.add_constant(Value::Str(ns));
+                            self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
+                        }
                     }
                     ImportItems::Expr(_) => {
                         return Err(GoblinError::NotImplemented { feature: "dynamic import paths" });
@@ -1739,6 +1744,11 @@ impl Compiler {
                         self.emit(if op == "*>>" { Opcode::LoadFalse } else { Opcode::LoadTrue });
                         self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFieldsMap, 2));
                     }
+                    "%s" => {
+                        self.emit(Opcode::Pop);
+                        self.emit_runtime_error("R0504: `N%s` is N percent of the left operand and needs one, as in `price + 15%s`; on its own, write `15% of price`")?;
+                        self.emit(Opcode::LoadNil);
+                    }
                     other => {
                         return Err(self.locate_err(GoblinError::Runtime(format!("unknown postfix operator '{other}'"))));
                     }
@@ -1988,6 +1998,15 @@ impl Compiler {
             return Ok(());
         }
 
+        // `25 %o 50` / `25% %o 50`: a plain number on the left counts as a percent.
+        if op == "%o" {
+            self.compile_expr(lhs)?;
+            self.emit(Opcode::CallBuiltin(BuiltinId::Pct, 1));
+            self.compile_expr(rhs)?;
+            self.emit(Opcode::Mul);
+            return Ok(());
+        }
+
         self.compile_expr(lhs)?;
         self.compile_expr(rhs)?;
 
@@ -2026,7 +2045,7 @@ impl Compiler {
                 return Ok(());
             }
             // percent-of: pct of value  →  pct * value
-            "of" | "%o" => Opcode::Mul,
+            "of" => Opcode::Mul,
             "><" => {
                 self.emit(Opcode::MakePair);
                 return Ok(());

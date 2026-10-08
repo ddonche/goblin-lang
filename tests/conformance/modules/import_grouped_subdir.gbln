@@ -1,0 +1,4 @@
+/// A grouped import's items can come from a subdirectory.
+import { inner, sib } from _support/modules/sub
+say(inner::triple_add(1, 2))
+say(sib::v())

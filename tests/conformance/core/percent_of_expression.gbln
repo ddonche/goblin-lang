@@ -1,0 +1,6 @@
+/// `p% of E` is (p/100) * E, and binds tighter than `*` and `+`.
+say(25% of 50)
+say(8 + (25% of 50))
+say(2 + 25% of 50 * 2)
+say(2% of 80)
+say(25% of 50%)

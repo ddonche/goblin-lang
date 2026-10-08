@@ -8023,12 +8023,25 @@ impl<'t> Parser<'t> {
             self.i += 1;
             self.skip_newlines();
 
-            let Some(source) = self.eat_ident() else {
-                return Err(s_help_site!(
-                    "P1013",
-                    "Expected source path after 'from'",
-                    "import { hero } from game"
-                ));
+            // The source is a path, written like a single import's: game/sub or "game/sub".
+            let source = if let Some(raw) = self.eat_string_lit() {
+                raw
+            } else {
+                let mut parts = Vec::new();
+                loop {
+                    let Some(part) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P1013",
+                            "Expected source path after 'from'",
+                            "import { hero } from game"
+                        ));
+                    };
+                    parts.push(part);
+                    if !self.eat_op("/") {
+                        break;
+                    }
+                }
+                parts.join("/")
             };
 
             return Ok(ast::Stmt::Import(ast::ImportStmt {
@@ -9239,35 +9252,20 @@ impl<'t> Parser<'t> {
 
             if self.eat_op("++") {
                 self.skip_newlines();
-                let mut rhs = self.with_depth(|p| p.parse_multiplicative())?;
-                if let PExpr::Postfix(inner, op) = &rhs {
-                    if op == "%s" {
-                        let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
-                        rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
-                    }
-                }
+                let rhs = self.with_depth(|p| p.parse_multiplicative())?;
+                let rhs = desugar_self_pct(rhs, &lhs);
                 lhs = PExpr::Binary(Box::new(lhs), "++".to_string(), Box::new(rhs));
                 continue;
             } else if self.eat_op("+") {
                 self.skip_newlines();
-                let mut rhs = self.with_depth(|p| p.parse_multiplicative())?;
-                if let PExpr::Postfix(inner, op) = &rhs {
-                    if op == "%s" {
-                        let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
-                        rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
-                    }
-                }
+                let rhs = self.with_depth(|p| p.parse_multiplicative())?;
+                let rhs = desugar_self_pct(rhs, &lhs);
                 lhs = PExpr::Binary(Box::new(lhs), "+".to_string(), Box::new(rhs));
                 continue;
             } else if self.eat_op("-") {
                 self.skip_newlines();
-                let mut rhs = self.with_depth(|p| p.parse_multiplicative())?;
-                if let PExpr::Postfix(inner, op) = &rhs {
-                    if op == "%s" {
-                        let n_pct = PExpr::Postfix(Box::new((**inner).clone()), "%".to_string());
-                        rhs = PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(lhs.clone()));
-                    }
-                }
+                let rhs = self.with_depth(|p| p.parse_multiplicative())?;
+                let rhs = desugar_self_pct(rhs, &lhs);
                 lhs = PExpr::Binary(Box::new(lhs), "-".to_string(), Box::new(rhs));
                 continue;
             }
@@ -11870,5 +11868,19 @@ mod tests {
     #[test]
     fn err_unclosed_single_brace() {
         assert!(parser().validate_interpolation_braces("{ not closed").is_err());
+    }
+}
+/// `A ∘ p%s` is `A ∘ (p% of A)`. On the additive tier the `p%s` may open a
+/// product: `x + 25%s * 2` is `x + ((25% of x) * 2)`.
+fn desugar_self_pct(rhs: PExpr, base: &PExpr) -> PExpr {
+    match rhs {
+        PExpr::Postfix(inner, op) if op == "%s" => {
+            let n_pct = PExpr::Postfix(inner, "%".to_string());
+            PExpr::Binary(Box::new(n_pct), "of".to_string(), Box::new(base.clone()))
+        }
+        PExpr::Binary(l, op, r) if matches!(op.as_str(), "*" | "/" | "%" | "//" | "><") => {
+            PExpr::Binary(Box::new(desugar_self_pct(*l, base)), op, r)
+        }
+        other => other,
     }
 }

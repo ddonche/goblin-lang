@@ -1,3 +1,4 @@
+/// known-gap: interp keeps :percent(0.5) as 50% (owner's percent spec, 2026-10-07: pct(0.5) is 0.5%)
 say(:big(10))
 say(:big("12.50"))
 say(:b(3))

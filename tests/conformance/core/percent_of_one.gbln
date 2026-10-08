@@ -1,0 +1,7 @@
+/// `p%` is p/100, a fraction of 1 (owner's percent spec, 2026-10-07).
+say(8 * 25%)
+say(100 / 25%)
+say(8 + 25%)
+say(8 - 25%)
+say(25%)
+say(-25%)
