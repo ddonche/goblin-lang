@@ -1,0 +1,6 @@
+/// known-gap: interp prints a percent as a fraction (0.25)
+/// A formatted percent is still a percent (decimals apply to the points), and printing keeps real digits but not float noise.
+say(:format(12.5%, 1))
+say(:format(25%, 2))
+say(0.1234567890123%)
+say(7%)

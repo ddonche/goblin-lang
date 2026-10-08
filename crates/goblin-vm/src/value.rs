@@ -958,6 +958,8 @@ pub enum BuiltinId {
     EnumDeclared,
     // LiteralToken expr: (module_str, ident_str) → Value from token store
     LiteralTokenExpr,
+    // `??` test: (value) → false for nil, "", [] and {}
+    CoalescePresent,
     // duration literal: (number, unit_str) → Duration
     DurationLiteral,
     // BoxVar expr: (namespace_str, name_str) → Value from box_store

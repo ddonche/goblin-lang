@@ -1354,6 +1354,20 @@ impl Compiler {
 
             // ── Calls ─────────────────────────────────────────────────────────
             Expr::FreeCall(name, args, _) => {
+                // A bang call writes its result back into the variable its first
+                // argument comes from, so on an `imm` variable it is an error
+                // (owner, 2026-10-07), raised before anything is changed.
+                const BANG_NO_WRITEBACK: &[&str] = &[
+                    "write_text!", "write_json!", "append_file!",
+                    "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
+                    "delete_object!", "delete_overlays_on!",
+                ];
+                let bang = name.trim_start_matches(':');
+                if bang.ends_with('!') && !BANG_NO_WRITEBACK.contains(&bang) && !self.user_actions.contains(bang) {
+                    if let Some(root) = args.first().and_then(lvalue_root) {
+                        self.emit_imm_guard(&root)?;
+                    }
+                }
                 // Special forms (look like calls but compile to control flow).
                 if self.try_compile_special_form(name, args)? {
                     return Ok(());
@@ -1995,8 +2009,11 @@ impl Compiler {
 
         // Null coalescing must be handled before we compile operands.
         if op == "??" {
+            // Falls back on nil, "", [] and {} only; 0 and false are values
+            // (owner, 2026-10-07).
             self.compile_expr(lhs)?;
             self.emit(Opcode::Dup);
+            self.emit(Opcode::CallBuiltin(BuiltinId::CoalescePresent, 1));
             let skip = self.scope_mut().emit_jump(Opcode::JumpIfTrue);
             self.emit(Opcode::Pop);
             self.compile_expr(rhs)?;
@@ -3665,6 +3682,19 @@ fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String
     if keys.is_empty() || keys.len() > 16 { return None; }
     keys.reverse();
     Some((bid, root, keys))
+}
+
+/// The variable at the root of an lvalue (`x`, `x[k]`, `x{k}`, `x >> f`).
+fn lvalue_root(e: &Expr) -> Option<String> {
+    if !is_lvalue(e) { return None; }
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::Ident(name, _) => return Some(name.clone()),
+            Expr::Index(base, _, _) | Expr::IndexMap(base, _, _) | Expr::Member(base, _, _) => cur = base.as_ref(),
+            _ => return None,
+        }
+    }
 }
 
 fn is_lvalue(e: &Expr) -> bool {

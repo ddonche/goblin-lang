@@ -1,3 +1,4 @@
+/// known-gap: interp prints a percent as a fraction (0.25); owner 2026-10-07: a percent prints as 25%
 /// `p% of E` is (p/100) * E, and binds tighter than `*` and `+`.
 say(25% of 50)
 say(8 + (25% of 50))

@@ -1,3 +1,4 @@
+/// known-gap: interp prints a percent as a fraction (0.25); owner 2026-10-07: a percent prints as 25%
 say(1_000 + 1)
 say(1e3)
 say(.5 + 1)

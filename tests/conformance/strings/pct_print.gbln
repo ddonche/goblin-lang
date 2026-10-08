@@ -1,3 +1,4 @@
+/// known-gap: interp prints a percent as a fraction (0.25); owner 2026-10-07: a percent prints as 25%
 x | (20%)
 say(x)
 say(:is_pct(x))

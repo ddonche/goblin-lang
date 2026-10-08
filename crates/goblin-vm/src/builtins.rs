@@ -588,10 +588,21 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let text  = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between")) };
             let open  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between open")) };
             let close = match read(2)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "keep_between close")) };
-            let o = FenceOpts::read(if args.len() == 4 { Some(read(3)?) } else { None }, false, false, false, "keep_between opts")?;
+            let opts = if args.len() == 4 { Some(read(3)?) } else { None };
+            // An open delimiter that is never closed is an error (owner,
+            // 2026-10-07), unless the call asks to read to the end with
+            // `allow_eof_close: true`.
+            let eof_ok = matches!(opts.as_ref().and_then(|v| v.map_entries())
+                .and_then(|es| es.into_iter().find(|(k, _)| k == "allow_eof_close")),
+                Some((_, Value::Bool(true))));
+            let o = FenceOpts::read(opts, false, false, false, "keep_between opts")?;
+            let o = FenceOpts { allow_eof_close: eof_ok, ..o };
             if open.is_empty() || close.is_empty() { return Ok(Value::Str(String::new())); }
             let Some(start) = find_fence(&text, 0, &open, &o) else { return Ok(Value::Str(String::new())) };
-            let Some((cs, ce)) = find_close(&text, start + open.len(), &close, &o) else { return Ok(Value::Str(String::new())) };
+            let Some((cs, ce)) = find_close(&text, start + open.len(), &close, &o) else {
+                return Err(GoblinError::Runtime(format!(
+                    "keep_between: {open:?} is never closed by {close:?}; add the closing delimiter, or pass {{allow_eof_close: true}} to read to the end")));
+            };
             Ok(Value::Str(if o.include_delims { text[start..ce].to_string() } else { text[start + open.len()..cs].to_string() }))
         }
         BuiltinId::SanitizeBom => {
@@ -4352,6 +4363,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
+        // CoalescePresent(v) → false when `??` falls back: nil, "", [] or {}
+        BuiltinId::CoalescePresent => {
+            Ok(Value::Bool(match read(0)? {
+                Value::Nil => false,
+                Value::Str(s) => !s.is_empty(),
+                v if v.is_container() => v.container_len() > 0,
+                _ => true,
+            }))
+        }
         // DurationLiteral(number, unit_str) → Duration
         BuiltinId::DurationLiteral => {
             let unit = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "duration unit")) };
@@ -5194,6 +5214,16 @@ pub(crate) fn fmt_num_trim(f: f64) -> String {
     }
 }
 
+/// A percent prints as a percent (owner, 2026-10-07): 0.25 is `25%`.
+/// Shown to 15 significant digits, so the noise of scaling by 100
+/// (0.07 → 7.000000000000001) never shows but real digits are kept.
+fn fmt_pct(p: f64) -> String {
+    let v = p * 100.0;
+    if !v.is_finite() || v == 0.0 { return format!("{}%", fmt_num_trim(v)); }
+    let v = format!("{:.14e}", v).parse::<f64>().unwrap_or(v);
+    format!("{}%", fmt_num_trim(v))
+}
+
 pub fn value_to_str(v: &Value) -> String {
     match v {
         Value::Nil             => "nil".to_string(),
@@ -5201,7 +5231,7 @@ pub fn value_to_str(v: &Value) -> String {
         Value::Bool(b)         => b.to_string(),
         Value::Int(n)          => n.to_string(),
         Value::Float(f)        => fmt_num_trim(*f),
-        Value::Pct(p)          => fmt_num_trim(*p),
+        Value::Pct(p)          => fmt_pct(*p),
         Value::Duration(d)     => crate::duration::display(d),
         Value::Big(d)          => d.to_string(),
         Value::Char(c)         => c.to_string(),
@@ -5468,10 +5498,13 @@ fn fmt_formatted_value(inner: &Value, spec: &FormatSpec) -> String {
             let rounded = round_to(*x, spec.decimals);
             render_with_spec(&fmt_num_trim(rounded), spec)
         }
+        // A formatted percent is still a percent: the decimals apply to the
+        // points, so `:format(12.5%, 1)` is `12.5%`.
         Value::Pct(p) => {
-            if !p.is_finite() { return p.to_string(); }
-            let rounded = round_to(*p, spec.decimals);
-            render_with_spec(&fmt_num_trim(rounded), spec)
+            let v = p * 100.0;
+            if !v.is_finite() { return format!("{}%", v); }
+            let rounded = round_to(v, spec.decimals);
+            format!("{}%", render_with_spec(&fmt_num_trim(rounded), spec))
         }
         other => fmt_value_raw(other),
     }
@@ -5484,7 +5517,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
         Value::Char(c)  => c.to_string(),
         Value::Int(n)   => n.to_string(),
         Value::Float(f) => fmt_num_trim(*f),
-        Value::Pct(p)   => fmt_num_trim(*p),
+        Value::Pct(p)   => fmt_pct(*p),
         Value::Duration(d) => crate::duration::display(d),
         Value::Bool(b)  => if *b { "true".into() } else { "false".into() },
         Value::Nil      => "nil".into(),
@@ -5740,30 +5773,36 @@ fn regex_with_flags(pattern: &str, flags_val: &Value, who: &'static str) -> Resu
 /// `:pack` always gives text (owner, 2026-10-07): an array's elements are
 /// joined as text, so `[1, 2, 3]` packs to "123" and never overflows.
 fn pack_value(v: Value) -> Result<Value, GoblinError> {
-    if !matches!(v, Value::Array(_)) && v.is_seq_like() {
-        let items = v.seq_items().map(|c| c.into_owned()).unwrap_or_default();
-        return pack_value(Value::Array(items));
+    if v.is_seq_like() {
+        let mut out = String::new();
+        return Ok(if pack_into(&mut out, &v, 0) { Value::Str(out) } else { Value::Nil });
     }
     Ok(match v {
-        Value::Array(xs) => {
-            let mut out = String::new();
-            for e in &xs {
-                match e {
-                    Value::Str(s)   => out.push_str(s),
-                    Value::Char(c)  => out.push(*c),
-                    Value::Int(n)   => out.push_str(&n.to_string()),
-                    Value::Float(f) => out.push_str(&f.to_string()),
-                    Value::Bool(b)  => out.push_str(if *b { "true" } else { "false" }),
-                    _ => return Ok(Value::Nil),
-                }
-            }
-            Value::Str(out)
-        }
         Value::Int(n) => Value::Str(n.to_string()),
         Value::Str(_) => v,
         Value::Char(c) => Value::Str(c.to_string()),
         _ => Value::Nil,
     })
+}
+
+/// Append an array's elements to `out`: nil elements are skipped and nested
+/// arrays are packed in place (owner, 2026-10-07). False for an element that
+/// cannot be packed (a map, an object, ...).
+fn pack_into(out: &mut String, v: &Value, depth: usize) -> bool {
+    if depth > 64 { return false; }
+    if v.is_seq_like() {
+        return v.seq_items().map_or(true, |items| items.iter().all(|e| pack_into(out, e, depth + 1)));
+    }
+    match v {
+        Value::Nil      => {}
+        Value::Str(s)   => out.push_str(s),
+        Value::Char(c)  => out.push(*c),
+        Value::Int(n)   => out.push_str(&n.to_string()),
+        Value::Float(f) => out.push_str(&f.to_string()),
+        Value::Bool(b)  => out.push_str(if *b { "true" } else { "false" }),
+        _ => return false,
+    }
+    true
 }
 
 fn csprng_pick_from_slice(items: &[Value], count: usize, allow_dups: bool, session: &mut Session) -> Vec<Value> {

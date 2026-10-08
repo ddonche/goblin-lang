@@ -1,0 +1,8 @@
+/// `??` keeps 0, false, a blank string and a non-empty collection (owner, 2026-10-07).
+say(0 ?? "d")
+say(false ?? "d")
+say(" " ?? "d")
+say([1] ?? "d")
+x | 0
+x |= x ?? 5
+say(x)

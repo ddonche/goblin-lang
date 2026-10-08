@@ -1133,3 +1133,9 @@ The interpreter also has three builtins the VM lacks:
 - `backend` of a value that is not a collection is a type error.
 - `array + array` is a new array holding both operands in order.
 - Durations (owner, 2026-10-07): a duration is a whole number of nanoseconds that keeps the unit it was written in (`90s` prints `90s`). `s`, `m`, `h`, `d`, `w` are fixed; `mo` and `y` must be declared first (`unit calendar | 1mo == 30d; 1y == 365d xx`), otherwise using them is an error. Durations add and subtract with durations (the result keeps the smaller unit: `2h + 30m` is `150m`), multiply or divide by a number, and duration / duration is a plain number. A duration plus or compared with a plain number is an error; `2h == 2` is false. `:int(2h)` is `2`. VM only (interpreter known-gap).
+- Ruled 2026-10-07 (owner), VM only (interpreter known-gap):
+  - `??` falls back on nil, "", [] and {}; 0, false and " " are kept.
+  - A bang call (`:put_last!(a, x)`, `:update!(m{"k"}, v)`, `:int!(k)`, ...) on an `imm` variable is an error, raised before anything changes.
+  - `keep_between` with an open delimiter that is never closed is an error, unless the call passes `allow_eof_close: true`.
+  - `:pack` skips nil elements and packs nested arrays in place: `["a", "b", "c", nil, "d"]` is `"abcd"`.
+  - A percent prints as a percent: `25%`, not `0.25`. `x | 25%` at the end of a line is a percent, not the start of a modulus.

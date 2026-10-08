@@ -1,0 +1,4 @@
+/// known-gap: interp reads an unclosed span to the end of the text
+/// keep_between with an open delimiter that is never closed is an error (owner, 2026-10-07).
+say(:keep_between("a[b]c", "[", "]"))
+say(:keep_between("a[bc", "[", "]"))

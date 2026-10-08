@@ -1,0 +1,9 @@
+/// known-gap: interp lets a bang call change an imm collection
+/// A bang call on an element of an imm map is an error, and the map is left unchanged.
+imm m | {a: 1}
+attempt
+    :update!(m{"a"}, 2)
+rescue
+    say("error")
+xx
+say(m)

@@ -1,0 +1,6 @@
+/// known-gap: interp only falls back on nil and ""
+/// `??` falls back on nil, "", [] and {} (owner, 2026-10-07).
+say(nil ?? "d")
+say("" ?? "d")
+say([] ?? "d")
+say({} ?? "d")
