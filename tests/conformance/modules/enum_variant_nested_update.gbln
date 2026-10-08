@@ -1,0 +1,11 @@
+/// `update!` descends through a variant's field into a variant inside it.
+enum Inner
+    B { v: int }
+xx
+enum Outer
+    A { inner: Inner, n: int }
+xx
+o | Outer::A { inner: Inner::B { v: 1 }, n: 7 }
+:update!(o >> inner >> v, 2)
+say(o >> inner >> v)
+say(o >> n)

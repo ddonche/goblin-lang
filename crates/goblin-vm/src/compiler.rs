@@ -1546,17 +1546,39 @@ impl Compiler {
             }
 
             Expr::NsCall(ns, name, args, _) => {
-                // If the namespace starts with uppercase and there are no args,
-                // treat as an enum variant: Status::idle → EnumVariantExpr("Status", "idle")
+                // An uppercase namespace may be an enum or a module alias (`M`).
+                // `Status::idle()` / `Shape::Circle({"r": 3})` build a variant when
+                // the enum is declared (known only at run time: enums can come
+                // from imports); otherwise `Ns::f(args)` is a module call.
                 let ns_is_enum = ns.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-                if ns_is_enum && args.is_empty() {
-                    let en_idx = self.add_constant(Value::Str(ns.clone()));
-                    let vn_idx = self.add_constant(Value::Str(name.clone()));
-                    self.emit(Opcode::LoadConst(en_idx));
-                    self.emit(Opcode::LoadConst(vn_idx));
-                    self.emit(Opcode::LoadNil);
-                    self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
-                } else {
+                {
+                    let enum_branch = if ns_is_enum {
+                        let en_idx = self.add_constant(Value::Str(ns.clone()));
+                        self.emit(Opcode::LoadConst(en_idx));
+                        self.emit(Opcode::CallBuiltin(BuiltinId::EnumDeclared, 1));
+                        let to_call = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                        if args.is_empty() {
+                            let vn_idx = self.add_constant(Value::Str(name.clone()));
+                            self.emit(Opcode::LoadConst(en_idx));
+                            self.emit(Opcode::LoadConst(vn_idx));
+                            self.emit(Opcode::LoadNil);
+                            self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
+                        } else if args.len() == 1 {
+                            let vn_idx = self.add_constant(Value::Str(name.clone()));
+                            self.emit(Opcode::LoadConst(en_idx));
+                            self.emit(Opcode::LoadConst(vn_idx));
+                            self.compile_expr(&args[0])?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantCall, 3));
+                        } else {
+                            self.emit_runtime_error(&format!(
+                                "R0301: wrong-arity: enum variant '{ns}::{name}' takes 0 arguments or 1 map of fields, got {}",
+                                args.len()))?;
+                            self.emit(Opcode::LoadNil);
+                        }
+                        let to_end = self.scope_mut().emit_jump(Opcode::Jump);
+                        self.scope_mut().patch_jump(to_call);
+                        Some(to_end)
+                    } else { None };
                     // Namespace call: try full_name as a compile-time global/local.
                     // Do NOT fall back to bare name — a bare local named `foo` must not
                     // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
@@ -1572,6 +1594,7 @@ impl Compiler {
                     }
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call(args.len() as u8));
+                    if let Some(to_end) = enum_branch { self.scope_mut().patch_jump(to_end); }
                 }
             }
 

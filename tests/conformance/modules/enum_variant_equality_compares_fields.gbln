@@ -1,0 +1,9 @@
+/// Two variants are equal only when their fields are equal too.
+enum Shape
+    Circle { r: int }
+    Rect { w: int, h: int }
+    Dot
+xx
+say(Shape::Circle { r: 1 } == Shape::Circle { r: 1 })
+say(Shape::Circle { r: 1 } == Shape::Circle { r: 2 })
+say(Shape::Circle { r: 1 } != Shape::Circle { r: 2 })
