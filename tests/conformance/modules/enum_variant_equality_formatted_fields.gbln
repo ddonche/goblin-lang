@@ -1,0 +1,8 @@
+/// Variants whose fields hold equal formatted values are equal.
+enum Price
+    Tag { amount: str }
+xx
+a | Price::Tag { amount: :format(1.5, 2) }
+b | Price::Tag { amount: :format(1.5, 2) }
+say(a == b)
+say(:format(1.5, 2) == :format(1.5, 2))
