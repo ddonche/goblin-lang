@@ -1,0 +1,4 @@
+/// A grouped import of a module that does not exist is an import error.
+say("before")
+import { nope } from _support/modules
+say("after")

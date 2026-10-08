@@ -1,0 +1,7 @@
+/// `type` is reserved: giving it in construction raises R0412.
+<>Hero |
+    hp: 10
+xx
+say("before")
+h <> Hero | type: "abc", hp: 3
+say(h >> hp)

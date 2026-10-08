@@ -1,0 +1,7 @@
+/// Reading a field the class does not declare raises R0403.
+<>Hero |
+    hp: 10
+xx
+h <> Hero | hp: 3
+say(h >> hp)
+say(h >> mana)

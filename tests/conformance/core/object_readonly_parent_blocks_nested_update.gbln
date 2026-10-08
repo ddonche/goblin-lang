@@ -1,0 +1,15 @@
+/// `update!` through a readonly field fails before anything below it changes.
+<>Child |
+    hp: 10
+xx
+<>Parent |
+    child!: 0
+xx
+c <> Child | hp: 10
+p <> Parent | child: c
+attempt
+    :update!(p >> child >> hp, 2)
+rescue
+    say("rejected")
+xx
+say(c >> hp)
