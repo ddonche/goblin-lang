@@ -931,11 +931,16 @@ impl Compiler {
                         }
                     }
                     ImportItems::Named { items, source } => {
-                        // import { a, b } from source — import the source file
-                        let resolved = format!("{}.gbln", source.replace('/', std::path::MAIN_SEPARATOR_STR));
-                        let idx = self.add_constant(Value::Str(resolved));
-                        self.emit(Opcode::ImportFile(idx));
-                        let _ = items; // named imports — globals are populated by running the file
+                        // import { a, b as c } from dir — each item is the module
+                        // dir/<name>, imported under its alias (or its own name).
+                        for item in items {
+                            let full = format!("{}/{}", source, item.name);
+                            let resolved = format!("{}.gbln", full.replace('/', std::path::MAIN_SEPARATOR_STR));
+                            let path_idx = self.add_constant(Value::Str(resolved));
+                            let ns = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                            let ns_idx = self.add_constant(Value::Str(ns));
+                            self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
+                        }
                     }
                     ImportItems::Expr(_) => {
                         return Err(GoblinError::NotImplemented { feature: "dynamic import paths" });

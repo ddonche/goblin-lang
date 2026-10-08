@@ -1,0 +1,7 @@
+/// The source may be a string, the list may span lines and end with a comma.
+import {
+    mathy as m,
+    loud,
+} from "_support/modules"
+say(m::double(4))
+say(loud::hi())

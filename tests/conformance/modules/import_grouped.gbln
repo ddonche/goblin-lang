@@ -1,0 +1,4 @@
+/// `import { a, b as c } from dir` imports dir/a as `a` and dir/b as `c`.
+import { mathy, loud as l } from _support/modules
+say(mathy::add(2, 3))
+say(l::hi())
