@@ -1,0 +1,9 @@
+/// The generated `id` is readonly (P9001).
+<>Hero |
+    name!: "x"
+    hp: 10
+xx
+h <> Hero | name: "Ann"
+say(:len(h >> id) == 36)
+:update!(h.id, "zzz")
+say(h >> id)

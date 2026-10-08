@@ -1,0 +1,10 @@
+/// A readonly field (`name!:`) cannot be changed with `update!` (P9001).
+<>Hero |
+    name!: "x"
+    hp: 10
+xx
+h <> Hero | name: "Ann"
+:update!(h.hp, 5)
+say(h >> hp)
+:update!(h.name, "Bob")
+say(h >> name)

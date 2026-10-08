@@ -1,0 +1,11 @@
+/// Fields not given take their defaults; given fields replace them; extra keys are ignored.
+<>Hero |
+    name!: "nobody"
+    hp: 10
+xx
+a <> Hero | hp: 3
+b <> Hero | name: "Ann", extra: 1
+say(a >> name)
+say(a >> hp)
+say(b >> name)
+say(b >> hp)

@@ -982,6 +982,7 @@ impl Vm {
                 };
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
+                    check_field_write(obj, &field_name)?;
                     if let Value::Object { ref mut fields, .. } = obj {
                         std::rc::Rc::make_mut(fields).insert(field_name, new_val);
                     }
@@ -1061,18 +1062,42 @@ impl Vm {
                 let mut readonly_fields = std::collections::BTreeSet::new();
                 let trait_fields = std::collections::BTreeSet::new();
 
+                // `id` and `type` are reserved (R0412); `id: "{id}"` is the
+                // placeholder for the generated id.
+                if let Some(id_val) = provided.get("id") {
+                    if !matches!(id_val, Value::Str(s) if s == "{id}") {
+                        return Err(GoblinError::Runtime(
+                            "R0412: reserved-field: 'id' is a reserved field name; the runtime generates it. Use a field such as 'name' or 'label'".into()));
+                    }
+                }
+                if provided.contains_key("type") {
+                    return Err(GoblinError::Runtime(
+                        "R0412: reserved-field: 'type' is a reserved keyword and cannot be used as a field name; use 'kind' or 'category'".into()));
+                }
+
                 // Auto-id (readonly)
                 fields.insert("id".to_string(), Value::Str(uuid.clone()));
                 readonly_fields.insert("id".to_string());
 
                 for field in &class.fields {
                     if field.readonly { readonly_fields.insert(field.name.clone()); }
+                    // Relation fields (`of X as name`, `with X`, `re X`) keep
+                    // their own handling; the nil and required checks are for
+                    // plain fields.
+                    let plain = field.relation.is_none();
                     let value = if let Some(v) = provided.get(&field.name) {
+                        if plain && matches!(v, Value::Nil) && !field.nullable {
+                            return Err(GoblinError::Runtime(format!(
+                                "T0207: non-nullable-field-nil: cannot assign nil to non-nullable field '{}'", field.name)));
+                        }
                         v.clone()
                     } else if let Some(default_expr) = &field.default {
                         eval_default_expr(default_expr)
-                    } else {
+                    } else if field.nullable || !plain {
                         Value::Nil
+                    } else {
+                        return Err(GoblinError::Runtime(format!(
+                            "T0206: non-nullable-field-required: field '{}' is required and has no default", field.name)));
                     };
                     fields.insert(field.name.clone(), value);
                 }
@@ -3797,6 +3822,13 @@ impl Vm {
     /// does) and the reference itself is returned unchanged.
     fn update_path(&mut self, container: Value, segs: &[(Value, bool)], new_val: Value) -> Result<Value, GoblinError> {
         let (key, is_field) = &segs[0];
+        // Check an object's field before descending, so a rejected write
+        // (readonly or missing) changes nothing further down the path.
+        if let (Value::Ref(uuid) | Value::Object { uuid, .. }, Value::Str(field)) = (&container, key) {
+            if let Some(obj) = self.session.object_store.get(uuid) {
+                check_field_write(obj, field)?;
+            }
+        }
         let replacement = if segs.len() == 1 {
             new_val
         } else {
@@ -3815,7 +3847,12 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!("update!: object field name must be a string, got {}", key.type_name())));
                 };
                 match self.session.object_store.get_mut(&uuid) {
-                    Some(Value::Object { fields, .. }) => { std::rc::Rc::make_mut(fields).insert(field.clone(), replacement); }
+                    Some(obj @ Value::Object { .. }) => {
+                        check_field_write(obj, field)?;
+                        if let Value::Object { fields, .. } = obj {
+                            std::rc::Rc::make_mut(fields).insert(field.clone(), replacement);
+                        }
+                    }
                     _ => return Err(GoblinError::Runtime(format!("update!: object {} not found", uuid))),
                 }
                 Ok(Value::Ref(uuid))
@@ -3834,6 +3871,22 @@ impl Vm {
             }
         }
     }
+}
+
+/// A write to an object field: readonly fields (`name!:` and `id`) cannot
+/// change (P9001), and an object has only the fields its class declares (R0403).
+fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
+    if let Value::Object { fields, readonly_fields, .. } = obj {
+        if readonly_fields.contains(field) {
+            return Err(GoblinError::Runtime(format!(
+                "P9001: readonly-field: cannot modify readonly field '{field}'")));
+        }
+        if !fields.contains_key(field) {
+            return Err(GoblinError::Runtime(format!(
+                "R0403: no-such-field: no field '{field}'; check the field name or add it to the class")));
+        }
+    }
+    Ok(())
 }
 
 fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
@@ -3970,9 +4023,10 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         return call_builtin(id, vec![v.clone()], session);
     }
 
-    // For Object, look in fields (missing fields return nil, matching interpreter behavior)
+    // For Object, look in fields; an object has only the fields its class declares.
     if let Value::Object { fields, .. } = v {
-        return Ok(fields.get(name).cloned().unwrap_or(Value::Nil));
+        return fields.get(name).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+            "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name")));
     }
     crate::collections::get_index(v, &Value::Str(name.to_string()))
 }
