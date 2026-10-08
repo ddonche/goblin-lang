@@ -1,0 +1,6 @@
+/// A module alias and an enum with the same name: `Shape::f(x)` calls the module.
+enum Shape
+    Dot
+xx
+import _support/modules/Shape as Shape
+say(Shape::area(3))

@@ -1,4 +1,4 @@
-/// known-gap: interp prints a percent as a fraction (0.25); owner 2026-10-07: a percent prints as 25%
+/// known-gap: interp keeps :percent(0.5) as 50% and prints a percent as a fraction (owner 2026-10-07: pct(0.5) is 0.5%, printed as 0.5%)
 say(:big(10))
 say(:big("12.50"))
 say(:b(3))

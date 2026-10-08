@@ -931,11 +931,16 @@ impl Compiler {
                         }
                     }
                     ImportItems::Named { items, source } => {
-                        // import { a, b } from source — import the source file
-                        let resolved = format!("{}.gbln", source.replace('/', std::path::MAIN_SEPARATOR_STR));
-                        let idx = self.add_constant(Value::Str(resolved));
-                        self.emit(Opcode::ImportFile(idx));
-                        let _ = items; // named imports — globals are populated by running the file
+                        // import { a, b as c } from dir — each item is the module
+                        // dir/<name>, imported under its alias (or its own name).
+                        for item in items {
+                            let full = format!("{}/{}", source, item.name);
+                            let resolved = format!("{}.gbln", full.replace('/', std::path::MAIN_SEPARATOR_STR));
+                            let path_idx = self.add_constant(Value::Str(resolved));
+                            let ns = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                            let ns_idx = self.add_constant(Value::Str(ns));
+                            self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
+                        }
                     }
                     ImportItems::Expr(_) => {
                         return Err(GoblinError::NotImplemented { feature: "dynamic import paths" });
@@ -1555,17 +1560,39 @@ impl Compiler {
             }
 
             Expr::NsCall(ns, name, args, _) => {
-                // If the namespace starts with uppercase and there are no args,
-                // treat as an enum variant: Status::idle → EnumVariantExpr("Status", "idle")
+                // An uppercase namespace may be an enum or a module alias (`M`).
+                // `Status::idle()` / `Shape::Circle({"r": 3})` build a variant when
+                // the enum is declared (known only at run time: enums can come
+                // from imports); otherwise `Ns::f(args)` is a module call.
                 let ns_is_enum = ns.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-                if ns_is_enum && args.is_empty() {
-                    let en_idx = self.add_constant(Value::Str(ns.clone()));
-                    let vn_idx = self.add_constant(Value::Str(name.clone()));
-                    self.emit(Opcode::LoadConst(en_idx));
-                    self.emit(Opcode::LoadConst(vn_idx));
-                    self.emit(Opcode::LoadNil);
-                    self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
-                } else {
+                {
+                    let enum_branch = if ns_is_enum {
+                        let en_idx = self.add_constant(Value::Str(ns.clone()));
+                        self.emit(Opcode::LoadConst(en_idx));
+                        self.emit(Opcode::CallBuiltin(BuiltinId::EnumDeclared, 1));
+                        let to_call = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                        if args.is_empty() {
+                            let vn_idx = self.add_constant(Value::Str(name.clone()));
+                            self.emit(Opcode::LoadConst(en_idx));
+                            self.emit(Opcode::LoadConst(vn_idx));
+                            self.emit(Opcode::LoadNil);
+                            self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
+                        } else if args.len() == 1 {
+                            let vn_idx = self.add_constant(Value::Str(name.clone()));
+                            self.emit(Opcode::LoadConst(en_idx));
+                            self.emit(Opcode::LoadConst(vn_idx));
+                            self.compile_expr(&args[0])?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantCall, 3));
+                        } else {
+                            self.emit_runtime_error(&format!(
+                                "R0301: wrong-arity: enum variant '{ns}::{name}' takes 0 arguments or 1 map of fields, got {}",
+                                args.len()))?;
+                            self.emit(Opcode::LoadNil);
+                        }
+                        let to_end = self.scope_mut().emit_jump(Opcode::Jump);
+                        self.scope_mut().patch_jump(to_call);
+                        Some(to_end)
+                    } else { None };
                     // Namespace call: try full_name as a compile-time global/local.
                     // Do NOT fall back to bare name — a bare local named `foo` must not
                     // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
@@ -1581,6 +1608,7 @@ impl Compiler {
                     }
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call(args.len() as u8));
+                    if let Some(to_end) = enum_branch { self.scope_mut().patch_jump(to_end); }
                 }
             }
 
@@ -1700,6 +1728,12 @@ impl Compiler {
                 }
                 self.compile_expr(inner)?;
                 match op.as_str() {
+                    // `90s`: the parser hands the unit over as `dur:<unit>`.
+                    unit_op if unit_op.starts_with("dur:") => {
+                        let unit = self.scope_mut().add_constant(Value::Str(unit_op[4..].to_string()));
+                        self.emit(Opcode::LoadConst(unit));
+                        self.emit(Opcode::CallBuiltin(BuiltinId::DurationLiteral, 2));
+                    }
                     "%" => { self.emit(Opcode::ToPct); }
                     "**" => {
                         // x ** postfix = x^2 → Pow(x, 2)
@@ -1729,6 +1763,11 @@ impl Compiler {
                     "*>>" | "*>>:show_ids" => {
                         self.emit(if op == "*>>" { Opcode::LoadFalse } else { Opcode::LoadTrue });
                         self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFieldsMap, 2));
+                    }
+                    "%s" => {
+                        self.emit(Opcode::Pop);
+                        self.emit_runtime_error("R0504: `N%s` is N percent of the left operand and needs one, as in `price + 15%s`; on its own, write `15% of price`")?;
+                        self.emit(Opcode::LoadNil);
                     }
                     other => {
                         return Err(self.locate_err(GoblinError::Runtime(format!("unknown postfix operator '{other}'"))));
@@ -1982,6 +2021,15 @@ impl Compiler {
             return Ok(());
         }
 
+        // `25 %o 50` / `25% %o 50`: a plain number on the left counts as a percent.
+        if op == "%o" {
+            self.compile_expr(lhs)?;
+            self.emit(Opcode::CallBuiltin(BuiltinId::Pct, 1));
+            self.compile_expr(rhs)?;
+            self.emit(Opcode::Mul);
+            return Ok(());
+        }
+
         self.compile_expr(lhs)?;
         self.compile_expr(rhs)?;
 
@@ -2020,7 +2068,7 @@ impl Compiler {
                 return Ok(());
             }
             // percent-of: pct of value  →  pct * value
-            "of" | "%o" => Opcode::Mul,
+            "of" => Opcode::Mul,
             "><" => {
                 self.emit(Opcode::MakePair);
                 return Ok(());

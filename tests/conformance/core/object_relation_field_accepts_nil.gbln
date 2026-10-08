@@ -1,0 +1,10 @@
+/// An `of X as name` relation field may be given nil (the plain-field nil rule does not apply).
+<>User |
+    name: "u"
+xx
+<>Post |
+    heading: "t"
+    of User as author
+xx
+p <> Post | heading: "x", author: nil
+say(p >> heading)

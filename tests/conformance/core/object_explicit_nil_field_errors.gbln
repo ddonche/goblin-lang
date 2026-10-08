@@ -1,0 +1,7 @@
+/// Giving nil to a field raises T0207: fields are not nullable.
+<>Hero |
+    hp: 10
+xx
+say("before")
+h <> Hero | hp: nil
+say(h >> hp)

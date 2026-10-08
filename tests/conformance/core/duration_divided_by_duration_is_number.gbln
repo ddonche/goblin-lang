@@ -1,0 +1,5 @@
+/// known-gap: interp the interpreter drops the unit from a duration literal (2h is 2)
+/// A duration divided by a duration is a plain number.
+say(2h / 1h)
+say(90m / 1h)
+say(1w / 1d)

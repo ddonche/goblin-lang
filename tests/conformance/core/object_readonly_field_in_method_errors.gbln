@@ -1,0 +1,13 @@
+/// known-gap: interp lets `self >> f |=` rebind a readonly field inside a method
+/// A method cannot rebind a readonly field of its object either.
+<>Hero |
+    name!: "x"
+    hp: 10
+    act rename(n)
+        self >> name |= n
+    xx
+xx
+h <> Hero | name: "Ann"
+say("before")
+h.rename("Bob")
+say(h >> name)

@@ -18,7 +18,18 @@ pub fn call_builtin(
     session: &mut Session,
 ) -> Result<Value, GoblinError> {
     let args = if takes_legacy_args(id) { args.into_iter().map(legacy_arg).collect() } else { args };
+    // Math functions read a percent as its fraction: sqrt(25%) = 0.5.
+    let args = if is_math(id) {
+        args.into_iter().map(|v| match v { Value::Pct(p) => Value::Float(p), v => v }).collect()
+    } else { args };
     dispatch(id, args, session)
+}
+
+fn is_math(id: BuiltinId) -> bool {
+    matches!(id,
+        BuiltinId::Abs | BuiltinId::Min | BuiltinId::Max | BuiltinId::Avg | BuiltinId::Sum
+        | BuiltinId::Floor | BuiltinId::Ceil | BuiltinId::Round | BuiltinId::Sqrt
+        | BuiltinId::Clamp | BuiltinId::Pow)
 }
 
 /// Builtins whose arms are written against the legacy `Value::Map` /
@@ -770,9 +781,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::Pct => {
             expect_n(1)?;
             match read(0)? {
+                // pct(25) is 25%, and pct(0.5) is 0.5% (owner's percent spec, 2026-10-07).
                 Value::Pct(p)   => Ok(Value::Pct(p)),
-                Value::Int(n)   => Ok(Value::Pct(n as f64)),
-                Value::Float(f) => Ok(Value::Pct(f)),
+                Value::Int(n)   => Ok(Value::Pct(n as f64 / 100.0)),
+                Value::Float(f) => Ok(Value::Pct(f / 100.0)),
                 Value::Str(s) => {
                     let trimmed = s.trim();
                     let cleaned: String = trimmed.chars().filter(|&c| c != '_').collect();
@@ -782,7 +794,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                             return Ok(Value::Pct(f / 100.0));
                         }
                     } else if let Ok(f) = cleaned.parse::<f64>() {
-                        return Ok(Value::Pct(f));
+                        return Ok(Value::Pct(f / 100.0));
                     }
                     Err(GoblinError::Runtime(format!("pct: invalid string '{}'", s)))
                 }
@@ -2008,6 +2020,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // error, and so are bool and nil (D18).
             match read(0)? {
                 v @ (Value::Bool(_) | Value::Nil) => Err(GoblinError::type_error("number or str", v.type_name(), "int")),
+                // `:int(2h)` is 2, the count in the duration's own unit.
+                Value::Duration(d) => Ok(crate::duration::count_int(&d)),
                 v => lock_to_int(v),
             }
         }
@@ -2017,6 +2031,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Float(f) => Value::Float(f),
                 Value::Pct(f)   => Value::Float(f),
                 Value::Int(n)   => Value::Float(n as f64),
+                Value::Duration(d) => crate::duration::count_float(&d),
                 // bool is not a number (D18, as for `:int`).
                 v @ Value::Bool(_) => return Err(GoblinError::type_error("number or str", v.type_name(), "float")),
                 Value::Str(s)   => {
@@ -4322,10 +4337,18 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             // Validate against registered enum if known
             if let Some(enum_decl) = session.enums.get(&enum_name) {
-                if !enum_decl.variants.iter().any(|v| v.name == variant_name) {
+                let Some(variant) = enum_decl.variants.iter().find(|v| v.name == variant_name) else {
                     return Err(GoblinError::Runtime(format!(
                         "unknown variant '{}' for enum '{}'", variant_name, enum_name
                     )));
+                };
+                // Given fields must include every field the variant declares.
+                if let (Some(given), Some(declared)) = (&fields, &variant.fields) {
+                    if let Some(missing) = declared.iter().find(|d| !given.contains_key(&d.name)) {
+                        return Err(GoblinError::Runtime(format!(
+                            "R0403: missing-variant-field: missing field '{}' for variant '{}'; give every field, e.g. {}::{} {{ {}: <value> }}",
+                            missing.name, variant_name, enum_name, variant_name, missing.name)));
+                    }
                 }
                 Ok(Value::Enum { enum_name, variant_name, fields })
             } else {
@@ -4348,6 +4371,27 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 v if v.is_container() => v.container_len() > 0,
                 _ => true,
             }))
+        }
+        // DurationLiteral(number, unit_str) → Duration
+        BuiltinId::DurationLiteral => {
+            let unit = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "duration unit")) };
+            crate::duration::literal(&read(0)?, &unit, session)
+        }
+        BuiltinId::EnumDeclared => {
+            expect_n(1)?;
+            Ok(Value::Bool(matches!(read(0)?, Value::Str(s) if session.enums.contains_key(&s))))
+        }
+        // `Shape::Circle({"r": 3})`: the call form takes one map of named fields.
+        BuiltinId::EnumVariantCall => {
+            expect_n(3)?;
+            let arg = read(2)?;
+            if arg.map_entries().is_none() {
+                let (en, vn) = (read(0)?, read(1)?);
+                return Err(GoblinError::Runtime(format!(
+                    "T0205: type-mismatch: enum variant '{}::{}' expects a map for named fields, got {}",
+                    crate::builtins::value_to_str(&en), crate::builtins::value_to_str(&vn), arg.type_name())));
+            }
+            call_builtin(BuiltinId::EnumVariantExpr, vec![read(0)?, read(1)?, arg], session)
         }
 
         // LiteralTokenExpr(module_str, ident_str) → Value from token_store
@@ -5160,7 +5204,7 @@ fn numeric_max(a: Value, b: Value) -> Result<Value, GoblinError> {
     })
 }
 
-fn fmt_num_trim(f: f64) -> String {
+pub(crate) fn fmt_num_trim(f: f64) -> String {
     if f.is_finite() && f.fract() == 0.0 && f.abs() < 9.2e18 {
         format!("{}", f as i64)
     } else {
@@ -5188,6 +5232,7 @@ pub fn value_to_str(v: &Value) -> String {
         Value::Int(n)          => n.to_string(),
         Value::Float(f)        => fmt_num_trim(*f),
         Value::Pct(p)          => fmt_pct(*p),
+        Value::Duration(d)     => crate::duration::display(d),
         Value::Big(d)          => d.to_string(),
         Value::Char(c)         => c.to_string(),
         Value::Str(s)          => s.clone(),
@@ -5228,7 +5273,11 @@ pub fn value_to_str(v: &Value) -> String {
         }
         Value::Ref(s)        => format!("<ref {}>", s),
         Value::GridRef { grid_id, x, y } => format!("GridRef({}, {}, {})", grid_id, x, y),
-        Value::Enum { enum_name, variant_name, .. } => format!("{}::{}", enum_name, variant_name),
+        Value::Enum { enum_name, variant_name, fields: None } => format!("{}::{}", enum_name, variant_name),
+        Value::Enum { enum_name, variant_name, fields: Some(f) } => {
+            let parts: Vec<String> = f.iter().map(|(k, v)| format!("{}: {}", k, value_to_str(v))).collect();
+            format!("{}::{} {{ {} }}", enum_name, variant_name, parts.join(", "))
+        }
         Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) if collections::is_map_collection(c) => {
             let parts: Vec<String> = collections::to_pairs(c).iter()
@@ -5469,6 +5518,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
         Value::Int(n)   => n.to_string(),
         Value::Float(f) => fmt_num_trim(*f),
         Value::Pct(p)   => fmt_pct(*p),
+        Value::Duration(d) => crate::duration::display(d),
         Value::Bool(b)  => if *b { "true".into() } else { "false".into() },
         Value::Nil      => "nil".into(),
         Value::Unit     => String::new(),
@@ -5531,6 +5581,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
             s
         }
         Value::DateTime(gdt) => dt_display(gdt),
+        Value::Enum { .. } => value_to_str(v),
         _ => v.type_name().to_string(),
     }
 }

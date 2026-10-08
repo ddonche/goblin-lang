@@ -187,6 +187,7 @@ fn format_value_depth(v: &Value, depth: usize) -> String {
         Value::Int(n)        => n.to_string(),
         Value::Float(f)      => f.to_string(),
         Value::Big(d)        => d.to_string(),
+        Value::Duration(d)   => crate::duration::display(d),
         Value::Pct(p)        => format!("{}%", p),
         Value::Char(c)       => format!("'{}'", c),
         Value::Str(s)        => format!("{:?}", s),

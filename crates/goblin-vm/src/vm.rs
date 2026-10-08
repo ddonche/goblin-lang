@@ -578,6 +578,7 @@ impl Vm {
                 // unwrap Formatted for arithmetic, carry spec forward
                 let (a_inner, a_spec) = match a { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
                 let (b_inner, b_spec) = match b { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
+                let (a_inner, b_inner) = pct_as_number(a_inner, b_inner);
                 let raw = match (&a_inner, &b_inner) {
                     (Value::Int(x), Value::Int(y))     => Value::Int(x.wrapping_add(*y)),
                     (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
@@ -590,8 +591,6 @@ impl Vm {
                     (Value::Big(_), Value::Float(_)) | (Value::Float(_), Value::Big(_)) =>
                         crate::value::numeric_binop("add", &a_inner, &b_inner).expect("numeric")?,
                     (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
-                    (Value::Pct(x), Value::Float(y))   => Value::Pct(x + y),
-                    (Value::Float(x), Value::Pct(y))   => Value::Pct(x + y),
                     (Value::Char(c), Value::Int(n))    => {
                         let new_cp = (*c as i64).wrapping_add(*n) as u32;
                         Value::Char(char::from_u32(new_cp).unwrap_or(*c))
@@ -613,6 +612,7 @@ impl Vm {
                         return Err(GoblinError::Runtime(format!(
                             "T0205: type-mismatch: cannot add str and {t} with '+'; convert explicitly, e.g. \"total: \" + :str(n)")));
                     }
+                    (Value::Duration(_), _) | (_, Value::Duration(_)) => crate::duration::binop("add", &a_inner, &b_inner)?,
                     _ => return Err(GoblinError::type_error("number or str", b_inner.type_name(), "+")),
                 };
                 let result = if let Some(spec) = a_spec.or(b_spec) {
@@ -633,6 +633,7 @@ impl Vm {
             Opcode::Sub => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let (a, b) = pct_as_number(a, b);
                 let result = self.arith_op(a, b, "sub", |x, y| x - y, |x, y| x - y)?;
                 self.stack.push(Operand::Val(result));
             }
@@ -647,6 +648,7 @@ impl Vm {
             Opcode::Mul => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let (a, b) = pct_as_number(a, b);
                 let result = self.arith_op(a, b, "mul", |x, y| x * y, |x, y| x * y)?;
                 self.stack.push(Operand::Val(result));
             }
@@ -661,8 +663,10 @@ impl Vm {
             Opcode::Div => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                let (a, b) = pct_as_number(a, b);
                 let result = match (&a, &b) {
                     (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => num_div(&a, &b)?,
+                    (Value::Duration(_), _) | (_, Value::Duration(_)) => crate::duration::binop("div", &a, &b)?,
                     (Value::Big(x), Value::Big(y)) => {
                         if y.is_zero() { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / y)
@@ -671,8 +675,8 @@ impl Vm {
                         if *y == 0 { return Err(GoblinError::DivisionByZero); }
                         Value::Big(x / rust_decimal::Decimal::from(*y))
                     }
-                    (Value::Pct(x), Value::Pct(y))     => Value::Pct(x / y),
-                    (Value::Pct(x), Value::Float(y))   => Value::Pct(x / y),
+                    // A ratio of two percents is a plain number: 50% / 25% = 2.
+                    (Value::Pct(x), Value::Pct(y))     => num_div(&Value::Float(*x), &Value::Float(*y))?,
                     _ => return Err(GoblinError::type_error("number", b.type_name(), "/")),
                 };
                 self.stack.push(Operand::Val(result));
@@ -688,6 +692,13 @@ impl Vm {
             Opcode::Rem => {
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
+                if matches!(a, Value::Duration(_)) || matches!(b, Value::Duration(_)) {
+                    return Err(crate::duration::binop("rem", &a, &b).err().unwrap_or(GoblinError::Runtime("rem".into())));
+                }
+                let (a, b) = match pct_as_number(a, b) {
+                    (Value::Pct(x), Value::Pct(y)) => (Value::Float(x), Value::Float(y)),
+                    ab => ab,
+                };
                 let result = match crate::value::numeric_binop("rem", &a, &b) {
                     Some(r) => floor_mod_adjust(r?, &b),
                     None => return Err(GoblinError::type_error("number", b.type_name(), "%")),
@@ -707,6 +718,7 @@ impl Vm {
                     Value::Float(x) => Value::Float(-x),
                     Value::Big(x)   => Value::Big(-x),
                     Value::Pct(x)   => Value::Pct(-x),
+                    Value::Duration(d) => crate::duration::neg(d),
                     _ => return Err(GoblinError::type_error("number", a.type_name(), "neg")),
                 };
                 self.stack.push(Operand::Val(result));
@@ -976,6 +988,7 @@ impl Vm {
                 };
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
+                    check_field_write(obj, &field_name)?;
                     if let Value::Object { ref mut fields, .. } = obj {
                         std::rc::Rc::make_mut(fields).insert(field_name, new_val);
                     }
@@ -1055,18 +1068,42 @@ impl Vm {
                 let mut readonly_fields = std::collections::BTreeSet::new();
                 let trait_fields = std::collections::BTreeSet::new();
 
+                // `id` and `type` are reserved (R0412); `id: "{id}"` is the
+                // placeholder for the generated id.
+                if let Some(id_val) = provided.get("id") {
+                    if !matches!(id_val, Value::Str(s) if s == "{id}") {
+                        return Err(GoblinError::Runtime(
+                            "R0412: reserved-field: 'id' is a reserved field name; the runtime generates it. Use a field such as 'name' or 'label'".into()));
+                    }
+                }
+                if provided.contains_key("type") {
+                    return Err(GoblinError::Runtime(
+                        "R0412: reserved-field: 'type' is a reserved keyword and cannot be used as a field name; use 'kind' or 'category'".into()));
+                }
+
                 // Auto-id (readonly)
                 fields.insert("id".to_string(), Value::Str(uuid.clone()));
                 readonly_fields.insert("id".to_string());
 
                 for field in &class.fields {
                     if field.readonly { readonly_fields.insert(field.name.clone()); }
+                    // Relation fields (`of X as name`, `with X`, `re X`) keep
+                    // their own handling; the nil and required checks are for
+                    // plain fields.
+                    let plain = field.relation.is_none();
                     let value = if let Some(v) = provided.get(&field.name) {
+                        if plain && matches!(v, Value::Nil) && !field.nullable {
+                            return Err(GoblinError::Runtime(format!(
+                                "T0207: non-nullable-field-nil: cannot assign nil to non-nullable field '{}'", field.name)));
+                        }
                         v.clone()
                     } else if let Some(default_expr) = &field.default {
                         eval_default_expr(default_expr)
-                    } else {
+                    } else if field.nullable || !plain {
                         Value::Nil
+                    } else {
+                        return Err(GoblinError::Runtime(format!(
+                            "T0206: non-nullable-field-required: field '{}' is required and has no default", field.name)));
                     };
                     fields.insert(field.name.clone(), value);
                 }
@@ -1337,6 +1374,20 @@ impl Vm {
                         }
                         let result = crate::builtins::call_builtin(id, arg_vals, &mut self.session)?;
                         self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    // As in the interpreter, a module alias wins over an enum of
+                    // the same name: `Shape::f(x)` then calls the module's action.
+                    BuiltinId::EnumDeclared => {
+                        let is_enum = match arg_vals.first() {
+                            Some(Value::Str(ns)) => {
+                                let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+                                self.session.enums.contains_key(ns)
+                                    && !self.session.module_aliases.contains_key(&(importer, ns.clone()))
+                            }
+                            _ => false,
+                        };
+                        self.stack.push(Operand::Val(Value::Bool(is_enum)));
                         return Ok(());
                     }
                     BuiltinId::Need => {
@@ -3701,6 +3752,9 @@ impl Vm {
         int_fn: fn(i64, i64) -> i64,
         flt_fn: fn(f64, f64) -> f64,
     ) -> Result<Value, GoblinError> {
+        if matches!(a, Value::Duration(_)) || matches!(b, Value::Duration(_)) {
+            return crate::duration::binop(op, &a, &b);
+        }
         // int/float/big: exact, overflow promotes to big (value.rs).
         if let Some(r) = crate::value::numeric_binop(op, &a, &b) { return r; }
         match (&a, &b) {
@@ -3732,8 +3786,6 @@ impl Vm {
                 Ok(Value::Big(d))
             }
             (Value::Pct(x), Value::Pct(y))     => Ok(Value::Pct(flt_fn(*x, *y))),
-            (Value::Pct(x), Value::Float(y))   => Ok(Value::Pct(flt_fn(*x, *y))),
-            (Value::Float(x), Value::Pct(y))   => Ok(Value::Pct(flt_fn(*x, *y))),
             _ => Err(GoblinError::type_error("number", b.type_name(), op)),
         }
     }
@@ -3743,6 +3795,7 @@ impl Vm {
         use std::cmp::Ordering;
         let ord_to_i32 = |o: Ordering| match o { Ordering::Less => -1, Ordering::Equal => 0, Ordering::Greater => 1 };
         match (a, b) {
+            (Value::Duration(x), Value::Duration(y)) => Ok(ord_to_i32(x.ns.cmp(&y.ns))),
             (Value::Int(x), Value::Int(y))     => Ok(ord_to_i32(x.cmp(y))),
             (Value::Float(x), Value::Float(y)) => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
             (Value::Int(x), Value::Float(y))   => Ok((*x as f64).partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
@@ -3753,7 +3806,15 @@ impl Vm {
             (Value::Big(x), Value::Int(y))     => Ok(ord_to_i32(x.cmp(&rust_decimal::Decimal::from(*y)))),
             (Value::Int(x), Value::Big(y))     => Ok(ord_to_i32(rust_decimal::Decimal::from(*x).cmp(y))),
             (Value::Pct(x), Value::Pct(y))     => Ok(x.partial_cmp(y).map(ord_to_i32).unwrap_or(0)),
+            (Value::Pct(_), Value::Int(_) | Value::Float(_) | Value::Big(_))
+            | (Value::Int(_) | Value::Float(_) | Value::Big(_), Value::Pct(_)) => {
+                let (a, b) = pct_as_number(a.clone(), b.clone());
+                self.compare_values(&a, &b, op)
+            }
             (Value::DateTime(a), Value::DateTime(b)) => Ok(ord_to_i32(a.utc.cmp(&b.utc))),
+            (Value::Duration(_), _) | (_, Value::Duration(_)) => Err(GoblinError::Runtime(format!(
+                "T0205: type-mismatch: cannot compare {} and {}; compare a duration with a duration, e.g. t > 2h",
+                a.type_name(), b.type_name()))),
             _ => Err(GoblinError::type_error("comparable", b.type_name(), op)),
         }
     }
@@ -3788,6 +3849,13 @@ impl Vm {
     /// does) and the reference itself is returned unchanged.
     fn update_path(&mut self, container: Value, segs: &[(Value, bool)], new_val: Value) -> Result<Value, GoblinError> {
         let (key, is_field) = &segs[0];
+        // Check an object's field before descending, so a rejected write
+        // (readonly or missing) changes nothing further down the path.
+        if let (Value::Ref(uuid) | Value::Object { uuid, .. }, Value::Str(field)) = (&container, key) {
+            if let Some(obj) = self.session.object_store.get(uuid) {
+                check_field_write(obj, field)?;
+            }
+        }
         let replacement = if segs.len() == 1 {
             new_val
         } else {
@@ -3800,13 +3868,34 @@ impl Vm {
             self.update_path(child, &segs[1..], new_val)?
         };
         match &container {
+            // A variant's fields are part of its value: `update!(c.r, 5)` rebinds
+            // `c` to the variant with that field replaced.
+            Value::Enum { enum_name, variant_name, fields } => {
+                let Value::Str(field) = key else {
+                    return Err(GoblinError::Runtime(format!("update!: variant field name must be a string, got {}", key.type_name())));
+                };
+                match fields {
+                    Some(f) if f.contains_key(field) => {
+                        let mut f = f.clone();
+                        f.insert(field.clone(), replacement);
+                        Ok(Value::Enum { enum_name: enum_name.clone(), variant_name: variant_name.clone(), fields: Some(f) })
+                    }
+                    _ => Err(GoblinError::Runtime(format!(
+                        "R0403: no-such-field: variant '{variant_name}' has no field '{field}'"))),
+                }
+            }
             Value::Ref(uuid) | Value::Object { uuid, .. } => {
                 let uuid = uuid.clone();
                 let Value::Str(field) = key else {
                     return Err(GoblinError::Runtime(format!("update!: object field name must be a string, got {}", key.type_name())));
                 };
                 match self.session.object_store.get_mut(&uuid) {
-                    Some(Value::Object { fields, .. }) => { std::rc::Rc::make_mut(fields).insert(field.clone(), replacement); }
+                    Some(obj @ Value::Object { .. }) => {
+                        check_field_write(obj, field)?;
+                        if let Value::Object { fields, .. } = obj {
+                            std::rc::Rc::make_mut(fields).insert(field.clone(), replacement);
+                        }
+                    }
                     _ => return Err(GoblinError::Runtime(format!("update!: object {} not found", uuid))),
                 }
                 Ok(Value::Ref(uuid))
@@ -3827,9 +3916,30 @@ impl Vm {
     }
 }
 
+/// A write to an object field: readonly fields (`name!:` and `id`) cannot
+/// change (P9001), and an object has only the fields its class declares (R0403).
+fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
+    if let Value::Object { fields, readonly_fields, .. } = obj {
+        if readonly_fields.contains(field) {
+            return Err(GoblinError::Runtime(format!(
+                "P9001: readonly-field: cannot modify readonly field '{field}'")));
+        }
+        if !fields.contains_key(field) {
+            return Err(GoblinError::Runtime(format!(
+                "R0403: no-such-field: no field '{field}'; check the field name or add it to the class")));
+        }
+    }
+    Ok(())
+}
+
 fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
     use crate::value::BuiltinId;
     use crate::builtins::call_builtin;
+
+    // A variant's fields, so nested paths such as `update!(w.payload.x, 2)` can descend.
+    if let Value::Enum { fields: Some(f), .. } = v {
+        if let Some(x) = f.get(name) { return Ok(x.clone()); }
+    }
 
     // Try builtin method dispatch first
     let bid = match name {
@@ -3961,9 +4071,10 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         return call_builtin(id, vec![v.clone()], session);
     }
 
-    // For Object, look in fields (missing fields return nil, matching interpreter behavior)
+    // For Object, look in fields; an object has only the fields its class declares.
     if let Value::Object { fields, .. } = v {
-        return Ok(fields.get(name).cloned().unwrap_or(Value::Nil));
+        return fields.get(name).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+            "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name")));
     }
     crate::collections::get_index(v, &Value::Str(name.to_string()))
 }
@@ -4154,9 +4265,23 @@ fn is_map_value(v: &Value) -> bool {
 
 /// `==` (D7): an int and a float are equal when they are the same number;
 /// everything else compares structurally.
+/// A percent mixed with a plain number stands for its fraction (25% is
+/// 0.25), so `8 + 25%` is 8.25 (owner's percent spec, 2026-10-07). Two
+/// percents stay percents; anything else is left alone.
+pub(crate) fn pct_as_number(a: Value, b: Value) -> (Value, Value) {
+    let is_num = |v: &Value| matches!(v, Value::Int(_) | Value::Float(_) | Value::Big(_));
+    match (a, b) {
+        (Value::Pct(p), b) if is_num(&b) => (Value::Float(p), b),
+        (a, Value::Pct(p)) if is_num(&a) => (a, Value::Float(p)),
+        ab => ab,
+    }
+}
+
 fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => (*x as f64) == *y,
+        (Value::Pct(x), Value::Float(y)) | (Value::Float(y), Value::Pct(x)) => *x == *y,
+        (Value::Pct(x), Value::Int(y)) | (Value::Int(y), Value::Pct(x)) => *x == *y as f64,
         _ => a == b,
     }
 }

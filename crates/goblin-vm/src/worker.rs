@@ -71,6 +71,7 @@ impl TransferValue {
             Value::Unit => Ok(TransferValue::Nil),
             Value::Char(c) => Ok(TransferValue::Str(c.to_string())),
             Value::Big(d) => Ok(TransferValue::Str(d.to_string())),
+            Value::Duration(d) => Ok(TransferValue::Str(crate::duration::display(d))),
             Value::Pct(p) => Ok(TransferValue::Float(*p)),
             Value::Array(items) => {
                 let mut tv_items = Vec::with_capacity(items.len());

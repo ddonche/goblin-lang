@@ -1,0 +1,4 @@
+/// `x + 25%s * 2` is `x + ((25% of x) * 2)`: the `%s` refers to the operand of `+`.
+x | 8
+say(x + 25%s * 2)
+say(x - 10%s * 3 + 1)

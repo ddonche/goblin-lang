@@ -1,0 +1,8 @@
+/// `Status::Idle()` with empty parentheses is still the variant.
+enum Status
+    Idle
+    Busy
+xx
+s | Status::Idle()
+say(s == Status::Idle)
+say(s)
