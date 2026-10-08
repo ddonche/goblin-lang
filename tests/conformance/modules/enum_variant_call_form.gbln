@@ -1,0 +1,10 @@
+/// `Shape::Circle({"r": 3})` builds a variant with fields, like `Shape::Circle { r: 3 }`.
+enum Shape
+    Circle { r: int }
+    Rect { w: int, h: int }
+    Dot
+xx
+c | Shape::Circle({"r": 3})
+say(c.r)
+say(c == Shape::Circle { r: 3 })
+say(:valtype(c))

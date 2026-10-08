@@ -1,0 +1,10 @@
+/// `update!` cannot add a field the variant does not have (R0403).
+enum Shape
+    Circle { r: int }
+    Rect { w: int, h: int }
+    Dot
+xx
+c | Shape::Circle { r: 3 }
+say("before")
+:update!(c.w, 5)
+say(c)

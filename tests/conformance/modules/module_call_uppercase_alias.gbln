@@ -1,0 +1,3 @@
+/// `M::f(x)` with an uppercase module alias is still a module call, not an enum.
+import _support/modules/mathy as M
+say(M::double(4))

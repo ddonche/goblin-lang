@@ -1,0 +1,12 @@
+/// known-gap: interp prints two spaces after each comma between fields
+/// A variant with fields prints them: `Shape::Rect { w: 2, h: 3 }`.
+enum Shape
+    Circle { r: int }
+    Rect { w: int, h: int }
+    Dot
+xx
+r | Shape::Rect { w: 2, h: 3 }
+say(r)
+say(:str(r))
+say("{r}")
+say(Shape::Dot)

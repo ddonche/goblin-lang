@@ -1,0 +1,3 @@
+/// `L::hi()` with an uppercase module alias calls the action, even with no arguments.
+import _support/modules/loud as L
+say(L::hi())
