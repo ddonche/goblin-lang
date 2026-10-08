@@ -80,6 +80,8 @@ pub enum Value {
     Char(char),
     Str(String),
     DateTime(GoblinDateTime),
+    /// A length of time in nanoseconds, shown in the unit it was written in.
+    Duration(Box<crate::duration::Duration>),
 
     // ── Structured ──────────────────────────────────────────────────────────
     Formatted(Box<Value>, FormatSpec),
@@ -139,6 +141,7 @@ impl Value {
             Value::Char(_)       => "char",
             Value::Str(_)        => "str",
             Value::DateTime(_)   => "datetime",
+            Value::Duration(_)   => "duration",
             Value::Formatted(..) => "formatted",
             Value::Array(_)      => "array",
             Value::Map(_)        => "map",
@@ -174,6 +177,7 @@ impl Value {
             Value::Char(c)       => *c != '\0',
             Value::Str(s)        => !s.is_empty(),
             Value::DateTime(_)   => true,
+            Value::Duration(d)   => d.ns != 0,
             Value::Formatted(v, _) => v.is_truthy(),
             Value::Array(a)      => !a.is_empty(),
             Value::Map(m)        => !m.is_empty(),
@@ -210,6 +214,7 @@ impl PartialEq for Value {
             (Value::Char(a),          Value::Char(b))          => a == b,
             (Value::Str(a),           Value::Str(b))           => a == b,
             (Value::DateTime(a),      Value::DateTime(b))      => a == b,
+            (Value::Duration(a),      Value::Duration(b))      => a.ns == b.ns,
             (Value::Array(a),         Value::Array(b))         => a == b,
             (Value::Map(a),           Value::Map(b))           => a == b,
             (Value::Pair(ak, av),     Value::Pair(bk, bv))     => ak == bk && av == bv,
@@ -387,6 +392,7 @@ impl std::hash::Hash for Value {
             Value::Char(c)       => c.hash(state),
             Value::Str(s)        => s.hash(state),
             Value::DateTime(dt)  => dt.hash(state),
+            Value::Duration(d)   => d.ns.hash(state),
             Value::Formatted(v, _) => v.hash(state),
             Value::Array(a)      => { for x in a { x.hash(state); } }
             Value::Map(m)        => { for (k, v) in m { k.hash(state); v.hash(state); } }
@@ -952,6 +958,8 @@ pub enum BuiltinId {
     EnumDeclared,
     // LiteralToken expr: (module_str, ident_str) → Value from token store
     LiteralTokenExpr,
+    // duration literal: (number, unit_str) → Duration
+    DurationLiteral,
     // BoxVar expr: (namespace_str, name_str) → Value from box_store
     BoxVarExpr,
     // BoxBind expr: (namespace_str, name_str, value) → stores in box_store, returns Nil

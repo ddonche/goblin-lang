@@ -7367,6 +7367,23 @@ impl<'t> Parser<'t> {
         None
     }
 
+    /// Eat the amount on one side of a unit conversion rule: a number
+    /// followed by a type name (`1 kg`), or a duration literal (`30d`).
+    /// The type is None when the number has no name after it.
+    fn eat_unit_amount(&mut self) -> Option<(f64, Option<String>)> {
+        use goblin_lexer::TokenKind;
+        let tok = self.peek()?;
+        if tok.kind == TokenKind::Duration {
+            let lit = tok.value.clone().unwrap_or_default();
+            let (base, unit) = Self::split_duration_lexeme(&lit).ok()?;
+            self.i += 1;
+            return Some((base.parse::<f64>().ok()?, Some(unit)));
+        }
+        let n = self.eat_number_f64()?;
+        self.skip_layout();
+        Some((n, self.eat_ident()))
+    }
+
     /// Eat a numeric token and return it as u32.
     fn eat_number_u32(&mut self) -> Option<u32> {
         self.eat_number_f64().map(|f| f as u32)
@@ -7641,9 +7658,8 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::ClearLink(ast::ClearLinkStmt { from_var, to_var, channel, span }))
     }
 
-    /// Parse `unit name | types: a, b; N a = M b end/xx`
+    /// Parse `unit name | types: a, b; N a == M b end/xx`
     fn parse_unit_decl(&mut self) -> Result<ast::Stmt, String> {
-        use goblin_lexer::TokenKind;
         let start_i = self.i;
         let _ = self.eat_ident(); // consume 'unit'
         self.skip_layout();
@@ -7672,9 +7688,7 @@ impl<'t> Parser<'t> {
             self.skip_layout();
             if self.peek_block_close() || self.is_eof() { break; }
 
-            let Some(kw) = self.peek_ident() else { break; };
-
-            if kw == "types" {
+            if self.peek_ident() == Some("types") {
                 let _ = self.eat_ident(); // consume 'types'
                 self.skip_layout();
                 if !self.eat_op(":") {
@@ -7690,23 +7704,22 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            // Conversion rule: N type_a = M type_b
-            if let Some(from_count) = self.eat_number_f64() {
-                self.skip_layout();
-                let Some(from_type) = self.eat_ident() else {
-                    return Err(s_help_site!("P1603", "Expected type name in conversion rule", "Write: 1 kg = 1000 g"));
+            // Conversion rule: `N type_a == M type_b`. A duration literal
+            // such as `1mo` or `30d` counts as the number and the type.
+            if let Some((from_count, from_type)) = self.eat_unit_amount() {
+                let Some(from_type) = from_type else {
+                    return Err(s_help_site!("P1603", "Expected type name in conversion rule", "Write: 1 kg == 1000 g"));
                 };
                 self.skip_layout();
-                if !self.eat_op("=") {
-                    return Err(s_help_site!("P1604", "Expected '=' in conversion rule", "Write: 1 kg = 1000 g"));
+                if !self.eat_op("==") && !self.eat_op("=") {
+                    return Err(s_help_site!("P1604", "Expected '==' in conversion rule", "Write: 1 kg == 1000 g"));
                 }
                 self.skip_layout();
-                let Some(to_count) = self.eat_number_f64() else {
-                    return Err(s_help_site!("P1605", "Expected number after '=' in conversion rule", "Write: 1 kg = 1000 g"));
+                let Some((to_count, to_type)) = self.eat_unit_amount() else {
+                    return Err(s_help_site!("P1605", "Expected number after '==' in conversion rule", "Write: 1 kg == 1000 g"));
                 };
-                self.skip_layout();
-                let Some(to_type) = self.eat_ident() else {
-                    return Err(s_help_site!("P1606", "Expected type name after count in conversion rule", "Write: 1 kg = 1000 g"));
+                let Some(to_type) = to_type else {
+                    return Err(s_help_site!("P1606", "Expected type name after count in conversion rule", "Write: 1 kg == 1000 g"));
                 };
                 conversions.push((from_type, from_count, to_type, to_count));
                 // optional separator
@@ -8909,11 +8922,10 @@ impl<'t> Parser<'t> {
                 self.i += 1;
                 let (base, unit) = Self::split_duration_lexeme(&lit)?;
                 let is_floaty = base.contains('.') || base.contains('e') || base.contains('E');
-                if is_floaty {
-                    PExpr::FloatWithUnit(base, unit)
-                } else {
-                    PExpr::IntWithUnit(base, unit)
-                }
+                // A duration keeps its unit: `90s` is the number 90 under the
+                // postfix `dur:s`, which the VM turns into a duration value.
+                let num = if is_floaty { PExpr::Float(base) } else { PExpr::Int(base) };
+                PExpr::Postfix(Box::new(num), format!("dur:{unit}"))
             }
 
             // --- String literal: ALWAYS plain string (no StrInterp here) ---

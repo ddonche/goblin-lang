@@ -500,7 +500,7 @@ impl Session {
             | Value::Big(_) | Value::Pct(_) | Value::Char(_) | Value::Str(_)
             | Value::CtrlSkip | Value::CtrlStop
             | Value::Ref(_) | Value::GridRef { .. } | Value::Class { .. }
-            | Value::DateTime(_) => {
+            | Value::DateTime(_) | Value::Duration(_) => {
                 self.alloc_value(value.clone())
             }
 
