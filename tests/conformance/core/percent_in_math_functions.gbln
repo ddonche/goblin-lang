@@ -1,0 +1,6 @@
+/// Math functions read a percent as its fraction.
+say(sqrt(25%))
+say((25%) ** 2)
+say(abs(-25%))
+say(max(10%, 20%))
+say(round(150%))

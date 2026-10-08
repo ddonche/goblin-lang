@@ -1722,6 +1722,11 @@ impl Compiler {
                         self.emit(if op == "*>>" { Opcode::LoadFalse } else { Opcode::LoadTrue });
                         self.emit(Opcode::CallBuiltin(BuiltinId::PostfixFieldsMap, 2));
                     }
+                    "%s" => {
+                        self.emit(Opcode::Pop);
+                        self.emit_runtime_error("R0504: `N%s` is N percent of the left operand and needs one, as in `price + 15%s`; on its own, write `15% of price`")?;
+                        self.emit(Opcode::LoadNil);
+                    }
                     other => {
                         return Err(self.locate_err(GoblinError::Runtime(format!("unknown postfix operator '{other}'"))));
                     }
@@ -1971,6 +1976,15 @@ impl Compiler {
             return Ok(());
         }
 
+        // `25 %o 50` / `25% %o 50`: a plain number on the left counts as a percent.
+        if op == "%o" {
+            self.compile_expr(lhs)?;
+            self.emit(Opcode::CallBuiltin(BuiltinId::Pct, 1));
+            self.compile_expr(rhs)?;
+            self.emit(Opcode::Mul);
+            return Ok(());
+        }
+
         self.compile_expr(lhs)?;
         self.compile_expr(rhs)?;
 
@@ -2009,7 +2023,7 @@ impl Compiler {
                 return Ok(());
             }
             // percent-of: pct of value  →  pct * value
-            "of" | "%o" => Opcode::Mul,
+            "of" => Opcode::Mul,
             "><" => {
                 self.emit(Opcode::MakePair);
                 return Ok(());

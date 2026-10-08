@@ -18,7 +18,18 @@ pub fn call_builtin(
     session: &mut Session,
 ) -> Result<Value, GoblinError> {
     let args = if takes_legacy_args(id) { args.into_iter().map(legacy_arg).collect() } else { args };
+    // Math functions read a percent as its fraction: sqrt(25%) = 0.5.
+    let args = if is_math(id) {
+        args.into_iter().map(|v| match v { Value::Pct(p) => Value::Float(p), v => v }).collect()
+    } else { args };
     dispatch(id, args, session)
+}
+
+fn is_math(id: BuiltinId) -> bool {
+    matches!(id,
+        BuiltinId::Abs | BuiltinId::Min | BuiltinId::Max | BuiltinId::Avg | BuiltinId::Sum
+        | BuiltinId::Floor | BuiltinId::Ceil | BuiltinId::Round | BuiltinId::Sqrt
+        | BuiltinId::Clamp | BuiltinId::Pow)
 }
 
 /// Builtins whose arms are written against the legacy `Value::Map` /
@@ -759,9 +770,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::Pct => {
             expect_n(1)?;
             match read(0)? {
+                // pct(25) is 25%, and pct(0.5) is 0.5% (owner's percent spec, 2026-10-07).
                 Value::Pct(p)   => Ok(Value::Pct(p)),
-                Value::Int(n)   => Ok(Value::Pct(n as f64)),
-                Value::Float(f) => Ok(Value::Pct(f)),
+                Value::Int(n)   => Ok(Value::Pct(n as f64 / 100.0)),
+                Value::Float(f) => Ok(Value::Pct(f / 100.0)),
                 Value::Str(s) => {
                     let trimmed = s.trim();
                     let cleaned: String = trimmed.chars().filter(|&c| c != '_').collect();
@@ -771,7 +783,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                             return Ok(Value::Pct(f / 100.0));
                         }
                     } else if let Ok(f) = cleaned.parse::<f64>() {
-                        return Ok(Value::Pct(f));
+                        return Ok(Value::Pct(f / 100.0));
                     }
                     Err(GoblinError::Runtime(format!("pct: invalid string '{}'", s)))
                 }

@@ -991,6 +991,7 @@ In these cases both engines agree and the docs say something else. For each one:
 - Docs: `pct 25` is `25%` (cheat-sheet.md:1731).
 - Both engines: `:pct(25) == (25%)` is `false`.
 - **Rec:** the doc is canonical.
+- **Ruled 2026-10-07 (owner's percent paper, "Percent as a First-Class Type"):** `pct(25)` is 25% and `pct(0.5)` is 0.5%. `p%` is p/100; `A ∘ p%s` is `A ∘ (p% of A)`, and on `+`/`-` a `p%s` that opens a product refers to the operand of `+`/`-` (`x + 25%s * 2` is `x + ((25% of x) * 2)`); `p% of E` is (p/100)·E; `%` with spaces is the remainder. A percent mixed with a plain number, compared with one, or passed to a math function stands for its fraction. Done on the VM; the interpreter keeps `pct(25)` as 2500% (known gap). Cases: `core/percent_*`, `core/pct_constructor_takes_points`, `core/modulus_needs_spaces`.
 
 **Large whole floats.** Case: `float_large_not_saturated`.
 - Docs: nothing specific.

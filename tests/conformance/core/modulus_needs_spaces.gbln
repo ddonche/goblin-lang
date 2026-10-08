@@ -1,0 +1,4 @@
+/// `%` with spaces around it is the remainder; `25%` with no space is a percent.
+say(8 % 3)
+say(7.5 % 2)
+say(8 % 3 + 25%)
