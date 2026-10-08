@@ -215,6 +215,7 @@ impl PartialEq for Value {
             (Value::Str(a),           Value::Str(b))           => a == b,
             (Value::DateTime(a),      Value::DateTime(b))      => a == b,
             (Value::Duration(a),      Value::Duration(b))      => a.ns == b.ns,
+            (Value::Formatted(a, sa), Value::Formatted(b, sb)) => a == b && sa == sb,
             (Value::Array(a),         Value::Array(b))         => a == b,
             (Value::Map(a),           Value::Map(b))           => a == b,
             (Value::Pair(ak, av),     Value::Pair(bk, bv))     => ak == bk && av == bv,
