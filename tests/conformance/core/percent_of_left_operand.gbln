@@ -1,0 +1,7 @@
+/// `p%s` is p percent of the left operand: `A + p%s` is `A + (p% of A)`.
+say(8 + 25%s)
+say(8 - 25%s)
+say(8 * 25%s)
+say(8 / 25%s)
+price | 80
+say(price + 15%s)
