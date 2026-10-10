@@ -58,6 +58,9 @@ pub struct LinkDef {
     pub formula_max: f64,
 }
 
+/// The smallest arena size that triggers a collection.
+pub const GC_MIN_THRESHOLD: usize = 1 << 16;
+
 #[derive(Debug, Clone)]
 pub struct LinkOffset {
     pub value: f64,
@@ -105,11 +108,13 @@ pub struct Session {
     /// and old Addresses with a mismatched generation are detected as stale.
     next_generation: u32,
 
-    /// Allocation counter for Auto GC.
-    alloc_since_last_gc: usize,
+    /// Arena size at which the VM runs its next mark-sweep: twice what the
+    /// last one kept, and never below `GC_MIN_THRESHOLD`.
+    gc_threshold: usize,
 
-    /// How many allocations before an Auto sweep.
-    gc_watermark: usize,
+    /// Set once a closure has captured a variable; until then no value can
+    /// hold an arena slot, and the collector skips tracing values.
+    pub has_cells: bool,
 
     /// PRNG state for builtins like shuffle/mixed. LCG/MCG.
     pub rng_state: u128,
@@ -257,8 +262,8 @@ impl Session {
             gc_mode,
             worker_id: 0,
             next_generation: 1,
-            alloc_since_last_gc: 0,
-            gc_watermark: 10_000,
+            gc_threshold: GC_MIN_THRESHOLD,
+            has_cells: false,
             rng_state: seed,
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
@@ -347,19 +352,14 @@ impl Session {
         };
 
         let slot = self.arena.insert(stash) as u32;
-        self.maybe_gc_on_alloc();
 
         Tether { addr: Address { slot, generation: gen } }
     }
 
-    fn maybe_gc_on_alloc(&mut self) {
-        if self.gc_mode == GcMode::Auto {
-            self.alloc_since_last_gc += 1;
-            if self.alloc_since_last_gc >= self.gc_watermark {
-                self.gc_sweep();
-                self.alloc_since_last_gc = 0;
-            }
-        }
+    /// Whether the arena has grown enough for the VM to collect.
+    #[inline]
+    pub fn gc_due(&self) -> bool {
+        self.arena.len() >= self.gc_threshold
     }
 
     // ── Address validation ──────────────────────────────────────────────────
@@ -463,15 +463,16 @@ impl Session {
 
     /// Mark-sweep GC: free all stashes whose slot is NOT in `live_slots`.
     /// Called by the VM after collecting all reachable tether addresses.
-    pub fn gc_mark_sweep(&mut self, live_slots: &std::collections::HashSet<u32>) {
+    pub fn gc_mark_sweep(&mut self, live_slots: &[bool]) {
         let to_remove: Vec<usize> = self.arena
             .iter()
-            .filter(|(slot, _)| !live_slots.contains(&(*slot as u32)))
+            .filter(|(slot, _)| !live_slots.get(*slot).copied().unwrap_or(false))
             .map(|(k, _)| k)
             .collect();
         for key in to_remove {
             self.arena.remove(key);
         }
+        self.gc_threshold = (self.arena.len() * 2).max(GC_MIN_THRESHOLD);
     }
 
     /// Number of live stashes.
