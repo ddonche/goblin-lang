@@ -61,6 +61,11 @@ pub struct LinkDef {
 /// The smallest arena size that triggers a collection.
 pub const GC_MIN_THRESHOLD: usize = 1 << 16;
 
+/// Roughly how many bytes of strings and collections may be stored into new
+/// slots before a collection runs, however few slots that took: a loop
+/// rewriting a large string makes one dead copy per pass.
+pub const GC_BYTE_BUDGET: usize = 64 << 20;
+
 #[derive(Debug, Clone)]
 pub struct LinkOffset {
     pub value: f64,
@@ -111,6 +116,9 @@ pub struct Session {
     /// Arena size at which the VM runs its next mark-sweep: twice what the
     /// last one kept, and never below `GC_MIN_THRESHOLD`.
     gc_threshold: usize,
+
+    /// Approximate bytes stored into slots since the last collection.
+    gc_bytes: usize,
 
     /// Set once a closure has captured a variable; until then no value can
     /// hold an arena slot, and the collector skips tracing values.
@@ -263,6 +271,7 @@ impl Session {
             worker_id: 0,
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
+            gc_bytes: 0,
             has_cells: false,
             rng_state: seed,
             token_store: BTreeMap::new(),
@@ -345,6 +354,12 @@ impl Session {
         let gen = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
 
+        self.gc_bytes += match &value {
+            Value::Str(text) => text.len(),
+            Value::Collection(c) => c.len() * 32,
+            _ => 0,
+        };
+
         let stash = Stash {
             value,
             tether_count: 1,
@@ -359,7 +374,7 @@ impl Session {
     /// Whether the arena has grown enough for the VM to collect.
     #[inline]
     pub fn gc_due(&self) -> bool {
-        self.arena.len() >= self.gc_threshold
+        self.arena.len() >= self.gc_threshold || self.gc_bytes >= GC_BYTE_BUDGET
     }
 
     // ── Address validation ──────────────────────────────────────────────────
@@ -473,6 +488,7 @@ impl Session {
             self.arena.remove(key);
         }
         self.gc_threshold = (self.arena.len() * 2).max(GC_MIN_THRESHOLD);
+        self.gc_bytes = 0;
     }
 
     /// Number of live stashes.
