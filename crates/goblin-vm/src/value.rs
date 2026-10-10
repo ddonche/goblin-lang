@@ -126,6 +126,18 @@ pub enum Value {
 
     /// A built-in native function.
     Builtin(BuiltinId),
+
+    /// A frozen snapshot (`:freeze`): read like the value it holds, never
+    /// mutated, and shared with workers without copying it again.
+    Frozen(Rc<Frozen>),
+}
+
+/// The two forms of a frozen snapshot: `value` for reading in this session,
+/// `shared` for handing to other workers.
+#[derive(Debug)]
+pub struct Frozen {
+    pub value: Value,
+    pub shared: std::sync::Arc<crate::portable::PValue>,
 }
 
 impl Value {
@@ -141,6 +153,7 @@ impl Value {
             Value::Char(_)       => "char",
             Value::Str(_)        => "str",
             Value::DateTime(_)   => "datetime",
+            Value::Frozen(f)     => f.value.type_name(),
             Value::Duration(_)   => "duration",
             Value::Formatted(..) => "formatted",
             Value::Array(_)      => "array",
@@ -177,6 +190,7 @@ impl Value {
             Value::Char(c)       => *c != '\0',
             Value::Str(s)        => !s.is_empty(),
             Value::DateTime(_)   => true,
+            Value::Frozen(f)     => f.value.is_truthy(),
             Value::Duration(d)   => d.ns != 0,
             Value::Formatted(v, _) => v.is_truthy(),
             Value::Array(a)      => !a.is_empty(),
@@ -204,6 +218,8 @@ impl Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Value::Frozen(a), b) => a.value == *b,
+            (a, Value::Frozen(b)) => *a == b.value,
             (Value::Nil,              Value::Nil)              => true,
             (Value::Unit,             Value::Unit)             => true,
             (Value::Bool(a),          Value::Bool(b))          => a == b,
@@ -378,6 +394,7 @@ impl std::hash::Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Containers are equal across representations (see PartialEq), so they
         // hash by kind and length only, never by variant or pointer.
+        if let Value::Frozen(f) = self { return f.value.hash(state); }
         if self.is_seq_like() { 0xA5u8.hash(state); self.container_len().hash(state); return; }
         if self.is_map_like() { 0x5Au8.hash(state); self.container_len().hash(state); return; }
         std::mem::discriminant(self).hash(state);
@@ -414,6 +431,7 @@ impl std::hash::Hash for Value {
             Value::Function(f)   => (Rc::as_ptr(f) as usize).hash(state),
             Value::Closure(c)    => (Rc::as_ptr(c) as usize).hash(state),
             Value::Builtin(b)    => b.hash(state),
+            Value::Frozen(_)     => {}
         }
     }
 }
@@ -530,6 +548,11 @@ pub struct Closure {
 /// Numeric IDs for all built-in functions dispatched by CallBuiltin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinId {
+    // Concurrency (spec 2026-10-08)
+    Freeze,
+    Swarm,
+    SwarmBang,
+
     // Memory introspection
     MemId,
     MemAddr,

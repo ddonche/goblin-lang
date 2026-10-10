@@ -1,0 +1,9 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// :swarm! tears its workers down; it returns its results and leaves the items alone (owner, 2026-10-08).
+act inc(x)
+    return x + 1
+xx
+items | [1, 2, 3]
+out | :swarm!(items, inc, 2)
+say(out)
+say(items)

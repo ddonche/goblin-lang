@@ -276,7 +276,7 @@ impl Vm {
                         return Ok(());
                     }
                 }
-                let val = self.stack_pop()?;
+                let val = self.stack_pop_raw()?;
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
                     crate::builtins::cast_value_to_lock(val, &lock)?
@@ -336,7 +336,7 @@ impl Vm {
                         return Ok(());
                     }
                 }
-                let val = self.stack_pop()?;
+                let val = self.stack_pop_raw()?;
                 // Retether: if a hard type lock exists for this global, auto-cast the incoming value.
                 let val = if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
                     crate::builtins::cast_value_to_lock(val, &lock)?
@@ -525,7 +525,7 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreUpvalue(idx) => {
-                let val = self.stack_pop()?;
+                let val = self.stack_pop_raw()?;
                 let t = if let Value::Object { ref uuid, .. } = val {
                     let uuid = uuid.clone();
                     self.session.object_store.insert(uuid.clone(), val);
@@ -554,6 +554,21 @@ impl Vm {
             // With Vec<Value> stack, overwrite of named locals requires the slot-based
             // Overwrite(slot) opcode (future work). This placeholder handles the case
             // where the target is a Ref in the object_store.
+            Opcode::GuardMutable(name_idx) => {
+                let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
+                let frozen = match &op {
+                    Operand::Val(v) => matches!(v, Value::Frozen(_)),
+                    Operand::Ref(t) => matches!(self.session.get_stash(t)?.value, Value::Frozen(_)),
+                };
+                if frozen {
+                    let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::from("?"),
+                    };
+                    return Err(GoblinError::Runtime(format!(
+                        "C0102: frozen-snapshot: '{name}' holds a frozen snapshot (from :freeze), which cannot be changed")));
+                }
+            }
             Opcode::Overwrite => {
                 let new_val = self.stack_pop()?;
                 let target = self.stack_pop()?;
@@ -1248,7 +1263,8 @@ impl Vm {
                 // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
                 for i in (0..arg_count).rev() {
                     let op = self.stack.pop().unwrap();
-                    let v = self.resolve_op(op)?;
+                    // A frozen argument stays frozen inside the callee.
+                    let v = self.resolve_op_raw(op)?;
                     let t = self.session.alloc_value(v);
                     new_frame.locals[i] = Some(t);
                 }
@@ -1342,7 +1358,13 @@ impl Vm {
                     return Err(GoblinError::Runtime("stack underflow on CallBuiltin".into()));
                 }
                 let start = self.stack.len() - arg_count;
-                let arg_vals = self.drain_operands(start)?;
+                // `:swarm` needs to see whether its context is frozen.
+                let arg_vals = if matches!(id, BuiltinId::Swarm | BuiltinId::SwarmBang) {
+                    let ops: Vec<Operand> = self.stack.drain(start..).collect();
+                    ops.into_iter().map(|op| self.resolve_op_raw(op)).collect::<Result<Vec<_>, _>>()?
+                } else {
+                    self.drain_operands(start)?
+                };
 
                 // Special handling for builtins that need VM call capability.
                 match id {
@@ -2470,8 +2492,28 @@ impl Vm {
     #[inline]
     fn resolve_op(&self, op: Operand) -> Result<Value, GoblinError> {
         match op {
+            Operand::Val(Value::Frozen(f)) => Ok(f.value.clone()),
             Operand::Val(v) => Ok(v),
             Operand::Ref(t) => self.session.read_value(&t),
+        }
+    }
+
+    /// Pop one operand for a store: a frozen snapshot stays frozen, so
+    /// `b | shared` makes `b` frozen too.
+    fn stack_pop_raw(&mut self) -> Result<Value, GoblinError> {
+        let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
+        self.resolve_op_raw(op)
+    }
+
+    /// Resolve an operand but keep a frozen snapshot frozen (stores, call
+    /// arguments, and the context handed to `:swarm`).
+    fn resolve_op_raw(&self, op: Operand) -> Result<Value, GoblinError> {
+        match op {
+            Operand::Val(v) => Ok(v),
+            Operand::Ref(t) => match &self.session.get_stash(&t)?.value {
+                f @ Value::Frozen(_) => Ok(f.clone()),
+                _ => self.session.read_value(&t),
+            },
         }
     }
 

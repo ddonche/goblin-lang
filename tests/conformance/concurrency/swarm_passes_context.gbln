@@ -1,0 +1,10 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// With a context, :swarm calls action(item, context); without one, action(item).
+act add(x, ctx)
+    return x + ctx{"step"}
+xx
+act twice(x)
+    return x * 2
+xx
+say(:swarm([1, 2, 3], add, 2, {"step": 10}))
+say(:swarm([1, 2, 3], twice, 8))

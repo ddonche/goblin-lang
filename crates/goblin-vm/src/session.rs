@@ -414,6 +414,7 @@ impl Session {
                 .ok_or_else(|| crate::error::GoblinError::Runtime(
                     format!("dangling ref: uuid {} not in object_store", uuid)
                 )),
+            Value::Frozen(f) => Ok(f.value.clone()),
             other => Ok(other),
         }
     }
@@ -500,7 +501,7 @@ impl Session {
             | Value::Big(_) | Value::Pct(_) | Value::Char(_) | Value::Str(_)
             | Value::CtrlSkip | Value::CtrlStop
             | Value::Ref(_) | Value::GridRef { .. } | Value::Class { .. }
-            | Value::DateTime(_) | Value::Duration(_) => {
+            | Value::DateTime(_) | Value::Duration(_) | Value::Frozen(_) => {
                 self.alloc_value(value.clone())
             }
 

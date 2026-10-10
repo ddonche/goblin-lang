@@ -1,0 +1,13 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A frozen snapshot reads exactly like the value it was made from.
+shared | :freeze({"a": 1, "list": [1, 2], "inner": {"b": "x"}})
+say(shared{"a"})
+say(shared{"list"}[1])
+say(shared{"inner"}{"b"})
+say(:keys(shared))
+say(:valtype(shared))
+say(shared == {"a": 1, "list": [1, 2], "inner": {"b": "x"}})
+copy | shared{"list"}
+:put_last!(copy, 3)
+say(copy)
+say(shared{"list"})

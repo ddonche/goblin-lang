@@ -674,6 +674,18 @@ impl Compiler {
 
     /// D16: the routes the interpreter guards (`|=`, tuple `|=`, `++`/`--`,
     /// bang casts, `x.method!`) raise R0113 on an `imm` name when reached.
+    /// Before a mutation of `name`: the imm check, plus a run-time check that
+    /// it does not hold a frozen snapshot.
+    fn emit_mut_guard(&mut self, name: &str) -> Result<(), GoblinError> {
+        self.emit_imm_guard(name)?;
+        if let Ok(load) = self.resolve_load(name) {
+            self.emit(load);
+            let idx = self.add_constant(Value::Str(name.to_string())) as u16;
+            self.emit(Opcode::GuardMutable(idx));
+        }
+        Ok(())
+    }
+
     fn emit_imm_guard(&mut self, name: &str) -> Result<(), GoblinError> {
         if self.is_imm_name(name) {
             let msg = format!("cannot update imm binding '{}' (declared with imm)", name);
@@ -1354,18 +1366,13 @@ impl Compiler {
 
             // ── Calls ─────────────────────────────────────────────────────────
             Expr::FreeCall(name, args, _) => {
-                // A bang call writes its result back into the variable its first
-                // argument comes from, so on an `imm` variable it is an error
-                // (owner, 2026-10-07), raised before anything is changed.
-                const BANG_NO_WRITEBACK: &[&str] = &[
-                    "write_text!", "write_json!", "append_file!",
-                    "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-                    "delete_object!", "delete_overlays_on!",
-                ];
+                // A bang call that mutates changes its first argument itself, so
+                // on an `imm` variable it is an error (owner, 2026-10-07),
+                // raised before anything is changed.
                 let bang = name.trim_start_matches(':');
-                if bang.ends_with('!') && !BANG_NO_WRITEBACK.contains(&bang) && !self.user_actions.contains(bang) {
+                if bang_mutates_target(bang) && !self.user_actions.contains(bang) {
                     if let Some(root) = args.first().and_then(lvalue_root) {
-                        self.emit_imm_guard(&root)?;
+                        self.emit_mut_guard(&root)?;
                     }
                 }
                 // Special forms (look like calls but compile to control flow).
@@ -1448,7 +1455,7 @@ impl Compiler {
                             "R0802: {base}!(name) requires exactly one variable name, not an expression"));
                     };
                     let var_name = var_name.clone();
-                    self.emit_imm_guard(&var_name)?;
+                    self.emit_mut_guard(&var_name)?;
                     let cast_op = if let Some(slot) = self.scope().find_local(&var_name) {
                         Some(Opcode::CastBangLocal(slot, base.to_string()))
                     } else if self.scopes.len() == 1 || self.resolve_upvalue(self.scopes.len() - 1, &var_name).is_none() {
@@ -1467,14 +1474,8 @@ impl Compiler {
                 if let Some(_) = self.try_compile_builtin_call(name, args)? {
                     // Mutation-bang free call: name!(collection, ...) stores result back.
                     // e.g. update_at!(meta, "id", val) → CallBuiltin + Dup + StoreLocal(meta)
-                    // I/O builtins use ! for side-effect signaling only — they return Nil and
-                    // must NOT write back to the first argument variable.
-                    const IO_BANG_NO_WRITEBACK: &[&str] = &[
-                        "write_text!", "write_json!", "append_file!",
-                        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-                    ];
                     let bare = name.trim_start_matches(':');
-                    if bare.ends_with('!') && !IO_BANG_NO_WRITEBACK.contains(&bare) {
+                    if bang_mutates_target(bare) {
                         if let Some(target) = args.first() {
                             if is_lvalue(target) {
                                 // The result goes back into the variable the
@@ -1689,7 +1690,7 @@ impl Compiler {
                         _ => None,
                     };
                     if let Some((var_name, type_name)) = cast_bang {
-                        self.emit_imm_guard(&var_name)?;
+                        self.emit_mut_guard(&var_name)?;
                         if let Some(slot) = self.scope().find_local(&var_name) {
                             self.emit(Opcode::CastBangLocal(slot, type_name));
                             return Ok(());
@@ -1712,7 +1713,7 @@ impl Compiler {
                         _ => None,
                     };
                     if let Some((var_name, _method_name)) = mutation_bang {
-                        self.emit_imm_guard(&var_name)?;
+                        self.emit_mut_guard(&var_name)?;
                         self.compile_expr(inner)?; // pushes method result
                         self.emit(Opcode::Dup);    // duplicate: one to store, one to leave as value
                         if let Some(slot) = self.scope().find_local(&var_name) {
@@ -1748,7 +1749,7 @@ impl Compiler {
                         self.emit(Opcode::LoadConst(one));
                         if op == "++" { self.emit(Opcode::Add); } else { self.emit(Opcode::Sub); }
                         if is_lvalue(inner) {
-                            if let Expr::Ident(n, _) = inner.as_ref() { self.emit_imm_guard(n)?; }
+                            if let Expr::Ident(n, _) = inner.as_ref() { self.emit_mut_guard(n)?; }
                             self.emit(Opcode::Dup);
                             self.compile_store_from_stack(inner)?;
                         }
@@ -3462,6 +3463,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "second"                         => BuiltinId::DtSecond,
         "weekday"                        => BuiltinId::DtWeekday,
         "add_duration"                   => BuiltinId::DtAddDuration,
+        "freeze"                         => BuiltinId::Freeze,
+        "swarm"                          => BuiltinId::Swarm,
+        "swarm!"                         => BuiltinId::SwarmBang,
         "since"                          => BuiltinId::DtSince,
         "until"                          => BuiltinId::DtUntil,
         "timezone"                       => BuiltinId::DtTimezone,
@@ -3662,12 +3666,8 @@ impl Compiler {
 /// into its first argument: the builtin, the root variable and the keys.
 /// Paths with `>>` fields keep the general lowering.
 fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String, Vec<&'a Expr>)> {
-    const IO_BANG_NO_WRITEBACK: &[&str] = &[
-        "write_text!", "write_json!", "append_file!",
-        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-    ];
     let bare = name.trim_start_matches(':');
-    if !bare.ends_with('!') || IO_BANG_NO_WRITEBACK.contains(&bare) || args.len() > 255 { return None; }
+    if !bang_mutates_target(bare) || args.len() > 255 { return None; }
     let bid = builtin_by_name(bare).or_else(|| builtin_by_name(name))
         .or_else(|| bare.strip_suffix('!').and_then(builtin_by_name))?;
     let mut keys = Vec::new();
@@ -3682,6 +3682,19 @@ fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String
     if keys.is_empty() || keys.len() > 16 { return None; }
     keys.reverse();
     Some((bid, root, keys))
+}
+
+/// `!` means the call mutates or is destructive (owner, 2026-10-08).
+/// A mutating bang (`:put_last!(xs, 4)`, `:update!`, `:int!(x)`) changes the
+/// thing its first argument names, not a copy. A destructive bang acts on
+/// something else (files, objects, overlays) and leaves its arguments alone.
+fn bang_mutates_target(bare: &str) -> bool {
+    const DESTRUCTIVE: &[&str] = &[
+        "write_text!", "write_json!", "append_file!",
+        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
+        "delete_object!", "delete_overlays_on!", "swarm!",
+    ];
+    bare.ends_with('!') && !DESTRUCTIVE.contains(&bare)
 }
 
 /// The variable at the root of an lvalue (`x`, `x[k]`, `x{k}`, `x >> f`).

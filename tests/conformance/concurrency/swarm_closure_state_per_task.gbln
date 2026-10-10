@@ -1,0 +1,16 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A closure's captured variables start fresh for every task, even when one
+/// worker runs several tasks; the caller's closure is left alone.
+act make_counter()
+    n | 0
+    act bump(x)
+        n |= n + x
+        return n
+    xx
+    return bump
+xx
+counter | make_counter()
+say(counter(100))
+say(:swarm([1, 2, 3, 4], counter, 1))
+say(:swarm([1, 2, 3, 4], counter, 2))
+say(counter(1))
