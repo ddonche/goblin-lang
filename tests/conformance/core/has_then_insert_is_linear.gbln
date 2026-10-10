@@ -1,0 +1,28 @@
+/// known-gap: interp quadratic :has on a big map (times out at 120000 keys)
+/// Checking :has before each insert stays fast on a big map, and :has still
+/// finds a key written as another type with the same text.
+act fill(n)
+    m | {}
+    i | 0
+    while i < n
+        key | "k{i}"
+        if :has(m, key) == false
+            :update!(m{key}, i)
+        xx
+        i |= i + 1
+    xx
+    return m.len
+xx
+say(fill(120000))
+big | {}
+i | 0
+while i < 40
+    :update!(big{i}, true)
+    i |= i + 1
+xx
+:update!(big{"flag"}, 1)
+say(:has(big, 7))
+say(:has(big, "7"))
+say(:has(big, "flag"))
+say(:has(big, 99))
+say(:has(big, "nope"))

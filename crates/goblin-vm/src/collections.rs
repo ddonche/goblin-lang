@@ -1650,12 +1650,30 @@ pub fn has(coll: &CollectionValue, needle: &Value) -> bool {
             pairs.iter().any(|(k, _)| key_matches(k, needle, &key))
         }
         CollectionLayout::HashMapBackend(m) => {
-            m.contains_key(needle) || {
-                let key = crate::value::map_key_text(needle);
-                m.keys().any(|k| key_matches(k, needle, &key))
-            }
+            if m.contains_key(needle) { return true; }
+            // Same rule as key_matches, by lookup instead of a scan over every
+            // key (a scan made each miss O(n) and `if not :has ... update!`
+            // loops quadratic): try each key value whose text is the needle's.
+            let key = crate::value::map_key_text(needle);
+            key_candidates(&key).iter().any(|k| m.contains_key(k))
         }
     }
+}
+
+/// The scalar keys whose map_key_text is `text`.
+fn key_candidates(text: &str) -> Vec<Value> {
+    let mut out = vec![Value::Str(text.to_string())];
+    if let Ok(n) = text.parse::<i64>() {
+        if n.to_string() == text { out.push(Value::Int(n)); }
+    }
+    if let Ok(f) = text.parse::<f64>() {
+        if f.to_string() == text { out.push(Value::Float(f)); }
+    }
+    if let Ok(b) = text.parse::<bool>() { out.push(Value::Bool(b)); }
+    let mut cs = text.chars();
+    if let (Some(c), None) = (cs.next(), cs.next()) { out.push(Value::Char(c)); }
+    if text == "nil" { out.push(Value::Nil); }
+    out
 }
 
 pub fn count(coll: &CollectionValue) -> usize {
