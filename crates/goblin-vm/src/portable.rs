@@ -236,6 +236,13 @@ impl FromPortable {
         FromPortable { funcs: HashMap::new(), frozen: HashMap::new(), global_names: HashMap::new() }
     }
 
+    /// Drop rebuilt frozen values before converting into a new session: they
+    /// can hold closures whose captured variables live in the old one.
+    /// Converted functions hold no session state and are kept.
+    pub fn forget_values(&mut self) {
+        self.frozen.clear();
+    }
+
     pub fn value(&mut self, p: &PValue, session: &mut Session) -> Value {
         match p {
             PValue::Nil => Value::Nil,

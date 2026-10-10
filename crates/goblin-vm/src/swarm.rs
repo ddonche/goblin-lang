@@ -9,8 +9,8 @@
 //! order, and so does whatever each task printed. The first failing task stops
 //! the others from starting new items, and the swarm reports that failure.
 //!
-//! A frozen context (`:freeze`) is converted once and shared by every worker;
-//! each worker rebuilds it once for reading.
+//! A frozen context (`:freeze`) is converted once, when it is frozen, and
+//! shared by every worker; it stays read-only inside each task.
 //!
 //! `:swarm` and `:swarm!` share this engine. Both currently tear every worker
 //! down before returning, which is the stronger `:swarm!` contract; `:swarm`
@@ -166,42 +166,6 @@ fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize) -> Sessio
     s
 }
 
-/// The state every task in a worker starts from.
-struct Pristine {
-    globals: Vec<Option<Value>>,
-    token_store: BTreeMap<String, BTreeMap<String, Value>>,
-    object_store: HashMap<String, Value>,
-    box_store: HashMap<String, Value>,
-}
-
-impl Pristine {
-    fn capture(s: &Session) -> Self {
-        Pristine {
-            globals: s.globals.iter()
-                .map(|g| g.as_ref().and_then(|t| s.get_stash(t).ok()).map(|st| st.value.clone()))
-                .collect(),
-            token_store: s.token_store.clone(),
-            object_store: s.object_store.clone(),
-            box_store: s.box_store.clone(),
-        }
-    }
-
-    fn restore(&self, s: &mut Session) {
-        s.globals.truncate(self.globals.len());
-        for (i, g) in self.globals.iter().enumerate() {
-            match (g, s.globals.get(i).cloned().flatten()) {
-                (Some(v), Some(t)) if s.overwrite(&t, v.clone()).is_ok() => {}
-                (Some(v), _) => { let t = s.alloc_value(v.clone()); s.set_global(i, t); }
-                (None, _) => { if i < s.globals.len() { s.globals[i] = None; } }
-            }
-        }
-        s.token_store = self.token_store.clone();
-        s.object_store = self.object_store.clone();
-        s.box_store = self.box_store.clone();
-        s.response = Default::default();
-    }
-}
-
 fn task_seed(base: u128, i: usize) -> u128 {
     // splitmix-style mix, so each item's random sequence depends only on the
     // swarm and the item's position, never on which worker ran it.
@@ -245,7 +209,7 @@ pub fn run(
         let p_items = items.iter().map(|v| tp.value(v)).collect::<Result<Vec<_>, _>>()?;
         let p_action = tp.value(&action)?;
         let p_context = match &context {
-            Some(c) => Some(session.frozen_shared(c).map(PValue::Frozen).map_or_else(|| tp.value(c), Ok)?),
+            Some(c) => Some(tp.value(c)?),
             None => None,
         };
         (image, p_items, p_action, p_context)
@@ -267,26 +231,25 @@ pub fn run(
                 .name(format!("goblin-swarm-{w}"))
                 .stack_size(WORKER_STACK)
                 .spawn_scoped(sc, move || {
+                    // Functions are converted once per worker; everything a
+                    // task can change (globals, stores, closures and their
+                    // captured variables, the context) is rebuilt for every
+                    // task, so no task sees another's changes.
                     let mut fp = FromPortable::new();
-                    let session = build_session(image, &mut fp, w + 1);
-                    let pristine = Pristine::capture(&session);
-                    let mut vm = Vm::new(session);
-                    let action = fp.value(p_action, &mut vm.session);
-                    let context = p_context.as_ref().map(|c| fp.value(c, &mut vm.session));
-                    let mut first = true;
                     loop {
                         if cancel.load(Ordering::SeqCst) { break; }
                         let i = next.fetch_add(1, Ordering::SeqCst);
                         if i >= n { break; }
-                        if !first { pristine.restore(&mut vm.session); }
-                        first = false;
-                        vm.reset_for_task();
+                        fp.forget_values();
+                        let mut vm = Vm::new(build_session(image, &mut fp, w + 1));
+                        let action = fp.value(p_action, &mut vm.session);
+                        let context = p_context.as_ref().map(|c| fp.value(c, &mut vm.session));
                         vm.session.rng_state = task_seed(base_seed, i);
                         vm.session.output_buf = Some(String::new());
                         let mut args = vec![fp.value(&p_items[i], &mut vm.session)];
-                        if let Some(c) = &context { args.push(c.clone()); }
+                        if let Some(c) = context { args.push(c); }
                         let call = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            vm.call_callable(action.clone(), args)
+                            vm.call_callable(action, args)
                         }));
                         let output = vm.session.take_output();
                         let result = match call {
@@ -335,6 +298,5 @@ pub fn run(
 pub fn freeze(v: Value, session: &mut Session) -> Result<Value, GoblinError> {
     if let Value::Frozen(_) = v { return Ok(v); }
     let shared = Arc::new(ToPortable::new(session).value(&v)?);
-    session.remember_frozen(&v, &shared);
     Ok(Value::Frozen(std::rc::Rc::new(crate::value::Frozen { value: v, shared })))
 }

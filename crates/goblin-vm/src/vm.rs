@@ -131,14 +131,6 @@ impl Vm {
         Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0, interp_overrides: Vec::new() }
     }
 
-    /// Forget any frames and operands left by a previous swarm task.
-    pub(crate) fn reset_for_task(&mut self) {
-        self.stack.clear();
-        self.call_stack.clear();
-        self.catch_stack.clear();
-        self.interp_overrides.clear();
-    }
-
     /// Run a top-level function. Returns the final return value.
     pub fn execute(&mut self, mut func: FunctionObject) -> Result<Value, GoblinError> {
         self.quicken(&mut func);
@@ -1271,7 +1263,8 @@ impl Vm {
                 // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
                 for i in (0..arg_count).rev() {
                     let op = self.stack.pop().unwrap();
-                    let v = self.resolve_op(op)?;
+                    // A frozen argument stays frozen inside the callee.
+                    let v = self.resolve_op_raw(op)?;
                     let t = self.session.alloc_value(v);
                     new_frame.locals[i] = Some(t);
                 }
@@ -1365,7 +1358,13 @@ impl Vm {
                     return Err(GoblinError::Runtime("stack underflow on CallBuiltin".into()));
                 }
                 let start = self.stack.len() - arg_count;
-                let arg_vals = self.drain_operands(start)?;
+                // `:swarm` needs to see whether its context is frozen.
+                let arg_vals = if matches!(id, BuiltinId::Swarm | BuiltinId::SwarmBang) {
+                    let ops: Vec<Operand> = self.stack.drain(start..).collect();
+                    ops.into_iter().map(|op| self.resolve_op_raw(op)).collect::<Result<Vec<_>, _>>()?
+                } else {
+                    self.drain_operands(start)?
+                };
 
                 // Special handling for builtins that need VM call capability.
                 match id {
@@ -2503,6 +2502,12 @@ impl Vm {
     /// `b | shared` makes `b` frozen too.
     fn stack_pop_raw(&mut self) -> Result<Value, GoblinError> {
         let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
+        self.resolve_op_raw(op)
+    }
+
+    /// Resolve an operand but keep a frozen snapshot frozen (stores, call
+    /// arguments, and the context handed to `:swarm`).
+    fn resolve_op_raw(&self, op: Operand) -> Result<Value, GoblinError> {
         match op {
             Operand::Val(v) => Ok(v),
             Operand::Ref(t) => match &self.session.get_stash(&t)?.value {

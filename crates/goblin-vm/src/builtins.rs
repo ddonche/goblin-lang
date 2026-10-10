@@ -3624,10 +3624,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 return Err(GoblinError::Runtime(format!(
                     "{name}: expects (items, action, workers) or (items, action, workers, context), got {} arguments", args.len())));
             }
+            // Only the context may stay frozen; the VM hands these over raw.
+            let thaw = |v: Value| match v { Value::Frozen(f) => f.value.clone(), v => v };
             let mut it = args.into_iter();
-            let items_v = it.next().unwrap();
-            let action = it.next().unwrap();
-            let workers = match it.next().unwrap() {
+            let items_v = thaw(it.next().unwrap());
+            let action = thaw(it.next().unwrap());
+            let workers = match thaw(it.next().unwrap()) {
                 Value::Int(n) => n,
                 other => return Err(GoblinError::Runtime(format!(
                     "C0104: swarm-workers: the worker count must be a positive whole number, got {}", other.type_name()))),
