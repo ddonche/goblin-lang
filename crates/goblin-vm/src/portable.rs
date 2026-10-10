@@ -223,7 +223,8 @@ impl<'s> ToPortable<'s> {
 /// snapshots are rebuilt once per session.
 pub struct FromPortable {
     funcs: HashMap<*const PFunction, Rc<FunctionObject>>,
-    frozen: HashMap<*const PValue, Rc<Frozen>>,
+    /// Rebuilt frozen values, and whether each holds a closure.
+    frozen: HashMap<*const PValue, (Rc<Frozen>, bool)>,
     global_names: HashMap<Vec<String>, Rc<std::cell::OnceCell<Vec<String>>>>,
 }
 
@@ -236,11 +237,12 @@ impl FromPortable {
         FromPortable { funcs: HashMap::new(), frozen: HashMap::new(), global_names: HashMap::new() }
     }
 
-    /// Drop rebuilt frozen values before converting into a new session: they
-    /// can hold closures whose captured variables live in the old one.
-    /// Converted functions hold no session state and are kept.
+    /// Before converting into a new session, drop rebuilt frozen values that
+    /// hold closures: their captured variables live in the old session.
+    /// Frozen values without closures hold no session state and are reused,
+    /// as are converted functions.
     pub fn forget_values(&mut self) {
-        self.frozen.clear();
+        self.frozen.retain(|_, (_, cells)| !*cells);
     }
 
     pub fn value(&mut self, p: &PValue, session: &mut Session) -> Value {
@@ -310,10 +312,10 @@ impl FromPortable {
     /// A frozen snapshot, rebuilt once per session however often it arrives.
     pub fn frozen(&mut self, shared: &Arc<PValue>, session: &mut Session) -> Rc<Frozen> {
         let key = Arc::as_ptr(shared);
-        if let Some(f) = self.frozen.get(&key) { return f.clone(); }
+        if let Some((f, _)) = self.frozen.get(&key) { return f.clone(); }
         let value = self.value(shared, session);
         let f = Rc::new(Frozen { value, shared: shared.clone() });
-        self.frozen.insert(key, f.clone());
+        self.frozen.insert(key, (f.clone(), has_closure(shared)));
         f
     }
 
@@ -354,5 +356,30 @@ impl FromPortable {
         });
         self.funcs.insert(key, r.clone());
         r
+    }
+}
+
+/// Whether a portable value holds a closure anywhere inside it.
+fn has_closure(p: &PValue) -> bool {
+    let any = |vs: &[PValue]| vs.iter().any(has_closure);
+    let any_pairs = |ps: &[(PValue, PValue)]| ps.iter().any(|(k, v)| has_closure(k) || has_closure(v));
+    let any_fields = |fs: &[(String, PValue)]| fs.iter().any(|(_, v)| has_closure(v));
+    match p {
+        PValue::Closure(..) => true,
+        PValue::Formatted(v, _) | PValue::CtrlReturn(v) => has_closure(v),
+        PValue::Array(a) | PValue::Seq(a) => any(a),
+        PValue::Map(m) => m.values().any(has_closure),
+        PValue::MapOrd(m) => any_fields(m),
+        PValue::Pair(a, b) => has_closure(a) || has_closure(b),
+        PValue::Object { fields, .. } => any_fields(fields),
+        PValue::Enum { fields: Some(f), .. } => any_fields(f),
+        PValue::Collection(layout, _) => match layout {
+            PLayout::FlatArray(v) => any(v),
+            PLayout::RingBuf { buf, .. } => any(buf),
+            PLayout::ChunkedSeq { chunks, .. } => chunks.iter().any(|c| any(c)),
+            PLayout::SmallMap(p) | PLayout::HashMapBackend(p) => any_pairs(p),
+        },
+        PValue::Frozen(inner) => has_closure(inner),
+        _ => false,
     }
 }
