@@ -51,6 +51,9 @@ pub enum Opcode {
     /// Pop (new_val_tether, target_tether) and call session.overwrite.
     /// Stack before: [..., target, new_val]
     Overwrite,
+    /// Pop the variable just loaded; error if it holds a frozen snapshot.
+    /// The u16 is the constant index of the variable's name.
+    GuardMutable(u16),
 
     // ── Arithmetic (generic — quickened at runtime) ────────────────────────────
     Add,
@@ -320,6 +323,7 @@ impl Opcode {
             Opcode::Pop             => "Pop",
             Opcode::Dup             => "Dup",
             Opcode::Overwrite       => "Overwrite",
+            Opcode::GuardMutable(_) => "GuardMutable",
             Opcode::Add             => "Add",
             Opcode::Sub             => "Sub",
             Opcode::Mul             => "Mul",

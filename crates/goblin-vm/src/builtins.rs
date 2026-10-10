@@ -3611,6 +3611,34 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             Ok(Value::Str(name.to_string()))
         }
+        BuiltinId::Freeze => {
+            if args.len() != 1 {
+                return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "freeze".into() });
+            }
+            let v = args.into_iter().next().unwrap();
+            crate::swarm::freeze(v, session)
+        }
+        BuiltinId::Swarm | BuiltinId::SwarmBang => {
+            let name = if id == BuiltinId::Swarm { "swarm" } else { "swarm!" };
+            if !(3..=4).contains(&args.len()) {
+                return Err(GoblinError::Runtime(format!(
+                    "{name}: expects (items, action, workers) or (items, action, workers, context), got {} arguments", args.len())));
+            }
+            let mut it = args.into_iter();
+            let items_v = it.next().unwrap();
+            let action = it.next().unwrap();
+            let workers = match it.next().unwrap() {
+                Value::Int(n) => n,
+                other => return Err(GoblinError::Runtime(format!(
+                    "C0104: swarm-workers: the worker count must be a positive whole number, got {}", other.type_name()))),
+            };
+            let context = it.next();
+            if !items_v.is_seq_like() {
+                return Err(GoblinError::type_error("array", items_v.type_name(), name));
+            }
+            let items = value_to_items(items_v, "swarm")?;
+            crate::swarm::run(items, action, workers, context, session, id == BuiltinId::SwarmBang)
+        }
         BuiltinId::DtAddDuration => {
             if args.len() != 2 {
                 return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "add_duration".into() });
@@ -5226,6 +5254,7 @@ fn fmt_pct(p: f64) -> String {
 
 pub fn value_to_str(v: &Value) -> String {
     match v {
+        Value::Frozen(f)       => value_to_str(&f.value),
         Value::Nil             => "nil".to_string(),
         Value::Unit            => String::new(),
         Value::Bool(b)         => b.to_string(),

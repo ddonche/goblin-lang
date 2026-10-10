@@ -131,6 +131,14 @@ impl Vm {
         Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0, interp_overrides: Vec::new() }
     }
 
+    /// Forget any frames and operands left by a previous swarm task.
+    pub(crate) fn reset_for_task(&mut self) {
+        self.stack.clear();
+        self.call_stack.clear();
+        self.catch_stack.clear();
+        self.interp_overrides.clear();
+    }
+
     /// Run a top-level function. Returns the final return value.
     pub fn execute(&mut self, mut func: FunctionObject) -> Result<Value, GoblinError> {
         self.quicken(&mut func);
@@ -276,7 +284,7 @@ impl Vm {
                         return Ok(());
                     }
                 }
-                let val = self.stack_pop()?;
+                let val = self.stack_pop_raw()?;
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
                     crate::builtins::cast_value_to_lock(val, &lock)?
@@ -336,7 +344,7 @@ impl Vm {
                         return Ok(());
                     }
                 }
-                let val = self.stack_pop()?;
+                let val = self.stack_pop_raw()?;
                 // Retether: if a hard type lock exists for this global, auto-cast the incoming value.
                 let val = if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
                     crate::builtins::cast_value_to_lock(val, &lock)?
@@ -525,7 +533,7 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreUpvalue(idx) => {
-                let val = self.stack_pop()?;
+                let val = self.stack_pop_raw()?;
                 let t = if let Value::Object { ref uuid, .. } = val {
                     let uuid = uuid.clone();
                     self.session.object_store.insert(uuid.clone(), val);
@@ -554,6 +562,21 @@ impl Vm {
             // With Vec<Value> stack, overwrite of named locals requires the slot-based
             // Overwrite(slot) opcode (future work). This placeholder handles the case
             // where the target is a Ref in the object_store.
+            Opcode::GuardMutable(name_idx) => {
+                let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
+                let frozen = match &op {
+                    Operand::Val(v) => matches!(v, Value::Frozen(_)),
+                    Operand::Ref(t) => matches!(self.session.get_stash(t)?.value, Value::Frozen(_)),
+                };
+                if frozen {
+                    let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::from("?"),
+                    };
+                    return Err(GoblinError::Runtime(format!(
+                        "C0102: frozen-snapshot: '{name}' holds a frozen snapshot (from :freeze), which cannot be changed")));
+                }
+            }
             Opcode::Overwrite => {
                 let new_val = self.stack_pop()?;
                 let target = self.stack_pop()?;
@@ -2470,8 +2493,22 @@ impl Vm {
     #[inline]
     fn resolve_op(&self, op: Operand) -> Result<Value, GoblinError> {
         match op {
+            Operand::Val(Value::Frozen(f)) => Ok(f.value.clone()),
             Operand::Val(v) => Ok(v),
             Operand::Ref(t) => self.session.read_value(&t),
+        }
+    }
+
+    /// Pop one operand for a store: a frozen snapshot stays frozen, so
+    /// `b | shared` makes `b` frozen too.
+    fn stack_pop_raw(&mut self) -> Result<Value, GoblinError> {
+        let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
+        match op {
+            Operand::Val(v) => Ok(v),
+            Operand::Ref(t) => match &self.session.get_stash(&t)?.value {
+                f @ Value::Frozen(_) => Ok(f.clone()),
+                _ => self.session.read_value(&t),
+            },
         }
     }
 

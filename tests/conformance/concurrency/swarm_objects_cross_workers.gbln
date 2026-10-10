@@ -1,0 +1,17 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Objects cross to workers as copies: their methods run there, and changing a copy never changes the caller's object.
+<>Point |
+    x: 0
+    y: 0
+    act sum_xy()
+        return self >> x + self >> y
+    xx
+xx
+a <> Point | x: 1, y: 2
+b <> Point | x: 3, y: 4
+act measure(p)
+    p >> x |= 100
+    return p.sum_xy()
+xx
+say(:swarm([a, b], measure, 2))
+say(a >> x)

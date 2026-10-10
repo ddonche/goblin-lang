@@ -203,6 +203,9 @@ pub struct Session {
     /// Output buffer — when Some, say/print write here instead of stdout.
     /// Used by the WASM REPL to capture output.
     pub output_buf: Option<String>,
+    /// Collections frozen by `:freeze`, with their shared worker form, so a
+    /// frozen context passed to `:swarm` is not converted a second time.
+    pub frozen_cache: Vec<(std::rc::Weak<crate::value::CollectionValue>, std::sync::Arc<crate::portable::PValue>)>,
 }
 
 impl Session {
@@ -295,7 +298,24 @@ impl Session {
             action_needs: HashMap::new(),
             action_file_map: HashMap::new(),
             output_buf: None,
+            frozen_cache: Vec::new(),
         }
+    }
+
+    /// Remember the shared form of a value just frozen (collections only).
+    pub fn remember_frozen(&mut self, v: &Value, shared: &std::sync::Arc<crate::portable::PValue>) {
+        self.frozen_cache.retain(|(w, _)| w.strong_count() > 0);
+        if let Value::Collection(c) = v {
+            self.frozen_cache.push((std::rc::Rc::downgrade(c), shared.clone()));
+        }
+    }
+
+    /// The shared form of `v` if `v` is a collection read out of a frozen snapshot.
+    pub fn frozen_shared(&self, v: &Value) -> Option<std::sync::Arc<crate::portable::PValue>> {
+        let Value::Collection(c) = v else { return None };
+        self.frozen_cache.iter()
+            .find(|(w, _)| w.upgrade().is_some_and(|r| std::rc::Rc::ptr_eq(&r, c)))
+            .map(|(_, s)| s.clone())
     }
 
     /// Enable output capture (used by WASM REPL).
@@ -414,6 +434,7 @@ impl Session {
                 .ok_or_else(|| crate::error::GoblinError::Runtime(
                     format!("dangling ref: uuid {} not in object_store", uuid)
                 )),
+            Value::Frozen(f) => Ok(f.value.clone()),
             other => Ok(other),
         }
     }
@@ -500,7 +521,7 @@ impl Session {
             | Value::Big(_) | Value::Pct(_) | Value::Char(_) | Value::Str(_)
             | Value::CtrlSkip | Value::CtrlStop
             | Value::Ref(_) | Value::GridRef { .. } | Value::Class { .. }
-            | Value::DateTime(_) | Value::Duration(_) => {
+            | Value::DateTime(_) | Value::Duration(_) | Value::Frozen(_) => {
                 self.alloc_value(value.clone())
             }
 

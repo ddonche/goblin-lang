@@ -1,0 +1,14 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A failing task fails the whole swarm with C0103, naming the item.
+act risky(x)
+    if x == 2
+        return x / 0
+    xx
+    return x
+xx
+attempt
+    :swarm([1, 2, 3], risky, 1)
+rescue e
+    say(:has("{e}", "C0103: swarm-task-failed: the task for item 1 failed"))
+    say(:has("{e}", "division by zero"))
+xx

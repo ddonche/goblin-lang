@@ -1,0 +1,28 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A frozen snapshot cannot be changed: not directly, not through a nested field, and not through another name bound to it (C0102).
+shared | :freeze({"a": 1, "list": [1, 2]})
+attempt
+    :put!(shared{"list"}, 9)
+rescue e
+    say(:has("{e}", "C0102"))
+xx
+attempt
+    :update!(shared{"a"}, 2)
+rescue e
+    say(:has("{e}", "C0102"))
+xx
+alias | shared
+attempt
+    :delete!(alias, "a")
+rescue e
+    say(:has("{e}", "C0102"))
+xx
+n | :freeze(5)
+attempt
+    n++
+rescue e
+    say(:has("{e}", "C0102"))
+xx
+say(shared)
+shared |= {"a": 3}
+say(shared)

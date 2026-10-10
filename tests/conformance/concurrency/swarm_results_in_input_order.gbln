@@ -1,0 +1,13 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// :swarm returns results in input order, whatever order the workers finish in.
+act work(n)
+    total | 0
+    i | 0
+    while i < n
+        total |= total + 1
+        i |= i + 1
+    xx
+    return total
+xx
+say(:swarm([4000, 10, 3000, 1, 2000, 5], work, 3))
+say(:swarm([], work, 2))
