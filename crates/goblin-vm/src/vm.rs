@@ -2121,10 +2121,14 @@ impl Vm {
                 let source_file = self.call_stack.last()
                     .map(|f| f.func.source_file.clone())
                     .unwrap_or_default();
-                self.session.action_file_map
-                    .entry(source_file)
-                    .or_default()
-                    .push((name.clone(), value.clone()));
+                // One entry per action and file: a nested `act` runs again on
+                // every call, and keeping each old closure here would keep it
+                // (and what it captured) alive for good.
+                let list = self.session.action_file_map.entry(source_file).or_default();
+                match list.iter_mut().find(|(n, _)| *n == name) {
+                    Some(entry) => entry.1 = value.clone(),
+                    None => list.push((name.clone(), value.clone())),
+                }
                 self.session.named_values.insert(name, value);
             }
 
