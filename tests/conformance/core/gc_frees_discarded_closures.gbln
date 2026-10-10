@@ -1,0 +1,21 @@
+/// known-gap: interp stash_count is VM-only (unknown action)
+/// Closures that are no longer reachable are collected, even when they were
+/// made by running a nested act many times.
+act make_counter(start)
+    n | start
+    act bump(x)
+        n |= n + x
+        return n
+    xx
+    return bump
+xx
+kept | make_counter(5)
+i | 0
+while i < 3000
+    c | make_counter(i)
+    c(1)
+    i |= i + 1
+xx
+:gc()
+say(:stash_count(){"total"} < 500)
+say(kept(1))

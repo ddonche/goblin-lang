@@ -4,7 +4,7 @@ use crate::error::GoblinError;
 use crate::opcode::Opcode;
 use crate::session::Session;
 use crate::value::{
-    BuiltinId, Closure, CollectionValue, FunctionObject, Tether, UpvalueCell,
+    BuiltinId, Closure, CollectionLayout, CollectionValue, FunctionObject, Tether, UpvalueCell,
     UpvalueDescriptor, Value,
 };
 
@@ -121,14 +121,13 @@ pub struct Vm {
     pub stack: Vec<Operand>,
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
-    gc_op_counter: u32,
     /// Placeholder values for the string being interpolated (StringInterpVals).
     interp_overrides: Vec<(String, Value)>,
 }
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), gc_op_counter: 0, interp_overrides: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -179,12 +178,8 @@ impl Vm {
 
     fn run_loop(&mut self) -> Result<(), GoblinError> {
         loop {
-            // Periodic mark-sweep GC: every 5000 ops, free unreachable stashes.
-            self.gc_op_counter += 1;
-            if self.gc_op_counter >= 5000 {
-                self.gc_op_counter = 0;
-                self.vm_gc();
-            }
+            // Mark-sweep GC once the arena has doubled since the last one.
+            if self.session.gc_due() { self.vm_gc(); }
 
             // Fetch next opcode (avoid holding a mutable borrow across the match).
             let op = {
@@ -1446,7 +1441,7 @@ impl Vm {
                         let live_slots = self.collect_live_slots();
                         let total = self.session.arena.len();
                         let live = self.session.arena.iter()
-                            .filter(|(slot, _)| live_slots.contains(&(*slot as u32)))
+                            .filter(|(slot, _)| live_slots.get(*slot).copied().unwrap_or(false))
                             .count();
                         let abandoned = total - live;
                         let mut map = indexmap::IndexMap::new();
@@ -1459,7 +1454,7 @@ impl Vm {
                     BuiltinId::TetherCount => {
                         // TetherCount without slot info is approximate — count all live slots.
                         let live_slots = self.collect_live_slots();
-                        let count = live_slots.len();
+                        let count = live_slots.iter().filter(|l| **l).count();
                         self.stack.push(Operand::Val(Value::Int(count as i64)));
                         return Ok(());
                     }
@@ -1705,6 +1700,7 @@ impl Vm {
                     // A captured stash has a second holder, so it is never
                     // changed in place (see sole_ref_target).
                     self.session.inc_tether(&tether)?;
+                    self.session.has_cells = true;
                     upvalues.push(UpvalueCell::new(tether));
                 }
 
@@ -2125,10 +2121,14 @@ impl Vm {
                 let source_file = self.call_stack.last()
                     .map(|f| f.func.source_file.clone())
                     .unwrap_or_default();
-                self.session.action_file_map
-                    .entry(source_file)
-                    .or_default()
-                    .push((name.clone(), value.clone()));
+                // One entry per action and file: a nested `act` runs again on
+                // every call, and keeping each old closure here would keep it
+                // (and what it captured) alive for good.
+                let list = self.session.action_file_map.entry(source_file).or_default();
+                match list.iter_mut().find(|(n, _)| *n == name) {
+                    Some(entry) => entry.1 = value.clone(),
+                    None => list.push((name.clone(), value.clone())),
+                }
                 self.session.named_values.insert(name, value);
             }
 
@@ -2427,34 +2427,43 @@ impl Vm {
 
     // ── GC ────────────────────────────────────────────────────────────────────
 
-    /// Collect all live tether slots reachable from the VM's roots:
-    /// call frame locals and upvalue cells. Stack holds Values directly (no arena slots).
-    fn collect_live_slots(&self) -> std::collections::HashSet<u32> {
-        let mut live = std::collections::HashSet::new();
+    /// Mark every arena slot reachable from the VM's roots: frame locals,
+    /// `self`, captured variables, globals and operands. Values held in those
+    /// slots, on the stack and in the session's stores are traced too, since
+    /// a closure inside any of them keeps its captured variables alive.
+    fn collect_live_slots(&self) -> Vec<bool> {
+        let mut m = Marker {
+            live: vec![false; self.session.arena.capacity()],
+            pending: Vec::new(),
+            seen: std::collections::HashSet::new(),
+            trace: self.session.has_cells,
+        };
         for frame in &self.call_stack {
-            for maybe_t in &frame.locals {
-                if let Some(t) = maybe_t {
-                    live.insert(t.addr.slot);
-                }
-            }
-            for cell in &frame.upvalues {
-                live.insert(cell.0.borrow().addr.slot);
-            }
+            for t in frame.locals.iter().flatten() { m.slot(t.addr.slot); }
+            if let Some(t) = &frame.self_tether { m.slot(t.addr.slot); }
+            for cell in &frame.upvalues { m.slot(cell.0.borrow().addr.slot); }
         }
-        // Globals are roots — never collect them.
-        for maybe_t in &self.session.globals {
-            if let Some(t) = maybe_t {
-                live.insert(t.addr.slot);
-            }
-        }
-
-        // Ref operands on the expression stack hold arena slots too.
+        for t in self.session.globals.iter().flatten() { m.slot(t.addr.slot); }
         for op in &self.stack {
-            if let Operand::Ref(t) = op {
-                live.insert(t.addr.slot);
+            match op {
+                Operand::Ref(t) => m.slot(t.addr.slot),
+                Operand::Val(v) => m.value(v),
             }
         }
-        live
+        if m.trace {
+            for (_, v) in &self.interp_overrides { m.value(v); }
+            let s = &self.session;
+            for v in s.object_store.values().chain(s.box_store.values()).chain(s.named_values.values()) { m.value(v); }
+            for ns in s.token_store.values() { for v in ns.values() { m.value(v); } }
+            for list in s.action_file_map.values() { for (_, v) in list { m.value(v); } }
+        }
+        // Values in marked slots can hold more slots.
+        while let Some(slot) = m.pending.pop() {
+            if let Some(stash) = self.session.arena.get(slot as usize) {
+                m.value(&stash.value);
+            }
+        }
+        m.live
     }
 
     /// Mark-sweep GC: free all arena stashes not reachable from live roots.
@@ -2574,6 +2583,9 @@ impl Vm {
 
     pub(crate) fn run_until_depth(&mut self, target_depth: usize) -> Result<(), GoblinError> {
         while self.call_stack.len() > target_depth {
+            // Nested runs (`:summon`, callbacks) collect too; the frames below
+            // stay on `call_stack`, so they are still roots.
+            if self.session.gc_due() { self.vm_gc(); }
             let op = {
                 let frame = match self.call_stack.last_mut() {
                     Some(f) => f,
@@ -4342,5 +4354,63 @@ fn bracket_error(v: &Value, brace: bool, label: &str) -> Option<GoblinError> {
         Some(GoblinError::Runtime(format!("`{label}` is a string. Use [] for strings: {label}[0]")))
     } else {
         None
+    }
+}
+
+/// Marking state for `Vm::collect_live_slots`.
+struct Marker {
+    live: Vec<bool>,
+    /// Newly marked slots whose values still need tracing.
+    pending: Vec<u32>,
+    /// Shared containers already traced in this collection.
+    seen: std::collections::HashSet<usize>,
+    /// Whether values can hold slots at all (some closure has captured).
+    trace: bool,
+}
+
+impl Marker {
+    fn slot(&mut self, slot: u32) {
+        if let Some(l) = self.live.get_mut(slot as usize) {
+            if !*l {
+                *l = true;
+                if self.trace { self.pending.push(slot); }
+            }
+        }
+    }
+
+    fn first_visit<T>(&mut self, rc: &Rc<T>) -> bool {
+        self.seen.insert(Rc::as_ptr(rc) as *const u8 as usize)
+    }
+
+    fn value(&mut self, v: &Value) {
+        if !self.trace { return; }
+        match v {
+            Value::Closure(c) => {
+                if !self.first_visit(c) { return; }
+                for cell in &c.upvalues { self.slot(cell.0.borrow().addr.slot); }
+            }
+            Value::Collection(c) => {
+                if !self.first_visit(c) { return; }
+                match &c.layout {
+                    CollectionLayout::FlatArray(items) => for x in items.iter() { self.value(x) },
+                    CollectionLayout::RingBuf(r) => for x in &r.buf { self.value(x) },
+                    CollectionLayout::ChunkedSeq(ch) => for x in ch.chunks.iter().flatten() { self.value(x) },
+                    CollectionLayout::SmallMap(kv) => for (k, x) in kv.iter() { self.value(k); self.value(x) },
+                    CollectionLayout::HashMapBackend(kv) => for (k, x) in kv.iter() { self.value(k); self.value(x) },
+                }
+            }
+            Value::Object { fields, .. } => {
+                if !self.first_visit(fields) { return; }
+                for x in fields.values() { self.value(x) }
+            }
+            Value::Array(items) => for x in items { self.value(x) },
+            Value::Seq(sq) => for x in &sq.items { self.value(x) },
+            Value::Map(m) => for x in m.values() { self.value(x) },
+            Value::MapOrd(m) => for x in m.values() { self.value(x) },
+            Value::Pair(a, b) => { self.value(a); self.value(b) }
+            Value::Formatted(x, _) | Value::CtrlReturn(x) => self.value(x),
+            Value::Enum { fields: Some(f), .. } => for x in f.values() { self.value(x) },
+            _ => {}
+        }
     }
 }
