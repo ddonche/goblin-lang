@@ -1117,7 +1117,7 @@ async fn exec_goblin_script_via_vm(
             use goblin_vm::value::Value;
             let html = goblin_vm::render::render_template(&script_path_str, Value::Nil)?;
             let html_str = match html {
-                Value::Str(s) => s,
+                Value::Str(s) => s.into_string(),
                 other => format!("{other:?}"),
             };
             let mut response = goblin_vm::session::ResponseState::default();

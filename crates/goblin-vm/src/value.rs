@@ -66,6 +66,52 @@ impl Seq {
     pub fn is_empty(&self) -> bool { self.items.is_empty() }
 }
 
+/// A Goblin string. Copies share one buffer; a change copies it only when
+/// another value still shares it, so reading or passing a string is cheap.
+#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GStr(Rc<String>);
+
+impl GStr {
+    pub fn new(s: String) -> Self { GStr(Rc::new(s)) }
+    pub fn as_str(&self) -> &str { self.0.as_str() }
+    /// The text to change in place; copied first only if it is shared.
+    pub fn make_mut(&mut self) -> &mut String { Rc::make_mut(&mut self.0) }
+    /// True when no other value shares this text.
+    pub fn is_unique(&self) -> bool { Rc::strong_count(&self.0) == 1 }
+    /// The owned text, without copying when nothing else shares it.
+    pub fn into_string(self) -> String { Rc::try_unwrap(self.0).unwrap_or_else(|rc| (*rc).clone()) }
+}
+impl std::ops::Deref for GStr {
+    type Target = String;
+    fn deref(&self) -> &String { &self.0 }
+}
+impl std::fmt::Debug for GStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(self.0.as_str(), f) }
+}
+impl std::fmt::Display for GStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
+}
+impl From<String> for GStr { fn from(s: String) -> Self { GStr::new(s) } }
+impl From<&str> for GStr { fn from(s: &str) -> Self { GStr::new(s.to_string()) } }
+impl From<&String> for GStr { fn from(s: &String) -> Self { GStr::new(s.clone()) } }
+impl From<char> for GStr { fn from(c: char) -> Self { GStr::new(c.to_string()) } }
+impl FromIterator<char> for GStr { fn from_iter<I: IntoIterator<Item = char>>(i: I) -> Self { GStr::new(i.into_iter().collect()) } }
+impl<'a> FromIterator<&'a char> for GStr { fn from_iter<I: IntoIterator<Item = &'a char>>(i: I) -> Self { GStr::new(i.into_iter().collect()) } }
+impl<'a> FromIterator<&'a str> for GStr { fn from_iter<I: IntoIterator<Item = &'a str>>(i: I) -> Self { GStr::new(i.into_iter().collect()) } }
+impl FromIterator<String> for GStr { fn from_iter<I: IntoIterator<Item = String>>(i: I) -> Self { GStr::new(i.into_iter().collect()) } }
+impl From<GStr> for String { fn from(s: GStr) -> Self { s.into_string() } }
+impl std::borrow::Borrow<str> for GStr { fn borrow(&self) -> &str { self.0.as_str() } }
+impl AsRef<str> for GStr { fn as_ref(&self) -> &str { self.0.as_str() } }
+impl AsRef<std::path::Path> for GStr { fn as_ref(&self) -> &std::path::Path { std::path::Path::new(self.0.as_str()) } }
+impl AsRef<std::ffi::OsStr> for GStr { fn as_ref(&self) -> &std::ffi::OsStr { std::ffi::OsStr::new(self.0.as_str()) } }
+impl AsRef<[u8]> for GStr { fn as_ref(&self) -> &[u8] { self.0.as_bytes() } }
+impl PartialEq<str> for GStr { fn eq(&self, o: &str) -> bool { self.0.as_str() == o } }
+impl PartialEq<&str> for GStr { fn eq(&self, o: &&str) -> bool { self.0.as_str() == *o } }
+impl PartialEq<String> for GStr { fn eq(&self, o: &String) -> bool { *self.0 == *o } }
+impl PartialEq<GStr> for str { fn eq(&self, o: &GStr) -> bool { self == o.0.as_str() } }
+impl PartialEq<GStr> for &str { fn eq(&self, o: &GStr) -> bool { *self == o.0.as_str() } }
+impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == *o.0 } }
+
 /// The user-facing value stored inside a stash.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -78,7 +124,7 @@ pub enum Value {
     Big(rust_decimal::Decimal),
     Pct(f64),
     Char(char),
-    Str(String),
+    Str(GStr),
     DateTime(GoblinDateTime),
     /// A length of time in nanoseconds, shown in the unit it was written in.
     Duration(Box<crate::duration::Duration>),
@@ -261,7 +307,7 @@ impl Eq for Value {}
 /// String keys, map collections have Value keys).
 pub fn map_key_text(k: &Value) -> String {
     match k {
-        Value::Str(s)   => s.clone(),
+        Value::Str(s)   => s.to_string(),
         Value::Int(n)   => n.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Bool(b)  => b.to_string(),
@@ -361,7 +407,7 @@ impl Value {
             Value::Collection(c) => match &c.layout {
                 CollectionLayout::SmallMap(p) =>
                     p.iter().find(|(k, _)| map_key_text(k) == key).map(|(_, v)| v.clone()),
-                CollectionLayout::HashMapBackend(m) => m.get(&Value::Str(key.to_string())).cloned()
+                CollectionLayout::HashMapBackend(m) => m.get(&Value::Str(key.to_string().into())).cloned()
                     .or_else(|| m.iter().find(|(k, _)| map_key_text(k) == key).map(|(_, v)| v.clone())),
                 _ => None,
             },

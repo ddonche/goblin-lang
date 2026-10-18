@@ -438,12 +438,12 @@ impl Vm {
                         },
                         _ => lock,
                     };
-                    self.stack.push(Operand::Val(Value::Str(label)));
+                    self.stack.push(Operand::Val(Value::Str(label.into())));
                 } else {
                     // No lock — fall through to normal type name of the value.
                     let t = self.call_stack.last().unwrap().load_local(slot)?;
                     let val = self.session.read_value(&t)?;
-                    self.stack.push(Operand::Val(Value::Str(val.type_name().to_string())));
+                    self.stack.push(Operand::Val(Value::Str(val.type_name().to_string().into())));
                 }
             }
 
@@ -463,13 +463,13 @@ impl Vm {
                         },
                         _ => lock,
                     };
-                    self.stack.push(Operand::Val(Value::Str(label)));
+                    self.stack.push(Operand::Val(Value::Str(label.into())));
                 } else {
                     let t = self.session.get_global(idx as usize)
                         .cloned()
                         .ok_or_else(|| GoblinError::Runtime(format!("global slot {idx} is uninitialized")))?;
                     let val = self.session.read_value(&t)?;
-                    self.stack.push(Operand::Val(Value::Str(val.type_name().to_string())));
+                    self.stack.push(Operand::Val(Value::Str(val.type_name().to_string().into())));
                 }
             }
 
@@ -558,7 +558,7 @@ impl Vm {
                 if frozen {
                     let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
                         Some(Value::Str(s)) => s.clone(),
-                        _ => String::from("?"),
+                        _ => String::from("?").into(),
                     };
                     return Err(GoblinError::Runtime(format!(
                         "C0102: frozen-snapshot: '{name}' holds a frozen snapshot (from :freeze), which cannot be changed")));
@@ -594,7 +594,7 @@ impl Vm {
                     (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
                     (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 + y),
                     (Value::Float(x), Value::Int(y))   => Value::Float(x + *y as f64),
-                    (Value::Str(x), Value::Str(y))     => Value::Str(format!("{}{}", x, y)),
+                    (Value::Str(x), Value::Str(y))     => Value::Str(format!("{}{}", x, y).into()),
                     (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
                     (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
                     (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
@@ -613,10 +613,10 @@ impl Vm {
                     }
                     // Text joins only with text (owner, 2026-10-07): str + char, or a
                     // formatted value's text. `"a" + 3` is an error: convert explicitly.
-                    (Value::Char(c), Value::Str(y)) => Value::Str(format!("{}{}", c, y)),
-                    (Value::Str(x), Value::Char(c)) => Value::Str(format!("{}{}", x, c)),
-                    (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y)),
-                    (Value::Str(x), b2) if b_spec.is_some() => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2))),
+                    (Value::Char(c), Value::Str(y)) => Value::Str(format!("{}{}", c, y).into()),
+                    (Value::Str(x), Value::Char(c)) => Value::Str(format!("{}{}", x, c).into()),
+                    (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y).into()),
+                    (Value::Str(x), b2) if b_spec.is_some() => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2)).into()),
                     (other, Value::Str(_)) | (Value::Str(_), other) => {
                         let t = other.type_name();
                         return Err(GoblinError::Runtime(format!(
@@ -758,7 +758,7 @@ impl Vm {
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 // An empty side adds no space; surrounding quote marks are dropped.
                 let joined = if a_str.is_empty() { b_str } else if b_str.is_empty() { a_str } else { format!("{} {}", a_str, b_str) };
-                let result = Value::Str(joined.trim_matches('"').to_string());
+                let result = Value::Str(joined.trim_matches('"').to_string().into());
                 self.stack.push(Operand::Val(result));
             }
 
@@ -868,7 +868,7 @@ impl Vm {
                 if is_obj(&old) && !is_obj(&new) {
                     let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
                         Some(Value::Str(s)) => s.clone(),
-                        _ => String::new(),
+                        _ => String::new().into(),
                     };
                     return Err(GoblinError::Runtime(format!(
                         "R1300: '{name}' is an object and cannot be rebound to a non-object value")));
@@ -877,7 +877,7 @@ impl Vm {
             Opcode::CheckPath(n, info_idx) => {
                 let n = n as usize;
                 let info: Vec<String> = match self.call_stack.last().and_then(|f| f.func.constants.get(info_idx as usize)) {
-                    Some(Value::Array(items)) => items.iter().map(|v| match v { Value::Str(s) => s.clone(), _ => String::new() }).collect(),
+                    Some(Value::Array(items)) => items.iter().map(|v| match v { Value::Str(s) => s.to_string(), _ => String::new() }).collect(),
                     _ => return Err(GoblinError::Runtime("CheckPath: bad info constant".into())),
                 };
                 if self.stack.len() < n + 1 {
@@ -1000,7 +1000,7 @@ impl Vm {
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     check_field_write(obj, &field_name)?;
                     if let Value::Object { ref mut fields, .. } = obj {
-                        std::rc::Rc::make_mut(fields).insert(field_name, new_val);
+                        std::rc::Rc::make_mut(fields).insert(field_name.to_string(), new_val);
                     }
                 } else {
                     return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
@@ -1025,7 +1025,7 @@ impl Vm {
                 };
                 let Some(t) = it else { return Ok(()) };
                 let found = match self.deref_value(&t)? {
-                    Value::Object { fields, .. } => fields.get(&field).cloned(),
+                    Value::Object { fields, .. } => fields.get(field.as_str()).cloned(),
                     _ => None,
                 };
                 if let Some(v) = found {
@@ -1054,7 +1054,7 @@ impl Vm {
                     }
                 };
                 let rhs = self.pop_value()?;
-                let class = self.session.classes.get(&class_name)
+                let class = self.session.classes.get(class_name.as_str())
                     .ok_or_else(|| GoblinError::Runtime(format!("unknown class '{}'", class_name)))?
                     .clone();
 
@@ -1067,7 +1067,7 @@ impl Vm {
                         crate::collections::to_pairs(&c)
                             .into_iter()
                             .filter_map(|(k, v)| {
-                                if let Value::Str(s) = k { Some((s, v)) } else { None }
+                                if let Value::Str(s) = k { Some((s.into_string(), v)) } else { None }
                             })
                             .collect()
                     }
@@ -1092,7 +1092,7 @@ impl Vm {
                 }
 
                 // Auto-id (readonly)
-                fields.insert("id".to_string(), Value::Str(uuid.clone()));
+                fields.insert("id".to_string(), Value::Str(uuid.clone().into()));
                 readonly_fields.insert("id".to_string());
 
                 for field in &class.fields {
@@ -1118,9 +1118,9 @@ impl Vm {
                     fields.insert(field.name.clone(), value);
                 }
                 // As in the interpreter, the object's uuid is also its `uuid` field.
-                fields.insert("uuid".to_string(), Value::Str(uuid.clone()));
+                fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
 
-                let obj = Value::Object { class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid };
+                let obj = Value::Object { class_name: class_name.to_string(), fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid };
                 self.stack.push(Operand::Val(obj));
             }
 
@@ -1148,7 +1148,7 @@ impl Vm {
                 };
 
                 let func_rc = if let Some(ref cn) = class_name {
-                    self.session.compiled_methods.get(&(cn.clone(), method_name.clone())).cloned()
+                    self.session.compiled_methods.get(&(cn.clone(), method_name.to_string())).cloned()
                 } else {
                     None
                 };
@@ -1201,7 +1201,7 @@ impl Vm {
                 };
                 let coll_val = self.pop_value()?;
                 let enum_field = match (&coll_val, &key) {
-                    (Value::Enum { fields: Some(f), .. }, Value::Str(name)) => f.get(name).cloned(),
+                    (Value::Enum { fields: Some(f), .. }, Value::Str(name)) => f.get(name.as_str()).cloned(),
                     _ => None,
                 };
                 let result = if let Some(v) = enum_field {
@@ -1382,7 +1382,7 @@ impl Vm {
                     // global as it is now, not a copy taken at import time.
                     BuiltinId::EnumVariantExpr if matches!(arg_vals.get(2), Some(Value::Nil)) => {
                         if let (Some(Value::Str(ns)), Some(Value::Str(var))) = (arg_vals.get(0), arg_vals.get(1)) {
-                            if !self.session.enums.contains_key(ns) {
+                            if !self.session.enums.contains_key(ns.as_str()) {
                                 if let Some(v) = self.module_var(ns, var)? {
                                     self.stack.push(Operand::Val(v));
                                     return Ok(());
@@ -1399,8 +1399,8 @@ impl Vm {
                         let is_enum = match arg_vals.first() {
                             Some(Value::Str(ns)) => {
                                 let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
-                                self.session.enums.contains_key(ns)
-                                    && !self.session.module_aliases.contains_key(&(importer, ns.clone()))
+                                self.session.enums.contains_key(ns.as_str())
+                                    && !self.session.module_aliases.contains_key(&(importer, ns.to_string()))
                             }
                             _ => false,
                         };
@@ -1679,7 +1679,7 @@ impl Vm {
                             other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token")),
                         };
                         let rendered = self.render_string_interp(&text)?;
-                        self.stack.push(Operand::Val(Value::Str(rendered)));
+                        self.stack.push(Operand::Val(Value::Str(rendered.into())));
                         return Ok(());
                     }
 
@@ -1887,7 +1887,7 @@ impl Vm {
                     if p.exists() { p } else { full_path.clone() }
                 } else { full_path.clone() };
                 let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
-                match self.session.module_aliases.get(&(importer.clone(), ns.clone())) {
+                match self.session.module_aliases.get(&(importer.clone(), ns.to_string())) {
                     Some(first) if *first != prefix => {
                         // A second module under an alias this file already uses:
                         // keep the first one and skip this import.
@@ -1896,13 +1896,13 @@ impl Vm {
                         return Ok(());
                     }
                     Some(_) => {}
-                    None => { self.session.module_aliases.insert((importer, ns.clone()), prefix); }
+                    None => { self.session.module_aliases.insert((importer, ns.to_string()), prefix); }
                 }
 
                 // Run with current_glam_ns = Some(alias) so RegisterAction registers
                 // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
                 let prev_ns = self.session.current_glam_ns.take();
-                self.session.current_glam_ns = Some(ns.clone());
+                self.session.current_glam_ns = Some(ns.to_string());
                 let r = self.import_file(full_path.clone(), None, std::collections::HashMap::new());
                 self.session.current_glam_ns = prev_ns;
                 r?;
@@ -1959,9 +1959,9 @@ impl Vm {
                 // qualified names (e.g. "create_shard" AND "graveyard::create_shard").
                 // Save and restore to handle nested `use` statements correctly.
                 let prev_glam_ns = self.session.current_glam_ns.take();
-                self.session.current_glam_ns = Some(ns.clone());
-                self.session.box_namespace = Some(ns.clone());
-                let glam_result = self.import_file(entry_path.clone(), Some(ns.clone()), value_needs);
+                self.session.current_glam_ns = Some(ns.to_string());
+                self.session.box_namespace = Some(ns.to_string());
+                let glam_result = self.import_file(entry_path.clone(), Some(ns.to_string()), value_needs);
                 self.session.current_glam_ns = prev_glam_ns;
                 self.session.box_namespace = prev_box_ns;
                 self.session.box_provides = prev_provides;
@@ -2014,7 +2014,7 @@ impl Vm {
                 let host_val = self.pop_value()?;
                 let (host_var, host_uuid) = match &host_val {
                     Value::Object { uuid, .. } => (host_var_name.clone(), uuid.clone()),
-                    Value::Str(s) => (host_var_name.clone(), s.clone()),
+                    Value::Str(s) => (host_var_name.clone(), s.to_string()),
                     _ => return Err(GoblinError::Runtime("overlay apply: host must be an object or string".into())),
                 };
                 let def = self.session.overlay_defs.get(overlay_name.as_str())
@@ -2149,9 +2149,9 @@ impl Vm {
                 let list = self.session.action_file_map.entry(source_file).or_default();
                 match list.iter_mut().find(|(n, _)| *n == name) {
                     Some(entry) => entry.1 = value.clone(),
-                    None => list.push((name.clone(), value.clone())),
+                    None => list.push((name.to_string(), value.clone())),
                 }
-                self.session.named_values.insert(name, value);
+                self.session.named_values.insert(name.to_string(), value);
             }
 
             Opcode::LoadNamed(name_idx) => {
@@ -2162,8 +2162,8 @@ impl Vm {
                         _ => return Err(GoblinError::Runtime("LoadNamed: name constant must be a string".into())),
                     }
                 };
-                let value = self.session.named_values.get(&name)
-                    .ok_or_else(|| GoblinError::UndefinedVariable { name: name.clone() })?
+                let value = self.session.named_values.get(name.as_str())
+                    .ok_or_else(|| GoblinError::UndefinedVariable { name: name.to_string() })?
                     .clone();
                 self.stack.push(Operand::Val(value));
             }
@@ -2180,7 +2180,7 @@ impl Vm {
                 for i in (0..n as usize).rev() {
                     let v = self.pop_value()?;
                     let Value::Str(name) = &parts[i + 1] else { continue };
-                    vals.push((name.clone(), v));
+                    vals.push((name.to_string(), v));
                 }
                 let Value::Str(template) = &parts[0] else {
                     return Err(GoblinError::Runtime("StringInterpVals: bad template".into()));
@@ -2188,7 +2188,7 @@ impl Vm {
                 let saved = std::mem::replace(&mut self.interp_overrides, vals);
                 let result = self.render_string_interp(template);
                 self.interp_overrides = saved;
-                self.stack.push(Operand::Val(Value::Str(result?)));
+                self.stack.push(Operand::Val(Value::Str(result?.into())));
             }
             Opcode::StringInterp(idx) => {
                 let template = {
@@ -2199,7 +2199,7 @@ impl Vm {
                     }
                 };
                 let result = self.render_string_interp(&template)?;
-                self.stack.push(Operand::Val(Value::Str(result)));
+                self.stack.push(Operand::Val(Value::Str(result.into())));
             }
 
             Opcode::SelfField(idx) => {
@@ -2215,7 +2215,7 @@ impl Vm {
                 let result = if let Some(t) = self_tether {
                     match self.session.read_value(&t)? {
                         Value::Object { ref fields, .. } => {
-                            fields.get(&field_name).cloned().unwrap_or(Value::Nil)
+                            fields.get(field_name.as_str()).cloned().unwrap_or(Value::Nil)
                         }
                         _ => Value::Nil,
                     }
@@ -2616,7 +2616,7 @@ impl Vm {
             self.call_stack.pop();
         }
         self.stack.truncate(handler.stack_depth);
-        self.stack.push(Operand::Val(Value::Str(e.to_string())));
+        self.stack.push(Operand::Val(Value::Str(e.to_string().into())));
         if let Some(frame) = self.call_stack.last_mut() {
             frame.ip = handler.catch_ip;
         }
@@ -2849,11 +2849,11 @@ impl Vm {
         if let Some(toml::Value::Table(values)) = table.get("values") {
             for (local_name, val) in values {
                 let v = match val {
-                    toml::Value::String(s)  => Value::Str(s.clone()),
+                    toml::Value::String(s)  => Value::Str(s.clone().into()),
                     toml::Value::Integer(i) => Value::Int(*i),
                     toml::Value::Float(f)   => Value::Float(*f),
                     toml::Value::Boolean(b) => Value::Bool(*b),
-                    other                   => Value::Str(other.to_string()),
+                    other                   => Value::Str(other.to_string().into()),
                 };
                 self.session.box_store.insert(format!("{}::{}", ns, local_name), v);
             }
@@ -2898,7 +2898,7 @@ impl Vm {
                 Some(v) => {
                     let v = if let Value::Str(s) = &v {
                         let resolved_s = self.resolve_box_template_from_store(&s.clone());
-                        Value::Str(resolved_s)
+                        Value::Str(resolved_s.into())
                     } else {
                         v
                     };
@@ -3045,7 +3045,7 @@ impl Vm {
     pub(crate) fn call_callable(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, GoblinError> {
         match callee {
             Value::Str(name) => {
-                if let Some(func_val) = self.session.named_values.get(&name).cloned() {
+                if let Some(func_val) = self.session.named_values.get(name.as_str()).cloned() {
                     let (func_rc, upvalues) = match func_val {
                         Value::Function(f) => (f, Vec::new()),
                         Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
@@ -3081,7 +3081,7 @@ impl Vm {
                 _ => false,
             });
         }
-        let result = self.call_callable(Value::Str(pred.to_string()), vec![v.clone()])?;
+        let result = self.call_callable(Value::Str(pred.to_string().into()), vec![v.clone()])?;
         Ok(matches!(result, Value::Bool(true)))
     }
 
@@ -3152,7 +3152,7 @@ impl Vm {
             }
             Value::Str(s) => {
                 // delete_where on a string: always literal substring removal, pred is the needle
-                Ok(Value::Str(s.replace(pred, "")))
+                Ok(Value::Str(s.replace(pred, "").into()))
             }
             // A map collection keeps map semantics (insertion-ordered map).
             Value::Collection(col) if col.is_map() => self.vm_where_delete(Value::Collection(col).into_legacy(), pred),
@@ -3200,10 +3200,10 @@ impl Vm {
                 // update_where on a string: always literal substring replace, pred is the needle
                 let repl = match &new_val {
                     Value::Str(r) => r.clone(),
-                    Value::Char(c) => c.to_string(),
+                    Value::Char(c) => c.to_string().into(),
                     _ => return Err(GoblinError::type_error("str", new_val.type_name(), "update_where on string")),
                 };
-                Ok(Value::Str(s.replace(pred, &repl)))
+                Ok(Value::Str(s.replace(pred, &repl).into()))
             }
             // A map collection keeps map semantics (insertion-ordered map).
             Value::Collection(col) if col.is_map() => self.vm_where_update(Value::Collection(col).into_legacy(), pred, new_val),
@@ -3246,7 +3246,7 @@ impl Vm {
             for r in results {
                 match r { Value::Char(c) => s.push(c), Value::Str(ts) => s.push_str(&ts), _ => {} }
             }
-            Ok(Value::Str(s))
+            Ok(Value::Str(s.into()))
         } else {
             Ok(Value::Array(results))
         }
@@ -3422,7 +3422,7 @@ impl Vm {
             ))?;
 
         let action_path = self.session.action_needs.get(&glam_ns)
-            .and_then(|m| m.get(&need_name))
+            .and_then(|m| m.get(need_name.as_str()))
             .cloned()
             .ok_or_else(|| GoblinError::Runtime(format!(
                 "B0106: missing-action-need — GLAM '{}' requires action need '{}' but no provider was configured.",
@@ -3592,9 +3592,9 @@ impl Vm {
                 let mut results: Vec<Value> = Vec::new();
                 for inst in instances.iter().filter(|i| i.overlay_name == cand) {
                     let mut fields: IndexMap<String, Value> = IndexMap::new();
-                    fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
-                    fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
-                    fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+                    fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
+                    fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
+                    fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
                     fields.insert("strength".to_string(), Value::Float(inst.strength));
                     fields.insert("age".to_string(), Value::Int(inst.age as i64));
                     fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
@@ -3658,9 +3658,9 @@ impl Vm {
         let mut results: Vec<Value> = Vec::new();
         for inst in &instances {
             let mut fields: IndexMap<String, Value> = IndexMap::new();
-            fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
-            fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
-            fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+            fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
+            fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
+            fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
             fields.insert("strength".to_string(), Value::Float(inst.strength));
             fields.insert("age".to_string(), Value::Int(inst.age as i64));
             fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
@@ -3715,7 +3715,7 @@ impl Vm {
         if args.len() < 3 { return Ok(Value::Nil); }
         let s = |i: usize| -> Result<String, GoblinError> {
             match &args[i] {
-                Value::Str(s) => Ok(s.clone()),
+                Value::Str(s) => Ok(s.to_string()),
                 other => Err(GoblinError::type_error("str", other.type_name(), "link_score")),
             }
         };
@@ -3774,16 +3774,16 @@ impl Vm {
             Some(Value::Object { uuid, .. }) => uuid.clone(),
             Some(Value::Str(s)) => match self.lookup_var(s) {
                 Some(Value::Object { uuid, .. }) => uuid,
-                _ => s.clone(),
+                _ => s.to_string(),
             },
             _ => return Err(GoblinError::Runtime("A0414: clone-object-bad-source: clone_object() argument must be an object".into())),
         };
         match self.session.object_store.get(&source_uuid).cloned() {
             Some(Value::Object { class_name, fields, readonly_fields, trait_fields, .. }) => {
                 let mut fields = (*fields).clone();
-                fields.insert("owner_id".to_string(), Value::Str(String::new()));
+                fields.insert("owner_id".to_string(), Value::Str(String::new().into()));
                 let new_uuid = uuid::Uuid::new_v4().to_string();
-                fields.insert("uuid".to_string(), Value::Str(new_uuid.clone()));
+                fields.insert("uuid".to_string(), Value::Str(new_uuid.clone().into()));
                 let cloned = Value::Object {
                     class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid: new_uuid.clone(),
                 };
@@ -3890,7 +3890,7 @@ fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
             if n.contains('.') { n.parse::<f64>().map(Value::Float).unwrap_or(Value::Nil) }
             else { n.parse::<i64>().map(Value::Int).unwrap_or(Value::Nil) }
         }
-        Expr::Str(s, _)     => Value::Str(s.clone()),
+        Expr::Str(s, _)     => Value::Str(s.clone().into()),
         Expr::Char(c, _)    => Value::Char(*c),
         _                   => Value::Nil,
     }
@@ -3929,9 +3929,9 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!("update!: variant field name must be a string, got {}", key.type_name())));
                 };
                 match fields {
-                    Some(f) if f.contains_key(field) => {
+                    Some(f) if f.contains_key(field.as_str()) => {
                         let mut f = f.clone();
-                        f.insert(field.clone(), replacement);
+                        f.insert(field.to_string(), replacement);
                         Ok(Value::Enum { enum_name: enum_name.clone(), variant_name: variant_name.clone(), fields: Some(f) })
                     }
                     _ => Err(GoblinError::Runtime(format!(
@@ -3947,7 +3947,7 @@ impl Vm {
                     Some(obj @ Value::Object { .. }) => {
                         check_field_write(obj, field)?;
                         if let Value::Object { fields, .. } = obj {
-                            std::rc::Rc::make_mut(fields).insert(field.clone(), replacement);
+                            std::rc::Rc::make_mut(fields).insert(field.to_string(), replacement);
                         }
                     }
                     _ => return Err(GoblinError::Runtime(format!("update!: object {} not found", uuid))),
@@ -4130,7 +4130,7 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         return fields.get(name).cloned().ok_or_else(|| GoblinError::Runtime(format!(
             "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name")));
     }
-    crate::collections::get_index(v, &Value::Str(name.to_string()))
+    crate::collections::get_index(v, &Value::Str(name.to_string().into()))
 }
 
 

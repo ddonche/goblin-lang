@@ -191,6 +191,6 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
 
     match result {
         Value::Str(s) => Ok(Value::Str(s)),
-        other => Ok(Value::Str(crate::builtins::fmt_value_raw(&other))),
+        other => Ok(Value::Str(crate::builtins::fmt_value_raw(&other).into())),
     }
 }

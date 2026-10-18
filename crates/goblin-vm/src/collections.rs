@@ -72,7 +72,7 @@ pub enum Operation {
 
 pub fn fmt_value_raw(v: &Value) -> String {
     match v {
-        Value::Str(s)   => s.clone(),
+        Value::Str(s)   => s.to_string(),
         Value::Int(n)   => n.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Char(c)  => c.to_string(),
@@ -102,7 +102,7 @@ pub fn rng_bounded(session: &mut crate::session::Session, bound: usize) -> usize
 
 pub fn value_to_map_key(v: &Value) -> Option<String> {
     match v {
-        Value::Str(s)   => Some(s.clone()),
+        Value::Str(s)   => Some(s.to_string()),
         Value::Int(n)   => Some(n.to_string()),
         Value::Float(f) => Some(f.to_string()),
         Value::Bool(b)  => Some(b.to_string()),
@@ -892,7 +892,7 @@ fn str_op(
             Ok(Value::Char(chars[i]))
         }
         (Position::All, Operation::Get) | (Position::All, Operation::Reap) => {
-            Ok(Value::Str(s.clone()))
+            Ok(Value::Str(s.clone().into()))
         }
         (Position::Where(needle), Operation::Get) | (Position::Where(needle), Operation::Reap) => {
             let result: Vec<Value> = chars.iter()
@@ -903,7 +903,7 @@ fn str_op(
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
             let re = compile_regex(&pat)?;
-            let result: Vec<Value> = re.find_iter(s).map(|m| Value::Str(m.as_str().to_string())).collect();
+            let result: Vec<Value> = re.find_iter(s).map(|m| Value::Str(m.as_str().to_string().into())).collect();
             Ok(Value::Array(result))
         }
         (Position::Between(start_pat, end_pat), Operation::Get) |
@@ -915,7 +915,7 @@ fn str_op(
             let mut results = Vec::new();
             for sm in &start_matches {
                 if let Some(em) = end_matches.iter().find(|e| e.start() > sm.end()) {
-                    results.push(Value::Str(s[sm.end()..em.start()].to_string()));
+                    results.push(Value::Str(s[sm.end()..em.start()].to_string().into()));
                 }
             }
             Ok(Value::Array(results))
@@ -924,11 +924,11 @@ fn str_op(
         // Put
         (Position::First, Operation::Put(v)) => {
             let prefix = value_to_str_for_concat(&v);
-            Ok(Value::Str(prefix + s))
+            Ok(Value::Str((prefix + s).into()))
         }
         (Position::Last, Operation::Put(v)) => {
             let suffix = value_to_str_for_concat(&v);
-            Ok(Value::Str(s.clone() + &suffix))
+            Ok(Value::Str((s.clone() + &suffix).into()))
         }
         (Position::At(idx_val), Operation::Put(v)) => {
             let idx = match idx_val {
@@ -941,21 +941,21 @@ fn str_op(
             result.push_str(&ins);
             let tail: String = chars[i..].iter().collect();
             result.push_str(&tail);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
 
         // Update
         (Position::First, Operation::Update(v)) => {
-            if chars.is_empty() { return Ok(Value::Str(s.clone())); }
+            if chars.is_empty() { return Ok(Value::Str(s.clone().into())); }
             let repl = value_to_str_for_concat(&v);
             let rest: String = chars[1..].iter().collect();
-            Ok(Value::Str(repl + &rest))
+            Ok(Value::Str((repl + &rest).into()))
         }
         (Position::Last, Operation::Update(v)) => {
-            if chars.is_empty() { return Ok(Value::Str(s.clone())); }
+            if chars.is_empty() { return Ok(Value::Str(s.clone().into())); }
             let repl = value_to_str_for_concat(&v);
             let front: String = chars[..chars.len()-1].iter().collect();
-            Ok(Value::Str(front + &repl))
+            Ok(Value::Str((front + &repl).into()))
         }
         (Position::At(idx_val), Operation::Update(v)) => {
             let idx = match idx_val {
@@ -968,20 +968,20 @@ fn str_op(
             result.push_str(&repl);
             let tail: String = chars[i+1..].iter().collect();
             result.push_str(&tail);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
         (Position::Where(needle), Operation::Update(v)) => {
             let repl = value_to_str_for_concat(&v);
-            Ok(Value::Str(s.replace(&needle, &repl)))
+            Ok(Value::Str(s.replace(&needle, &repl).into()))
         }
 
         // Delete
         (Position::First, Operation::Delete) => {
-            if chars.is_empty() { return Ok(Value::Str(s.clone())); }
+            if chars.is_empty() { return Ok(Value::Str(s.clone().into())); }
             Ok(Value::Str(chars[1..].iter().collect()))
         }
         (Position::Last, Operation::Delete) => {
-            if chars.is_empty() { return Ok(Value::Str(s.clone())); }
+            if chars.is_empty() { return Ok(Value::Str(s.clone().into())); }
             Ok(Value::Str(chars[..chars.len()-1].iter().collect()))
         }
         (Position::At(idx_val), Operation::Delete) => {
@@ -995,16 +995,16 @@ fn str_op(
             Ok(Value::Str(new_chars.iter().collect()))
         }
         (Position::Where(needle), Operation::Delete) => {
-            Ok(Value::Str(s.replace(&needle, "")))
+            Ok(Value::Str(s.replace(&needle, "").into()))
         }
         (Position::Matching(pat), Operation::Delete) => {
             let re = compile_regex(&pat)?;
-            Ok(Value::Str(re.replace_all(s, "").to_string()))
+            Ok(Value::Str(re.replace_all(s, "").to_string().into()))
         }
         (Position::Matching(pat), Operation::Update(v)) => {
             let re = compile_regex(&pat)?;
             let repl = value_to_str_for_concat(&v);
-            Ok(Value::Str(re.replace_all(s, repl.as_str()).to_string()))
+            Ok(Value::Str(re.replace_all(s, repl.as_str()).to_string().into()))
         }
         (Position::Matching(pat), Operation::Put(v)) => {
             let re = compile_regex(&pat)?;
@@ -1017,7 +1017,7 @@ fn str_op(
                 last_end = m.end();
             }
             result.push_str(&s[last_end..]);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
         (Position::Between(start_pat, end_pat), Operation::Delete) => {
             let start_re = compile_regex(&start_pat)?;
@@ -1033,7 +1033,7 @@ fn str_op(
                 }
             }
             result.push_str(&s[last_pos..]);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
         (Position::Between(start_pat, end_pat), Operation::Update(v)) => {
             let start_re = compile_regex(&start_pat)?;
@@ -1051,7 +1051,7 @@ fn str_op(
                 }
             }
             result.push_str(&s[last_pos..]);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
         (Position::Between(start_pat, end_pat), Operation::Put(v)) => {
             let start_re = compile_regex(&start_pat)?;
@@ -1069,7 +1069,7 @@ fn str_op(
                 }
             }
             result.push_str(&s[last_pos..]);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
         // Random + Put/Update/Delete
         (Position::Random, Operation::Put(v)) => {
@@ -1080,7 +1080,7 @@ fn str_op(
             result.push_str(&ins);
             let tail: String = chars[i..].iter().collect();
             result.push_str(&tail);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
         (Position::Random, Operation::Update(v)) => {
             if chars.is_empty() { return Err(GoblinError::Runtime("empty string".into())); }
@@ -1090,7 +1090,7 @@ fn str_op(
             result.push_str(&repl);
             let tail: String = chars[i+1..].iter().collect();
             result.push_str(&tail);
-            Ok(Value::Str(result))
+            Ok(Value::Str(result.into()))
         }
         (Position::Random, Operation::Delete) => {
             if chars.is_empty() { return Err(GoblinError::Runtime("empty string".into())); }
@@ -1101,7 +1101,7 @@ fn str_op(
         }
         // All + Delete: return empty string
         (Position::All, Operation::Delete) => {
-            Ok(Value::Str(String::new()))
+            Ok(Value::Str(String::new().into()))
         }
         // All + Put/Update: replace entire string (v must be string)
         (Position::All, Operation::Put(v)) | (Position::All, Operation::Update(v)) => {
@@ -1116,7 +1116,7 @@ fn str_op(
 
 fn value_to_str_for_concat(v: &Value) -> String {
     match v {
-        Value::Str(s)  => s.clone(),
+        Value::Str(s)  => s.to_string(),
         Value::Char(c) => c.to_string(),
         other          => fmt_value_raw(other),
     }
@@ -1128,11 +1128,11 @@ pub fn has_element(v: &Value, needle: &Value) -> bool {
     match v {
         Value::Array(xs)  => xs.iter().any(|x| x == needle),
         Value::Map(m)     => {
-            if let Value::Str(k) = needle { m.contains_key(k) }
+            if let Value::Str(k) = needle { m.contains_key(k.as_str()) }
             else { m.values().any(|x| x == needle) }
         }
         Value::MapOrd(m)  => {
-            if let Value::Str(k) = needle { m.contains_key(k) }
+            if let Value::Str(k) = needle { m.contains_key(k.as_str()) }
             else { m.values().any(|x| x == needle) }
         }
         Value::Str(s)     => {
@@ -1220,13 +1220,13 @@ pub fn into_collection(v: Value) -> Value {
         Value::Array(xs) => Value::Collection(Rc::new(CollectionValue::from_flat(xs))),
         Value::Map(m) => {
             let pairs: Vec<(Value, Value)> = m.into_iter()
-                .map(|(k, v)| (Value::Str(k), v))
+                .map(|(k, v)| (Value::Str(k.into()), v))
                 .collect();
             Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
         }
         Value::MapOrd(m) => {
             let pairs: Vec<(Value, Value)> = m.into_iter()
-                .map(|(k, v)| (Value::Str(k), v))
+                .map(|(k, v)| (Value::Str(k.into()), v))
                 .collect();
             Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
         }
@@ -1289,13 +1289,13 @@ fn collection_value_op(
         }
         Value::Map(m2) => {
             let pairs: Vec<(Value, Value)> = m2.into_iter()
-                .map(|(k, v)| (Value::Str(k), v))
+                .map(|(k, v)| (Value::Str(k.into()), v))
                 .collect();
             Value::Collection(Rc::new(build_map(pairs, meta)))
         }
         Value::MapOrd(m2) => {
             let pairs: Vec<(Value, Value)> = m2.into_iter()
-                .map(|(k, v)| (Value::Str(k), v))
+                .map(|(k, v)| (Value::Str(k.into()), v))
                 .collect();
             Value::Collection(Rc::new(build_map(pairs, meta)))
         }
@@ -1322,17 +1322,17 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
             let k = match key {
                 Value::Str(s) => s.clone(),
                 other => value_to_map_key(other)
-                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?,
+                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?.into(),
             };
-            Ok(m.get(&k).cloned().unwrap_or(Value::Nil))
+            Ok(m.get(k.as_str()).cloned().unwrap_or(Value::Nil))
         }
         Value::MapOrd(m) => {
             let k = match key {
                 Value::Str(s) => s.clone(),
                 other => value_to_map_key(other)
-                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?,
+                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?.into(),
             };
-            Ok(m.get(&k).cloned().unwrap_or(Value::Nil))
+            Ok(m.get(k.as_str()).cloned().unwrap_or(Value::Nil))
         }
         // Read one element in place: cloning the whole backing store here made
         // every `xs[i]` (and so every `for x in xs`) O(n).
@@ -1364,7 +1364,7 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
             };
             let chars: Vec<char> = s.chars().collect();
             let i = resolve_seq_index(idx, chars.len())?;
-            Ok(Value::Str(chars[i].to_string()))
+            Ok(Value::Str(chars[i].to_string().into()))
         }
         _ => Err(GoblinError::type_error("collection or str", coll_val.type_name(), "index")),
     }
@@ -1386,18 +1386,18 @@ pub fn set_index(coll_val: Value, key: &Value, new_val: Value) -> Result<Value, 
             let k = match key {
                 Value::Str(s) => s.clone(),
                 other => value_to_map_key(other)
-                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?,
+                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?.into(),
             };
-            m.insert(k, new_val);
+            m.insert(k.to_string(), new_val);
             Ok(Value::Map(m))
         }
         Value::MapOrd(mut m) => {
             let k = match key {
                 Value::Str(s) => s.clone(),
                 other => value_to_map_key(other)
-                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?,
+                    .ok_or_else(|| GoblinError::type_error("string", other.type_name(), "map key"))?.into(),
             };
-            m.insert(k, new_val);
+            m.insert(k.to_string(), new_val);
             Ok(Value::MapOrd(m))
         }
         Value::Collection(c) => {
@@ -1662,7 +1662,7 @@ pub fn has(coll: &CollectionValue, needle: &Value) -> bool {
 
 /// The scalar keys whose map_key_text is `text`.
 fn key_candidates(text: &str) -> Vec<Value> {
-    let mut out = vec![Value::Str(text.to_string())];
+    let mut out = vec![Value::Str(text.to_string().into())];
     if let Ok(n) = text.parse::<i64>() {
         if n.to_string() == text { out.push(Value::Int(n)); }
     }

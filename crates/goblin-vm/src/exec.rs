@@ -48,11 +48,11 @@ pub fn load_box_toml_into_session(session: &mut Session, path: &std::path::Path)
         if let toml::Value::Table(fields) = section {
             for (key, val) in fields {
                 let v = match val {
-                    toml::Value::String(s)  => Value::Str(s.clone()),
+                    toml::Value::String(s)  => Value::Str(s.clone().into()),
                     toml::Value::Integer(i) => Value::Int(*i),
                     toml::Value::Float(f)   => Value::Float(*f),
                     toml::Value::Boolean(b) => Value::Bool(*b),
-                    other                   => Value::Str(other.to_string()),
+                    other                   => Value::Str(other.to_string().into()),
                 };
                 session.box_store.insert(format!("{}::{}", namespace, key), v);
             }
@@ -68,7 +68,7 @@ pub fn load_box_toml_into_session(session: &mut Session, path: &std::path::Path)
                 if s.contains("{#") {
                     let resolved = resolve_box_template_vm(&s, &session.box_store);
                     if resolved != s {
-                        session.box_store.insert(k, Value::Str(resolved));
+                        session.box_store.insert(k, Value::Str(resolved.into()));
                         changed = true;
                     }
                 }
@@ -230,7 +230,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
 
     // Inject CLI args as global `args` before execution (matches interpreter behavior).
     if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
-        let args_val = Value::Array(extra_args.into_iter().map(Value::Str).collect());
+        let args_val = Value::Array(extra_args.into_iter().map(|s: String| Value::Str(s.into())).collect());
         let tether = session.alloc_value(args_val);
         session.set_global(idx, tether);
     }
@@ -268,7 +268,7 @@ pub fn prepare_entry(
     }
     install_classes(&mut session, compiled.classes, compiled.enums);
     if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
-        let args_val = Value::Array(extra_args.into_iter().map(Value::Str).collect());
+        let args_val = Value::Array(extra_args.into_iter().map(|s: String| Value::Str(s.into())).collect());
         let tether = session.alloc_value(args_val);
         session.set_global(idx, tether);
     }

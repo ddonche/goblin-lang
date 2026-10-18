@@ -104,12 +104,12 @@ pub fn parse_arms(spec: &Value) -> Vec<ArmKind> {
     let items = spec.seq_items().map(|c| c.into_owned()).unwrap_or_default();
     items.iter().map(|arm| {
         let f = arm.seq_items().map(|c| c.into_owned()).unwrap_or_default();
-        let s = |i: usize| match f.get(i) { Some(Value::Str(s)) => s.clone(), _ => String::new() };
+        let s = |i: usize| match f.get(i) { Some(Value::Str(s)) => s.clone(), _ => String::new().into() };
         match s(0).as_str() {
-            "pattern" => ArmKind::Pattern(s(1)),
+            "pattern" => ArmKind::Pattern(s(1).to_string()),
             "range" => ArmKind::Range {
-                start: s(1),
-                end: s(2),
+                start: s(1).to_string(),
+                end: s(2).to_string(),
                 repeat: match s(3).as_str() { "first" => Repeat::First, "last" => Repeat::Last, _ => Repeat::All },
             },
             _ => ArmKind::All,
@@ -123,11 +123,11 @@ impl Sweeps {
         let mut raw: Vec<String> = Vec::new();
         for v in target_vals {
             match v {
-                Value::Str(s) => raw.push(s),
+                Value::Str(s) => raw.push(s.to_string()),
                 v if v.is_seq_like() => {
                     for e in v.seq_items().map(|c| c.into_owned()).unwrap_or_default() {
                         match e {
-                            Value::Str(s) => raw.push(s),
+                            Value::Str(s) => raw.push(s.to_string()),
                             other => return Err(GoblinError::Runtime(format!(
                                 "sweep: target array contains a non-string value ({})", other.type_name()))),
                         }
@@ -276,7 +276,7 @@ impl Sweeps {
                         out.push_str(&st.buffer[e..]);
                         out
                     }
-                    None => new,
+                    None => new.to_string(),
                 };
             }
         }

@@ -354,9 +354,11 @@ impl Session {
         let gen = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
 
+        // Only new text or storage counts: a value shared with another
+        // variable (`copy | page`) costs no new memory.
         self.gc_bytes += match &value {
-            Value::Str(text) => text.len(),
-            Value::Collection(c) => c.len() * 32,
+            Value::Str(text) if text.is_unique() => text.len(),
+            Value::Collection(c) if std::rc::Rc::strong_count(c) == 1 => c.len() * 32,
             _ => 0,
         };
 
