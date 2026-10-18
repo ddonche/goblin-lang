@@ -1354,16 +1354,11 @@ impl Compiler {
 
             // ── Calls ─────────────────────────────────────────────────────────
             Expr::FreeCall(name, args, _) => {
-                // A bang call writes its result back into the variable its first
-                // argument comes from, so on an `imm` variable it is an error
-                // (owner, 2026-10-07), raised before anything is changed.
-                const BANG_NO_WRITEBACK: &[&str] = &[
-                    "write_text!", "write_json!", "append_file!",
-                    "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-                    "delete_object!", "delete_overlays_on!",
-                ];
+                // A bang call that mutates changes its first argument itself, so
+                // on an `imm` variable it is an error (owner, 2026-10-07),
+                // raised before anything is changed.
                 let bang = name.trim_start_matches(':');
-                if bang.ends_with('!') && !BANG_NO_WRITEBACK.contains(&bang) && !self.user_actions.contains(bang) {
+                if bang_mutates_target(bang) && !self.user_actions.contains(bang) {
                     if let Some(root) = args.first().and_then(lvalue_root) {
                         self.emit_imm_guard(&root)?;
                     }
@@ -1467,14 +1462,8 @@ impl Compiler {
                 if let Some(_) = self.try_compile_builtin_call(name, args)? {
                     // Mutation-bang free call: name!(collection, ...) stores result back.
                     // e.g. update_at!(meta, "id", val) → CallBuiltin + Dup + StoreLocal(meta)
-                    // I/O builtins use ! for side-effect signaling only — they return Nil and
-                    // must NOT write back to the first argument variable.
-                    const IO_BANG_NO_WRITEBACK: &[&str] = &[
-                        "write_text!", "write_json!", "append_file!",
-                        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-                    ];
                     let bare = name.trim_start_matches(':');
-                    if bare.ends_with('!') && !IO_BANG_NO_WRITEBACK.contains(&bare) {
+                    if bang_mutates_target(bare) {
                         if let Some(target) = args.first() {
                             if is_lvalue(target) {
                                 // The result goes back into the variable the
@@ -3662,12 +3651,8 @@ impl Compiler {
 /// into its first argument: the builtin, the root variable and the keys.
 /// Paths with `>>` fields keep the general lowering.
 fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String, Vec<&'a Expr>)> {
-    const IO_BANG_NO_WRITEBACK: &[&str] = &[
-        "write_text!", "write_json!", "append_file!",
-        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-    ];
     let bare = name.trim_start_matches(':');
-    if !bare.ends_with('!') || IO_BANG_NO_WRITEBACK.contains(&bare) || args.len() > 255 { return None; }
+    if !bang_mutates_target(bare) || args.len() > 255 { return None; }
     let bid = builtin_by_name(bare).or_else(|| builtin_by_name(name))
         .or_else(|| bare.strip_suffix('!').and_then(builtin_by_name))?;
     let mut keys = Vec::new();
@@ -3682,6 +3667,19 @@ fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String
     if keys.is_empty() || keys.len() > 16 { return None; }
     keys.reverse();
     Some((bid, root, keys))
+}
+
+/// `!` means the call mutates or is destructive (owner, 2026-10-08).
+/// A mutating bang (`:put_last!(xs, 4)`, `:update!`, `:int!(x)`) changes the
+/// thing its first argument names, not a copy. A destructive bang acts on
+/// something else (files, objects, overlays) and leaves its arguments alone.
+fn bang_mutates_target(bare: &str) -> bool {
+    const DESTRUCTIVE: &[&str] = &[
+        "write_text!", "write_json!", "append_file!",
+        "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
+        "delete_object!", "delete_overlays_on!",
+    ];
+    bare.ends_with('!') && !DESTRUCTIVE.contains(&bare)
 }
 
 /// The variable at the root of an lvalue (`x`, `x[k]`, `x{k}`, `x >> f`).

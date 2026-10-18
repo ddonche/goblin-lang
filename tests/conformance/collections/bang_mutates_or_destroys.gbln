@@ -1,0 +1,14 @@
+/// `!` means the call mutates or is destructive (owner, 2026-10-08). A mutating bang changes the thing its first argument names; a destructive bang (files, objects, overlays) leaves its arguments alone.
+xs | [1, 2, 3]
+:put_last!(xs, 4)
+say(xs)
+n | "42"
+:int!(n)
+say(:valtype(n))
+d | :env("GOBLIN_CONF_TMP")
+p | "{d}/bang_rule.txt"
+:write_text!(p, "hi")
+say(p == "{d}/bang_rule.txt")
+:delete_path!(p)
+say(p == "{d}/bang_rule.txt")
+say(:file_exists(p))
