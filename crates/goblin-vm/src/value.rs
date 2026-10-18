@@ -68,28 +68,56 @@ impl Seq {
 
 /// A Goblin string. Copies share one buffer; a change copies it only when
 /// another value still shares it, so reading or passing a string is cheap.
-#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GStr(Rc<String>);
+/// The text behind a `GStr`, and whether the GC has counted it yet.
+#[derive(Default)]
+pub struct GText {
+    s: String,
+    /// Set once this text has been charged to the GC's byte budget, so a
+    /// shared copy (`copy | page`) is not counted again.
+    charged: std::cell::Cell<bool>,
+}
+impl Clone for GText {
+    // A copy is new text: not charged yet.
+    fn clone(&self) -> Self { GText { s: self.s.clone(), charged: std::cell::Cell::new(false) } }
+}
+impl std::ops::Deref for GText {
+    type Target = String;
+    fn deref(&self) -> &String { &self.s }
+}
+
+/// A string value: shared, and copied only when a change needs its own copy.
+#[derive(Clone, Default)]
+pub struct GStr(Rc<GText>);
 
 impl GStr {
-    pub fn new(s: String) -> Self { GStr(Rc::new(s)) }
-    pub fn as_str(&self) -> &str { self.0.as_str() }
+    pub fn new(s: String) -> Self { GStr(Rc::new(GText { s, charged: std::cell::Cell::new(false) })) }
+    pub fn as_str(&self) -> &str { self.0.s.as_str() }
     /// The text to change in place; copied first only if it is shared.
-    pub fn make_mut(&mut self) -> &mut String { Rc::make_mut(&mut self.0) }
-    /// True when no other value shares this text.
-    pub fn is_unique(&self) -> bool { Rc::strong_count(&self.0) == 1 }
+    pub fn make_mut(&mut self) -> &mut String {
+        let t = Rc::make_mut(&mut self.0);
+        t.charged.set(false);
+        &mut t.s
+    }
     /// The owned text, without copying when nothing else shares it.
-    pub fn into_string(self) -> String { Rc::try_unwrap(self.0).unwrap_or_else(|rc| (*rc).clone()) }
+    pub fn into_string(self) -> String { Rc::try_unwrap(self.0).map(|t| t.s).unwrap_or_else(|rc| rc.s.clone()) }
+    /// Whether this text still has to be charged to the GC's byte budget;
+    /// marks it charged.
+    pub fn take_uncharged(&self) -> bool { !self.0.charged.replace(true) }
 }
+impl PartialEq for GStr { fn eq(&self, o: &GStr) -> bool { self.as_str() == o.as_str() } }
+impl Eq for GStr {}
+impl std::hash::Hash for GStr { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.as_str().hash(h) } }
+impl PartialOrd for GStr { fn partial_cmp(&self, o: &GStr) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
+impl Ord for GStr { fn cmp(&self, o: &GStr) -> std::cmp::Ordering { self.as_str().cmp(o.as_str()) } }
 impl std::ops::Deref for GStr {
     type Target = String;
-    fn deref(&self) -> &String { &self.0 }
+    fn deref(&self) -> &String { &self.0.s }
 }
 impl std::fmt::Debug for GStr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(self.0.as_str(), f) }
 }
 impl std::fmt::Display for GStr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.as_str()) }
 }
 impl From<String> for GStr { fn from(s: String) -> Self { GStr::new(s) } }
 impl From<&str> for GStr { fn from(s: &str) -> Self { GStr::new(s.to_string()) } }
@@ -107,10 +135,10 @@ impl AsRef<std::ffi::OsStr> for GStr { fn as_ref(&self) -> &std::ffi::OsStr { st
 impl AsRef<[u8]> for GStr { fn as_ref(&self) -> &[u8] { self.0.as_bytes() } }
 impl PartialEq<str> for GStr { fn eq(&self, o: &str) -> bool { self.0.as_str() == o } }
 impl PartialEq<&str> for GStr { fn eq(&self, o: &&str) -> bool { self.0.as_str() == *o } }
-impl PartialEq<String> for GStr { fn eq(&self, o: &String) -> bool { *self.0 == *o } }
+impl PartialEq<String> for GStr { fn eq(&self, o: &String) -> bool { self.0.s == *o } }
 impl PartialEq<GStr> for str { fn eq(&self, o: &GStr) -> bool { self == o.0.as_str() } }
 impl PartialEq<GStr> for &str { fn eq(&self, o: &GStr) -> bool { *self == o.0.as_str() } }
-impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == *o.0 } }
+impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == o.0.s } }
 
 /// The user-facing value stored inside a stash.
 #[derive(Debug, Clone)]
