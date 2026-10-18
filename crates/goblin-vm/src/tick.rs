@@ -58,8 +58,8 @@ fn des_flush_pending(vm: &mut Vm) {
                 .map(|e| e.interp_uuid.clone())
                 .unwrap_or_default();
             if let Some(obj) = vm.session.object_store.get_mut(&interp_uuid) {
-                if let Value::Object { ref mut fields, .. } = obj {
-                    let fields = std::rc::Rc::make_mut(fields);
+                if let Value::Object(ref mut o) = obj {
+                    let fields = std::rc::Rc::make_mut(&mut o.fields);
                     for (field, fv) in changes {
                         let val = match fv {
                             FieldValue::Float(f) => Value::Float(f),
@@ -239,7 +239,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             match rule {
                 SpreadRule::Channel { channel, rate } => {
                     let host_class = match vm.session.object_store.get(&inst.host_uuid) {
-                        Some(Value::Object { class_name, .. }) => class_name.clone(),
+                        Some(Value::Object(o)) => o.class_name.clone(),
                         _ => continue,
                     };
                     let link_def = vm.session.link_defs.get(&(host_class.clone(), channel.clone())).cloned()
@@ -249,7 +249,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         Some(v) => v, None => continue,
                     };
                     let candidates: Vec<(String, Value)> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object { class_name, .. } if class_name == &host_class))
+                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object(o) if o.class_name == host_class))
                         .map(|(uuid, v)| (uuid.clone(), v.clone()))
                         .collect();
                     for (target_uuid, target_val) in candidates {
@@ -273,7 +273,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
                 SpreadRule::All { class_name, rate } => {
                     let candidates: Vec<String> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object { class_name: cn, .. } if cn == class_name))
+                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object(o) if &o.class_name == class_name))
                         .map(|(uuid, _)| uuid.clone())
                         .collect();
                     for target_uuid in candidates {
@@ -295,12 +295,12 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
                 SpreadRule::Ownership { rate } => {
                     let host_uuid = match vm.session.object_store.get(&inst.host_uuid) {
-                        Some(Value::Object { uuid, .. }) => uuid.clone(),
+                        Some(Value::Object(o)) => o.uuid.clone(),
                         _ => continue,
                     };
                     let candidates: Vec<String> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object { fields, .. } if
-                            fields.get("owner_id").map(|o| matches!(o, Value::Str(s) if s == &host_uuid)).unwrap_or(false)
+                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object(o) if
+                            o.fields.get("owner_id").map(|o| matches!(o, Value::Str(s) if s == &host_uuid)).unwrap_or(false)
                         ))
                         .map(|(uuid, _)| uuid.clone())
                         .collect();
@@ -365,9 +365,9 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             let is_temporary = duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
             let original_values: Vec<(String, Value)> = if is_temporary {
-                if let Some(Value::Object { fields, .. }) = vm.session.object_store.get(&host_uuid) {
+                if let Some(Value::Object(o)) = vm.session.object_store.get(&host_uuid) {
                     def.modifiers.iter().filter_map(|(fname, _)| {
-                        fields.get(fname).map(|v| (fname.clone(), v.clone()))
+                        o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
                     }).collect()
                 } else { Vec::new() }
             } else { Vec::new() };
@@ -427,9 +427,9 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             let is_temporary = def.default_duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
             let original_values: Vec<(String, Value)> = if is_temporary {
-                if let Some(Value::Object { fields, .. }) = vm.session.object_store.get(&host_uuid) {
+                if let Some(Value::Object(o)) = vm.session.object_store.get(&host_uuid) {
                     def.modifiers.iter().filter_map(|(fname, _)| {
-                        fields.get(fname).map(|v| (fname.clone(), v.clone()))
+                        o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
                     }).collect()
                 } else { Vec::new() }
             } else { Vec::new() };
@@ -478,13 +478,13 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             self_fields.insert(k.clone(), v.clone());
         }
         use std::collections::BTreeSet;
-        let self_val = Value::Object {
+        let self_val = Value::Object(Box::new(crate::value::ObjectVal {
             class_name: inst.overlay_name.clone(),
             fields: std::rc::Rc::new(self_fields),
             readonly_fields: BTreeSet::new(),
             trait_fields: BTreeSet::new(),
             uuid: inst.host_uuid.clone(),
-        };
+        }));
 
         for tdef in &def.transitions {
             let trigger_fired = vm.eval_tick_expr_bool(
@@ -715,7 +715,8 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     let candidates: Vec<(String, String)> = {
         let mut out = Vec::new();
         for (uuid, val) in &vm.session.object_store {
-            if let Value::Object { class_name, .. } = val {
+            if let Value::Object(o) = val {
+                let class_name = &o.class_name;
                 let has_decision = vm.session.classes.get(class_name)
                     .map(|c| c.decision.is_some())
                     .unwrap_or(false)
@@ -746,7 +747,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         let self_val = match vm.session.object_store.get(&self_uuid).cloned() { Some(v) => v, None => continue };
 
         let target_candidates: Vec<(String, Value)> = vm.session.object_store.iter()
-            .filter(|(uuid, v)| *uuid != &self_uuid && matches!(v, Value::Object { class_name: cn, .. } if cn == &decision.target_class))
+            .filter(|(uuid, v)| *uuid != &self_uuid && matches!(v, Value::Object(o) if o.class_name == decision.target_class))
             .map(|(uuid, v)| (uuid.clone(), v.clone()))
             .collect();
 
@@ -764,8 +765,8 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         if scored.is_empty() { continue; }
 
         let best = scored.iter().map(|(_, _, s)| *s).fold(f64::NEG_INFINITY, f64::max);
-        let margin = if let Value::Object { ref fields, .. } = self_val {
-            fields.get("margin").and_then(|v| match v {
+        let margin = if let Value::Object(ref o) = self_val {
+            o.fields.get("margin").and_then(|v| match v {
                 Value::Float(f) => Some(*f),
                 Value::Int(i) => Some(*i as f64),
                 _ => None,
@@ -830,7 +831,8 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
     let candidates: Vec<(String, String)> = vm.session.object_store.iter()
         .filter_map(|(uuid, v)| {
-            if let Value::Object { class_name, .. } = v {
+            if let Value::Object(o) = v {
+                let class_name = &o.class_name;
                 let has_transitions = vm.session.classes.get(class_name)
                     .map(|c| !c.transitions.is_empty())
                     .unwrap_or(false);
@@ -876,20 +878,20 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                             }
                         }
                         use std::collections::BTreeSet;
-                        let child_obj = Value::Object {
+                        let child_obj = Value::Object(Box::new(crate::value::ObjectVal {
                             class_name: child_class.clone(),
                             fields: std::rc::Rc::new(fields),
                             readonly_fields: BTreeSet::new(),
                             trait_fields: BTreeSet::new(),
                             uuid: new_uuid.clone(),
-                        };
+                        }));
                         vm.session.object_store.insert(new_uuid, child_obj);
                     }
                     break;
                 }
                 TransitionKind::Mutate => {
                     let new_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
-                    if let Some(Value::Object { fields, .. }) = vm.session.object_store.get_mut(self_uuid) {
+                    if let Some(Value::Object(fields)) = vm.session.object_store.get_mut(self_uuid) {
                         // Keep fields, just change the class (interpreter behavior)
                         let _ = new_class; // class change not modeled in simple field map
                     }
@@ -1061,9 +1063,9 @@ pub fn apply_overlay_modifiers(
     if deltas.is_empty() { return; }
 
     if let Some(obj) = vm.session.object_store.get_mut(host_uuid) {
-        if let Value::Object { ref mut fields, ref trait_fields, .. } = obj {
-            let trait_fields = trait_fields.clone();
-            let fields = std::rc::Rc::make_mut(fields);
+        if let Value::Object(ref mut o) = obj {
+            let trait_fields = o.trait_fields.clone();
+            let fields = std::rc::Rc::make_mut(&mut o.fields);
             for (field_name, delta) in deltas {
                 if let Some(field_val) = fields.get_mut(&field_name) {
                     let current = match field_val {
@@ -1086,8 +1088,8 @@ pub fn apply_overlay_modifiers(
 }
 
 fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]) {
-    if let Some(Value::Object { ref mut fields, .. }) = vm.session.object_store.get_mut(host_uuid) {
-        let fields = std::rc::Rc::make_mut(fields);
+    if let Some(Value::Object(ref mut o)) = vm.session.object_store.get_mut(host_uuid) {
+        let fields = std::rc::Rc::make_mut(&mut o.fields);
         for (fname, fval) in originals {
             fields.insert(fname.clone(), fval.clone());
         }

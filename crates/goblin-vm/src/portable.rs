@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::error::GoblinError;
 use crate::session::Session;
 use crate::value::{
-    ChunkedSeq, Closure, CollectionLayout, CollectionMeta, CollectionValue, FormatSpec, Frozen,
+    ChunkedSeq, Closure, EnumVal, ObjectVal, CollectionLayout, CollectionMeta, CollectionValue, FormatSpec, Frozen,
     FunctionObject, GoblinDateTime, RingBuf, Seq, UpvalueCell, UpvalueDescriptor, Value, BuiltinId,
 };
 
@@ -115,7 +115,7 @@ impl<'s> ToPortable<'s> {
             Value::Pct(p) => PValue::Pct(*p),
             Value::Char(c) => PValue::Char(*c),
             Value::Str(s) => PValue::Str(s.to_string()),
-            Value::DateTime(d) => PValue::DateTime(d.clone()),
+            Value::DateTime(d) => PValue::DateTime(*d.clone()),
             Value::Duration(d) => PValue::Duration((**d).clone()),
             Value::Formatted(inner, spec) => PValue::Formatted(Box::new(self.value(inner)?), spec.clone()),
             Value::Array(a) => PValue::Array(self.values(a)?),
@@ -130,12 +130,12 @@ impl<'s> ToPortable<'s> {
             Value::CtrlSkip => PValue::CtrlSkip,
             Value::CtrlStop => PValue::CtrlStop,
             Value::CtrlReturn(v) => PValue::CtrlReturn(Box::new(self.value(v)?)),
-            Value::Object { class_name, fields, readonly_fields, trait_fields, uuid } => PValue::Object {
-                class_name: class_name.clone(),
-                fields: self.fields(fields)?,
-                readonly_fields: readonly_fields.clone(),
-                trait_fields: trait_fields.clone(),
-                uuid: uuid.clone(),
+            Value::Object(o) => PValue::Object {
+                class_name: o.class_name.clone(),
+                fields: self.fields(&o.fields)?,
+                readonly_fields: o.readonly_fields.clone(),
+                trait_fields: o.trait_fields.clone(),
+                uuid: o.uuid.clone(),
             },
             // An object reference crosses as the object itself.
             Value::Ref(uuid) => match self.session.object_store.get(uuid) {
@@ -143,10 +143,10 @@ impl<'s> ToPortable<'s> {
                 None => return Err(GoblinError::Runtime(format!("dangling ref: uuid {uuid} not in object_store"))),
             },
             Value::GridRef { .. } => return Err(unsupported("a grid reference")),
-            Value::Enum { enum_name, variant_name, fields } => PValue::Enum {
-                enum_name: enum_name.clone(),
-                variant_name: variant_name.clone(),
-                fields: match fields { Some(f) => Some(self.fields(f)?), None => None },
+            Value::Enum(e) => PValue::Enum {
+                enum_name: e.enum_name.clone(),
+                variant_name: e.variant_name.clone(),
+                fields: match &e.fields { Some(f) => Some(self.fields(f)?), None => None },
             },
             Value::Class { name } => PValue::Class { name: name.clone() },
             Value::Collection(c) => self.collection(c)?,
@@ -258,29 +258,29 @@ impl FromPortable {
             PValue::Pct(x) => Value::Pct(*x),
             PValue::Char(c) => Value::Char(*c),
             PValue::Str(s) => Value::Str(s.clone().into()),
-            PValue::DateTime(d) => Value::DateTime(d.clone()),
+            PValue::DateTime(d) => Value::DateTime(Box::new(d.clone())),
             PValue::Duration(d) => Value::Duration(Box::new(d.clone())),
             PValue::Formatted(inner, spec) => Value::Formatted(Box::new(self.value(inner, session)), spec.clone()),
             PValue::Array(a) => Value::Array(self.values(a, session)),
             PValue::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), self.value(v, session))).collect()),
-            PValue::MapOrd(m) => Value::MapOrd(self.fields(m, session)),
+            PValue::MapOrd(m) => Value::MapOrd(Box::new(self.fields(m, session))),
             PValue::Pair(a, b) => Value::Pair(Box::new(self.value(a, session)), Box::new(self.value(b, session))),
             PValue::Seq(s) => Value::Seq(Seq::from_vec(self.values(s, session))),
             PValue::CtrlSkip => Value::CtrlSkip,
             PValue::CtrlStop => Value::CtrlStop,
             PValue::CtrlReturn(v) => Value::CtrlReturn(Box::new(self.value(v, session))),
-            PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } => Value::Object {
+            PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } => Value::Object(Box::new(ObjectVal {
                 class_name: class_name.clone(),
                 fields: Rc::new(self.fields(fields, session)),
                 readonly_fields: readonly_fields.clone(),
                 trait_fields: trait_fields.clone(),
                 uuid: uuid.clone(),
-            },
-            PValue::Enum { enum_name, variant_name, fields } => Value::Enum {
+            })),
+            PValue::Enum { enum_name, variant_name, fields } => Value::Enum(Box::new(EnumVal {
                 enum_name: enum_name.clone(),
                 variant_name: variant_name.clone(),
                 fields: fields.as_ref().map(|f| self.fields(f, session)),
-            },
+            })),
             PValue::Class { name } => Value::Class { name: name.clone() },
             PValue::Collection(layout, meta) => {
                 let layout = match layout {

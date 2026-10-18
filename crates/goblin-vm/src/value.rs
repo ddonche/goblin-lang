@@ -127,8 +127,26 @@ impl PartialEq<GStr> for str { fn eq(&self, o: &GStr) -> bool { self == o.0.as_s
 impl PartialEq<GStr> for &str { fn eq(&self, o: &GStr) -> bool { *self == o.0.as_str() } }
 impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == *o.0 } }
 
-/// The user-facing value stored inside a stash.
+/// An object instance: the payload of `Value::Object`.
 #[derive(Debug, Clone)]
+pub struct ObjectVal {
+    pub class_name: String,
+    pub fields: Rc<indexmap::IndexMap<String, Value>>,
+    pub readonly_fields: std::collections::BTreeSet<String>,
+    pub trait_fields: std::collections::BTreeSet<String>,
+    pub uuid: String,
+}
+
+/// An enum variant value: the payload of `Value::Enum`.
+#[derive(Debug, Clone)]
+pub struct EnumVal {
+    pub enum_name: String,
+    pub variant_name: String,
+    pub fields: Option<indexmap::IndexMap<String, Value>>,
+}
+
+/// The user-facing value stored inside a stash.
+#[derive(Clone)]
 pub enum Value {
     // ── Primitives ──────────────────────────────────────────────────────────
     Nil,
@@ -140,7 +158,7 @@ pub enum Value {
     Pct(f64),
     Char(char),
     Str(GStr),
-    DateTime(GoblinDateTime),
+    DateTime(Box<GoblinDateTime>),
     /// A length of time in nanoseconds, shown in the unit it was written in.
     Duration(Box<crate::duration::Duration>),
 
@@ -148,7 +166,7 @@ pub enum Value {
     Formatted(Box<Value>, FormatSpec),
     Array(Vec<Value>),
     Map(std::collections::BTreeMap<String, Value>),
-    MapOrd(indexmap::IndexMap<String, Value>),
+    MapOrd(Box<indexmap::IndexMap<String, Value>>),
     Pair(Box<Value>, Box<Value>),
     Seq(Seq),
 
@@ -158,20 +176,12 @@ pub enum Value {
     CtrlReturn(Box<Value>),
 
     // ── Object/type system ───────────────────────────────────────────────────
-    Object {
-        class_name: String,
-        fields: Rc<indexmap::IndexMap<String, Value>>,
-        readonly_fields: std::collections::BTreeSet<String>,
-        trait_fields: std::collections::BTreeSet<String>,
-        uuid: String,
-    },
+    /// Boxed so the large payload does not widen every Value.
+    Object(Box<ObjectVal>),
     Ref(String),
-    GridRef { grid_id: String, x: i32, y: i32 },
-    Enum {
-        enum_name: String,
-        variant_name: String,
-        fields: Option<indexmap::IndexMap<String, Value>>,
-    },
+    GridRef { grid_id: Rc<str>, x: i32, y: i32 },
+    /// Boxed so the large payload does not widen every Value.
+    Enum(Box<EnumVal>),
     Class { name: String },
 
     // ── Canonical VM adaptive collection type ───────────────────────────────
@@ -191,6 +201,60 @@ pub enum Value {
     /// A frozen snapshot (`:freeze`): read like the value it holds, never
     /// mutated, and shared with workers without copying it again.
     Frozen(Rc<Frozen>),
+}
+
+// Written by hand (not derived) so the text matches what the derive printed
+// before Object and Enum were boxed: `{:?}` text is used as a dedup key and a
+// map-key fallback, so it must not change.
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Nil           => f.write_str("Nil"),
+            Value::Unit          => f.write_str("Unit"),
+            Value::Bool(v)       => f.debug_tuple("Bool").field(v).finish(),
+            Value::Int(v)        => f.debug_tuple("Int").field(v).finish(),
+            Value::Float(v)      => f.debug_tuple("Float").field(v).finish(),
+            Value::Big(v)        => f.debug_tuple("Big").field(v).finish(),
+            Value::Pct(v)        => f.debug_tuple("Pct").field(v).finish(),
+            Value::Char(v)       => f.debug_tuple("Char").field(v).finish(),
+            Value::Str(v)        => f.debug_tuple("Str").field(v).finish(),
+            Value::DateTime(v)   => f.debug_tuple("DateTime").field(v).finish(),
+            Value::Duration(v)   => f.debug_tuple("Duration").field(v).finish(),
+            Value::Formatted(v, spec) => f.debug_tuple("Formatted").field(v).field(spec).finish(),
+            Value::Array(v)      => f.debug_tuple("Array").field(v).finish(),
+            Value::Map(v)        => f.debug_tuple("Map").field(v).finish(),
+            Value::MapOrd(v)     => f.debug_tuple("MapOrd").field(v).finish(),
+            Value::Pair(a, b)    => f.debug_tuple("Pair").field(a).field(b).finish(),
+            Value::Seq(v)        => f.debug_tuple("Seq").field(v).finish(),
+            Value::CtrlSkip      => f.write_str("CtrlSkip"),
+            Value::CtrlStop      => f.write_str("CtrlStop"),
+            Value::CtrlReturn(v) => f.debug_tuple("CtrlReturn").field(v).finish(),
+            Value::Object(o) => f.debug_struct("Object")
+                .field("class_name", &o.class_name)
+                .field("fields", &o.fields)
+                .field("readonly_fields", &o.readonly_fields)
+                .field("trait_fields", &o.trait_fields)
+                .field("uuid", &o.uuid)
+                .finish(),
+            Value::Ref(v)        => f.debug_tuple("Ref").field(v).finish(),
+            Value::GridRef { grid_id, x, y } => f.debug_struct("GridRef")
+                .field("grid_id", grid_id)
+                .field("x", x)
+                .field("y", y)
+                .finish(),
+            Value::Enum(e) => f.debug_struct("Enum")
+                .field("enum_name", &e.enum_name)
+                .field("variant_name", &e.variant_name)
+                .field("fields", &e.fields)
+                .finish(),
+            Value::Class { name } => f.debug_struct("Class").field("name", name).finish(),
+            Value::Collection(v) => f.debug_tuple("Collection").field(v).finish(),
+            Value::Function(v)   => f.debug_tuple("Function").field(v).finish(),
+            Value::Closure(v)    => f.debug_tuple("Closure").field(v).finish(),
+            Value::Builtin(v)    => f.debug_tuple("Builtin").field(v).finish(),
+            Value::Frozen(v)     => f.debug_tuple("Frozen").field(v).finish(),
+        }
+    }
 }
 
 /// The two forms of a frozen snapshot: `value` for reading in this session,
@@ -225,10 +289,10 @@ impl Value {
             Value::CtrlSkip      => "ctrl_skip",
             Value::CtrlStop      => "ctrl_stop",
             Value::CtrlReturn(_) => "ctrl_return",
-            Value::Object { .. } => "object",
+            Value::Object(_)     => "object",
             Value::Ref(_)        => "ref",
             Value::GridRef { .. } => "grid_ref",
-            Value::Enum { .. }   => "enum",
+            Value::Enum(_)       => "enum",
             Value::Class { .. }  => "class",
             // Collections are the VM's representation of array/map literals;
             // user-visible type names match the interpreter.
@@ -262,10 +326,10 @@ impl Value {
             Value::CtrlSkip      => false,
             Value::CtrlStop      => false,
             Value::CtrlReturn(_) => false,
-            Value::Object { .. } => true,
+            Value::Object(_)     => true,
             Value::Ref(_)        => true,
             Value::GridRef { .. } => true,
-            Value::Enum { .. }   => true,
+            Value::Enum(_)       => true,
             Value::Class { .. }  => true,
             Value::Collection(c) => c.meta.len > 0,
             Value::Function(_)   => true,
@@ -310,8 +374,8 @@ impl PartialEq for Value {
             (Value::Closure(a),       Value::Closure(b))       => Rc::ptr_eq(a, b),
             (Value::Builtin(a),       Value::Builtin(b))       => a == b,
             // Variants with fields are equal only when their fields are too.
-            (Value::Enum { enum_name: en_a, variant_name: vn_a, fields: fa },
-             Value::Enum { enum_name: en_b, variant_name: vn_b, fields: fb }) => en_a == en_b && vn_a == vn_b && fa == fb,
+            (Value::Enum(a), Value::Enum(b)) =>
+                a.enum_name == b.enum_name && a.variant_name == b.variant_name && a.fields == b.fields,
             _ => false,
         }
     }
@@ -445,7 +509,7 @@ impl Value {
     /// values pass through. For builtins that only understand legacy shapes.
     pub fn into_legacy(self) -> Value {
         match &self {
-            Value::Collection(c) if c.is_map() => Value::MapOrd(self.to_index_map().unwrap_or_default()),
+            Value::Collection(c) if c.is_map() => Value::MapOrd(Box::new(self.to_index_map().unwrap_or_default())),
             Value::Collection(_) => Value::Array(self.seq_items().map(|x| x.into_owned()).unwrap_or_default()),
             _ => self,
         }
@@ -475,18 +539,18 @@ impl std::hash::Hash for Value {
             Value::Formatted(v, _) => v.hash(state),
             Value::Array(a)      => { for x in a { x.hash(state); } }
             Value::Map(m)        => { for (k, v) in m { k.hash(state); v.hash(state); } }
-            Value::MapOrd(m)     => { for (k, v) in m { k.hash(state); v.hash(state); } }
+            Value::MapOrd(m)     => { for (k, v) in m.iter() { k.hash(state); v.hash(state); } }
             Value::Pair(k, v)    => { k.hash(state); v.hash(state); }
             Value::Seq(s)        => { for x in &s.items { x.hash(state); } }
             Value::CtrlSkip      => {}
             Value::CtrlStop      => {}
             Value::CtrlReturn(v) => v.hash(state),
-            Value::Object { uuid, .. } => uuid.hash(state),
+            Value::Object(o)     => o.uuid.hash(state),
             Value::Ref(s)        => s.hash(state),
             Value::GridRef { grid_id, x, y } => { grid_id.hash(state); x.hash(state); y.hash(state); }
-            Value::Enum { enum_name, variant_name, .. } => {
-                enum_name.hash(state);
-                variant_name.hash(state);
+            Value::Enum(e) => {
+                e.enum_name.hash(state);
+                e.variant_name.hash(state);
             }
             Value::Class { name } => name.hash(state),
             Value::Collection(c) => (Rc::as_ptr(c) as usize).hash(state),
@@ -1407,5 +1471,19 @@ fn big_op(op: &str, x: rust_decimal::Decimal, y: rust_decimal::Decimal) -> Optio
         "sub" => x.checked_sub(y),
         "mul" => x.checked_mul(y),
         _     => x.checked_rem(y),
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::Value;
+
+    /// Every stack push, pop and clone moves a whole Value, so keep it small:
+    /// box any variant whose payload would grow it past 32 bytes.
+    #[test]
+    fn value_stays_small() {
+        assert!(std::mem::size_of::<Value>() <= 32, "Value is {} bytes", std::mem::size_of::<Value>());
+        assert!(std::mem::size_of::<crate::vm::Operand>() <= 32,
+            "Operand is {} bytes", std::mem::size_of::<crate::vm::Operand>());
     }
 }
