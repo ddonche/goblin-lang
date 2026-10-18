@@ -147,3 +147,15 @@ fn reading_a_string_does_not_copy_it() {
         "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"line {i} with some text to make the page longer\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nact one(t)\n    return 1\nxx\ntotal | 0\nj | 0\nwhile j < N\n    copy | page\n    total |= total + one(copy) + one(page)\n    j |= j + 1\nxx\nsay(total)\n",
     );
 }
+
+#[test]
+fn sweep_with_idle_arms_is_linear() {
+    // One arm matches every heading; the other arms never match. Each step
+    // used to search every arm over the rest of the page again, so this was
+    // quadratic.
+    check_scaling(
+        "sweep",
+        2_000,
+        "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"<h2>Heading {i}</h2> some text about it\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nn | 0\nsweep page\n    \"<h2>\" ... \"</h2>\" :\n        n += 1\n    \"<h9>\" ... \"</h9>\" :\n        n += 100\n    \"[[\" ... \"]]\" :\n        n += 1000\nxx\nsay(n)\n",
+    );
+}
