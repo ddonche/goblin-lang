@@ -1,0 +1,23 @@
+/// known-gap: interp :swarm! is VM-only
+/// A closure in a frozen swarm context keeps its captured variable when a
+/// worker cleans up memory before calling it.
+act make_counter()
+    n | 0
+    act bump()
+        n |= n + 1
+        return n
+    xx
+    return bump
+xx
+act work(item, ctx)
+    i | 0
+    junk | []
+    while i < 300000
+        junk |= ["x{i}"]
+        i |= i + 1
+    xx
+    fa | ctx{"count"}
+    return fa()
+xx
+shared | :freeze({"count": make_counter()})
+say(:swarm!([1, 2], work, 2, shared))
