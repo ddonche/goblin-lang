@@ -423,16 +423,15 @@ impl Session {
 
     /// Clone the Value payload for read-only introspection.
     pub fn read_value(&self, t: &Tether) -> Result<Value, GoblinError> {
-        let v = self.get_stash(t)?.value.clone();
         // Auto-deref Ref through object_store (matches interpreter's get_var semantics).
-        match v {
-            Value::Ref(ref uuid) => self.object_store.get(uuid.as_str())
+        match &self.get_stash(t)?.value {
+            Value::Ref(uuid) => self.object_store.get(uuid.as_str())
                 .cloned()
                 .ok_or_else(|| crate::error::GoblinError::Runtime(
                     format!("dangling ref: uuid {} not in object_store", uuid)
                 )),
             Value::Frozen(f) => Ok(f.value.clone()),
-            other => Ok(other),
+            other => Ok(other.clone_fast()),
         }
     }
 

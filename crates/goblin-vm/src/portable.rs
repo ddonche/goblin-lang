@@ -73,6 +73,7 @@ pub enum PLayout {
 #[derive(Debug)]
 pub struct PFunction {
     pub bytecode: Vec<crate::opcode::Opcode>,
+    pub op_data: Vec<crate::opcode::OpData>,
     pub constants: Vec<PValue>,
     pub locals: usize,
     pub params: usize,
@@ -202,6 +203,7 @@ impl<'s> ToPortable<'s> {
         let constants = self.values(&f.constants)?;
         let p = Arc::new(PFunction {
             bytecode: f.bytecode.clone(),
+            op_data: f.op_data.clone(),
             constants,
             locals: f.locals,
             params: f.params,
@@ -344,6 +346,7 @@ impl FromPortable {
         let constants = f.constants.iter().map(|c| self.value(c, session)).collect();
         let r = Rc::new(FunctionObject {
             bytecode: f.bytecode.clone(),
+            op_data: f.op_data.clone(),
             constants,
             locals: f.locals,
             params: f.params,

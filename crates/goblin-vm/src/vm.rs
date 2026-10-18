@@ -198,7 +198,7 @@ impl Vm {
                     }
                     continue;
                 }
-                let op = frame.func.bytecode[frame.ip].clone();
+                let op = frame.func.bytecode[frame.ip];
                 frame.ip += 1;
                 op
             };
@@ -231,13 +231,26 @@ impl Vm {
         Ok(())
     }
 
+    /// The current function's data for an opcode (see `OpData`).
+    fn op_data_at(&self, i: u16) -> crate::opcode::OpData {
+        self.call_stack.last().unwrap().func.op_data[i as usize].clone()
+    }
+
+    /// The type name stored for a type-lock or cast opcode.
+    fn op_name(&self, i: u16) -> String {
+        match &self.call_stack.last().unwrap().func.op_data[i as usize] {
+            crate::opcode::OpData::Name(n) => n.clone(),
+            other => unreachable!("opcode data {other:?} is not a name"),
+        }
+    }
+
     fn execute_op(&mut self, op: Opcode) -> Result<(), GoblinError> {
         match op {
             // ── Literals ────────────────────────────────────────────────────
             Opcode::LoadConst(idx) => {
                 let val = {
                     let frame = self.call_stack.last().unwrap();
-                    frame.func.constants[idx as usize].clone()
+                    frame.func.constants[idx as usize].clone_fast()
                 };
                 self.stack.push(Operand::Val(val));
             }
@@ -349,8 +362,8 @@ impl Vm {
             }
 
             // ── Type-lock opcodes ─────────────────────────────────────────────
-            Opcode::StoreLockLocal(slot, ref lock_type) => {
-                let lock_type = lock_type.clone();
+            Opcode::StoreLockLocal(slot, name_i) => {
+                let lock_type = self.op_name(name_i);
                 let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Value::Object { ref uuid, .. } = cast {
@@ -366,8 +379,8 @@ impl Vm {
                 frame.set_hard_type_lock(slot, lock_type);
             }
 
-            Opcode::StoreLockGlobal(idx, ref lock_type) => {
-                let lock_type = lock_type.clone();
+            Opcode::StoreLockGlobal(idx, name_i) => {
+                let lock_type = self.op_name(name_i);
                 let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Value::Object { ref uuid, .. } = cast {
@@ -382,8 +395,8 @@ impl Vm {
                 self.session.global_hard_type_locks.insert(idx as u32, lock_type);
             }
 
-            Opcode::CastBangLocal(slot, ref cast_type) => {
-                let cast_type = cast_type.clone();
+            Opcode::CastBangLocal(slot, name_i) => {
+                let cast_type = self.op_name(name_i);
                 // Validate against hard type lock if one exists.
                 if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
                     if lock != cast_type {
@@ -402,8 +415,8 @@ impl Vm {
                 self.stack.push(Operand::Val(new_val));
             }
 
-            Opcode::CastBangGlobal(idx, ref cast_type) => {
-                let cast_type = cast_type.clone();
+            Opcode::CastBangGlobal(idx, name_i) => {
+                let cast_type = self.op_name(name_i);
                 // Validate against hard type lock if one exists.
                 if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
                     if lock != cast_type {
@@ -473,8 +486,8 @@ impl Vm {
                 }
             }
 
-            Opcode::CastMemberLocal(slot, ref cast_type) => {
-                let cast_type = cast_type.clone();
+            Opcode::CastMemberLocal(slot, name_i) => {
+                let cast_type = self.op_name(name_i);
                 // If a hard type lock exists and mismatches the requested cast, error.
                 if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
                     let canonical = if cast_type == "string" { "str" } else { cast_type.as_str() };
@@ -491,8 +504,8 @@ impl Vm {
                 self.stack.push(Operand::Val(cast));
             }
 
-            Opcode::CastMemberGlobal(idx, ref cast_type) => {
-                let cast_type = cast_type.clone();
+            Opcode::CastMemberGlobal(idx, name_i) => {
+                let cast_type = self.op_name(name_i);
                 // If a hard type lock exists and mismatches, error.
                 if let Some(lock) = self.session.global_hard_type_locks.get(&(idx as u32)).cloned() {
                     let canonical = if cast_type == "string" { "str" } else { cast_type.as_str() };
@@ -583,6 +596,13 @@ impl Vm {
 
             // ── Arithmetic ───────────────────────────────────────────────────
             Opcode::Add => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = Some(Value::Int(a.wrapping_add(b))) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 // unwrap Formatted for arithmetic, carry spec forward
@@ -641,6 +661,13 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Float(a + b)));
             }
             Opcode::Sub => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = a.checked_sub(b).map(Value::Int) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let (a, b) = pct_as_number(a, b);
@@ -656,6 +683,13 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Float(a - b)));
             }
             Opcode::Mul => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = a.checked_mul(b).map(Value::Int) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 let (a, b) = pct_as_number(a, b);
@@ -700,6 +734,13 @@ impl Vm {
                 self.stack.push(Operand::Val(num_div(&Value::Float(a), &Value::Float(b))?));
             }
             Opcode::Rem => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = a.checked_rem(b).map(|r| Value::Int(if r != 0 && (r < 0) != (b < 0) { r + b } else { r })) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?;
                 let a = self.pop_value()?;
                 if matches!(a, Value::Duration(_)) || matches!(b, Value::Duration(_)) {
@@ -764,29 +805,71 @@ impl Vm {
 
             // ── Comparison ───────────────────────────────────────────────────
             Opcode::Eq => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = Some(Value::Bool(a == b)) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 self.stack.push(Operand::Val(Value::Bool(values_equal(&a, &b))));
             }
             Opcode::Ne => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = Some(Value::Bool(a != b)) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 self.stack.push(Operand::Val(Value::Bool(!values_equal(&a, &b))));
             }
             Opcode::Lt => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = Some(Value::Bool(a < b)) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<")?;
                 self.stack.push(Operand::Val(Value::Bool(result < 0)));
             }
             Opcode::Le => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = Some(Value::Bool(a <= b)) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, "<=")?;
                 self.stack.push(Operand::Val(Value::Bool(result <= 0)));
             }
             Opcode::Gt => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = Some(Value::Bool(a > b)) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">")?;
                 self.stack.push(Operand::Val(Value::Bool(result > 0)));
             }
             Opcode::Ge => {
+                if let Some((a, b)) = self.top2_ints() {
+                    if let Some(r) = Some(Value::Bool(a >= b)) {
+                        self.stack.pop();
+                        *self.stack.last_mut().unwrap() = Operand::Val(r);
+                        return Ok(());
+                    }
+                }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 let result = self.compare_values(&a, &b, ">=")?;
                 self.stack.push(Operand::Val(Value::Bool(result >= 0)));
@@ -802,6 +885,15 @@ impl Vm {
                 frame.ip = (frame.ip as isize + offset as isize) as usize;
             }
             Opcode::JumpIfFalse(offset) => {
+                if let Some(Operand::Val(Value::Bool(c))) = self.stack.last() {
+                    let jump = !*c;
+                    self.stack.pop();
+                    if jump {
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.ip = (frame.ip as isize + offset as isize) as usize;
+                    }
+                    return Ok(());
+                }
                 let cond = self.pop_value()?;
                 if !cond.is_truthy() {
                     let frame = self.call_stack.last_mut().unwrap();
@@ -809,6 +901,15 @@ impl Vm {
                 }
             }
             Opcode::JumpIfTrue(offset) => {
+                if let Some(Operand::Val(Value::Bool(c))) = self.stack.last() {
+                    let jump = *c;
+                    self.stack.pop();
+                    if jump {
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.ip = (frame.ip as isize + offset as isize) as usize;
+                    }
+                    return Ok(());
+                }
                 let cond = self.pop_value()?;
                 if cond.is_truthy() {
                     let frame = self.call_stack.last_mut().unwrap();
@@ -1987,7 +2088,8 @@ impl Vm {
             }
 
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
-            Opcode::OverlayDef(def) => {
+            Opcode::OverlayDef(i) => {
+                let crate::opcode::OpData::OverlayDef(def) = self.op_data_at(i) else { unreachable!() };
                 use crate::session::{OverlayDef, OverlayApplyBehavior};
                 let vm_def = OverlayDef {
                     name: def.name.clone(),
@@ -2009,7 +2111,8 @@ impl Vm {
                 self.session.overlay_defs.insert(vm_def.name.clone(), vm_def);
             }
 
-            Opcode::OverlayApply { overlay_name, host_var_name, strength, duration_override } => {
+            Opcode::OverlayApply(i) => {
+                let crate::opcode::OpData::OverlayApply { overlay_name, host_var_name, strength, duration_override } = self.op_data_at(i) else { unreachable!() };
                 use crate::session::{OverlayInstance, OverlayInstanceId};
                 let host_val = self.pop_value()?;
                 let (host_var, host_uuid) = match &host_val {
@@ -2048,14 +2151,16 @@ impl Vm {
                 self.session.overlay_instances.push(inst);
             }
 
-            Opcode::OverlayDetach { overlay_name, host_var_name } => {
+            Opcode::OverlayDetach(i) => {
+                let crate::opcode::OpData::OverlayDetach { overlay_name, host_var_name } = self.op_data_at(i) else { unreachable!() };
                 let _host_val = self.pop_value()?;
                 self.session.overlay_instances.retain(|inst| {
                     !(inst.overlay_name == *overlay_name && inst.host_var == *host_var_name)
                 });
             }
 
-            Opcode::LinkDef(def) => {
+            Opcode::LinkDef(i) => {
+                let crate::opcode::OpData::LinkDef(def) = self.op_data_at(i) else { unreachable!() };
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
                 let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
@@ -2069,7 +2174,8 @@ impl Vm {
                 self.session.link_defs.insert((def.class_name.clone(), channel), link_def);
             }
 
-            Opcode::ObjectLinkDef(def) => {
+            Opcode::ObjectLinkDef(i) => {
+                let crate::opcode::OpData::ObjectLinkDef(def) = self.op_data_at(i) else { unreachable!() };
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
                 let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
@@ -2083,7 +2189,8 @@ impl Vm {
                 self.session.object_link_defs.insert((def.object_var.clone(), channel), link_def);
             }
 
-            Opcode::LinkOffset(s) => {
+            Opcode::LinkOffset(i) => {
+                let crate::opcode::OpData::LinkOffset(s) = self.op_data_at(i) else { unreachable!() };
                 use crate::session::LinkOffset;
                 let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
                 let new_offset = LinkOffset { value: s.offset, ticks_remaining: s.ticks };
@@ -2100,13 +2207,15 @@ impl Vm {
                 }
             }
 
-            Opcode::ClearLink(s) => {
+            Opcode::ClearLink(i) => {
+                let crate::opcode::OpData::ClearLink(s) = self.op_data_at(i) else { unreachable!() };
                 let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
                 self.session.link_offsets.remove(&key);
                 self.session.des_link_ids.remove(&key);
             }
 
-            Opcode::ObjectDecision { var_name, def } => {
+            Opcode::ObjectDecision(i) => {
+                let crate::opcode::OpData::ObjectDecision { var_name, def } = self.op_data_at(i) else { unreachable!() };
                 let mut d = *def.clone();
                 let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
                 d.formula_min = min;
@@ -2114,7 +2223,8 @@ impl Vm {
                 self.session.object_decisions.insert(var_name.clone(), d);
             }
 
-            Opcode::UnitDecl(decl) => {
+            Opcode::UnitDecl(i) => {
+                let crate::opcode::OpData::UnitDecl(decl) = self.op_data_at(i) else { unreachable!() };
                 self.session.unit_registry.insert(decl.name.clone(), *decl.clone());
             }
 
@@ -2526,6 +2636,28 @@ impl Vm {
         }
     }
 
+    /// The integer an operand holds, without copying it off the stack.
+    #[inline(always)]
+    fn operand_int(&self, op: &Operand) -> Option<i64> {
+        match op {
+            Operand::Val(Value::Int(n)) => Some(*n),
+            Operand::Ref(t) => match self.session.get_stash(t) {
+                Ok(stash) => if let Value::Int(n) = stash.value { Some(n) } else { None },
+                Err(_) => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Both top operands as integers (second from top, top), if they are:
+    /// the fast path for arithmetic and comparisons on plain ints.
+    #[inline(always)]
+    fn top2_ints(&self) -> Option<(i64, i64)> {
+        let n = self.stack.len();
+        if n < 2 { return None; }
+        Some((self.operand_int(&self.stack[n - 2])?, self.operand_int(&self.stack[n - 1])?))
+    }
+
     /// Pop one operand and resolve it.  Does NOT deref Value::Ref → Object.
     #[inline]
     fn stack_pop(&mut self) -> Result<Value, GoblinError> {
@@ -2640,7 +2772,7 @@ impl Vm {
                     self.stack.push(Operand::Val(Value::Nil));
                     continue;
                 }
-                let op = frame.func.bytecode[frame.ip].clone();
+                let op = frame.func.bytecode[frame.ip];
                 frame.ip += 1;
                 op
             };
@@ -4147,6 +4279,7 @@ mod tests {
 
     fn simple_func(bytecode: Vec<Opcode>, constants: Vec<Value>) -> FunctionObject {
         FunctionObject {
+            op_data: Vec::new(),
             bytecode,
             constants,
             locals: 0,
@@ -4186,6 +4319,7 @@ mod tests {
     fn store_and_load_local() {
         let mut vm = make_vm();
         let func = FunctionObject {
+            op_data: Vec::new(),
             bytecode: vec![
                 Opcode::LoadConst(0),  // push 10
                 Opcode::StoreLocal(0), // store in slot 0
@@ -4214,6 +4348,7 @@ mod tests {
         // if false { 1 } else { 2 }
         // LoadFalse, JumpIfFalse(+2), LoadConst(0)[=1], Jump(+1), LoadConst(1)[=2], Return
         let func = FunctionObject {
+            op_data: Vec::new(),
             bytecode: vec![
                 Opcode::LoadFalse,
                 Opcode::JumpIfFalse(2),  // skip next 2 instructions
@@ -4244,6 +4379,7 @@ mod tests {
 
         // Inner function: takes one arg (slot 0), returns it + 1
         let inner = FunctionObject {
+            op_data: Vec::new(),
             bytecode: vec![
                 Opcode::LoadLocal(0),   // arg
                 Opcode::LoadConst(0),   // 1
@@ -4265,6 +4401,7 @@ mod tests {
 
         // Outer: create inner, call with 5, return result
         let outer = FunctionObject {
+            op_data: Vec::new(),
             bytecode: vec![
                 Opcode::LoadConst(0),  // push the function (inner)
                 Opcode::LoadConst(1),  // push 5 (arg)

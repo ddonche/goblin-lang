@@ -7,7 +7,7 @@ use crate::value::BuiltinId;
 ///
 /// Quickening: generic ops (Add, Sub, …) are replaced at runtime with
 /// specialised forms (AddInt, AddFloat, Concat) once operand types are known.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Opcode {
     // ── Literals ───────────────────────────────────────────────────────────────
     /// Push constants[idx] onto the stack (allocates a new stash).
@@ -220,25 +220,25 @@ pub enum Opcode {
     /// its top-level actions. Pushes nothing.
     UseGlam(u16),
 
-    // ── DES statement opcodes (carry AST data inline) ──────────────────────
+    // ── DES statement opcodes (their data is in the function's `op_data`) ──
     /// Register an overlay definition in session.overlay_defs.
-    OverlayDef(Box<goblin_ast::OverlayDefStmt>),
+    OverlayDef(u16),
     /// Apply an overlay to a host (host value must be on stack).
-    OverlayApply { overlay_name: String, host_var_name: String, strength: f64, duration_override: Option<u32> },
+    OverlayApply(u16),
     /// Detach an overlay from a host (host variable name on stack).
-    OverlayDetach { overlay_name: String, host_var_name: String },
+    OverlayDetach(u16),
     /// Register a class-level link definition.
-    LinkDef(Box<goblin_ast::LinkDefStmt>),
+    LinkDef(u16),
     /// Register an object-level link definition override.
-    ObjectLinkDef(Box<goblin_ast::ObjectLinkDefStmt>),
-    /// Apply a link offset (from_var, to_var, channel, offset, ticks on stack as consts).
-    LinkOffset(Box<goblin_ast::LinkOffsetStmt>),
+    ObjectLinkDef(u16),
+    /// Apply a link offset.
+    LinkOffset(u16),
     /// Clear link offsets.
-    ClearLink(Box<goblin_ast::ClearLinkStmt>),
+    ClearLink(u16),
     /// Register an object decision formula.
-    ObjectDecision { var_name: String, def: Box<goblin_ast::DecisionDef> },
+    ObjectDecision(u16),
     /// Register a unit declaration.
-    UnitDecl(Box<goblin_ast::UnitDecl>),
+    UnitDecl(u16),
 
     /// Peek at top-of-stack and register it into session.named_values[constants[name_idx]].
     /// Does NOT pop — the value stays on stack for the subsequent StoreLocal.
@@ -263,15 +263,15 @@ pub enum Opcode {
     // ── Type-lock opcodes ─────────────────────────────────────────────────────
     /// Tether with type lock for a local slot: pop value, cast to lock_type, store in slot,
     /// register lock in BOTH type_locks and hard_type_locks of the current frame.
-    StoreLockLocal(u8, String),
+    StoreLockLocal(u8, u16),
     /// Same as StoreLockLocal but for a global slot (by index).
-    StoreLockGlobal(u16, String),
+    StoreLockGlobal(u16, u16),
 
     /// Cast-bang for a local: read value from slot, cast to cast_type, store back, update
     /// type_locks (NOT hard_type_locks). Push new value onto stack.
-    CastBangLocal(u8, String),
+    CastBangLocal(u8, u16),
     /// Same as CastBangLocal but for a global slot.
-    CastBangGlobal(u16, String),
+    CastBangGlobal(u16, u16),
 
     /// Get the type lock for a local variable: if type_lock is set push it as a string
     /// (qualified for collections), otherwise fall through to normal TypeOf on the value.
@@ -281,9 +281,9 @@ pub enum Opcode {
 
     /// Cast member with hard-lock check for a local: read from slot, check hard_type_lock
     /// (error R0215 on mismatch), cast value, push result. Does NOT store back.
-    CastMemberLocal(u8, String),
+    CastMemberLocal(u8, u16),
     /// Same as CastMemberLocal but for a global slot.
-    CastMemberGlobal(u16, String),
+    CastMemberGlobal(u16, u16),
 
     /// Pop RHS; if it is a Collection/Array of exactly N elements, push them in
     /// reverse order (element 0 on top). If empty collection, broadcast empty
@@ -386,13 +386,13 @@ impl Opcode {
             Opcode::ImportFileAs(..)  => "ImportFileAs",
             Opcode::UseGlam(_)        => "UseGlam",
             Opcode::OverlayDef(_)     => "OverlayDef",
-            Opcode::OverlayApply {..} => "OverlayApply",
-            Opcode::OverlayDetach {..} => "OverlayDetach",
+            Opcode::OverlayApply(_) => "OverlayApply",
+            Opcode::OverlayDetach(_) => "OverlayDetach",
             Opcode::LinkDef(_)        => "LinkDef",
             Opcode::ObjectLinkDef(_)  => "ObjectLinkDef",
             Opcode::LinkOffset(_)     => "LinkOffset",
             Opcode::ClearLink(_)      => "ClearLink",
-            Opcode::ObjectDecision {..} => "ObjectDecision",
+            Opcode::ObjectDecision(_) => "ObjectDecision",
             Opcode::UnitDecl(_)       => "UnitDecl",
             Opcode::RegisterAction(_) => "RegisterAction",
             Opcode::LoadNamed(_)      => "LoadNamed",
@@ -412,4 +412,23 @@ impl Opcode {
             Opcode::ArrayPushToLocal(_)  => "ArrayPushToLocal",
         }
     }
+}
+
+/// Data for the few opcodes that need more than small numbers, kept beside
+/// the bytecode (`FunctionObject::op_data`) so `Opcode` stays a plain
+/// copyable value and the VM loop never clones or drops heap data per
+/// instruction. The opcode holds the index.
+#[derive(Debug, Clone)]
+pub enum OpData {
+    /// A type name, for the type-lock and cast opcodes.
+    Name(String),
+    OverlayDef(Box<goblin_ast::OverlayDefStmt>),
+    OverlayApply { overlay_name: String, host_var_name: String, strength: f64, duration_override: Option<u32> },
+    OverlayDetach { overlay_name: String, host_var_name: String },
+    LinkDef(Box<goblin_ast::LinkDefStmt>),
+    ObjectLinkDef(Box<goblin_ast::ObjectLinkDefStmt>),
+    LinkOffset(Box<goblin_ast::LinkOffsetStmt>),
+    ClearLink(Box<goblin_ast::ClearLinkStmt>),
+    ObjectDecision { var_name: String, def: Box<goblin_ast::DecisionDef> },
+    UnitDecl(Box<goblin_ast::UnitDecl>),
 }

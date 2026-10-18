@@ -71,6 +71,21 @@ impl Seq {
 #[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GStr(Rc<String>);
 
+impl Value {
+    /// `clone()`, with the plain scalars copied inline (the hot VM paths
+    /// load ints and floats far more often than anything else).
+    #[inline(always)]
+    pub fn clone_fast(&self) -> Value {
+        match self {
+            Value::Int(n) => Value::Int(*n),
+            Value::Float(f) => Value::Float(*f),
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Nil => Value::Nil,
+            other => other.clone(),
+        }
+    }
+}
+
 impl GStr {
     pub fn new(s: String) -> Self { GStr(Rc::new(s)) }
     pub fn as_str(&self) -> &str { self.0.as_str() }
@@ -512,6 +527,8 @@ pub enum UpvalueDescriptor {
 #[derive(Debug, Clone)]
 pub struct FunctionObject {
     pub bytecode: Vec<crate::opcode::Opcode>,
+    /// Data for opcodes that carry strings or AST (indexed by the opcode).
+    pub op_data: Vec<crate::opcode::OpData>,
     pub constants: Vec<Value>,
     /// Total number of local slots (parameters + other locals).
     pub locals: usize,
