@@ -354,11 +354,11 @@ impl Session {
         let gen = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
 
-        // Only new text or storage counts: a value shared with another
-        // variable (`copy | page`) costs no new memory.
+        // Text counts once: a string already charged, now shared with another
+        // variable (`copy | page`), costs no new memory.
         self.gc_bytes += match &value {
-            Value::Str(text) if text.is_unique() => text.len(),
-            Value::Collection(c) if std::rc::Rc::strong_count(c) == 1 => c.len() * 32,
+            Value::Str(text) if text.take_uncharged() => text.len(),
+            Value::Collection(c) => c.len() * 32,
             _ => 0,
         };
 
@@ -687,6 +687,25 @@ impl Session {
 mod tests {
     use super::*;
     use crate::value::Value;
+
+    #[test]
+    fn new_text_is_charged_to_the_gc_budget_once() {
+        let mut sess = Session::new(GcMode::Off);
+        let text: crate::value::GStr = "x".repeat(1000).into();
+        // New text stored while another copy is still on the stack (the
+        // compiler's `Dup` before a store) is still new memory.
+        let on_stack = text.clone();
+        sess.alloc_value(Value::Str(text));
+        assert_eq!(sess.gc_bytes, 1000);
+        // Storing the same text in another variable costs nothing new.
+        sess.alloc_value(Value::Str(on_stack.clone()));
+        assert_eq!(sess.gc_bytes, 1000);
+        // Changing a shared copy makes new text, which counts again.
+        let mut changed = on_stack;
+        changed.make_mut().push('y');
+        sess.alloc_value(Value::Str(changed));
+        assert_eq!(sess.gc_bytes, 2001);
+    }
 
     #[test]
     fn alloc_and_read() {
