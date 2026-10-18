@@ -1,0 +1,21 @@
+/// known-gap: interp :freeze is VM-only
+/// A closure inside a frozen value keeps its captured variable when memory
+/// is cleaned up.
+act make_counter()
+    n | 0
+    act bump()
+        n |= n + 1
+        return n
+    xx
+    return bump
+xx
+box | :freeze({"count": make_counter()})
+i | 0
+junk | []
+while i < 200000
+    junk |= ["x{i}"]
+    i |= i + 1
+xx
+fa | box{"count"}
+say(fa())
+say(fa())
