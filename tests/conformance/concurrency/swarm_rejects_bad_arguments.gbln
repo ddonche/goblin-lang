@@ -1,0 +1,20 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// The worker count must be a positive whole number and the action an action.
+act id(x)
+    return x
+xx
+attempt
+    :swarm([1], id, 0)
+rescue e
+    say(:has("{e}", "C0104"))
+xx
+attempt
+    :swarm([1], 5, 2)
+rescue e
+    say(:has("{e}", "C0105"))
+xx
+attempt
+    :swarm(5, id, 2)
+rescue e
+    say("not a list")
+xx

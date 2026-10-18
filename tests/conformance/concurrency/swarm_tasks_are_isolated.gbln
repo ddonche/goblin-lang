@@ -1,0 +1,12 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Every task starts from the caller's state: changes one task makes to globals are not seen by the next task or by the caller.
+count | 0
+seen | []
+act bump(x)
+    count |= count + x
+    :put_last!(seen, x)
+    return [count, seen.len]
+xx
+say(:swarm([1, 2, 3], bump, 1))
+say(count)
+say(seen)

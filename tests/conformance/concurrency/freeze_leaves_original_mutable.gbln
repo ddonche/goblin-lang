@@ -1,0 +1,13 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Freezing a value does not freeze the variable it came from.
+act touch(x, ctx)
+    :update!(ctx{"k"}, x)
+    return ctx{"k"}
+xx
+plain | {"k": 0}
+snap | :freeze(plain)
+:update!(plain{"k"}, 1)
+say(plain)
+say(snap)
+say(:swarm([5, 6], touch, 2, plain))
+say(plain)

@@ -1,0 +1,18 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Workers run closures (with their captured values copied) and actions looked up by name.
+act make_mult(m)
+    act inner(n)
+        return n * m
+    xx
+    return inner
+xx
+triple | make_mult(3)
+act apply(x)
+    return triple(x)
+xx
+say(:swarm([1, 2], apply, 2))
+say(:swarm([4], triple, 1))
+act by_name(x)
+    return :summon(x, ["apply"])
+xx
+say(:swarm([5], by_name, 1))

@@ -1,0 +1,14 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Inside a worker a frozen context is still frozen; an unfrozen context is each task's own copy.
+act touch(x, ctx)
+    :update!(ctx{"k"}, x)
+    return ctx{"k"}
+xx
+attempt
+    :swarm([1], touch, 1, :freeze({"k": 0}))
+rescue e
+    say(:has("{e}", "C0102"))
+xx
+plain | {"k": 0}
+say(:swarm([5, 6], touch, 1, plain))
+say(plain)

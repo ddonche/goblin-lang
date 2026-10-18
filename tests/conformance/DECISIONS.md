@@ -1139,3 +1139,14 @@ The interpreter also has three builtins the VM lacks:
   - `keep_between` with an open delimiter that is never closed is an error, unless the call passes `allow_eof_close: true`.
   - `:pack` skips nil elements and packs nested arrays in place: `["a", "b", "c", nil, "d"]` is `"abcd"`.
   - A percent prints as a percent: `25%`, not `0.25`. `x | 25%` at the end of a line is a percent, not the start of a modulus.
+- `!` means the call mutates or is destructive (owner, 2026-10-08). A mutating bang changes the thing its first argument names; a destructive bang (file I/O, `delete_object!`, `delete_overlays_on!`, `swarm!`) leaves its arguments alone.
+
+## Concurrency, stages 1 and 2 (owner's spec, 2026-10-08)
+
+Spec: /mnt/project-files/goblin-concurrency/Goblin_Concurrency_Spec_Final.md (with the groups addendum). VM only (interpreter known-gap).
+
+- `:freeze(v)` is a read-only snapshot. It reads exactly like `v`. Changing it (a bang call, `++`, through a nested field, or through another name bound to it) is error C0102. Rebinding the name with `|=` is allowed. Values read out of it are ordinary copies.
+- `:swarm(items, action, workers, context)` calls `action(item, context)` (or `action(item)` with no context) for each item on up to `workers` threads and returns the results in input order. `:swarm!` is the same with full teardown; it returns its results and leaves `items` alone.
+- Each task starts from the caller's state; changes a task makes to globals, tokens or stores are not seen by other tasks or by the caller. Values cross as copies; a frozen context is converted once and shared.
+- What tasks print appears in input order after the swarm finishes.
+- A failing task stops the others from starting new items; the swarm fails with C0103 naming the item. C0104: bad worker count. C0105: the action is not an action. C0101: a value that cannot cross (grid references).

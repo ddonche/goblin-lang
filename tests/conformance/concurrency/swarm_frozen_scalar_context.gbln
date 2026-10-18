@@ -1,0 +1,15 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A frozen context stays frozen inside workers even when it is a plain number.
+act add(x, ctx)
+    return x + ctx
+xx
+act bump(x, ctx)
+    ctx++
+    return ctx
+xx
+say(:swarm([1, 2], add, 2, :freeze(10)))
+attempt
+    :swarm([1], bump, 1, :freeze(10))
+rescue e
+    say(:has("{e}", "C0102"))
+xx

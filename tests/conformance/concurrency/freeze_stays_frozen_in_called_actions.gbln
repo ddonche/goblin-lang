@@ -1,0 +1,24 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A frozen value passed to an ordinary action is still frozen inside it.
+act change_map(m)
+    :update!(m{"k"}, 1)
+    return m
+xx
+act change_number(n)
+    n++
+    return n
+xx
+snap | :freeze({"k": 0})
+attempt
+    change_map(snap)
+rescue e
+    say(:has("{e}", "C0102"))
+xx
+five | :freeze(5)
+attempt
+    change_number(five)
+rescue e
+    say(:has("{e}", "C0102"))
+xx
+say(snap)
+say(five)

@@ -674,6 +674,18 @@ impl Compiler {
 
     /// D16: the routes the interpreter guards (`|=`, tuple `|=`, `++`/`--`,
     /// bang casts, `x.method!`) raise R0113 on an `imm` name when reached.
+    /// Before a mutation of `name`: the imm check, plus a run-time check that
+    /// it does not hold a frozen snapshot.
+    fn emit_mut_guard(&mut self, name: &str) -> Result<(), GoblinError> {
+        self.emit_imm_guard(name)?;
+        if let Ok(load) = self.resolve_load(name) {
+            self.emit(load);
+            let idx = self.add_constant(Value::Str(name.to_string())) as u16;
+            self.emit(Opcode::GuardMutable(idx));
+        }
+        Ok(())
+    }
+
     fn emit_imm_guard(&mut self, name: &str) -> Result<(), GoblinError> {
         if self.is_imm_name(name) {
             let msg = format!("cannot update imm binding '{}' (declared with imm)", name);
@@ -1360,7 +1372,7 @@ impl Compiler {
                 let bang = name.trim_start_matches(':');
                 if bang_mutates_target(bang) && !self.user_actions.contains(bang) {
                     if let Some(root) = args.first().and_then(lvalue_root) {
-                        self.emit_imm_guard(&root)?;
+                        self.emit_mut_guard(&root)?;
                     }
                 }
                 // Special forms (look like calls but compile to control flow).
@@ -1443,7 +1455,7 @@ impl Compiler {
                             "R0802: {base}!(name) requires exactly one variable name, not an expression"));
                     };
                     let var_name = var_name.clone();
-                    self.emit_imm_guard(&var_name)?;
+                    self.emit_mut_guard(&var_name)?;
                     let cast_op = if let Some(slot) = self.scope().find_local(&var_name) {
                         Some(Opcode::CastBangLocal(slot, base.to_string()))
                     } else if self.scopes.len() == 1 || self.resolve_upvalue(self.scopes.len() - 1, &var_name).is_none() {
@@ -1678,7 +1690,7 @@ impl Compiler {
                         _ => None,
                     };
                     if let Some((var_name, type_name)) = cast_bang {
-                        self.emit_imm_guard(&var_name)?;
+                        self.emit_mut_guard(&var_name)?;
                         if let Some(slot) = self.scope().find_local(&var_name) {
                             self.emit(Opcode::CastBangLocal(slot, type_name));
                             return Ok(());
@@ -1701,7 +1713,7 @@ impl Compiler {
                         _ => None,
                     };
                     if let Some((var_name, _method_name)) = mutation_bang {
-                        self.emit_imm_guard(&var_name)?;
+                        self.emit_mut_guard(&var_name)?;
                         self.compile_expr(inner)?; // pushes method result
                         self.emit(Opcode::Dup);    // duplicate: one to store, one to leave as value
                         if let Some(slot) = self.scope().find_local(&var_name) {
@@ -1737,7 +1749,7 @@ impl Compiler {
                         self.emit(Opcode::LoadConst(one));
                         if op == "++" { self.emit(Opcode::Add); } else { self.emit(Opcode::Sub); }
                         if is_lvalue(inner) {
-                            if let Expr::Ident(n, _) = inner.as_ref() { self.emit_imm_guard(n)?; }
+                            if let Expr::Ident(n, _) = inner.as_ref() { self.emit_mut_guard(n)?; }
                             self.emit(Opcode::Dup);
                             self.compile_store_from_stack(inner)?;
                         }
@@ -3451,6 +3463,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "second"                         => BuiltinId::DtSecond,
         "weekday"                        => BuiltinId::DtWeekday,
         "add_duration"                   => BuiltinId::DtAddDuration,
+        "freeze"                         => BuiltinId::Freeze,
+        "swarm"                          => BuiltinId::Swarm,
+        "swarm!"                         => BuiltinId::SwarmBang,
         "since"                          => BuiltinId::DtSince,
         "until"                          => BuiltinId::DtUntil,
         "timezone"                       => BuiltinId::DtTimezone,
@@ -3677,7 +3692,7 @@ fn bang_mutates_target(bare: &str) -> bool {
     const DESTRUCTIVE: &[&str] = &[
         "write_text!", "write_json!", "append_file!",
         "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-        "delete_object!", "delete_overlays_on!",
+        "delete_object!", "delete_overlays_on!", "swarm!",
     ];
     bare.ends_with('!') && !DESTRUCTIVE.contains(&bare)
 }
