@@ -1,0 +1,32 @@
+/// known-gap: interp gc is VM-only (unknown action)
+/// A collection never frees a variable a closure captured, wherever the
+/// closure is kept: a variable, an array, a map, or an object's field.
+act make_counter(start)
+    n | start
+    act bump(x)
+        n |= n + x
+        return n
+    xx
+    return bump
+xx
+<>Holder |
+    f: nil
+xx
+counter | make_counter(0)
+in_array | [make_counter(10)]
+in_map | {"c": make_counter(20)}
+h <> Holder | f: make_counter(30)
+say(counter(1))
+:gc()
+say(counter(1))
+fa | in_array[0]
+say(fa(1))
+g | in_map{"c"}
+say(g(1))
+k | h >> f
+say(k(1))
+:gc()
+say(counter(1))
+say(fa(1))
+say(g(1))
+say(k(1))

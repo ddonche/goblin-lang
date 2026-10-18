@@ -1,0 +1,13 @@
+/// known-gap: interp stash_count is VM-only (unknown action)
+/// Work done inside an action called by name (invoke, summon, callbacks)
+/// is collected as it runs, so memory does not pile up there.
+act churn(n)
+    i | 0
+    while i < n
+        tmp | [i, i + 1]
+        i |= i + 1
+    xx
+    return :stash_count(){"total"}
+xx
+total | :invoke("churn", 400000)
+say(total < 200000)

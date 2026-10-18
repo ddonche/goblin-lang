@@ -1,0 +1,22 @@
+/// known-gap: interp stash_count is VM-only (unknown action)
+/// Rewriting a large string over and over leaves one dead copy per pass;
+/// those are collected once they add up, even though they use few slots.
+act build(n)
+    parts | []
+    i | 0
+    while i < n
+        :put_last!(parts, "[[page-{i}]] some text here to make it longer and longer")
+        i |= i + 1
+    xx
+    return :join(parts, "\n")
+xx
+act rewrite(n)
+    result | build(n)
+    i | 0
+    while i < n
+        :update_where!(result, "[[page-{i}]]", "<a>page</a>")
+        i |= i + 1
+    xx
+    return :stash_count(){"total"}
+xx
+say(rewrite(3000) < 1500)
