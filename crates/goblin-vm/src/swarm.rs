@@ -34,6 +34,8 @@ const WORKER_STACK: usize = 64 * 1024 * 1024;
 /// Everything a worker needs to run the program's actions.
 pub(crate) struct Image {
     globals: Vec<Option<PValue>>,
+    /// Globals left out because the actor's code cannot reach them.
+    omitted: Vec<bool>,
     gc_mode: GcMode,
     token_store: BTreeMap<String, BTreeMap<String, PValue>>,
     object_store: Vec<(String, PValue)>,
@@ -136,6 +138,8 @@ impl Tables {
 pub(crate) struct ProgramCache {
     tables: Tables,
     program: Arc<Program>,
+    /// What the program's actions reach, worked out on first use.
+    base: Option<Rc<crate::reach::Base>>,
 }
 
 fn program_of(session: &Session, tp: &mut ToPortable) -> Result<Arc<Program>, GoblinError> {
@@ -178,17 +182,39 @@ fn program_of(session: &Session, tp: &mut ToPortable) -> Result<Arc<Program>, Go
     // Only an inert program can be reused: a closure's captured variables
     // can change while the tables holding it stay the same.
     if sharing && inert {
-        *session.portable_program.borrow_mut() = Some(ProgramCache { tables, program: program.clone() });
+        *session.portable_program.borrow_mut() = Some(ProgramCache { tables, program: program.clone(), base: None });
     }
     Ok(program)
 }
 
-pub(crate) fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, GoblinError> {
+/// What the program's actions reach: kept with the converted program while
+/// its tables stay unchanged.
+fn base_of(session: &Session) -> Rc<crate::reach::Base> {
+    let tables = Tables::of(session);
+    if let Some(c) = session.portable_program.borrow_mut().as_mut() {
+        if c.tables.same(&tables) {
+            return c.base.get_or_insert_with(|| Rc::new(crate::reach::Base::of(session))).clone();
+        }
+    }
+    Rc::new(crate::reach::Base::of(session))
+}
+
+/// The session as an image. With `roots` (an actor's handler, state and
+/// stop condition), only the globals that code can reach are copied.
+pub(crate) fn image_of(session: &Session, tp: &mut ToPortable, roots: Option<&[&Value]>) -> Result<Image, GoblinError> {
     let program = program_of(session, tp)?;
+    let keep = roots.and_then(|r| crate::reach::reachable(&base_of(session), r, session));
     let mut globals = Vec::with_capacity(session.globals.len());
-    for g in &session.globals {
+    let mut omitted = Vec::new();
+    for (i, g) in session.globals.iter().enumerate() {
+        let wanted = keep.as_ref().is_none_or(|k| k.get(i).copied().unwrap_or(false));
         globals.push(match g {
-            Some(t) => Some(tp.value(&session.get_stash(t)?.value)?),
+            Some(t) if wanted => Some(tp.value(&session.get_stash(t)?.value)?),
+            Some(_) => {
+                omitted.resize(i + 1, false);
+                omitted[i] = true;
+                None
+            }
             None => None,
         });
     }
@@ -205,6 +231,7 @@ pub(crate) fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, 
     let box_store = pairs(tp, &session.box_store)?;
     Ok(Image {
         globals,
+        omitted,
         gc_mode: session.gc_mode,
         token_store,
         object_store,
@@ -299,6 +326,7 @@ pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize
         let m = m.iter().map(|(k, v)| (k.clone(), fp.value(v, &mut s))).collect();
         s.token_store.insert(ns.clone(), m);
     }
+    s.omitted_globals = img.omitted.clone();
     s.ensure_globals(img.globals.len());
     for (i, g) in img.globals.iter().enumerate() {
         if let Some(p) = g {
@@ -349,7 +377,7 @@ pub fn run(
     // Convert everything once, in the calling session.
     let (image, p_items, p_action, p_context) = {
         let mut tp = ToPortable::new(session);
-        let image = image_of(session, &mut tp)?;
+        let image = image_of(session, &mut tp, None)?;
         let p_items = items.iter().map(|v| tp.value(v)).collect::<Result<Vec<_>, _>>()?;
         let p_action = tp.value(&action)?;
         let p_context = match &context {

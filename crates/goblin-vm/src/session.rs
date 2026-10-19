@@ -123,6 +123,15 @@ pub struct Session {
         (Value, std::sync::Arc<crate::portable::PValue>)>>,
     /// Size of `portable_values` after its last clean-up.
     pub(crate) portable_values_kept: std::cell::Cell<usize>,
+    /// Large collections known to hold no code, so working out an actor's
+    /// globals does not walk them again (`reach.rs`). Holding each keeps it
+    /// unchanged: a change to it copies it first.
+    pub(crate) plain_collections: std::cell::RefCell<HashMap<*const crate::value::CollectionValue,
+        Rc<crate::value::CollectionValue>>>,
+    pub(crate) plain_collections_kept: std::cell::Cell<usize>,
+    /// In an actor: the globals left out of its copy because its code
+    /// cannot reach them, so reading one says so.
+    pub(crate) omitted_globals: Vec<bool>,
     /// The program tables last converted for an actor (`swarm::program_of`).
     pub(crate) portable_program: std::cell::RefCell<Option<crate::swarm::ProgramCache>>,
     /// Objects handed to an actor, and the variable each came from, so
@@ -295,6 +304,9 @@ impl Session {
             portable_values: Default::default(),
             portable_values_kept: Default::default(),
             portable_program: Default::default(),
+            plain_collections: Default::default(),
+            plain_collections_kept: Default::default(),
+            omitted_globals: Vec::new(),
             handed_off: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
@@ -707,6 +719,16 @@ impl Session {
     pub fn set_global(&mut self, idx: usize, t: Tether) {
         self.ensure_globals(idx + 1);
         self.globals[idx] = Some(t);
+    }
+
+    /// The error for reading a global slot that holds nothing.
+    pub fn missing_global(&self, idx: usize) -> GoblinError {
+        if self.omitted_globals.get(idx).copied().unwrap_or(false) {
+            let name = self.global_names.get(idx).map(|n| n.rsplit("::").next().unwrap_or(n)).unwrap_or("?");
+            return GoblinError::Runtime(format!(
+                "C0121: actor-global-omitted: `{name}` was not copied into this actor, because none of its code uses it by name; pass the value in the actor's state or a message instead"));
+        }
+        GoblinError::Runtime(format!("global slot {idx} is uninitialized"))
     }
 
     pub fn get_global(&self, idx: usize) -> Option<&Tether> {

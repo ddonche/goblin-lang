@@ -354,3 +354,64 @@ say(:await(:request(c, 9)))
 "#;
     assert_eq!(run_files("import", src, &[("extra.gbln", lib)], 1, &[]).trim(), "2\n15\n10");
 }
+
+/// Actors get only the globals their code can use: a global list of actor
+/// handles, kept by the program's top-level code, is not copied into each
+/// new actor. Starting n actors used to cost O(n²) (10,000 took 2 GB).
+#[test]
+fn a_global_list_of_actors_is_not_copied_into_each_actor() {
+    let src = r#"act count(state, msg)
+    return state + msg
+xx
+hs | []
+i | 0
+while i < 20000
+    :put_last!(hs, :actor(0, count))
+    i |= i + 1
+xx
+total | 0
+for h in hs
+    total |= total + :await(:request(h, 1))
+xx
+say(total)
+for l in :lines(:read_text("/proc/self/status"))
+    if :starts_with(l, "VmHWM:")
+        say(l)
+    xx
+xx
+"#;
+    let out = run("global-list", src, 2, &[]);
+    assert!(out.starts_with("20000\n"), "{out}");
+    assert!(status_kb(&out, "VmHWM:") < 400 * 1024, "{out}");
+}
+
+/// Every way an actor's code can use a global still finds it: a direct
+/// read, a call to an action that reads one, interpolation, a closure kept
+/// in a global, a module's variable through its alias, and a write.
+#[test]
+fn an_actor_still_sees_every_global_its_code_uses() {
+    let lib = "RATE | 3\nact rate()\n    return RATE\nxx\n";
+    let src = r#"import extra as ex
+BASE | 100
+LABEL | "total"
+LIMIT | 7
+COUNTER | 0
+act limit()
+    return LIMIT
+xx
+act add(state, msg)
+    COUNTER |= COUNTER + 1
+    return state + msg + BASE + limit() + ex::rate() + ex::RATE
+xx
+act show(state, msg)
+    return "{LABEL}: {state} after {COUNTER}"
+xx
+act handle(state, msg)
+    n | add(state, msg)
+    return show(n, 0)
+xx
+a | :actor(0, handle)
+say(:await(:request(a, 1)))
+"#;
+    assert_eq!(run_files("globals-used", src, &[("extra.gbln", lib)], 1, &[]).trim(), "total: 114 after 1");
+}

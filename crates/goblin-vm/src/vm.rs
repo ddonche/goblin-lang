@@ -344,11 +344,10 @@ impl Vm {
 
             // ── Globals ──────────────────────────────────────────────────────
             Opcode::LoadGlobal(idx) => {
-                let t = self.session.get_global(idx as usize)
-                    .cloned()
-                    .ok_or_else(|| GoblinError::Runtime(
-                        format!("global slot {idx} is uninitialized")
-                    ))?;
+                let t = match self.session.get_global(idx as usize) {
+                    Some(t) => t.clone(),
+                    None => return Err(self.session.missing_global(idx as usize)),
+                };
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreGlobal(idx) => {
