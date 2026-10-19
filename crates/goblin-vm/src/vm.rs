@@ -4452,6 +4452,7 @@ impl Marker {
             Value::Pair(a, b) => { self.value(a); self.value(b) }
             Value::Formatted(x, _) | Value::CtrlReturn(x) => self.value(x),
             Value::Enum { fields: Some(f), .. } => for x in f.values() { self.value(x) },
+            Value::Frozen(f) => self.value(&f.value),
             _ => {}
         }
     }

@@ -298,6 +298,8 @@ impl FromPortable {
             PValue::Function(f) => Value::Function(self.function(f, session)),
             PValue::Closure(f, ups) => {
                 let func = self.function(f, session);
+                // Captured variables live in the arena; the cleanup must trace them.
+                session.has_cells = true;
                 let upvalues = ups.iter().map(|u| {
                     let v = self.value(u, session);
                     UpvalueCell::new(session.alloc_value(v))
