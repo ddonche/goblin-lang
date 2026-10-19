@@ -419,6 +419,8 @@ impl Vm {
                 if let Value::Object(o) = obj { for x in o.fields.values() { count_refs(x, &graph, &mut n); } }
             }
             for m in self.session.token_store.values() { for x in m.values() { count_refs(x, &graph, &mut n); } }
+            for x in self.session.box_store.values() { count_refs(x, &graph, &mut n); }
+            self.session.grid_store.for_each_value(&mut |x| count_refs(x, &graph, &mut n));
             // `named_values` registers a declared object under its own
             // variable's name; that entry goes with the object.
             for op in &self.stack { if let Operand::Val(x) = op { count_refs(x, &graph, &mut n); } }
@@ -482,6 +484,9 @@ impl Vm {
             self.session.object_store.remove(u.as_str());
             self.session.handed_off.entry(u.clone()).or_insert_with(|| "this object".to_string());
         }
+        // Actors that already ended need no shutdown; forget them, so a
+        // session that starts many short-lived actors does not keep them all.
+        self.session.owned_actors.retain(|a| a.end.lock().unwrap_or_else(|x| x.into_inner()).is_none());
         self.session.owned_actors.push(shared.clone());
         Ok(Value::Handle(Handle::Actor(shared)))
     }
@@ -562,6 +567,12 @@ fn run_actor(
         for m in shared.mailbox.drain() {
             if let Msg::Request(_, r) = m { r.set(Err(rest.clone())); }
         }
+    };
+    // After a failure: the actors this one started finish first, then it ends,
+    // so whoever waits for it never returns while its children still run.
+    let fail_end = |shared: &ActorShared, vm: &mut Vm| {
+        vm.session.finish_actors();
+        let msg = shared.failure.lock().unwrap_or_else(|x| x.into_inner()).clone().unwrap_or_default();
         shared.finish(End::Failed(msg));
     };
 
@@ -583,12 +594,12 @@ fn run_actor(
         }));
         let next = match call {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => { fail(shared, e.to_string(), reply); vm.session.finish_actors(); return; }
-            Err(_) => { fail(shared, "the handler crashed (internal error)".into(), reply); vm.session.finish_actors(); return; }
+            Ok(Err(e)) => { fail(shared, e.to_string(), reply); fail_end(shared, &mut vm); return; }
+            Err(_) => { fail(shared, "the handler crashed (internal error)".into(), reply); fail_end(shared, &mut vm); return; }
         };
         if matches!(next, Value::Nil) {
             fail(shared, "the handler returned nil; it must return the actor's next state".into(), reply);
-            vm.session.finish_actors();
+            fail_end(shared, &mut vm);
             return;
         }
         state = adopt(next, &mut vm.session);
@@ -600,7 +611,7 @@ fn run_actor(
             let current = deref(state.clone(), &vm.session);
             match vm.call_callable(sw.clone(), vec![current]) {
                 Ok(v) => if v.is_truthy() { shared.mailbox.close(); },
-                Err(e) => { fail(shared, format!("stop_when failed: {e}"), None); vm.session.finish_actors(); return; }
+                Err(e) => { fail(shared, format!("stop_when failed: {e}"), None); fail_end(shared, &mut vm); return; }
             }
         }
     }

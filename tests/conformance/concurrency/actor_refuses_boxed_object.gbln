@@ -1,0 +1,16 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An object also kept in a box cannot be handed to an actor (C0113); it stays usable.
+<>Room |
+    name: ""
+xx
+act h(room, msg)
+    return room
+xx
+lobby <> Room | name: "lobby"
+#app::saved | lobby
+attempt
+    a | :actor(lobby, h)
+rescue e
+    say(:has("{e}", "C0113"))
+xx
+say(lobby >> name)
