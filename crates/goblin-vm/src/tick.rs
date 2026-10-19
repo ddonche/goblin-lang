@@ -65,7 +65,7 @@ fn des_flush_pending(vm: &mut Vm) {
                             FieldValue::Float(f) => Value::Float(f),
                             FieldValue::Int(i)   => Value::Int(i),
                             FieldValue::Bool(b)  => Value::Bool(b),
-                            FieldValue::Str(s)   => Value::Str(s),
+                            FieldValue::Str(s)   => Value::Str(s.into()),
                             FieldValue::Nil      => Value::Nil,
                         };
                         fields.insert(field, val);
@@ -471,9 +471,9 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let mut self_fields = IndexMap::new();
         self_fields.insert("strength".to_string(), Value::Float(inst.strength));
         self_fields.insert("age".to_string(), Value::Int(inst.age as i64));
-        self_fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone()));
-        self_fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone()));
-        self_fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone()));
+        self_fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
+        self_fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
+        self_fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
         for (k, v) in &inst.extra_fields {
             self_fields.insert(k.clone(), v.clone());
         }

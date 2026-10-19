@@ -635,7 +635,7 @@ impl Compiler {
 
         // 4. In a class method, unknown names are self-field accesses (shadow builtins).
         if self.is_class_method {
-            let field_idx = self.add_constant(Value::Str(name.to_string()));
+            let field_idx = self.add_constant(Value::Str(name.to_string().into()));
             return Ok(Opcode::SelfField(field_idx));
         }
 
@@ -680,7 +680,7 @@ impl Compiler {
         self.emit_imm_guard(name)?;
         if let Ok(load) = self.resolve_load(name) {
             self.emit(load);
-            let idx = self.add_constant(Value::Str(name.to_string())) as u16;
+            let idx = self.add_constant(Value::Str(name.to_string().into())) as u16;
             self.emit(Opcode::GuardMutable(idx));
         }
         Ok(())
@@ -734,7 +734,7 @@ impl Compiler {
 
                 // If this is a typed bind (alice|Person = {...}), instantiate the class.
                 if let Some(ref cn) = bind.class_name {
-                    let idx = self.add_constant(Value::Str(cn.clone()));
+                    let idx = self.add_constant(Value::Str(cn.clone().into()));
                     self.emit(Opcode::ClassInstantiate(idx));
                 }
 
@@ -750,7 +750,7 @@ impl Compiler {
                                         span_debug: format!("{:?}", bind.name.1),
                                     });
                                 }
-                                let name_idx = self.add_constant(Value::Str(name.clone()));
+                                let name_idx = self.add_constant(Value::Str(name.clone().into()));
                                 self.emit(Opcode::RegisterAction(name_idx));
                                 if let Some(ref lock) = bind.lock_type {
                                     self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
@@ -760,7 +760,7 @@ impl Compiler {
                             } else {
                                 let pos = self.globals.len();
                                 self.globals.push(name.clone());
-                                let name_idx = self.add_constant(Value::Str(name.clone()));
+                                let name_idx = self.add_constant(Value::Str(name.clone().into()));
                                 self.emit(Opcode::RegisterAction(name_idx));
                                 if let Some(ref lock) = bind.lock_type {
                                     self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
@@ -804,7 +804,7 @@ impl Compiler {
                             Expr::Ident(name, _) => name.clone(),
                             _ => { let k = format!("_{}", pos); pos += 1; k }
                         };
-                        let key_idx = self.add_constant(Value::Str(key));
+                        let key_idx = self.add_constant(Value::Str(key.into()));
                         self.emit(Opcode::LoadConst(key_idx));
                         self.compile_expr(v)?;
                     }
@@ -823,7 +823,7 @@ impl Compiler {
                 // module loading). The VM matches this: all actions live in globals and are
                 // registered in named_values on execution, enabling string-based dispatch
                 // from collection builtins (grab_where, map, etc.) at any nesting level.
-                let name_idx = self.add_constant(Value::Str(action.name.clone()));
+                let name_idx = self.add_constant(Value::Str(action.name.clone().into()));
                 self.emit(Opcode::RegisterAction(name_idx));
                 let pos = self.declare_global(&action.name);
                 self.emit(Opcode::StoreGlobal(pos as u16));
@@ -884,8 +884,8 @@ impl Compiler {
                         let mut parts = key.splitn(2, "::");
                         let ns_str = parts.next().unwrap_or("").to_string();
                         let nm_str = parts.next().unwrap_or("").to_string();
-                        let ns_idx = self.add_constant(Value::Str(ns_str)) as u16;
-                        let nm_idx = self.add_constant(Value::Str(nm_str)) as u16;
+                        let ns_idx = self.add_constant(Value::Str(ns_str.into())) as u16;
+                        let nm_idx = self.add_constant(Value::Str(nm_str.into())) as u16;
                         self.emit(Opcode::StoreBox(ns_idx, nm_idx, matches!(tb.mode, BindMode::Tether)));
                     } else {
                         let store_op = match tb.mode {
@@ -932,11 +932,11 @@ impl Compiler {
                         } else {
                             format!("{}.gbln", path.replace('/', std::path::MAIN_SEPARATOR_STR))
                         };
-                        let path_idx = self.add_constant(Value::Str(resolved));
+                        let path_idx = self.add_constant(Value::Str(resolved.into()));
                         if let Some(alias) = &import_stmt.alias {
                             // `import path as ns` — register actions under the alias namespace
                             // so that `ns::action(...)` dispatch works (same as GLAM `use`).
-                            let ns_idx = self.add_constant(Value::Str(alias.clone()));
+                            let ns_idx = self.add_constant(Value::Str(alias.clone().into()));
                             self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
                         } else {
                             self.emit(Opcode::ImportFile(path_idx));
@@ -948,9 +948,9 @@ impl Compiler {
                         for item in items {
                             let full = format!("{}/{}", source, item.name);
                             let resolved = format!("{}.gbln", full.replace('/', std::path::MAIN_SEPARATOR_STR));
-                            let path_idx = self.add_constant(Value::Str(resolved));
+                            let path_idx = self.add_constant(Value::Str(resolved.into()));
                             let ns = item.alias.clone().unwrap_or_else(|| item.name.clone());
-                            let ns_idx = self.add_constant(Value::Str(ns));
+                            let ns_idx = self.add_constant(Value::Str(ns.into()));
                             self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
                         }
                     }
@@ -963,7 +963,7 @@ impl Compiler {
                 // use namespace [as alias] — read glams/<namespace>/glam.toml (for
                 // [needs.actions]) then load glams/<namespace>/<namespace>.gbln,
                 // stamping owner_glam = Some(namespace) on its top-level actions.
-                let idx = self.add_constant(Value::Str(use_stmt.namespace.clone()));
+                let idx = self.add_constant(Value::Str(use_stmt.namespace.clone().into()));
                 self.emit(Opcode::UseGlam(idx));
             }
 
@@ -1017,8 +1017,8 @@ impl Compiler {
             // ── Box store bind: #namespace::name = expr ───────────────────────
             Stmt::BoxBind { namespace, name, expr, mode, .. } => {
                 // Push namespace string, name string, value, is-tether → BoxBindExpr
-                let ns_idx = self.add_constant(Value::Str(namespace.clone()));
-                let nm_idx = self.add_constant(Value::Str(name.clone()));
+                let ns_idx = self.add_constant(Value::Str(namespace.clone().into()));
+                let nm_idx = self.add_constant(Value::Str(name.clone().into()));
                 self.emit(Opcode::BoxCheck(ns_idx as u16, nm_idx as u16));
                 self.emit(Opcode::LoadConst(ns_idx as u16));
                 self.emit(Opcode::LoadConst(nm_idx as u16));
@@ -1099,7 +1099,7 @@ impl Compiler {
         use goblin_ast::{SweepArmKind, SweepArmRepeat, SweepMode};
 
         let spec: Vec<Value> = sweep.arms.iter().map(|arm| {
-            let s = |x: &str| Value::Str(x.to_string());
+            let s = |x: &str| Value::Str(x.to_string().into());
             let fields = match &arm.kind {
                 SweepArmKind::Pattern(p) => vec![s("pattern"), s(p), s(""), s("all")],
                 SweepArmKind::Range { start, end } => vec![s("range"), s(start), s(end), s(match arm.repeat {
@@ -1239,7 +1239,7 @@ impl Compiler {
             }
 
             Expr::Str(s, _) => {
-                let idx = self.add_constant(Value::Str(s.clone()));
+                let idx = self.add_constant(Value::Str(s.clone().into()));
                 if s.as_bytes().contains(&b'{') && !s.starts_with('\u{001E}') {
                     // Resolve `{name}` placeholders to the variables in scope here
                     // (locals, captured upvalues, globals) so shadowed and
@@ -1262,8 +1262,8 @@ impl Compiler {
                     if names.is_empty() {
                         self.emit(Opcode::StringInterp(idx));
                     } else {
-                        let mut parts = vec![Value::Str(s.clone())];
-                        parts.extend(names.iter().cloned().map(Value::Str));
+                        let mut parts = vec![Value::Str(s.clone().into())];
+                        parts.extend(names.iter().cloned().map(|s: String| Value::Str(s.into())));
                         let tidx = self.add_constant(Value::Array(parts));
                         self.emit(Opcode::StringInterpVals(tidx, names.len() as u8));
                     }
@@ -1282,7 +1282,7 @@ impl Compiler {
                 // In a query predicate, a field of `it` shadows the name.
                 let field_jump = if self.scope().pred_fields && name != "it"
                     && self.scope().find_local(name).is_none() {
-                    let idx = self.add_constant(Value::Str(name.clone()));
+                    let idx = self.add_constant(Value::Str(name.clone().into()));
                     Some(self.emit(Opcode::LoadItFieldOrJump(idx, 0)))
                 } else { None };
                 match self.resolve_load(name) {
@@ -1290,7 +1290,7 @@ impl Compiler {
                     Err(_) => {
                         // Unknown at compile time — may come from an imported module.
                         // Emit a runtime named-value lookup as fallback.
-                        let name_idx = self.add_constant(Value::Str(name.clone()));
+                        let name_idx = self.add_constant(Value::Str(name.clone().into()));
                         self.emit(Opcode::LoadNamed(name_idx));
                     }
                 }
@@ -1305,7 +1305,7 @@ impl Compiler {
 
             Expr::Object(fields, _) => {
                 for (key, val_expr) in fields {
-                    let kidx = self.add_constant(Value::Str(key.clone()));
+                    let kidx = self.add_constant(Value::Str(key.clone().into()));
                     self.emit(Opcode::LoadConst(kidx));
                     self.compile_expr(val_expr)?;
                 }
@@ -1317,14 +1317,14 @@ impl Compiler {
             Expr::Index(obj, idx, _) => {
                 self.compile_expr(obj)?;
                 self.compile_expr(idx)?;
-                let label = self.add_constant(Value::Str(source_text(obj)));
+                let label = self.add_constant(Value::Str(source_text(obj).into()));
                 self.emit(Opcode::IndexGet(label));
             }
 
             Expr::IndexMap(obj, key, _) => {
                 self.compile_expr(obj)?;
                 self.compile_expr(key)?;
-                let label = self.add_constant(Value::Str(source_text(obj)));
+                let label = self.add_constant(Value::Str(source_text(obj).into()));
                 self.emit(Opcode::KeyGet(label));
             }
 
@@ -1360,7 +1360,7 @@ impl Compiler {
                     }
                 }
                 self.compile_expr(obj)?;
-                let kidx = self.add_constant(Value::Str(name.clone()));
+                let kidx = self.add_constant(Value::Str(name.clone().into()));
                 self.emit(Opcode::GetMember(kidx));
             }
 
@@ -1392,7 +1392,7 @@ impl Compiler {
                 // loaded as a constant and never interpolated.
                 if bare_name == "raw" && args.len() == 1 {
                     if let Expr::Str(s, _) = &args[0] {
-                        let idx = self.add_constant(Value::Str(s.clone()));
+                        let idx = self.add_constant(Value::Str(s.clone().into()));
                         self.emit(Opcode::LoadConst(idx));
                         return Ok(());
                     }
@@ -1406,7 +1406,7 @@ impl Compiler {
                     match args.as_slice() {
                         [Expr::Ident(var, _)] => {
                             self.compile_expr(&args[0])?;
-                            let idx = self.add_constant(Value::Str(var.clone()));
+                            let idx = self.add_constant(Value::Str(var.clone().into()));
                             self.emit(Opcode::LoadConst(idx));
                         }
                         _ => {
@@ -1555,7 +1555,7 @@ impl Compiler {
                     // for non-object receivers or missing class methods.
                     self.compile_expr(recv)?;
                     for arg in args { self.compile_expr(arg)?; }
-                    let method_idx = self.add_constant(Value::Str(method.clone()));
+                    let method_idx = self.add_constant(Value::Str(method.clone().into()));
                     self.emit(Opcode::CallMethod(method_idx, args.len() as u8));
                 }
             }
@@ -1568,18 +1568,18 @@ impl Compiler {
                 let ns_is_enum = ns.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
                 {
                     let enum_branch = if ns_is_enum {
-                        let en_idx = self.add_constant(Value::Str(ns.clone()));
+                        let en_idx = self.add_constant(Value::Str(ns.clone().into()));
                         self.emit(Opcode::LoadConst(en_idx));
                         self.emit(Opcode::CallBuiltin(BuiltinId::EnumDeclared, 1));
                         let to_call = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
                         if args.is_empty() {
-                            let vn_idx = self.add_constant(Value::Str(name.clone()));
+                            let vn_idx = self.add_constant(Value::Str(name.clone().into()));
                             self.emit(Opcode::LoadConst(en_idx));
                             self.emit(Opcode::LoadConst(vn_idx));
                             self.emit(Opcode::LoadNil);
                             self.emit(Opcode::CallBuiltin(BuiltinId::EnumVariantExpr, 3));
                         } else if args.len() == 1 {
-                            let vn_idx = self.add_constant(Value::Str(name.clone()));
+                            let vn_idx = self.add_constant(Value::Str(name.clone().into()));
                             self.emit(Opcode::LoadConst(en_idx));
                             self.emit(Opcode::LoadConst(vn_idx));
                             self.compile_expr(&args[0])?;
@@ -1603,7 +1603,7 @@ impl Compiler {
                         Err(_) => {
                             // Not known at compile time — emit a runtime named lookup.
                             // UseGlam registers actions under the qualified name ("ns::action").
-                            let name_idx = self.add_constant(Value::Str(full_name.clone()));
+                            let name_idx = self.add_constant(Value::Str(full_name.clone().into()));
                             self.emit(Opcode::LoadNamed(name_idx));
                         }
                     }
@@ -1644,7 +1644,7 @@ impl Compiler {
                 self.emit(Opcode::LoadConst(nil_idx));
                 self.emit(Opcode::Eq);
                 let skip = self.scope_mut().emit_jump(Opcode::JumpIfTrue);
-                let kidx = self.add_constant(Value::Str(name.clone()));
+                let kidx = self.add_constant(Value::Str(name.clone().into()));
                 self.emit(Opcode::GetMember(kidx));
                 let end = self.scope_mut().emit_jump(Opcode::Jump);
                 self.scope_mut().patch_jump(skip);
@@ -1731,7 +1731,7 @@ impl Compiler {
                 match op.as_str() {
                     // `90s`: the parser hands the unit over as `dur:<unit>`.
                     unit_op if unit_op.starts_with("dur:") => {
-                        let unit = self.scope_mut().add_constant(Value::Str(unit_op[4..].to_string()));
+                        let unit = self.scope_mut().add_constant(Value::Str(unit_op[4..].to_string().into()));
                         self.emit(Opcode::LoadConst(unit));
                         self.emit(Opcode::CallBuiltin(BuiltinId::DurationLiteral, 2));
                     }
@@ -1833,14 +1833,14 @@ impl Compiler {
 
             // EnumName::Variant { fields } — push name_str, variant_str, fields_map_or_nil
             Expr::EnumVariant { enum_name, variant_name, fields, .. } => {
-                let en_idx = self.add_constant(Value::Str(enum_name.clone()));
-                let vn_idx = self.add_constant(Value::Str(variant_name.clone()));
+                let en_idx = self.add_constant(Value::Str(enum_name.clone().into()));
+                let vn_idx = self.add_constant(Value::Str(variant_name.clone().into()));
                 self.emit(Opcode::LoadConst(en_idx));
                 self.emit(Opcode::LoadConst(vn_idx));
                 if let Some(field_exprs) = fields {
                     let n = field_exprs.len() as u16;
                     for (k, v) in field_exprs {
-                        let kidx = self.add_constant(Value::Str(k.clone()));
+                        let kidx = self.add_constant(Value::Str(k.clone().into()));
                         self.emit(Opcode::LoadConst(kidx));
                         self.compile_expr(v)?;
                     }
@@ -1853,8 +1853,8 @@ impl Compiler {
 
             // Module::Token — push module_str, ident_str → LiteralTokenExpr
             Expr::LiteralToken { module, ident, .. } => {
-                let midx = self.add_constant(Value::Str(module.clone()));
-                let iidx = self.add_constant(Value::Str(ident.clone()));
+                let midx = self.add_constant(Value::Str(module.clone().into()));
+                let iidx = self.add_constant(Value::Str(ident.clone().into()));
                 self.emit(Opcode::LoadConst(midx));
                 self.emit(Opcode::LoadConst(iidx));
                 self.emit(Opcode::CallBuiltin(BuiltinId::LiteralTokenExpr, 2));
@@ -1862,8 +1862,8 @@ impl Compiler {
 
             // #namespace::name box var — push ns_str, name_str → BoxVarExpr
             Expr::BoxVar { namespace, name, .. } => {
-                let nidx = self.add_constant(Value::Str(namespace.clone()));
-                let aidx = self.add_constant(Value::Str(name.clone()));
+                let nidx = self.add_constant(Value::Str(namespace.clone().into()));
+                let aidx = self.add_constant(Value::Str(name.clone().into()));
                 self.emit(Opcode::LoadConst(nidx));
                 self.emit(Opcode::LoadConst(aidx));
                 self.emit(Opcode::CallBuiltin(BuiltinId::BoxVarExpr, 2));
@@ -1895,7 +1895,7 @@ impl Compiler {
                     self.compile_expr(recv)?;
                     self.compile_expr(lhs)?;
                     for arg in args { self.compile_expr(arg)?; }
-                    let method_idx = self.scope_mut().add_constant(Value::Str(method.clone()));
+                    let method_idx = self.scope_mut().add_constant(Value::Str(method.clone().into()));
                     // Emit as member call: recv.method(lhs, args...)
                     let argc = (args.len() + 1) as u8;
                     self.emit(Opcode::GetMember(method_idx));
@@ -1932,7 +1932,7 @@ impl Compiler {
                 Expr::Ident(name, _) => name.clone(),
                 other => return Err(GoblinError::Runtime(format!(">> rhs must be identifier, got {:?}", other))),
             };
-            let idx = self.add_constant(Value::Str(field_name));
+            let idx = self.add_constant(Value::Str(field_name.into()));
             self.emit(Opcode::GetMember(idx));
             return Ok(());
         }
@@ -1955,7 +1955,7 @@ impl Compiler {
             if let Some((obj_expr, field_name)) = field_target {
                 self.compile_expr(obj_expr)?;
                 self.compile_expr(rhs)?;
-                let idx = self.add_constant(Value::Str(field_name));
+                let idx = self.add_constant(Value::Str(field_name.into()));
                 self.emit(Opcode::SetField(idx));
                 let var_name = match obj_expr {
                     Expr::Ident(n, _) => n.clone(),
@@ -2179,8 +2179,8 @@ impl Compiler {
         let mut cur = target;
         loop {
             match cur {
-                Expr::Index(base, _, _) => { info.push(Value::Str(format!("[{}", source_text(base)))); cur = base.as_ref(); }
-                Expr::IndexMap(base, _, _) => { info.push(Value::Str(format!("{{{}", source_text(base)))); cur = base.as_ref(); }
+                Expr::Index(base, _, _) => { info.push(Value::Str(format!("[{}", source_text(base)).into())); cur = base.as_ref(); }
+                Expr::IndexMap(base, _, _) => { info.push(Value::Str(format!("{{{}", source_text(base)).into())); cur = base.as_ref(); }
                 Expr::Member(base, _, _) => { info.push(Value::Str(".".into())); cur = base.as_ref(); }
                 _ => break,
             }
@@ -2220,7 +2220,7 @@ impl Compiler {
             if *is_field {
                 mask |= 1 << i;
                 let Expr::Member(_, field, _) = seg else { unreachable!() };
-                let kidx = self.add_constant(Value::Str(field.clone()));
+                let kidx = self.add_constant(Value::Str(field.clone().into()));
                 self.emit(Opcode::LoadConst(kidx));
             } else {
                 self.compile_expr(seg)?;
@@ -2283,7 +2283,7 @@ impl Compiler {
                 if depth == 0 {
                     self.bound_globals.insert(name.clone());
                     if is_imm { self.imm_globals.insert(name.clone()); }
-                    let name_idx = self.add_constant(Value::Str(name.clone()));
+                    let name_idx = self.add_constant(Value::Str(name.clone().into()));
                     self.emit(Opcode::RegisterAction(name_idx));
                     if let Some(ref lock) = lock_type {
                         self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
@@ -2322,7 +2322,7 @@ impl Compiler {
         // At top-level module scope, register in named_values so
         // other modules can access this value via LoadNamed after import.
         if self.scopes.len() == 1 && depth == 0 {
-            let name_idx = self.add_constant(Value::Str(name.clone()));
+            let name_idx = self.add_constant(Value::Str(name.clone().into()));
             self.emit(Opcode::RegisterAction(name_idx));
         }
         if let Some(ref lock) = lock_type {
@@ -2338,7 +2338,7 @@ impl Compiler {
     fn emit_obj_rebind_guard(&mut self, name: &str) -> Result<(), GoblinError> {
         let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
         self.emit(load_op);
-        let idx = self.add_constant(Value::Str(name.to_string()));
+        let idx = self.add_constant(Value::Str(name.to_string().into()));
         self.emit(Opcode::GuardObjRebind(idx));
         Ok(())
     }
@@ -2347,7 +2347,7 @@ impl Compiler {
     /// output before it still happens, as with the interpreter's runtime
     /// errors.
     fn emit_runtime_error(&mut self, msg: &str) -> Result<(), GoblinError> {
-        let idx = self.add_constant(Value::Str(msg.to_string()));
+        let idx = self.add_constant(Value::Str(msg.to_string().into()));
         self.emit(Opcode::LoadConst(idx));
         self.emit(Opcode::CallBuiltin(BuiltinId::Panic, 1));
         self.emit(Opcode::Pop);
@@ -2558,7 +2558,7 @@ impl Compiler {
                         || self.global_index(name.as_str()).is_some();
                     if !has_local {
                         // Emit as class/overlay query by name string
-                        let name_str = Value::Str(name.clone());
+                        let name_str = Value::Str(name.clone().into());
                         let cidx = self.add_constant(name_str);
                         self.emit(Opcode::LoadConst(cidx));
                         self.emit(Opcode::CallBuiltin(BuiltinId::QueryByIdent, 1));
@@ -2773,7 +2773,7 @@ impl Compiler {
                 // (R0405), raised when the statement is reached.
                 if self.loop_stack.len() <= self.loop_floors.last().copied().unwrap_or(0) {
                     let msg = format!("R0405: '{name}' used outside of a loop");
-                    let idx = self.add_constant(Value::Str(msg));
+                    let idx = self.add_constant(Value::Str(msg.into()));
                     self.emit(Opcode::LoadConst(idx));
                     self.emit(Opcode::CallBuiltin(BuiltinId::Panic, 1));
                     return Ok(true);
@@ -3013,7 +3013,7 @@ impl Compiler {
                             if *is_field {
                                 mask |= 1 << i;
                                 let Expr::Member(_, field, _) = seg else { unreachable!() };
-                                let kidx = self.add_constant(Value::Str(field.clone()));
+                                let kidx = self.add_constant(Value::Str(field.clone().into()));
                                 self.emit(Opcode::LoadConst(kidx));
                             } else {
                                 self.compile_expr(seg)?;

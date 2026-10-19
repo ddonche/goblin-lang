@@ -135,3 +135,15 @@ fn string_literals_lex_linearly() {
         "s | \"\"\nREPEATsay(:len(s))\n",
     );
 }
+
+#[test]
+fn reading_a_string_does_not_copy_it() {
+    // Copying a variable or passing it to an action or builtin shares the
+    // text. It used to copy the whole string on every read, so reading an
+    // N-line string N times was quadratic.
+    check_scaling(
+        "string_read",
+        8_000,
+        "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"line {i} with some text to make the page longer\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nact one(t)\n    return 1\nxx\ntotal | 0\nj | 0\nwhile j < N\n    copy | page\n    total |= total + one(copy) + one(page)\n    j |= j + 1\nxx\nsay(total)\n",
+    );
+}
