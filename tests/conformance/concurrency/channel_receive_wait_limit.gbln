@@ -1,0 +1,12 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// :receive(channel, limit) waits at most that long: it returns nil when nothing arrives in time, and the channel stays open for later values.
+ch | :channel(2)
+say(:receive(ch, 0.05s))
+:post(ch, "late")
+say(:receive(ch, 0.05s))
+say(:receive(ch, 0s))
+attempt
+    :receive(ch, 5)
+rescue e
+    say(:has("{e}", "C0107"))
+xx
