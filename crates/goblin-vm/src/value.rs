@@ -107,6 +107,10 @@ impl Value {
 impl GStr {
     pub fn new(s: String) -> Self { GStr(Rc::new(GText { s, charged: std::cell::Cell::new(false) })) }
     pub fn as_str(&self) -> &str { self.0.s.as_str() }
+    /// A plain copy of the text. Without this, `to_string()` went through the
+    /// general `Display` formatter, which grows the copy piece by piece.
+    #[allow(clippy::inherent_to_string_shadow_display)]
+    pub fn to_string(&self) -> String { self.0.s.clone() }
     /// The text to change in place; copied first only if it is shared.
     pub fn make_mut(&mut self) -> &mut String {
         let t = Rc::make_mut(&mut self.0);

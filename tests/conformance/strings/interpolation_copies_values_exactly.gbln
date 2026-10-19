@@ -1,0 +1,23 @@
+/// Interpolated text is copied as it is: braces, backslashes and multi-byte
+/// characters inside a value are not interpolated again; other values are
+/// formatted; unknown names stay as written; `\{` is a literal brace.
+inner | "{not_a_var} \\ x"
+name | "Zoë 🎉"
+n | 42
+f | 2.50
+flag | true
+xs | [1, "two"]
+big | ""
+i | 0
+while i < 200
+    big |= big + "<li>" + :str(i) + "</li>"
+    i |= i + 1
+xx
+say("[{inner}] [{name}] [{n}] [{f}] [{flag}] [{xs}] [{missing}] \{literal}")
+say(:len("<ul>{big}</ul>"))
+act card(who)
+    body | "by " + who
+    return "<p>{who}: {body}</p>"
+xx
+say(card(name))
+say('Z' + "oë" + '!')
