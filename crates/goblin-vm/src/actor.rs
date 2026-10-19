@@ -1,4 +1,4 @@
-//! Persistent actors and bounded channels (concurrency spec, stage 3).
+//! Persistent actors and bounded channels (concurrency spec, stages 3 and 4).
 //!
 //! `:actor(object, handler, policy)` hands an object to a new actor and
 //! returns its handle. The actor owns the object from then on: the caller's
@@ -20,27 +20,47 @@
 //! `:halt(channel)` closes it, after which receivers drain what is left and
 //! then get `nil`.
 //!
-//! This is the interim implementation the spec allows: every actor has its
-//! own OS thread, and the number of live actors is capped
-//! (`GOBLIN_MAX_ACTORS`, 256 by default). Lightweight actors that share
-//! threads need a VM that can pause an action, which is stage 4.
+//! Scheduling (stage 4): actors are lightweight. A fixed pool of worker
+//! threads (`GOBLIN_ACTOR_THREADS`, one per core by default) runs them all.
+//! Each actor lives on one worker for its whole life: its Session and VM are
+//! built on that thread and never leave it, so no `Rc` crosses threads
+//! (spec XIV). An actor with nothing to do holds no thread. When a handler
+//! waits (`:await`, `:receive`, `:post` to a full channel), the VM saves the
+//! handler where it stopped and the worker runs other actors; the handler
+//! continues once the value it waits for is there. A handler that runs long
+//! gives its worker up every so often, so one busy actor cannot starve the
+//! others on its worker.
+//!
+//! A wait inside a builtin that calls back into Goblin (`:map_fn` and the
+//! like) cannot be saved that way, because part of the handler is then Rust
+//! code. Such a wait keeps its worker, which runs its other actors meanwhile.
 
-use std::collections::{HashSet, VecDeque};
+use std::cell::{Cell, RefCell};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::error::GoblinError;
 use crate::portable::{FromPortable, PValue, ToPortable};
 use crate::session::Session;
-use crate::value::Value;
-use crate::vm::{Operand, Vm};
+use crate::value::{BuiltinId, Value};
+use crate::vm::{Operand, Slice, Vm};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static LIVE_ACTORS: AtomicUsize = AtomicUsize::new(0);
 
-const ACTOR_STACK: usize = 64 * 1024 * 1024;
+const WORKER_STACK: usize = 64 * 1024 * 1024;
 const DEFAULT_MAILBOX: usize = 1000;
+/// Messages one actor handles before its worker moves on to the next actor.
+const MESSAGE_BUDGET: usize = 64;
+/// VM instructions a handler runs before it lets the other actors on its
+/// worker have a turn.
+pub(crate) const OP_BUDGET: u32 = 20_000;
+/// How long an idle worker keeps looking for work before it sleeps.
+const SPIN: Duration = Duration::from_micros(50);
+/// How deep a worker that waits inside a callback goes running other actors.
+const MAX_HELP_DEPTH: u32 = 8;
 
 fn next_id() -> u64 { NEXT_ID.fetch_add(1, Ordering::Relaxed) }
 
@@ -48,123 +68,240 @@ fn max_actors() -> usize {
     std::env::var("GOBLIN_MAX_ACTORS").ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(256)
+        .unwrap_or(1_000_000)
 }
 
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
 
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 thread_local! {
-    /// The actor this thread runs, if any.
-    static CURRENT_ACTOR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The actor this thread is running right now, if any.
+    static CURRENT_ACTOR: RefCell<Option<Arc<ActorShared>>> = const { RefCell::new(None) };
+}
+
+fn current_actor() -> Option<Arc<ActorShared>> { CURRENT_ACTOR.with(|c| c.borrow().clone()) }
+fn current_actor_id() -> u64 { CURRENT_ACTOR.with(|c| c.borrow().as_ref().map(|a| a.id).unwrap_or(0)) }
+
+// ── Waking ───────────────────────────────────────────────────────────────────
+
+/// Lets a plain thread (the main program, a request) sleep until woken.
+pub struct Parker {
+    woken: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Parker {
+    fn new() -> Self { Parker { woken: Mutex::new(false), cv: Condvar::new() } }
+    fn unpark(&self) {
+        *lock(&self.woken) = true;
+        self.cv.notify_one();
+    }
+    fn park(&self, until: Option<Instant>) {
+        // Answers often come back within microseconds: look a few times
+        // before sleeping, like an idle worker does.
+        let spin_until = Instant::now() + SPIN;
+        while Instant::now() < spin_until {
+            let mut w = lock(&self.woken);
+            if *w { *w = false; return; }
+            drop(w);
+            std::thread::yield_now();
+        }
+        let mut w = lock(&self.woken);
+        while !*w {
+            match until {
+                None => w = self.cv.wait(w).unwrap_or_else(|e| e.into_inner()),
+                Some(d) => {
+                    let now = Instant::now();
+                    if now >= d { break; }
+                    w = self.cv.wait_timeout(w, d - now).unwrap_or_else(|e| e.into_inner()).0;
+                }
+            }
+        }
+        *w = false;
+    }
+}
+
+thread_local! {
+    static PARKER: Arc<Parker> = Arc::new(Parker::new());
+}
+
+/// Who to wake when something waited for happens.
+#[derive(Clone)]
+pub enum Waker {
+    /// A suspended or idle actor: schedule it on its worker.
+    Actor(Arc<ActorShared>),
+    /// A plain thread blocked in a wait.
+    Thread(Arc<Parker>),
+    /// A worker blocked in a wait inside a callback.
+    Worker(Arc<WorkerQ>),
+}
+
+impl Waker {
+    fn same(&self, o: &Waker) -> bool {
+        match (self, o) {
+            (Waker::Actor(a), Waker::Actor(b)) => Arc::ptr_eq(a, b),
+            (Waker::Thread(a), Waker::Thread(b)) => Arc::ptr_eq(a, b),
+            (Waker::Worker(a), Waker::Worker(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+    fn wake(self) {
+        match self {
+            Waker::Actor(a) => schedule(&a),
+            Waker::Thread(p) => p.unpark(),
+            Waker::Worker(q) => q.poke(),
+        }
+    }
+}
+
+/// Add a waiter once: a waiter that checks again re-registers, so a list
+/// never holds the same waiter twice.
+fn add_waiter(list: &mut Vec<Waker>, w: &Waker) {
+    if !list.iter().any(|x| x.same(w)) { list.push(w.clone()); }
+}
+
+fn wake_all(list: Vec<Waker>) { for w in list { w.wake(); } }
+
+/// Wait until `check` gives a value, or until `deadline` (None when it
+/// passes). `check` looks, and when there is nothing yet, registers the
+/// waker it is given under the same lock, so no wake-up is lost. A worker
+/// thread runs its other actors while it waits.
+fn block_on<R>(deadline: Option<Instant>, mut check: impl FnMut(&Waker) -> Option<R>) -> Option<R> {
+    if let Some(q) = WORKER.with(|w| w.borrow().clone()) {
+        let waker = Waker::Worker(q.clone());
+        let mut timer_set = false;
+        loop {
+            let seen = q.epoch();
+            if let Some(r) = check(&waker) { return Some(r); }
+            if let Some(d) = deadline {
+                if Instant::now() >= d { return None; }
+                if !timer_set { timer_at(d, waker.clone()); timer_set = true; }
+            }
+            help_or_wait(&q, seen);
+        }
+    }
+    let p = PARKER.with(|p| p.clone());
+    let waker = Waker::Thread(p.clone());
+    loop {
+        if let Some(r) = check(&waker) { return Some(r); }
+        if deadline.is_some_and(|d| Instant::now() >= d) { return None; }
+        p.park(deadline);
+    }
 }
 
 // ── Bounded queue ────────────────────────────────────────────────────────────
 
 pub struct Queue<T> {
     state: Mutex<QState<T>>,
-    not_empty: Condvar,
-    not_full: Condvar,
     cap: usize,
 }
 
 struct QState<T> {
     items: VecDeque<T>,
     closed: bool,
+    /// Waiting for an item (or the close).
+    takers: Vec<Waker>,
+    /// Waiting for room.
+    givers: Vec<Waker>,
 }
 
 pub enum Push<T> { Done, Full(T), Closed(T) }
-pub enum Pop<T> { Item(T), Closed, Idle }
+pub enum Pop<T> { Item(T), Closed, Empty }
 
 impl<T> Queue<T> {
     pub fn new(cap: usize) -> Self {
         Queue {
-            state: Mutex::new(QState { items: VecDeque::new(), closed: false }),
-            not_empty: Condvar::new(),
-            not_full: Condvar::new(),
+            state: Mutex::new(QState { items: VecDeque::new(), closed: false, takers: Vec::new(), givers: Vec::new() }),
             cap,
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, QState<T>> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Add without waiting: a full or closed queue says so.
-    pub fn try_push(&self, v: T) -> Push<T> {
-        let mut st = self.lock();
+    /// Add without waiting; when full, `w` (if any) is woken once there is room.
+    fn push_or_register(&self, v: T, w: Option<&Waker>) -> Push<T> {
+        let mut st = lock(&self.state);
         if st.closed { return Push::Closed(v); }
-        if st.items.len() >= self.cap { return Push::Full(v); }
+        if st.items.len() >= self.cap {
+            if let Some(w) = w { add_waiter(&mut st.givers, w); }
+            return Push::Full(v);
+        }
         st.items.push_back(v);
-        self.not_empty.notify_one();
+        let takers = std::mem::take(&mut st.takers);
+        drop(st);
+        wake_all(takers);
         Push::Done
     }
 
+    /// Take without waiting; when empty, `w` (if any) is woken once there is
+    /// an item or the queue closes.
+    fn pop_or_register(&self, w: Option<&Waker>) -> Pop<T> {
+        let mut st = lock(&self.state);
+        if let Some(v) = st.items.pop_front() {
+            let givers = std::mem::take(&mut st.givers);
+            drop(st);
+            wake_all(givers);
+            return Pop::Item(v);
+        }
+        if st.closed { return Pop::Closed; }
+        if let Some(w) = w { add_waiter(&mut st.takers, w); }
+        Pop::Empty
+    }
+
+    /// Add without waiting: a full or closed queue says so.
+    pub fn try_push(&self, v: T) -> Push<T> { self.push_or_register(v, None) }
+
     /// Add, waiting while the queue is full.
     pub fn push_wait(&self, v: T) -> Push<T> {
-        let mut st = self.lock();
-        loop {
-            if st.closed { return Push::Closed(v); }
-            if st.items.len() < self.cap {
-                st.items.push_back(v);
-                self.not_empty.notify_one();
-                return Push::Done;
-            }
-            st = self.not_full.wait(st).unwrap_or_else(|e| e.into_inner());
-        }
+        let mut v = Some(v);
+        block_on(None, |w| match self.push_or_register(v.take().unwrap(), Some(w)) {
+            Push::Full(x) => { v = Some(x); None }
+            other => Some(other),
+        }).unwrap()
     }
 
-    /// Take the next item, waiting while the queue is empty. With `idle`, a
-    /// queue that stays empty that long is closed (nothing can be accepted
-    /// and then lost: the close happens under the same lock as the check).
-    pub fn pop(&self, idle: Option<Duration>) -> Pop<T> {
-        self.pop_until(idle, true)
-    }
-
-    /// Take the next item, waiting at most `limit` (forever with None). An
-    /// empty queue stays open when the time runs out.
+    /// Take the next item, waiting at most `limit` (forever with None).
+    /// `Empty` means the time ran out; the queue stays open.
     pub fn pop_within(&self, limit: Option<Duration>) -> Pop<T> {
-        self.pop_until(limit, false)
+        let deadline = limit.map(|d| Instant::now() + d);
+        block_on(deadline, |w| match self.pop_or_register(Some(w)) {
+            Pop::Empty => None,
+            other => Some(other),
+        }).unwrap_or(Pop::Empty)
     }
 
-    fn pop_until(&self, wait: Option<Duration>, close_when_idle: bool) -> Pop<T> {
-        let deadline = wait.map(|d| Instant::now() + d);
-        let mut st = self.lock();
-        loop {
-            if let Some(v) = st.items.pop_front() {
-                self.not_full.notify_one();
-                return Pop::Item(v);
-            }
-            if st.closed { return Pop::Closed; }
-            match deadline {
-                None => { st = self.not_empty.wait(st).unwrap_or_else(|e| e.into_inner()); }
-                Some(d) => {
-                    let now = Instant::now();
-                    if now >= d {
-                        if close_when_idle {
-                            st.closed = true;
-                            self.not_full.notify_all();
-                        }
-                        return Pop::Idle;
-                    }
-                    st = self.not_empty.wait_timeout(st, d - now).unwrap_or_else(|e| e.into_inner()).0;
-                }
-            }
-        }
+    /// Close the queue if it is empty, under the same lock as the check, so
+    /// nothing can be accepted and then lost. Says whether it closed.
+    fn close_if_empty(&self) -> bool {
+        let mut st = lock(&self.state);
+        if !st.items.is_empty() { return false; }
+        st.closed = true;
+        let (t, g) = (std::mem::take(&mut st.takers), std::mem::take(&mut st.givers));
+        drop(st);
+        wake_all(t);
+        wake_all(g);
+        true
     }
 
     /// Accept nothing more. Items already queued stay until taken.
     pub fn close(&self) {
-        let mut st = self.lock();
+        let mut st = lock(&self.state);
         st.closed = true;
-        self.not_empty.notify_all();
-        self.not_full.notify_all();
+        let (t, g) = (std::mem::take(&mut st.takers), std::mem::take(&mut st.givers));
+        drop(st);
+        wake_all(t);
+        wake_all(g);
     }
 
     /// Take everything still queued.
     pub fn drain(&self) -> Vec<T> {
-        let mut st = self.lock();
-        self.not_full.notify_all();
-        st.items.drain(..).collect()
+        let mut st = lock(&self.state);
+        let items: Vec<T> = st.items.drain(..).collect();
+        let g = std::mem::take(&mut st.givers);
+        drop(st);
+        wake_all(g);
+        items
     }
 }
 
@@ -212,24 +349,34 @@ pub struct Channel {
 /// The answer to one `:request`.
 pub struct Reply {
     id: u64,
-    slot: Mutex<Option<Result<Arc<PValue>, String>>>,
-    ready: Condvar,
+    slot: Mutex<ReplySlot>,
     /// The actor that will answer, so it cannot wait for itself.
     actor: u64,
 }
 
+struct ReplySlot {
+    answer: Option<Result<Arc<PValue>, String>>,
+    waiters: Vec<Waker>,
+}
+
 impl Reply {
     fn set(&self, r: Result<Arc<PValue>, String>) {
-        let mut s = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if s.is_none() { *s = Some(r); }
-        self.ready.notify_all();
+        let mut s = lock(&self.slot);
+        if s.answer.is_none() { s.answer = Some(r); }
+        let w = std::mem::take(&mut s.waiters);
+        drop(s);
+        wake_all(w);
+    }
+    fn answered(&self) -> bool { lock(&self.slot).answer.is_some() }
+    /// The answer, or None after registering `w`.
+    fn poll(&self, w: Option<&Waker>) -> Option<Result<Arc<PValue>, String>> {
+        let mut s = lock(&self.slot);
+        if let Some(r) = s.answer.as_ref() { return Some(r.clone()); }
+        if let Some(w) = w { add_waiter(&mut s.waiters, w); }
+        None
     }
     fn wait(&self) -> Result<Arc<PValue>, String> {
-        let mut s = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        loop {
-            if let Some(r) = s.as_ref() { return r.clone(); }
-            s = self.ready.wait(s).unwrap_or_else(|e| e.into_inner());
-        }
+        block_on(None, |w| self.poll(Some(w))).unwrap()
     }
 }
 
@@ -245,33 +392,48 @@ enum End {
     Cancelled,
 }
 
+struct EndSlot {
+    end: Option<End>,
+    waiters: Vec<Waker>,
+}
+
 pub struct ActorShared {
     id: u64,
     mailbox: Queue<Msg>,
     cancelled: AtomicBool,
     /// Set before the mailbox closes when the handler fails.
     failure: Mutex<Option<String>>,
-    end: Mutex<Option<End>>,
-    ended: Condvar,
+    end: Mutex<EndSlot>,
     /// The object handed over, if the state is an object (its uuid).
     origin: Option<String>,
+    /// The worker this actor lives on.
+    worker: usize,
+    /// A run of this actor is queued on its worker.
+    scheduled: AtomicBool,
 }
 
 impl ActorShared {
     fn finish(&self, e: End) {
-        let mut end = self.end.lock().unwrap_or_else(|x| x.into_inner());
-        *end = Some(e);
-        self.ended.notify_all();
+        let mut s = lock(&self.end);
+        if s.end.is_some() { return; }
+        s.end = Some(e);
+        let w = std::mem::take(&mut s.waiters);
+        drop(s);
+        LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst);
+        wake_all(w);
+    }
+    fn ended(&self) -> bool { lock(&self.end).end.is_some() }
+    fn poll_end(&self, w: Option<&Waker>) -> Option<End> {
+        let mut s = lock(&self.end);
+        if let Some(e) = s.end.as_ref() { return Some(e.clone()); }
+        if let Some(w) = w { add_waiter(&mut s.waiters, w); }
+        None
     }
     fn wait_end(&self) -> End {
-        let mut end = self.end.lock().unwrap_or_else(|x| x.into_inner());
-        loop {
-            if let Some(e) = end.as_ref() { return e.clone(); }
-            end = self.ended.wait(end).unwrap_or_else(|x| x.into_inner());
-        }
+        block_on(None, |w| self.poll_end(Some(w))).unwrap()
     }
     fn stopped_error(&self) -> GoblinError {
-        if let Some(f) = self.failure.lock().unwrap_or_else(|x| x.into_inner()).as_ref() {
+        if let Some(f) = lock(&self.failure).as_ref() {
             return err(format!("C0112: actor-failed: the actor stopped because its handler failed: {f}"));
         }
         if self.cancelled.load(Ordering::SeqCst) {
@@ -291,6 +453,284 @@ pub fn finish_owned(actors: &mut Vec<Arc<ActorShared>>) {
     for a in actors.drain(..) { let _ = a.wait_end(); }
 }
 
+// ── Scheduler ────────────────────────────────────────────────────────────────
+
+/// One worker's queue of things to run.
+pub struct WorkerQ {
+    st: Mutex<WState>,
+    cv: Condvar,
+}
+
+struct WState {
+    jobs: VecDeque<Job>,
+    /// Threads asleep on `cv` (the worker, or a wait inside it).
+    sleepers: usize,
+    /// Bumped on every new job and every wake-up, so a waiting worker can
+    /// tell that something happened since it last looked.
+    epoch: u64,
+}
+
+enum Job {
+    Start(Box<Start>),
+    Run(Arc<ActorShared>),
+}
+
+/// Everything a worker needs to build a new actor. All of it is portable.
+struct Start {
+    shared: Arc<ActorShared>,
+    image: crate::swarm::Image,
+    state: PValue,
+    handler: PValue,
+    stop_when: Option<PValue>,
+    idle: Option<Duration>,
+    seed: u128,
+    worker_id: usize,
+}
+
+impl WorkerQ {
+    fn push(&self, j: Job) {
+        let mut st = lock(&self.st);
+        st.jobs.push_back(j);
+        st.epoch += 1;
+        let sleeping = st.sleepers > 0;
+        drop(st);
+        if sleeping { self.cv.notify_all(); }
+    }
+    fn poke(&self) {
+        let mut st = lock(&self.st);
+        st.epoch += 1;
+        let sleeping = st.sleepers > 0;
+        drop(st);
+        if sleeping { self.cv.notify_all(); }
+    }
+    fn epoch(&self) -> u64 { lock(&self.st).epoch }
+    fn try_take(&self) -> Option<Job> { lock(&self.st).jobs.pop_front() }
+    fn take(&self) -> Job {
+        // A message often arrives a few microseconds after the last one was
+        // handled; looking again for a moment is far cheaper than going to
+        // sleep and being woken by another thread.
+        let spin_until = Instant::now() + SPIN;
+        loop {
+            if let Some(j) = lock(&self.st).jobs.pop_front() { return j; }
+            if Instant::now() >= spin_until { break; }
+            std::thread::yield_now();
+        }
+        let mut st = lock(&self.st);
+        loop {
+            if let Some(j) = st.jobs.pop_front() { return j; }
+            st.sleepers += 1;
+            st = self.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+            st.sleepers -= 1;
+        }
+    }
+    /// Sleep until something new happens after `seen`.
+    fn wait_past(&self, seen: u64, want_jobs: bool) {
+        let mut st = lock(&self.st);
+        while st.epoch == seen && !(want_jobs && !st.jobs.is_empty()) {
+            st.sleepers += 1;
+            st = self.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+            st.sleepers -= 1;
+        }
+    }
+}
+
+struct Sched {
+    workers: Vec<Arc<WorkerQ>>,
+    next: AtomicUsize,
+}
+
+static SCHED: OnceLock<Sched> = OnceLock::new();
+
+fn worker_count() -> usize {
+    std::env::var("GOBLIN_ACTOR_THREADS").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+}
+
+fn sched() -> &'static Sched {
+    SCHED.get_or_init(|| {
+        let n = worker_count();
+        let workers: Vec<Arc<WorkerQ>> = (0..n)
+            .map(|_| Arc::new(WorkerQ { st: Mutex::new(WState { jobs: VecDeque::new(), sleepers: 0, epoch: 0 }), cv: Condvar::new() }))
+            .collect();
+        for (i, q) in workers.iter().enumerate() {
+            let q = q.clone();
+            std::thread::Builder::new()
+                .name(format!("goblin-actors-{i}"))
+                .stack_size(WORKER_STACK)
+                .spawn(move || worker_main(q))
+                .expect("could not start an actor worker thread");
+        }
+        Sched { workers, next: AtomicUsize::new(0) }
+    })
+}
+
+/// Queue a run of `a` on its worker, unless one is already queued.
+fn schedule(a: &Arc<ActorShared>) {
+    if !a.scheduled.swap(true, Ordering::SeqCst) {
+        sched().workers[a.worker].push(Job::Run(a.clone()));
+    }
+}
+
+thread_local! {
+    /// Set on worker threads: this worker's queue.
+    static WORKER: RefCell<Option<Arc<WorkerQ>>> = const { RefCell::new(None) };
+    /// The actors living on this worker that are not running right now.
+    static SLOTS: RefCell<HashMap<u64, Box<Slot>>> = RefCell::new(HashMap::new());
+    /// Actors running right now on this worker (one, or more when a wait
+    /// inside a callback runs others).
+    static BUSY: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    /// Busy actors that were asked to run again meanwhile.
+    static RERUN: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    static HELP_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+fn worker_main(q: Arc<WorkerQ>) {
+    WORKER.with(|w| *w.borrow_mut() = Some(q.clone()));
+    loop {
+        let job = q.take();
+        run_job(job);
+    }
+}
+
+/// Inside a wait on a worker: run another job if there is one, else sleep
+/// until something happens.
+fn help_or_wait(q: &Arc<WorkerQ>, seen: u64) {
+    let depth = HELP_DEPTH.with(|d| d.get());
+    if depth < MAX_HELP_DEPTH {
+        if let Some(job) = q.try_take() {
+            HELP_DEPTH.with(|d| d.set(depth + 1));
+            run_job(job);
+            HELP_DEPTH.with(|d| d.set(depth));
+            return;
+        }
+    }
+    q.wait_past(seen, depth < MAX_HELP_DEPTH);
+}
+
+fn run_job(job: Job) {
+    match job {
+        Job::Start(s) => {
+            let shared = s.shared.clone();
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Slot::build(*s))) {
+                Ok(slot) => turn(shared, Box::new(slot)),
+                Err(_) => crash(&shared, "the actor could not be started (internal error)"),
+            }
+        }
+        Job::Run(a) => {
+            a.scheduled.store(false, Ordering::SeqCst);
+            if let Some(slot) = SLOTS.with(|m| m.borrow_mut().remove(&a.id)) {
+                turn(a, slot);
+            } else if BUSY.with(|b| b.borrow().contains(&a.id)) {
+                RERUN.with(|r| r.borrow_mut().insert(a.id));
+            }
+            // Otherwise the actor has ended: nothing to do.
+        }
+    }
+}
+
+/// Last resort after a Rust panic: end the actor as failed, so nothing
+/// waits for it forever.
+fn crash(shared: &ActorShared, msg: &str) {
+    lock(&shared.failure).get_or_insert_with(|| msg.to_string());
+    shared.mailbox.close();
+    for m in shared.mailbox.drain() {
+        if let Msg::Request(_, r) = m { r.set(Err(msg.to_string())); }
+    }
+    shared.finish(End::Failed(msg.to_string()));
+}
+
+/// Give an actor a turn on this worker; keep it if it is still alive.
+fn turn(shared: Arc<ActorShared>, mut slot: Box<Slot>) {
+    let id = shared.id;
+    BUSY.with(|b| b.borrow_mut().insert(id));
+    let prev = CURRENT_ACTOR.with(|c| c.replace(Some(shared.clone())));
+    let alive = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| slot.turn())) {
+        Ok(alive) => alive,
+        Err(_) => {
+            let msg = "the handler crashed (internal error)";
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| slot.fail(msg.into()))).is_err() {
+                crash(&shared, msg);
+            }
+            false
+        }
+    };
+    CURRENT_ACTOR.with(|c| *c.borrow_mut() = prev);
+    BUSY.with(|b| b.borrow_mut().remove(&id));
+    if alive {
+        SLOTS.with(|m| m.borrow_mut().insert(id, slot));
+        if RERUN.with(|r| r.borrow_mut().remove(&id)) { schedule(&shared); }
+    } else {
+        RERUN.with(|r| r.borrow_mut().remove(&id));
+        drop(slot);
+    }
+}
+
+// ── Timers ───────────────────────────────────────────────────────────────────
+
+struct Timers {
+    st: Mutex<TState>,
+    cv: Condvar,
+}
+
+struct TState {
+    due: BinaryHeap<std::cmp::Reverse<(Instant, u64)>>,
+    wakers: HashMap<u64, Waker>,
+    seq: u64,
+}
+
+static TIMERS: OnceLock<Arc<Timers>> = OnceLock::new();
+
+/// Wake `w` at `at`.
+fn timer_at(at: Instant, w: Waker) {
+    let t = TIMERS.get_or_init(|| {
+        let t = Arc::new(Timers {
+            st: Mutex::new(TState { due: BinaryHeap::new(), wakers: HashMap::new(), seq: 0 }),
+            cv: Condvar::new(),
+        });
+        let t2 = t.clone();
+        std::thread::Builder::new()
+            .name("goblin-timers".into())
+            .spawn(move || timer_main(&t2))
+            .expect("could not start the timer thread");
+        t
+    });
+    let mut st = lock(&t.st);
+    st.seq += 1;
+    let n = st.seq;
+    st.due.push(std::cmp::Reverse((at, n)));
+    st.wakers.insert(n, w);
+    drop(st);
+    t.cv.notify_one();
+}
+
+fn timer_main(t: &Timers) {
+    let mut st = lock(&t.st);
+    loop {
+        let now = Instant::now();
+        let mut fire = Vec::new();
+        while let Some(std::cmp::Reverse((at, n))) = st.due.peek().copied() {
+            if at > now { break; }
+            st.due.pop();
+            if let Some(w) = st.wakers.remove(&n) { fire.push(w); }
+        }
+        if !fire.is_empty() {
+            drop(st);
+            wake_all(fire);
+            st = lock(&t.st);
+            continue;
+        }
+        st = match st.due.peek() {
+            Some(std::cmp::Reverse((at, _))) => {
+                let wait = at.saturating_duration_since(now);
+                t.cv.wait_timeout(st, wait).unwrap_or_else(|e| e.into_inner()).0
+            }
+            None => t.cv.wait(st).unwrap_or_else(|e| e.into_inner()),
+        };
+    }
+}
+
 // ── :actor ───────────────────────────────────────────────────────────────────
 
 struct Policy {
@@ -298,7 +738,6 @@ struct Policy {
     idle: Option<Duration>,
     stop_when: Option<Value>,
 }
-
 fn policy_of(v: Option<Value>) -> Result<Policy, GoblinError> {
     let mut p = Policy { mailbox: DEFAULT_MAILBOX, idle: None, stop_when: None };
     let Some(v) = v else { return Ok(p) };
@@ -446,7 +885,7 @@ impl Vm {
         if LIVE_ACTORS.fetch_add(1, Ordering::SeqCst) >= max_actors() {
             LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst);
             return Err(err(format!(
-                "C0110: actor-limit: {} actors are already running, the most this interim version allows (set GOBLIN_MAX_ACTORS to change it)", max_actors())));
+                "C0110: actor-limit: {} actors are already running, the most allowed (set GOBLIN_MAX_ACTORS to change it)", max_actors())));
         }
 
         let converted = (|| {
@@ -463,30 +902,29 @@ impl Vm {
         };
 
         let origin = match &state { Value::Object(o) => Some(o.uuid.clone()), Value::Ref(u) => Some(u.clone()), _ => None };
+        let sched = sched();
+        let worker = sched.next.fetch_add(1, Ordering::Relaxed) % sched.workers.len();
         let shared = Arc::new(ActorShared {
             id: next_id(),
             mailbox: Queue::new(policy.mailbox),
             cancelled: AtomicBool::new(false),
             failure: Mutex::new(None),
-            end: Mutex::new(None),
-            ended: Condvar::new(),
+            end: Mutex::new(EndSlot { end: None, waiters: Vec::new() }),
             origin,
+            worker,
+            scheduled: AtomicBool::new(false),
         });
-        let seed = self.session.next_u128();
-        let worker_id = self.session.worker_id;
-        let idle = policy.idle;
-        let sh = shared.clone();
-        let spawned = std::thread::Builder::new()
-            .name(format!("goblin-actor-{}", shared.id))
-            .stack_size(ACTOR_STACK)
-            .spawn(move || {
-                run_actor(&sh, image, p_state, p_handler, p_stop, idle, seed, worker_id);
-                LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst);
-            });
-        if let Err(e) = spawned {
-            LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst);
-            return Err(err(format!("C0110: actor-limit: could not start the actor's thread: {e}")));
-        }
+        // The worker builds the actor's session on its own thread.
+        sched.workers[worker].push(Job::Start(Box::new(Start {
+            shared: shared.clone(),
+            image,
+            state: p_state,
+            handler: p_handler,
+            stop_when: p_stop,
+            idle: policy.idle,
+            seed: self.session.next_u128(),
+            worker_id: self.session.worker_id,
+        })));
 
         // Handed over: the objects now belong to the actor.
         self.session.named_values.retain(|_, v| {
@@ -498,7 +936,10 @@ impl Vm {
         }
         // Actors that already ended need no shutdown; forget them, so a
         // session that starts many short-lived actors does not keep them all.
-        self.session.owned_actors.retain(|a| a.end.lock().unwrap_or_else(|x| x.into_inner()).is_none());
+        // Pruned when the list doubles, so starting n actors costs O(n).
+        if self.session.owned_actors.len().is_power_of_two() {
+            self.session.owned_actors.retain(|a| !a.ended());
+        }
         self.session.owned_actors.push(shared.clone());
         Ok(Value::Handle(Handle::Actor(shared)))
     }
@@ -548,114 +989,240 @@ fn deref(v: Value, s: &Session) -> Value {
         other => other,
     }
 }
+// ── Running an actor ─────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-fn run_actor(
-    shared: &Arc<ActorShared>,
-    image: crate::swarm::Image,
-    p_state: PValue,
-    p_handler: PValue,
-    p_stop: Option<PValue>,
+/// What a handler that stopped part-way is waiting for.
+pub enum Wait {
+    Future(Arc<Reply>),
+    End(Arc<ActorShared>),
+    /// A channel value; the deadline from `:receive(ch, limit)`, and whether
+    /// a timer for it is already set.
+    Recv(Arc<Channel>, Option<Instant>, bool),
+    /// Room in a full channel for this value.
+    Send(Arc<Channel>, PValue),
+}
+
+/// What a waiting builtin gives inside an actor's handler.
+pub enum Started { Now(Value), Later(Wait) }
+
+/// An actor as its worker keeps it. Never leaves its worker thread.
+struct Slot {
+    shared: Arc<ActorShared>,
+    vm: Vm,
+    handler: Value,
+    stop_when: Option<Value>,
+    state: Value,
     idle: Option<Duration>,
-    seed: u128,
-    worker_id: usize,
-) {
-    CURRENT_ACTOR.with(|c| c.set(shared.id));
-    let mut fp = FromPortable::new();
-    let mut vm = Vm::new(crate::swarm::build_session(&image, &mut fp, worker_id));
-    drop(image);
-    vm.session.rng_state = seed | 1;
-    let handler = fp.value(&p_handler, &mut vm.session);
-    let stop_when = p_stop.as_ref().map(|p| fp.value(p, &mut vm.session));
-    let first = fp.value(&p_state, &mut vm.session);
-    let mut state = adopt(first, &mut vm.session);
-    drop(fp);
+    last_active: Instant,
+    /// When the idle timer set last will fire.
+    idle_timer: Option<Instant>,
+    /// The message being handled, while the handler is stopped part-way.
+    current: Option<Current>,
+}
 
-    let fail = |shared: &ActorShared, msg: String, reply: Option<Arc<Reply>>| {
-        *shared.failure.lock().unwrap_or_else(|x| x.into_inner()) = Some(msg.clone());
+struct Current {
+    reply: Option<Arc<Reply>>,
+    /// Call depth the handler runs above.
+    base: usize,
+    /// None: ready to go on (it gave its worker up after running a while).
+    wait: Option<Wait>,
+}
+
+impl Slot {
+    fn build(s: Start) -> Slot {
+        let mut fp = FromPortable::new();
+        let mut vm = Vm::new(crate::swarm::build_session(&s.image, &mut fp, s.worker_id));
+        drop(s.image);
+        vm.session.rng_state = s.seed | 1;
+        let handler = fp.value(&s.handler, &mut vm.session);
+        let stop_when = s.stop_when.as_ref().map(|p| fp.value(p, &mut vm.session));
+        let first = fp.value(&s.state, &mut vm.session);
+        let state = adopt(first, &mut vm.session);
+        drop(fp);
+        Slot {
+            shared: s.shared,
+            vm,
+            handler,
+            stop_when,
+            state,
+            idle: s.idle,
+            last_active: Instant::now(),
+            idle_timer: None,
+            current: None,
+        }
+    }
+
+    /// Run until the actor has nothing to do, waits, or has had its share
+    /// of the worker. Says whether the actor is still alive.
+    fn turn(&mut self) -> bool {
+        let me = Waker::Actor(self.shared.clone());
+        let mut handled = 0usize;
+        loop {
+            if let Some(cur) = self.current.as_mut() {
+                let base = cur.base;
+                let step = match cur.wait.take() {
+                    None => self.vm.continue_actor(base),
+                    Some(w) => match poll_wait(w, Some(&me), &mut self.vm.session) {
+                        Ok(r) => self.vm.resume_actor(r, base),
+                        Err(w) => { cur.wait = Some(w); return true; }
+                    },
+                };
+                match self.after_step(step) {
+                    Some(true) => continue,
+                    Some(false) => return true,
+                    None => return false,
+                }
+            }
+
+            if self.shared.cancelled.load(Ordering::SeqCst) {
+                self.end_cancelled();
+                return false;
+            }
+            if handled >= MESSAGE_BUDGET {
+                schedule(&self.shared);
+                return true;
+            }
+            match self.shared.mailbox.pop_or_register(Some(&me)) {
+                Pop::Item(msg) => {
+                    handled += 1;
+                    self.last_active = Instant::now();
+                    // A :cancel that landed while this message was being
+                    // taken: it is not handled, like the rest of the queue.
+                    if self.shared.cancelled.load(Ordering::SeqCst) {
+                        if let Msg::Request(_, r) = msg {
+                            r.set(Err("C0116: actor-cancelled: the actor was cancelled before it handled this request".into()));
+                        }
+                        self.end_cancelled();
+                        return false;
+                    }
+                    let (p_msg, reply) = match msg { Msg::Post(p) => (p, None), Msg::Request(p, r) => (p, Some(r)) };
+                    // Converted afresh per message, so nothing from old messages is kept.
+                    let message = {
+                        let m = snapshot(&p_msg, &mut self.vm.session);
+                        adopt(m, &mut self.vm.session)
+                    };
+                    drop(p_msg);
+                    let base = self.vm.call_stack.len();
+                    self.current = Some(Current { reply, base, wait: None });
+                    let step = self.vm.start_actor_call(self.handler.clone(), vec![self.state.clone(), message]);
+                    match self.after_step(step) {
+                        Some(true) => continue,
+                        Some(false) => return true,
+                        None => return false,
+                    }
+                }
+                Pop::Closed => {
+                    self.end_done();
+                    return false;
+                }
+                Pop::Empty => {
+                    if let Some(idle) = self.idle {
+                        let due = self.last_active + idle;
+                        if Instant::now() >= due {
+                            // Closes only if still empty; either way, look again.
+                            self.shared.mailbox.close_if_empty();
+                            continue;
+                        }
+                        if self.idle_timer != Some(due) {
+                            timer_at(due, me.clone());
+                            self.idle_timer = Some(due);
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// After the handler ran for a while. Some(true): the message is done,
+    /// take the next. Some(false): the handler waits or gave the worker up.
+    /// None: the actor has ended.
+    fn after_step(&mut self, step: Result<Slice, GoblinError>) -> Option<bool> {
+        match step {
+            Ok(Slice::Done(v)) => {
+                let reply = self.current.take().and_then(|c| c.reply);
+                if self.finish_message(v, reply) { Some(true) } else { None }
+            }
+            Ok(Slice::Waiting(w)) => {
+                if let Some(c) = self.current.as_mut() { c.wait = Some(w); }
+                Some(false)
+            }
+            Ok(Slice::Yielded) => {
+                schedule(&self.shared);
+                Some(false)
+            }
+            Err(e) => {
+                self.fail(e.to_string());
+                None
+            }
+        }
+    }
+
+    /// The handler returned `next`. Says whether the actor goes on.
+    fn finish_message(&mut self, next: Value, reply: Option<Arc<Reply>>) -> bool {
+        if matches!(next, Value::Nil) {
+            self.fail_with("the handler returned nil; it must return the actor's next state".into(), reply);
+            return false;
+        }
+        self.state = adopt(next, &mut self.vm.session);
+        if let Some(r) = reply {
+            let current = deref(self.state.clone(), &self.vm.session);
+            r.set(ToPortable::new(&self.vm.session).value(&current).map(Arc::new).map_err(|e| e.to_string()));
+        }
+        if let Some(sw) = self.stop_when.clone() {
+            let current = deref(self.state.clone(), &self.vm.session);
+            match self.vm.call_callable(sw, vec![current]) {
+                Ok(v) => if v.is_truthy() { self.shared.mailbox.close(); },
+                Err(e) => {
+                    self.fail_with(format!("stop_when failed: {e}"), None);
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn fail(&mut self, msg: String) {
+        let reply = self.current.take().and_then(|c| c.reply);
+        self.fail_with(msg, reply);
+    }
+
+    /// The handler failed: refuse new messages, fail the queued requests,
+    /// let the actors this one started finish, then end.
+    fn fail_with(&mut self, msg: String, reply: Option<Arc<Reply>>) {
+        let shared = &self.shared;
+        *lock(&shared.failure) = Some(msg.clone());
         shared.mailbox.close();
         if let Some(r) = reply { r.set(Err(msg.clone())); }
         let rest = format!("C0112: actor-failed: the actor stopped because its handler failed: {msg}");
         for m in shared.mailbox.drain() {
             if let Msg::Request(_, r) = m { r.set(Err(rest.clone())); }
         }
-    };
-    // After a failure: the actors this one started finish first, then it ends,
-    // so whoever waits for it never returns while its children still run.
-    let fail_end = |shared: &ActorShared, vm: &mut Vm| {
-        vm.session.finish_actors();
-        let msg = shared.failure.lock().unwrap_or_else(|x| x.into_inner()).clone().unwrap_or_default();
-        shared.finish(End::Failed(msg));
-    };
-
-    loop {
-        if shared.cancelled.load(Ordering::SeqCst) { break; }
-        let msg = match shared.mailbox.pop(idle) {
-            Pop::Item(m) => m,
-            Pop::Closed | Pop::Idle => break,
-        };
-        // A :cancel that landed while this message was being taken: it is
-        // not handled, like the rest of the queue.
-        if shared.cancelled.load(Ordering::SeqCst) {
-            if let Msg::Request(_, r) = msg {
-                r.set(Err("C0116: actor-cancelled: the actor was cancelled before it handled this request".into()));
-            }
-            break;
-        }
-        let (p_msg, reply) = match msg { Msg::Post(p) => (p, None), Msg::Request(p, r) => (p, Some(r)) };
-        // Converted afresh per message, so nothing from old messages is kept.
-        let message = {
-            let m = snapshot(&p_msg, &mut vm.session);
-            adopt(m, &mut vm.session)
-        };
-        drop(p_msg);
-        let call = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            vm.call_callable(handler.clone(), vec![state.clone(), message])
-        }));
-        let next = match call {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => { fail(shared, e.to_string(), reply); fail_end(shared, &mut vm); return; }
-            Err(_) => { fail(shared, "the handler crashed (internal error)".into(), reply); fail_end(shared, &mut vm); return; }
-        };
-        if matches!(next, Value::Nil) {
-            fail(shared, "the handler returned nil; it must return the actor's next state".into(), reply);
-            fail_end(shared, &mut vm);
-            return;
-        }
-        state = adopt(next, &mut vm.session);
-        if let Some(r) = reply {
-            let current = deref(state.clone(), &vm.session);
-            r.set(ToPortable::new(&vm.session).value(&current).map(Arc::new).map_err(|e| e.to_string()));
-        }
-        if let Some(sw) = &stop_when {
-            let current = deref(state.clone(), &vm.session);
-            match vm.call_callable(sw.clone(), vec![current]) {
-                Ok(v) => if v.is_truthy() { shared.mailbox.close(); },
-                Err(e) => { fail(shared, format!("stop_when failed: {e}"), None); fail_end(shared, &mut vm); return; }
-            }
-        }
+        self.vm.session.finish_actors();
+        self.shared.finish(End::Failed(msg));
     }
 
-    if shared.cancelled.load(Ordering::SeqCst) {
-        shared.mailbox.close();
-        for m in shared.mailbox.drain() {
+    fn end_cancelled(&mut self) {
+        self.shared.mailbox.close();
+        for m in self.shared.mailbox.drain() {
             if let Msg::Request(_, r) = m {
                 r.set(Err("C0116: actor-cancelled: the actor was cancelled before it handled this request".into()));
             }
         }
-        vm.session.finish_actors();
-        shared.finish(End::Cancelled);
-        return;
+        self.vm.session.finish_actors();
+        self.shared.finish(End::Cancelled);
     }
-    let current = deref(state, &vm.session);
-    let end = match ToPortable::new(&vm.session).value(&current) {
-        Ok(p) => End::Done(Arc::new(p)),
-        Err(e) => End::Failed(format!("its final state cannot be copied out: {e}")),
-    };
-    vm.session.finish_actors();
-    shared.finish(end);
-}
 
+    fn end_done(&mut self) {
+        let current = deref(self.state.clone(), &self.vm.session);
+        let end = match ToPortable::new(&self.vm.session).value(&current) {
+            Ok(p) => End::Done(Arc::new(p)),
+            Err(e) => End::Failed(format!("its final state cannot be copied out: {e}")),
+        };
+        self.vm.session.finish_actors();
+        self.shared.finish(end);
+    }
+}
 // ── Messages ─────────────────────────────────────────────────────────────────
 
 /// A copy of an actor's state, as the asker receives it. Objects in it get
@@ -692,6 +1259,77 @@ fn snapshot(p: &PValue, session: &mut Session) -> Value {
     FromPortable::new().value(&copy, session)
 }
 
+/// Look once at what `w` waits for. `Ok` with the outcome when it is there;
+/// otherwise `waker` is registered and the wait comes back.
+fn poll_wait(w: Wait, waker: Option<&Waker>, session: &mut Session) -> Result<Result<Value, GoblinError>, Wait> {
+    match w {
+        Wait::Future(r) => match r.poll(waker) {
+            Some(Ok(p)) => Ok(Ok(snapshot(&p, session))),
+            Some(Err(e)) => Ok(Err(err(e))),
+            None => Err(Wait::Future(r)),
+        },
+        Wait::End(a) => match a.poll_end(waker) {
+            Some(End::Done(p)) => Ok(Ok(snapshot(&p, session))),
+            Some(End::Failed(e)) => Ok(Err(err(format!("C0112: actor-failed: the actor stopped because its handler failed: {e}")))),
+            Some(End::Cancelled) => Ok(Err(err("C0116: actor-cancelled: the actor was cancelled"))),
+            None => Err(Wait::End(a)),
+        },
+        Wait::Recv(c, deadline, timer_set) => match c.queue.pop_or_register(waker) {
+            Pop::Item(p) => Ok(Ok(snapshot(&p, session))),
+            Pop::Closed => Ok(Ok(Value::Nil)),
+            Pop::Empty => {
+                let mut timer_set = timer_set;
+                if let Some(d) = deadline {
+                    if Instant::now() >= d { return Ok(Ok(Value::Nil)); }
+                    if !timer_set {
+                        if let Some(w) = waker { timer_at(d, w.clone()); }
+                        timer_set = true;
+                    }
+                }
+                Err(Wait::Recv(c, deadline, timer_set))
+            }
+        },
+        Wait::Send(c, p) => match c.queue.push_or_register(p, waker) {
+            Push::Done => Ok(Ok(Value::Bool(true))),
+            Push::Closed(_) => Ok(Err(channel_closed())),
+            Push::Full(p) => Err(Wait::Send(c, p)),
+        },
+    }
+}
+
+/// Wait on this thread until `w` is there. On a worker, other actors run meanwhile.
+fn wait_here(w: Wait, session: &mut Session) -> Result<Value, GoblinError> {
+    let mut pending = Some(w);
+    block_on(None, |waker| match poll_wait(pending.take().unwrap(), Some(waker), session) {
+        Ok(r) => Some(r),
+        Err(w) => { pending = Some(w); None }
+    }).unwrap()
+}
+
+/// A waiting builtin called from an actor's handler where the VM can stop
+/// it part-way: the value now, or what it waits for (with the actor
+/// registered to be woken).
+pub fn start_wait(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Started, GoblinError> {
+    let w = match id {
+        BuiltinId::Await => await_wait(&args)?,
+        BuiltinId::Receive => receive_wait(&args)?,
+        BuiltinId::Post => match post_step(args, session)? {
+            PostStep::Done(v) => return Ok(Started::Now(v)),
+            PostStep::Wait(w) => w,
+        },
+        _ => return Err(err("internal: not a waiting builtin")),
+    };
+    let me = current_actor().map(Waker::Actor);
+    match poll_wait(w, me.as_ref(), session) {
+        Ok(r) => Ok(Started::Now(r?)),
+        Err(w) => Ok(Started::Later(w)),
+    }
+}
+
+fn channel_closed() -> GoblinError {
+    err("C0117: channel-closed: the channel is closed and takes no more values")
+}
+
 fn handle_arg<'a>(v: &'a Value, what: &str) -> Result<&'a Handle, GoblinError> {
     match v {
         Value::Handle(h) => Ok(h),
@@ -706,8 +1344,9 @@ fn expect_args(args: &[Value], n: usize, name: &str) -> Result<(), GoblinError> 
     Ok(())
 }
 
-/// `:post(handle, message)`.
-pub fn post(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+enum PostStep { Done(Value), Wait(Wait) }
+
+fn post_step(args: Vec<Value>, session: &mut Session) -> Result<PostStep, GoblinError> {
     expect_args(&args, 2, "post")?;
     let h = handle_arg(&args[0], ":post")?.clone();
     let msg = &args[1];
@@ -715,7 +1354,7 @@ pub fn post(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinErro
         Handle::Actor(a) => {
             let p = ToPortable::new(session).value(msg)?;
             match a.mailbox.try_push(Msg::Post(p)) {
-                Push::Done => Ok(Value::Bool(true)),
+                Push::Done => Ok(PostStep::Done(Value::Bool(true))),
                 Push::Full(_) => Err(err(format!(
                     "C0114: actor-mailbox-full: the actor's mailbox is full ({} messages); it is not keeping up", a.mailbox.cap))),
                 Push::Closed(_) => Err(a.stopped_error()),
@@ -726,12 +1365,17 @@ pub fn post(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinErro
                 return Err(err("C0117: channel-nil: nil cannot be posted to a channel; :receive gives nil once a channel is closed"));
             }
             let p = ToPortable::new(session).value(msg)?;
-            match c.queue.push_wait(p) {
-                Push::Done => Ok(Value::Bool(true)),
-                _ => Err(err("C0117: channel-closed: the channel is closed and takes no more values")),
-            }
+            Ok(PostStep::Wait(Wait::Send(c, p)))
         }
         Handle::Future(_) => Err(err("C0118: not-a-handle: :post expects an actor or a channel, got a future")),
+    }
+}
+
+/// `:post(handle, message)`.
+pub fn post(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+    match post_step(args, session)? {
+        PostStep::Done(v) => Ok(v),
+        PostStep::Wait(w) => wait_here(w, session),
     }
 }
 
@@ -742,7 +1386,11 @@ pub fn request(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinE
         return Err(err("C0118: not-a-handle: :request expects an actor"));
     };
     let p = ToPortable::new(session).value(&args[1])?;
-    let reply = Arc::new(Reply { id: next_id(), slot: Mutex::new(None), ready: Condvar::new(), actor: a.id });
+    let reply = Arc::new(Reply {
+        id: next_id(),
+        slot: Mutex::new(ReplySlot { answer: None, waiters: Vec::new() }),
+        actor: a.id,
+    });
     match a.mailbox.try_push(Msg::Request(p, reply.clone())) {
         Push::Done => Ok(Value::Handle(Handle::Future(reply))),
         Push::Full(_) => Err(err(format!(
@@ -751,39 +1399,36 @@ pub fn request(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinE
     }
 }
 
-/// `:await(future)` or `:await(actor)`.
-pub fn await_(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
-    expect_args(&args, 1, "await")?;
-    let me = CURRENT_ACTOR.with(|c| c.get());
+fn await_wait(args: &[Value]) -> Result<Wait, GoblinError> {
+    expect_args(args, 1, "await")?;
+    let me = current_actor_id();
     match handle_arg(&args[0], ":await")?.clone() {
         Handle::Future(r) => {
-            if me != 0 && r.actor == me && r.slot.lock().unwrap_or_else(|x| x.into_inner()).is_none() {
+            if me != 0 && r.actor == me && !r.answered() {
                 return Err(err("C0119: actor-self-wait: an actor cannot wait for its own answer; it would wait forever"));
             }
-            match r.wait() {
-                Ok(p) => Ok(snapshot(&p, session)),
-                Err(e) => Err(err(e)),
-            }
+            Ok(Wait::Future(r))
         }
         Handle::Actor(a) => {
             if me == a.id {
                 return Err(err("C0119: actor-self-wait: an actor cannot wait for itself to end; it would wait forever"));
             }
-            match a.wait_end() {
-                End::Done(p) => Ok(snapshot(&p, session)),
-                End::Failed(e) => Err(err(format!("C0112: actor-failed: the actor stopped because its handler failed: {e}"))),
-                End::Cancelled => Err(err("C0116: actor-cancelled: the actor was cancelled")),
-            }
+            Ok(Wait::End(a))
         }
         Handle::Channel(_) => Err(err("C0118: not-a-handle: :await expects a future or an actor, got a channel; use :receive")),
     }
 }
 
-/// `:receive(channel)`: the next value, or nil once the channel is closed and empty.
-pub fn receive(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+/// `:await(future)` or `:await(actor)`.
+pub fn await_(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+    let w = await_wait(&args)?;
+    wait_here(w, session)
+}
+
+fn receive_wait(args: &[Value]) -> Result<Wait, GoblinError> {
     if args.is_empty() {
         return Err(err(
-            "C0120: receive-unsupported: :receive() is not built yet; an actor gets its messages through its handler (lightweight actors, stage 4)"));
+            "C0120: receive-unsupported: :receive() is not built yet; an actor gets its messages through its handler"));
     }
     if args.len() > 2 {
         return Err(err(format!("C0107: actor-args: :receive takes a channel and an optional wait limit, got {} arguments", args.len())));
@@ -797,12 +1442,15 @@ pub fn receive(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinE
             crate::builtins::value_to_str(other)))),
     };
     match handle_arg(&args[0], ":receive")?.clone() {
-        Handle::Channel(c) => match c.queue.pop_within(limit) {
-            Pop::Item(p) => Ok(snapshot(&p, session)),
-            _ => Ok(Value::Nil),
-        },
+        Handle::Channel(c) => Ok(Wait::Recv(c, limit.map(|d| Instant::now() + d), false)),
         other => Err(err(format!("C0118: not-a-handle: :receive expects a channel, got {}", other.kind()))),
     }
+}
+
+/// `:receive(channel)`: the next value, or nil once the channel is closed and empty.
+pub fn receive(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
+    let w = receive_wait(&args)?;
+    wait_here(w, session)
 }
 
 /// `:halt(handle)`: an actor finishes what it accepted and ends; a channel closes.
@@ -856,10 +1504,10 @@ mod tests {
         let q2 = q.clone();
         let t = std::thread::spawn(move || matches!(q2.push_wait(3), Push::Done));
         std::thread::sleep(Duration::from_millis(20));
-        assert!(matches!(q.pop(None), Pop::Item(1)));
+        assert!(matches!(q.pop_within(None), Pop::Item(1)));
         assert!(t.join().unwrap());
-        assert!(matches!(q.pop(None), Pop::Item(2)));
-        assert!(matches!(q.pop(None), Pop::Item(3)));
+        assert!(matches!(q.pop_within(None), Pop::Item(2)));
+        assert!(matches!(q.pop_within(None), Pop::Item(3)));
     }
 
     #[test]
@@ -868,14 +1516,23 @@ mod tests {
         let _ = q.try_push("a");
         q.close();
         assert!(matches!(q.try_push("b"), Push::Closed("b")));
-        assert!(matches!(q.pop(None), Pop::Item("a")));
-        assert!(matches!(q.pop(None), Pop::Closed));
+        assert!(matches!(q.pop_within(None), Pop::Item("a")));
+        assert!(matches!(q.pop_within(None), Pop::Closed));
+    }
+
+    #[test]
+    fn wait_limit_gives_up_and_leaves_the_queue_open() {
+        let q: Queue<i32> = Queue::new(4);
+        let t = Instant::now();
+        assert!(matches!(q.pop_within(Some(Duration::from_millis(30))), Pop::Empty));
+        assert!(t.elapsed() >= Duration::from_millis(30));
+        assert!(matches!(q.try_push(1), Push::Done));
     }
 
     #[test]
     fn idle_close_never_loses_an_accepted_item() {
-        // Many short idle waits racing with pushes: every push that was
-        // accepted is popped, and a push after the idle close is refused.
+        // Idle closes racing with pushes: every push that was accepted is
+        // taken, and a push after the close is refused.
         for _ in 0..200 {
             let q = Arc::new(Queue::new(8));
             let q2 = q.clone();
@@ -889,14 +1546,40 @@ mod tests {
             });
             let mut taken = 0;
             loop {
-                match q.pop(Some(Duration::from_micros(200))) {
+                match q.pop_or_register(None) {
                     Pop::Item(_) => taken += 1,
-                    Pop::Closed | Pop::Idle => break,
+                    Pop::Closed => break,
+                    Pop::Empty => { if q.close_if_empty() { break; } }
                 }
             }
             let accepted = producer.join().unwrap();
             taken += q.drain().len();
             assert_eq!(taken, accepted);
         }
+    }
+
+    #[test]
+    fn a_waiter_is_woken_once_per_registration() {
+        // Registering twice keeps one entry; a push wakes it.
+        let q: Queue<i32> = Queue::new(1);
+        let p = Arc::new(Parker::new());
+        let w = Waker::Thread(p.clone());
+        assert!(matches!(q.pop_or_register(Some(&w)), Pop::Empty));
+        assert!(matches!(q.pop_or_register(Some(&w)), Pop::Empty));
+        assert_eq!(lock(&q.state).takers.len(), 1);
+        assert!(matches!(q.try_push(5), Push::Done));
+        assert_eq!(lock(&q.state).takers.len(), 0);
+        p.park(Some(Instant::now() + Duration::from_secs(5)));
+        assert!(matches!(q.pop_or_register(None), Pop::Item(5)));
+    }
+
+    #[test]
+    fn timers_fire_in_order() {
+        let p = Arc::new(Parker::new());
+        let t = Instant::now();
+        timer_at(t + Duration::from_millis(40), Waker::Thread(p.clone()));
+        p.park(Some(t + Duration::from_secs(5)));
+        assert!(t.elapsed() >= Duration::from_millis(40));
+        assert!(t.elapsed() < Duration::from_secs(5));
     }
 }
