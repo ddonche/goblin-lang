@@ -1,0 +1,31 @@
+/// Arithmetic and comparisons on int variables (the VM's fast path) give the
+/// same results as on any other values: overflow becomes a big number,
+/// `%` takes the divisor's sign, comparisons and branches work.
+big | 9223372036854775807
+small | -9223372036854775807
+one | 1
+two | 2
+say(small - two)
+say(big * two)
+seven | 7
+neg | -7
+three | 3
+say(neg % three)
+say(seven % (0 - three))
+say(seven % three)
+say([seven < three, seven <= seven, seven > three, seven >= 8, seven == 7, seven != 7])
+i | 0
+total | 0
+while i < 10
+    if i % 2 == 0
+        total |= total + i
+    xx
+    i |= i + 1
+xx
+say(total)
+zero | 0
+attempt
+    say(seven % zero)
+rescue e
+    say("error")
+xx

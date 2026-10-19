@@ -33,6 +33,8 @@ struct FunctionScope {
     upvalues: Vec<(String, UpvalueDescriptor)>,
     /// Bytecode under construction.
     bytecode: Vec<Opcode>,
+    /// Data for opcodes that carry strings or AST.
+    op_data: Vec<crate::opcode::OpData>,
     /// Constant pool.
     constants: Vec<Value>,
     /// Total local slots allocated so far.
@@ -68,6 +70,7 @@ impl FunctionScope {
             all_locals: Vec::new(),
             upvalues: Vec::new(),
             bytecode: Vec::new(),
+            op_data: Vec::new(),
             constants: Vec::new(),
             next_slot: params as u8,
             params,
@@ -205,6 +208,7 @@ impl FunctionScope {
         }
         FunctionObject {
             bytecode: self.bytecode,
+            op_data: self.op_data,
             constants: self.constants,
             locals: total_slots,
             params: self.params,
@@ -596,6 +600,17 @@ impl Compiler {
         self.scope_mut().emit(op)
     }
 
+    /// Store data for an opcode in the current function; returns its index.
+    fn op_data(&mut self, d: crate::opcode::OpData) -> u16 {
+        let data = &mut self.scope_mut().op_data;
+        data.push(d);
+        (data.len() - 1) as u16
+    }
+
+    fn name_data(&mut self, name: impl Into<String>) -> u16 {
+        self.op_data(crate::opcode::OpData::Name(name.into()))
+    }
+
     fn set_current_line(&mut self, line: u32) {
         self.current_line = line;
         if let Some(scope) = self.scopes.last_mut() {
@@ -753,7 +768,7 @@ impl Compiler {
                                 let name_idx = self.add_constant(Value::Str(name.clone().into()));
                                 self.emit(Opcode::RegisterAction(name_idx));
                                 if let Some(ref lock) = bind.lock_type {
-                                    self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                                    { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockGlobal(pos as u16, n)); }
                                 } else {
                                     self.emit(Opcode::StoreGlobal(pos as u16));
                                 }
@@ -763,7 +778,7 @@ impl Compiler {
                                 let name_idx = self.add_constant(Value::Str(name.clone().into()));
                                 self.emit(Opcode::RegisterAction(name_idx));
                                 if let Some(ref lock) = bind.lock_type {
-                                    self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                                    { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockGlobal(pos as u16, n)); }
                                 } else {
                                     self.emit(Opcode::StoreGlobal(pos as u16));
                                 }
@@ -969,7 +984,7 @@ impl Compiler {
 
             // ── DES / Overlay / Link statements ──────────────────────────────
             Stmt::OverlayDef(def) => {
-                self.emit(Opcode::OverlayDef(Box::new(def.clone())));
+                { let i = self.op_data(crate::opcode::OpData::OverlayDef(Box::new(def.clone()))); self.emit(Opcode::OverlayDef(i)); }
             }
             Stmt::OverlayApply(apply) => {
                 self.compile_expr(&apply.host_expr)?;
@@ -977,12 +992,13 @@ impl Compiler {
                     goblin_ast::Expr::Ident(name, _) => name.clone(),
                     _ => String::new(),
                 };
-                self.emit(Opcode::OverlayApply {
+                let i = self.op_data(crate::opcode::OpData::OverlayApply {
                     overlay_name: apply.overlay_name.clone(),
                     host_var_name,
                     strength: apply.strength,
                     duration_override: apply.duration_override,
                 });
+                self.emit(Opcode::OverlayApply(i));
             }
             Stmt::OverlayDetach(detach) => {
                 self.compile_expr(&detach.host_expr)?;
@@ -990,28 +1006,30 @@ impl Compiler {
                     goblin_ast::Expr::Ident(name, _) => name.clone(),
                     _ => String::new(),
                 };
-                self.emit(Opcode::OverlayDetach { overlay_name: detach.overlay_name.clone(), host_var_name });
+                let i = self.op_data(crate::opcode::OpData::OverlayDetach { overlay_name: detach.overlay_name.clone(), host_var_name });
+                self.emit(Opcode::OverlayDetach(i));
             }
             Stmt::LinkDef(def) => {
-                self.emit(Opcode::LinkDef(Box::new(def.clone())));
+                let i = self.op_data(crate::opcode::OpData::LinkDef(Box::new(def.clone()))); self.emit(Opcode::LinkDef(i));
             }
             Stmt::ObjectLinkDef(def) => {
-                self.emit(Opcode::ObjectLinkDef(Box::new(def.clone())));
+                let i = self.op_data(crate::opcode::OpData::ObjectLinkDef(Box::new(def.clone()))); self.emit(Opcode::ObjectLinkDef(i));
             }
             Stmt::LinkOffset(s) => {
-                self.emit(Opcode::LinkOffset(Box::new(s.clone())));
+                let i = self.op_data(crate::opcode::OpData::LinkOffset(Box::new(s.clone()))); self.emit(Opcode::LinkOffset(i));
             }
             Stmt::ClearLink(s) => {
-                self.emit(Opcode::ClearLink(Box::new(s.clone())));
+                let i = self.op_data(crate::opcode::OpData::ClearLink(Box::new(s.clone()))); self.emit(Opcode::ClearLink(i));
             }
             Stmt::ObjectDecision(var_name, def) => {
-                self.emit(Opcode::ObjectDecision {
+                let i = self.op_data(crate::opcode::OpData::ObjectDecision {
                     var_name: var_name.clone(),
                     def: Box::new(def.clone()),
                 });
+                self.emit(Opcode::ObjectDecision(i));
             }
             Stmt::UnitDecl(decl) => {
-                self.emit(Opcode::UnitDecl(Box::new(decl.clone())));
+                let i = self.op_data(crate::opcode::OpData::UnitDecl(Box::new(decl.clone()))); self.emit(Opcode::UnitDecl(i));
             }
 
             // ── Box store bind: #namespace::name = expr ───────────────────────
@@ -1350,11 +1368,11 @@ impl Compiler {
                 if CAST_TYPES.contains(&name.as_str()) {
                     if let Expr::Ident(var_name, _) = obj.as_ref() {
                         if let Some(slot) = self.scope().find_local(var_name) {
-                            self.emit(Opcode::CastMemberLocal(slot, name.clone()));
+                            { let n = self.name_data(name.clone()); self.emit(Opcode::CastMemberLocal(slot, n)); }
                             return Ok(());
                         }
                         if let Some(pos) = self.global_index(var_name) {
-                            self.emit(Opcode::CastMemberGlobal(pos as u16, name.clone()));
+                            { let n = self.name_data(name.clone()); self.emit(Opcode::CastMemberGlobal(pos as u16, n)); }
                             return Ok(());
                         }
                     }
@@ -1457,9 +1475,10 @@ impl Compiler {
                     let var_name = var_name.clone();
                     self.emit_mut_guard(&var_name)?;
                     let cast_op = if let Some(slot) = self.scope().find_local(&var_name) {
-                        Some(Opcode::CastBangLocal(slot, base.to_string()))
+                        Some(Opcode::CastBangLocal(slot, self.name_data(base)))
                     } else if self.scopes.len() == 1 || self.resolve_upvalue(self.scopes.len() - 1, &var_name).is_none() {
-                        self.global_index(&var_name).map(|pos| Opcode::CastBangGlobal(pos as u16, base.to_string()))
+                        let n = self.name_data(base);
+                        self.global_index(&var_name).map(|pos| Opcode::CastBangGlobal(pos as u16, n))
                     } else { None };
                     // A captured variable takes the generic bang path below.
                     if let Some(op) = cast_op {
@@ -1525,11 +1544,11 @@ impl Compiler {
                 if CALL_CAST_TYPES.contains(&method.as_str()) && args.is_empty() {
                     if let Expr::Ident(var_name, _) = recv.as_ref() {
                         if let Some(slot) = self.scope().find_local(var_name) {
-                            self.emit(Opcode::CastMemberLocal(slot, method.clone()));
+                            { let n = self.name_data(method.clone()); self.emit(Opcode::CastMemberLocal(slot, n)); }
                             return Ok(());
                         }
                         if let Some(pos) = self.global_index(var_name) {
-                            self.emit(Opcode::CastMemberGlobal(pos as u16, method.clone()));
+                            { let n = self.name_data(method.clone()); self.emit(Opcode::CastMemberGlobal(pos as u16, n)); }
                             return Ok(());
                         }
                     }
@@ -1692,11 +1711,11 @@ impl Compiler {
                     if let Some((var_name, type_name)) = cast_bang {
                         self.emit_mut_guard(&var_name)?;
                         if let Some(slot) = self.scope().find_local(&var_name) {
-                            self.emit(Opcode::CastBangLocal(slot, type_name));
+                            { let n = self.name_data(type_name); self.emit(Opcode::CastBangLocal(slot, n)); }
                             return Ok(());
                         }
                         if let Some(pos) = self.global_index(&var_name) {
-                            self.emit(Opcode::CastBangGlobal(pos as u16, type_name));
+                            { let n = self.name_data(type_name); self.emit(Opcode::CastBangGlobal(pos as u16, n)); }
                             return Ok(());
                         }
                         return Err(self.locate_err(GoblinError::UndefinedVariable { name: var_name }));
@@ -2259,7 +2278,7 @@ impl Compiler {
             self.scope_mut().local_meta[i].imm = true;
         }
         if let Some(ref lock) = lock_type {
-            self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
+            { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockLocal(slot, n)); }
         } else {
             self.emit(Opcode::StoreLocal(slot));
         }
@@ -2286,7 +2305,7 @@ impl Compiler {
                     let name_idx = self.add_constant(Value::Str(name.clone().into()));
                     self.emit(Opcode::RegisterAction(name_idx));
                     if let Some(ref lock) = lock_type {
-                        self.emit(Opcode::StoreLockGlobal(pos as u16, lock.clone()));
+                        { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockGlobal(pos as u16, n)); }
                     } else {
                         self.emit(Opcode::StoreGlobal(pos as u16));
                     }
@@ -2326,7 +2345,7 @@ impl Compiler {
             self.emit(Opcode::RegisterAction(name_idx));
         }
         if let Some(ref lock) = lock_type {
-            self.emit(Opcode::StoreLockLocal(slot, lock.clone()));
+            { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockLocal(slot, n)); }
         } else {
             self.emit(Opcode::StoreLocal(slot));
         }
