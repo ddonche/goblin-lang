@@ -1209,7 +1209,7 @@ impl Vm {
                         }
                         v.clone()
                     } else if let Some(default_expr) = &field.default {
-                        eval_default_expr(default_expr)
+                        self.field_default(&class_name, &field.name, default_expr)?
                     } else if field.nullable || !plain {
                         Value::Nil
                     } else {
@@ -4015,9 +4015,11 @@ fn value_to_str(v: &Value) -> String {
 }
 
 /// Handle `.method` postfix member accesses that dispatch to builtins.
-fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
+/// A field default that is a plain literal; anything else (`[]`, `{}`,
+/// `-1`, an expression) is evaluated by `Vm::field_default`.
+fn eval_default_expr(expr: &goblin_ast::Expr) -> Option<Value> {
     use goblin_ast::Expr;
-    match expr {
+    Some(match expr {
         Expr::Nil(_)        => Value::Nil,
         Expr::Bool(b, _)    => Value::Bool(*b),
         Expr::Number(n, _)  => {
@@ -4026,7 +4028,26 @@ fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
         }
         Expr::Str(s, _)     => Value::Str(s.clone().into()),
         Expr::Char(c, _)    => Value::Char(*c),
-        _                   => Value::Nil,
+        _                   => return None,
+    })
+}
+
+impl Vm {
+    /// A field's default, evaluated afresh for every new object (as the
+    /// interpreter does), so objects never share a default list or map.
+    /// The compiled expression is kept per class field.
+    fn field_default(&mut self, class: &str, field: &str, expr: &goblin_ast::Expr) -> Result<Value, GoblinError> {
+        if let Some(v) = eval_default_expr(expr) { return Ok(v); }
+        let key = (class.to_string(), field.to_string());
+        let func = match self.session.field_defaults.get(&key) {
+            Some(f) => f.clone(),
+            None => {
+                let f = self.compile_tick_expr(expr, &[])?;
+                self.session.field_defaults.insert(key, f.clone());
+                f
+            }
+        };
+        self.call_func_core(func, Vec::new(), Vec::new())
     }
 }
 

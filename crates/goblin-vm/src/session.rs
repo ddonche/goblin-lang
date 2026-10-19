@@ -108,6 +108,10 @@ pub struct Session {
     /// Optional worker ID for cross-worker safety checks.
     pub worker_id: usize,
 
+    /// Compiled field defaults that are not plain literals, per (class, field).
+    /// Cleared whenever a class is (re)declared.
+    pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
+
     /// Monotonic generation counter. Each new stash gets the current value,
     /// then we increment. This means each stash has a unique generation number,
     /// and old Addresses with a mismatched generation are detected as stale.
@@ -269,6 +273,7 @@ impl Session {
             global_names: Vec::new(),
             gc_mode,
             worker_id: 0,
+            field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
             gc_bytes: 0,
