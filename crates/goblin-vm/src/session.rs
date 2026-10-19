@@ -556,7 +556,7 @@ impl Session {
                 let new_m: indexmap::IndexMap<String, Value> = m.iter()
                     .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
                     .collect();
-                self.alloc_value(Value::MapOrd(new_m))
+                self.alloc_value(Value::MapOrd(Box::new(new_m)))
             }
 
             // Pair: deep clone both
@@ -575,29 +575,29 @@ impl Session {
             }
 
             // Object: deep clone fields
-            Value::Object { class_name, fields, readonly_fields, trait_fields, uuid } => {
-                let new_fields: indexmap::IndexMap<String, Value> = fields.iter()
+            Value::Object(o) => {
+                let new_fields: indexmap::IndexMap<String, Value> = o.fields.iter()
                     .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
                     .collect();
-                self.alloc_value(Value::Object {
-                    class_name: class_name.clone(),
+                self.alloc_value(Value::Object(Box::new(crate::value::ObjectVal {
+                    class_name: o.class_name.clone(),
                     fields: std::rc::Rc::new(new_fields),
-                    readonly_fields: readonly_fields.clone(),
-                    trait_fields: trait_fields.clone(),
-                    uuid: uuid.clone(),
-                })
+                    readonly_fields: o.readonly_fields.clone(),
+                    trait_fields: o.trait_fields.clone(),
+                    uuid: o.uuid.clone(),
+                })))
             }
 
             // Enum: deep clone fields
-            Value::Enum { enum_name, variant_name, fields } => {
-                let new_fields = fields.as_ref().map(|f| {
+            Value::Enum(e) => {
+                let new_fields = e.fields.as_ref().map(|f| {
                     f.iter().map(|(k, v)| (k.clone(), self.clone_value_shallow(v))).collect()
                 });
-                self.alloc_value(Value::Enum {
-                    enum_name: enum_name.clone(),
-                    variant_name: variant_name.clone(),
+                self.alloc_value(Value::Enum(Box::new(crate::value::EnumVal {
+                    enum_name: e.enum_name.clone(),
+                    variant_name: e.variant_name.clone(),
                     fields: new_fields,
-                })
+                })))
             }
 
             Value::Collection(coll_rc) => {

@@ -2403,7 +2403,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         }
                     }
                     Value::MapOrd(map) => {
-                        for (k, v) in &map {
+                        for (k, v) in map.iter() {
                             match (k.as_str(), v) {
                                 ("path", Value::Str(s)) => cookie.push_str(&format!("; Path={s}")),
                                 ("domain", Value::Str(s)) => cookie.push_str(&format!("; Domain={s}")),
@@ -3401,7 +3401,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     .or_else(|_| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
                         .map(|d| chrono::Utc.from_utc_datetime(&d.and_hms_opt(0,0,0).unwrap())))
                     .map_err(|_| GoblinError::Runtime(format!("date: cannot parse {:?}", s)))?;
-                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+                Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })))
             } else if args.len() == 3 {
                 let y  = require_int(read(0)?, "date")? as i32;
                 let mo = require_int(read(1)?, "date")? as u32;
@@ -3410,7 +3410,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     .ok_or_else(|| GoblinError::Runtime("date: invalid date".into()))?
                     .and_hms_opt(0, 0, 0).unwrap();
                 let utc = chrono::Utc.from_utc_datetime(&naive);
-                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+                Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })))
             } else {
                 Err(GoblinError::Runtime("date: expected (str) or (y, mo, d)".into()))
             }
@@ -3424,7 +3424,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     .map_err(|_| GoblinError::Runtime(format!("time: cannot parse {:?}", s)))?;
                 let dt = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap().and_time(naive);
                 let utc = chrono::Utc.from_utc_datetime(&dt);
-                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time }))
+                Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time })))
             } else if args.len() == 3 {
                 let h  = require_int(read(0)?, "time")? as u32;
                 let m  = require_int(read(1)?, "time")? as u32;
@@ -3433,7 +3433,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     .and_hms_opt(h, m, s)
                     .ok_or_else(|| GoblinError::Runtime("time: invalid time".into()))?;
                 let utc = chrono::Utc.from_utc_datetime(&naive);
-                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time }))
+                Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Time })))
             } else {
                 Err(GoblinError::Runtime("time: expected (str) or (h, m, s)".into()))
             }
@@ -3445,7 +3445,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 let utc = chrono::DateTime::parse_from_rfc3339(&s)
                     .map(|d| d.with_timezone(&chrono::Utc))
                     .map_err(|_| GoblinError::Runtime(format!("datetime: cannot parse {:?}", s)))?;
-                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+                Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })))
             } else if args.len() == 6 {
                 let y  = require_int(read(0)?, "datetime")? as i32;
                 let mo = require_int(read(1)?, "datetime")? as u32;
@@ -3457,7 +3457,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     .and_then(|d| d.and_hms_opt(h, m, s))
                     .ok_or_else(|| GoblinError::Runtime("datetime: invalid date/time".into()))?;
                 let utc = chrono::Utc.from_utc_datetime(&naive);
-                Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+                Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })))
             } else {
                 Err(GoblinError::Runtime("datetime: expected (str) or (y, mo, d, h, m, s)".into()))
             }
@@ -3468,7 +3468,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── Date/time builtins ────────────────────────────────────────────────
         BuiltinId::DtNow | BuiltinId::DtUtcNow => {
-            Ok(Value::DateTime(dt_now()))
+            Ok(Value::DateTime(Box::new(dt_now())))
         }
         BuiltinId::DtEpochMs => {
             let ms = chrono::Utc::now().timestamp_millis();
@@ -3486,7 +3486,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let h = total_secs / 3600;
             let m = (total_secs.abs() % 3600) / 60;
             let tz_name = format!("{:+03}:{:02}", h, m);
-            Ok(Value::DateTime(GoblinDateTime { utc, tz: Some(tz_name), kind: GoblinDateKind::DateTime }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: Some(tz_name), kind: GoblinDateKind::DateTime })))
         }
         BuiltinId::DtToday => {
             use chrono::{Datelike, TimeZone};
@@ -3494,7 +3494,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
                 .unwrap().and_hms_opt(0,0,0).unwrap();
             let utc = chrono::Utc.from_utc_datetime(&naive);
-            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })))
         }
         BuiltinId::DtTomorrow => {
             use chrono::{Datelike, Duration, TimeZone};
@@ -3502,7 +3502,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
                 .unwrap().and_hms_opt(0,0,0).unwrap();
             let utc = chrono::Utc.from_utc_datetime(&naive) + Duration::days(1);
-            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })))
         }
         BuiltinId::DtYesterday => {
             use chrono::{Datelike, Duration, TimeZone};
@@ -3510,7 +3510,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let naive = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
                 .unwrap().and_hms_opt(0,0,0).unwrap();
             let utc = chrono::Utc.from_utc_datetime(&naive) - Duration::days(1);
-            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::Date })))
         }
         BuiltinId::DtToIso => {
             expect_n(1)?;
@@ -3525,7 +3525,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let utc = chrono::DateTime::parse_from_rfc3339(&s)
                 .map(|d| d.with_timezone(&chrono::Utc))
                 .map_err(|_| GoblinError::Runtime(format!("from_iso: cannot parse {:?}", s)))?;
-            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })))
         }
         BuiltinId::DtToEpochMs => {
             expect_n(1)?;
@@ -3543,7 +3543,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             let utc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
                 .ok_or_else(|| GoblinError::Runtime("from_epoch_ms: value out of range".into()))?;
-            Ok(Value::DateTime(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { utc, tz: None, kind: GoblinDateKind::DateTime })))
         }
         BuiltinId::DtFormatDatetime | BuiltinId::DtFormatDate | BuiltinId::DtFormatTime => {
             if args.len() != 2 {
@@ -3683,7 +3683,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if total_secs != 0 {
                 utc = utc + Duration::seconds(total_secs);
             }
-            Ok(Value::DateTime(GoblinDateTime { utc, ..gdt }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { utc, ..*gdt })))
         }
         BuiltinId::DtSince => {
             expect_n(1)?;
@@ -3710,7 +3710,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let tz_name = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "to_timezone")) };
             let _tz: chrono_tz::Tz = tz_name.parse()
                 .map_err(|_| GoblinError::Runtime(format!("to_timezone: unknown timezone {:?}", tz_name)))?;
-            Ok(Value::DateTime(GoblinDateTime { tz: Some(tz_name.to_string()), ..gdt }))
+            Ok(Value::DateTime(Box::new(GoblinDateTime { tz: Some(tz_name.to_string()), ..*gdt })))
         }
 
         // ── Tick (DES tick runner — not yet implemented in VM) ────────────────
@@ -3791,13 +3791,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // owned_by(owner): the objects whose owner_id is owner's uuid
             // (direct children only), as the interpreter's object_store scan.
             let owner_uuid = match args.first() {
-                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Object(o)) => o.uuid.clone(),
                 Some(Value::Str(s)) => s.to_string(),
                 _ => return Err(GoblinError::Runtime("A0412: owned-by-bad-arg: owned_by() argument must be an object".into())),
             };
             let owned: Vec<Value> = session.object_store.values()
-                .filter(|v| matches!(v, Value::Object { fields, .. }
-                    if matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)))
+                .filter(|v| matches!(v, Value::Object(o)
+                    if matches!(o.fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)))
                 .cloned()
                 .collect();
             Ok(Value::Array(owned))
@@ -3807,24 +3807,24 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // (sorted) indented two spaces per level.
             fn build_tree(owner_uuid: &str, object_store: &std::collections::HashMap<String, Value>, depth: usize) -> String {
                 let indent = "  ".repeat(depth);
-                let label = if let Some(Value::Object { class_name, fields, .. }) = object_store.get(owner_uuid) {
-                    let id = fields.get("id")
+                let label = if let Some(Value::Object(o)) = object_store.get(owner_uuid) {
+                    let id = o.fields.get("id")
                         .map(fmt_value_raw)
                         .unwrap_or_else(|| owner_uuid.to_string());
-                    format!("{}{{{}: {}}}", indent, class_name, id)
+                    format!("{}{{{}: {}}}", indent, o.class_name, id)
                 } else {
                     format!("{}{}", indent, owner_uuid)
                 };
                 let mut children: Vec<String> = object_store.iter()
-                    .filter(|(_, v)| matches!(v, Value::Object { fields, .. } if
-                        matches!(fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner_uuid)))
+                    .filter(|(_, v)| matches!(v, Value::Object(o) if
+                        matches!(o.fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner_uuid)))
                     .map(|(child_uuid, _)| build_tree(child_uuid, object_store, depth + 1))
                     .collect();
                 children.sort();
                 if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
             }
             let root_uuid = match args.first() {
-                Some(Value::Object { uuid, .. }) => uuid.clone(),
+                Some(Value::Object(o)) => o.uuid.clone(),
                 Some(Value::Str(s)) => s.to_string(),
                 _ => return Err(GoblinError::Runtime("A0413: owns-tree-bad-arg: owns_tree() argument must be an object".into())),
             };
@@ -3838,7 +3838,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // delete_object!(x): [x's value, "x", argc] from the compiler.
             let var_name = bang_object_target(&args, "delete_object!")?;
             let uuid = match read(0)? {
-                Value::Object { uuid, .. } => uuid,
+                Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_object! can only delete objects".into())),
             };
             erase_object(session, &var_name, &uuid);
@@ -3854,7 +3854,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // delete_overlays_on!(x): [x's value, "x", argc] from the compiler.
             let host_var = bang_object_target(&args, "delete_overlays_on!")?;
             let host_uuid = match read(0)? {
-                Value::Object { uuid, .. } => uuid,
+                Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_overlays_on! can only target object instances".into())),
             };
             drop_overlays_for(session, &host_var, &host_uuid);
@@ -4076,7 +4076,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_neighbors: no grid named '{}'", grid_id)))?;
             if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_neighbors: ({},{}) out of bounds", x, y))); }
             let refs: Vec<Value> = world.neighbors(x, y).into_iter()
-                .map(|(nx, ny)| Value::GridRef { grid_id: grid_id.clone(), x: nx, y: ny })
+                .map(|(nx, ny)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x: nx, y: ny })
                 .collect();
             Ok(Value::Array(refs))
         }
@@ -4085,7 +4085,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let grid_id = grid_world_name_from(read(0)?)?;
             let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied: no grid named '{}'", grid_id)))?;
             let refs: Vec<Value> = world.occupied("owner").into_iter()
-                .map(|(x, y)| Value::GridRef { grid_id: grid_id.clone(), x, y })
+                .map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y })
                 .collect();
             Ok(Value::Array(refs))
         }
@@ -4094,7 +4094,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let grid_id = grid_world_name_from(read(0)?)?;
             let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_unoccupied: no grid named '{}'", grid_id)))?;
             let refs: Vec<Value> = world.unoccupied_cells().into_iter()
-                .map(|(x, y)| Value::GridRef { grid_id: grid_id.clone(), x, y })
+                .map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y })
                 .collect();
             Ok(Value::Array(refs))
         }
@@ -4127,7 +4127,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let target = read(1)?;
             let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied_by: no grid named '{}'", grid_id)))?;
             let refs: Vec<Value> = world.cells_with_value("owner", &target).into_iter()
-                .map(|(x, y)| Value::GridRef { grid_id: grid_id.clone(), x, y })
+                .map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y })
                 .collect();
             Ok(Value::Array(refs))
         }
@@ -4246,8 +4246,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let show_ids = matches!(read(1)?, Value::Bool(true));
             let keep = |k: &str| show_ids || !(k == "id" || k.ends_with("_id"));
             match read(0)? {
-                Value::Object { fields, .. } => Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
-                    fields.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (Value::Str(k.clone().into()), v.clone())).collect())))),
+                Value::Object(o) => Ok(Value::Collection(Rc::new(crate::value::CollectionValue::from_map(
+                    o.fields.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (Value::Str(k.clone().into()), v.clone())).collect())))),
                 m if m.is_map_like() => {
                     if show_ids { return Ok(m); }
                     let pairs = m.map_entries().unwrap_or_default();
@@ -4317,7 +4317,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let grid_id = match read(0)? {
                 Value::Str(s) => s,
-                Value::GridRef { grid_id, .. } => grid_id.into(),
+                Value::GridRef { grid_id, .. } => grid_id.to_string().into(),
                 other => return Err(GoblinError::type_error("str", other.type_name(), "grid[x,y] grid name")),
             };
             let x = match read(1)? {
@@ -4336,7 +4336,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     x, y, grid_id, world.width, world.height
                 )));
             }
-            Ok(Value::GridRef { grid_id: grid_id.to_string(), x, y })
+            Ok(Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y })
         }
 
         // EnumVariantExpr(enum_name_str, variant_name_str, fields_map_or_nil) → Enum
@@ -4354,7 +4354,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             let fields = match read(2)? {
                 Value::Nil => None,
-                Value::MapOrd(m) => Some(m),
+                Value::MapOrd(m) => Some(*m),
                 Value::Map(m) => {
                     let mut out = indexmap::IndexMap::new();
                     for (k, v) in m { out.insert(k, v); }
@@ -4380,7 +4380,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                             missing.name, variant_name, enum_name, variant_name, missing.name)));
                     }
                 }
-                Ok(Value::Enum { enum_name: enum_name.to_string(), variant_name: variant_name.to_string(), fields })
+                Ok(Value::Enum(Box::new(crate::value::EnumVal { enum_name: enum_name.to_string(), variant_name: variant_name.to_string(), fields })))
             } else {
                 // Not a known enum — may be a module-qualified value access like storage::my_map.
                 // Fall back to named_values lookup using the variant name.
@@ -4762,7 +4762,7 @@ fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Re
 fn grid_world_name_from(v: Value) -> Result<String, GoblinError> {
     match v {
         Value::Str(s) => Ok(s.to_string()),
-        Value::GridRef { grid_id, .. } => Ok(grid_id),
+        Value::GridRef { grid_id, .. } => Ok(grid_id.to_string()),
         other => Err(GoblinError::type_error("str or grid_ref", other.type_name(), "grid world name")),
     }
 }
@@ -4845,10 +4845,10 @@ pub(crate) fn cast_value_to_lock(v: Value, lock: &str) -> Result<Value, GoblinEr
         }
         Value::MapOrd(map) => {
             let mut results = indexmap::IndexMap::new();
-            for (k, val) in map {
+            for (k, val) in *map {
                 results.insert(k, cast_value_to_lock(val, lock)?);
             }
-            return Ok(Value::MapOrd(results));
+            return Ok(Value::MapOrd(Box::new(results)));
         }
         Value::Collection(coll) => {
             use crate::value::CollectionLayout;
@@ -5288,10 +5288,10 @@ pub fn value_to_str(v: &Value) -> String {
         Value::CtrlSkip      => "<skip>".to_string(),
         Value::CtrlStop      => "<stop>".to_string(),
         Value::CtrlReturn(v) => format!("<return {}>", value_to_str(v)),
-        Value::Object { class_name, fields, .. } => {
-            let mut s = format!("{}{{", class_name);
+        Value::Object(o) => {
+            let mut s = format!("{}{{", o.class_name);
             let mut first = true;
-            for (k, v) in fields.iter() {
+            for (k, v) in o.fields.iter() {
                 if k == "uuid" { continue; }
                 if !first { s.push_str(", "); }
                 first = false;
@@ -5304,11 +5304,13 @@ pub fn value_to_str(v: &Value) -> String {
         }
         Value::Ref(s)        => format!("<ref {}>", s),
         Value::GridRef { grid_id, x, y } => format!("GridRef({}, {}, {})", grid_id, x, y),
-        Value::Enum { enum_name, variant_name, fields: None } => format!("{}::{}", enum_name, variant_name),
-        Value::Enum { enum_name, variant_name, fields: Some(f) } => {
-            let parts: Vec<String> = f.iter().map(|(k, v)| format!("{}: {}", k, value_to_str(v))).collect();
-            format!("{}::{} {{ {} }}", enum_name, variant_name, parts.join(", "))
-        }
+        Value::Enum(e) => match &e.fields {
+            None => format!("{}::{}", e.enum_name, e.variant_name),
+            Some(f) => {
+                let parts: Vec<String> = f.iter().map(|(k, v)| format!("{}: {}", k, value_to_str(v))).collect();
+                format!("{}::{} {{ {} }}", e.enum_name, e.variant_name, parts.join(", "))
+            }
+        },
         Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) if collections::is_map_collection(c) => {
             let parts: Vec<String> = collections::to_pairs(c).iter()
@@ -5612,7 +5614,7 @@ fn fmt_value_depth(v: &Value, depth: usize) -> String {
             s
         }
         Value::DateTime(gdt) => dt_display(gdt),
-        Value::Enum { .. } => value_to_str(v),
+        Value::Enum(_) => value_to_str(v),
         _ => v.type_name().to_string(),
     }
 }
@@ -5885,7 +5887,7 @@ fn yall_to_value(v: &goblin_yall::YallValue) -> Value {
         goblin_yall::YallValue::Map(map) => {
             let mut out = indexmap::IndexMap::new();
             for (k, v2) in map.iter() { out.insert(k.clone(), yall_to_value(v2)); }
-            Value::MapOrd(out)
+            Value::MapOrd(Box::new(out))
         }
     }
 }
@@ -5925,9 +5927,9 @@ fn value_to_yall(v: &Value) -> goblin_yall::YallValue {
                 }
             }
         }
-        Value::Object { fields, .. } => {
+        Value::Object(o) => {
             let mut out = indexmap::IndexMap::new();
-            for (k, v2) in fields.iter() { out.insert(k.clone(), value_to_yall(v2)); }
+            for (k, v2) in o.fields.iter() { out.insert(k.clone(), value_to_yall(v2)); }
             goblin_yall::YallValue::Map(out)
         }
         Value::DateTime(gdt) => goblin_yall::YallValue::Str(dt_display(gdt)),
@@ -6115,7 +6117,7 @@ fn db_call(id: BuiltinId, sql: &str, params: &[Value], fn_name: &str) -> Result<
             DbValue::Int(n) => Value::Int(n),
             DbValue::Float(x) => Value::Float(x),
             DbValue::Str(s) => Value::Str(s.into()),
-        })).collect()))
+        })).collect::<indexmap::IndexMap<_, _>>().into()))
     };
     let err = |e: goblin_db::DbError| GoblinError::Runtime(e.to_string());
     match id {
@@ -6126,7 +6128,7 @@ fn db_call(id: BuiltinId, sql: &str, params: &[Value], fn_name: &str) -> Result<
             let mut m = indexmap::IndexMap::new();
             m.insert("ok".to_string(), Value::Bool(true));
             m.insert("rows_affected".to_string(), Value::Int(n as i64));
-            Ok(collections::into_collection(Value::MapOrd(m)))
+            Ok(collections::into_collection(Value::MapOrd(Box::new(m))))
         }
     }
 }
@@ -6176,7 +6178,7 @@ fn json_parse_ordered(text: &str) -> Result<Value, serde_json::Error> {
                 let v = map.next_value_seed(Seed)?;
                 m.insert(k, v);
             }
-            Ok(collections::into_collection(Value::MapOrd(m)))
+            Ok(collections::into_collection(Value::MapOrd(Box::new(m))))
         }
     }
     let mut de = serde_json::Deserializer::from_str(text);

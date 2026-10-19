@@ -109,8 +109,8 @@ fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, GoblinError
 /// A value going into a variable: objects live in the object store and the
 /// variable holds a reference, as `StoreLocal` does.
 fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
-    if let Value::Object { ref uuid, .. } = v {
-        let uuid = uuid.clone();
+    if let Value::Object(ref o) = v {
+        let uuid = o.uuid.clone();
         session.object_store.insert(uuid.clone(), v);
         session.alloc_value(Value::Ref(uuid))
     } else {

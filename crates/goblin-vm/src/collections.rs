@@ -665,7 +665,7 @@ fn map_op_ordered(
             Ok(m.values().nth(i).cloned().unwrap_or(Value::Nil))
         }
         (Position::All, Operation::Get) | (Position::All, Operation::Reap) => {
-            Ok(Value::MapOrd(m.clone()))
+            Ok(Value::MapOrd(Box::new(m.clone())))
         }
         (Position::Where(pred), Operation::Get) | (Position::Where(pred), Operation::Reap) => {
             let result: Vec<Value> = m.values()
@@ -680,7 +680,7 @@ fn map_op_ordered(
                 .filter(|(k, _)| re.is_match(k))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            Ok(Value::MapOrd(result))
+            Ok(Value::MapOrd(Box::new(result)))
         }
         // Put
         (Position::At(key_val), Operation::Put(v)) => {
@@ -688,7 +688,7 @@ fn map_op_ordered(
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::First, Operation::Put(_)) | (Position::Last, Operation::Put(_)) => {
             Err(GoblinError::Runtime("put_first/put_last not meaningful for maps".into()))
@@ -698,7 +698,7 @@ fn map_op_ordered(
             let first_key = m.iter().next().ok_or(GoblinError::IndexOutOfBounds { index: 0, len: 0 })?.0.clone();
             let mut new_m = m.clone();
             new_m.insert(first_key, v);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::At(key_val), Operation::Update(v)) => {
             let key = value_to_map_key(&key_val)
@@ -706,79 +706,79 @@ fn map_op_ordered(
             if !m.contains_key(&key) { return Err(GoblinError::KeyNotFound); }
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::Random, Operation::Update(v)) => {
-            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
             let i = rng_bounded(session, m.len());
             let key = m.keys().nth(i).cloned().unwrap();
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::Where(pred), Operation::Update(v)) => {
             let mut new_m = m.clone();
             for (k, val) in m { if fmt_value_raw(val) == pred { new_m.insert(k.clone(), v.clone()); } }
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::Matching(pat), Operation::Update(v)) => {
             let re = compile_regex(&pat)?;
             let mut new_m = m.clone();
             for k in m.keys() { if re.is_match(k) { new_m.insert(k.clone(), v.clone()); } }
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         // Delete
         (Position::First, Operation::Delete) => {
-            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
             let first_key = m.iter().next().map(|(k, _)| k.clone()).unwrap();
             let mut new_m = m.clone();
             new_m.shift_remove(&first_key);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::Last, Operation::Delete) => {
-            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
             let last_key = m.iter().last().map(|(k, _)| k.clone()).unwrap();
             let mut new_m = m.clone();
             new_m.shift_remove(&last_key);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::At(key_val), Operation::Delete) => {
             let key = value_to_map_key(&key_val)
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             let mut new_m = m.clone();
             new_m.shift_remove(&key);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::All, Operation::Delete) => {
-            Ok(Value::MapOrd(indexmap::IndexMap::new()))
+            Ok(Value::MapOrd(Box::new(indexmap::IndexMap::new())))
         }
         (Position::Where(pred), Operation::Delete) => {
             let new_m = m.iter()
                 .filter(|(_, v)| fmt_value_raw(v) != pred)
                 .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            Ok(Value::MapOrd(new_m))
+                .collect::<indexmap::IndexMap<_, _>>();
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         (Position::Matching(pat), Operation::Delete) => {
             let re = compile_regex(&pat)?;
-            let new_m = m.iter().filter(|(k, _)| !re.is_match(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
-            Ok(Value::MapOrd(new_m))
+            let new_m = m.iter().filter(|(k, _)| !re.is_match(k)).map(|(k, v)| (k.clone(), v.clone())).collect::<indexmap::IndexMap<_, _>>();
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         // All + Put/Update: replace entire map (v must be a Map)
         (Position::All, Operation::Put(v)) | (Position::All, Operation::Update(v)) => {
             match v.to_index_map() {
-                Some(m2) => Ok(Value::MapOrd(m2)),
+                Some(m2) => Ok(Value::MapOrd(Box::new(m2))),
                 None => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
             }
         }
         // Random + Put: update a random key's value (same as Random + Update)
         (Position::Random, Operation::Put(v)) => {
-            if m.is_empty() { return Ok(Value::MapOrd(m.clone())); }
+            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
             let i = rng_bounded(session, m.len());
             let key = m.keys().nth(i).cloned().unwrap();
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(new_m))
+            Ok(Value::MapOrd(Box::new(new_m)))
         }
         // Last + Put/Update/Delete: not meaningful for maps
         (Position::Last, Operation::Put(_)) | (Position::Last, Operation::Update(_)) | (Position::Last, Operation::Delete) => {
@@ -793,7 +793,7 @@ fn map_op_ordered(
             if pat.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ') {
                 let mut new_m = m.clone();
                 new_m.insert(pat, v);
-                Ok(Value::MapOrd(new_m))
+                Ok(Value::MapOrd(Box::new(new_m)))
             } else {
                 Err(GoblinError::Runtime("put_matching with complex regex is not meaningful for maps".into()))
             }
@@ -827,17 +827,17 @@ fn map_op_ordered(
                     let result: indexmap::IndexMap<String, Value> = between.iter()
                         .map(|k| (k.clone(), m.get(k).unwrap().clone()))
                         .collect();
-                    Ok(Value::MapOrd(result))
+                    Ok(Value::MapOrd(Box::new(result)))
                 }
                 Operation::Delete => {
                     let mut new_m = m.clone();
                     for k in &between { new_m.shift_remove(k); }
-                    Ok(Value::MapOrd(new_m))
+                    Ok(Value::MapOrd(Box::new(new_m)))
                 }
                 Operation::Update(v) => {
                     let mut new_m = m.clone();
                     for k in &between { new_m.insert(k.clone(), v.clone()); }
-                    Ok(Value::MapOrd(new_m))
+                    Ok(Value::MapOrd(Box::new(new_m)))
                 }
                 Operation::Put(_) => {
                     Err(GoblinError::Runtime("put_between is not meaningful for maps".into()))

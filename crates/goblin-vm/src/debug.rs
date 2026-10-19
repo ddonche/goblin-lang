@@ -205,10 +205,10 @@ fn format_value_depth(v: &Value, depth: usize) -> String {
         Value::CtrlSkip      => "<skip>".into(),
         Value::CtrlStop      => "<stop>".into(),
         Value::CtrlReturn(v) => format!("<return {}>", format_value_depth(v, depth+1)),
-        Value::Object { class_name, .. } => format!("<{}>", class_name),
+        Value::Object(o) => format!("<{}>", o.class_name),
         Value::Ref(s)        => format!("<ref {}>", s),
         Value::GridRef { grid_id, x, y } => format!("GridRef({}, {}, {})", grid_id, x, y),
-        Value::Enum { enum_name, variant_name, .. } => format!("{}::{}", enum_name, variant_name),
+        Value::Enum(e) => format!("{}::{}", e.enum_name, e.variant_name),
         Value::Class { name } => format!("<class {}>", name),
         Value::Collection(c) => {
             #[allow(unused_imports)] use crate::collections;
