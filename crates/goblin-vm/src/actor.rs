@@ -594,6 +594,14 @@ fn run_actor(
             Pop::Item(m) => m,
             Pop::Closed | Pop::Idle => break,
         };
+        // A :cancel that landed while this message was being taken: it is
+        // not handled, like the rest of the queue.
+        if shared.cancelled.load(Ordering::SeqCst) {
+            if let Msg::Request(_, r) = msg {
+                r.set(Err("C0116: actor-cancelled: the actor was cancelled before it handled this request".into()));
+            }
+            break;
+        }
         let (p_msg, reply) = match msg { Msg::Post(p) => (p, None), Msg::Request(p, r) => (p, Some(r)) };
         // Converted afresh per message, so nothing from old messages is kept.
         let message = {

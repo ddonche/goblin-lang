@@ -160,6 +160,10 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     // known_globals = only the data variables — OUT is declared by the transpiled `__render_out | ""`
     // and must NOT be pre-declared here or the compiler will see a duplicate-local.
     let mut known_globals: Vec<String> = data_pairs.iter().map(|(k, _)| k.clone()).collect();
+    // A startup script's variables are visible in templates too; data wins on a clash.
+    for name in crate::startup::names() {
+        if !known_globals.contains(&name) { known_globals.push(name); }
+    }
 
     let compiled = compile_repl_snippet(&module, &known_globals).map_err(|e| {
         GoblinError::Runtime(format!("render_template: compile error in '{path}': {e}"))
@@ -179,6 +183,7 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     for decl in compiled.enums {
         session.enums.insert(decl.name.clone(), decl);
     }
+    crate::startup::bind(&mut session);
     for (i, (_, value)) in data_pairs.into_iter().enumerate() {
         let t = session.alloc_value(value);
         session.set_global(i, t);

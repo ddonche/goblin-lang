@@ -88,6 +88,17 @@ fn requests_share_startup_actors_but_copy_its_variables() {
 }
 
 #[test]
+fn render_pages_see_startup_variables() {
+    let dir = scratch("render");
+    std::fs::write(dir.join("startup.gbln"), STARTUP).unwrap();
+    std::fs::write(dir.join("www/api/page.gbln"), "<{ render }>\n<p><{ note }> <{ :valtype(counter) }></p>\n").unwrap();
+    let port = free_port();
+    let _server = start(&dir, "startup.gbln", port);
+    let body = get(port, "/api/page").expect("request failed");
+    assert!(body.contains("<p>start actor</p>"), "{body}");
+}
+
+#[test]
 fn goblin_run_with_startup_env() {
     let dir = scratch("run");
     std::fs::write(dir.join("startup.gbln"), STARTUP).unwrap();
