@@ -1,0 +1,15 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An actor runs handler(state, message) for each message in order; the handler's result is the next state. :await on a request gives the state right after that message; :await on the actor, after :halt, gives its final state.
+act count(state, msg)
+    :update!(state{"n"}, state{"n"} + msg)
+    return state
+xx
+box | {"n": 0}
+h | :actor(box, count)
+say(:valtype(h))
+say(:post(h, 5))
+:post(h, 7)
+say(:await(:request(h, 1)){"n"})
+:post(h, 100)
+:halt(h)
+say(:await(h){"n"})

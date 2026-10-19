@@ -1,0 +1,34 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// :actor takes ownership (spec IV.4): the variable handed over can no longer be used (C0115). While anything else still refers to an object, creating the actor fails (C0113) and changes nothing.
+<>Room |
+    name: ""
+    messages: []
+xx
+act on_message(room, text)
+    :put_last!(room >> messages, text)
+    return room
+xx
+lobby <> Room | name: "lobby", messages: []
+other | lobby
+attempt
+    h | :actor(lobby, on_message)
+rescue e
+    say(:has("{e}", "C0113: actor-shared-state"))
+xx
+say(lobby >> name)
+den <> Room | name: "den", messages: []
+d | :actor(den, on_message)
+copy | :await(:request(d, "hi"))
+say(copy >> messages)
+attempt
+    say(den >> name)
+rescue e
+    say(:has("{e}", "C0115: actor-handed-off: `den` was handed to an actor"))
+xx
+settings | {"theme": "dark"}
+s | :actor(settings, on_message)
+attempt
+    say(settings)
+rescue e
+    say(:has("{e}", "C0115"))
+xx

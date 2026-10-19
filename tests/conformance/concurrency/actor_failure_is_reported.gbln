@@ -1,0 +1,33 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// When the handler fails, the actor stops: the failing request, later posts and :await on the actor all report the error (C0112). A handler must return the next state; returning nil is a failure too.
+act risky(state, msg)
+    if msg == "boom" => return 1 / 0
+    return state + 1
+xx
+h | :actor(0, risky)
+say(:await(:request(h, "ok")))
+f | :request(h, "boom")
+attempt
+    :await(f)
+rescue e
+    say(:has("{e}", "division by zero"))
+xx
+attempt
+    :post(h, "ok")
+rescue e
+    say(:has("{e}", "C0112: actor-failed"))
+xx
+attempt
+    :await(h)
+rescue e
+    say(:has("{e}", "C0112: actor-failed"))
+xx
+act forgetful(state, msg)
+    return nil
+xx
+g | :actor(0, forgetful)
+attempt
+    :await(:request(g, 1))
+rescue e
+    say(:has("{e}", "returned nil"))
+xx

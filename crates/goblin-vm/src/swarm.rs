@@ -31,7 +31,7 @@ use crate::vm::Vm;
 const WORKER_STACK: usize = 64 * 1024 * 1024;
 
 /// Everything a worker needs to run the program's actions.
-struct Image {
+pub(crate) struct Image {
     globals: Vec<Option<PValue>>,
     global_names: Vec<String>,
     global_type_locks: HashMap<u32, String>,
@@ -53,7 +53,7 @@ struct Image {
     project_root: std::path::PathBuf,
 }
 
-fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, GoblinError> {
+pub(crate) fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, GoblinError> {
     let mut globals = Vec::with_capacity(session.globals.len());
     for g in &session.globals {
         globals.push(match g {
@@ -108,7 +108,7 @@ fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, GoblinError
 
 /// A value going into a variable: objects live in the object store and the
 /// variable holds a reference, as `StoreLocal` does.
-fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
+pub(crate) fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
     if let Value::Object(ref o) = v {
         let uuid = o.uuid.clone();
         session.object_store.insert(uuid.clone(), v);
@@ -118,7 +118,7 @@ fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
     }
 }
 
-fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize) -> Session {
+pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize) -> Session {
     let mut s = Session::new(img.gc_mode).with_worker_id(worker_id);
     s.global_names = img.global_names.clone();
     s.global_type_locks = img.global_type_locks.clone();

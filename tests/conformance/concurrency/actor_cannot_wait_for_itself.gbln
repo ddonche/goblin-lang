@@ -1,0 +1,12 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An actor that waits for its own answer, or for itself to end, would wait forever; it gets C0119 instead.
+act selfish(state, me)
+    return :await(:request(me, 1))
+xx
+s | :actor(0, selfish)
+:post(s, s)
+attempt
+    :await(s)
+rescue e
+    say(:has("{e}", "C0119: actor-self-wait"))
+xx

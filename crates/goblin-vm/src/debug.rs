@@ -182,6 +182,7 @@ fn format_value_depth(v: &Value, depth: usize) -> String {
     if depth > 2 { return "...".into(); }
     match v {
         Value::Frozen(f)     => format_value_depth(&f.value, depth),
+        Value::Handle(h)     => h.display(),
         Value::Nil           => "nil".into(),
         Value::Unit          => "()".into(),
         Value::Bool(b)       => b.to_string(),
