@@ -176,12 +176,12 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     }
 
     let mut session = Session::new(GcMode::Auto);
-    session.global_names = known_globals.clone();
+    session.global_names = std::rc::Rc::new(known_globals.clone());
     for decl in compiled.classes {
-        session.classes.insert(decl.name.clone(), decl);
+        std::rc::Rc::make_mut(&mut session.classes).insert(decl.name.clone(), decl);
     }
     for decl in compiled.enums {
-        session.enums.insert(decl.name.clone(), decl);
+        std::rc::Rc::make_mut(&mut session.enums).insert(decl.name.clone(), decl);
     }
     crate::startup::bind(&mut session);
     for (i, (_, value)) in data_pairs.into_iter().enumerate() {

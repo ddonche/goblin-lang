@@ -1409,10 +1409,10 @@ fn run_repl_vm() -> i32 {
                     // Register new classes/enums into the VM session.
                     for decl in &compiled.classes {
                         compile_class_methods_pub(decl, &mut vm.session);
-                        vm.session.classes.insert(decl.name.clone(), decl.clone());
+                        std::rc::Rc::make_mut(&mut vm.session.classes).insert(decl.name.clone(), decl.clone());
                     }
                     for decl in compiled.enums {
-                        vm.session.enums.insert(decl.name.clone(), decl);
+                        std::rc::Rc::make_mut(&mut vm.session.enums).insert(decl.name.clone(), decl);
                     }
 
                     // Extend known globals with any new names declared by this statement.
@@ -1421,7 +1421,7 @@ fn run_repl_vm() -> i32 {
                             known_globals.push(name.clone());
                         }
                     }
-                    vm.session.global_names = known_globals.clone();
+                    vm.session.global_names = std::rc::Rc::new(known_globals.clone());
 
                     // Execute the single-statement function.
                     match vm.execute_repl(compiled.entry, known_globals.len()) {

@@ -107,6 +107,10 @@ impl Value {
 impl GStr {
     pub fn new(s: String) -> Self { GStr(Rc::new(GText { s, charged: std::cell::Cell::new(false) })) }
     pub fn as_str(&self) -> &str { self.0.s.as_str() }
+    /// Identity of the shared buffer.
+    pub fn ptr(&self) -> *const () { Rc::as_ptr(&self.0) as *const () }
+    /// How many values share this buffer.
+    pub fn refs(&self) -> usize { Rc::strong_count(&self.0) }
     /// The text to change in place; copied first only if it is shared.
     pub fn make_mut(&mut self) -> &mut String {
         let t = Rc::make_mut(&mut self.0);

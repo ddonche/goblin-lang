@@ -100,7 +100,7 @@ pub struct Session {
     /// Global variable slots (indexed by compiled global index).
     pub globals: Vec<Option<Tether>>,
     /// Name for each global slot (slot index → name), for string interpolation.
-    pub global_names: Vec<String>,
+    pub global_names: Rc<Vec<String>>,
 
     /// GC behaviour for this session.
     pub gc_mode: GcMode,
@@ -110,6 +110,21 @@ pub struct Session {
 
     /// Actors this session started; they end when it does (`actor.rs`).
     pub owned_actors: Vec<std::sync::Arc<crate::actor::ActorShared>>,
+    /// Portable copies of this session's compiled functions, made once and
+    /// reused by every actor or swarm started from it (`ToPortable::function`).
+    /// Holding the `Rc` keeps each key's address from being reused.
+    pub(crate) portable_funcs: std::cell::RefCell<HashMap<*const crate::value::FunctionObject,
+        (std::rc::Rc<crate::value::FunctionObject>, std::sync::Arc<crate::portable::PFunction>)>>,
+    /// Portable copies of this session's collections and long strings that
+    /// hold no session state, keyed by buffer (`ToPortable::sharing_values`).
+    /// Holding the value keeps its address and, through copy-on-write, its
+    /// contents unchanged while it is cached.
+    pub(crate) portable_values: std::cell::RefCell<HashMap<*const (),
+        (Value, std::sync::Arc<crate::portable::PValue>)>>,
+    /// Size of `portable_values` after its last clean-up.
+    pub(crate) portable_values_kept: std::cell::Cell<usize>,
+    /// The program tables last converted for an actor (`swarm::program_of`).
+    pub(crate) portable_program: std::cell::RefCell<Option<crate::swarm::ProgramCache>>,
     /// Objects handed to an actor, and the variable each came from, so
     /// reading one says where it went.
     pub handed_off: HashMap<String, String>,
@@ -151,13 +166,13 @@ pub struct Session {
     pub grid_store: GridStore,
 
     /// Class definitions registered at runtime.
-    pub classes: HashMap<String, ClassDecl>,
+    pub classes: Rc<HashMap<String, ClassDecl>>,
 
     /// Pre-compiled class methods: (class_name, method_name) -> FunctionObject
-    pub compiled_methods: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
+    pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
 
     /// Enum definitions registered at runtime.
-    pub enums: HashMap<String, EnumDecl>,
+    pub enums: Rc<HashMap<String, EnumDecl>>,
 
     /// Base directory for resolving relative `import` paths.
     /// Changes to the importing file's directory during nested imports.
@@ -169,7 +184,7 @@ pub struct Session {
     pub project_root: std::path::PathBuf,
 
     /// Set of already-imported paths (to avoid re-importing).
-    pub imported: std::collections::HashSet<String>,
+    pub imported: Rc<std::collections::HashSet<String>>,
 
     // ── DES / Overlay / Link state ───────────────────────────────────────────
     pub overlay_defs: HashMap<String, OverlayDef>,
@@ -177,7 +192,7 @@ pub struct Session {
     pub object_link_defs: HashMap<(String, String), LinkDef>,
     pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>>,
     pub object_decisions: HashMap<String, goblin_ast::DecisionDef>,
-    pub unit_registry: HashMap<String, goblin_ast::UnitDecl>,
+    pub unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     pub des_store: EntityStore,
     pub des_index: EntityIndex,
     pub des_tick_runner: TickRunner,
@@ -186,14 +201,14 @@ pub struct Session {
     pub des_link_ids: HashMap<(String, String, String), LinkId>,
 
     /// Type lock: current cast type per global slot index (updated by cast-bang and declaration).
-    pub global_type_locks: HashMap<u32, String>,
+    pub global_type_locks: Rc<HashMap<u32, String>>,
     /// Hard type lock: declared lock type per global slot index (set only at declaration, never changes).
-    pub global_hard_type_locks: HashMap<u32, String>,
+    pub global_hard_type_locks: Rc<HashMap<u32, String>>,
 
     /// Named function registry for `invoke`/`summon`/`provoke` and GLAM namespace dispatch.
     /// Actions are stored under both bare names ("create_shard") and qualified names
     /// ("graveyard::create_shard") when registered during a `use glam` import.
-    pub named_values: HashMap<String, Value>,
+    pub named_values: Rc<HashMap<String, Value>>,
 
     /// The namespace of the GLAM currently being imported, if any.
     /// Set by UseGlam before importing the GLAM entry file; cleared after.
@@ -206,18 +221,18 @@ pub struct Session {
     pub box_provides: Option<std::collections::HashSet<String>>,
     /// `import path as alias`: (importing file, alias) → the module's global-name
     /// prefix, so `alias::var` reads the module's live global.
-    pub module_aliases: HashMap<(String, String), String>,
+    pub module_aliases: Rc<HashMap<(String, String), String>>,
 
     /// Box store: namespace::name → Value (cross-module mutable state).
     pub box_store: HashMap<String, Value>,
 
     /// Action needs declared in glam.toml [needs.actions]: glam_namespace -> (need_name -> "provider_ns::action").
-    pub action_needs: HashMap<String, HashMap<String, String>>,
+    pub action_needs: Rc<HashMap<String, HashMap<String, String>>>,
 
     /// Tracks which (bare_name, Value) pairs were registered from each source file.
     /// Used by UseGlam to retroactively register qualified "ns::name" keys even when
     /// the GLAM entry file was already imported (import guard) without a namespace context.
-    pub action_file_map: HashMap<String, Vec<(String, Value)>>,
+    pub action_file_map: Rc<HashMap<String, Vec<(String, Value)>>>,
 
     /// Output buffer — when Some, say/print write here instead of stdout.
     /// Used by the WASM REPL to capture output.
@@ -272,10 +287,14 @@ impl Session {
         Session {
             arena: Slab::new(),
             globals: Vec::new(),
-            global_names: Vec::new(),
+            global_names: Default::default(),
             gc_mode,
             worker_id: 0,
             owned_actors: Vec::new(),
+            portable_funcs: Default::default(),
+            portable_values: Default::default(),
+            portable_values_kept: Default::default(),
+            portable_program: Default::default(),
             handed_off: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
@@ -288,34 +307,34 @@ impl Session {
             overlay_instances: Vec::new(),
             response: ResponseState::default(),
             grid_store: GridStore::new(),
-            classes: HashMap::new(),
-            compiled_methods: HashMap::new(),
-            enums: HashMap::new(),
+            classes: Default::default(),
+            compiled_methods: Default::default(),
+            enums: Default::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),
-            imported: std::collections::HashSet::new(),
+            imported: Default::default(),
             overlay_defs: HashMap::new(),
             link_defs: HashMap::new(),
             object_link_defs: HashMap::new(),
             link_offsets: HashMap::new(),
             object_decisions: HashMap::new(),
-            unit_registry: HashMap::new(),
+            unit_registry: Default::default(),
             des_store: EntityStore::new(),
             des_index: EntityIndex::default(),
             des_tick_runner: TickRunner::new(),
             des_overlay_id_counter: 0,
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
-            global_type_locks: HashMap::new(),
-            global_hard_type_locks: HashMap::new(),
-            named_values: HashMap::new(),
+            global_type_locks: Default::default(),
+            global_hard_type_locks: Default::default(),
+            named_values: Default::default(),
             current_glam_ns: None,
             box_namespace: None,
             box_provides: None,
-            module_aliases: HashMap::new(),
+            module_aliases: Default::default(),
             box_store: HashMap::new(),
-            action_needs: HashMap::new(),
-            action_file_map: HashMap::new(),
+            action_needs: Default::default(),
+            action_file_map: Default::default(),
             output_buf: None,
         }
     }
