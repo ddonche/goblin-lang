@@ -69,13 +69,13 @@ impl GoblinRepl {
             compile_class_methods_pub(decl, &mut self.vm.session);
         }
         for decl in compiled.classes {
-            self.vm.session.classes.insert(decl.name.clone(), decl);
+            std::rc::Rc::make_mut(&mut self.vm.session.classes).insert(decl.name.clone(), decl);
         }
         for decl in compiled.enums {
-            self.vm.session.enums.insert(decl.name.clone(), decl);
+            std::rc::Rc::make_mut(&mut self.vm.session.enums).insert(decl.name.clone(), decl);
         }
 
-        self.vm.session.global_names = compiled.global_names;
+        self.vm.session.global_names = std::rc::Rc::new(compiled.global_names);
 
         let n = self.n_globals;
         match self.vm.execute_repl(compiled.entry, n) {

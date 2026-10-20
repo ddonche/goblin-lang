@@ -63,6 +63,9 @@ pub enum PValue {
     Handle(crate::actor::Handle),
     /// A variable whose object was handed to an actor: it stays dead.
     HandedOff { uuid: String, var: String },
+    /// A collection or long string holding no session state, converted once
+    /// and shared: every actor on one worker reads the same copy.
+    Shared(Arc<PValue>),
 }
 
 #[derive(Debug, Clone)]
@@ -101,12 +104,22 @@ fn unsupported(what: &str) -> GoblinError {
 pub struct ToPortable<'s> {
     session: &'s Session,
     funcs: HashMap<*const FunctionObject, Arc<PFunction>>,
+    share: bool,
 }
+
+/// Strings at least this long are shared like collections.
+const SHARED_STR: usize = 256;
 
 impl<'s> ToPortable<'s> {
     pub fn new(session: &'s Session) -> Self {
-        ToPortable { session, funcs: HashMap::new() }
+        ToPortable { session, funcs: HashMap::new(), share: false }
     }
+
+    /// Convert collections and long strings that hold no session state once,
+    /// keeping the copy in the session for the next actor started from it.
+    pub fn sharing_values(mut self) -> Self { self.share = true; self }
+
+    pub fn is_sharing(&self) -> bool { self.share }
 
     pub fn value(&mut self, v: &Value) -> Result<PValue, GoblinError> {
         Ok(match v {
@@ -118,6 +131,7 @@ impl<'s> ToPortable<'s> {
             Value::Big(d) => PValue::Big(*d),
             Value::Pct(p) => PValue::Pct(*p),
             Value::Char(c) => PValue::Char(*c),
+            Value::Str(s) if self.share && s.as_str().len() >= SHARED_STR => self.shared(v)?,
             Value::Str(s) => PValue::Str(s.to_string()),
             Value::DateTime(d) => PValue::DateTime(*d.clone()),
             Value::Duration(d) => PValue::Duration((**d).clone()),
@@ -156,6 +170,7 @@ impl<'s> ToPortable<'s> {
                 fields: match &e.fields { Some(f) => Some(self.fields(f)?), None => None },
             },
             Value::Class { name } => PValue::Class { name: name.clone() },
+            Value::Collection(_) if self.share => self.shared(v)?,
             Value::Collection(c) => self.collection(c)?,
             Value::Function(f) => PValue::Function(self.function(f)?),
             Value::Closure(c) => {
@@ -172,6 +187,36 @@ impl<'s> ToPortable<'s> {
             Value::Frozen(f) => PValue::Frozen(f.shared.clone()),
             Value::Handle(h) => PValue::Handle(h.clone()),
         })
+    }
+
+    /// A collection or long string, from the session's cache when it was
+    /// converted before. The cache holds the value too, so a change to it in
+    /// place copies it first (`Rc::make_mut`) and the cached copy stays true.
+    fn shared(&mut self, v: &Value) -> Result<PValue, GoblinError> {
+        let key = match v {
+            Value::Collection(c) => Rc::as_ptr(c) as *const (),
+            Value::Str(s) => s.ptr(),
+            _ => unreachable!("only collections and strings are shared"),
+        };
+        if let Some((_, p)) = self.session.portable_values.borrow().get(&key) {
+            return Ok(PValue::Shared(p.clone()));
+        }
+        let p = match v {
+            Value::Collection(c) => self.collection(c)?,
+            Value::Str(s) => PValue::Str(s.to_string()),
+            _ => unreachable!(),
+        };
+        if !inert(&p) { return Ok(p); }
+        let p = Arc::new(p);
+        let mut cache = self.session.portable_values.borrow_mut();
+        cache.insert(key, (v.clone(), p.clone()));
+        let kept = &self.session.portable_values_kept;
+        if cache.len() > 2 * kept.get().max(256) {
+            // Forget values nothing but the cache still holds.
+            cache.retain(|_, (v, _)| value_refs(v) > 1);
+            kept.set(cache.len());
+        }
+        Ok(PValue::Shared(p))
     }
 
     fn values(&mut self, vs: &[Value]) -> Result<Vec<PValue>, GoblinError> {
@@ -208,6 +253,16 @@ impl<'s> ToPortable<'s> {
     pub fn function(&mut self, f: &Rc<FunctionObject>) -> Result<Arc<PFunction>, GoblinError> {
         let key = Rc::as_ptr(f);
         if let Some(p) = self.funcs.get(&key) { return Ok(p.clone()); }
+        // Compiled code does not change, so the session keeps the copy for
+        // the next actor or swarm. Only once its module has finished
+        // compiling: before that its global names are not final.
+        let cacheable = f.global_names.get().is_some();
+        if cacheable {
+            if let Some((_, p)) = self.session.portable_funcs.borrow().get(&key) {
+                self.funcs.insert(key, p.clone());
+                return Ok(p.clone());
+            }
+        }
         let constants = self.values(&f.constants)?;
         let p = Arc::new(PFunction {
             bytecode: f.bytecode.clone(),
@@ -225,6 +280,9 @@ impl<'s> ToPortable<'s> {
             global_names: f.global_names().to_vec(),
         });
         self.funcs.insert(key, p.clone());
+        if cacheable {
+            self.session.portable_funcs.borrow_mut().insert(key, (f.clone(), p.clone()));
+        }
         Ok(p)
     }
 }
@@ -233,8 +291,13 @@ impl<'s> ToPortable<'s> {
 /// snapshots are rebuilt once per session.
 pub struct FromPortable {
     funcs: HashMap<*const PFunction, Rc<FunctionObject>>,
+    /// Reuse functions already rebuilt on this thread by other sessions
+    /// (actors on one worker share their compiled code).
+    shared: bool,
     /// Rebuilt frozen values, and whether each holds a closure.
     frozen: HashMap<*const PValue, (Rc<Frozen>, bool)>,
+    /// Shared values already rebuilt in this session.
+    values: HashMap<*const PValue, Value>,
     global_names: HashMap<Vec<String>, Rc<std::cell::OnceCell<Vec<String>>>>,
 }
 
@@ -244,7 +307,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), frozen: HashMap::new(), global_names: HashMap::new() }
+        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new() }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -253,6 +316,7 @@ impl FromPortable {
     /// as are converted functions.
     pub fn forget_values(&mut self) {
         self.frozen.retain(|_, (_, cells)| !*cells);
+        self.values.clear();
     }
 
     pub fn value(&mut self, p: &PValue, session: &mut Session) -> Value {
@@ -323,7 +387,30 @@ impl FromPortable {
                 session.handed_off.insert(uuid.clone(), var.clone());
                 Value::Ref(uuid.clone())
             }
+            PValue::Shared(inner) => self.shared_value(inner, session),
         }
+    }
+
+    /// A shared value: rebuilt once per session, and once per thread when
+    /// this conversion shares with the thread's other sessions. It holds no
+    /// session state, and a change to it copies it first.
+    fn shared_value(&mut self, inner: &Arc<PValue>, session: &mut Session) -> Value {
+        let key = Arc::as_ptr(inner);
+        if let Some(v) = self.values.get(&key) { return v.clone(); }
+        let v = if self.shared {
+            match THREAD_VALUES.with(|m| m.borrow().map.get(&key).map(|(_, v)| v.clone())) {
+                Some(v) => v,
+                None => {
+                    let v = self.value(inner, session);
+                    THREAD_VALUES.with(|m| m.borrow_mut().insert(key, inner.clone(), v.clone()));
+                    v
+                }
+            }
+        } else {
+            self.value(inner, session)
+        };
+        self.values.insert(key, v.clone());
+        v
     }
 
     /// A frozen snapshot, rebuilt once per session however often it arrives.
@@ -348,9 +435,30 @@ impl FromPortable {
         p.iter().map(|(k, v)| (self.value(k, session), self.value(v, session))).collect()
     }
 
+    /// Rebuilt functions are shared with the other sessions on this thread.
+    /// A function is read-only once built and its constants are plain
+    /// values, so sessions on one thread can use the same copy.
+    pub fn sharing_functions(mut self) -> Self { self.shared = true; self }
+
+    pub fn is_sharing(&self) -> bool { self.shared }
+
     pub fn function(&mut self, f: &Arc<PFunction>, session: &mut Session) -> Rc<FunctionObject> {
         let key = Arc::as_ptr(f);
         if let Some(r) = self.funcs.get(&key) { return r.clone(); }
+        if self.shared && f.constants.iter().all(inert) {
+            if let Some(r) = THREAD_FUNCS.with(|m| m.borrow().map.get(&key).map(|(_, r)| r.clone())) {
+                self.funcs.insert(key, r.clone());
+                return r;
+            }
+            let r = self.build_function(f, session);
+            THREAD_FUNCS.with(|m| m.borrow_mut().insert(key, f.clone(), r.clone()));
+            return r;
+        }
+        self.build_function(f, session)
+    }
+
+    fn build_function(&mut self, f: &Arc<PFunction>, session: &mut Session) -> Rc<FunctionObject> {
+        let key = Arc::as_ptr(f);
         let names = self.global_names.entry(f.global_names.clone()).or_insert_with(|| {
             let cell = std::cell::OnceCell::new();
             let _ = cell.set(f.global_names.clone());
@@ -374,6 +482,84 @@ impl FromPortable {
         });
         self.funcs.insert(key, r.clone());
         r
+    }
+}
+
+/// Functions rebuilt on this thread, shared by the sessions living on it.
+struct ThreadFuncs {
+    map: HashMap<*const PFunction, (Arc<PFunction>, Rc<FunctionObject>)>,
+    /// Size after the last clean-up; the next one runs when it doubles.
+    kept: usize,
+}
+
+impl ThreadFuncs {
+    fn insert(&mut self, key: *const PFunction, p: Arc<PFunction>, r: Rc<FunctionObject>) {
+        self.map.insert(key, (p, r));
+        if self.map.len() > 2 * self.kept.max(512) {
+            // Forget functions no session uses any more.
+            self.map.retain(|_, (_, r)| Rc::strong_count(r) > 1);
+            self.kept = self.map.len();
+        }
+    }
+}
+
+/// Shared values rebuilt on this thread, used by the sessions living on it.
+struct ThreadValues {
+    map: HashMap<*const PValue, (Arc<PValue>, Value)>,
+    kept: usize,
+}
+
+impl ThreadValues {
+    fn insert(&mut self, key: *const PValue, p: Arc<PValue>, v: Value) {
+        self.map.insert(key, (p, v));
+        if self.map.len() > 2 * self.kept.max(512) {
+            self.map.retain(|_, (_, v)| value_refs(v) > 1);
+            self.kept = self.map.len();
+        }
+    }
+}
+
+/// How many holders share a collection's or string's buffer.
+fn value_refs(v: &Value) -> usize {
+    match v {
+        Value::Collection(c) => Rc::strong_count(c),
+        Value::Str(s) => s.refs(),
+        _ => usize::MAX,
+    }
+}
+
+thread_local! {
+    static THREAD_VALUES: std::cell::RefCell<ThreadValues> =
+        std::cell::RefCell::new(ThreadValues { map: HashMap::new(), kept: 0 });
+}
+
+thread_local! {
+    static THREAD_FUNCS: std::cell::RefCell<ThreadFuncs> =
+        std::cell::RefCell::new(ThreadFuncs { map: HashMap::new(), kept: 0 });
+}
+
+/// A constant that holds no session state: safe in a function shared by
+/// several sessions on one thread.
+pub(crate) fn inert(p: &PValue) -> bool {
+    match p {
+        PValue::Nil | PValue::Unit | PValue::Bool(_) | PValue::Int(_) | PValue::Float(_)
+        | PValue::Big(_) | PValue::Pct(_) | PValue::Char(_) | PValue::Str(_)
+        | PValue::DateTime(_) | PValue::Duration(_) | PValue::CtrlSkip | PValue::CtrlStop
+        | PValue::Builtin(_) | PValue::Class { .. } | PValue::Function(_) | PValue::Shared(_) => true,
+        PValue::Formatted(v, _) | PValue::CtrlReturn(v) => inert(v),
+        PValue::Array(a) | PValue::Seq(a) => a.iter().all(inert),
+        PValue::Map(m) => m.values().all(inert),
+        PValue::MapOrd(m) => m.iter().all(|(_, v)| inert(v)),
+        PValue::Pair(a, b) => inert(a) && inert(b),
+        PValue::Enum { fields, .. } => fields.as_ref().is_none_or(|f| f.iter().all(|(_, v)| inert(v))),
+        PValue::Collection(layout, _) => match layout {
+            PLayout::FlatArray(v) => v.iter().all(inert),
+            PLayout::RingBuf { buf, .. } => buf.iter().all(inert),
+            PLayout::ChunkedSeq { chunks, .. } => chunks.iter().all(|c| c.iter().all(inert)),
+            PLayout::SmallMap(p) | PLayout::HashMapBackend(p) => p.iter().all(|(k, v)| inert(k) && inert(v)),
+        },
+        PValue::Object { .. } | PValue::Closure(..) | PValue::Frozen(_) | PValue::Handle(_)
+        | PValue::HandedOff { .. } => false,
     }
 }
 
