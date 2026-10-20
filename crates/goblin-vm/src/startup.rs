@@ -107,10 +107,19 @@ pub fn finish() {
 /// running after that are cancelled, and stderr says how many.
 pub fn finish_for_shutdown() {
     let Some(st) = STARTUP.get() else { return };
-    let grace = std::env::var("GOBLIN_SHUTDOWN_GRACE").ok()
-        .and_then(|v| v.parse::<f64>().ok()).filter(|g| *g >= 0.0).unwrap_or(10.0);
+    let raw = std::env::var("GOBLIN_SHUTDOWN_GRACE").ok();
+    let parsed = raw.as_deref().and_then(|v| v.trim().parse::<f64>().ok())
+        .and_then(|g| std::time::Duration::try_from_secs_f64(g).ok().map(|d| (g, d)));
+    let (grace, wait) = match (raw, parsed) {
+        (_, Some(ok)) => ok,
+        (None, None) => (10.0, std::time::Duration::from_secs(10)),
+        (Some(v), None) => {
+            eprintln!("goblin: GOBLIN_SHUTDOWN_GRACE={v:?} is not a number of seconds; using 10");
+            (10.0, std::time::Duration::from_secs(10))
+        }
+    };
     let mut a = st.actors.lock().unwrap_or_else(|e| e.into_inner());
-    let n = crate::actor::finish_owned_within(&mut a, std::time::Duration::from_secs_f64(grace));
+    let n = crate::actor::finish_owned_within(&mut a, wait);
     if n > 0 {
         eprintln!("goblin: shutdown: {n} actor(s) still busy after {grace}s were cancelled");
     }
