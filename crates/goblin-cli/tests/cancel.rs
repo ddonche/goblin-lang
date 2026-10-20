@@ -191,6 +191,11 @@ fn free_port() -> u16 { TcpListener::bind("127.0.0.1:0").unwrap().local_addr().u
 /// grace period; how long it took to stop, and its stderr.
 #[cfg(unix)]
 fn stop_server(name: &str, startup: &str) -> (Duration, String) {
+    stop_server_with_grace(name, startup, "1")
+}
+
+#[cfg(unix)]
+fn stop_server_with_grace(name: &str, startup: &str, grace: &str) -> (Duration, String) {
     let dir = scratch(name);
     std::fs::create_dir_all(dir.join("www/api")).unwrap();
     std::fs::write(dir.join("startup.gbln"), startup).unwrap();
@@ -199,7 +204,7 @@ fn stop_server(name: &str, startup: &str) -> (Duration, String) {
         .args(["start", "--host", "127.0.0.1", "--port", &port.to_string(), "--startup", "startup.gbln"])
         .current_dir(&dir)
         .env("GOBLIN_DOCROOT", dir.join("www"))
-        .env("GOBLIN_SHUTDOWN_GRACE", "1")
+        .env("GOBLIN_SHUTDOWN_GRACE", grace)
         .stdout(Stdio::null()).stderr(Stdio::piped())
         .spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -259,4 +264,46 @@ p | :actor(0, parent)
 "#);
     assert!(took < Duration::from_secs(4), "took {took:?}");
     assert!(err.contains("1 actor(s) still busy after 1s were cancelled"), "{err}");
+}
+
+/// A shutdown grace that is not a usable number of seconds (`inf`, `-1`,
+/// `abc`) falls back to the default with a warning. Before, `inf` crashed
+/// the server while it shut down.
+#[cfg(unix)]
+#[test]
+fn a_bad_shutdown_grace_falls_back_to_the_default() {
+    for bad in ["inf", "-1", "abc"] {
+        let (took, err) = stop_server_with_grace("bad-grace", "act idle(state, msg)\n    return state\nxx\nw | :actor(0, idle)\n", bad);
+        assert!(took < Duration::from_secs(4), "{bad}: took {took:?}");
+        assert!(err.contains("is not a number of seconds; using 10"), "{bad}: {err}");
+        assert!(!err.contains("panicked"), "{bad}: {err}");
+    }
+}
+
+/// Cancelled while the stop condition waits: the actor ends as cancelled
+/// (C0116), not as failed. Before, it was reported as a failure (C0112).
+#[test]
+fn cancel_during_a_waiting_stop_condition_is_a_cancellation() {
+    let (out, _) = run("stop-when", r#"ch | :channel(1)
+act count(state, msg)
+    return state + 1
+xx
+act wait_stop(state)
+    :receive(ch)
+    return false
+xx
+a | :actor(0, count, {stop_when: wait_stop})
+say(:await(:request(a, 1)))
+nap | :channel(1)
+:receive(nap, 1s)
+:cancel(a)
+attempt
+    :await(a)
+rescue e
+    say("{e}")
+xx
+"#, Duration::from_secs(10));
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "1", "{out}");
+    assert!(lines[1].contains("C0116: actor-cancelled") && !lines[1].contains("C0112"), "{out}");
 }

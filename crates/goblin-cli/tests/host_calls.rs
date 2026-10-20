@@ -294,3 +294,51 @@ say(:await(f))
     assert!(ping - start < Duration::from_millis(500), "ping took {:?}", ping - start);
     assert_eq!(lines.last().unwrap().1, "failed");
 }
+
+/// Many actors make their first database call at once: one connection
+/// attempt serves them all, so the burst does not start a thread per caller,
+/// and every caller gets the outcome.
+#[test]
+fn a_burst_of_first_database_calls_shares_one_connect() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(1500)); drop(s); });
+        }
+    });
+    let src = r#"act q(state, msg)
+    attempt
+        :db_query("select 1", [])
+    rescue e
+        return "failed"
+    xx
+    return "connected"
+xx
+fs | []
+i | 0
+while i < 200
+    :put_last!(fs, :request(:actor("", q), i))
+    i |= i + 1
+xx
+nap | :channel(1)
+:receive(nap, 0.5s)
+for l in :lines(:read_text("/proc/self/status"))
+    if :starts_with(l, "Threads:")
+        say(l)
+    xx
+xx
+failed | 0
+for f in fs
+    if :await(f) == "failed"
+        failed |= failed + 1
+    xx
+xx
+say("failed {failed}")
+"#;
+    let url = format!("postgres://nobody@127.0.0.1:{port}/none");
+    let lines = run_timed("db-connect-burst", src, &[("DATABASE_URL", &url)]);
+    let threads: usize = lines.iter().find_map(|(_, l)| l.strip_prefix("Threads:")).unwrap().trim().parse().unwrap();
+    assert!(threads < 40, "{threads} threads while connecting");
+    assert_eq!(lines.last().unwrap().1, "failed 200");
+}

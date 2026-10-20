@@ -490,9 +490,10 @@ pub fn cancel_owned(actors: &mut Vec<Arc<ActorShared>>) {
 /// cancelled.
 pub fn finish_owned_within(actors: &mut Vec<Arc<ActorShared>>, grace: Duration) -> usize {
     for a in actors.iter() { a.halt(); }
-    let deadline = Instant::now() + grace;
+    // A grace too long to add to now: wait without a deadline.
+    let deadline = Instant::now().checked_add(grace);
     for a in actors.iter() {
-        let _ = block_on(Some(deadline), |w| a.poll_end(Some(w)));
+        let _ = block_on(deadline, |w| a.poll_end(Some(w)));
     }
     let left: Vec<Arc<ActorShared>> = actors.drain(..).filter(|a| !a.ended()).collect();
     for a in &left { a.cancel(); }
@@ -1333,6 +1334,12 @@ impl Slot {
             let current = deref(self.state.clone(), &self.vm.session);
             match self.vm.call_callable(sw, vec![current]) {
                 Ok(v) => if v.is_truthy() { self.shared.mailbox.close(); },
+                // Cancelled while the stop condition waited: that is a
+                // cancellation, not a failure.
+                Err(_) if self.shared.cancelled.load(Ordering::SeqCst) => {
+                    self.end_cancelled();
+                    return false;
+                }
                 Err(e) => {
                     self.fail_with(format!("stop_when failed: {e}"), None);
                     return false;
