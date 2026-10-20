@@ -11,9 +11,15 @@ fn bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_goblin")) }
 
 /// Run `src` with `workers` actor threads; stdout, or a panic with stderr.
 fn run(name: &str, src: &str, workers: usize, extra: &[(&str, &str)]) -> String {
+    run_files(name, src, &[], workers, extra)
+}
+
+/// `run`, with more source files next to `main.gbln`.
+fn run_files(name: &str, src: &str, files: &[(&str, &str)], workers: usize, extra: &[(&str, &str)]) -> String {
     let dir = std::env::temp_dir().join(format!("goblin-actors-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    for (f, text) in files { std::fs::write(dir.join(f), text).unwrap(); }
     let file = dir.join("main.gbln");
     std::fs::write(&file, src).unwrap();
     let mut cmd = Command::new(bin());
@@ -231,4 +237,120 @@ say(:await(:request(w, ch)){"got"})
     let out = run("limit", src, 1, &[]);
     assert_eq!(out.trim(), "7\nnil");
     assert!(t.elapsed() < Duration::from_secs(10));
+}
+
+fn status_kb(out: &str, key: &str) -> usize {
+    out.lines().find_map(|l| l.strip_prefix(key)).map(|n| n.trim().trim_end_matches("kB").trim().parse().unwrap()).unwrap()
+}
+
+/// Actors started from a program with large constant tables share one copy
+/// of them per worker: two thousand actors next to a 20,000-entry map and a
+/// long string stay small. Each used to get its own copy (over 2 GB here).
+#[test]
+fn actors_share_the_programs_constants() {
+    let src = r#"act build(n)
+    m | {}
+    i | 0
+    while i < n
+        :update!(m{"key-{i}"}, "value number {i}")
+        i |= i + 1
+    xx
+    return m
+xx
+act long(piece, n)
+    t | ""
+    i | 0
+    while i < n
+        t |= t + piece
+        i |= i + 1
+    xx
+    return t
+xx
+TABLE | build(20000)
+TEXT | long("long text ", 2000)
+act look(state, k)
+    return state + :len(TEXT) + :len(TABLE{k})
+xx
+act make(n)
+    hs | []
+    i | 0
+    while i < n
+        :put_last!(hs, :actor(0, look))
+        i |= i + 1
+    xx
+    return hs
+xx
+hs | make(2000)
+total | 0
+for h in hs
+    total |= total + :await(:request(h, "key-7"))
+xx
+say(total)
+for l in :lines(:read_text("/proc/self/status"))
+    if :starts_with(l, "VmHWM:")
+        say(l)
+    xx
+xx
+"#;
+    let out = run("constants", src, 2, &[]);
+    assert!(out.starts_with(&format!("{}\n", 2000 * (20000 + 14))), "{out}");
+    assert!(status_kb(&out, "VmHWM:") < 400 * 1024, "{out}");
+}
+
+/// A shared constant is still each actor's own value: one actor changing it
+/// does not change it for the others on its worker, or for the program.
+#[test]
+fn a_shared_constant_changed_in_one_actor_stays_put_in_the_others() {
+    let src = r#"act long(piece, n)
+    t | ""
+    i | 0
+    while i < n
+        t |= t + piece
+        i |= i + 1
+    xx
+    return t
+xx
+NAMES | ["ann", "bob", "cy"]
+TEXT | long("abc", 200)
+act change(state, msg)
+    :put_last!(NAMES, msg)
+    TEXT |= TEXT + msg
+    return {"n": :len(NAMES), "t": :len(TEXT)}
+xx
+act read(state, msg)
+    return {"n": :len(NAMES), "t": :len(TEXT)}
+xx
+a | :actor({}, change)
+b | :actor({}, read)
+say(:await(:request(a, "dee")))
+say(:await(:request(a, "eve")))
+say(:await(:request(b, 0)))
+c | :actor({}, read)
+say(:await(:request(c, 0)))
+say(:len(NAMES))
+"#;
+    assert_eq!(run("cow", src, 1, &[]).trim(),
+        "{n: 4, t: 603}\n{n: 5, t: 606}\n{n: 3, t: 600}\n{n: 3, t: 600}\n3");
+}
+
+/// An actor started after an import sees the imported actions, though the
+/// actors started before it shared the program as it was then.
+#[test]
+fn actors_started_after_an_import_see_it() {
+    let lib = "act triple(x)\n    return x * 3\nxx\n";
+    let src = r#"act first(state, msg)
+    return msg + 1
+xx
+a | :actor(0, first)
+say(:await(:request(a, 1)))
+import extra as ex
+act second(state, msg)
+    return ex::triple(msg)
+xx
+b | :actor(0, second)
+say(:await(:request(b, 5)))
+c | :actor(0, first)
+say(:await(:request(c, 9)))
+"#;
+    assert_eq!(run_files("import", src, &[("extra.gbln", lib)], 1, &[]).trim(), "2\n15\n10");
 }

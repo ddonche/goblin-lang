@@ -18,6 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::error::GoblinError;
@@ -33,13 +34,22 @@ const WORKER_STACK: usize = 64 * 1024 * 1024;
 /// Everything a worker needs to run the program's actions.
 pub(crate) struct Image {
     globals: Vec<Option<PValue>>,
-    global_names: Vec<String>,
-    global_type_locks: HashMap<u32, String>,
-    global_hard_type_locks: HashMap<u32, String>,
     gc_mode: GcMode,
     token_store: BTreeMap<String, BTreeMap<String, PValue>>,
     object_store: Vec<(String, PValue)>,
     box_store: Vec<(String, PValue)>,
+    program: Arc<Program>,
+    base_dir: std::path::PathBuf,
+    project_root: std::path::PathBuf,
+}
+
+/// The program's code and name tables: what imports and declarations build,
+/// as opposed to the values its variables hold. Actors started from one
+/// session share one copy while these tables stay unchanged.
+pub(crate) struct Program {
+    global_names: Vec<String>,
+    global_type_locks: HashMap<u32, String>,
+    global_hard_type_locks: HashMap<u32, String>,
     named_values: Vec<(String, PValue)>,
     action_file_map: Vec<(String, Vec<(String, PValue)>)>,
     compiled_methods: Vec<((String, String), Arc<PFunction>)>,
@@ -49,11 +59,132 @@ pub(crate) struct Image {
     module_aliases: HashMap<(String, String), String>,
     action_needs: HashMap<String, HashMap<String, String>>,
     imported: std::collections::HashSet<String>,
-    base_dir: std::path::PathBuf,
-    project_root: std::path::PathBuf,
+    /// No value in it holds session state (closures, objects), so sessions
+    /// on one thread can share the rebuilt tables.
+    inert: bool,
+}
+
+/// A session's tables, as Rc handles: the same handles mean nothing in them
+/// changed, since a change to a shared table copies it first.
+#[derive(Clone)]
+struct Tables {
+    global_names: Rc<Vec<String>>,
+    global_type_locks: Rc<HashMap<u32, String>>,
+    global_hard_type_locks: Rc<HashMap<u32, String>>,
+    named_values: Rc<HashMap<String, Value>>,
+    action_file_map: Rc<HashMap<String, Vec<(String, Value)>>>,
+    compiled_methods: Rc<HashMap<(String, String), Rc<crate::value::FunctionObject>>>,
+    classes: Rc<HashMap<String, goblin_ast::ClassDecl>>,
+    enums: Rc<HashMap<String, goblin_ast::EnumDecl>>,
+    unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
+    module_aliases: Rc<HashMap<(String, String), String>>,
+    action_needs: Rc<HashMap<String, HashMap<String, String>>>,
+    imported: Rc<std::collections::HashSet<String>>,
+}
+
+impl Tables {
+    fn of(s: &Session) -> Tables {
+        Tables {
+            global_names: s.global_names.clone(),
+            global_type_locks: s.global_type_locks.clone(),
+            global_hard_type_locks: s.global_hard_type_locks.clone(),
+            named_values: s.named_values.clone(),
+            action_file_map: s.action_file_map.clone(),
+            compiled_methods: s.compiled_methods.clone(),
+            classes: s.classes.clone(),
+            enums: s.enums.clone(),
+            unit_registry: s.unit_registry.clone(),
+            module_aliases: s.module_aliases.clone(),
+            action_needs: s.action_needs.clone(),
+            imported: s.imported.clone(),
+        }
+    }
+
+    fn same(&self, o: &Tables) -> bool {
+        Rc::ptr_eq(&self.global_names, &o.global_names)
+            && Rc::ptr_eq(&self.global_type_locks, &o.global_type_locks)
+            && Rc::ptr_eq(&self.global_hard_type_locks, &o.global_hard_type_locks)
+            && Rc::ptr_eq(&self.named_values, &o.named_values)
+            && Rc::ptr_eq(&self.action_file_map, &o.action_file_map)
+            && Rc::ptr_eq(&self.compiled_methods, &o.compiled_methods)
+            && Rc::ptr_eq(&self.classes, &o.classes)
+            && Rc::ptr_eq(&self.enums, &o.enums)
+            && Rc::ptr_eq(&self.unit_registry, &o.unit_registry)
+            && Rc::ptr_eq(&self.module_aliases, &o.module_aliases)
+            && Rc::ptr_eq(&self.action_needs, &o.action_needs)
+            && Rc::ptr_eq(&self.imported, &o.imported)
+    }
+
+    fn install(self, s: &mut Session) {
+        s.global_names = self.global_names;
+        s.global_type_locks = self.global_type_locks;
+        s.global_hard_type_locks = self.global_hard_type_locks;
+        s.named_values = self.named_values;
+        s.action_file_map = self.action_file_map;
+        s.compiled_methods = self.compiled_methods;
+        s.classes = self.classes;
+        s.enums = self.enums;
+        s.unit_registry = self.unit_registry;
+        s.module_aliases = self.module_aliases;
+        s.action_needs = self.action_needs;
+        s.imported = self.imported;
+    }
+}
+
+/// The program last converted for an actor, kept by the session that
+/// started it, with the tables it came from.
+pub(crate) struct ProgramCache {
+    tables: Tables,
+    program: Arc<Program>,
+}
+
+fn program_of(session: &Session, tp: &mut ToPortable) -> Result<Arc<Program>, GoblinError> {
+    let tables = Tables::of(session);
+    let sharing = tp.is_sharing();
+    if sharing {
+        if let Some(c) = session.portable_program.borrow().as_ref() {
+            if c.tables.same(&tables) { return Ok(c.program.clone()); }
+        }
+    }
+    let mut named_values = Vec::with_capacity(session.named_values.len());
+    for (k, v) in session.named_values.iter() { named_values.push((k.clone(), tp.value(v)?)); }
+    let mut action_file_map = Vec::with_capacity(session.action_file_map.len());
+    for (file, list) in session.action_file_map.iter() {
+        let mut out = Vec::with_capacity(list.len());
+        for (n, v) in list { out.push((n.clone(), tp.value(v)?)); }
+        action_file_map.push((file.clone(), out));
+    }
+    let mut compiled_methods = Vec::with_capacity(session.compiled_methods.len());
+    for (k, f) in session.compiled_methods.iter() {
+        compiled_methods.push((k.clone(), tp.function(f)?));
+    }
+    let inert = named_values.iter().all(|(_, v)| crate::portable::inert(v))
+        && action_file_map.iter().all(|(_, l)| l.iter().all(|(_, v)| crate::portable::inert(v)));
+    let program = Arc::new(Program {
+        global_names: (*session.global_names).clone(),
+        global_type_locks: (*session.global_type_locks).clone(),
+        global_hard_type_locks: (*session.global_hard_type_locks).clone(),
+        named_values,
+        action_file_map,
+        compiled_methods,
+        classes: (*session.classes).clone(),
+        enums: (*session.enums).clone(),
+        unit_registry: (*session.unit_registry).clone(),
+        module_aliases: (*session.module_aliases).clone(),
+        action_needs: (*session.action_needs).clone(),
+        imported: (*session.imported).clone(),
+        inert,
+    });
+    // Only an inert program can be reused: a closure's captured variables
+    // can change while the tables holding it stay the same.
+    if sharing && inert {
+        *session.portable_program.borrow_mut() = Some(ProgramCache { tables, program: program.clone() });
+    }
+    Ok(program)
 }
 
 pub(crate) fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, GoblinError> {
+    let program = program_of(session, tp)?;
     let mut globals = Vec::with_capacity(session.globals.len());
     for g in &session.globals {
         globals.push(match g {
@@ -72,35 +203,13 @@ pub(crate) fn image_of(session: &Session, tp: &mut ToPortable) -> Result<Image, 
     };
     let object_store = pairs(tp, &session.object_store)?;
     let box_store = pairs(tp, &session.box_store)?;
-    let named_values = pairs(tp, &session.named_values)?;
-    let mut action_file_map = Vec::new();
-    for (file, list) in &session.action_file_map {
-        let mut out = Vec::with_capacity(list.len());
-        for (n, v) in list { out.push((n.clone(), tp.value(v)?)); }
-        action_file_map.push((file.clone(), out));
-    }
-    let mut compiled_methods = Vec::new();
-    for (k, f) in &session.compiled_methods {
-        compiled_methods.push((k.clone(), tp.function(f)?));
-    }
     Ok(Image {
         globals,
-        global_names: session.global_names.clone(),
-        global_type_locks: session.global_type_locks.clone(),
-        global_hard_type_locks: session.global_hard_type_locks.clone(),
         gc_mode: session.gc_mode,
         token_store,
         object_store,
         box_store,
-        named_values,
-        action_file_map,
-        compiled_methods,
-        classes: session.classes.clone(),
-        enums: session.enums.clone(),
-        unit_registry: session.unit_registry.clone(),
-        module_aliases: session.module_aliases.clone(),
-        action_needs: session.action_needs.clone(),
-        imported: session.imported.clone(),
+        program,
         base_dir: session.base_dir.clone(),
         project_root: session.project_root.clone(),
     })
@@ -118,31 +227,66 @@ pub(crate) fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
     }
 }
 
+fn build_tables(p: &Program, fp: &mut FromPortable, s: &mut Session) -> Tables {
+    let mut compiled_methods = HashMap::with_capacity(p.compiled_methods.len());
+    for ((c, m), f) in &p.compiled_methods {
+        compiled_methods.insert((c.clone(), m.clone()), fp.function(f, s));
+    }
+    let mut named_values = HashMap::with_capacity(p.named_values.len());
+    for (k, v) in &p.named_values { named_values.insert(k.clone(), fp.value(v, s)); }
+    let mut action_file_map = HashMap::with_capacity(p.action_file_map.len());
+    for (file, list) in &p.action_file_map {
+        let list = list.iter().map(|(n, v)| (n.clone(), fp.value(v, s))).collect();
+        action_file_map.insert(file.clone(), list);
+    }
+    Tables {
+        global_names: Rc::new(p.global_names.clone()),
+        global_type_locks: Rc::new(p.global_type_locks.clone()),
+        global_hard_type_locks: Rc::new(p.global_hard_type_locks.clone()),
+        named_values: Rc::new(named_values),
+        action_file_map: Rc::new(action_file_map),
+        compiled_methods: Rc::new(compiled_methods),
+        classes: Rc::new(p.classes.clone()),
+        enums: Rc::new(p.enums.clone()),
+        unit_registry: Rc::new(p.unit_registry.clone()),
+        module_aliases: Rc::new(p.module_aliases.clone()),
+        action_needs: Rc::new(p.action_needs.clone()),
+        imported: Rc::new(p.imported.clone()),
+    }
+}
+
+thread_local! {
+    /// Programs rebuilt on this thread, shared by the sessions living on it.
+    static THREAD_PROGRAMS: std::cell::RefCell<Vec<(Arc<Program>, Tables)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize) -> Session {
     let mut s = Session::new(img.gc_mode).with_worker_id(worker_id);
-    s.global_names = img.global_names.clone();
-    s.global_type_locks = img.global_type_locks.clone();
-    s.global_hard_type_locks = img.global_hard_type_locks.clone();
-    s.classes = img.classes.clone();
-    s.enums = img.enums.clone();
-    s.unit_registry = img.unit_registry.clone();
-    s.module_aliases = img.module_aliases.clone();
-    s.action_needs = img.action_needs.clone();
-    s.imported = img.imported.clone();
     s.base_dir = img.base_dir.clone();
     s.project_root = img.project_root.clone();
-    for ((c, m), f) in &img.compiled_methods {
-        let f = fp.function(f, &mut s);
-        s.compiled_methods.insert((c.clone(), m.clone()), f);
-    }
-    for (k, v) in &img.named_values {
-        let v = fp.value(v, &mut s);
-        s.named_values.insert(k.clone(), v);
-    }
-    for (file, list) in &img.action_file_map {
-        let list = list.iter().map(|(n, v)| (n.clone(), fp.value(v, &mut s))).collect();
-        s.action_file_map.insert(file.clone(), list);
-    }
+    let p = &img.program;
+    let tables = if p.inert && fp.is_sharing() {
+        let found = THREAD_PROGRAMS.with(|t| {
+            t.borrow().iter().find(|(q, _)| Arc::ptr_eq(q, p)).map(|(_, tb)| tb.clone())
+        });
+        match found {
+            Some(tb) => tb,
+            None => {
+                let tb = build_tables(p, fp, &mut s);
+                THREAD_PROGRAMS.with(|t| {
+                    let mut t = t.borrow_mut();
+                    // Forget programs no session on this thread uses any more.
+                    t.retain(|(_, tb)| Rc::strong_count(&tb.named_values) > 1);
+                    t.push((p.clone(), tb.clone()));
+                });
+                tb
+            }
+        }
+    } else {
+        build_tables(p, fp, &mut s)
+    };
+    tables.install(&mut s);
     for (k, v) in &img.object_store {
         let v = fp.value(v, &mut s);
         s.object_store.insert(k.clone(), v);
