@@ -198,15 +198,50 @@ pub enum Outcome {
 /// The first statement for a database connects on a thread of its own, so
 /// the caller does not wait for that either.
 pub fn start(kind: Kind, sql: String, params: Vec<DbValue>, done: impl FnOnce(Result<Outcome, DbError>) + Send + 'static) {
-    match ready_pool() {
-        Some(p) => spawn_statement(p, kind, sql, params, done),
-        None => {
-            let spawned = std::thread::Builder::new().name("goblin-db-connect".into()).spawn(move || match pooled() {
-                Ok(p) => spawn_statement(p, kind, sql, params, done),
-                Err(e) => done(Err(e)),
-            });
-            if let Err(e) = spawned { eprintln!("goblin-db: could not start a connect thread: {e}"); }
-        }
+    if let Some(p) = ready_pool() {
+        return spawn_statement(p, kind, sql, params, done);
+    }
+    when_connected(Box::new(move |r| match r {
+        Ok(p) => spawn_statement(p, kind, sql, params, done),
+        Err(e) => done(Err(e)),
+    }));
+}
+
+type Waiter = Box<dyn FnOnce(Result<&'static Pooled, DbError>) + Send>;
+
+/// Statements waiting for the database to connect, by URL. Only the first
+/// caller starts a connect thread; the rest join its queue.
+fn connecting() -> &'static Mutex<HashMap<String, Vec<Waiter>>> {
+    static CONNECTING: OnceLock<Mutex<HashMap<String, Vec<Waiter>>>> = OnceLock::new();
+    CONNECTING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Run `w` with the pool once it is connected (or with the error).
+fn when_connected(w: Waiter) {
+    let url = std::env::var("DATABASE_URL").unwrap_or_default();
+    let mut map = connecting().lock().unwrap_or_else(|e| e.into_inner());
+    // Connected while we took the lock.
+    if let Some(p) = ready_pool() {
+        drop(map);
+        return w(Ok(p));
+    }
+    if let Some(q) = map.get_mut(&url) {
+        q.push(w);
+        return;
+    }
+    map.insert(url.clone(), vec![w]);
+    drop(map);
+    let key = url.clone();
+    let finish = move |r: Result<&'static Pooled, DbError>| {
+        let waiters = connecting().lock().unwrap_or_else(|e| e.into_inner()).remove(&key).unwrap_or_default();
+        for w in waiters { w(r.clone()); }
+    };
+    let spawned = std::thread::Builder::new().name("goblin-db-connect".into()).spawn({
+        let finish = finish.clone();
+        move || finish(pooled())
+    });
+    if let Err(e) = spawned {
+        finish(Err(DbError::Runtime(format!("could not start a thread to connect to the database: {e}"))));
     }
 }
 
