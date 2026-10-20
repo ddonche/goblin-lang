@@ -4,7 +4,8 @@
 //! list of actor handles kept in a global by the program's top-level code is
 //! not copied into every actor it starts. Its code is its handler, its
 //! stop condition, the functions in its state, and every named action,
-//! method and import of the program (any of them can be called by name).
+//! method, import and class field default of the program (any of them can
+//! be called by name, or runs when an object is made).
 //! A global is reachable when such code reads or writes it, names it in a
 //! string constant (interpolation, `alias::var`), or when it holds code
 //! itself (a closure kept in a reachable global). Builtins that find a
@@ -30,6 +31,9 @@ pub(crate) struct Base {
     /// Global slots by the names a string constant can use for them: the
     /// full name, and the part after a module prefix.
     tokens: HashMap<String, Vec<usize>>,
+    /// Field defaults compiled for the walk, kept alive so their addresses
+    /// in `seen` are never reused by other functions.
+    _defaults: Vec<Rc<FunctionObject>>,
 }
 
 impl Base {
@@ -56,10 +60,22 @@ impl Base {
             for (_, v) in list { w.value(v, session); }
         }
         for f in session.compiled_methods.values() { w.func(f); }
+        // Field defaults that are not plain literals run when an object is
+        // made, so the globals they read count too.
+        let mut defaults = Vec::new();
+        for class in session.classes.values() {
+            for expr in class.fields.iter().filter_map(|f| f.default.as_ref()) {
+                if crate::vm::eval_default_expr(expr).is_some() { continue; }
+                match crate::vm::compile_field_default(expr, &session.global_names) {
+                    Ok(f) => { w.func(&f); defaults.push(f); }
+                    Err(_) => w.all = true,
+                }
+            }
+        }
         // The values these globals hold now are walked for each actor, as
         // they can change between actors.
         let (all, slots, seen) = (w.all, w.slots, w.seen);
-        Base { all, slots, seen, tokens }
+        Base { all, slots, seen, tokens, _defaults: defaults }
     }
 }
 

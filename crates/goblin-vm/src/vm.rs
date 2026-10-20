@@ -3737,13 +3737,12 @@ impl Vm {
         expr: &goblin_ast::Expr,
         param_names: &[&str],
     ) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
-        self.compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())
+        Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())
     }
 
     /// Compile one expression as a parameterless action, with `compiler`
     /// deciding which globals it can see.
     fn compile_expr_fn(
-        &self,
         expr: &goblin_ast::Expr,
         param_names: &[&str],
         compiler: crate::compiler::Compiler,
@@ -4180,7 +4179,15 @@ fn value_to_str(v: &Value) -> String {
 /// Handle `.method` postfix member accesses that dispatch to builtins.
 /// A field default that is a plain literal; anything else (`[]`, `{}`,
 /// `-1`, an expression) is evaluated by `Vm::field_default`.
-fn eval_default_expr(expr: &goblin_ast::Expr) -> Option<Value> {
+/// A field default that is not a plain literal, compiled against the
+/// program's globals, so a default that reads a variable sees its current
+/// value, as in the interpreter.
+pub(crate) fn compile_field_default(expr: &goblin_ast::Expr, global_names: &[String]) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
+    let compiler = crate::compiler::Compiler::new().with_initial_globals(global_names.to_vec());
+    Vm::compile_expr_fn(expr, &[], compiler)
+}
+
+pub(crate) fn eval_default_expr(expr: &goblin_ast::Expr) -> Option<Value> {
     use goblin_ast::Expr;
     Some(match expr {
         Expr::Nil(_)        => Value::Nil,
@@ -4205,10 +4212,7 @@ impl Vm {
         let func = match self.session.field_defaults.get(&key) {
             Some(f) => f.clone(),
             None => {
-                // Compiled against the program's globals, so a default that
-                // reads a variable sees its current value, as in the interpreter.
-                let compiler = crate::compiler::Compiler::new().with_initial_globals((*self.session.global_names).clone());
-                let f = self.compile_expr_fn(expr, &[], compiler)?;
+                let f = compile_field_default(expr, &self.session.global_names)?;
                 self.session.field_defaults.insert(key, f.clone());
                 f
             }
