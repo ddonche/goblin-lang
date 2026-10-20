@@ -608,7 +608,7 @@ impl Host {
                                             &auth_email,
                                             &auth_role,
                                             &auth_json,
-                                        ).await
+                                        ).await.map(ExecOk::Direct)
                                     } else {
                                         exec_goblin_script_via_cli_timeout(
                                             &script_path,
@@ -625,20 +625,16 @@ impl Host {
                                             &auth_email,
                                             &auth_role,
                                             &auth_json,
-                                        ).await
+                                        ).await.map(ExecOk::Text)
                                     };
                                     match exec_result {
-                                        Ok(body) => {
-                                            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
+                                        Ok(out) => {
+                                            let (parsed, body) = match out {
+                                                ExecOk::Direct(env) => (Ok(env), String::new()),
+                                                ExecOk::Text(text) => (Envelope::from_json(&text), text),
+                                            };
 
-                                            if let Ok(v) = parsed {
-                                                let is_envelope =
-                                                    v.get("status").is_some()
-                                                    || v.get("body").is_some()
-                                                    || v.get("headers").is_some()
-                                                    || v.get("cookies").is_some();
-
-                                                if !is_envelope {
+                                            if let Err(true) = parsed {
                                                     let headers = format!(
                                                         "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n\r\n",
                                                         body.len(), crate::CONTRACT_VERSION
@@ -648,33 +644,20 @@ impl Host {
                                                     }
                                                     log.done(200, body.len());
                                                     if want_close { break 'conn; } else { continue 'conn; }
-                                                }
+                                            }
 
-                                                let status = v.get("status")
-                                                    .and_then(|x| x.as_u64())
-                                                    .unwrap_or(200) as u16;
-
-                                                let response_body = v.get("body")
-                                                    .and_then(|x| x.as_str())
-                                                    .unwrap_or("")
-                                                    .to_string();
+                                            if let Ok(env) = parsed {
+                                                let status = env.status;
+                                                let response_body = env.body;
 
                                                 let mut extra_headers = String::new();
 
-                                                if let Some(headers_obj) = v.get("headers").and_then(|x| x.as_object()) {
-                                                    for (k, val) in headers_obj {
-                                                        if let Some(s) = val.as_str() {
-                                                            extra_headers.push_str(&format!("{k}: {s}\r\n"));
-                                                        }
-                                                    }
+                                                for (k, s) in &env.headers {
+                                                    extra_headers.push_str(&format!("{k}: {s}\r\n"));
                                                 }
 
-                                                if let Some(cookies_arr) = v.get("cookies").and_then(|x| x.as_array()) {
-                                                    for c in cookies_arr {
-                                                        if let Some(s) = c.as_str() {
-                                                            extra_headers.push_str(&format!("Set-Cookie: {s}\r\n"));
-                                                        }
-                                                    }
+                                                for s in &env.cookies {
+                                                    extra_headers.push_str(&format!("Set-Cookie: {s}\r\n"));
                                                 }
 
                                                 let reason = match status {
@@ -711,9 +694,8 @@ impl Host {
                                                         crate::CONTRACT_VERSION
                                                     )
                                                 } else {
-                                                    let content_type = v.get("headers")
-                                                        .and_then(|h| h.get("Content-Type"))
-                                                        .and_then(|x| x.as_str())
+                                                    let content_type = env.headers.get("Content-Type")
+                                                        .map(String::as_str)
                                                         .unwrap_or("text/plain; charset=utf-8");
                                                     format!(
                                                         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
@@ -909,10 +891,9 @@ impl Host {
                                         &s_auth_json,
                                     ).await;
                                     match result {
-                                        Ok(envelope_json) => {
-                                            let parsed: serde_json::Value = serde_json::from_str(&envelope_json).unwrap_or(serde_json::Value::Null);
-                                            let body_str = parsed.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string();
-                                            let status = parsed.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
+                                        Ok(env) => {
+                                            let body_str = env.body;
+                                            let status = env.status;
                                             let is_redirect = status >= 300 && status < 400;
                                             let reason = match status {
                                                 200 => "OK", 201 => "Created", 204 => "No Content",
@@ -924,12 +905,8 @@ impl Host {
                                                 500 => "Internal Server Error", _ => "OK",
                                             };
                                             let mut extra_headers = String::new();
-                                            if let Some(ho) = parsed.get("headers").and_then(|h| h.as_object()) {
-                                                for (k, val) in ho {
-                                                    if let Some(s) = val.as_str() {
-                                                        extra_headers.push_str(&format!("{k}: {s}\r\n"));
-                                                    }
-                                                }
+                                            for (k, s) in &env.headers {
+                                                extra_headers.push_str(&format!("{k}: {s}\r\n"));
                                             }
                                             let resp_headers = if is_redirect {
                                                 format!(
@@ -937,7 +914,7 @@ impl Host {
                                                     crate::CONTRACT_VERSION
                                                 )
                                             } else {
-                                                let content_type = parsed.get("headers").and_then(|h| h.get("Content-Type")).and_then(|v| v.as_str()).unwrap_or("text/html; charset=utf-8");
+                                                let content_type = env.headers.get("Content-Type").map(String::as_str).unwrap_or("text/html; charset=utf-8");
                                                 format!(
                                                     "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection_header}\r\nx-goblin-web-contract: {}\r\n{extra_headers}\r\n",
                                                     body_str.len(), crate::CONTRACT_VERSION
@@ -1053,6 +1030,46 @@ enum ExecErr {
     NonZero(String),
 }
 
+/// A script's response: what the VM hands back directly, or what a child
+/// process prints as a JSON envelope (`{"status", "headers", "cookies",
+/// "body"}`). Headers are kept in key order, as the JSON envelope's object
+/// always gave them.
+struct Envelope {
+    status: u16,
+    headers: std::collections::BTreeMap<String, String>,
+    cookies: Vec<String>,
+    body: String,
+}
+
+impl Envelope {
+    /// Reads a JSON envelope. Otherwise says whether the text is JSON
+    /// without any envelope field (`Err(true)`, sent as JSON) or not JSON at
+    /// all (`Err(false)`, sent as plain text).
+    fn from_json(text: &str) -> Result<Envelope, bool> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|_| false)?;
+        let is_envelope = v.get("status").is_some() || v.get("body").is_some()
+            || v.get("headers").is_some() || v.get("cookies").is_some();
+        if !is_envelope { return Err(true); }
+        Ok(Envelope {
+            status: v.get("status").and_then(|x| x.as_u64()).unwrap_or(200) as u16,
+            headers: v.get("headers").and_then(|x| x.as_object()).map(|o| o.iter()
+                .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+                .unwrap_or_default(),
+            cookies: v.get("cookies").and_then(|x| x.as_array()).map(|a| a.iter()
+                .filter_map(|c| c.as_str().map(str::to_string)).collect())
+                .unwrap_or_default(),
+            body: v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        })
+    }
+}
+
+/// What running a script produced: the VM's response as it is, or a child
+/// process's standard output.
+enum ExecOk {
+    Direct(Envelope),
+    Text(String),
+}
+
 async fn exec_goblin_script_via_vm(
     script_path: &std::path::Path,
     timeout_ms: u64,
@@ -1068,7 +1085,7 @@ async fn exec_goblin_script_via_vm(
     auth_email: &str,
     auth_role: &str,
     auth_json: &str,
-) -> Result<String, ExecErr> {
+) -> Result<Envelope, ExecErr> {
     use tokio::time::{timeout, Duration};
 
     let src = std::fs::read_to_string(script_path)
@@ -1138,22 +1155,17 @@ async fn exec_goblin_script_via_vm(
     match timeout(Duration::from_millis(timeout_ms), task).await {
         Err(_) => Err(ExecErr::Timeout),
         Ok(Ok(Ok((output, response)))) => {
+            // Handed over as it is: no JSON text for the server to parse back.
+            // A status outside 0..=65535 or below 0 reads as the JSON
+            // envelope read it.
             let status = response.status.unwrap_or(200);
-            let headers_obj: serde_json::Map<String, serde_json::Value> = response.headers
-                .iter()
-                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                .collect();
-            let cookies_arr: Vec<serde_json::Value> = response.cookies
-                .iter()
-                .map(|c| serde_json::Value::String(c.clone()))
-                .collect();
-            let envelope = serde_json::json!({
-                "status": status,
-                "headers": headers_obj,
-                "cookies": cookies_arr,
-                "body": output,
-            });
-            Ok(envelope.to_string())
+            let status = if status < 0 { 200 } else { status as u64 as u16 };
+            Ok(Envelope {
+                status,
+                headers: response.headers.into_iter().collect(),
+                cookies: response.cookies,
+                body: output,
+            })
         }
         Ok(Ok(Err(e))) => Err(ExecErr::NonZero(e.to_string())),
         Ok(Err(e)) => Err(ExecErr::Spawn(format!("task panic: {e}"))),
