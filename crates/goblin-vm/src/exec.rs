@@ -176,6 +176,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
                 merged
             } else { decl }
         } else { decl };
+        session.field_defaults.clear();
         session.classes.insert(merged.name.clone(), merged);
     }
     for decl in compiled.enums   { session.enums.insert(decl.name.clone(), decl); }
@@ -224,6 +225,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
                 merged
             } else { decl }
         } else { decl };
+        session.field_defaults.clear();
         session.classes.insert(merged.name.clone(), merged);
     }
     for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
@@ -300,6 +302,7 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
                 merged
             } else { decl }
         } else { decl };
+        session.field_defaults.clear();
         session.classes.insert(merged.name.clone(), merged);
     }
     for decl in enums { session.enums.insert(decl.name.clone(), decl); }
