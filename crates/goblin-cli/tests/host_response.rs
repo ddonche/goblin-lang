@@ -44,7 +44,7 @@ fn vm_responses_on_the_wire() {
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let child = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_goblin")))
         .args(["start", "--host", "127.0.0.1", "--port", &port.to_string()])
-        .current_dir(&dir).env("GOBLIN_DOCROOT", dir.join("www"))
+        .current_dir(&dir).env("GOBLIN_DOCROOT", dir.join("www")).env_remove("PORT")
         .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let _server = Server(child);
     let deadline = Instant::now() + Duration::from_secs(20);
