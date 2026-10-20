@@ -303,6 +303,11 @@ pub enum Opcode {
     /// If tether_count == 1 (sole owner), mutates in place (O(1)).
     /// Otherwise falls back to clone + alloc (O(N)).
     ArrayPushToLocal(u8),
+    /// `x |= x + piece` with x in locals[slot]: pops the piece; when x is
+    /// text that only this variable holds and the piece is text, adds it to
+    /// x in place and pushes x. Otherwise pushes x and the piece and adds
+    /// them as `Add` does. The guard and StoreLocal of `|=` follow.
+    AppendLocal(u8),
 }
 
 impl Opcode {
@@ -410,6 +415,7 @@ impl Opcode {
             Opcode::StoreBox(..)         => "StoreBox",
             Opcode::BoxCheck(..)         => "BoxCheck",
             Opcode::ArrayPushToLocal(_)  => "ArrayPushToLocal",
+            Opcode::AppendLocal(_)       => "AppendLocal",
         }
     }
 }

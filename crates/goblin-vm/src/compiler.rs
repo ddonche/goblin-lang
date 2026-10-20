@@ -744,6 +744,7 @@ impl Compiler {
                 self.emit(Opcode::Pop); // discard expression result
             }
 
+            Stmt::Bind(bind) if self.compile_append_local(bind)? => {}
             Stmt::Bind(bind) => {
                 self.compile_expr(&bind.expr)?;
 
@@ -2372,6 +2373,27 @@ impl Compiler {
 
     /// Before `name |= v` (v on the stack): an object variable cannot be
     /// rebound to a non-object value (R1300, as the interpreter).
+    /// `x |= x + piece` on a local: AppendLocal adds the piece to x in place
+    /// when it can, instead of copying x every time (a loop building text
+    /// this way copied everything built so far on each pass). Only when the
+    /// piece does not mention x, so reading x after the piece is as before.
+    /// Says whether it compiled the statement.
+    fn compile_append_local(&mut self, bind: &goblin_ast::BindStmt) -> Result<bool, GoblinError> {
+        let name = &bind.name.0;
+        let Expr::Binary(left, op, piece, _) = &bind.expr else { return Ok(false) };
+        if !matches!(bind.mode, BindMode::Retether) || op != "+" || bind.class_name.is_some() || self.is_imm_name(name) {
+            return Ok(false);
+        }
+        if !matches!(left.as_ref(), Expr::Ident(n, _) if n == name) { return Ok(false); }
+        let Some(slot) = self.scope().find_local(name) else { return Ok(false) };
+        if format!("{piece:?}").contains(&format!("{name:?}")) { return Ok(false); }
+        self.compile_expr(piece.as_ref())?;
+        self.emit(Opcode::AppendLocal(slot));
+        self.emit_obj_rebind_guard(name)?;
+        self.emit(Opcode::StoreLocal(slot));
+        Ok(true)
+    }
+
     fn emit_obj_rebind_guard(&mut self, name: &str) -> Result<(), GoblinError> {
         let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
         self.emit(load_op);
