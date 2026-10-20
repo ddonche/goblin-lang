@@ -890,7 +890,9 @@ impl Vm {
 
         let converted = (|| {
             let mut tp = ToPortable::new(&self.session).sharing_values();
-            let image = crate::swarm::image_of(&self.session, &mut tp)?;
+            let mut roots = vec![&state, &handler];
+            if let Some(f) = &policy.stop_when { roots.push(f); }
+            let image = crate::swarm::image_of(&self.session, &mut tp, Some(&roots))?;
             let p_state = tp.value(&state)?;
             let p_handler = tp.value(&handler)?;
             let p_stop = match &policy.stop_when { Some(f) => Some(tp.value(f)?), None => None };
