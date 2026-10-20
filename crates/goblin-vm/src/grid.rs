@@ -559,6 +559,21 @@ impl GridStore {
 
     pub fn contains(&self, name: &str) -> bool { self.worlds.contains_key(name) }
 
+    /// Every value stored anywhere in any grid: cells, tiles, regions,
+    /// defaults and the snapshot (for the actor hand-off check).
+    pub fn for_each_value(&self, f: &mut dyn FnMut(&Value)) {
+        for w in self.worlds.values() {
+            let layer_vals = |l: &GridLayer, f: &mut dyn FnMut(&Value)| {
+                for s in l.cells.values() { if let CellState::Occupied(v) = s { f(v) } }
+            };
+            for l in w.layers.values() { layer_vals(l, f); }
+            if let Some(snap) = &w.snapshot { for l in snap.values() { layer_vals(l, f); } }
+            for t in &w.tiles { t.state.values().for_each(|v| f(v)); }
+            for r in &w.regions { r.state.values().for_each(|v| f(v)); }
+            w.world_defaults.values().for_each(|v| f(v));
+        }
+    }
+
     pub fn names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.worlds.keys().cloned().collect();
         names.sort();

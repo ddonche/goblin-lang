@@ -108,6 +108,11 @@ pub struct Session {
     /// Optional worker ID for cross-worker safety checks.
     pub worker_id: usize,
 
+    /// Actors this session started; they end when it does (`actor.rs`).
+    pub owned_actors: Vec<std::sync::Arc<crate::actor::ActorShared>>,
+    /// Objects handed to an actor, and the variable each came from, so
+    /// reading one says where it went.
+    pub handed_off: HashMap<String, String>,
     /// Compiled field defaults that are not plain literals, per (class, field).
     /// Cleared whenever a class is (re)declared.
     pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
@@ -273,6 +278,8 @@ impl Session {
             global_names: Vec::new(),
             gc_mode,
             worker_id: 0,
+            owned_actors: Vec::new(),
+            handed_off: HashMap::new(),
             field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
@@ -328,6 +335,12 @@ impl Session {
     }
 
     /// Write a line to the output buffer if capture is enabled, else to stdout.
+    /// End every actor this session started, after each finishes the
+    /// messages it already accepted.
+    pub fn finish_actors(&mut self) {
+        crate::actor::finish_owned(&mut self.owned_actors);
+    }
+
     pub fn write_output(&mut self, s: &str, newline: bool) {
         if let Some(ref mut buf) = self.output_buf {
             buf.push_str(s);
@@ -432,9 +445,7 @@ impl Session {
         match &self.get_stash(t)?.value {
             Value::Ref(uuid) => self.object_store.get(uuid.as_str())
                 .cloned()
-                .ok_or_else(|| crate::error::GoblinError::Runtime(
-                    format!("dangling ref: uuid {} not in object_store", uuid)
-                )),
+                .ok_or_else(|| crate::actor::missing_object(self, uuid)),
             Value::Frozen(f) => Ok(f.value.clone()),
             other => Ok(other.clone_fast()),
         }
@@ -524,7 +535,7 @@ impl Session {
             | Value::Big(_) | Value::Pct(_) | Value::Char(_) | Value::Str(_)
             | Value::CtrlSkip | Value::CtrlStop
             | Value::Ref(_) | Value::GridRef { .. } | Value::Class { .. }
-            | Value::DateTime(_) | Value::Duration(_) | Value::Frozen(_) => {
+            | Value::DateTime(_) | Value::Duration(_) | Value::Frozen(_) | Value::Handle(_) => {
                 self.alloc_value(value.clone())
             }
 
@@ -738,5 +749,11 @@ mod tests {
         sess.overwrite(&t, Value::Int(99)).unwrap();
         let v = sess.read_value(&t).unwrap();
         assert!(matches!(v, Value::Int(99)));
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if !self.owned_actors.is_empty() { self.finish_actors(); }
     }
 }

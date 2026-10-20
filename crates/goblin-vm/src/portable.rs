@@ -59,6 +59,10 @@ pub enum PValue {
     Builtin(BuiltinId),
     /// A frozen snapshot: shared by every worker that receives it.
     Frozen(Arc<PValue>),
+    /// An actor, channel or future handle: already thread-safe.
+    Handle(crate::actor::Handle),
+    /// A variable whose object was handed to an actor: it stays dead.
+    HandedOff { uuid: String, var: String },
 }
 
 #[derive(Debug, Clone)]
@@ -140,7 +144,10 @@ impl<'s> ToPortable<'s> {
             // An object reference crosses as the object itself.
             Value::Ref(uuid) => match self.session.object_store.get(uuid) {
                 Some(obj) => self.value(&obj.clone())?,
-                None => return Err(GoblinError::Runtime(format!("dangling ref: uuid {uuid} not in object_store"))),
+                None => match self.session.handed_off.get(uuid.as_str()) {
+                    Some(var) => PValue::HandedOff { uuid: uuid.clone(), var: var.clone() },
+                    None => return Err(crate::actor::missing_object(self.session, uuid)),
+                },
             },
             Value::GridRef { .. } => return Err(unsupported("a grid reference")),
             Value::Enum(e) => PValue::Enum {
@@ -163,6 +170,7 @@ impl<'s> ToPortable<'s> {
             }
             Value::Builtin(b) => PValue::Builtin(*b),
             Value::Frozen(f) => PValue::Frozen(f.shared.clone()),
+            Value::Handle(h) => PValue::Handle(h.clone()),
         })
     }
 
@@ -310,6 +318,11 @@ impl FromPortable {
             }
             PValue::Builtin(b) => Value::Builtin(*b),
             PValue::Frozen(shared) => Value::Frozen(self.frozen(shared, session)),
+            PValue::Handle(h) => Value::Handle(h.clone()),
+            PValue::HandedOff { uuid, var } => {
+                session.handed_off.insert(uuid.clone(), var.clone());
+                Value::Ref(uuid.clone())
+            }
         }
     }
 

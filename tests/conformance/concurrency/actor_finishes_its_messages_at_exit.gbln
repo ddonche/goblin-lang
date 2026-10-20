@@ -1,0 +1,10 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A program does not end until its actors have handled every message they accepted (structured ownership, spec VI).
+act noisy(state, msg)
+    say("handled " + :str(msg))
+    return state
+xx
+q | :actor(0, noisy)
+:post(q, 1)
+:post(q, 2)
+:post(q, 3)

@@ -1464,6 +1464,17 @@ impl Vm {
 
                 // Special handling for builtins that need VM call capability.
                 match id {
+                    BuiltinId::Actor | BuiltinId::ActorFromVar => {
+                        let result = self.actor_create(arg_vals, id == BuiltinId::ActorFromVar)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ActorHandOff => {
+                        let var = match arg_vals.get(1) { Some(Value::Str(s)) => s.to_string(), _ => String::new() };
+                        let marker = crate::actor::hand_off_marker(&arg_vals[0], &var, &mut self.session);
+                        self.stack.push(Operand::Val(marker));
+                        return Ok(());
+                    }
                     BuiltinId::Invoke => {
                         let result = self.vm_invoke(arg_vals)?;
                         self.stack.push(Operand::Val(result));
@@ -2563,7 +2574,7 @@ impl Vm {
     /// `self`, captured variables, globals and operands. Values held in those
     /// slots, on the stack and in the session's stores are traced too, since
     /// a closure inside any of them keeps its captured variables alive.
-    fn collect_live_slots(&self) -> Vec<bool> {
+    pub(crate) fn collect_live_slots(&self) -> Vec<bool> {
         let mut m = Marker {
             live: vec![false; self.session.arena.capacity()],
             pending: Vec::new(),
@@ -2672,7 +2683,7 @@ impl Vm {
         match v {
             Value::Ref(uuid) => self.session.object_store.get(&uuid)
                 .cloned()
-                .ok_or_else(|| GoblinError::Runtime(format!("dangling ref: uuid {} not in object_store", uuid))),
+                .ok_or_else(|| crate::actor::missing_object(&self.session, &uuid)),
             other => Ok(other),
         }
     }
@@ -2725,7 +2736,7 @@ impl Vm {
         match v {
             Value::Ref(uuid) => self.session.object_store.get(&uuid)
                 .cloned()
-                .ok_or_else(|| GoblinError::Runtime(format!("dangling ref: uuid {} not in object_store", uuid))),
+                .ok_or_else(|| crate::actor::missing_object(&self.session, &uuid)),
             other => Ok(other),
         }
     }

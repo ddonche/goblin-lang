@@ -3611,6 +3611,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             Ok(Value::Str(name.to_string().into()))
         }
+        BuiltinId::Actor | BuiltinId::ActorFromVar | BuiltinId::ActorHandOff => Err(GoblinError::Runtime(
+            "C0107: actor-args: :actor must be called directly, as :actor(object, handler, policy)".into())),
+        BuiltinId::Post => crate::actor::post(args, session),
+        BuiltinId::Request => crate::actor::request(args, session),
+        BuiltinId::Await => crate::actor::await_(args, session),
+        BuiltinId::Receive => crate::actor::receive(args, session),
+        BuiltinId::Halt => crate::actor::halt(args),
+        BuiltinId::Cancel => crate::actor::cancel(args),
+        BuiltinId::Channel => crate::actor::channel(args),
         BuiltinId::Freeze => {
             if args.len() != 1 {
                 return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "freeze".into() });
@@ -5257,6 +5266,7 @@ fn fmt_pct(p: f64) -> String {
 pub fn value_to_str(v: &Value) -> String {
     match v {
         Value::Frozen(f)       => value_to_str(&f.value),
+        Value::Handle(h)       => h.display(),
         Value::Nil             => "nil".to_string(),
         Value::Unit            => String::new(),
         Value::Bool(b)         => b.to_string(),
