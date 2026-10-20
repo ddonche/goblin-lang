@@ -889,8 +889,10 @@ impl Vm {
         }
 
         let converted = (|| {
-            let mut tp = ToPortable::new(&self.session);
-            let image = crate::swarm::image_of(&self.session, &mut tp)?;
+            let mut tp = ToPortable::new(&self.session).sharing_values();
+            let mut roots = vec![&state, &handler];
+            if let Some(f) = &policy.stop_when { roots.push(f); }
+            let image = crate::swarm::image_of(&self.session, &mut tp, Some(&roots))?;
             let p_state = tp.value(&state)?;
             let p_handler = tp.value(&handler)?;
             let p_stop = match &policy.stop_when { Some(f) => Some(tp.value(f)?), None => None };
@@ -927,9 +929,13 @@ impl Vm {
         })));
 
         // Handed over: the objects now belong to the actor.
-        self.session.named_values.retain(|_, v| {
-            let mut k = 0; count_refs(v, &graph, &mut k); k == 0
-        });
+        // (Left alone when nothing was handed over: a change copies the
+        // table, which the next actor's program would then not share.)
+        if !graph.is_empty() {
+            std::rc::Rc::make_mut(&mut self.session.named_values).retain(|_, v| {
+                let mut k = 0; count_refs(v, &graph, &mut k); k == 0
+            });
+        }
         for u in &graph {
             self.session.object_store.remove(u.as_str());
             self.session.handed_off.entry(u.clone()).or_insert_with(|| "this object".to_string());
@@ -1030,7 +1036,7 @@ struct Current {
 
 impl Slot {
     fn build(s: Start) -> Slot {
-        let mut fp = FromPortable::new();
+        let mut fp = FromPortable::new().sharing_functions();
         let mut vm = Vm::new(crate::swarm::build_session(&s.image, &mut fp, s.worker_id));
         drop(s.image);
         vm.session.rng_state = s.seed | 1;

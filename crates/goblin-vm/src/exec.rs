@@ -118,7 +118,7 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session) {
         compiler.is_class_method = true;
         match compiler.compile_action(&pseudo) {
             Ok(func) => {
-                session.compiled_methods.insert(
+                std::rc::Rc::make_mut(&mut session.compiled_methods).insert(
                     (class.name.clone(), action.name.clone()),
                     std::rc::Rc::new(func),
                 );
@@ -150,7 +150,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
 
     // Execute
     let mut session = Session::new(GcMode::Auto);
-    session.global_names = compiled.global_names;
+    session.global_names = std::rc::Rc::new(compiled.global_names);
     for decl in &compiled.classes {
         compile_class_methods(decl, &mut session);
     }
@@ -177,9 +177,9 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
             } else { decl }
         } else { decl };
         session.field_defaults.clear();
-        session.classes.insert(merged.name.clone(), merged);
+        std::rc::Rc::make_mut(&mut session.classes).insert(merged.name.clone(), merged);
     }
-    for decl in compiled.enums   { session.enums.insert(decl.name.clone(), decl); }
+    for decl in compiled.enums   { std::rc::Rc::make_mut(&mut session.enums).insert(decl.name.clone(), decl); }
     let mut vm = Vm::new(session);
     vm.execute(compiled.entry)
 }
@@ -204,7 +204,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
     let compiled = Compiler::new().with_globals(&["args"]).compile_module(&module)?;
 
     let mut session = Session::new(GcMode::Auto);
-    session.global_names = compiled.global_names;
+    session.global_names = std::rc::Rc::new(compiled.global_names);
     for decl in &compiled.classes { compile_class_methods(decl, &mut session); }
     for decl in compiled.classes {
         let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
@@ -226,9 +226,9 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
             } else { decl }
         } else { decl };
         session.field_defaults.clear();
-        session.classes.insert(merged.name.clone(), merged);
+        std::rc::Rc::make_mut(&mut session.classes).insert(merged.name.clone(), merged);
     }
-    for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
+    for decl in compiled.enums { std::rc::Rc::make_mut(&mut session.enums).insert(decl.name.clone(), decl); }
 
     // Inject CLI args as global `args` before execution (matches interpreter behavior).
     if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
@@ -261,7 +261,7 @@ pub fn prepare_entry(
     let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let mut session = Session::new(GcMode::Auto);
-    session.global_names = compiled.global_names;
+    session.global_names = std::rc::Rc::new(compiled.global_names);
     session.project_root = project_root.clone();
     session.base_dir = project_root;
     if box_toml_path.exists() {
@@ -303,9 +303,9 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
             } else { decl }
         } else { decl };
         session.field_defaults.clear();
-        session.classes.insert(merged.name.clone(), merged);
+        std::rc::Rc::make_mut(&mut session.classes).insert(merged.name.clone(), merged);
     }
-    for decl in enums { session.enums.insert(decl.name.clone(), decl); }
+    for decl in enums { std::rc::Rc::make_mut(&mut session.enums).insert(decl.name.clone(), decl); }
 }
 
 /// The response body from API-mode output: every `say` and top-level

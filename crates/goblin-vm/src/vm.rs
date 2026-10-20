@@ -344,11 +344,10 @@ impl Vm {
 
             // ── Globals ──────────────────────────────────────────────────────
             Opcode::LoadGlobal(idx) => {
-                let t = self.session.get_global(idx as usize)
-                    .cloned()
-                    .ok_or_else(|| GoblinError::Runtime(
-                        format!("global slot {idx} is uninitialized")
-                    ))?;
+                let t = match self.session.get_global(idx as usize) {
+                    Some(t) => t.clone(),
+                    None => return Err(self.session.missing_global(idx as usize)),
+                };
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreGlobal(idx) => {
@@ -406,8 +405,8 @@ impl Vm {
                     self.session.alloc_value(cast)
                 };
                 self.session.set_global(idx as usize, t);
-                self.session.global_type_locks.insert(idx as u32, lock_type.clone());
-                self.session.global_hard_type_locks.insert(idx as u32, lock_type);
+                std::rc::Rc::make_mut(&mut self.session.global_type_locks).insert(idx as u32, lock_type.clone());
+                std::rc::Rc::make_mut(&mut self.session.global_hard_type_locks).insert(idx as u32, lock_type);
             }
 
             Opcode::CastBangLocal(slot, name_i) => {
@@ -448,7 +447,7 @@ impl Vm {
                 let new_val = crate::builtins::cast_value_to_lock(val, &cast_type)?;
                 let new_t = self.session.alloc_value(new_val.clone());
                 self.session.set_global(idx as usize, new_t);
-                self.session.global_type_locks.insert(idx as u32, cast_type);
+                std::rc::Rc::make_mut(&mut self.session.global_type_locks).insert(idx as u32, cast_type);
                 self.stack.push(Operand::Val(new_val));
             }
 
@@ -2035,7 +2034,7 @@ impl Vm {
                         return Ok(());
                     }
                     Some(_) => {}
-                    None => { self.session.module_aliases.insert((importer, ns.to_string()), prefix); }
+                    None => { std::rc::Rc::make_mut(&mut self.session.module_aliases).insert((importer, ns.to_string()), prefix); }
                 }
 
                 // Run with current_glam_ns = Some(alias) so RegisterAction registers
@@ -2061,7 +2060,7 @@ impl Vm {
                     .unwrap_or_default();
                 for (bare_name, val) in pairs {
                     let qualified = format!("{}::{}", ns, bare_name);
-                    self.session.named_values.entry(qualified).or_insert(val);
+                    std::rc::Rc::make_mut(&mut self.session.named_values).entry(qualified).or_insert(val);
                 }
             }
 
@@ -2121,7 +2120,7 @@ impl Vm {
                     .collect();
                 for (bare_name, val) in pairs {
                     let qualified = format!("{}::{}", ns, bare_name);
-                    self.session.named_values.entry(qualified).or_insert(val);
+                    std::rc::Rc::make_mut(&mut self.session.named_values).entry(qualified).or_insert(val);
                 }
             }
 
@@ -2263,7 +2262,7 @@ impl Vm {
 
             Opcode::UnitDecl(i) => {
                 let crate::opcode::OpData::UnitDecl(decl) = self.op_data_at(i) else { unreachable!() };
-                self.session.unit_registry.insert(decl.name.clone(), *decl.clone());
+                std::rc::Rc::make_mut(&mut self.session.unit_registry).insert(decl.name.clone(), *decl.clone());
             }
 
             Opcode::RegisterAction(name_idx) => {
@@ -2286,7 +2285,7 @@ impl Vm {
                 // Also register under the qualified name if we're inside a `use glam` import.
                 if let Some(ref ns) = self.session.current_glam_ns.clone() {
                     let qualified = format!("{}::{}", ns, name);
-                    self.session.named_values.insert(qualified, value.clone());
+                    std::rc::Rc::make_mut(&mut self.session.named_values).insert(qualified, value.clone());
                 }
                 let source_file = self.call_stack.last()
                     .map(|f| f.func.source_file.clone())
@@ -2294,12 +2293,12 @@ impl Vm {
                 // One entry per action and file: a nested `act` runs again on
                 // every call, and keeping each old closure here would keep it
                 // (and what it captured) alive for good.
-                let list = self.session.action_file_map.entry(source_file).or_default();
+                let list = std::rc::Rc::make_mut(&mut self.session.action_file_map).entry(source_file).or_default();
                 match list.iter_mut().find(|(n, _)| *n == name) {
                     Some(entry) => entry.1 = value.clone(),
                     None => list.push((name.to_string(), value.clone())),
                 }
-                self.session.named_values.insert(name.to_string(), value);
+                std::rc::Rc::make_mut(&mut self.session.named_values).insert(name.to_string(), value);
             }
 
             Opcode::LoadNamed(name_idx) => {
@@ -2986,7 +2985,7 @@ impl Vm {
         if self.session.imported.contains(&canonical) {
             return Ok(());
         }
-        self.session.imported.insert(canonical.clone());
+        std::rc::Rc::make_mut(&mut self.session.imported).insert(canonical.clone());
 
         let path_str = full_path.to_string_lossy().to_string();
         // Try .gbln fallback if not found
@@ -3015,7 +3014,7 @@ impl Vm {
 
         // Append any new global names this module introduced.
         for name in compiled.global_names[globals_before_len..].iter() {
-            self.session.global_names.push(name.clone());
+            std::rc::Rc::make_mut(&mut self.session.global_names).push(name.clone());
         }
 
         // Pre-register classes/enums from the imported module
@@ -3107,7 +3106,7 @@ impl Vm {
                     }
                     map.insert(need_name.clone(), ref_str.clone());
                 }
-                self.session.action_needs.insert(ns.to_string(), map);
+                std::rc::Rc::make_mut(&mut self.session.action_needs).insert(ns.to_string(), map);
             }
 
             let has_new_format = needs.contains_key("values") || needs.contains_key("actions");
@@ -3328,7 +3327,7 @@ impl Vm {
                             pairs.iter().find(|(n, _)| n == bare).map(|(_, v)| v.clone())
                         });
                     if let Some(val) = candidate {
-                        self.session.named_values.insert(name.to_string(), val.clone());
+                        std::rc::Rc::make_mut(&mut self.session.named_values).insert(name.to_string(), val.clone());
                         return Some(val);
                     }
                     // Last resort: bare name lookup (pre-existing flat-registry limitation)
@@ -4228,7 +4227,7 @@ impl Vm {
             None => {
                 // Compiled against the program's globals, so a default that
                 // reads a variable sees its current value, as in the interpreter.
-                let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.clone());
+                let compiler = crate::compiler::Compiler::new().with_initial_globals((*self.session.global_names).clone());
                 let f = self.compile_expr_fn(expr, &[], compiler)?;
                 self.session.field_defaults.insert(key, f.clone());
                 f
