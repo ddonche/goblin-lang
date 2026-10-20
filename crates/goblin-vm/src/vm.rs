@@ -1224,7 +1224,7 @@ impl Vm {
                         }
                         v.clone()
                     } else if let Some(default_expr) = &field.default {
-                        eval_default_expr(default_expr)
+                        self.field_default(&class_name, &field.name, default_expr)?
                     } else if field.nullable || !plain {
                         Value::Nil
                     } else {
@@ -3738,6 +3738,17 @@ impl Vm {
         expr: &goblin_ast::Expr,
         param_names: &[&str],
     ) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
+        self.compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())
+    }
+
+    /// Compile one expression as a parameterless action, with `compiler`
+    /// deciding which globals it can see.
+    fn compile_expr_fn(
+        &self,
+        expr: &goblin_ast::Expr,
+        param_names: &[&str],
+        compiler: crate::compiler::Compiler,
+    ) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
         use crate::compiler::Compiler;
         // Wrap the expression in a tiny module: `action __tick_expr(params...) | expr end`
         // We compile it as a module and extract the entry function, which is a
@@ -3756,7 +3767,7 @@ impl Vm {
         let module = goblin_ast::Module {
             items: vec![goblin_ast::Stmt::Action(action_decl)],
         };
-        let compiled = Compiler::new().compile_module(&module)?;
+        let compiled = compiler.compile_module(&module)?;
         // The entry function just declares the action as a local; we need the inner FunctionObject.
         // It should be in constants[0] or similar. Let's find it.
         for c in &compiled.entry.constants {
@@ -4168,9 +4179,11 @@ fn value_to_str(v: &Value) -> String {
 }
 
 /// Handle `.method` postfix member accesses that dispatch to builtins.
-fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
+/// A field default that is a plain literal; anything else (`[]`, `{}`,
+/// `-1`, an expression) is evaluated by `Vm::field_default`.
+fn eval_default_expr(expr: &goblin_ast::Expr) -> Option<Value> {
     use goblin_ast::Expr;
-    match expr {
+    Some(match expr {
         Expr::Nil(_)        => Value::Nil,
         Expr::Bool(b, _)    => Value::Bool(*b),
         Expr::Number(n, _)  => {
@@ -4179,7 +4192,29 @@ fn eval_default_expr(expr: &goblin_ast::Expr) -> Value {
         }
         Expr::Str(s, _)     => Value::Str(s.clone().into()),
         Expr::Char(c, _)    => Value::Char(*c),
-        _                   => Value::Nil,
+        _                   => return None,
+    })
+}
+
+impl Vm {
+    /// A field's default, evaluated afresh for every new object (as the
+    /// interpreter does), so objects never share a default list or map.
+    /// The compiled expression is kept per class field.
+    fn field_default(&mut self, class: &str, field: &str, expr: &goblin_ast::Expr) -> Result<Value, GoblinError> {
+        if let Some(v) = eval_default_expr(expr) { return Ok(v); }
+        let key = (class.to_string(), field.to_string());
+        let func = match self.session.field_defaults.get(&key) {
+            Some(f) => f.clone(),
+            None => {
+                // Compiled against the program's globals, so a default that
+                // reads a variable sees its current value, as in the interpreter.
+                let compiler = crate::compiler::Compiler::new().with_initial_globals((*self.session.global_names).clone());
+                let f = self.compile_expr_fn(expr, &[], compiler)?;
+                self.session.field_defaults.insert(key, f.clone());
+                f
+            }
+        };
+        self.call_func_core(func, Vec::new(), Vec::new())
     }
 }
 
