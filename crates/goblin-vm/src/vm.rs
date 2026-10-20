@@ -122,7 +122,7 @@ pub struct Vm {
     pub call_stack: Vec<CallFrame>,
     catch_stack: Vec<CatchFrame>,
     /// Placeholder values for the string being interpolated (StringInterpVals).
-    interp_overrides: Vec<(String, Value)>,
+    interp_overrides: Vec<(crate::value::GStr, Value)>,
     /// True while an actor's handler runs at the level the VM can stop and
     /// continue later (no builtin calling back into Goblin in between).
     resumable: bool,
@@ -628,7 +628,7 @@ impl Vm {
                     (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
                     (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 + y),
                     (Value::Float(x), Value::Int(y))   => Value::Float(x + *y as f64),
-                    (Value::Str(x), Value::Str(y))     => Value::Str(format!("{}{}", x, y).into()),
+                    (Value::Str(x), Value::Str(y))     => Value::Str(concat_text(x, y).into()),
                     (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
                     (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
                     (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
@@ -647,10 +647,10 @@ impl Vm {
                     }
                     // Text joins only with text (owner, 2026-10-07): str + char, or a
                     // formatted value's text. `"a" + 3` is an error: convert explicitly.
-                    (Value::Char(c), Value::Str(y)) => Value::Str(format!("{}{}", c, y).into()),
-                    (Value::Str(x), Value::Char(c)) => Value::Str(format!("{}{}", x, c).into()),
-                    (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(format!("{}{}", crate::builtins::fmt_value_raw(a2), y).into()),
-                    (Value::Str(x), b2) if b_spec.is_some() => Value::Str(format!("{}{}", x, crate::builtins::fmt_value_raw(b2)).into()),
+                    (Value::Char(c), Value::Str(y)) => Value::Str(concat_text(c.encode_utf8(&mut [0; 4]), y).into()),
+                    (Value::Str(x), Value::Char(c)) => Value::Str(concat_text(x, c.encode_utf8(&mut [0; 4])).into()),
+                    (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(concat_text(&crate::builtins::fmt_value_raw(a2), y).into()),
+                    (Value::Str(x), b2) if b_spec.is_some() => Value::Str(concat_text(x, &crate::builtins::fmt_value_raw(b2)).into()),
                     (other, Value::Str(_)) | (Value::Str(_), other) => {
                         let t = other.type_name();
                         return Err(GoblinError::Runtime(format!(
@@ -812,7 +812,10 @@ impl Vm {
                 let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
                 // An empty side adds no space; surrounding quote marks are dropped.
-                let joined = if a_str.is_empty() { b_str } else if b_str.is_empty() { a_str } else { format!("{} {}", a_str, b_str) };
+                let joined = if a_str.is_empty() { b_str } else if b_str.is_empty() { a_str } else {
+                    let mut j = String::with_capacity(a_str.len() + 1 + b_str.len());
+                    j.push_str(&a_str); j.push(' '); j.push_str(&b_str); j
+                };
                 let result = Value::Str(joined.trim_matches('"').to_string().into());
                 self.stack.push(Operand::Val(result));
             }
@@ -2320,11 +2323,11 @@ impl Vm {
                         _ => return Err(GoblinError::Runtime("StringInterpVals: bad constant".into())),
                     }
                 };
-                let mut vals: Vec<(String, Value)> = Vec::with_capacity(n as usize);
+                let mut vals: Vec<(crate::value::GStr, Value)> = Vec::with_capacity(n as usize);
                 for i in (0..n as usize).rev() {
                     let v = self.pop_value()?;
                     let Value::Str(name) = &parts[i + 1] else { continue };
-                    vals.push((name.to_string(), v));
+                    vals.push((name.clone(), v));
                 }
                 let Value::Str(template) = &parts[0] else {
                     return Err(GoblinError::Runtime("StringInterpVals: bad template".into()));
@@ -2459,12 +2462,29 @@ impl Vm {
                             _ => { out.push('{'); out.push_str(raw); out.push('}'); }
                         }
                     } else if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                        let val = self.lookup_interp_var(inner);
+                        // Text is copied straight into the result; other values
+                        // are formatted first.
+                        // A value resolved at compile time is formatted where
+                        // it sits, so a big array or map is not copied first.
+                        let over = self.interp_overrides.iter().find(|(n, _)| n.as_str() == inner)
+                            .map(|(_, v)| match v {
+                                Value::Str(t) => Ok(t.clone()),
+                                v => Err(crate::builtins::fmt_value_raw(v)),
+                            });
+                        let found = if over.is_some() { None } else { self.lookup_interp_value(inner) };
+                        let formatted;
+                        let val: &str = match (&over, &found) {
+                            (Some(Ok(t)), _) => t.as_str(),
+                            (Some(Err(f)), _) => f,
+                            (None, Some(Value::Str(t))) => t.as_str(),
+                            (None, Some(v)) => { formatted = crate::builtins::fmt_value_raw(v); &formatted }
+                            (None, None) => { formatted = format!("{{{}}}", inner); &formatted }
+                        };
                         // Secondary resolve: a regular variable's value may contain {#...}
                         if val.contains("{#") {
-                            out.push_str(&self.resolve_box_template_from_store(&val));
+                            out.push_str(&self.resolve_box_template_from_store(val));
                         } else {
-                            out.push_str(&val);
+                            out.push_str(val);
                         }
                     } else {
                         out.push('{'); out.push_str(raw); out.push('}');
@@ -2472,18 +2492,18 @@ impl Vm {
                     i = j + 1;
                     lit = i;
                 }
-                _ => i += 1,
+                // Literal text: jump straight to the next `\\` or `{`.
+                _ => i = memchr::memchr2(b'\\', b'{', &b[i + 1..]).map_or(n, |k| i + 1 + k),
             }
         }
         out.push_str(&s[lit..]);
         Ok(out)
     }
 
-    fn lookup_interp_var(&mut self, name: &str) -> String {
-        // 0. Values resolved at compile time (StringInterpVals).
-        if let Some((_, v)) = self.interp_overrides.iter().find(|(n, _)| n == name) {
-            return crate::builtins::fmt_value_raw(v);
-        }
+    /// The value `{name}` interpolates from the variables in scope (values
+    /// resolved at compile time are looked up by the caller), or None when
+    /// nothing by that name is in scope (the text then stays as written).
+    fn lookup_interp_value(&mut self, name: &str) -> Option<Value> {
         // 1. Check locals in current frame by name
         let local_tether = self.call_stack.last().and_then(|frame| {
             frame.func.local_names.iter().position(|n| n == name)
@@ -2491,7 +2511,7 @@ impl Vm {
         });
         if let Some(t) = local_tether {
             if let Ok(v) = self.session.read_value(&t) {
-                return crate::builtins::fmt_value_raw(&v);
+                return Some(v);
             }
         }
         // 2. If self (locals[0]) is an Object, check its fields
@@ -2500,7 +2520,7 @@ impl Vm {
         if let Some(t) = self_tether {
             if let Ok(Value::Object(ref o)) = self.session.read_value(&t) {
                 if let Some(fv) = o.fields.get(name) {
-                    return crate::builtins::fmt_value_raw(fv);
+                    return Some(fv.clone());
                 }
             }
         }
@@ -2515,11 +2535,11 @@ impl Vm {
             });
         if let Some(t) = global_tether {
             if let Ok(v) = self.session.read_value(&t) {
-                return crate::builtins::fmt_value_raw(&v);
+                return Some(v);
             }
         }
         // 4. Soft fail
-        format!("{{{}}}", name)
+        None
     }
 
     // ── Quickening ───────────────────────────────────────────────────────────
@@ -4799,4 +4819,12 @@ impl Marker {
             _ => {}
         }
     }
+}
+
+/// `a + b` for text, copied once into a string of exactly the right size.
+fn concat_text(a: &str, b: &str) -> String {
+    let mut s = String::with_capacity(a.len() + b.len());
+    s.push_str(a);
+    s.push_str(b);
+    s
 }
