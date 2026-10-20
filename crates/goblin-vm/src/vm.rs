@@ -1352,6 +1352,9 @@ impl Vm {
                     let bid = *bid;
                     let arg_vals = self.drain_operands(func_idx + 1)?;
                     self.stack.pop(); // pop the func operand
+                    if crate::host::is_host_call(bid) && crate::actor::on_worker() {
+                        return self.host_call_on_worker(bid, arg_vals);
+                    }
                     let result = crate::builtins::call_builtin(bid, arg_vals, &mut self.session)?;
                     self.stack.push(Operand::Val(result));
                 } else {
@@ -1489,6 +1492,11 @@ impl Vm {
                             crate::actor::Started::Later(w) => self.suspended = Some(w),
                         }
                         return Ok(());
+                    }
+                    // A database or HTTP call on an actor's worker does not
+                    // hold the worker while it waits (host.rs).
+                    _ if crate::host::is_host_call(id) && crate::actor::on_worker() => {
+                        return self.host_call_on_worker(id, arg_vals);
                     }
                     BuiltinId::Actor | BuiltinId::ActorFromVar => {
                         let result = self.actor_create(arg_vals, id == BuiltinId::ActorFromVar)?;
@@ -4226,6 +4234,23 @@ impl Vm {
     /// A field's default, evaluated afresh for every new object (as the
     /// interpreter does), so objects never share a default list or map.
     /// The compiled expression is kept per class field.
+    /// A database or HTTP call on an actor's worker (host.rs): in a handler
+    /// the VM can stop, the handler waits like `:await`; elsewhere the
+    /// worker runs its other actors until the answer is there.
+    fn host_call_on_worker(&mut self, id: BuiltinId, args: Vec<Value>) -> Result<(), GoblinError> {
+        let call = crate::host::prepare(id, &args)?;
+        if self.resumable {
+            match crate::actor::start_io(call, &mut self.session)? {
+                crate::actor::Started::Now(v) => self.stack.push(Operand::Val(v)),
+                crate::actor::Started::Later(w) => self.suspended = Some(w),
+            }
+        } else {
+            let v = crate::actor::io_here(call, &mut self.session)?;
+            self.stack.push(Operand::Val(v));
+        }
+        Ok(())
+    }
+
     fn field_default(&mut self, class: &str, field: &str, expr: &goblin_ast::Expr) -> Result<Value, GoblinError> {
         if let Some(v) = eval_default_expr(expr) { return Ok(v); }
         let key = (class.to_string(), field.to_string());

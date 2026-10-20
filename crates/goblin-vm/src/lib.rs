@@ -19,4 +19,5 @@ pub mod portable;
 pub(crate) mod reach;
 pub mod swarm;
 pub mod actor;
+pub mod host;
 pub mod startup;

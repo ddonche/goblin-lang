@@ -4540,110 +4540,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
-        // ── Outbound HTTP ─────────────────────────────────────────────────────
-        BuiltinId::HttpGet => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(GoblinError::Runtime(format!("http_get: expected 1-2 args (url[, headers]), got {}", args.len())));
-            }
-            let url = match read(0)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_get")),
-            };
-            let headers = if args.len() == 2 { http_extract_headers(read(1)?, "http_get")? } else { vec![] };
-            http_call("GET", &url, None, "", &headers)
-        }
-
-        BuiltinId::HttpPost => {
-            if args.len() < 2 || args.len() > 4 {
-                return Err(GoblinError::Runtime(format!("http_post: expected 2-4 args (url, body[, content_type[, headers]]), got {}", args.len())));
-            }
-            let url = match read(0)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_post url")),
-            };
-            let body = match read(1)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_post body")),
-            };
-            let content_type = if args.len() >= 3 {
-                match read(2)? { Value::Str(s) => s.into_string(), _ => "application/json".to_string() }
-            } else { "application/json".to_string() };
-            let headers = if args.len() == 4 { http_extract_headers(read(3)?, "http_post")? } else { vec![] };
-            http_call("POST", &url, Some(&body), &content_type, &headers)
-        }
-
-        BuiltinId::HttpPut => {
-            if args.len() < 2 || args.len() > 4 {
-                return Err(GoblinError::Runtime(format!("http_put: expected 2-4 args (url, body[, content_type[, headers]]), got {}", args.len())));
-            }
-            let url = match read(0)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_put url")),
-            };
-            let body = match read(1)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_put body")),
-            };
-            let content_type = if args.len() >= 3 {
-                match read(2)? { Value::Str(s) => s.into_string(), _ => "application/json".to_string() }
-            } else { "application/json".to_string() };
-            let headers = if args.len() == 4 { http_extract_headers(read(3)?, "http_put")? } else { vec![] };
-            http_call("PUT", &url, Some(&body), &content_type, &headers)
-        }
-
-        BuiltinId::HttpDelete => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(GoblinError::Runtime(format!("http_delete: expected 1-2 args (url[, headers]), got {}", args.len())));
-            }
-            let url = match read(0)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_delete")),
-            };
-            let headers = if args.len() == 2 { http_extract_headers(read(1)?, "http_delete")? } else { vec![] };
-            http_call("DELETE", &url, None, "", &headers)
-        }
-
-        BuiltinId::DbQuery | BuiltinId::DbQueryOne | BuiltinId::DbExec => {
-            let fn_name = match id { BuiltinId::DbQuery => "db_query", BuiltinId::DbQueryOne => "db_query_one", _ => "db_exec" };
-            if args.len() != 2 {
-                return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: fn_name.into() });
-            }
-            let sql = match read(0)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), fn_name)),
-            };
-            let params = match read(1)? {
-                v @ (Value::Array(_) | Value::Collection(_)) => value_to_items(v, "db params")?,
-                Value::Seq(s) => s.items,
-                _ => return Err(GoblinError::Runtime(format!("{fn_name} params argument must be an array"))),
-            };
-            db_call(id, &sql, &params, fn_name)
-        }
-
-        BuiltinId::HttpRequest => {
-            if args.len() != 5 {
-                return Err(GoblinError::Runtime(format!("http_request: expected 5 args (method, url, body, content_type, headers), got {}", args.len())));
-            }
-            let method = match read(0)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_request method")),
-            };
-            let url = match read(1)? {
-                Value::Str(s) => s,
-                other => return Err(GoblinError::type_error("str", other.type_name(), "http_request url")),
-            };
-            let body_opt = match read(2)? {
-                Value::Str(s) => Some(s),
-                Value::Nil => None,
-                other => return Err(GoblinError::type_error("str or nil", other.type_name(), "http_request body")),
-            };
-            let content_type = match read(3)? {
-                Value::Str(s) => s,
-                Value::Nil => "application/json".to_string().into(),
-                other => return Err(GoblinError::type_error("str or nil", other.type_name(), "http_request content_type")),
-            };
-            let headers = http_extract_headers(read(4)?, "http_request")?;
-            http_call(&method, &url, body_opt.as_deref().map(|x| x.as_str()), &content_type, &headers)
+        // ── Database and outbound HTTP (see host.rs) ─────────────────────────
+        BuiltinId::HttpGet | BuiltinId::HttpPost | BuiltinId::HttpPut | BuiltinId::HttpDelete
+        | BuiltinId::HttpRequest | BuiltinId::DbQuery | BuiltinId::DbQueryOne | BuiltinId::DbExec => {
+            crate::host::prepare(id, &args)?.run_here()
         }
 
         BuiltinId::RenderTemplate => {
@@ -5180,7 +5080,7 @@ fn require_collection(v: Value, op: &'static str) -> Result<std::rc::Rc<Collecti
 }
 
 /// Extract a Vec<Value> from either Value::Array or Value::Collection.
-fn value_to_items(v: Value, op: &'static str) -> Result<Vec<Value>, GoblinError> {
+pub(crate) fn value_to_items(v: Value, op: &'static str) -> Result<Vec<Value>, GoblinError> {
     match v {
         Value::Array(xs) => Ok(xs),
         Value::Collection(c) => {
@@ -6064,89 +5964,6 @@ fn process_memory_bytes() -> usize {
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn process_memory_bytes() -> usize { 0 }
 
-// ── HTTP helpers ──────────────────────────────────────────────────────────────
-
-fn http_extract_headers(v: Value, caller: &str) -> Result<Vec<(String, String)>, GoblinError> {
-    match v {
-        Value::Map(m) => Ok(m.into_iter().map(|(k, v)| (k, match v {
-            Value::Str(s) => s.into_string(), other => fmt_value_raw(&other),
-        })).collect()),
-        Value::MapOrd(m) => Ok(m.into_iter().map(|(k, v)| (k, match v {
-            Value::Str(s) => s.into_string(), other => fmt_value_raw(&other),
-        })).collect()),
-        Value::Collection(c) if collections::is_map_collection(&c) => Ok(collections::to_pairs(&c).into_iter().map(|(k, v)| (
-            match k { Value::Str(s) => s.into_string(), other => fmt_value_raw(&other) },
-            match v { Value::Str(s) => s.into_string(), other => fmt_value_raw(&other) },
-        )).collect()),
-        Value::Nil => Ok(vec![]),
-        other => Err(GoblinError::Runtime(format!("{caller}: headers must be a map, got {}", other.type_name()))),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn http_call(method: &str, url: &str, body: Option<&str>, content_type: &str, headers: &[(String, String)]) -> Result<Value, GoblinError> {
-    match goblin_http::request(method, url, body, content_type, &headers.to_vec()) {
-        Ok(resp) => {
-            let mut m = std::collections::BTreeMap::new();
-            m.insert("status".to_string(), Value::Int(resp.status as i64));
-            m.insert("body".to_string(), Value::Str(resp.body.into()));
-            m.insert("ok".to_string(), Value::Bool(resp.status < 400));
-            Ok(Value::Map(m))
-        }
-        Err(e) => Err(GoblinError::Runtime(format!("http error: {e}"))),
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn http_call(_method: &str, _url: &str, _body: Option<&str>, _content_type: &str, _headers: &[(String, String)]) -> Result<Value, GoblinError> {
-    Err(GoblinError::Runtime("outbound HTTP is not available in WASM builds".into()))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn db_call(id: BuiltinId, sql: &str, params: &[Value], fn_name: &str) -> Result<Value, GoblinError> {
-    use goblin_db::DbValue;
-    let mut ps = Vec::with_capacity(params.len());
-    for v in params {
-        ps.push(match v {
-            Value::Str(s) => DbValue::Str(s.to_string()),
-            Value::Int(n) => DbValue::Int(*n),
-            Value::Float(x) => DbValue::Float(*x),
-            Value::Bool(b) => DbValue::Bool(*b),
-            Value::Nil => DbValue::Null,
-            _ => return Err(GoblinError::Runtime(format!(
-                "{fn_name} got an unsupported parameter type (supported: str, int, float, bool, nil)"))),
-        });
-    }
-    // Rows come back as map collections (and query results as an array
-    // collection): shared on read, where the legacy MapOrd/Array forms were
-    // deep-copied every time a variable holding them was read.
-    let row_to_value = |row: goblin_db::DbRow| -> Value {
-        collections::into_collection(Value::MapOrd(row.into_iter().map(|(k, c)| (k, match c {
-            DbValue::Null => Value::Nil,
-            DbValue::Bool(b) => Value::Bool(b),
-            DbValue::Int(n) => Value::Int(n),
-            DbValue::Float(x) => Value::Float(x),
-            DbValue::Str(s) => Value::Str(s.into()),
-        })).collect::<indexmap::IndexMap<_, _>>().into()))
-    };
-    let err = |e: goblin_db::DbError| GoblinError::Runtime(e.to_string());
-    match id {
-        BuiltinId::DbQuery => Ok(collections::into_collection(Value::Array(goblin_db::query(sql, &ps).map_err(err)?.into_iter().map(row_to_value).collect()))),
-        BuiltinId::DbQueryOne => Ok(goblin_db::query_one(sql, &ps).map_err(err)?.map(row_to_value).unwrap_or(Value::Nil)),
-        _ => {
-            let n = goblin_db::exec(sql, &ps).map_err(err)?;
-            let mut m = indexmap::IndexMap::new();
-            m.insert("ok".to_string(), Value::Bool(true));
-            m.insert("rows_affected".to_string(), Value::Int(n as i64));
-            Ok(collections::into_collection(Value::MapOrd(Box::new(m))))
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn db_call(_id: BuiltinId, _sql: &str, _params: &[Value], fn_name: &str) -> Result<Value, GoblinError> {
-    Err(GoblinError::Runtime(format!("{fn_name}: databases are not available in WASM builds")))
-}
 
 /// Parses JSON straight into Goblin values. Objects keep their key order
 /// (D6: maps are insertion-ordered; serde_json's own map sorts its keys) and

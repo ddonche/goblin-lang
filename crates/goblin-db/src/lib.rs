@@ -85,6 +85,7 @@ fn pooled() -> Result<&'static Pooled, DbError> {
         .map_err(|e| DbError::Connect(e.to_string()))?;
     // Lives for the rest of the process, like the connection pool it holds.
     let p: &'static Pooled = Box::leak(Box::new(Pooled { rt, pool }));
+    ready().write().unwrap_or_else(|e| e.into_inner()).insert(url.clone(), p);
     map.insert(url, p);
     Ok(p)
 }
@@ -177,4 +178,101 @@ pub fn exec(sql: &str, params: &[DbValue]) -> Result<u64, DbError> {
             .map_err(|e| DbError::Exec(e.to_string()))?;
         Ok(res.rows_affected())
     }))
+}
+
+/// Which call a statement started with [`start`] is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kind { Query, QueryOne, Exec }
+
+/// What a statement started with [`start`] gives.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    Rows(Vec<DbRow>),
+    Row(Option<DbRow>),
+    Affected(u64),
+}
+
+/// Start a statement without waiting for it. `done` runs on the pool's
+/// runtime once it finishes, so the caller's thread is free meanwhile.
+/// Gives the same results and errors as [`query`], [`query_one`] and [`exec`].
+/// The first statement for a database connects on a thread of its own, so
+/// the caller does not wait for that either.
+pub fn start(kind: Kind, sql: String, params: Vec<DbValue>, done: impl FnOnce(Result<Outcome, DbError>) + Send + 'static) {
+    if let Some(p) = ready_pool() {
+        return spawn_statement(p, kind, sql, params, done);
+    }
+    when_connected(Box::new(move |r| match r {
+        Ok(p) => spawn_statement(p, kind, sql, params, done),
+        Err(e) => done(Err(e)),
+    }));
+}
+
+type Waiter = Box<dyn FnOnce(Result<&'static Pooled, DbError>) + Send>;
+
+/// Statements waiting for the database to connect, by URL. Only the first
+/// caller starts a connect thread; the rest join its queue.
+fn connecting() -> &'static Mutex<HashMap<String, Vec<Waiter>>> {
+    static CONNECTING: OnceLock<Mutex<HashMap<String, Vec<Waiter>>>> = OnceLock::new();
+    CONNECTING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Run `w` with the pool once it is connected (or with the error).
+fn when_connected(w: Waiter) {
+    let url = std::env::var("DATABASE_URL").unwrap_or_default();
+    let mut map = connecting().lock().unwrap_or_else(|e| e.into_inner());
+    // Connected while we took the lock.
+    if let Some(p) = ready_pool() {
+        drop(map);
+        return w(Ok(p));
+    }
+    if let Some(q) = map.get_mut(&url) {
+        q.push(w);
+        return;
+    }
+    map.insert(url.clone(), vec![w]);
+    drop(map);
+    let key = url.clone();
+    let finish = move |r: Result<&'static Pooled, DbError>| {
+        let waiters = connecting().lock().unwrap_or_else(|e| e.into_inner()).remove(&key).unwrap_or_default();
+        for w in waiters { w(r.clone()); }
+    };
+    let spawned = std::thread::Builder::new().name("goblin-db-connect".into()).spawn({
+        let finish = finish.clone();
+        move || finish(pooled())
+    });
+    if let Err(e) = spawned {
+        finish(Err(DbError::Runtime(format!("could not start a thread to connect to the database: {e}"))));
+    }
+}
+
+/// The pool for `DATABASE_URL` if it is already connected, without waiting.
+fn ready_pool() -> Option<&'static Pooled> {
+    let url = std::env::var("DATABASE_URL").ok()?;
+    ready().read().unwrap_or_else(|e| e.into_inner()).get(&url).copied()
+}
+
+/// Connected pools, readable while another database is still connecting
+/// (`pools()` stays locked during a connect).
+fn ready() -> &'static std::sync::RwLock<HashMap<String, &'static Pooled>> {
+    static READY: OnceLock<std::sync::RwLock<HashMap<String, &'static Pooled>>> = OnceLock::new();
+    READY.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+fn spawn_statement(p: &'static Pooled, kind: Kind, sql: String, params: Vec<DbValue>, done: impl FnOnce(Result<Outcome, DbError>) + Send + 'static) {
+    let pool = p.pool.clone();
+    p.rt.spawn(async move {
+        let q = bind(sqlx::query(&sql), &params);
+        let r = match kind {
+            Kind::Query => q.fetch_all(&pool).await
+                .map(|rows| Outcome::Rows(rows.iter().map(to_row).collect()))
+                .map_err(|e| DbError::Query(e.to_string())),
+            Kind::QueryOne => q.fetch_optional(&pool).await
+                .map(|row| Outcome::Row(row.as_ref().map(to_row)))
+                .map_err(|e| DbError::Query(e.to_string())),
+            Kind::Exec => q.execute(&pool).await
+                .map(|res| Outcome::Affected(res.rows_affected()))
+                .map_err(|e| DbError::Exec(e.to_string())),
+        };
+        done(r);
+    });
 }
