@@ -1,0 +1,36 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Inside a handler, :receive() takes the next message from the actor's own mailbox (a whole batch can be handled in one go); :receive(limit) gives nil if nothing arrives in time, and :receive(0s) takes only what is already queued. A request taken this way is answered with the state the handler returns. Outside an actor there is no mailbox (C0120).
+act batch(total, n)
+    total |= total + n
+    more | :receive(0s)
+    while more != nil
+        total |= total + more
+        more |= :receive(0s)
+    xx
+    return total
+xx
+b | :actor(0, batch)
+i | 1
+while i <= 10
+    :post(b, i)
+    i |= i + 1
+xx
+say(:await(:request(b, 0)))
+act pair(state, first)
+    second | :receive()
+    return state + [first, second]
+xx
+p | :actor([], pair)
+f1 | :request(p, "a")
+f2 | :request(p, "b")
+say(:await(f1))
+say(:await(f2))
+act patient(state, msg)
+    return [msg, :receive(1s)]
+xx
+say(:await(:request(:actor(0, patient), "alone")))
+attempt
+    :receive()
+rescue e
+    say(:has("{e}", "C0120"))
+xx

@@ -239,6 +239,58 @@ say(:await(:request(w, ch)){"got"})
     assert!(t.elapsed() < Duration::from_secs(10));
 }
 
+/// A handler waiting in `:receive()` for its own next message gives its
+/// worker up: another actor on the only worker answers meanwhile, and the
+/// message that arrives later finishes the first one's request.
+#[test]
+fn receive_from_its_own_mailbox_leaves_the_worker_free() {
+    let src = r#"act gather(state, first)
+    second | :receive()
+    return [first, second]
+xx
+act echo(state, msg)
+    return msg
+xx
+g | :actor([], gather)
+e | :actor(0, echo)
+f | :request(g, "one")
+say(:await(:request(e, 7)))
+:post(g, "two")
+say(:await(f))
+"#;
+    let out = run("own-mailbox", src, 1, &[]);
+    assert_eq!(out.trim(), "7\n[one, two]");
+}
+
+/// Halting an actor whose handler waits in `:receive()` gives that wait
+/// nil, the handler finishes, and the actor ends; cancelling it fails the
+/// request with C0116.
+#[test]
+fn halt_or_cancel_reaches_a_handler_waiting_on_its_own_mailbox() {
+    let src = r#"act gather(state, first)
+    return [first, :receive()]
+xx
+g | :actor([], gather)
+f | :request(g, "one")
+nap | :channel(1)
+:receive(nap, 0.3s)
+:halt(g)
+say(:await(f))
+say(:await(g))
+h | :actor([], gather)
+f2 | :request(h, "one")
+:receive(nap, 0.3s)
+:cancel(h)
+attempt
+    :await(f2)
+rescue e
+    say(:has("{e}", "C0116"))
+xx
+"#;
+    let out = run("own-mailbox-halt", src, 1, &[]);
+    assert_eq!(out.trim(), "[one, nil]\n[one, nil]\ntrue");
+}
+
 fn status_kb(out: &str, key: &str) -> usize {
     out.lines().find_map(|l| l.strip_prefix(key)).map(|n| n.trim().trim_end_matches("kB").trim().parse().unwrap()).unwrap()
 }
