@@ -413,6 +413,10 @@ pub struct ActorShared {
     /// Requests the running handler took with `:receive()`: answered with
     /// the state the handler returns, like the request that started it.
     pulled: Mutex<Vec<Arc<Reply>>>,
+    /// The `idle` policy, and when the actor last took a message: a handler
+    /// waiting in `:receive()` counts as idle too.
+    idle: Option<Duration>,
+    last_active: Mutex<Instant>,
 }
 
 impl ActorShared {
@@ -968,6 +972,8 @@ impl Vm {
             worker,
             scheduled: AtomicBool::new(false),
             pulled: Mutex::new(Vec::new()),
+            idle: policy.idle,
+            last_active: Mutex::new(Instant::now()),
         });
         // The worker builds the actor's session on its own thread.
         sched.workers[worker].push(Job::Start(Box::new(Start {
@@ -1172,7 +1178,6 @@ struct Slot {
     stop_when: Option<Value>,
     state: Value,
     idle: Option<Duration>,
-    last_active: Instant,
     /// When the idle timer set last will fire.
     idle_timer: Option<Instant>,
     /// The message being handled, while the handler is stopped part-way.
@@ -1205,7 +1210,6 @@ impl Slot {
             stop_when,
             state,
             idle: s.idle,
-            last_active: Instant::now(),
             idle_timer: None,
             current: None,
         }
@@ -1248,7 +1252,7 @@ impl Slot {
             match self.shared.mailbox.pop_or_register(Some(&me)) {
                 Pop::Item(msg) => {
                     handled += 1;
-                    self.last_active = Instant::now();
+                    *lock(&self.shared.last_active) = Instant::now();
                     // A :cancel that landed while this message was being
                     // taken: it is not handled, like the rest of the queue.
                     if self.shared.cancelled.load(Ordering::SeqCst) {
@@ -1280,7 +1284,7 @@ impl Slot {
                 }
                 Pop::Empty => {
                     if let Some(idle) = self.idle {
-                        let due = self.last_active + idle;
+                        let due = *lock(&self.shared.last_active) + idle;
                         if Instant::now() >= due {
                             // Closes only if still empty; either way, look again.
                             self.shared.mailbox.close_if_empty();
@@ -1522,23 +1526,41 @@ fn poll_wait(w: Wait, waker: Option<&Waker>, session: &mut Session) -> Result<Re
             Some(f) => Ok(f()),
             None => Err(Wait::Io(s)),
         },
-        Wait::Mailbox(a, deadline, timer_set) => match a.mailbox.pop_or_register(waker) {
-            Pop::Item(Msg::Post(p)) => Ok(Ok(snapshot(&p, session))),
-            Pop::Item(Msg::Request(p, r)) => {
-                lock(&a.pulled).push(r);
-                Ok(Ok(snapshot(&p, session)))
-            }
-            Pop::Closed => Ok(Ok(Value::Nil)),
-            Pop::Empty => {
-                let mut timer_set = timer_set;
-                if let Some(d) = deadline {
-                    if Instant::now() >= d { return Ok(Ok(Value::Nil)); }
-                    if !timer_set {
+        Wait::Mailbox(a, deadline, timer_set) => loop {
+            match a.mailbox.pop_or_register(waker) {
+                Pop::Item(msg) => {
+                    *lock(&a.last_active) = Instant::now();
+                    let p = match msg {
+                        Msg::Post(p) => p,
+                        Msg::Request(p, r) => { lock(&a.pulled).push(r); p }
+                    };
+                    return Ok(Ok(snapshot(&p, session)));
+                }
+                Pop::Closed => return Ok(Ok(Value::Nil)),
+                Pop::Empty => {
+                    let now = Instant::now();
+                    // Idle for the `idle` policy's time: the mailbox closes,
+                    // `:receive()` gives nil, and the actor ends once the
+                    // handler returns. Closes only if still empty; look again.
+                    let idle_due = a.idle.map(|i| *lock(&a.last_active) + i);
+                    if idle_due.is_some_and(|d| now >= d) {
+                        a.mailbox.close_if_empty();
+                        continue;
+                    }
+                    if deadline.is_some_and(|d| now >= d) { return Ok(Ok(Value::Nil)); }
+                    let mut timer_set = timer_set;
+                    // Neither changes while this wait lasts: last_active
+                    // moves only when a message is taken, which ends it.
+                    let wake = match (deadline, idle_due) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (d, i) => d.or(i),
+                    };
+                    if let (Some(d), false) = (wake, timer_set) {
                         if let Some(w) = waker { timer_at(d, w.clone()); }
                         timer_set = true;
                     }
+                    return Err(Wait::Mailbox(a, deadline, timer_set));
                 }
-                Err(Wait::Mailbox(a, deadline, timer_set))
             }
         },
     }

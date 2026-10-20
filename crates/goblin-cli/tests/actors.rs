@@ -262,6 +262,31 @@ say(:await(f))
     assert_eq!(out.trim(), "7\n[one, two]");
 }
 
+/// The `idle` policy counts a handler waiting in `:receive()` as idle:
+/// with nothing arriving, the wait gives nil and the actor ends. A message
+/// taken by `:receive()` counts as activity, like one the actor takes itself.
+#[test]
+fn the_idle_policy_reaches_a_handler_waiting_on_its_own_mailbox() {
+    let src = r#"act gather(state, first)
+    second | :receive()
+    third | :receive()
+    return [first, second, third]
+xx
+g | :actor([], gather, {idle: 0.4s})
+f | :request(g, "one")
+nap | :channel(1)
+:receive(nap, 0.3s)
+:post(g, "two")
+:receive(nap, 0.3s)
+say(:await(f))
+say(:await(g))
+"#;
+    let t0 = Instant::now();
+    let out = run("idle-receive", src, 1, &[]);
+    assert_eq!(out.trim(), "[one, two, nil]\n[one, two, nil]");
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+}
+
 /// Halting an actor whose handler waits in `:receive()` gives that wait
 /// nil, the handler finishes, and the actor ends; cancelling it fails the
 /// request with C0116.
