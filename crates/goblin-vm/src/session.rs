@@ -234,6 +234,10 @@ pub struct Session {
     /// `import path as alias`: (importing file, alias) → the module's global-name
     /// prefix, so `alias::var` reads the module's live global.
     pub module_aliases: Rc<HashMap<(String, String), String>>,
+    /// `import path as alias`: the path (resolved against its directory) →
+    /// the module's global-name prefix. A request imports the same few
+    /// modules from many files; this resolves each path on disk once.
+    pub import_paths: HashMap<std::path::PathBuf, String>,
 
     /// Box store: namespace::name → Value (cross-module mutable state).
     pub box_store: HashMap<String, Value>,
@@ -348,6 +352,7 @@ impl Session {
             box_namespace: None,
             box_provides: None,
             module_aliases: Default::default(),
+            import_paths: HashMap::new(),
             box_store: HashMap::new(),
             action_needs: Default::default(),
             action_file_map: Default::default(),

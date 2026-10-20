@@ -2028,11 +2028,18 @@ impl Vm {
                 // Remember which module this alias names in the importing file
                 // (the first import under an alias wins).
                 let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
-                let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
-                    let p = full_path.with_extension("gbln");
-                    if p.exists() { p } else { full_path.clone() }
-                } else { full_path.clone() };
-                let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
+                let prefix = match self.session.import_paths.get(&full_path) {
+                    Some(hit) => hit.clone(),
+                    None => {
+                        let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+                            let p = full_path.with_extension("gbln");
+                            if p.exists() { p } else { full_path.clone() }
+                        } else { full_path.clone() };
+                        let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
+                        self.session.import_paths.insert(full_path.clone(), prefix.clone());
+                        prefix
+                    }
+                };
                 match self.session.module_aliases.get(&(importer.clone(), ns.to_string())) {
                     Some(first) if *first != prefix => {
                         // A second module under an alias this file already uses:
@@ -2058,17 +2065,33 @@ impl Vm {
                 // used to take every file under the module's directory, which
                 // gave `alias::` names to sibling files' actions and, run for
                 // every import, was a large part of a request's time.
+                // A request imports the same modules from many files, so this
+                // runs often: look the file up directly (a scan only for paths
+                // written with backslashes), and add only the names missing.
                 let own = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
                 let targets = [own(&full_path), own(&full_path.with_extension("gbln"))];
-                let pairs: Vec<(String, Value)> = targets.iter()
-                    .filter_map(|t| self.session.action_file_map.iter()
-                        .find(|(file, _)| file.replace('\\', "/") == *t)
-                        .map(|(_, pairs)| pairs.clone()))
-                    .next()
-                    .unwrap_or_default();
-                for (bare_name, val) in pairs {
-                    let qualified = format!("{}::{}", ns, bare_name);
-                    std::rc::Rc::make_mut(&mut self.session.named_values).entry(qualified).or_insert(val);
+                let files = &self.session.action_file_map;
+                let list = targets.iter().find_map(|t| files.get(t.as_str()).or_else(|| {
+                    files.iter()
+                        .find(|(file, _)| file.contains('\\') && file.replace('\\', "/") == *t)
+                        .map(|(_, pairs)| pairs)
+                }));
+                if let Some(list) = list {
+                    let mut qualified = String::new();
+                    let mut missing = Vec::new();
+                    for (bare_name, val) in list {
+                        qualified.clear();
+                        qualified.push_str(&ns);
+                        qualified.push_str("::");
+                        qualified.push_str(bare_name);
+                        if !self.session.named_values.contains_key(qualified.as_str()) {
+                            missing.push((qualified.clone(), val.clone()));
+                        }
+                    }
+                    if !missing.is_empty() {
+                        let names = std::rc::Rc::make_mut(&mut self.session.named_values);
+                        for (k, v) in missing { names.entry(k).or_insert(v); }
+                    }
                 }
             }
 
