@@ -123,11 +123,26 @@ pub struct Vm {
     catch_stack: Vec<CatchFrame>,
     /// Placeholder values for the string being interpolated (StringInterpVals).
     interp_overrides: Vec<(String, Value)>,
+    /// True while an actor's handler runs at the level the VM can stop and
+    /// continue later (no builtin calling back into Goblin in between).
+    resumable: bool,
+    /// Set by a waiting builtin that stopped the handler: what it waits for.
+    suspended: Option<crate::actor::Wait>,
+}
+
+/// How far an actor's handler got in one go.
+pub enum Slice {
+    /// It returned this value.
+    Done(Value),
+    /// It stopped at a waiting builtin; it goes on once this is there.
+    Waiting(crate::actor::Wait),
+    /// It ran a while and gave its worker up; it can go on at once.
+    Yielded,
 }
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1464,6 +1479,15 @@ impl Vm {
 
                 // Special handling for builtins that need VM call capability.
                 match id {
+                    // In an actor's handler a wait stops the handler; the
+                    // worker runs other actors until the value is there.
+                    BuiltinId::Await | BuiltinId::Receive | BuiltinId::Post if self.resumable => {
+                        match crate::actor::start_wait(id, arg_vals, &mut self.session)? {
+                            crate::actor::Started::Now(v) => self.stack.push(Operand::Val(v)),
+                            crate::actor::Started::Later(w) => self.suspended = Some(w),
+                        }
+                        return Ok(());
+                    }
                     BuiltinId::Actor | BuiltinId::ActorFromVar => {
                         let result = self.actor_create(arg_vals, id == BuiltinId::ActorFromVar)?;
                         self.stack.push(Operand::Val(result));
@@ -2767,6 +2791,124 @@ impl Vm {
     }
 
     pub(crate) fn run_until_depth(&mut self, target_depth: usize) -> Result<(), GoblinError> {
+        // A nested run sits under Rust code (a builtin calling back into
+        // Goblin), so a wait inside it cannot stop the handler.
+        let was = std::mem::replace(&mut self.resumable, false);
+        let r = self.run_until_depth_inner(target_depth);
+        self.resumable = was;
+        r
+    }
+
+    /// An error at depth above `target_depth`: an `attempt` there catches it,
+    /// otherwise it gets its location and the frames above unwind.
+    fn raise_above(&mut self, e: GoblinError, target_depth: usize) -> Result<(), GoblinError> {
+        let e = match self.catch_error(e, target_depth) { Ok(()) => return Ok(()), Err(e) => e };
+        let located = if matches!(e, GoblinError::WithLocation { .. }) {
+            e
+        } else {
+            let (line, file) = self.call_stack.last()
+                .map(|f| (
+                    f.func.line_numbers.get(f.ip.saturating_sub(1)).copied().unwrap_or(0),
+                    f.func.source_file.clone(),
+                ))
+                .unwrap_or((0, String::new()));
+            GoblinError::WithLocation { inner: Box::new(e), line, file }
+        };
+        while self.call_stack.len() > target_depth {
+            self.call_stack.pop();
+        }
+        Err(located)
+    }
+
+    /// Start an actor's handler: push its frame and run it as far as it goes.
+    pub(crate) fn start_actor_call(&mut self, callee: Value, args: Vec<Value>) -> Result<Slice, GoblinError> {
+        let base = self.call_stack.len();
+        let (func_rc, upvalues) = match callee {
+            Value::Function(f) => (f, Vec::new()),
+            Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
+            Value::Str(ref name) => match self.session.named_values.get(name.as_str()).cloned() {
+                Some(Value::Function(f)) => (f, Vec::new()),
+                Some(Value::Closure(c)) => (c.func.clone(), c.upvalues.clone()),
+                // A builtin, or anything else: called the plain way.
+                _ => return self.call_callable(callee, args).map(Slice::Done),
+            },
+            other => return Err(GoblinError::NotCallable { got: other.type_name() }),
+        };
+        if args.len() != func_rc.params {
+            return Err(GoblinError::ArityMismatch { expected: func_rc.params, got: args.len(), name: func_rc.name.clone() });
+        }
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+        let stack_base = self.stack.len();
+        self.stack.push(Operand::Val(Value::Nil));
+        let mut frame = CallFrame::new(func_rc, upvalues, stack_base);
+        for (i, a) in args.into_iter().enumerate() {
+            let t = self.session.alloc_value(a);
+            frame.locals[i] = Some(t);
+        }
+        self.call_stack.push(frame);
+        self.run_slice(base)
+    }
+
+    /// Go on with a handler that stopped at a waiting builtin: `r` is what
+    /// the builtin gives (or the error it raises there).
+    pub(crate) fn resume_actor(&mut self, r: Result<Value, GoblinError>, base: usize) -> Result<Slice, GoblinError> {
+        match r {
+            Ok(v) => self.stack.push(Operand::Val(v)),
+            Err(e) => self.raise_above(e, base)?,
+        }
+        self.run_slice(base)
+    }
+
+    /// Go on with a handler that gave its worker up.
+    pub(crate) fn continue_actor(&mut self, base: usize) -> Result<Slice, GoblinError> {
+        self.run_slice(base)
+    }
+
+    /// Run the handler above `base` until it returns, waits, or has run
+    /// `OP_BUDGET` instructions.
+    fn run_slice(&mut self, base: usize) -> Result<Slice, GoblinError> {
+        self.resumable = true;
+        let r = self.run_slice_inner(base);
+        self.resumable = false;
+        r
+    }
+
+    fn run_slice_inner(&mut self, base: usize) -> Result<Slice, GoblinError> {
+        let mut budget = crate::actor::OP_BUDGET;
+        while self.call_stack.len() > base {
+            if self.session.gc_due() { self.vm_gc(); }
+            let op = {
+                let frame = self.call_stack.last_mut().unwrap();
+                if frame.ip >= frame.func.bytecode.len() {
+                    let stack_base = frame.stack_base;
+                    self.call_stack.pop();
+                    self.stack.truncate(stack_base);
+                    self.stack.push(Operand::Val(Value::Nil));
+                    continue;
+                }
+                let op = frame.func.bytecode[frame.ip];
+                frame.ip += 1;
+                op
+            };
+            if let Err(e) = self.execute_op(op) {
+                self.raise_above(e, base)?;
+            }
+            if let Some(w) = self.suspended.take() {
+                return Ok(Slice::Waiting(w));
+            }
+            budget -= 1;
+            if budget == 0 && self.call_stack.len() > base {
+                return Ok(Slice::Yielded);
+            }
+        }
+        let op = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("call: no return value on stack".into()))?;
+        Ok(Slice::Done(self.resolve_op(op)?))
+    }
+
+    fn run_until_depth_inner(&mut self, target_depth: usize) -> Result<(), GoblinError> {
         while self.call_stack.len() > target_depth {
             // Nested runs (`:summon`, callbacks) collect too; the frames below
             // stay on `call_stack`, so they are still roots.
