@@ -443,7 +443,18 @@ impl ActorShared {
     }
     /// Stop taking messages; the actor finishes the ones it accepted.
     pub fn halt(&self) { self.mailbox.close(); }
+    /// Stop taking messages and stop the handler at its next checkpoint:
+    /// a wait (`:await`, `:receive`, a database or HTTP call, ...) or its
+    /// next turn after running a while. Queued requests fail with C0116.
+    pub fn cancel(self: &Arc<Self>) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.mailbox.close();
+        // Wake it, wherever it waits.
+        schedule(self);
+    }
 }
+
+const CANCELLED_MIDWAY: &str = "C0116: actor-cancelled: the actor was cancelled while it handled this request";
 
 /// Ends every actor a session started: each finishes the messages it already
 /// accepted, then ends (structured ownership, spec VI). Called when the
@@ -451,6 +462,27 @@ impl ActorShared {
 pub fn finish_owned(actors: &mut Vec<Arc<ActorShared>>) {
     for a in actors.iter() { a.halt(); }
     for a in actors.drain(..) { let _ = a.wait_end(); }
+}
+
+/// Cancels every actor a session started and waits for each to end.
+pub fn cancel_owned(actors: &mut Vec<Arc<ActorShared>>) {
+    for a in actors.iter() { a.cancel(); }
+    for a in actors.drain(..) { let _ = a.wait_end(); }
+}
+
+/// Shutdown: halt the actors, give them `grace` to finish what they
+/// accepted, then cancel the ones still running. Gives how many were
+/// cancelled.
+pub fn finish_owned_within(actors: &mut Vec<Arc<ActorShared>>, grace: Duration) -> usize {
+    for a in actors.iter() { a.halt(); }
+    let deadline = Instant::now() + grace;
+    for a in actors.iter() {
+        let _ = block_on(Some(deadline), |w| a.poll_end(Some(w)));
+    }
+    let left: Vec<Arc<ActorShared>> = actors.drain(..).filter(|a| !a.ended()).collect();
+    for a in &left { a.cancel(); }
+    for a in &left { let _ = a.wait_end(); }
+    left.len()
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────
@@ -1161,6 +1193,10 @@ impl Slot {
         let me = Waker::Actor(self.shared.clone());
         let mut handled = 0usize;
         loop {
+            if self.current.is_some() && self.shared.cancelled.load(Ordering::SeqCst) {
+                self.cancel_midway();
+                return false;
+            }
             if let Some(cur) = self.current.as_mut() {
                 let base = cur.base;
                 let step = match cur.wait.take() {
@@ -1241,6 +1277,12 @@ impl Slot {
     /// take the next. Some(false): the handler waits or gave the worker up.
     /// None: the actor has ended.
     fn after_step(&mut self, step: Result<Slice, GoblinError>) -> Option<bool> {
+        // Cancelled during this step: the request fails as cancelled, even
+        // if the handler caught the failed wait or finished anyway.
+        if self.shared.cancelled.load(Ordering::SeqCst) {
+            self.cancel_midway();
+            return None;
+        }
         match step {
             Ok(Slice::Done(v)) => {
                 let reply = self.current.take().and_then(|c| c.reply);
@@ -1305,6 +1347,15 @@ impl Slot {
         self.shared.finish(End::Failed(msg));
     }
 
+    /// Cancelled with a message in progress: its request fails, then the
+    /// actor ends as cancelled.
+    fn cancel_midway(&mut self) {
+        if let Some(r) = self.current.take().and_then(|c| c.reply) {
+            r.set(Err(CANCELLED_MIDWAY.into()));
+        }
+        self.end_cancelled();
+    }
+
     fn end_cancelled(&mut self) {
         self.shared.mailbox.close();
         for m in self.shared.mailbox.drain() {
@@ -1312,7 +1363,7 @@ impl Slot {
                 r.set(Err("C0116: actor-cancelled: the actor was cancelled before it handled this request".into()));
             }
         }
-        self.vm.session.finish_actors();
+        self.vm.session.cancel_actors();
         self.shared.finish(End::Cancelled);
     }
 
@@ -1406,10 +1457,18 @@ fn poll_wait(w: Wait, waker: Option<&Waker>, session: &mut Session) -> Result<Re
 
 /// Wait on this thread until `w` is there. On a worker, other actors run meanwhile.
 fn wait_here(w: Wait, session: &mut Session) -> Result<Value, GoblinError> {
+    let me = current_actor();
     let mut pending = Some(w);
-    block_on(None, |waker| match poll_wait(pending.take().unwrap(), Some(waker), session) {
-        Ok(r) => Some(r),
-        Err(w) => { pending = Some(w); None }
+    block_on(None, |waker| {
+        // A wait inside a callback cannot be saved; once the actor is
+        // cancelled it fails instead, and the handler ends as cancelled.
+        if me.as_ref().is_some_and(|a| a.cancelled.load(Ordering::SeqCst)) {
+            return Some(Err(err(CANCELLED_MIDWAY)));
+        }
+        match poll_wait(pending.take().unwrap(), Some(waker), session) {
+            Ok(r) => Some(r),
+            Err(w) => { pending = Some(w); None }
+        }
     }).unwrap()
 }
 
@@ -1576,8 +1635,7 @@ pub fn cancel(args: Vec<Value>) -> Result<Value, GoblinError> {
     expect_args(&args, 1, "cancel")?;
     match handle_arg(&args[0], ":cancel")? {
         Handle::Actor(a) => {
-            a.cancelled.store(true, Ordering::SeqCst);
-            a.mailbox.close();
+            a.cancel();
             Ok(Value::Nil)
         }
         other => Err(err(format!("C0118: not-a-handle: :cancel expects an actor, got {}", other.kind()))),

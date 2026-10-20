@@ -230,7 +230,7 @@ fn main() {
             }
         }
         let code = run_devserver_with_proxies(host, port, proxies, start_vm);
-        goblin_vm::startup::finish();
+        goblin_vm::startup::finish_for_shutdown();
         std::process::exit(code);
     }
 
