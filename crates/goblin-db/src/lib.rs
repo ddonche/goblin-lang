@@ -178,3 +178,41 @@ pub fn exec(sql: &str, params: &[DbValue]) -> Result<u64, DbError> {
         Ok(res.rows_affected())
     }))
 }
+
+/// Which call a statement started with [`start`] is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kind { Query, QueryOne, Exec }
+
+/// What a statement started with [`start`] gives.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    Rows(Vec<DbRow>),
+    Row(Option<DbRow>),
+    Affected(u64),
+}
+
+/// Start a statement without waiting for it. `done` runs on the pool's
+/// runtime once it finishes, so the caller's thread is free meanwhile.
+/// Gives the same results and errors as [`query`], [`query_one`] and [`exec`].
+pub fn start(kind: Kind, sql: String, params: Vec<DbValue>, done: impl FnOnce(Result<Outcome, DbError>) + Send + 'static) {
+    let p = match pooled() {
+        Ok(p) => p,
+        Err(e) => return done(Err(e)),
+    };
+    let pool = p.pool.clone();
+    p.rt.spawn(async move {
+        let q = bind(sqlx::query(&sql), &params);
+        let r = match kind {
+            Kind::Query => q.fetch_all(&pool).await
+                .map(|rows| Outcome::Rows(rows.iter().map(to_row).collect()))
+                .map_err(|e| DbError::Query(e.to_string())),
+            Kind::QueryOne => q.fetch_optional(&pool).await
+                .map(|row| Outcome::Row(row.as_ref().map(to_row)))
+                .map_err(|e| DbError::Query(e.to_string())),
+            Kind::Exec => q.execute(&pool).await
+                .map(|res| Outcome::Affected(res.rows_affected()))
+                .map_err(|e| DbError::Exec(e.to_string())),
+        };
+        done(r);
+    });
+}

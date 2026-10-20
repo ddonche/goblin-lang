@@ -1006,6 +1006,95 @@ pub enum Wait {
     Recv(Arc<Channel>, Option<Instant>, bool),
     /// Room in a full channel for this value.
     Send(Arc<Channel>, PValue),
+    /// A database or HTTP call started elsewhere (host.rs).
+    Io(Arc<IoSlot>),
+}
+
+/// Where a host call started by an actor leaves its outcome.
+pub struct IoSlot {
+    slot: Mutex<(Option<crate::host::Finish>, Vec<Waker>)>,
+}
+
+impl IoSlot {
+    fn finish(&self, f: crate::host::Finish) {
+        let mut s = lock(&self.slot);
+        s.0 = Some(f);
+        let w = std::mem::take(&mut s.1);
+        drop(s);
+        wake_all(w);
+    }
+    /// The outcome, or None after registering `w`.
+    fn poll(&self, w: Option<&Waker>) -> Option<crate::host::Finish> {
+        let mut s = lock(&self.slot);
+        if let Some(f) = s.0.take() { return Some(f); }
+        if let Some(w) = w { add_waiter(&mut s.1, w); }
+        None
+    }
+}
+
+/// True on an actor worker thread.
+pub fn on_worker() -> bool { WORKER.with(|w| w.borrow().is_some()) }
+
+fn start_host_call(call: crate::host::HostCall) -> Wait {
+    let slot = Arc::new(IoSlot { slot: Mutex::new((None, Vec::new())) });
+    let s2 = slot.clone();
+    call.start(move |f| s2.finish(f));
+    Wait::Io(slot)
+}
+
+/// A database or HTTP call from an actor's handler where the VM can stop
+/// it part-way: started elsewhere, with the actor woken once it is done.
+pub fn start_io(call: crate::host::HostCall, session: &mut Session) -> Result<Started, GoblinError> {
+    let w = start_host_call(call);
+    let me = current_actor().map(Waker::Actor);
+    match poll_wait(w, me.as_ref(), session) {
+        Ok(r) => Ok(Started::Now(r?)),
+        Err(w) => Ok(Started::Later(w)),
+    }
+}
+
+/// A database or HTTP call on a worker where the handler cannot stop
+/// (inside a callback): the worker runs its other actors while it waits.
+pub fn io_here(call: crate::host::HostCall, session: &mut Session) -> Result<Value, GoblinError> {
+    wait_here(start_host_call(call), session)
+}
+
+type BlockingJob = Box<dyn FnOnce() + Send>;
+
+struct BlockingPool {
+    tx: Mutex<std::sync::mpsc::Sender<BlockingJob>>,
+    rx: Arc<Mutex<std::sync::mpsc::Receiver<BlockingJob>>>,
+    idle: AtomicUsize,
+    live: AtomicUsize,
+    max: usize,
+}
+
+/// Run `job` on a thread kept for calls that block (outbound HTTP). Threads
+/// are started as needed, up to `GOBLIN_IO_THREADS` (default 64); past
+/// that, jobs wait their turn.
+pub fn run_blocking(job: BlockingJob) {
+    static POOL: OnceLock<BlockingPool> = OnceLock::new();
+    let p = POOL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let max = std::env::var("GOBLIN_IO_THREADS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(64);
+        BlockingPool { tx: Mutex::new(tx), rx: Arc::new(Mutex::new(rx)), idle: AtomicUsize::new(0), live: AtomicUsize::new(0), max }
+    });
+    if p.idle.load(Ordering::SeqCst) == 0 {
+        if p.live.fetch_add(1, Ordering::SeqCst) < p.max {
+            let rx = p.rx.clone();
+            let idle: &'static AtomicUsize = &p.idle;
+            let spawned = std::thread::Builder::new().name("goblin-io".into()).spawn(move || loop {
+                idle.fetch_add(1, Ordering::SeqCst);
+                let job = lock(&rx).recv();
+                idle.fetch_sub(1, Ordering::SeqCst);
+                match job { Ok(j) => j(), Err(_) => return }
+            });
+            if spawned.is_err() { p.live.fetch_sub(1, Ordering::SeqCst); }
+        } else {
+            p.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    let _ = lock(&p.tx).send(job);
 }
 
 /// What a waiting builtin gives inside an actor's handler.
@@ -1299,6 +1388,10 @@ fn poll_wait(w: Wait, waker: Option<&Waker>, session: &mut Session) -> Result<Re
             Push::Done => Ok(Ok(Value::Bool(true))),
             Push::Closed(_) => Ok(Err(channel_closed())),
             Push::Full(p) => Err(Wait::Send(c, p)),
+        },
+        Wait::Io(s) => match s.poll(waker) {
+            Some(f) => Ok(f()),
+            None => Err(Wait::Io(s)),
         },
     }
 }

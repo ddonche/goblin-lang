@@ -1490,6 +1490,21 @@ impl Vm {
                         }
                         return Ok(());
                     }
+                    // A database or HTTP call on an actor's worker does not
+                    // hold the worker while it waits (host.rs).
+                    _ if crate::host::is_host_call(id) && crate::actor::on_worker() => {
+                        let call = crate::host::prepare(id, &arg_vals)?;
+                        if self.resumable {
+                            match crate::actor::start_io(call, &mut self.session)? {
+                                crate::actor::Started::Now(v) => self.stack.push(Operand::Val(v)),
+                                crate::actor::Started::Later(w) => self.suspended = Some(w),
+                            }
+                        } else {
+                            let v = crate::actor::io_here(call, &mut self.session)?;
+                            self.stack.push(Operand::Val(v));
+                        }
+                        return Ok(());
+                    }
                     BuiltinId::Actor | BuiltinId::ActorFromVar => {
                         let result = self.actor_create(arg_vals, id == BuiltinId::ActorFromVar)?;
                         self.stack.push(Operand::Val(result));
