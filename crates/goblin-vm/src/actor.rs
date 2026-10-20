@@ -536,6 +536,8 @@ struct Start {
     idle: Option<Duration>,
     seed: u128,
     worker_id: usize,
+    /// Restarts allowed within a minute (`restart: "on_failure"`).
+    restart: Option<usize>,
 }
 
 impl WorkerQ {
@@ -702,10 +704,12 @@ fn turn(shared: Arc<ActorShared>, mut slot: Box<Slot>) {
         Ok(alive) => alive,
         Err(_) => {
             let msg = "the handler crashed (internal error)";
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| slot.fail(msg.into()))).is_err() {
-                crash(&shared, msg);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| slot.fail(msg.into()))) {
+                // Restarted: go on with the queued messages.
+                Ok(true) => { schedule(&shared); true }
+                Ok(false) => false,
+                Err(_) => { crash(&shared, msg); false }
             }
-            false
         }
     };
     CURRENT_ACTOR.with(|c| *c.borrow_mut() = prev);
@@ -789,9 +793,16 @@ struct Policy {
     mailbox: usize,
     idle: Option<Duration>,
     stop_when: Option<Value>,
+    /// `restart: "on_failure"`: restarts allowed within a minute.
+    restart: Option<usize>,
+    max_restarts: Option<usize>,
 }
+
+/// Restarts an actor may have within this long before it gives up.
+const RESTART_WINDOW: Duration = Duration::from_secs(60);
+const DEFAULT_MAX_RESTARTS: usize = 5;
 fn policy_of(v: Option<Value>) -> Result<Policy, GoblinError> {
-    let mut p = Policy { mailbox: DEFAULT_MAILBOX, idle: None, stop_when: None };
+    let mut p = Policy { mailbox: DEFAULT_MAILBOX, idle: None, stop_when: None, restart: None, max_restarts: None };
     let Some(v) = v else { return Ok(p) };
     if matches!(v, Value::Nil) { return Ok(p); }
     let Some(entries) = v.map_entries() else {
@@ -816,12 +827,24 @@ fn policy_of(v: Option<Value>) -> Result<Policy, GoblinError> {
                 other => return Err(err(format!(
                     "C0108: actor-policy: stop_when must be an action, got {}", other.type_name()))),
             },
-            "restart" if matches!(&val, Value::Str(s) if s.as_str() == "never") => {}
-            "restart" | "max_restarts" => return Err(err(
-                "C0109: actor-restart-unsupported: restart policies are not built yet; an actor whose handler fails stops, and its error is reported (leave restart out, or use restart: \"never\")")),
+            "restart" => match &val {
+                Value::Str(s) if s.as_str() == "never" => p.restart = None,
+                Value::Str(s) if s.as_str() == "on_failure" => p.restart = Some(DEFAULT_MAX_RESTARTS),
+                other => return Err(err(format!(
+                    "C0108: actor-policy: restart must be \"on_failure\" or \"never\", got {}", crate::builtins::value_to_str(other)))),
+            },
+            "max_restarts" => match val {
+                Value::Int(n) if n >= 1 => p.max_restarts = Some(n as usize),
+                other => return Err(err(format!(
+                    "C0108: actor-policy: max_restarts must be a positive whole number, got {}", crate::builtins::value_to_str(&other)))),
+            },
             other => return Err(err(format!(
-                "C0108: actor-policy: unknown policy key `{other}` (known: mailbox, idle, stop_when, restart)"))),
+                "C0108: actor-policy: unknown policy key `{other}` (known: mailbox, idle, stop_when, restart, max_restarts)"))),
         }
+    }
+    if let (Some(m), Some(_)) = (p.max_restarts, p.restart) { p.restart = Some(m); }
+    if p.max_restarts.is_some() && p.restart.is_none() {
+        return Err(err("C0109: actor-restart-policy: max_restarts only applies with restart: \"on_failure\""));
     }
     Ok(p)
 }
@@ -979,6 +1002,7 @@ impl Vm {
             idle: policy.idle,
             seed: self.session.next_u128(),
             worker_id: self.session.worker_id,
+            restart: policy.restart,
         })));
 
         // Handed over: the objects now belong to the actor.
@@ -1177,6 +1201,35 @@ struct Slot {
     idle_timer: Option<Instant>,
     /// The message being handled, while the handler is stopped part-way.
     current: Option<Current>,
+    /// What a restart starts from, when the actor restarts on failure.
+    restart: Option<Box<Restart>>,
+}
+
+/// An actor that restarts keeps what it was started from, so a restart
+/// builds it again from scratch: its starting state, its own copy of the
+/// program's variables, and nothing the failed run left behind.
+struct Restart {
+    image: crate::swarm::Image,
+    state: PValue,
+    handler: PValue,
+    stop_when: Option<PValue>,
+    seed: u128,
+    worker_id: usize,
+    max: usize,
+    /// When it restarted, within the last minute.
+    times: VecDeque<Instant>,
+}
+
+/// A fresh session for an actor, with its handler, stop condition and state.
+fn incarnate(image: &crate::swarm::Image, handler: &PValue, stop_when: Option<&PValue>, state: &PValue, seed: u128, worker_id: usize) -> (Vm, Value, Option<Value>, Value) {
+    let mut fp = FromPortable::new().sharing_functions();
+    let mut vm = Vm::new(crate::swarm::build_session(image, &mut fp, worker_id));
+    vm.session.rng_state = seed | 1;
+    let handler = fp.value(handler, &mut vm.session);
+    let stop_when = stop_when.map(|p| fp.value(p, &mut vm.session));
+    let first = fp.value(state, &mut vm.session);
+    let state = adopt(first, &mut vm.session);
+    (vm, handler, stop_when, state)
 }
 
 struct Current {
@@ -1189,15 +1242,11 @@ struct Current {
 
 impl Slot {
     fn build(s: Start) -> Slot {
-        let mut fp = FromPortable::new().sharing_functions();
-        let mut vm = Vm::new(crate::swarm::build_session(&s.image, &mut fp, s.worker_id));
-        drop(s.image);
-        vm.session.rng_state = s.seed | 1;
-        let handler = fp.value(&s.handler, &mut vm.session);
-        let stop_when = s.stop_when.as_ref().map(|p| fp.value(p, &mut vm.session));
-        let first = fp.value(&s.state, &mut vm.session);
-        let state = adopt(first, &mut vm.session);
-        drop(fp);
+        let (vm, handler, stop_when, state) = incarnate(&s.image, &s.handler, s.stop_when.as_ref(), &s.state, s.seed, s.worker_id);
+        let restart = s.restart.map(|max| Box::new(Restart {
+            image: s.image, state: s.state, handler: s.handler, stop_when: s.stop_when,
+            seed: s.seed, worker_id: s.worker_id, max, times: VecDeque::new(),
+        }));
         Slot {
             shared: s.shared,
             vm,
@@ -1208,6 +1257,7 @@ impl Slot {
             last_active: Instant::now(),
             idle_timer: None,
             current: None,
+            restart,
         }
     }
 
@@ -1321,8 +1371,7 @@ impl Slot {
                 Some(false)
             }
             Err(e) => {
-                self.fail(e.to_string());
-                None
+                if self.fail(e.to_string()) { Some(true) } else { None }
             }
         }
     }
@@ -1330,8 +1379,7 @@ impl Slot {
     /// The handler returned `next`. Says whether the actor goes on.
     fn finish_message(&mut self, next: Value, reply: Option<Arc<Reply>>) -> bool {
         if matches!(next, Value::Nil) {
-            self.fail_with("the handler returned nil; it must return the actor's next state".into(), reply);
-            return false;
+            return self.fail_with("the handler returned nil; it must return the actor's next state".into(), reply);
         }
         self.state = adopt(next, &mut self.vm.session);
         let pulled = std::mem::take(&mut *lock(&self.shared.pulled));
@@ -1351,41 +1399,75 @@ impl Slot {
                     return false;
                 }
                 Err(e) => {
-                    self.fail_with(format!("stop_when failed: {e}"), None);
-                    return false;
+                    return self.fail_with(format!("stop_when failed: {e}"), None);
                 }
             }
         }
         true
     }
 
-    fn fail(&mut self, msg: String) {
+    /// Says whether the actor goes on (it restarted).
+    fn fail(&mut self, msg: String) -> bool {
         let reply = self.current.take().and_then(|c| c.reply);
-        self.fail_with(msg, reply);
+        self.fail_with(msg, reply)
+    }
+
+    fn name(&self) -> String {
+        match &self.handler {
+            Value::Function(f) => f.name.clone(),
+            Value::Closure(c) => c.func.name.clone(),
+            other => crate::builtins::fmt_value_raw(other),
+        }
+    }
+
+    /// `restart: "on_failure"`: build the actor again from what it was
+    /// started from. False when it may not restart (not asked for, being
+    /// cancelled, or out of restarts for this minute).
+    fn restart(&mut self, msg: &str) -> bool {
+        if self.shared.cancelled.load(Ordering::SeqCst) { return false; }
+        let name = self.name();
+        let Some(r) = self.restart.as_mut() else { return false };
+        let now = Instant::now();
+        while r.times.front().is_some_and(|t| now.duration_since(*t) >= RESTART_WINDOW) { r.times.pop_front(); }
+        if r.times.len() >= r.max {
+            eprintln!("goblin: actor `{name}` failed: {msg}; it already restarted {} times within a minute, so it stays stopped", r.max);
+            return false;
+        }
+        r.times.push_back(now);
+        let n = r.times.len();
+        let max = r.max;
+        let (vm, handler, stop_when, state) = incarnate(&r.image, &r.handler, r.stop_when.as_ref(), &r.state, r.seed, r.worker_id);
+        // The actors the failed run started go with it.
+        self.vm.session.cancel_actors();
+        self.vm = vm;
+        self.handler = handler;
+        self.stop_when = stop_when;
+        self.state = state;
+        self.last_active = now;
+        eprintln!("goblin: actor `{name}` failed: {msg}; restarted with its starting state ({n} of {max} restarts this minute)");
+        true
     }
 
     /// The handler failed: refuse new messages, fail the queued requests,
     /// let the actors this one started finish, then end.
-    fn fail_with(&mut self, msg: String, reply: Option<Arc<Reply>>) {
+    /// The handler failed. Its requests get the error; with `restart:
+    /// "on_failure"` the actor starts again and goes on with its queued
+    /// messages (true). Otherwise it refuses new messages, fails the queued
+    /// requests, lets the actors it started finish, and ends (false).
+    fn fail_with(&mut self, msg: String, reply: Option<Arc<Reply>>) -> bool {
+        let pulled = std::mem::take(&mut *lock(&self.shared.pulled));
+        let told = reply.is_some() || !pulled.is_empty();
+        for r in pulled { r.set(Err(msg.clone())); }
+        if let Some(r) = &reply { r.set(Err(msg.clone())); }
+        if self.restart.is_some() && self.restart(&msg) { return true; }
         let shared = &self.shared;
         *lock(&shared.failure) = Some(msg.clone());
         shared.mailbox.close();
-        let pulled = std::mem::take(&mut *lock(&shared.pulled));
-        let told = reply.is_some() || !pulled.is_empty();
-        for r in pulled { r.set(Err(msg.clone())); }
-        match reply {
-            Some(r) => r.set(Err(msg.clone())),
-            None if told => {}
-            // No request carries this failure back (a posted message, or the
-            // stop condition): say so, so it is never lost silently.
-            None => {
-                let name = match &self.handler {
-                    Value::Function(f) => f.name.clone(),
-                    Value::Closure(c) => c.func.name.clone(),
-                    other => crate::builtins::fmt_value_raw(other),
-                };
-                eprintln!("goblin: actor `{name}` failed: {msg}");
-            }
+        // No request carries this failure back (a posted message, or the
+        // stop condition): say so, so it is never lost silently. (A
+        // restarting actor that gave up has said so already.)
+        if !told && self.restart.is_none() {
+            eprintln!("goblin: actor `{}` failed: {msg}", self.name());
         }
         let rest = format!("C0112: actor-failed: the actor stopped because its handler failed: {msg}");
         for m in shared.mailbox.drain() {
@@ -1393,6 +1475,7 @@ impl Slot {
         }
         self.vm.session.finish_actors();
         self.shared.finish(End::Failed(msg));
+        false
     }
 
     /// Cancelled with a message in progress: its request fails, then the

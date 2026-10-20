@@ -1,5 +1,5 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// The policy map: stop_when(state) is checked after each message; idle ends an actor that gets no message for that long; restart policies are not built yet (C0109); unknown keys are errors (C0108).
+/// The policy map: stop_when(state) is checked after each message; idle ends an actor that gets no message for that long; restart takes "on_failure" or "never" (C0108), and max_restarts only goes with restart: "on_failure" (C0109); unknown keys are errors (C0108).
 act count(state, msg)
     return state + 1
 xx
@@ -20,9 +20,14 @@ rescue e
     say(:has("{e}", "C0111: actor-stopped"))
 xx
 attempt
-    :actor(0, count, {restart: "on_failure"})
+    :actor(0, count, {restart: "always"})
 rescue e
-    say(:has("{e}", "C0109: actor-restart-unsupported"))
+    say(:has("{e}", "C0108: actor-policy: restart must be"))
+xx
+attempt
+    :actor(0, count, {max_restarts: 3})
+rescue e
+    say(:has("{e}", "C0109: actor-restart-policy"))
 xx
 attempt
     :actor(0, count, {colour: 1})

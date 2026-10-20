@@ -1,0 +1,25 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// restart: "on_failure" builds a failed actor again from what it was started with: its starting state and its own fresh copy of the program's variables. The request that failed gets the error; the handle and the queued messages carry on. After max_restarts (default 5) within a minute it stays stopped (C0112).
+seen | 0
+act flaky(state, msg)
+    seen |= seen + 1
+    if msg == "boom" => return 1 / 0
+    return state + [msg, seen]
+xx
+a | :actor([], flaky, {restart: "on_failure", max_restarts: 2})
+say(:await(:request(a, "a")))
+say(:await(:request(a, "b")))
+attempt
+    :await(:request(a, "boom"))
+rescue e
+    say(:has("{e}", "division by zero"))
+xx
+say(:await(:request(a, "c")))
+:post(a, "boom")
+say(:await(:request(a, "d")))
+:post(a, "boom")
+attempt
+    :await(:request(a, "e"))
+rescue e
+    say(:has("{e}", "C0112: actor-failed"))
+xx
