@@ -37,6 +37,9 @@ pub fn cached_regex(pat: &str) -> Result<std::sync::Arc<regex::Regex>, regex::Er
     }
     let re = Arc::new(regex::Regex::new(pat)?);
     let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+    // Another thread may have compiled the same pattern meanwhile: hand out
+    // its copy so every thread shares one.
+    if let Some(re) = c.get(pat) { return Ok(Arc::clone(re)); }
     if c.len() >= 512 { c.clear(); }
     c.insert(pat.to_string(), Arc::clone(&re));
     Ok(re)
