@@ -114,6 +114,7 @@ while i < 20
     :put_last!(hs, :actor(0, fetch))
     i |= i + 1
 xx
+:await(:request(hs[0], "http://127.0.0.1:{port}/0"))
 say("start")
 fs | []
 for h in hs
@@ -125,8 +126,10 @@ for f in fs
 xx
 say("total {{total}}")
 "#);
+    // The first call leaves an idle thread behind, so the burst after it
+    // finds one thread already waiting: more must still start.
     let lines = run_timed("http-overlap", &src, &[]);
-    let took = at(&lines, "total 40") - at(&lines, "start");
+    let took = at(&lines, "total 42") - at(&lines, "start");
     // One after another would take 6 s.
     assert!(took < Duration::from_millis(2500), "20 calls took {took:?}");
 }
@@ -225,4 +228,69 @@ say(:await(:request(:actor(0, ex), 0)) == :db_exec("select 1", []))
     assert!(took < Duration::from_millis(1500), "10 calls took {took:?}");
     let tail: Vec<&str> = lines.iter().skip(2).map(|(_, l)| l.as_str()).collect();
     assert_eq!(tail, ["true", "true", "true"]);
+}
+
+/// A builtin held in a variable and called through it waits the same way.
+#[test]
+fn a_host_builtin_called_as_a_value_leaves_its_worker_free() {
+    let port = slow_server();
+    let src = format!(r#"act slow(state, url)
+    fetch | http_get
+    return fetch(url){{"body"}}
+xx
+act echo(state, msg)
+    return msg
+xx
+s | :actor("", slow)
+p | :actor(0, echo)
+:await(:request(p, 0))
+say("start")
+f | :request(s, "http://127.0.0.1:{port}/800")
+:await(:request(p, 1))
+say("ping")
+say(:await(f))
+"#);
+    let lines = run_timed("http-value", &src, &[]);
+    let (start, ping, done) = (at(&lines, "start"), at(&lines, "ping"), at(&lines, "ok"));
+    assert!(ping - start < Duration::from_millis(400), "ping took {:?}", ping - start);
+    assert!(done - start >= Duration::from_millis(800));
+}
+
+/// The first database call connects without holding the worker: a server
+/// that is slow to answer the connection does not stall the other actors.
+#[test]
+fn connecting_to_the_database_leaves_the_worker_free() {
+    // Accepts, says nothing for a second, then hangs up.
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(1000)); drop(s); });
+        }
+    });
+    let src = r#"act q(state, msg)
+    attempt
+        :db_query("select 1", [])
+    rescue e
+        return "failed"
+    xx
+    return "connected"
+xx
+act echo(state, msg)
+    return msg
+xx
+d | :actor("", q)
+p | :actor(0, echo)
+:await(:request(p, 0))
+say("start")
+f | :request(d, 0)
+:await(:request(p, 1))
+say("ping")
+say(:await(f))
+"#;
+    let url = format!("postgres://nobody@127.0.0.1:{port}/none");
+    let lines = run_timed("db-connect", src, &[("DATABASE_URL", &url)]);
+    let (start, ping) = (at(&lines, "start"), at(&lines, "ping"));
+    assert!(ping - start < Duration::from_millis(500), "ping took {:?}", ping - start);
+    assert_eq!(lines.last().unwrap().1, "failed");
 }

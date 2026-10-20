@@ -1064,34 +1064,42 @@ type BlockingJob = Box<dyn FnOnce() + Send>;
 struct BlockingPool {
     tx: Mutex<std::sync::mpsc::Sender<BlockingJob>>,
     rx: Arc<Mutex<std::sync::mpsc::Receiver<BlockingJob>>>,
-    idle: AtomicUsize,
+    /// Jobs sent and not yet finished.
+    outstanding: AtomicUsize,
+    /// Threads started.
     live: AtomicUsize,
     max: usize,
 }
 
-/// Run `job` on a thread kept for calls that block (outbound HTTP). Threads
-/// are started as needed, up to `GOBLIN_IO_THREADS` (default 64); past
-/// that, jobs wait their turn.
+/// Run `job` on a thread kept for calls that block (outbound HTTP). A new
+/// thread starts whenever more jobs are waiting or running than there are
+/// threads, up to `GOBLIN_IO_THREADS` (default 64); past that, jobs wait
+/// their turn.
 pub fn run_blocking(job: BlockingJob) {
     static POOL: OnceLock<BlockingPool> = OnceLock::new();
     let p = POOL.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel();
         let max = std::env::var("GOBLIN_IO_THREADS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(64);
-        BlockingPool { tx: Mutex::new(tx), rx: Arc::new(Mutex::new(rx)), idle: AtomicUsize::new(0), live: AtomicUsize::new(0), max }
+        BlockingPool { tx: Mutex::new(tx), rx: Arc::new(Mutex::new(rx)), outstanding: AtomicUsize::new(0), live: AtomicUsize::new(0), max }
     });
-    if p.idle.load(Ordering::SeqCst) == 0 {
-        if p.live.fetch_add(1, Ordering::SeqCst) < p.max {
-            let rx = p.rx.clone();
-            let idle: &'static AtomicUsize = &p.idle;
-            let spawned = std::thread::Builder::new().name("goblin-io".into()).spawn(move || loop {
-                idle.fetch_add(1, Ordering::SeqCst);
-                let job = lock(&rx).recv();
-                idle.fetch_sub(1, Ordering::SeqCst);
-                match job { Ok(j) => j(), Err(_) => return }
-            });
-            if spawned.is_err() { p.live.fetch_sub(1, Ordering::SeqCst); }
-        } else {
-            p.live.fetch_sub(1, Ordering::SeqCst);
+    let wanted = p.outstanding.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut live = p.live.load(Ordering::SeqCst);
+    while wanted > live && live < p.max {
+        match p.live.compare_exchange(live, live + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {
+                let rx = p.rx.clone();
+                let outstanding: &'static AtomicUsize = &p.outstanding;
+                let spawned = std::thread::Builder::new().name("goblin-io".into()).spawn(move || loop {
+                    let job = lock(&rx).recv();
+                    match job {
+                        Ok(j) => { j(); outstanding.fetch_sub(1, Ordering::SeqCst); }
+                        Err(_) => return,
+                    }
+                });
+                if spawned.is_err() { p.live.fetch_sub(1, Ordering::SeqCst); }
+                break;
+            }
+            Err(now) => live = now,
         }
     }
     let _ = lock(&p.tx).send(job);

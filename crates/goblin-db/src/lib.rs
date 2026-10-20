@@ -85,6 +85,7 @@ fn pooled() -> Result<&'static Pooled, DbError> {
         .map_err(|e| DbError::Connect(e.to_string()))?;
     // Lives for the rest of the process, like the connection pool it holds.
     let p: &'static Pooled = Box::leak(Box::new(Pooled { rt, pool }));
+    ready().write().unwrap_or_else(|e| e.into_inner()).insert(url.clone(), p);
     map.insert(url, p);
     Ok(p)
 }
@@ -194,11 +195,35 @@ pub enum Outcome {
 /// Start a statement without waiting for it. `done` runs on the pool's
 /// runtime once it finishes, so the caller's thread is free meanwhile.
 /// Gives the same results and errors as [`query`], [`query_one`] and [`exec`].
+/// The first statement for a database connects on a thread of its own, so
+/// the caller does not wait for that either.
 pub fn start(kind: Kind, sql: String, params: Vec<DbValue>, done: impl FnOnce(Result<Outcome, DbError>) + Send + 'static) {
-    let p = match pooled() {
-        Ok(p) => p,
-        Err(e) => return done(Err(e)),
-    };
+    match ready_pool() {
+        Some(p) => spawn_statement(p, kind, sql, params, done),
+        None => {
+            let spawned = std::thread::Builder::new().name("goblin-db-connect".into()).spawn(move || match pooled() {
+                Ok(p) => spawn_statement(p, kind, sql, params, done),
+                Err(e) => done(Err(e)),
+            });
+            if let Err(e) = spawned { eprintln!("goblin-db: could not start a connect thread: {e}"); }
+        }
+    }
+}
+
+/// The pool for `DATABASE_URL` if it is already connected, without waiting.
+fn ready_pool() -> Option<&'static Pooled> {
+    let url = std::env::var("DATABASE_URL").ok()?;
+    ready().read().unwrap_or_else(|e| e.into_inner()).get(&url).copied()
+}
+
+/// Connected pools, readable while another database is still connecting
+/// (`pools()` stays locked during a connect).
+fn ready() -> &'static std::sync::RwLock<HashMap<String, &'static Pooled>> {
+    static READY: OnceLock<std::sync::RwLock<HashMap<String, &'static Pooled>>> = OnceLock::new();
+    READY.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+fn spawn_statement(p: &'static Pooled, kind: Kind, sql: String, params: Vec<DbValue>, done: impl FnOnce(Result<Outcome, DbError>) + Send + 'static) {
     let pool = p.pool.clone();
     p.rt.spawn(async move {
         let q = bind(sqlx::query(&sql), &params);
