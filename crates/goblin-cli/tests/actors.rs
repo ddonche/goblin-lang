@@ -291,6 +291,27 @@ xx
     assert_eq!(out.trim(), "[one, nil]\n[one, nil]\ntrue");
 }
 
+/// A stop condition that takes a request with `:receive()` and lets the
+/// actor go on answers it with the state, even with nothing else queued.
+#[test]
+fn a_request_taken_by_the_stop_condition_is_answered() {
+    let src = r#"act count(state, msg)
+    return state + 1
+xx
+act peek(state)
+    :receive(0s)
+    return false
+xx
+a | :actor(0, count, {stop_when: peek})
+f1 | :request(a, 1)
+f2 | :request(a, 2)
+say(:await(f1))
+say(:await(f2))
+"#;
+    let out = run("stop-when-pull", src, 1, &[]);
+    assert_eq!(out.trim(), "1\n1");
+}
+
 fn status_kb(out: &str, key: &str) -> usize {
     out.lines().find_map(|l| l.strip_prefix(key)).map(|n| n.trim().trim_end_matches("kB").trim().parse().unwrap()).unwrap()
 }
