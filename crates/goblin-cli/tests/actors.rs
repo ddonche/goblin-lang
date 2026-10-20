@@ -415,3 +415,22 @@ say(:await(:request(a, 1)))
 "#;
     assert_eq!(run_files("globals-used", src, &[("extra.gbln", lib)], 1, &[]).trim(), "total: 114 after 1");
 }
+
+/// A class field default that reads a global runs inside the actor when it
+/// makes an object, so that global is copied into the actor too.
+#[test]
+fn an_actor_sees_globals_its_class_defaults_read() {
+    let src = r#"xs | [1, 2, 3]
+<>Box |
+    name: ""
+    size: :len(xs)
+xx
+act handle(state, msg)
+    b <> Box | name: msg
+    return b >> size
+xx
+a | :actor(0, handle)
+say(:await(:request(a, "x")))
+"#;
+    assert_eq!(run_files("class-defaults", src, &[], 1, &[]).trim(), "3");
+}
