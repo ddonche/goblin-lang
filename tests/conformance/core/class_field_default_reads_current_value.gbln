@@ -1,0 +1,12 @@
+/// A field default that reads a variable sees the variable's value when each object is made.
+xs | []
+<>Box |
+    name: ""
+    size: :len(xs)
+xx
+:put_last!(xs, 1)
+a <> Box | name: "a"
+say(a >> size)
+:put_last!(xs, 2)
+b <> Box | name: "b"
+say(b >> size)

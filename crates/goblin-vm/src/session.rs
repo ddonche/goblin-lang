@@ -137,6 +137,9 @@ pub struct Session {
     /// Objects handed to an actor, and the variable each came from, so
     /// reading one says where it went.
     pub handed_off: HashMap<String, String>,
+    /// Compiled field defaults that are not plain literals, per (class, field).
+    /// Cleared whenever a class is (re)declared.
+    pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
 
     /// Monotonic generation counter. Each new stash gets the current value,
     /// then we increment. This means each stash has a unique generation number,
@@ -308,6 +311,7 @@ impl Session {
             plain_collections_kept: Default::default(),
             omitted_globals: Vec::new(),
             handed_off: HashMap::new(),
+            field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
             gc_bytes: 0,

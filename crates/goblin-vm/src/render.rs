@@ -178,6 +178,7 @@ pub fn render_template(path: &str, data: Value) -> Result<Value, GoblinError> {
     let mut session = Session::new(GcMode::Auto);
     session.global_names = std::rc::Rc::new(known_globals.clone());
     for decl in compiled.classes {
+        session.field_defaults.clear();
         std::rc::Rc::make_mut(&mut session.classes).insert(decl.name.clone(), decl);
     }
     for decl in compiled.enums {
