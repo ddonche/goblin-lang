@@ -1353,7 +1353,19 @@ impl Slot {
         let shared = &self.shared;
         *lock(&shared.failure) = Some(msg.clone());
         shared.mailbox.close();
-        if let Some(r) = reply { r.set(Err(msg.clone())); }
+        match reply {
+            Some(r) => r.set(Err(msg.clone())),
+            // No request carries this failure back (a posted message, or the
+            // stop condition): say so, so it is never lost silently.
+            None => {
+                let name = match &self.handler {
+                    Value::Function(f) => f.name.clone(),
+                    Value::Closure(c) => c.func.name.clone(),
+                    other => crate::builtins::fmt_value_raw(other),
+                };
+                eprintln!("goblin: actor `{name}` failed: {msg}");
+            }
+        }
         let rest = format!("C0112: actor-failed: the actor stopped because its handler failed: {msg}");
         for m in shared.mailbox.drain() {
             if let Msg::Request(_, r) = m { r.set(Err(rest.clone())); }
