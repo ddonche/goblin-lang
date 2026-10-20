@@ -372,7 +372,7 @@ impl Session {
         crate::actor::finish_owned(&mut self.owned_actors);
     }
 
-    /// Cancel every actor this session started and wait for each to end.
+    /// Cancel every actor this session started (without waiting for them).
     pub fn cancel_actors(&mut self) {
         crate::actor::cancel_owned(&mut self.owned_actors);
     }

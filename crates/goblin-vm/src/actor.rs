@@ -459,15 +459,30 @@ const CANCELLED_MIDWAY: &str = "C0116: actor-cancelled: the actor was cancelled 
 /// Ends every actor a session started: each finishes the messages it already
 /// accepted, then ends (structured ownership, spec VI). Called when the
 /// session is dropped, so a program's actors never outlive it silently.
+/// If the actor doing the waiting is cancelled meanwhile, the ones not yet
+/// ended are cancelled instead of waited for.
 pub fn finish_owned(actors: &mut Vec<Arc<ActorShared>>) {
     for a in actors.iter() { a.halt(); }
-    for a in actors.drain(..) { let _ = a.wait_end(); }
+    let me = current_actor();
+    let cancelled = || me.as_ref().is_some_and(|m| m.cancelled.load(Ordering::SeqCst));
+    for i in 0..actors.len() {
+        let a = &actors[i];
+        let ended = block_on(None, |w| {
+            if cancelled() { return Some(false); }
+            a.poll_end(Some(w)).map(|_| true)
+        });
+        if ended == Some(false) {
+            for b in &actors[i..] { b.cancel(); }
+            break;
+        }
+    }
+    actors.clear();
 }
 
-/// Cancels every actor a session started and waits for each to end.
+/// Cancels every actor a session started. Does not wait: each ends at its
+/// next checkpoint, so a long chain of owners never nests waits on a worker.
 pub fn cancel_owned(actors: &mut Vec<Arc<ActorShared>>) {
-    for a in actors.iter() { a.cancel(); }
-    for a in actors.drain(..) { let _ = a.wait_end(); }
+    for a in actors.drain(..) { a.cancel(); }
 }
 
 /// Shutdown: halt the actors, give them `grace` to finish what they
@@ -1374,6 +1389,8 @@ impl Slot {
             Err(e) => End::Failed(format!("its final state cannot be copied out: {e}")),
         };
         self.vm.session.finish_actors();
+        // Cancelled while the actors it started were finishing.
+        let end = if self.shared.cancelled.load(Ordering::SeqCst) { End::Cancelled } else { end };
         self.shared.finish(end);
     }
 }

@@ -141,6 +141,23 @@ f | :request(a, ch)
 "#);
 }
 
+/// A chain of twenty owners on one worker: cancelling the top one ends them
+/// all, and the program exits. Before, each owner waited inside the one
+/// above it, and past eight levels the worker stopped running the others.
+#[test]
+fn cancel_ends_a_deep_chain_of_owners_on_one_worker() {
+    cancel_case("chain", r#"act node(state, depth)
+    if depth == 0
+        return :receive(:channel(1))
+    xx
+    c | :actor(0, node)
+    return :await(:request(c, depth - 1))
+xx
+a | :actor(0, node)
+f | :request(a, 20)
+"#);
+}
+
 /// Requests queued behind the cancelled one fail without running.
 #[test]
 fn cancel_fails_the_queued_requests() {
@@ -170,21 +187,13 @@ xx
 
 fn free_port() -> u16 { TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port() }
 
-/// Server shutdown: a startup actor stuck in its handler is cancelled once
-/// the grace period is over, and stderr says so. Before, the server never
-/// stopped.
+/// Starts a server with `startup`, stops it with SIGTERM and a one-second
+/// grace period; how long it took to stop, and its stderr.
 #[cfg(unix)]
-#[test]
-fn shutdown_cancels_startup_actors_still_busy_after_the_grace_period() {
-    let dir = scratch("shutdown");
+fn stop_server(name: &str, startup: &str) -> (Duration, String) {
+    let dir = scratch(name);
     std::fs::create_dir_all(dir.join("www/api")).unwrap();
-    std::fs::write(dir.join("startup.gbln"), r#"act stuck(state, ch)
-    return :receive(ch)
-xx
-ch | :channel(1)
-worker | :actor(0, stuck)
-:post(worker, ch)
-"#).unwrap();
+    std::fs::write(dir.join("startup.gbln"), startup).unwrap();
     let port = free_port();
     let mut child = Command::new(bin())
         .args(["start", "--host", "127.0.0.1", "--port", &port.to_string(), "--startup", "startup.gbln"])
@@ -203,14 +212,51 @@ worker | :actor(0, stuck)
     while child.try_wait().unwrap().is_none() {
         if t0.elapsed() > Duration::from_secs(10) {
             let _ = child.kill();
-            panic!("server did not stop");
+            panic!("{name}: server did not stop");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     let took = t0.elapsed();
     let mut err = String::new();
     child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    (took, err)
+}
+
+/// Server shutdown: a startup actor stuck in its handler is cancelled once
+/// the grace period is over, and stderr says so. Before, the server never
+/// stopped.
+#[cfg(unix)]
+#[test]
+fn shutdown_cancels_startup_actors_still_busy_after_the_grace_period() {
+    let (took, err) = stop_server("shutdown", r#"act stuck(state, ch)
+    return :receive(ch)
+xx
+ch | :channel(1)
+worker | :actor(0, stuck)
+:post(worker, ch)
+"#);
     assert!(took >= Duration::from_millis(900), "stopped before the grace period: {took:?}");
+    assert!(took < Duration::from_secs(4), "took {took:?}");
+    assert!(err.contains("1 actor(s) still busy after 1s were cancelled"), "{err}");
+}
+
+/// The startup actor itself is done, but an actor it started is stuck: the
+/// owner, waiting for it, notices its own cancellation and cancels it.
+/// Before, the server waited on the owner forever.
+#[cfg(unix)]
+#[test]
+fn shutdown_cancels_a_stuck_actor_started_by_a_startup_actor() {
+    let (took, err) = stop_server("shutdown-child", r#"act child(state, msg)
+    return :receive(:channel(1))
+xx
+act parent(state, msg)
+    c | :actor(0, child)
+    :post(c, 1)
+    return state
+xx
+p | :actor(0, parent)
+:post(p, 1)
+"#);
     assert!(took < Duration::from_secs(4), "took {took:?}");
     assert!(err.contains("1 actor(s) still busy after 1s were cancelled"), "{err}");
 }
