@@ -372,6 +372,11 @@ impl Session {
         crate::actor::finish_owned(&mut self.owned_actors);
     }
 
+    /// Cancel every actor this session started (without waiting for them).
+    pub fn cancel_actors(&mut self) {
+        crate::actor::cancel_owned(&mut self.owned_actors);
+    }
+
     pub fn write_output(&mut self, s: &str, newline: bool) {
         if let Some(ref mut buf) = self.output_buf {
             buf.push_str(s);
