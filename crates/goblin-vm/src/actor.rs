@@ -1342,7 +1342,17 @@ impl Slot {
         }
         if let Some(sw) = self.stop_when.clone() {
             let current = deref(self.state.clone(), &self.vm.session);
-            match self.vm.call_callable(sw, vec![current]) {
+            let result = self.vm.call_callable(sw, vec![current]);
+            // Requests the stop condition took with `:receive()` get the state.
+            let pulled = std::mem::take(&mut *lock(&self.shared.pulled));
+            if !pulled.is_empty() && result.is_ok() {
+                let current = deref(self.state.clone(), &self.vm.session);
+                let answer = ToPortable::new(&self.vm.session).value(&current).map(Arc::new).map_err(|e| e.to_string());
+                for r in pulled { r.set(answer.clone()); }
+            } else if !pulled.is_empty() {
+                *lock(&self.shared.pulled) = pulled;
+            }
+            match result {
                 Ok(v) => if v.is_truthy() { self.shared.mailbox.close(); },
                 // Cancelled while the stop condition waited: that is a
                 // cancellation, not a failure.
