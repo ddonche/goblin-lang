@@ -117,7 +117,17 @@ impl<T> Queue<T> {
     /// queue that stays empty that long is closed (nothing can be accepted
     /// and then lost: the close happens under the same lock as the check).
     pub fn pop(&self, idle: Option<Duration>) -> Pop<T> {
-        let deadline = idle.map(|d| Instant::now() + d);
+        self.pop_until(idle, true)
+    }
+
+    /// Take the next item, waiting at most `limit` (forever with None). An
+    /// empty queue stays open when the time runs out.
+    pub fn pop_within(&self, limit: Option<Duration>) -> Pop<T> {
+        self.pop_until(limit, false)
+    }
+
+    fn pop_until(&self, wait: Option<Duration>, close_when_idle: bool) -> Pop<T> {
+        let deadline = wait.map(|d| Instant::now() + d);
         let mut st = self.lock();
         loop {
             if let Some(v) = st.items.pop_front() {
@@ -130,8 +140,10 @@ impl<T> Queue<T> {
                 Some(d) => {
                     let now = Instant::now();
                     if now >= d {
-                        st.closed = true;
-                        self.not_full.notify_all();
+                        if close_when_idle {
+                            st.closed = true;
+                            self.not_full.notify_all();
+                        }
                         return Pop::Idle;
                     }
                     st = self.not_empty.wait_timeout(st, d - now).unwrap_or_else(|e| e.into_inner()).0;
@@ -582,6 +594,14 @@ fn run_actor(
             Pop::Item(m) => m,
             Pop::Closed | Pop::Idle => break,
         };
+        // A :cancel that landed while this message was being taken: it is
+        // not handled, like the rest of the queue.
+        if shared.cancelled.load(Ordering::SeqCst) {
+            if let Msg::Request(_, r) = msg {
+                r.set(Err("C0116: actor-cancelled: the actor was cancelled before it handled this request".into()));
+            }
+            break;
+        }
         let (p_msg, reply) = match msg { Msg::Post(p) => (p, None), Msg::Request(p, r) => (p, Some(r)) };
         // Converted afresh per message, so nothing from old messages is kept.
         let message = {
@@ -765,9 +785,19 @@ pub fn receive(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinE
         return Err(err(
             "C0120: receive-unsupported: :receive() is not built yet; an actor gets its messages through its handler (lightweight actors, stage 4)"));
     }
-    expect_args(&args, 1, "receive")?;
+    if args.len() > 2 {
+        return Err(err(format!("C0107: actor-args: :receive takes a channel and an optional wait limit, got {} arguments", args.len())));
+    }
+    // `:receive(ch, 20s)` gives up after 20s and returns nil.
+    let limit = match args.get(1) {
+        None => None,
+        Some(Value::Duration(d)) if d.ns >= 0 => Some(Duration::from_nanos(d.ns.min(u64::MAX as i128) as u64)),
+        Some(other) => return Err(err(format!(
+            "C0107: actor-args: the wait limit for :receive must be a duration like 20s, got {}",
+            crate::builtins::value_to_str(other)))),
+    };
     match handle_arg(&args[0], ":receive")?.clone() {
-        Handle::Channel(c) => match c.queue.pop(None) {
+        Handle::Channel(c) => match c.queue.pop_within(limit) {
             Pop::Item(p) => Ok(snapshot(&p, session)),
             _ => Ok(Value::Nil),
         },
