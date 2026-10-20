@@ -1,0 +1,36 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// The policy map: stop_when(state) is checked after each message; idle ends an actor that gets no message for that long; restart policies are not built yet (C0109); unknown keys are errors (C0108).
+act count(state, msg)
+    return state + 1
+xx
+act enough(state)
+    return state >= 3
+xx
+c | :actor(0, count, {stop_when: enough})
+:post(c, "a")
+:post(c, "b")
+:post(c, "c")
+say(:await(c))
+quiet | :actor(0, count, {idle: 0.5s})
+:post(quiet, 1)
+say(:await(quiet))
+attempt
+    :post(quiet, 1)
+rescue e
+    say(:has("{e}", "C0111: actor-stopped"))
+xx
+attempt
+    :actor(0, count, {restart: "on_failure"})
+rescue e
+    say(:has("{e}", "C0109: actor-restart-unsupported"))
+xx
+attempt
+    :actor(0, count, {colour: 1})
+rescue e
+    say(:has("{e}", "C0108: actor-policy: unknown policy key"))
+xx
+attempt
+    :actor(0, count, {mailbox: 0})
+rescue e
+    say(:has("{e}", "C0108"))
+xx

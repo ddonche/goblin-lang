@@ -1,0 +1,33 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A full mailbox refuses the message (C0114) instead of growing. :cancel ends the actor after its current message; :await on it then reports C0116.
+act slow(state, msg)
+    i | 0
+    while i < 300000
+        i |= i + 1
+    xx
+    return state + msg
+xx
+h | :actor(0, slow, {mailbox: 2})
+refused | false
+k | 0
+while k < 50
+    attempt
+        :post(h, 1)
+    rescue e
+        refused |= :has("{e}", "C0114: actor-mailbox-full")
+        stop
+    xx
+    k |= k + 1
+xx
+say(refused)
+:cancel(h)
+attempt
+    :await(h)
+rescue e
+    say(:has("{e}", "C0116: actor-cancelled"))
+xx
+attempt
+    :post(h, 1)
+rescue e
+    say(:has("{e}", "C0116"))
+xx

@@ -179,16 +179,17 @@ fn main() {
         let mut proxies: Vec<(String, String)> = Vec::new();
         // The VM is the default engine; `--interp` (or GOBLIN_ENGINE=interp) selects the interpreter.
         let mut start_vm = std::env::var("GOBLIN_ENGINE").unwrap_or_default() != "interp";
+        let mut startup: Option<String> = std::env::var("GOBLIN_STARTUP").ok().filter(|s| !s.is_empty());
 
         let mut i = 0;
         while i < args.len() {
             match args[i].as_str() {
                 "--host" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]"); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--startup <file>] [--interp]"); std::process::exit(2); }
                     host = args[i + 1].clone(); i += 2;
                 }
                 "--port" | "-p" => {
-                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]"); std::process::exit(2); }
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--startup <file>] [--interp]"); std::process::exit(2); }
                     port = args[i + 1].parse().unwrap_or_else(|_| { eprintln!("invalid port: {}", args[i + 1]); std::process::exit(2); });
                     i += 2;
                 }
@@ -209,15 +210,28 @@ fn main() {
                 }
                 "--vm" => { start_vm = true; i += 1; }
                 "--interp" | "--int" => { start_vm = false; i += 1; }
+                "--startup" => {
+                    if i + 1 >= args.len() { eprintln!("usage: goblin start --startup <file.gbln>"); std::process::exit(2); }
+                    startup = Some(args[i + 1].clone()); i += 2;
+                }
                 other => {
                     eprintln!("unknown start option: {}", other);
-                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--interp]");
+                    eprintln!("usage: goblin start [--host <host>] [--port <port>] [--proxy /pfx=URL]... [--startup <file>] [--interp]");
                     std::process::exit(2);
                 }
             }
         }
 
-        std::process::exit(run_devserver_with_proxies(host, port, proxies, start_vm));
+        if let Some(file) = &startup {
+            if !start_vm { eprintln!("a startup script needs the VM; drop --interp to use --startup"); std::process::exit(2); }
+            if let Err(e) = goblin_vm::startup::run(Path::new(file)) {
+                eprintln!("startup script {file} failed:\n{e}");
+                std::process::exit(1);
+            }
+        }
+        let code = run_devserver_with_proxies(host, port, proxies, start_vm);
+        goblin_vm::startup::finish();
+        std::process::exit(code);
     }
 
     // The VM is the default engine. `--interp` (or `--int`, or GOBLIN_ENGINE=interp)
@@ -1151,8 +1165,21 @@ fn vm_error_to_diagnostic(
     Diagnostic::new_with_code(Severity::Error, "VM", "runtime-error", &message, span)
 }
 
+/// `goblin run`; with GOBLIN_STARTUP set, that startup script runs first, as
+/// `goblin start --startup` runs it, and its actors finish after the script.
 fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
-    use goblin_vm::compiler::Compiler;
+    if let Some(file) = std::env::var("GOBLIN_STARTUP").ok().filter(|s| !s.is_empty()) {
+        if let Err(e) = goblin_vm::startup::run(Path::new(&file)) {
+            eprintln!("startup script {file} failed:\n{e}");
+            return 1;
+        }
+    }
+    let code = run_run_vm_inner(path, extra_args);
+    goblin_vm::startup::finish();
+    code
+}
+
+fn run_run_vm_inner(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
     use goblin_vm::exec::compile_class_methods_pub;
     use goblin_vm::session::{GcMode, Session};
     use goblin_vm::vm::Vm;
@@ -1184,7 +1211,7 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
             return 1;
         }
     };
-    let compiled = match Compiler::new().with_globals(&["args"]).for_file(&filepath).compile_module(&module) {
+    let compiled = match goblin_vm::startup::compiler().with_globals(&["args"]).for_file(&filepath).compile_module(&module) {
         Ok(c) => c,
         Err(e) => {
             let diag = vm_error_to_diagnostic(&e, &filepath, &src);
@@ -1197,6 +1224,7 @@ fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
         Ok(v) => v,
         Err(e) => { eprintln!("{}", e); return 1; }
     };
+    goblin_vm::startup::bind(&mut vm.session);
     // API mode prints the interpreter's response envelope instead of raw output.
     let is_api = std::env::var("GOBLIN_NONINTERACTIVE").unwrap_or_default() == "1";
     if is_api { vm.session.enable_output_capture(); }
@@ -2130,8 +2158,26 @@ fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, St
     let result = rt.block_on(async move {
         use goblin_devserver::{start, DevOptions};
         let opts = DevOptions { host, port, proxies: Vec::new(), use_vm };
-        start(opts).await
+        // Ctrl+C or SIGTERM ends the server normally, so the startup actors
+        // get to finish the messages they accepted.
+        #[cfg(unix)]
+        let term = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut s) => { s.recv().await; }
+                Err(_) => std::future::pending::<()>().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let term = std::future::pending::<()>();
+        tokio::select! {
+            r = start(opts) => r,
+            _ = tokio::signal::ctrl_c() => Ok(()),
+            _ = term => Ok(()),
+        }
     });
+    // Requests still running get a moment to finish; a long poll left waiting
+    // has already lost its connection, so the server doesn't wait it out.
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
 
     // Convert Result to exit code
     match result {

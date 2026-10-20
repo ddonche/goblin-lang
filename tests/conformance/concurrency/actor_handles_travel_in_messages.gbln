@@ -1,0 +1,22 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Handles are values: an actor can start actors and hand their handles back. Messages from one sender arrive in the order they were posted.
+act room(state, msg)
+    :put_last!(state{"log"}, msg)
+    return state
+xx
+act registry(state, msg)
+    name | msg{"room"}
+    if :has(state, name) == false
+        :update!(state{name}, :actor({"log": []}, room))
+    xx
+    :post(state{name}, msg{"text"})
+    return state
+xx
+rooms | :actor({}, registry)
+:post(rooms, {"room": "a", "text": "one"})
+:post(rooms, {"room": "b", "text": "two"})
+:post(rooms, {"room": "a", "text": "three"})
+reg | :await(:request(rooms, {"room": "a", "text": "four"}))
+say(:keys(reg))
+say(:await(:request(reg{"a"}, "five")){"log"})
+say(:await(:request(reg{"b"}, "six")){"log"})

@@ -1,0 +1,36 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// :channel(capacity) is a bounded queue: :post waits while it is full, :receive waits while it is empty, and after :halt receivers drain it and then get nil. Every value is received exactly once.
+ch | :channel(4)
+act consume(total, ch)
+    sum | 0
+    v | :receive(ch)
+    while v != nil
+        sum |= sum + v
+        v |= :receive(ch)
+    xx
+    return total + sum
+xx
+a | :actor(0, consume)
+b | :actor(0, consume)
+:post(a, ch)
+:post(b, ch)
+n | 1
+while n <= 100
+    :post(ch, n)
+    n |= n + 1
+xx
+:halt(ch)
+:halt(a)
+:halt(b)
+say(:await(a) + :await(b))
+say(:receive(ch))
+attempt
+    :post(ch, 1)
+rescue e
+    say(:has("{e}", "C0117: channel-closed"))
+xx
+attempt
+    :post(:channel(1), nil)
+rescue e
+    say(:has("{e}", "C0117: channel-nil"))
+xx

@@ -176,6 +176,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
                 merged
             } else { decl }
         } else { decl };
+        session.field_defaults.clear();
         session.classes.insert(merged.name.clone(), merged);
     }
     for decl in compiled.enums   { session.enums.insert(decl.name.clone(), decl); }
@@ -224,6 +225,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
                 merged
             } else { decl }
         } else { decl };
+        session.field_defaults.clear();
         session.classes.insert(merged.name.clone(), merged);
     }
     for decl in compiled.enums { session.enums.insert(decl.name.clone(), decl); }
@@ -300,6 +302,7 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
                 merged
             } else { decl }
         } else { decl };
+        session.field_defaults.clear();
         session.classes.insert(merged.name.clone(), merged);
     }
     for decl in enums { session.enums.insert(decl.name.clone(), decl); }
@@ -327,8 +330,9 @@ pub fn execute_source_api(source: &str, source_file: &str) -> Result<(String, Re
             span_debug: "<parse>".into(),
         })?;
 
-    let compiled = Compiler::new().with_globals(&["args"]).for_file(source_file).compile_module(&module)?;
+    let compiled = crate::startup::compiler().with_globals(&["args"]).for_file(source_file).compile_module(&module)?;
     let (mut vm, entry) = prepare_entry(compiled, std::path::Path::new(source_file), Vec::new())?;
+    crate::startup::bind(&mut vm.session);
     vm.session.enable_output_capture();
     vm.execute(entry)?;
     let output = api_body(vm.session.take_output());

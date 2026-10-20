@@ -233,6 +233,10 @@ pub enum Value {
     /// A frozen snapshot (`:freeze`): read like the value it holds, never
     /// mutated, and shared with workers without copying it again.
     Frozen(Rc<Frozen>),
+
+    /// An actor, a channel or a future (`:actor`, `:channel`, `:request`).
+    /// Shared across threads by `Arc`; it holds no session values.
+    Handle(crate::actor::Handle),
 }
 
 // Written by hand (not derived) so the text matches what the derive printed
@@ -285,6 +289,7 @@ impl std::fmt::Debug for Value {
             Value::Closure(v)    => f.debug_tuple("Closure").field(v).finish(),
             Value::Builtin(v)    => f.debug_tuple("Builtin").field(v).finish(),
             Value::Frozen(v)     => f.debug_tuple("Frozen").field(v).finish(),
+            Value::Handle(h)     => write!(f, "{h:?}"),
         }
     }
 }
@@ -332,6 +337,7 @@ impl Value {
             Value::Function(_)   => "function",
             Value::Closure(_)    => "closure",
             Value::Builtin(_)    => "builtin",
+            Value::Handle(h)     => h.kind(),
         }
     }
 
@@ -367,6 +373,7 @@ impl Value {
             Value::Function(_)   => true,
             Value::Closure(_)    => true,
             Value::Builtin(_)    => true,
+            Value::Handle(_)     => true,
         }
     }
 }
@@ -375,6 +382,7 @@ impl Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Value::Handle(a), Value::Handle(b)) => a.same(b),
             (Value::Frozen(a), b) => a.value == *b,
             (a, Value::Frozen(b)) => *a == b.value,
             (Value::Nil,              Value::Nil)              => true,
@@ -590,6 +598,7 @@ impl std::hash::Hash for Value {
             Value::Closure(c)    => (Rc::as_ptr(c) as usize).hash(state),
             Value::Builtin(b)    => b.hash(state),
             Value::Frozen(_)     => {}
+            Value::Handle(h)     => h.id().hash(state),
         }
     }
 }
@@ -712,6 +721,18 @@ pub enum BuiltinId {
     Freeze,
     Swarm,
     SwarmBang,
+    Actor,
+    /// `:actor(x, ...)` where `x` is a variable: that variable may refer to the state.
+    ActorFromVar,
+    /// Internal: what the variable handed to an actor holds afterwards.
+    ActorHandOff,
+    Post,
+    Receive,
+    Request,
+    Await,
+    Halt,
+    Cancel,
+    Channel,
 
     // Memory introspection
     MemId,

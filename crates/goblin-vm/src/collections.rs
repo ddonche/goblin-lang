@@ -20,28 +20,29 @@ use crate::value::{
     BackendHint, ChunkedSeq, CollectionLayout, CollectionMeta, CollectionValue, RingBuf, Value,
 };
 
-/// `Regex::new` through a per-thread cache: templates call the matching
+/// `Regex::new` through a process-wide cache: templates call the matching
 /// builtins with the same few patterns over and over, and compiling a regex
-/// costs far more than matching one.
-pub fn cached_regex(pat: &str) -> Result<regex::Regex, regex::Error> {
-    use std::cell::RefCell;
+/// costs far more than matching one. The cache hands out the same `Arc` every
+/// time rather than a clone: a cloned `Regex` starts with an empty pool of
+/// search scratch space, and building that scratch space again on every call
+/// cost almost as much as compiling the pattern. Requests run on many
+/// threads, so the cache is shared by all of them.
+pub fn cached_regex(pat: &str) -> Result<std::sync::Arc<regex::Regex>, regex::Error> {
     use std::collections::HashMap;
-    thread_local! {
-        static CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<regex::Regex>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(re) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(pat) {
+        return Ok(Arc::clone(re));
     }
-    if let Some(re) = CACHE.with(|c| c.borrow().get(pat).cloned()) {
-        return Ok(re);
-    }
-    let re = regex::Regex::new(pat)?;
-    CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        if c.len() >= 512 { c.clear(); }
-        c.insert(pat.to_string(), re.clone());
-    });
+    let re = Arc::new(regex::Regex::new(pat)?);
+    let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if c.len() >= 512 { c.clear(); }
+    c.insert(pat.to_string(), Arc::clone(&re));
     Ok(re)
 }
 
-fn compile_regex(pat: &str) -> Result<regex::Regex, GoblinError> {
+fn compile_regex(pat: &str) -> Result<std::sync::Arc<regex::Regex>, GoblinError> {
     cached_regex(pat).map_err(|e| GoblinError::Runtime(format!("invalid regex: {}", e)))
 }
 
@@ -1974,4 +1975,35 @@ pub fn mutate_nested_in_place(target: &mut Value, keys: &[Value], id: crate::val
     if !nested_mutable(target, keys, id, args) { return false; }
     apply_nested(target, keys, id, args);
     true
+}
+
+#[cfg(test)]
+mod regex_cache_tests {
+    use super::cached_regex;
+
+    /// Every call gets the same compiled regex, so its search scratch space is
+    /// built once rather than on every call (a cloned `Regex` starts empty).
+    #[test]
+    fn same_pattern_shares_one_compiled_regex() {
+        let a = cached_regex("co+f{2}e+").unwrap();
+        let b = cached_regex("co+f{2}e+").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        let other = std::thread::spawn(|| cached_regex("co+f{2}e+").unwrap()).join().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a, &other), "requests on other threads share it too");
+    }
+
+    /// Flags stay part of the pattern: `(?i)` and the plain pattern are cached
+    /// separately and match differently.
+    #[test]
+    fn flags_are_kept_per_pattern() {
+        let plain = cached_regex("coffee").unwrap();
+        let icase = cached_regex("(?i)coffee").unwrap();
+        assert!(!plain.is_match("COFFEE"));
+        assert!(icase.is_match("COFFEE"));
+    }
+
+    #[test]
+    fn invalid_patterns_still_error() {
+        assert!(cached_regex("(unclosed").is_err());
+    }
 }

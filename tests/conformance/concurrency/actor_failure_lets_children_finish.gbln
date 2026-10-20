@@ -1,0 +1,24 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// When an actor fails, the actors it started still finish the messages they accepted before it counts as ended.
+act child(state, msg)
+    i | 0
+    while i < 300000
+        i |= i + 1
+    xx
+    say("child " + :str(msg))
+    return state
+xx
+act parent(state, msg)
+    c | :actor(0, child)
+    :post(c, 1)
+    :post(c, 2)
+    :post(c, 3)
+    return 1 / 0
+xx
+p | :actor(0, parent)
+:post(p, "go")
+attempt
+    :await(p)
+rescue e
+    say("parent failed")
+xx

@@ -1514,6 +1514,24 @@ impl Compiler {
                             }
                         }
                     }
+                    // `h | :actor(room, ...)`: the actor owns `room` from now
+                    // on, so the variable is left holding a marker that makes
+                    // reading it an error (spec IV.4).
+                    if bare == "actor" {
+                        if let Some(target @ Expr::Ident(var, _)) = args.first() {
+                            let is_var = self.resolve_load(var).is_ok();
+                            if is_var {
+                                if let Some(Opcode::CallBuiltin(BuiltinId::Actor, n)) = self.scope().bytecode.last().cloned() {
+                                    *self.scope_mut().bytecode.last_mut().unwrap() = Opcode::CallBuiltin(BuiltinId::ActorFromVar, n);
+                                    self.emit(Opcode::Dup);
+                                    let k = self.add_constant(Value::Str(var.clone().into()));
+                                    self.emit(Opcode::LoadConst(k));
+                                    self.emit(Opcode::CallBuiltin(BuiltinId::ActorHandOff, 2));
+                                    self.compile_store_from_stack(target)?;
+                                }
+                            }
+                        }
+                    }
                 } else {
                     let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
@@ -3485,6 +3503,14 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "freeze"                         => BuiltinId::Freeze,
         "swarm"                          => BuiltinId::Swarm,
         "swarm!"                         => BuiltinId::SwarmBang,
+        "actor"                          => BuiltinId::Actor,
+        "post"                           => BuiltinId::Post,
+        "receive"                        => BuiltinId::Receive,
+        "request"                        => BuiltinId::Request,
+        "await"                          => BuiltinId::Await,
+        "halt"                           => BuiltinId::Halt,
+        "cancel"                         => BuiltinId::Cancel,
+        "channel"                        => BuiltinId::Channel,
         "since"                          => BuiltinId::DtSince,
         "until"                          => BuiltinId::DtUntil,
         "timezone"                       => BuiltinId::DtTimezone,
