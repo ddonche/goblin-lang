@@ -1,0 +1,18 @@
+/// A field default can be any expression, such as [], {} or -1; it is evaluated afresh for each new object, so objects never share a default list.
+<>Room |
+    name: ""
+    messages: []
+    tags: {}
+    level: -1
+    pair: [1, [2, 3]]
+    n: 0
+xx
+a <> Room | name: "a"
+b <> Room | name: "b"
+:put_last!(a >> messages, "hi")
+say(a >> messages)
+say(b >> messages)
+say(a >> tags)
+say(a >> level)
+say(b >> pair)
+say(a >> n)
