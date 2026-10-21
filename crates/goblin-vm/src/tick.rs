@@ -879,7 +879,11 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
                 TransitionKind::Spawn => {
                     let child_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
-                    if let Some(child_decl) = vm.session.classes.get(&child_class).cloned() {
+                    // Borrow the class through the shared table instead of
+                    // copying it: the formula cache knows a formula by its
+                    // address, which a dropped copy could hand to another.
+                    let classes = vm.session.classes.clone();
+                    if let Some(child_decl) = classes.get(&child_class) {
                         let new_uuid = uuid::Uuid::new_v4().to_string();
                         let mut fields = IndexMap::new();
                         for fd in &child_decl.fields {
