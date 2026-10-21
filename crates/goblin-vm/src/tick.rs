@@ -729,20 +729,18 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         out
     };
 
+    // Borrow the definitions (an Rc copy, not a deep one), so each formula
+    // keeps its address for the tick-expr cache.
+    let classes = vm.session.classes.clone();
     for (self_uuid, class_name) in candidates {
-        let (decision, judge) = {
-            if let Some(obj_decision) = vm.session.object_decisions.get(&self_uuid).cloned() {
-                let class = match vm.session.classes.get(&class_name).cloned() { Some(c) => c, None => continue };
-                let judge = match class.judge.clone() { Some(j) => j, None => continue };
-                (obj_decision, judge)
-            } else {
-                let class = match vm.session.classes.get(&class_name).cloned() { Some(c) => c, None => continue };
-                match (class.decision.clone(), class.judge.clone()) {
-                    (Some(d), Some(j)) => (d, j),
-                    _ => continue,
-                }
-            }
+        let Some(class) = classes.get(&class_name) else { continue };
+        let obj_decision = vm.session.object_decisions.get(&self_uuid).cloned();
+        let decision: &goblin_ast::DecisionDef = match (&obj_decision, &class.decision) {
+            (Some(d), _) => d,
+            (None, Some(d)) => d,
+            (None, None) => continue,
         };
+        let Some(judge) = &class.judge else { continue };
 
         let self_val = match vm.session.object_store.get(&self_uuid).cloned() { Some(v) => v, None => continue };
 
@@ -846,13 +844,14 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     for (self_uuid, class_name) in &candidates {
         if erased.contains(self_uuid) { continue; }
 
-        let transitions = match vm.session.classes.get(class_name) {
-            Some(c) => c.transitions.clone(),
+        let classes = vm.session.classes.clone();
+        let transitions = match classes.get(class_name) {
+            Some(c) => &c.transitions,
             None => continue,
         };
         let self_val = match vm.session.object_store.get(self_uuid).cloned() { Some(v) => v, None => continue };
 
-        for tdef in &transitions {
+        for tdef in transitions {
             let trigger_fired = vm.eval_tick_expr_bool(
                 &tdef.trigger,
                 vec![("self", self_val.clone())],
@@ -1036,13 +1035,14 @@ pub fn apply_overlay_modifiers(
     count: u64,
     extra_fields: &indexmap::IndexMap<String, Value>,
 ) {
-    let modifiers: Vec<(String, goblin_ast::Expr)> = match vm.session.overlay_defs.get(overlay_name) {
-        Some(d) if !d.modifiers.is_empty() => d.modifiers.clone(),
+    let def = match vm.session.overlay_defs.get(overlay_name) {
+        Some(d) if !d.modifiers.is_empty() => d.clone(),
         _ => return,
     };
+    let modifiers = &def.modifiers;
 
     let mut deltas: Vec<(String, f64)> = Vec::new();
-    for (fname, expr) in &modifiers {
+    for (fname, expr) in modifiers {
         let mut bindings = vec![
             ("strength", Value::Float(strength)),
             ("count", Value::Int(count as i64)),

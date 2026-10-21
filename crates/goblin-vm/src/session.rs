@@ -199,11 +199,13 @@ pub struct Session {
     pub imported: Rc<std::collections::HashSet<String>>,
 
     // ── DES / Overlay / Link state ───────────────────────────────────────────
-    pub overlay_defs: HashMap<String, OverlayDef>,
-    pub link_defs: HashMap<(String, String), LinkDef>,
-    pub object_link_defs: HashMap<(String, String), LinkDef>,
+    // Definitions are shared (Rc), so a tick that copies a table copies
+    // pointers, and each formula keeps one address for the tick-expr cache.
+    pub overlay_defs: HashMap<String, Rc<OverlayDef>>,
+    pub link_defs: HashMap<(String, String), Rc<LinkDef>>,
+    pub object_link_defs: HashMap<(String, String), Rc<LinkDef>>,
     pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>>,
-    pub object_decisions: HashMap<String, goblin_ast::DecisionDef>,
+    pub object_decisions: HashMap<String, Rc<goblin_ast::DecisionDef>>,
     pub unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     pub des_store: EntityStore,
     pub des_index: EntityIndex,
