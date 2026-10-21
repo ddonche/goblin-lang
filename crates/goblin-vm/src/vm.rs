@@ -1293,6 +1293,16 @@ impl Vm {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone()
                 };
+                // `obj >> field` on a variable: read the one field in place
+                // instead of copying the whole object off the variable.
+                if let Value::Str(ref name) = key {
+                    if let Some(r) = self.member_field_in_place(name) {
+                        let v = r?;
+                        self.stack.pop();
+                        self.stack.push(Operand::Val(v));
+                        return Ok(());
+                    }
+                }
                 let coll_val = self.pop_value()?;
                 let enum_field = match (&coll_val, &key) {
                     (Value::Enum(e), Value::Str(name)) => e.fields.as_ref().and_then(|f| f.get(name.as_str()).cloned()),
@@ -2670,6 +2680,26 @@ impl Vm {
     /// Resolve an Operand to a Value: Val is returned directly (free), Ref is
     /// read from the arena (clones only when actually needed).
     #[inline]
+    /// The field `name` of the object the top operand holds, read without
+    /// copying the object, when the top operand is a variable holding an
+    /// object and `name` is not a builtin member. None means take the
+    /// general path.
+    fn member_field_in_place(&self, name: &str) -> Option<Result<Value, GoblinError>> {
+        let Some(Operand::Ref(t)) = self.stack.last() else { return None };
+        if member_builtin(name).is_some() { return None; }
+        let stash = self.session.get_stash(t).ok()?;
+        let obj = match &stash.value {
+            Value::Object(o) => o,
+            Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                Some(Value::Object(o)) => o,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(obj.fields.get(name).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+            "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))))
+    }
+
     fn resolve_op(&self, op: Operand) -> Result<Value, GoblinError> {
         match op {
             Operand::Val(Value::Frozen(f)) => Ok(f.value.clone()),
@@ -4424,19 +4454,11 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
     Ok(())
 }
 
-fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
+/// The builtin a `x >> name` member access calls, if `name` is one; those
+/// names win over an object's fields of the same name.
+fn member_builtin(name: &str) -> Option<crate::value::BuiltinId> {
     use crate::value::BuiltinId;
-    use crate::builtins::call_builtin;
-
-    // A variant's fields, so nested paths such as `update!(w.payload.x, 2)` can descend.
-    if let Value::Enum(e) = v {
-        if let Some(f) = &e.fields {
-            if let Some(x) = f.get(name) { return Ok(x.clone()); }
-        }
-    }
-
-    // Try builtin method dispatch first
-    let bid = match name {
+    match name {
         "str" | "string"   => Some(BuiltinId::ToStr),
         "int"              => Some(BuiltinId::ToInt),
         "float"            => Some(BuiltinId::ToFloat),
@@ -4559,7 +4581,22 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "url_decode"       => Some(BuiltinId::UrlDecode),
         "url_encode"       => Some(BuiltinId::UrlEncode),
         _ => None,
-    };
+    }
+}
+
+fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
+    use crate::value::BuiltinId;
+    use crate::builtins::call_builtin;
+
+    // A variant's fields, so nested paths such as `update!(w.payload.x, 2)` can descend.
+    if let Value::Enum(e) = v {
+        if let Some(f) = &e.fields {
+            if let Some(x) = f.get(name) { return Ok(x.clone()); }
+        }
+    }
+
+    // Try builtin method dispatch first
+    let bid = member_builtin(name);
 
     if let Some(id) = bid {
         return call_builtin(id, vec![v.clone()], session);
