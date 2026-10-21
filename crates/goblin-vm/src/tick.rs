@@ -729,10 +729,11 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         out
     };
 
-    // Borrow the definitions (an Rc copy, not a deep one), so each formula
-    // keeps its address for the tick-expr cache.
-    let classes = vm.session.classes.clone();
     for (self_uuid, class_name) in candidates {
+        // Borrow the definitions (an Rc copy, not a deep one), so each
+        // formula keeps its address for the tick-expr cache. Taken per
+        // object, so a class an earlier action installed is seen here.
+        let classes = vm.session.classes.clone();
         let Some(class) = classes.get(&class_name) else { continue };
         let obj_decision = vm.session.object_decisions.get(&self_uuid).cloned();
         let decision: &goblin_ast::DecisionDef = match (&obj_decision, &class.decision) {
