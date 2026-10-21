@@ -2159,20 +2159,24 @@ fn run_devserver_with_proxies(host: String, port: u16, _proxies: Vec<(String, St
         use goblin_devserver::{start, DevOptions};
         let opts = DevOptions { host, port, proxies: Vec::new(), use_vm };
         // Ctrl+C or SIGTERM ends the server normally, so the startup actors
-        // get to finish the messages they accepted.
+        // get to finish the messages they accepted. Both are listened for
+        // before the server binds its port: once a client can connect, a
+        // SIGTERM must not hit the default handler and kill the process.
         #[cfg(unix)]
-        let term = async {
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(mut s) => { s.recv().await; }
-                Err(_) => std::future::pending::<()>().await,
-            }
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        #[cfg(unix)]
+        let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).ok();
+        #[cfg(unix)]
+        let stop = async {
+            let t = async { match term.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending::<()>().await } };
+            let i = async { match int.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending::<()>().await } };
+            tokio::select! { _ = t => {}, _ = i => {} }
         };
         #[cfg(not(unix))]
-        let term = std::future::pending::<()>();
+        let stop = async { let _ = tokio::signal::ctrl_c().await; };
         tokio::select! {
             r = start(opts) => r,
-            _ = tokio::signal::ctrl_c() => Ok(()),
-            _ = term => Ok(()),
+            _ = stop => Ok(()),
         }
     });
     // Requests still running get a moment to finish; a long poll left waiting
