@@ -1125,5 +1125,5 @@ fn extract_action_call_name(body: &goblin_ast::JudgeArmBody) -> Option<String> {
 
 /// The variable name an object's overlays report as `host_var`.
 pub(crate) fn host_name(vm: &Vm, uuid: &str) -> String {
-    vm.session.object_names.get(uuid).cloned().unwrap_or_else(|| uuid.to_string())
+    vm.session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_else(|| uuid.to_string())
 }

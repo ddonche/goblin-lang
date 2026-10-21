@@ -2182,9 +2182,16 @@ impl Vm {
                 use crate::session::{OverlayInstance, OverlayInstanceId};
                 let host_val = self.pop_value()?;
                 let (host_var, host_uuid) = match &host_val {
-                    // The host is named by the variable that holds the object
-                    // (so `overlay X on target` inside an action names the real host).
-                    Value::Object(o) => (self.session.object_names.get(o.uuid.as_str()).cloned().unwrap_or_else(|| host_var_name.clone()), o.uuid.clone()),
+                    // A statement naming a top-level variable names the host
+                    // by it, as the interpreter does; a local (`overlay X on
+                    // target` inside an action) names the real host instead.
+                    Value::Object(o) => {
+                        let is_local = self.call_stack.last().map_or(false, |f| f.func.local_names.iter().any(|n| n.as_str() == host_var_name.as_str()));
+                        let name = if is_local {
+                            self.session.object_names.get(o.uuid.as_str()).map(|(n, _)| n.clone()).unwrap_or_else(|| host_var_name.clone())
+                        } else { host_var_name.clone() };
+                        (name, o.uuid.clone())
+                    }
                     Value::Str(s) => (host_var_name.clone(), s.to_string()),
                     _ => return Err(GoblinError::Runtime("overlay apply: host must be an object or string".into())),
                 };
@@ -2231,9 +2238,13 @@ impl Vm {
 
             Opcode::OverlayDetach(i) => {
                 let crate::opcode::OpData::OverlayDetach { overlay_name, host_var_name } = self.op_data_at(i) else { unreachable!() };
-                let _host_val = self.pop_value()?;
+                let host_val = self.pop_value()?;
+                // An object host is matched by identity, so `detach X from
+                // target` inside an action finds the overlay put on the real host.
+                let host_uuid = match &host_val { Value::Object(o) => Some(o.uuid.clone()), _ => None };
                 self.session.overlay_instances.retain(|inst| {
-                    !(inst.overlay_name == *overlay_name && inst.host_var == *host_var_name)
+                    let same_host = match &host_uuid { Some(u) => inst.host_uuid == *u, None => inst.host_var == *host_var_name };
+                    !(inst.overlay_name == *overlay_name && same_host)
                 });
             }
 
@@ -4075,14 +4086,22 @@ impl Vm {
 
     /// Remember the first variable an object is stored in.
     fn note_object_name(&mut self, uuid: &str, at: NameOf) {
-        if self.session.object_names.contains_key(uuid) { return; }
+        // The first variable holding the object names it, except that a
+        // top-level variable replaces a local one (an object made in a
+        // factory action and returned is named by where it ends up).
+        let global = matches!(at, NameOf::Global(_));
+        match self.session.object_names.get(uuid) {
+            Some((_, true)) => return,
+            Some((_, false)) if !global => return,
+            _ => {}
+        }
         let name = match at {
             NameOf::Global(i) => self.session.global_names.get(i).cloned(),
             NameOf::Local(i) => self.call_stack.last().and_then(|f| f.func.local_names.get(i).cloned()),
         };
         if let Some(n) = name {
             let n = n.rsplit("::").next().unwrap_or(&n).to_string();
-            self.session.object_names.insert(uuid.to_string(), n);
+            self.session.object_names.insert(uuid.to_string(), (n, global));
         }
     }
 
