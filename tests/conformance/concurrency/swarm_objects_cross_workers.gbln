@@ -7,7 +7,7 @@
         return self >> x + self >> y
     xx
 xx
-a <> Point | x: 1, y: 2
+a <> Point | x: 5, y: 2
 b <> Point | x: 3, y: 4
 act measure(p)
     p >> x |= 100

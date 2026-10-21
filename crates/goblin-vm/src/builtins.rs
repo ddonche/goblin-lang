@@ -3814,7 +3814,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::OwnsTree => {
             // owns_tree(root): one "{Class: id}" line per object, children
             // (sorted) indented two spaces per level.
-            fn build_tree(owner_uuid: &str, object_store: &std::collections::HashMap<String, Value>, depth: usize) -> String {
+            fn build_tree(owner_uuid: &str, object_store: &indexmap::IndexMap<String, Value>, depth: usize) -> String {
                 let indent = "  ".repeat(depth);
                 let label = if let Some(Value::Object(o)) = object_store.get(owner_uuid) {
                     let id = o.fields.get("id")
@@ -3856,7 +3856,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::DeleteObject => {
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
-            session.object_store.remove(uuid.as_str());
+            session.object_store.shift_remove(uuid.as_str());
             Ok(Value::Nil)
         }
         BuiltinId::DeleteOverlaysOn if args.len() == 3 => {
@@ -5366,7 +5366,7 @@ fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
 /// afterwards is an error.
 fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
-    session.object_store.remove(uuid);
+    session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
         if let Some(entity) = session.des_store.get(handle) {
             let class = entity.class_name.clone();

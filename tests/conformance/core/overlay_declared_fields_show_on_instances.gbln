@@ -1,0 +1,13 @@
+/// Fields an overlay declares (here `kind`) appear on each of its instances.
+<>Polity |
+    stability: .8
+xx
+overlay Latin |
+    kind: "language"
+    modifies:
+        stability + .01
+    end
+rome <> Polity | stability: .8
+overlay Latin on rome at .9
+say(:overlays()[0] >> kind)
+say(:len(:overlays(it >> kind == "language")))

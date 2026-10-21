@@ -1,0 +1,17 @@
+/// An overlay spawned by another names the same host variable.
+<>Polity |
+    stability: .8
+xx
+overlay Dialect |
+    decays .01
+end
+overlay Tongue |
+    decays .0002
+    spawns Dialect when strength > .5:
+        strength .2
+    end
+end
+rome <> Polity | stability: .8
+overlay Tongue on rome at .9
+tick()
+say(:overlays(it >> overlay_name == "Dialect")[0] >> host_var)
