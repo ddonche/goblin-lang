@@ -224,11 +224,11 @@ pub(crate) fn image_of(session: &Session, tp: &mut ToPortable, roots: Option<&[&
         for (k, v) in m { out.insert(k.clone(), tp.value(v)?); }
         token_store.insert(ns.clone(), out);
     }
-    let pairs = |tp: &mut ToPortable, m: &HashMap<String, Value>| -> Result<Vec<(String, PValue)>, GoblinError> {
-        m.iter().map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect()
-    };
-    let object_store = pairs(tp, &session.object_store)?;
-    let box_store = pairs(tp, &session.box_store)?;
+    fn pairs<'a>(tp: &mut ToPortable, m: impl Iterator<Item = (&'a String, &'a Value)>) -> Result<Vec<(String, PValue)>, GoblinError> {
+        m.map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect()
+    }
+    let object_store = pairs(tp, session.object_store.iter())?;
+    let box_store = pairs(tp, session.box_store.iter())?;
     Ok(Image {
         globals,
         omitted,

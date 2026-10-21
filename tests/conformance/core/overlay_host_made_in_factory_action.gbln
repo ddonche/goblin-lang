@@ -1,0 +1,22 @@
+/// known-gap: interp names the host by the parameter (`target`), so `:overlays_of("rome")` misses the overlay
+/// An object made in an action and returned is named by the top-level
+/// variable that keeps it, not the action's local.
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+act make()
+    p <> Polity | stability: .8
+    return p
+end
+act stun(target)
+    overlay Stunned on target at .5
+end
+rome | make()
+stun(rome)
+say(:overlays_of("rome"))
+say(:overlays_of("p"))
+say(:overlays()[0] >> host_var)

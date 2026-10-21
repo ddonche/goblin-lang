@@ -1,0 +1,14 @@
+/// A field that starts at 0 or 1 is a 0..1 trait like any other; marking it
+/// `~` makes it a real value, so a totaler can total past 1.
+<>Tally |
+    n: 0
+    ~total: 0
+xx
+t <> Tally | n: 0
+t >> n |= t >> n + 1
+t >> n |= t >> n + 1
+t >> total |= t >> total + 1
+t >> total |= t >> total + 1
+t >> total |= t >> total + 1
+say(t >> n)
+say(t >> total)

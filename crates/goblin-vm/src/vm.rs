@@ -309,6 +309,7 @@ impl Vm {
                 // Mirror interpreter: store Object in object_store, put Ref in slot.
                 let t = if let Value::Object(ref o) = val {
                     let uuid = o.uuid.clone();
+                    self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -390,6 +391,7 @@ impl Vm {
                 };
                 let t = if let Value::Object(ref o) = val {
                     let uuid = o.uuid.clone();
+                    self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -405,6 +407,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Value::Object(ref o) = cast {
                     let uuid = o.uuid.clone();
+                    self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -422,6 +425,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Value::Object(ref o) = cast {
                     let uuid = o.uuid.clone();
+                    self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -1094,6 +1098,14 @@ impl Vm {
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     check_field_write(obj, &field_name)?;
                     if let Value::Object(ref mut o) = obj {
+                        // A trait field (a 0..1 number at creation) stays in 0..1.
+                        let new_val = if o.trait_fields.contains(field_name.as_str()) {
+                            match new_val {
+                                Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
+                                Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
+                                other => other,
+                            }
+                        } else { new_val };
                         std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
                     }
                 } else {
@@ -1170,7 +1182,6 @@ impl Vm {
 
                 let mut fields = indexmap::IndexMap::new();
                 let mut readonly_fields = std::collections::BTreeSet::new();
-                let trait_fields = std::collections::BTreeSet::new();
 
                 // `id` and `type` are reserved (R0412); `id: "{id}"` is the
                 // placeholder for the generated id.
@@ -1211,6 +1222,7 @@ impl Vm {
                     };
                     fields.insert(field.name.clone(), value);
                 }
+                let trait_fields = infer_trait_fields(&fields, &class.fields);
                 // As in the interpreter, the object's uuid is also its `uuid` field.
                 fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
 
@@ -1357,7 +1369,7 @@ impl Vm {
                     let op = self.stack.pop().unwrap();
                     // A frozen argument stays frozen inside the callee.
                     let v = self.resolve_op_raw(op)?;
-                    let t = self.session.alloc_value(v);
+                    let t = self.session.alloc_value(self.arg_ref(v));
                     new_frame.locals[i] = Some(t);
                 }
                 // Pop function operand.
@@ -2150,7 +2162,17 @@ impl Vm {
                     spread_rules: def.spread_rules.clone(),
                     spawn_rules: def.spawn_rules.clone(),
                     transitions: def.transitions.clone(),
-                    extra_fields: indexmap::IndexMap::new(),
+                    // Other fields the overlay declares (`kind: "language"`),
+                    // evaluated once here, as the interpreter does.
+                    extra_fields: {
+                        let mut map = indexmap::IndexMap::new();
+                        for (k, expr) in &def.extra_fields {
+                            if let Ok(v) = self.eval_tick_expr(expr, vec![]) {
+                                map.insert(k.clone(), v);
+                            }
+                        }
+                        map
+                    },
                 };
                 self.session.overlay_defs.insert(vm_def.name.clone(), vm_def);
             }
@@ -2160,13 +2182,32 @@ impl Vm {
                 use crate::session::{OverlayInstance, OverlayInstanceId};
                 let host_val = self.pop_value()?;
                 let (host_var, host_uuid) = match &host_val {
-                    Value::Object(o) => (host_var_name.clone(), o.uuid.clone()),
+                    // A statement naming a top-level variable names the host
+                    // by it, as the interpreter does; a local (`overlay X on
+                    // target` inside an action) names the real host instead.
+                    Value::Object(o) => {
+                        let is_local = self.call_stack.last().map_or(false, |f| f.func.local_names.iter().any(|n| n.as_str() == host_var_name.as_str()));
+                        let name = if is_local {
+                            self.session.object_names.get(o.uuid.as_str()).map(|(n, _)| n.clone()).unwrap_or_else(|| host_var_name.clone())
+                        } else { host_var_name.clone() };
+                        (name, o.uuid.clone())
+                    }
                     Value::Str(s) => (host_var_name.clone(), s.to_string()),
                     _ => return Err(GoblinError::Runtime("overlay apply: host must be an object or string".into())),
                 };
                 let def = self.session.overlay_defs.get(overlay_name.as_str())
                     .ok_or_else(|| GoblinError::Runtime(format!("unknown overlay '{}'", overlay_name)))?
                     .clone();
+                if !def.host_types.is_empty() {
+                    if let Value::Object(o) = &host_val {
+                        if !def.host_types.contains(&o.class_name) {
+                            return Err(GoblinError::Runtime(format!(
+                                "R1202: overlay-host-type-mismatch: overlay '{}' cannot occupy '{}' (valid hosts: {})",
+                                overlay_name, o.class_name, def.host_types.join(", "))));
+                        }
+                    }
+                }
+                let strength = strength.clamp(0.0, 1.0);
                 // The overlay's own `lasts N ticks` applies when the statement has no `for`.
                 let duration = duration_override.or(def.default_duration);
                 let is_temporary = duration.is_some();
@@ -2188,18 +2229,22 @@ impl Vm {
                     ticks_remaining: duration,
                     count: 1,
                     original_values,
-                    extra_fields: indexmap::IndexMap::new(),
+                    extra_fields: def.extra_fields.clone(),
                     des_id,
                 };
-                crate::tick::apply_overlay_modifiers(self, &host_uuid, &overlay_name, strength, 1, &indexmap::IndexMap::new());
-                self.session.overlay_instances.push(inst);
+                // Caps / replaces / stacks decide what a second copy does.
+                crate::tick::overlay_push(self, inst);
             }
 
             Opcode::OverlayDetach(i) => {
                 let crate::opcode::OpData::OverlayDetach { overlay_name, host_var_name } = self.op_data_at(i) else { unreachable!() };
-                let _host_val = self.pop_value()?;
+                let host_val = self.pop_value()?;
+                // An object host is matched by identity, so `detach X from
+                // target` inside an action finds the overlay put on the real host.
+                let host_uuid = match &host_val { Value::Object(o) => Some(o.uuid.clone()), _ => None };
                 self.session.overlay_instances.retain(|inst| {
-                    !(inst.overlay_name == *overlay_name && inst.host_var == *host_var_name)
+                    let same_host = match &host_uuid { Some(u) => inst.host_uuid == *u, None => inst.host_var == *host_var_name };
+                    !(inst.overlay_name == *overlay_name && same_host)
                 });
             }
 
@@ -4023,13 +4068,57 @@ impl Vm {
         Ok(Value::Array(vec![]))
     }
 
+    /// Whether a `:objects` / `:overlays` predicate holds for `obj`. As in the
+    /// interpreter, only `true` matches, and a predicate that fails (say, it
+    /// reads a field this object doesn't have) is no match, not an error.
+    fn query_predicate_holds(&mut self, pred_fn: &Value, obj: &Value) -> bool {
+        let base = self.stack.len();
+        match self.call_func_value(pred_fn.clone(), vec![obj.clone()]) {
+            Ok(v) => matches!(v, Value::Bool(true)),
+            Err(_) => { self.stack.truncate(base); false }
+        }
+    }
+
+    /// An argument as the callee holds it: an object that lives in the
+    /// object store is passed by reference, as in the interpreter, so the
+    /// callee reads the object's current fields, not a copy taken at the call.
+    fn arg_ref(&self, v: Value) -> Value {
+        match v {
+            // Same class as the stored object: an overlay record carries its
+            // host's uuid but is not the host.
+            Value::Object(o) if matches!(self.session.object_store.get(o.uuid.as_str()),
+                Some(Value::Object(stored)) if stored.class_name == o.class_name) => Value::Ref(o.uuid),
+            other => other,
+        }
+    }
+
+    /// Remember the first variable an object is stored in.
+    fn note_object_name(&mut self, uuid: &str, at: NameOf) {
+        // The first variable holding the object names it, except that a
+        // top-level variable replaces a local one (an object made in a
+        // factory action and returned is named by where it ends up).
+        let global = matches!(at, NameOf::Global(_));
+        match self.session.object_names.get(uuid) {
+            Some((_, true)) => return,
+            Some((_, false)) if !global => return,
+            _ => {}
+        }
+        let name = match at {
+            NameOf::Global(i) => self.session.global_names.get(i).cloned(),
+            NameOf::Local(i) => self.call_stack.last().and_then(|f| f.func.local_names.get(i).cloned()),
+        };
+        if let Some(n) = name {
+            let n = n.rsplit("::").next().unwrap_or(&n).to_string();
+            self.session.object_names.insert(uuid.to_string(), (n, global));
+        }
+    }
+
     fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
         let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
         let mut results: Vec<Value> = Vec::new();
         for obj in all_values {
             let include = if let Some(ref pred_fn) = pred {
-                let result = self.call_func_value(pred_fn.clone(), vec![obj.clone()])?;
-                matches!(result, Value::Bool(true))
+                self.query_predicate_holds(pred_fn, &obj)
             } else {
                 true
             };
@@ -4072,8 +4161,7 @@ impl Vm {
                 uuid: inst.host_uuid.clone(),
             }));
             let include = if let Some(ref pred_fn) = pred {
-                let result = self.call_func_value(pred_fn.clone(), vec![obj.clone()])?;
-                matches!(result, Value::Bool(true))
+                self.query_predicate_holds(pred_fn, &obj)
             } else {
                 true
             };
@@ -4935,3 +5023,28 @@ fn concat_text(a: &str, b: &str) -> String {
     s.push_str(b);
     s
 }
+
+/// The trait fields of a new object, as the interpreter infers them: every
+/// numeric field whose value is in 0..1 (0 and 1 included), except `id` and
+/// fields marked `~`, which hold real values.
+pub(crate) fn infer_trait_fields(
+    fields: &indexmap::IndexMap<String, Value>,
+    decls: &[goblin_ast::FieldDecl],
+) -> std::collections::BTreeSet<String> {
+    fields.iter()
+        .filter(|(k, v)| {
+            *k != "id"
+                && !decls.iter().any(|d| d.raw && &d.name == *k)
+                && match v {
+                    Value::Float(f) => (0.0..=1.0).contains(f),
+                    Value::Int(i) => (0..=1).contains(i),
+                    _ => false,
+                }
+        })
+        .map(|(k, _)| k.clone())
+        .collect()
+}
+
+/// Where a variable lives, for [`Vm::note_object_name`].
+#[derive(Clone, Copy)]
+enum NameOf { Global(usize), Local(usize) }

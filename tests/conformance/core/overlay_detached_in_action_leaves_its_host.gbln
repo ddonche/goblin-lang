@@ -1,0 +1,17 @@
+/// An overlay put on a parameter inside an action, then detached from that
+/// parameter, is gone and its effect with it.
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+act stun_then_free(target)
+    overlay Stunned on target at .5
+    detach Stunned from target
+end
+rome <> Polity | stability: .8
+stun_then_free(rome)
+say(:overlays_of("rome"))
+say(:len(:overlays()))

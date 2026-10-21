@@ -166,7 +166,14 @@ pub struct Session {
     pub sweeps: crate::sweep::Sweeps,
 
     /// Object store: uuid → Value (for DES/overlay system).
-    pub object_store: HashMap<String, Value>,
+    /// Objects in creation order, so DES passes and `:objects()` visit them
+    /// the same way every run (the interpreter keeps creation order too).
+    pub object_store: indexmap::IndexMap<String, Value>,
+    /// The variable each object was first stored in (uuid -> name, and
+    /// whether that variable is top-level). DES
+    /// overlays report their host by this name (`host_var`), as the
+    /// interpreter does, also for overlays that spread or spawn onto it.
+    pub object_names: HashMap<String, (String, bool)>,
 
     /// Active overlay instances.
     pub overlay_instances: Vec<OverlayInstance>,
@@ -323,7 +330,8 @@ impl Session {
             rng_state: seed,
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
-            object_store: HashMap::new(),
+            object_store: indexmap::IndexMap::new(),
+            object_names: HashMap::new(),
             overlay_instances: Vec::new(),
             response: ResponseState::default(),
             grid_store: GridStore::new(),

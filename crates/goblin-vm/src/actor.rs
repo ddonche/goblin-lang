@@ -1020,7 +1020,7 @@ impl Vm {
             });
         }
         for u in &graph {
-            self.session.object_store.remove(u.as_str());
+            self.session.object_store.shift_remove(u.as_str());
             self.session.handed_off.entry(u.clone()).or_insert_with(|| "this object".to_string());
         }
         // Actors that already ended need no shutdown; forget them, so a
