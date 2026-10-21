@@ -48,7 +48,9 @@ fn vm_responses_on_the_wire() {
         .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let _server = Server(child);
     let deadline = Instant::now() + Duration::from_secs(20);
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+    // A connect that reaches itself (the port is in the ephemeral range, so
+    // the client can be handed the same port) is not the server.
+    while TcpStream::connect(("127.0.0.1", port)).map_or(true, |s| s.local_addr().ok() == s.peer_addr().ok()) {
         assert!(Instant::now() < deadline, "server did not start");
         std::thread::sleep(Duration::from_millis(50));
     }
