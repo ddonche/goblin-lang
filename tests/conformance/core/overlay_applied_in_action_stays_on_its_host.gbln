@@ -1,0 +1,22 @@
+/// known-gap: interp names the host by the parameter (`target`), so the next tick drops the overlay as an orphan
+/// An overlay applied inside an action to a parameter is on the object the
+/// parameter holds, and lasts as long as it says.
+<>Polity |
+    stability: .8
+xx
+overlay Stunned |
+    modifies:
+        stability - .25
+    end
+act stun(target)
+    overlay Stunned on target at .5 for 2 ticks
+end
+rome <> Polity | stability: .8
+stun(rome)
+say(:overlays_of("rome"))
+tick()
+say(:overlays_of("rome"))
+say(rome >> stability)
+tick()
+say(:overlays_of("rome"))
+say(rome >> stability)

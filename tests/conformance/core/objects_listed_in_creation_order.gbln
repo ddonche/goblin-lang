@@ -1,0 +1,16 @@
+/// known-gap: interp lists objects class by class in hash order
+/// :objects() lists objects in the order they were made, whatever their
+/// class, so a simulation visits them the same way on every run.
+<>Polity |
+    name: "p"
+xx
+<>Guild |
+    name: "g"
+xx
+a <> Guild | name: "a"
+b <> Polity | name: "b"
+c <> Guild | name: "c"
+d <> Polity | name: "d"
+repeat :objects()
+    say(it >> name)
+xx
