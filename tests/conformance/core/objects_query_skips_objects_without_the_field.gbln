@@ -1,0 +1,15 @@
+/// A :objects() predicate that reads a field an object doesn't have is no
+/// match for that object, not an error.
+<>Polity |
+    kind: "polity"
+    name: "p"
+xx
+<>Guild |
+    size: 3
+xx
+rome <> Polity | name: "rome"
+smiths <> Guild | size: 4
+say(:len(:objects()))
+found | :objects(it >> kind == "polity")
+say(:len(found))
+say(found[0] >> name)
