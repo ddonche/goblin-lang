@@ -1,0 +1,43 @@
+/// known-gap: interp joins text and a number with + ("a" + 3 is "a3"), which the VM refuses
+/// `x |= x + piece` builds text; a copy taken before is left alone, a
+/// failed add leaves x as it was, and other types still add as `+` does.
+act build(n)
+    out | ""
+    i | 0
+    while i < n
+        out |= out + :str(i)
+        i |= i + 1
+    xx
+    return out
+xx
+say(build(12))
+act copies()
+    a | "ab"
+    keep | [a]
+    b | a
+    a |= a + "c"
+    return [a, keep, b]
+xx
+say(copies())
+act failed()
+    y | "a"
+    attempt
+        y |= y + 3
+    rescue e
+        say(:has("{e}", "T0205"))
+    xx
+    return y
+xx
+say(failed())
+act others()
+    n | 1
+    n |= n + 2
+    c | 'a'
+    c |= c + "bc"
+    xs | [1]
+    xs |= xs + [2]
+    s | "ab"
+    s |= s + s
+    return [n, c, xs, s]
+xx
+say(others())

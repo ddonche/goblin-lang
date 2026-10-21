@@ -342,6 +342,29 @@ impl Vm {
                 self.call_stack.last_mut().unwrap().store_local(slot, new_t, &mut self.session);
             }
 
+            Opcode::AppendLocal(slot) => {
+                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                let piece = self.pop_value()?;
+                // In place: x is text only this variable holds (a shared
+                // buffer is still copied by make_mut), the piece is text,
+                // and no hard type lock casts what is stored.
+                if let Value::Str(p) = &piece {
+                    if self.call_stack.last().unwrap().get_hard_type_lock(slot).is_none() {
+                        let stash = self.session.resolve_mut(t.addr)?;
+                        if stash.tether_count == 1 {
+                            if let Value::Str(ref mut s) = stash.value {
+                                s.make_mut().push_str(p);
+                                self.stack.push(Operand::Ref(t));
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                self.stack.push(Operand::Ref(t));
+                self.stack.push(Operand::Val(piece));
+                self.op_add()?;
+            }
+
             // ── Globals ──────────────────────────────────────────────────────
             Opcode::LoadGlobal(idx) => {
                 let t = match self.session.get_global(idx as usize) {
@@ -611,58 +634,11 @@ impl Vm {
             // ── Arithmetic ───────────────────────────────────────────────────
             Opcode::Add => {
                 if let Some((a, b)) = self.top2_ints() {
-                    if let Some(r) = Some(Value::Int(a.wrapping_add(b))) {
-                        self.stack.pop();
-                        *self.stack.last_mut().unwrap() = Operand::Val(r);
-                        return Ok(());
-                    }
+                    self.stack.pop();
+                    *self.stack.last_mut().unwrap() = Operand::Val(Value::Int(a.wrapping_add(b)));
+                    return Ok(());
                 }
-                let b = self.pop_value()?;
-                let a = self.pop_value()?;
-                // unwrap Formatted for arithmetic, carry spec forward
-                let (a_inner, a_spec) = match a { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
-                let (b_inner, b_spec) = match b { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
-                let (a_inner, b_inner) = pct_as_number(a_inner, b_inner);
-                let raw = match (&a_inner, &b_inner) {
-                    (Value::Int(x), Value::Int(y))     => Value::Int(x.wrapping_add(*y)),
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
-                    (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 + y),
-                    (Value::Float(x), Value::Int(y))   => Value::Float(x + *y as f64),
-                    (Value::Str(x), Value::Str(y))     => Value::Str(concat_text(x, y).into()),
-                    (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
-                    (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
-                    (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
-                    (Value::Big(_), Value::Float(_)) | (Value::Float(_), Value::Big(_)) =>
-                        crate::value::numeric_binop("add", &a_inner, &b_inner).expect("numeric")?,
-                    (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
-                    (Value::Char(c), Value::Int(n))    => {
-                        let new_cp = (*c as i64).wrapping_add(*n) as u32;
-                        Value::Char(char::from_u32(new_cp).unwrap_or(*c))
-                    }
-                    // array + array → a new array holding both in order
-                    (x, y) if x.is_seq_like() && y.is_seq_like() => {
-                        let mut items = x.seq_items().map(|c| c.into_owned()).unwrap_or_default();
-                        items.extend(y.seq_items().map(|c| c.into_owned()).unwrap_or_default());
-                        Value::Collection(Rc::new(crate::value::CollectionValue::from_flat(items)))
-                    }
-                    // Text joins only with text (owner, 2026-10-07): str + char, or a
-                    // formatted value's text. `"a" + 3` is an error: convert explicitly.
-                    (Value::Char(c), Value::Str(y)) => Value::Str(concat_text(c.encode_utf8(&mut [0; 4]), y).into()),
-                    (Value::Str(x), Value::Char(c)) => Value::Str(concat_text(x, c.encode_utf8(&mut [0; 4])).into()),
-                    (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(concat_text(&crate::builtins::fmt_value_raw(a2), y).into()),
-                    (Value::Str(x), b2) if b_spec.is_some() => Value::Str(concat_text(x, &crate::builtins::fmt_value_raw(b2)).into()),
-                    (other, Value::Str(_)) | (Value::Str(_), other) => {
-                        let t = other.type_name();
-                        return Err(GoblinError::Runtime(format!(
-                            "T0205: type-mismatch: cannot add str and {t} with '+'; convert explicitly, e.g. \"total: \" + :str(n)")));
-                    }
-                    (Value::Duration(_), _) | (_, Value::Duration(_)) => crate::duration::binop("add", &a_inner, &b_inner)?,
-                    _ => return Err(GoblinError::type_error("number or str", b_inner.type_name(), "+")),
-                };
-                let result = if let Some(spec) = a_spec.or(b_spec) {
-                    match &raw { Value::Str(_) => raw, _ => Value::Formatted(Box::new(raw), spec) }
-                } else { raw };
-                self.stack.push(Operand::Val(result));
+                self.op_add()?;
             }
             Opcode::AddInt => {
                 let b = self.pop_int()?;
@@ -3281,6 +3257,64 @@ impl Vm {
             i += 1;
         }
         out
+    }
+
+    /// `+` on the two values on top of the stack.
+    fn op_add(&mut self) -> Result<(), GoblinError> {
+        if let Some((a, b)) = self.top2_ints() {
+            if let Some(r) = Some(Value::Int(a.wrapping_add(b))) {
+                self.stack.pop();
+                *self.stack.last_mut().unwrap() = Operand::Val(r);
+                return Ok(());
+            }
+        }
+        let b = self.pop_value()?;
+        let a = self.pop_value()?;
+        // unwrap Formatted for arithmetic, carry spec forward
+        let (a_inner, a_spec) = match a { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
+        let (b_inner, b_spec) = match b { Value::Formatted(i, s) => (*i, Some(s)), v => (v, None) };
+        let (a_inner, b_inner) = pct_as_number(a_inner, b_inner);
+        let raw = match (&a_inner, &b_inner) {
+            (Value::Int(x), Value::Int(y))     => Value::Int(x.wrapping_add(*y)),
+            (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
+            (Value::Int(x), Value::Float(y))   => Value::Float(*x as f64 + y),
+            (Value::Float(x), Value::Int(y))   => Value::Float(x + *y as f64),
+            (Value::Str(x), Value::Str(y))     => Value::Str(concat_text(x, y).into()),
+            (Value::Big(x), Value::Big(y))     => Value::Big(x + y),
+            (Value::Big(x), Value::Int(y))     => Value::Big(x + rust_decimal::Decimal::from(*y)),
+            (Value::Int(x), Value::Big(y))     => Value::Big(rust_decimal::Decimal::from(*x) + y),
+            (Value::Big(_), Value::Float(_)) | (Value::Float(_), Value::Big(_)) =>
+                crate::value::numeric_binop("add", &a_inner, &b_inner).expect("numeric")?,
+            (Value::Pct(x), Value::Pct(y))     => Value::Pct(x + y),
+            (Value::Char(c), Value::Int(n))    => {
+                let new_cp = (*c as i64).wrapping_add(*n) as u32;
+                Value::Char(char::from_u32(new_cp).unwrap_or(*c))
+            }
+            // array + array → a new array holding both in order
+            (x, y) if x.is_seq_like() && y.is_seq_like() => {
+                let mut items = x.seq_items().map(|c| c.into_owned()).unwrap_or_default();
+                items.extend(y.seq_items().map(|c| c.into_owned()).unwrap_or_default());
+                Value::Collection(Rc::new(crate::value::CollectionValue::from_flat(items)))
+            }
+            // Text joins only with text (owner, 2026-10-07): str + char, or a
+            // formatted value's text. `"a" + 3` is an error: convert explicitly.
+            (Value::Char(c), Value::Str(y)) => Value::Str(concat_text(c.encode_utf8(&mut [0; 4]), y).into()),
+            (Value::Str(x), Value::Char(c)) => Value::Str(concat_text(x, c.encode_utf8(&mut [0; 4])).into()),
+            (a2, Value::Str(y)) if a_spec.is_some() => Value::Str(concat_text(&crate::builtins::fmt_value_raw(a2), y).into()),
+            (Value::Str(x), b2) if b_spec.is_some() => Value::Str(concat_text(x, &crate::builtins::fmt_value_raw(b2)).into()),
+            (other, Value::Str(_)) | (Value::Str(_), other) => {
+                let t = other.type_name();
+                return Err(GoblinError::Runtime(format!(
+                    "T0205: type-mismatch: cannot add str and {t} with '+'; convert explicitly, e.g. \"total: \" + :str(n)")));
+            }
+            (Value::Duration(_), _) | (_, Value::Duration(_)) => crate::duration::binop("add", &a_inner, &b_inner)?,
+            _ => return Err(GoblinError::type_error("number or str", b_inner.type_name(), "+")),
+        };
+        let result = if let Some(spec) = a_spec.or(b_spec) {
+            match &raw { Value::Str(_) => raw, _ => Value::Formatted(Box::new(raw), spec) }
+        } else { raw };
+        self.stack.push(Operand::Val(result));
+        Ok(())
     }
 
     /// Low-level function call: set up a frame for (func_rc, upvalues) with args and run it.
