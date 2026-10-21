@@ -227,7 +227,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     // Build (overlay_name, host_uuid) → idx
     let mut ov_host_idx: HashMap<(String, String), usize> = HashMap::new();
     for (idx, inst) in vm.session.overlay_instances.iter().enumerate() {
-        ov_host_idx.insert((inst.overlay_name.clone(), inst.host_var.clone()), idx);
+        ov_host_idx.insert((inst.overlay_name.clone(), inst.host_uuid.clone()), idx);
     }
 
     let mut spread_buf: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, strength)
@@ -361,6 +361,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     // Apply buffered spread additions
     for (ov_name, host_uuid, strength) in spread_buf {
         if let Some(def) = defs.get(&ov_name).cloned() {
+            let host_var = host_name(vm, &host_uuid);
             let duration = def.default_duration;
             let is_temporary = duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
@@ -375,7 +376,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             vm.session.des_overlay_id_counter += 1;
             overlay_push(vm, OverlayInstance {
                 overlay_name: ov_name,
-                host_var: host_uuid.clone(),
+                host_var,
                 host_uuid,
                 strength: clamped,
                 age: 0,
@@ -396,7 +397,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     let defs = vm.session.overlay_defs.clone();
     let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.clone();
-    let mut to_spawn: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, strength)
+    let mut to_spawn: Vec<(String, String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, host_var, strength)
 
     for inst in &instances_snap {
         let def = match defs.get(&inst.overlay_name) { Some(d) => d, None => continue };
@@ -416,13 +417,13 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                     i.overlay_name == rule.spawn_overlay && i.host_uuid == inst.host_uuid
                 });
                 if !already {
-                    to_spawn.push((rule.spawn_overlay.clone(), inst.host_uuid.clone(), rule.spawn_strength));
+                    to_spawn.push((rule.spawn_overlay.clone(), inst.host_uuid.clone(), inst.host_var.clone(), rule.spawn_strength));
                 }
             }
         }
     }
 
-    for (ov_name, host_uuid, strength) in to_spawn {
+    for (ov_name, host_uuid, host_var, strength) in to_spawn {
         if let Some(def) = defs.get(&ov_name).cloned() {
             let is_temporary = def.default_duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
@@ -437,7 +438,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             vm.session.des_overlay_id_counter += 1;
             overlay_push(vm, OverlayInstance {
                 overlay_name: ov_name,
-                host_var: host_uuid.clone(),
+                host_var,
                 host_uuid,
                 strength: clamped,
                 age: 0,
@@ -861,7 +862,7 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
             match tdef.kind {
                 TransitionKind::Erase => {
-                    vm.session.object_store.remove(self_uuid);
+                    vm.session.object_store.shift_remove(self_uuid);
                     erased.insert(self_uuid.clone());
                     break;
                 }
@@ -970,7 +971,7 @@ pub(crate) fn eval_link_score(
     Ok(normalized)
 }
 
-fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
+pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
     use crate::session::OverlayApplyBehavior;
     let behavior = vm.session.overlay_defs.get(&inst.overlay_name)
         .map(|d| d.apply_behavior.clone())
@@ -1041,12 +1042,18 @@ pub fn apply_overlay_modifiers(
         _ => return,
     };
 
+    // A `stacks as <label>` overlay also sees its count under that label.
+    let count_label: Option<String> = vm.session.overlay_defs.get(overlay_name).and_then(|d| {
+        use crate::session::OverlayApplyBehavior;
+        if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None }
+    });
     let mut deltas: Vec<(String, f64)> = Vec::new();
     for (fname, expr) in &modifiers {
         let mut bindings = vec![
             ("strength", Value::Float(strength)),
             ("count", Value::Int(count as i64)),
         ];
+        if let Some(ref l) = count_label { bindings.push((l.as_str(), Value::Int(count as i64))); }
         for (k, v) in extra_fields {
             bindings.push((k.as_str(), v.clone()));
         }
@@ -1114,4 +1121,9 @@ fn extract_action_call_name(body: &goblin_ast::JudgeArmBody) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// The variable name an object's overlays report as `host_var`.
+pub(crate) fn host_name(vm: &Vm, uuid: &str) -> String {
+    vm.session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_else(|| uuid.to_string())
 }

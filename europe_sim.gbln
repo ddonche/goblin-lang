@@ -1,4 +1,4 @@
-@Nation |
+<>Nation |
     military:    .5
     economy:     .5
     stability:   .5
@@ -539,8 +539,8 @@ link Nation culture by [
     + target >> democracy * .3
 ]
 
-@Nation matrix
-    id:          "{id}",  Britain, France,  Germany, AustriaHungary, Russia, OttomanEmpire, Italy, USA,  Japan
+<>Nation matrix
+    name:        "{name}", Britain, France,  Germany, AustriaHungary, Russia, OttomanEmpire, Italy, USA,  Japan
     military:    .5,      .7,      .6,      .8,      .6,             .6,     .4,            .4,    .6,   .5
     economy:     .5,      .9,      .7,      .75,     .5,             .4,     .25,           .5,    .7,   .4
     stability:   .5,      .75,     .7,      .7,      .5,             .3,     .2,            .55,   .8,   .6
