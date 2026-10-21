@@ -1,0 +1,22 @@
+/// An object passed to an action is the object itself: changes made to it
+/// elsewhere, such as by an overlay, show through the parameter.
+<>Polity |
+    fear: .3
+xx
+overlay Dread |
+    modifies:
+        fear + .04
+    end
+act frighten(target)
+    overlay Dread on target at .5
+    target >> fear |= target >> fear + .1
+    say(target >> fear)
+end
+act read(target)
+    rome >> fear |= .9
+    say(target >> fear)
+end
+rome <> Polity | fear: .3
+frighten(rome)
+say(rome >> fear)
+read(rome)
