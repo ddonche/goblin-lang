@@ -239,6 +239,104 @@ say(:await(:request(w, ch)){"got"})
     assert!(t.elapsed() < Duration::from_secs(10));
 }
 
+/// A handler waiting in `:receive()` for its own next message gives its
+/// worker up: another actor on the only worker answers meanwhile, and the
+/// message that arrives later finishes the first one's request.
+#[test]
+fn receive_from_its_own_mailbox_leaves_the_worker_free() {
+    let src = r#"act gather(state, first)
+    second | :receive()
+    return [first, second]
+xx
+act echo(state, msg)
+    return msg
+xx
+g | :actor([], gather)
+e | :actor(0, echo)
+f | :request(g, "one")
+say(:await(:request(e, 7)))
+:post(g, "two")
+say(:await(f))
+"#;
+    let out = run("own-mailbox", src, 1, &[]);
+    assert_eq!(out.trim(), "7\n[one, two]");
+}
+
+/// The `idle` policy counts a handler waiting in `:receive()` as idle:
+/// with nothing arriving, the wait gives nil and the actor ends. A message
+/// taken by `:receive()` counts as activity, like one the actor takes itself.
+#[test]
+fn the_idle_policy_reaches_a_handler_waiting_on_its_own_mailbox() {
+    let src = r#"act gather(state, first)
+    second | :receive()
+    third | :receive()
+    return [first, second, third]
+xx
+g | :actor([], gather, {idle: 0.4s})
+f | :request(g, "one")
+nap | :channel(1)
+:receive(nap, 0.3s)
+:post(g, "two")
+:receive(nap, 0.3s)
+say(:await(f))
+say(:await(g))
+"#;
+    let t0 = Instant::now();
+    let out = run("idle-receive", src, 1, &[]);
+    assert_eq!(out.trim(), "[one, two, nil]\n[one, two, nil]");
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+}
+
+/// Halting an actor whose handler waits in `:receive()` gives that wait
+/// nil, the handler finishes, and the actor ends; cancelling it fails the
+/// request with C0116.
+#[test]
+fn halt_or_cancel_reaches_a_handler_waiting_on_its_own_mailbox() {
+    let src = r#"act gather(state, first)
+    return [first, :receive()]
+xx
+g | :actor([], gather)
+f | :request(g, "one")
+nap | :channel(1)
+:receive(nap, 0.3s)
+:halt(g)
+say(:await(f))
+say(:await(g))
+h | :actor([], gather)
+f2 | :request(h, "one")
+:receive(nap, 0.3s)
+:cancel(h)
+attempt
+    :await(f2)
+rescue e
+    say(:has("{e}", "C0116"))
+xx
+"#;
+    let out = run("own-mailbox-halt", src, 1, &[]);
+    assert_eq!(out.trim(), "[one, nil]\n[one, nil]\ntrue");
+}
+
+/// A stop condition that takes a request with `:receive()` and lets the
+/// actor go on answers it with the state, even with nothing else queued.
+#[test]
+fn a_request_taken_by_the_stop_condition_is_answered() {
+    let src = r#"act count(state, msg)
+    return state + 1
+xx
+act peek(state)
+    :receive(0s)
+    return false
+xx
+a | :actor(0, count, {stop_when: peek})
+f1 | :request(a, 1)
+f2 | :request(a, 2)
+say(:await(f1))
+say(:await(f2))
+"#;
+    let out = run("stop-when-pull", src, 1, &[]);
+    assert_eq!(out.trim(), "1\n1");
+}
+
 fn status_kb(out: &str, key: &str) -> usize {
     out.lines().find_map(|l| l.strip_prefix(key)).map(|n| n.trim().trim_end_matches("kB").trim().parse().unwrap()).unwrap()
 }

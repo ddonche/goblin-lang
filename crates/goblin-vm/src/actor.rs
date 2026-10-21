@@ -410,6 +410,13 @@ pub struct ActorShared {
     worker: usize,
     /// A run of this actor is queued on its worker.
     scheduled: AtomicBool,
+    /// Requests the running handler took with `:receive()`: answered with
+    /// the state the handler returns, like the request that started it.
+    pulled: Mutex<Vec<Arc<Reply>>>,
+    /// The `idle` policy, and when the actor last took a message: a handler
+    /// waiting in `:receive()` counts as idle too.
+    idle: Option<Duration>,
+    last_active: Mutex<Instant>,
 }
 
 impl ActorShared {
@@ -683,6 +690,7 @@ fn run_job(job: Job) {
 fn crash(shared: &ActorShared, msg: &str) {
     lock(&shared.failure).get_or_insert_with(|| msg.to_string());
     shared.mailbox.close();
+    for r in std::mem::take(&mut *lock(&shared.pulled)) { r.set(Err(msg.to_string())); }
     for m in shared.mailbox.drain() {
         if let Msg::Request(_, r) = m { r.set(Err(msg.to_string())); }
     }
@@ -963,6 +971,9 @@ impl Vm {
             origin,
             worker,
             scheduled: AtomicBool::new(false),
+            pulled: Mutex::new(Vec::new()),
+            idle: policy.idle,
+            last_active: Mutex::new(Instant::now()),
         });
         // The worker builds the actor's session on its own thread.
         sched.workers[worker].push(Job::Start(Box::new(Start {
@@ -1056,6 +1067,9 @@ pub enum Wait {
     Send(Arc<Channel>, PValue),
     /// A database or HTTP call started elsewhere (host.rs).
     Io(Arc<IoSlot>),
+    /// The next message in this actor's own mailbox (`:receive()` in a
+    /// handler); the deadline, and whether a timer for it is set.
+    Mailbox(Arc<ActorShared>, Option<Instant>, bool),
 }
 
 /// Where a host call started by an actor leaves its outcome.
@@ -1164,7 +1178,6 @@ struct Slot {
     stop_when: Option<Value>,
     state: Value,
     idle: Option<Duration>,
-    last_active: Instant,
     /// When the idle timer set last will fire.
     idle_timer: Option<Instant>,
     /// The message being handled, while the handler is stopped part-way.
@@ -1197,7 +1210,6 @@ impl Slot {
             stop_when,
             state,
             idle: s.idle,
-            last_active: Instant::now(),
             idle_timer: None,
             current: None,
         }
@@ -1240,7 +1252,7 @@ impl Slot {
             match self.shared.mailbox.pop_or_register(Some(&me)) {
                 Pop::Item(msg) => {
                     handled += 1;
-                    self.last_active = Instant::now();
+                    *lock(&self.shared.last_active) = Instant::now();
                     // A :cancel that landed while this message was being
                     // taken: it is not handled, like the rest of the queue.
                     if self.shared.cancelled.load(Ordering::SeqCst) {
@@ -1272,7 +1284,7 @@ impl Slot {
                 }
                 Pop::Empty => {
                     if let Some(idle) = self.idle {
-                        let due = self.last_active + idle;
+                        let due = *lock(&self.shared.last_active) + idle;
                         if Instant::now() >= due {
                             // Closes only if still empty; either way, look again.
                             self.shared.mailbox.close_if_empty();
@@ -1326,13 +1338,25 @@ impl Slot {
             return false;
         }
         self.state = adopt(next, &mut self.vm.session);
-        if let Some(r) = reply {
+        let pulled = std::mem::take(&mut *lock(&self.shared.pulled));
+        if reply.is_some() || !pulled.is_empty() {
             let current = deref(self.state.clone(), &self.vm.session);
-            r.set(ToPortable::new(&self.vm.session).value(&current).map(Arc::new).map_err(|e| e.to_string()));
+            let answer = ToPortable::new(&self.vm.session).value(&current).map(Arc::new).map_err(|e| e.to_string());
+            for r in reply.into_iter().chain(pulled) { r.set(answer.clone()); }
         }
         if let Some(sw) = self.stop_when.clone() {
             let current = deref(self.state.clone(), &self.vm.session);
-            match self.vm.call_callable(sw, vec![current]) {
+            let result = self.vm.call_callable(sw, vec![current]);
+            // Requests the stop condition took with `:receive()` get the state.
+            let pulled = std::mem::take(&mut *lock(&self.shared.pulled));
+            if !pulled.is_empty() && result.is_ok() {
+                let current = deref(self.state.clone(), &self.vm.session);
+                let answer = ToPortable::new(&self.vm.session).value(&current).map(Arc::new).map_err(|e| e.to_string());
+                for r in pulled { r.set(answer.clone()); }
+            } else if !pulled.is_empty() {
+                *lock(&self.shared.pulled) = pulled;
+            }
+            match result {
                 Ok(v) => if v.is_truthy() { self.shared.mailbox.close(); },
                 // Cancelled while the stop condition waited: that is a
                 // cancellation, not a failure.
@@ -1360,8 +1384,12 @@ impl Slot {
         let shared = &self.shared;
         *lock(&shared.failure) = Some(msg.clone());
         shared.mailbox.close();
+        let pulled = std::mem::take(&mut *lock(&shared.pulled));
+        let told = reply.is_some() || !pulled.is_empty();
+        for r in pulled { r.set(Err(msg.clone())); }
         match reply {
             Some(r) => r.set(Err(msg.clone())),
+            None if told => {}
             // No request carries this failure back (a posted message, or the
             // stop condition): say so, so it is never lost silently.
             None => {
@@ -1387,6 +1415,9 @@ impl Slot {
         if let Some(r) = self.current.take().and_then(|c| c.reply) {
             r.set(Err(CANCELLED_MIDWAY.into()));
         }
+        for r in std::mem::take(&mut *lock(&self.shared.pulled)) {
+            r.set(Err(CANCELLED_MIDWAY.into()));
+        }
         self.end_cancelled();
     }
 
@@ -1396,6 +1427,9 @@ impl Slot {
             if let Msg::Request(_, r) = m {
                 r.set(Err("C0116: actor-cancelled: the actor was cancelled before it handled this request".into()));
             }
+        }
+        for r in std::mem::take(&mut *lock(&self.shared.pulled)) {
+            r.set(Err(CANCELLED_MIDWAY.into()));
         }
         self.vm.session.cancel_actors();
         self.shared.finish(End::Cancelled);
@@ -1407,6 +1441,10 @@ impl Slot {
             Ok(p) => End::Done(Arc::new(p)),
             Err(e) => End::Failed(format!("its final state cannot be copied out: {e}")),
         };
+        // Requests the stop condition took with `:receive()` get the final state.
+        for r in std::mem::take(&mut *lock(&self.shared.pulled)) {
+            r.set(match &end { End::Done(p) => Ok(p.clone()), End::Failed(e) => Err(e.clone()), End::Cancelled => Err(CANCELLED_MIDWAY.into()) });
+        }
         self.vm.session.finish_actors();
         // Cancelled while the actors it started were finishing.
         let end = if self.shared.cancelled.load(Ordering::SeqCst) { End::Cancelled } else { end };
@@ -1487,6 +1525,43 @@ fn poll_wait(w: Wait, waker: Option<&Waker>, session: &mut Session) -> Result<Re
         Wait::Io(s) => match s.poll(waker) {
             Some(f) => Ok(f()),
             None => Err(Wait::Io(s)),
+        },
+        Wait::Mailbox(a, deadline, timer_set) => loop {
+            match a.mailbox.pop_or_register(waker) {
+                Pop::Item(msg) => {
+                    *lock(&a.last_active) = Instant::now();
+                    let p = match msg {
+                        Msg::Post(p) => p,
+                        Msg::Request(p, r) => { lock(&a.pulled).push(r); p }
+                    };
+                    return Ok(Ok(snapshot(&p, session)));
+                }
+                Pop::Closed => return Ok(Ok(Value::Nil)),
+                Pop::Empty => {
+                    let now = Instant::now();
+                    // Idle for the `idle` policy's time: the mailbox closes,
+                    // `:receive()` gives nil, and the actor ends once the
+                    // handler returns. Closes only if still empty; look again.
+                    let idle_due = a.idle.map(|i| *lock(&a.last_active) + i);
+                    if idle_due.is_some_and(|d| now >= d) {
+                        a.mailbox.close_if_empty();
+                        continue;
+                    }
+                    if deadline.is_some_and(|d| now >= d) { return Ok(Ok(Value::Nil)); }
+                    let mut timer_set = timer_set;
+                    // Neither changes while this wait lasts: last_active
+                    // moves only when a message is taken, which ends it.
+                    let wake = match (deadline, idle_due) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (d, i) => d.or(i),
+                    };
+                    if let (Some(d), false) = (wake, timer_set) {
+                        if let Some(w) = waker { timer_at(d, w.clone()); }
+                        timer_set = true;
+                    }
+                    return Err(Wait::Mailbox(a, deadline, timer_set));
+                }
+            }
         },
     }
 }
@@ -1627,22 +1702,35 @@ pub fn await_(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinEr
     wait_here(w, session)
 }
 
+fn wait_limit(v: &Value) -> Result<Duration, GoblinError> {
+    match v {
+        Value::Duration(d) if d.ns >= 0 => Ok(Duration::from_nanos(d.ns.min(u64::MAX as i128) as u64)),
+        other => Err(err(format!(
+            "C0107: actor-args: the wait limit for :receive must be a duration like 20s, got {}",
+            crate::builtins::value_to_str(other)))),
+    }
+}
+
 fn receive_wait(args: &[Value]) -> Result<Wait, GoblinError> {
-    if args.is_empty() {
-        return Err(err(
-            "C0120: receive-unsupported: :receive() is not built yet; an actor gets its messages through its handler"));
+    // `:receive()` / `:receive(limit)`: the next message in this actor's own
+    // mailbox. A request taken this way is answered with the state the
+    // handler returns.
+    if args.is_empty() || matches!(args[0], Value::Duration(_)) {
+        if args.len() > 1 {
+            return Err(err(format!("C0107: actor-args: :receive(limit) takes one wait limit, got {} arguments", args.len())));
+        }
+        let Some(me) = current_actor() else {
+            return Err(err(
+                "C0120: receive-outside-actor: only an actor's handler has a mailbox to :receive() from; outside one, give :receive a channel"));
+        };
+        let limit = args.first().map(wait_limit).transpose()?;
+        return Ok(Wait::Mailbox(me, limit.map(|d| Instant::now() + d), false));
     }
     if args.len() > 2 {
         return Err(err(format!("C0107: actor-args: :receive takes a channel and an optional wait limit, got {} arguments", args.len())));
     }
     // `:receive(ch, 20s)` gives up after 20s and returns nil.
-    let limit = match args.get(1) {
-        None => None,
-        Some(Value::Duration(d)) if d.ns >= 0 => Some(Duration::from_nanos(d.ns.min(u64::MAX as i128) as u64)),
-        Some(other) => return Err(err(format!(
-            "C0107: actor-args: the wait limit for :receive must be a duration like 20s, got {}",
-            crate::builtins::value_to_str(other)))),
-    };
+    let limit = args.get(1).map(wait_limit).transpose()?;
     match handle_arg(&args[0], ":receive")?.clone() {
         Handle::Channel(c) => Ok(Wait::Recv(c, limit.map(|d| Instant::now() + d), false)),
         other => Err(err(format!("C0118: not-a-handle: :receive expects a channel, got {}", other.kind()))),
