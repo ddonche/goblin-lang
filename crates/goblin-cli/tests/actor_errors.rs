@@ -303,7 +303,7 @@ jobs | :actor(0, job, {restart: "on_failure"})
         .stdout(Stdio::null()).stderr(Stdio::piped())
         .spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+    while TcpStream::connect(("127.0.0.1", port)).map_or(true, |s| s.local_addr().ok() == s.peer_addr().ok()) {
         assert!(Instant::now() < deadline, "server did not start");
         std::thread::sleep(Duration::from_millis(50));
     }
