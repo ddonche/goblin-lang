@@ -1,0 +1,83 @@
+day 30: pop 999, adults 706, employed 693, open businesses 50, births 0, deaths 1, moves 2, money ok
+day 60: pop 999, adults 706, employed 697, open businesses 50, births 0, deaths 1, moves 2, money ok
+day 90: pop 999, adults 706, employed 693, open businesses 50, births 0, deaths 1, moves 2, money ok
+day 120: pop 998, adults 705, employed 692, open businesses 50, births 0, deaths 2, moves 3, money ok
+rebuild district 3 day 120 from history: true
+done: births 0, deaths 2, moves 3
+
+=== End of run: day 120 ===
+
+Where the money is (total 928012):
+  people               305746   33%
+  businesses           436285   47%
+  district funds       172448   19%
+  in the mail           13533    1%
+
+Wealth of the 705 adults, poorest fifth to richest:
+  fifth   holds   average   lowest   highest
+  1         5%        49        0       106
+  2        13%       136      107       164
+  3        18%       188      165       208
+  4        24%       246      209       299
+  5        39%       399      301       659
+  median 190; 72 adults have under 50
+
+Businesses, best sales first (sales over the whole run):
+   id  district  open  staff  price  wage     cash     sales
+    8         0   yes      9     24   459    14361     69763
+   34         2   yes     15     24   419    19854     66684
+   30         2   yes     14     24   439    19847     63420
+   31         3   yes     15     24   409    18312     62217
+    7         3   yes     15     23   458     9313     61001
+   47         3   yes     15     23   438    14418     60978
+   42         2   yes     15     22   447    14471     60770
+   43         3   yes     15     23   418    17842     60748
+    2         2   yes     15     21   406    12923     58485
+   21         1   yes     15     23   438     5220     57912
+   16         0   yes     15     22   407    18646     57871
+   14         2   yes     15     21   456     8610     57330
+    5         1   yes     15     22   397    14218     56553
+   10         2   yes     15     20   455     7496     56096
+   12         0   yes     15     21   446     4477     56011
+    3         3   yes     15     22   447     3305     55415
+   27         3   yes     15     21   446     9482     55218
+   23         3   yes     15     21   446     8107     54735
+   45         1   yes     15     21   426     3178     54688
+   28         0   yes     11     21   386    19038     54583
+   29         1   yes     15     21   436     8074     54394
+    9         1   yes     15     22   417    10899     53979
+   33         1   yes     15     21   406    11762     53890
+   20         0   yes     15     19   434     8025     53237
+   26         2   yes     15     20   405    16391     53176
+   18         2   yes     10     18   403    12721     51486
+   35         3   yes     15     20   385     4806     50781
+    1         1   yes     14     20   445     6897     50737
+   17         1   yes     14     20   445     1012     50637
+   25         1   yes     15     19   444     4283     50231
+   24         0   yes     15     18   403     7831     50191
+   48         0   yes     13     18   453     4966     50155
+   11         3   yes     15     18   413     6434     49053
+   36         0   yes     15     17   402     6712     48952
+   38         2   yes     15     17   402     6576     48816
+   22         2   yes     11     17   442     4873     47745
+   49         1   yes     15     18   413     4051     47611
+   32         0   yes     15     18   393     5791     46951
+   46         2   yes     13     17   432     5821     46045
+   39         3   yes     14     17   442     5577     45545
+   40         0   yes     15     17   392     4495     45535
+   41         1   yes     11     18   443     2204     45505
+   15         3   yes     13     16   381    15966     45217
+    6         2   yes     11     16   451     5178     45180
+   37         1   yes     12     17   442     4012     44422
+    0         0   yes     10     16   451     1962     44219
+   44         0   yes     12     15   420     3394     43174
+   19         3   yes     13     16   441     3084     42753
+    4         0   yes     11     15   390     4144     42214
+   13         1   yes     11     16   451     5226     41169
+
+Districts:
+  district  people  adults  employed  avg adult money  funds  open biz  biz cash  biz sales  births  deaths  moved out
+         0     251     181       98%              212  42999        13    103842     662856       0       0          0
+         1     250     176       98%              213  43334        13     81036     661728       0       1          0
+         2     246     177       98%              194  43264        12    134761     655233       0       1          2
+         3     251     171       99%              195  42851        12    116646     643661       0       0          1
