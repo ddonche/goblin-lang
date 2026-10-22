@@ -66,7 +66,7 @@ act make_district(d, cfg)
     b | d
     while b < cfg{"nbiz"}
         r |= (r * 48271) % 2147483647
-        :put_last!(biz, {"id": b, "cash": 6000, "price": 15 + r % 10, "wage": 380 + r % 80, "staff": [], "open": true, "closed_on": -1})
+        :put_last!(biz, {"id": b, "cash": 6000, "price": 15 + r % 10, "wage": 380 + r % 80, "staff": [], "open": true, "closed_on": -1, "sales": 0})
         b |= b + nd
     xx
     i | 0
@@ -241,11 +241,20 @@ act district_tick(st, t, mail)
                         :put_last!(out, {"kind": "fired", "res": staff[last], "biz": bz{"id"}})
                         :delete!(staff, last)
                     xx
+                    /// Cash well above what the business needs (two paydays
+                    /// plus 2,000) is shared out as a bonus: half of the
+                    /// extra, split evenly between the staff.
+                    bill | bz{"wage"} * :len(staff)
+                    bonus | 0
+                    extra | bz{"cash"} - bill - (2 * bill + 2000)
+                    if :len(staff) > 0 and extra > 0
+                        bonus |= :floor(extra / 2 / :len(staff))
+                    xx
                     for who in staff
-                        :put_last!(out, {"kind": "wage", "res": who, "amount": bz{"wage"}})
+                        :put_last!(out, {"kind": "wage", "res": who, "amount": bz{"wage"} + bonus})
                     xx
                     :update!(st{"biz"}[b]{"staff"}, staff)
-                    :update!(st{"biz"}[b]{"cash"}, bz{"cash"} - bz{"wage"} * :len(staff))
+                    :update!(st{"biz"}[b]{"cash"}, bz{"cash"} - (bz{"wage"} + bonus) * :len(staff))
                     /// Nobody left and almost broke: close for a while.
                     if :len(staff) == 0 and bz{"cash"} < bz{"wage"}
                         :update!(st{"biz"}[b]{"open"}, false)
@@ -339,6 +348,7 @@ act district_tick(st, t, mail)
                     spend | price * units
                     :update!(st{"res"}[i]{"money"}, p{"money"} - spend)
                     :update!(st{"biz"}[b]{"cash"}, st{"biz"}[b]{"cash"} + spend)
+                    :update!(st{"biz"}[b]{"sales"}, st{"biz"}[b]{"sales"} + spend)
                 xx
                 /// No job and not looking: start looking within a week.
                 if p{"job"} == -1 and p{"seek_ev"} < 0
@@ -371,6 +381,27 @@ act district_tick(st, t, mail)
                 :update!(st{"treasury"}, st{"treasury"} - 120)
             xx
             i |= i + 1
+        xx
+    xx
+
+    /// --- the district spends what it holds above a reserve ---
+    /// Rent comes in faster than benefits go out, so without this the
+    /// district fund slowly soaks up the town's money. Each day it spends a
+    /// thirtieth of the surplus at its open businesses, split evenly.
+    if st{"treasury"} > 20000
+        open_b | []
+        for bi in :range(0, nb)
+            if st{"biz"}[bi]{"open"}
+                :put_last!(open_b, bi)
+            xx
+        xx
+        if :len(open_b) > 0
+            each | :floor((st{"treasury"} - 20000) / 30 / :len(open_b))
+            for bi in open_b
+                :update!(st{"biz"}[bi]{"cash"}, st{"biz"}[bi]{"cash"} + each)
+                :update!(st{"biz"}[bi]{"sales"}, st{"biz"}[bi]{"sales"} + each)
+            xx
+            :update!(st{"treasury"}, st{"treasury"} - each * :len(open_b))
         xx
     xx
 
@@ -532,6 +563,14 @@ xx
 
 say("town: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days, seed {seed}, mode {mode}")
 births | 0
+d_births | []
+d_deaths | []
+d_moves | []
+for d in :range(0, n_districts)
+    :put_last!(d_births, 0)
+    :put_last!(d_deaths, 0)
+    :put_last!(d_moves, 0)
+xx
 deaths | 0
 moves | 0
 checks | []
@@ -614,6 +653,10 @@ while t <= days
         births |= births + s{"births"}
         deaths |= deaths + s{"deaths"}
         moves |= moves + s{"moved"}
+        rd | rep{"d"}
+        :update_at!(d_births, rd, d_births[rd] + s{"births"})
+        :update_at!(d_deaths, rd, d_deaths[rd] + s{"deaths"})
+        :update_at!(d_moves, rd, d_moves[rd] + s{"moved"})
     xx
     if sum{"money"} != total_money
         have | sum{"money"}
@@ -656,6 +699,16 @@ while t <= days
     t |= t + 1
 xx
 
+/// The final state of every district, for the report.
+final | []
+if mode == "actors"
+    for h in handles
+        :put_last!(final, plain(:await(:request(h, {"kind": "look"}))))
+    xx
+else
+    final |= :map_fn(states, plain)
+xx
+
 for h in handles
     :halt(h)
 xx
@@ -673,3 +726,175 @@ while i < :len(checks)
     i |= i + 1
 xx
 say("done: births {births}, deaths {deaths}, moves {moves}")
+
+/// ---------- end-of-run report ----------
+
+act pad(v, n)
+    s | :str(v)
+    while :len(s) < n
+        s |= " " + s
+    xx
+    return s
+xx
+
+act share(part, whole)
+    if whole == 0
+        return "0%"
+    xx
+    return :str(:round(part * 100 / whole)) + "%"
+xx
+
+act sales_of(b)
+    return b{"sales"}
+xx
+
+adult_age | 18 * 365
+people_money | 0
+biz_money | 0
+treasuries | 0
+wealth | []
+for st in final
+    treasuries |= treasuries + st{"treasury"}
+    for p in st{"res"}
+        if p{"alive"} and p{"here"}
+            people_money |= people_money + p{"money"}
+            if p{"age"} >= adult_age
+                :put_last!(wealth, p{"money"})
+            xx
+        xx
+    xx
+    for bz in st{"biz"}
+        biz_money |= biz_money + bz{"cash"}
+    xx
+xx
+mail_money | total_money - people_money - biz_money - treasuries
+
+say("")
+say("=== End of run: day {days} ===")
+say("")
+say("Where the money is (total {total_money}):")
+m1 | pad(people_money, 8)
+m2 | pad(share(people_money, total_money), 4)
+say("  people             {m1}  {m2}")
+m1 |= pad(biz_money, 8)
+m2 |= pad(share(biz_money, total_money), 4)
+say("  businesses         {m1}  {m2}")
+m1 |= pad(treasuries, 8)
+m2 |= pad(share(treasuries, total_money), 4)
+say("  district funds     {m1}  {m2}")
+m1 |= pad(mail_money, 8)
+m2 |= pad(share(mail_money, total_money), 4)
+say("  in the mail        {m1}  {m2}")
+
+wealth |= :sort(wealth)
+n | :len(wealth)
+adult_total | :sum(wealth)
+say("")
+say("Wealth of the {n} adults, poorest fifth to richest:")
+say("  fifth   holds   average   lowest   highest")
+q | 0
+while q < 5
+    lo | :floor(n * q / 5)
+    hi | :floor(n * (q + 1) / 5)
+    tot | 0
+    j | lo
+    while j < hi
+        tot |= tot + wealth[j]
+        j |= j + 1
+    xx
+    avg | :floor(tot / (hi - lo))
+    lowest | wealth[lo]
+    highest | wealth[hi - 1]
+    fifth | q + 1
+    c1 | pad(share(tot, adult_total), 4)
+    c2 | pad(avg, 7)
+    c3 | pad(lowest, 6)
+    c4 | pad(highest, 7)
+    say("  {fifth}       {c1}   {c2}   {c3}   {c4}")
+    q |= q + 1
+xx
+mid | :floor(n / 2)
+median | wealth[mid]
+broke | 0
+for w in wealth
+    if w < 50
+        broke |= broke + 1
+    xx
+xx
+say("  median {median}; {broke} adults have under 50")
+
+rows | []
+for st in final
+    for bz in st{"biz"}
+        :put_last!(rows, {"id": bz{"id"}, "d": st{"d"}, "open": bz{"open"}, "staff": :len(bz{"staff"}), "cash": bz{"cash"}, "sales": bz{"sales"}, "price": bz{"price"}, "wage": bz{"wage"}})
+    xx
+xx
+rows |= :reverse(:sort_by(rows, sales_of))
+say("")
+say("Businesses, best sales first (sales over the whole run):")
+say("   id  district  open  staff  price  wage     cash     sales")
+for bz in rows
+    op | "yes"
+    if not bz{"open"}
+        op |= "no"
+    xx
+    c1 | pad(bz{"id"}, 3)
+    c2 | pad(bz{"d"}, 8)
+    c3 | pad(op, 4)
+    c4 | pad(bz{"staff"}, 5)
+    c5 | pad(bz{"price"}, 5)
+    c6 | pad(bz{"wage"}, 4)
+    c7 | pad(bz{"cash"}, 7)
+    c8 | pad(bz{"sales"}, 8)
+    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}")
+xx
+
+say("")
+say("Districts:")
+say("  district  people  adults  employed  avg adult money  funds  open biz  biz cash  biz sales  births  deaths  moved out")
+for st in final
+    dd | st{"d"}
+    pop | 0
+    ad | 0
+    emp | 0
+    am | 0
+    for p in st{"res"}
+        if p{"alive"} and p{"here"}
+            pop |= pop + 1
+            if p{"age"} >= adult_age
+                ad |= ad + 1
+                am |= am + p{"money"}
+                if p{"job"} >= 0
+                    emp |= emp + 1
+                xx
+            xx
+        xx
+    xx
+    ob | 0
+    bc | 0
+    bs | 0
+    for bz in st{"biz"}
+        if bz{"open"}
+            ob |= ob + 1
+        xx
+        bc |= bc + bz{"cash"}
+        bs |= bs + bz{"sales"}
+    xx
+    avg_m | 0
+    if ad > 0
+        avg_m |= :floor(am / ad)
+    xx
+    c1 | pad(dd, 8)
+    c2 | pad(pop, 6)
+    c3 | pad(ad, 6)
+    c4 | pad(share(emp, ad), 8)
+    c5 | pad(avg_m, 15)
+    c6 | pad(st{"treasury"}, 5)
+    c7 | pad(ob, 8)
+    c8 | pad(bc, 8)
+    c9 | pad(bs, 9)
+    c10 | pad(d_births[dd], 6)
+    c11 | pad(d_deaths[dd], 6)
+    c12 | pad(d_moves[dd], 9)
+    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}  {c9}  {c10}  {c11}  {c12}")
+xx
