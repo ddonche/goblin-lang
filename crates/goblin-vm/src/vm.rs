@@ -974,13 +974,18 @@ impl Vm {
             }
             Opcode::CheckPath(n, info_idx) => {
                 let n = n as usize;
+                if self.stack.len() < n + 1 {
+                    return Err(GoblinError::Runtime("stack underflow on CheckPath".into()));
+                }
+                // Walk the path by reference first; only a step this can't
+                // read in place falls back to the copying walk below.
+                if self.check_path_in_place(n, info_idx)? {
+                    return Ok(());
+                }
                 let info: Vec<String> = match self.call_stack.last().and_then(|f| f.func.constants.get(info_idx as usize)) {
                     Some(Value::Array(items)) => items.iter().map(|v| match v { Value::Str(s) => s.to_string(), _ => String::new() }).collect(),
                     _ => return Err(GoblinError::Runtime("CheckPath: bad info constant".into())),
                 };
-                if self.stack.len() < n + 1 {
-                    return Err(GoblinError::Runtime("stack underflow on CheckPath".into()));
-                }
                 let base = self.stack.len() - n - 1;
                 let mut cur = self.resolve_op(self.stack[base].clone())?;
                 for (i, seg) in info.iter().enumerate() {
@@ -2813,6 +2818,49 @@ impl Vm {
         let shared = self.stack.iter().enumerate()
             .any(|(i, op)| i != at && matches!(op, Operand::Ref(u) if u == t));
         if shared { None } else { Some(t.clone()) }
+    }
+
+    /// CheckPath without copying: `Ok(true)` when the whole walk was done
+    /// (the same bracket errors, the same stop at a missing step), `Ok(false)`
+    /// when a step needs the copying walk.
+    fn check_path_in_place(&self, n: usize, info_idx: u16) -> Result<bool, GoblinError> {
+        use crate::collections::{value_child_ref, ChildRef};
+        let Some(Value::Array(info)) = self.call_stack.last().and_then(|f| f.func.constants.get(info_idx as usize)) else {
+            return Err(GoblinError::Runtime("CheckPath: bad info constant".into()));
+        };
+        let base = self.stack.len() - n - 1;
+        let mut cur: &Value = match &self.stack[base] {
+            Operand::Val(v) => v,
+            Operand::Ref(t) => match &self.session.get_stash(t)?.value {
+                // An object goes through the object store; leave it to the copying walk.
+                Value::Ref(_) => return Ok(false),
+                v => v,
+            },
+        };
+        if let Value::Frozen(f) = cur { cur = &f.value; }
+        for (i, seg) in info.iter().enumerate() {
+            let key: &Value = match &self.stack[base + 1 + i] {
+                Operand::Val(Value::Frozen(f)) => &f.value,
+                Operand::Val(v) => v,
+                Operand::Ref(t) => match &self.session.get_stash(t)?.value {
+                    Value::Ref(_) => return Ok(false),
+                    Value::Frozen(f) => &f.value,
+                    v => v,
+                },
+            };
+            let seg = match seg { Value::Str(s) => s.as_str(), _ => "" };
+            if seg != "." {
+                bracket_error(cur, seg.starts_with('{'), &seg[1..]).map_or(Ok(()), Err)?;
+            }
+            // The last step's value is never checked, so don't look it up.
+            if i + 1 == info.len() { break; }
+            match value_child_ref(cur, key) {
+                ChildRef::Found(v) if !matches!(v, Value::Nil) => cur = v,
+                ChildRef::Found(_) | ChildRef::Missing => break,
+                ChildRef::Other => return Ok(false),
+            }
+        }
+        Ok(true)
     }
 
     fn drain_operands(&mut self, start: usize) -> Result<Vec<Value>, GoblinError> {

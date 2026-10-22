@@ -1246,13 +1246,18 @@ impl CollectionValue {
 }
 
 /// The concrete backend layout Goblin uses for this collection.
+/// The large-map backend. Keys keep insertion order (IndexMap), so the
+/// hasher's per-process random keys never change what a program sees;
+/// aHash is just much faster than the default SipHash.
+pub type BigMap = indexmap::IndexMap<Value, Value, ahash::RandomState>;
+
 #[derive(Debug, Clone)]
 pub enum CollectionLayout {
     FlatArray(Rc<Vec<Value>>),
     RingBuf(Rc<RingBuf>),
     ChunkedSeq(Rc<ChunkedSeq>),
     SmallMap(Rc<Vec<(Value, Value)>>),
-    HashMapBackend(Rc<indexmap::IndexMap<Value, Value>>),
+    HashMapBackend(Rc<BigMap>),
 }
 
 /// Ring buffer for queue/stack semantics.
