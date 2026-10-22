@@ -1379,7 +1379,21 @@ impl ChunkedSeq {
         self.chunks.iter().flat_map(|c| c.iter().cloned()).collect()
     }
 
+    /// Where `idx` sits when every chunk but the last is full (how
+    /// `from_flat` builds them), so a read doesn't walk the chunks.
+    #[inline]
+    fn direct(&self, idx: usize) -> Option<(usize, usize)> {
+        let last = self.chunks.last()?;
+        if last.len() > Self::CHUNK_SIZE
+            || self.len != (self.chunks.len() - 1) * Self::CHUNK_SIZE + last.len() {
+            return None;
+        }
+        let (c, r) = (idx / Self::CHUNK_SIZE, idx % Self::CHUNK_SIZE);
+        (c < self.chunks.len() && r < self.chunks[c].len()).then_some((c, r))
+    }
+
     pub fn get(&self, idx: usize) -> Option<&Value> {
+        if let Some((c, r)) = self.direct(idx) { return Some(&self.chunks[c][r]); }
         let mut rem = idx;
         for chunk in &self.chunks {
             if rem < chunk.len() {
@@ -1391,6 +1405,7 @@ impl ChunkedSeq {
     }
 
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut Value> {
+        if let Some((c, r)) = self.direct(idx) { return Some(&mut self.chunks[c][r]); }
         let mut rem = idx;
         for chunk in &mut self.chunks {
             if rem < chunk.len() {

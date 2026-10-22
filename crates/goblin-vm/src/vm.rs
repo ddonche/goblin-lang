@@ -128,6 +128,11 @@ pub struct Vm {
     resumable: bool,
     /// Set by a waiting builtin that stopped the handler: what it waits for.
     suspended: Option<crate::actor::Wait>,
+    /// Reused buffer for operands taken off the stack, so ops that take
+    /// several operands don't allocate a list for them every time.
+    scratch: Vec<Operand>,
+    /// Reused buffer for the resolved keys of an in-place path write.
+    key_buf: Vec<Value>,
 }
 
 /// How far an actor's handler got in one go.
@@ -142,7 +147,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -941,6 +946,13 @@ impl Vm {
             }
             Opcode::IndexGet(label_idx) | Opcode::KeyGet(label_idx) => {
                 let brace = matches!(op, Opcode::KeyGet(_));
+                // Read the element where it is; only it is copied.
+                if let Some(v) = self.index_get_in_place(brace)? {
+                    let len = self.stack.len();
+                    self.stack.truncate(len - 2);
+                    self.stack.push(Operand::Val(v));
+                    return Ok(());
+                }
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 self.check_bracket(&coll_val, brace, label_idx)?;
@@ -1449,10 +1461,14 @@ impl Vm {
                 if mask == 0 {
                     if let Some(t) = self.sole_ref_target(n as usize + 2) {
                         let start = self.stack.len() - (n as usize + 1);
-                        let mut vals = self.drain_operands(start)?;
+                        let mut vals = std::mem::take(&mut self.key_buf);
+                        vals.clear();
+                        self.drain_operands_into(start, &mut vals)?;
                         let new_val = vals.pop().unwrap();
                         let stash = self.session.resolve_mut(t.addr)?;
                         if crate::collections::update_path_in_place(&mut stash.value, &vals, new_val.clone()) {
+                            vals.clear();
+                            self.key_buf = vals;
                             return Ok(());
                         }
                         self.stack.extend(vals.into_iter().map(Operand::Val));
@@ -2863,13 +2879,56 @@ impl Vm {
         Ok(true)
     }
 
+    /// `coll[key]` / `coll{key}` read from the top two operands without
+    /// copying the collection. None when this can't be done in place (an
+    /// object, a missing element, or anything that must raise an error);
+    /// the copying path handles those.
+    fn index_get_in_place(&self, brace: bool) -> Result<Option<Value>, GoblinError> {
+        use crate::collections::{value_child_ref, ChildRef};
+        let len = self.stack.len();
+        if len < 2 { return Ok(None); }
+        let (Some(coll), Some(key)) = (self.plain_operand(&self.stack[len - 2])?, self.plain_operand(&self.stack[len - 1])?) else {
+            return Ok(None);
+        };
+        if bracket_error(coll, brace, "").is_some() { return Ok(None); }
+        if brace && !matches!(key, Value::Str(_) | Value::Char(_) | Value::Int(_)
+                | Value::Float(_) | Value::Big(_) | Value::Bool(_)) {
+            return Ok(None);
+        }
+        Ok(match value_child_ref(coll, key) {
+            ChildRef::Found(v) => Some(v.clone()),
+            _ => None,
+        })
+    }
+
+    /// The plain value an operand holds, by reference; None for an object.
+    fn plain_operand<'a>(&'a self, op: &'a Operand) -> Result<Option<&'a Value>, GoblinError> {
+        let v = match op {
+            Operand::Val(v) => v,
+            Operand::Ref(t) => &self.session.get_stash(t)?.value,
+        };
+        Ok(match v {
+            Value::Ref(_) => None,
+            Value::Frozen(f) => Some(&f.value),
+            v => Some(v),
+        })
+    }
+
     fn drain_operands(&mut self, start: usize) -> Result<Vec<Value>, GoblinError> {
-        let ops: Vec<Operand> = self.stack.drain(start..).collect();
-        let mut vals = Vec::with_capacity(ops.len());
-        for op in ops {
+        let mut vals = Vec::with_capacity(self.stack.len().saturating_sub(start));
+        self.drain_operands_into(start, &mut vals)?;
+        Ok(vals)
+    }
+
+    /// Like `drain_operands`, appending to `vals`.
+    fn drain_operands_into(&mut self, start: usize, vals: &mut Vec<Value>) -> Result<(), GoblinError> {
+        let mut ops = std::mem::take(&mut self.scratch);
+        ops.extend(self.stack.drain(start..));
+        for op in ops.drain(..) {
             vals.push(self.resolve_op(op)?);
         }
-        Ok(vals)
+        self.scratch = ops;
+        Ok(())
     }
 
     /// Dead code kept to avoid cascading changes — use resolve_op instead.
