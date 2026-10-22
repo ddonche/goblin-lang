@@ -1939,7 +1939,12 @@ fn write_in_place(target: &mut Value, keys: &[Value], val: Value) -> bool {
     // nil for a missing key and then fails on it).
     let Some(p) = probe_key(rc, &keys[0], !last && rc.is_map()) else { return false };
     let slot = slot_at(rc, &keys[0], p);
-    if last { *slot = val; true } else { write_in_place(slot, &keys[1..], val) }
+    if last { *slot = val; return true; }
+    if write_in_place(slot, &keys[1..], val) { return true; }
+    // A deeper step can't be done here, so the general path will redo this
+    // access and count it; take back the count slot_at added.
+    if let Some(c) = Rc::get_mut(rc) { c.meta.mid_hits = c.meta.mid_hits.saturating_sub(1); }
+    false
 }
 
 /// A child read in place, for walks that only look (CheckPath).
@@ -2110,5 +2115,25 @@ mod regex_cache_tests {
     #[test]
     fn invalid_patterns_still_error() {
         assert!(cached_regex("(unclosed").is_err());
+    }
+}
+
+#[cfg(test)]
+mod in_place_tests {
+    use super::*;
+
+    /// A write that can't finish in place counts the outer access once:
+    /// the general path that takes over counts it again.
+    #[test]
+    fn failed_in_place_write_keeps_access_count() {
+        let inner = Value::Array(vec![Value::Int(1)]);
+        let meta = CollectionMeta { len: 1, ..Default::default() };
+        let mut outer = Value::Collection(Rc::new(CollectionValue {
+            layout: CollectionLayout::FlatArray(Rc::new(vec![inner])),
+            meta,
+        }));
+        assert!(!update_path_in_place(&mut outer, &[Value::Int(0), Value::Int(0)], Value::Int(5)));
+        let Value::Collection(c) = &outer else { unreachable!() };
+        assert_eq!(c.meta.mid_hits, 0);
     }
 }
