@@ -1,0 +1,6 @@
+day 30: pop 999, adults 706, employed 693, open businesses 50, births 0, deaths 1, moves 2, money ok
+day 60: pop 999, adults 706, employed 685, open businesses 50, births 0, deaths 1, moves 2, money ok
+day 90: pop 999, adults 706, employed 655, open businesses 50, births 0, deaths 1, moves 2, money ok
+day 120: pop 999, adults 706, employed 616, open businesses 50, births 0, deaths 1, moves 3, money ok
+rebuild district 3 day 120 from history: true
+done: births 0, deaths 1, moves 3
