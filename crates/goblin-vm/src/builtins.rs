@@ -1569,6 +1569,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // reap!(arr, count?) — atomically pick+remove random items from arr.
         // Returns [remaining_arr, reaped_item_or_arr] so the compiler special
         // form can store remaining back and leave reaped as the expression value.
+        BuiltinId::Agenda => {
+            if !args.is_empty() {
+                return Err(GoblinError::ArityMismatch { expected: 0, got: args.len(), name: "agenda".into() });
+            }
+            Ok(crate::agenda::new())
+        }
+        BuiltinId::Schedule | BuiltinId::Unschedule | BuiltinId::Due => Err(GoblinError::Runtime(format!(
+            "{}: call it as :{}(agenda, ...) with the agenda in a variable",
+            match id { BuiltinId::Schedule => "schedule!", BuiltinId::Unschedule => "unschedule!", _ => "due!" },
+            match id { BuiltinId::Schedule => "schedule!", BuiltinId::Unschedule => "unschedule!", _ => "due!" }))),
         BuiltinId::ReapBang => {
             if args.is_empty() || args.len() > 2 {
                 return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "reap!".into() });
