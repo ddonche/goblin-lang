@@ -938,6 +938,24 @@ impl Vm {
                 }
                 self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_map(pairs)))));
             }
+            Opcode::QuickSet(idx) => {
+                if let Some(skip) = self.quick_set(idx)? {
+                    self.call_stack.last_mut().unwrap().ip += skip as usize;
+                }
+            }
+            Opcode::Fused(idx) => {
+                if self.fused_quick(idx)? { return Ok(()); }
+                // The quick way didn't apply: run the original steps.
+                let mut j = 0;
+                loop {
+                    let op = match &self.call_stack.last().unwrap().func.op_data[idx as usize] {
+                        crate::opcode::OpData::Fused(f) => match f.ops.get(j) { Some(op) => *op, None => break },
+                        _ => unreachable!("Fused without its data"),
+                    };
+                    self.execute_op(op)?;
+                    j += 1;
+                }
+            }
             Opcode::GetIndex => {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
@@ -1454,6 +1472,26 @@ impl Vm {
                 let segs: Vec<(Value, bool)> = keys.into_iter().map(|k| (k, false)).collect();
                 let updated = self.update_path(root, &segs, result)?;
                 self.stack.push(Operand::Val(updated));
+            }
+            Opcode::UpdatePathHint(n, idx) => {
+                if let Some(t) = self.sole_ref_target(n as usize + 2) {
+                    let start = self.stack.len() - (n as usize + 1);
+                    let mut vals = std::mem::take(&mut self.key_buf);
+                    vals.clear();
+                    self.drain_operands_into(start, &mut vals)?;
+                    let new_val = vals.pop().unwrap();
+                    let func = self.call_stack.last().unwrap().func.clone();
+                    let crate::opcode::OpData::Fused(f) = &func.op_data[idx as usize] else { unreachable!("UpdatePathHint without its data") };
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if crate::collections::update_path_in_place_hint(&mut stash.value, &vals, new_val.clone(), &f.segs) {
+                        vals.clear();
+                        self.key_buf = vals;
+                        return Ok(());
+                    }
+                    self.stack.extend(vals.into_iter().map(Operand::Val));
+                    self.stack.push(Operand::Val(new_val));
+                }
+                return self.execute_op(Opcode::UpdatePath(n, 0));
             }
             Opcode::UpdatePathMut(n, mask) => {
                 // Stack: [root, key1, …, keyN, new_val]. Field segments go
@@ -2877,6 +2915,179 @@ impl Vm {
             }
         }
         Ok(true)
+    }
+
+    /// `Opcode::QuickSet`: the whole `:update!(path, e)` statement, when the
+    /// root is a variable nothing else holds, the path checks out, `e` comes
+    /// out as a number the way its steps would compute it, and the write can
+    /// be done in place. Gives the steps to skip; None (having changed
+    /// nothing anyone can see) to let the statement's own steps run.
+    fn quick_set(&mut self, idx: u16) -> Result<Option<u32>, GoblinError> {
+        use crate::opcode::{FusedKey, OpData};
+        let func = self.call_stack.last().unwrap().func.clone();
+        let OpData::QuickSet(q) = &func.op_data[idx as usize] else { unreachable!("QuickSet without its data") };
+        let OpData::Fused(f) = &func.op_data[q.check as usize] else { unreachable!("QuickSet without its check") };
+        let frame = self.call_stack.last().unwrap();
+        let Some(Some(t)) = frame.locals.get(f.root as usize) else { return Ok(None) };
+        let t = t.clone();
+        {
+            let stash = self.session.get_stash(&t)?;
+            if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return Ok(None); }
+        }
+        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) { return Ok(None); }
+        if !self.check_walk(f)? { return Ok(None); }
+        let Some(val) = self.quick_num(&func, &q.expr)? else { return Ok(None) };
+        let mut keys = std::mem::take(&mut self.key_buf);
+        keys.clear();
+        let frame = self.call_stack.last().unwrap();
+        for seg in &f.segs {
+            let k = match seg.key {
+                FusedKey::Const(c) => func.constants[c as usize].clone_fast(),
+                FusedKey::Local(s) => match frame.locals.get(s as usize) {
+                    Some(Some(kt)) => self.session.read_value(kt)?,
+                    _ => { self.key_buf = keys; return Ok(None) }
+                },
+            };
+            keys.push(k);
+        }
+        let stash = self.session.resolve_mut(t.addr)?;
+        let done = crate::collections::update_path_in_place_hint(&mut stash.value, &keys, val, &f.segs);
+        keys.clear();
+        self.key_buf = keys;
+        Ok(done.then_some(q.skip))
+    }
+
+    /// The bracket checks of a fused check, without errors: true when the
+    /// root can be changed and every level takes the bracket used.
+    fn check_walk(&self, f: &crate::opcode::Fused) -> Result<bool, GoblinError> {
+        use crate::collections::{value_child_hint, ChildRef};
+        use crate::opcode::FusedKey;
+        let frame = self.call_stack.last().unwrap();
+        let Some(Some(root_t)) = frame.locals.get(f.root as usize) else { return Ok(false) };
+        let mut cur = match &self.session.get_stash(root_t)?.value {
+            Value::Frozen(_) | Value::Ref(_) => return Ok(false),
+            v => v,
+        };
+        let last = f.segs.len() - 1;
+        for (i, seg) in f.segs.iter().enumerate() {
+            if !bracket_fits(cur, seg.brace) { return Ok(false); }
+            if i == last { break; }
+            let key: &Value = match seg.key {
+                FusedKey::Const(c) => &frame.func.constants[c as usize],
+                FusedKey::Local(s) => match frame.locals.get(s as usize) {
+                    Some(Some(t)) => match &self.session.get_stash(t)?.value {
+                        Value::Ref(_) => return Ok(false),
+                        Value::Frozen(fr) => &fr.value,
+                        v => v,
+                    },
+                    _ => return Ok(false),
+                },
+            };
+            match value_child_hint(cur, key, &seg.slot) {
+                ChildRef::Found(v) if !matches!(v, Value::Nil) => cur = v,
+                ChildRef::Found(_) | ChildRef::Missing => break,
+                ChildRef::Other => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
+    /// A fused read's value, by reference; None where the read's own steps
+    /// must run.
+    fn fused_read_ref<'a>(&'a self, func: &'a FunctionObject, f: &'a crate::opcode::Fused) -> Result<Option<&'a Value>, GoblinError> {
+        use crate::collections::{value_child_hint, ChildRef};
+        use crate::opcode::FusedKey;
+        let frame = self.call_stack.last().unwrap();
+        let Some(Some(root_t)) = frame.locals.get(f.root as usize) else { return Ok(None) };
+        let mut cur: &Value = &self.session.get_stash(root_t)?.value;
+        for seg in &f.segs {
+            let coll = match cur { Value::Ref(_) => return Ok(None), Value::Frozen(fr) => &fr.value, v => v };
+            let key: &Value = match seg.key {
+                FusedKey::Const(c) => &func.constants[c as usize],
+                FusedKey::Local(s) => match frame.locals.get(s as usize) {
+                    Some(Some(t)) => &self.session.get_stash(t)?.value,
+                    _ => return Ok(None),
+                },
+            };
+            let key = match key { Value::Ref(_) => return Ok(None), Value::Frozen(fr) => &fr.value, v => v };
+            if !bracket_fits(coll, seg.brace) { return Ok(None); }
+            if seg.brace && !matches!(key, Value::Str(_) | Value::Char(_) | Value::Int(_)
+                    | Value::Float(_) | Value::Big(_) | Value::Bool(_)) {
+                return Ok(None);
+            }
+            match value_child_hint(coll, key, &seg.slot) {
+                ChildRef::Found(v) => cur = v,
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(cur))
+    }
+
+    /// A QuickSet value: an int or a float, worked out exactly as the
+    /// steps would (Add, Sub and Mul on ints as their quick paths do: wrapping
+    /// add, sub and mul only when they don't overflow); None otherwise.
+    fn quick_num(&self, func: &FunctionObject, e: &crate::opcode::QExpr) -> Result<Option<Value>, GoblinError> {
+        use crate::opcode::{OpData, QExpr};
+        let leaf = |v: &Value| match v { Value::Int(_) | Value::Float(_) => Some(v.clone_fast()), _ => None };
+        Ok(match e {
+            QExpr::Const(c) => leaf(&func.constants[*c as usize]),
+            QExpr::Local(s) => match self.call_stack.last().unwrap().locals.get(*s as usize) {
+                Some(Some(t)) => leaf(&self.session.get_stash(t)?.value),
+                _ => None,
+            },
+            QExpr::Read(i) => {
+                let OpData::Fused(f) = &func.op_data[*i as usize] else { return Ok(None) };
+                match self.fused_read_ref(func, f)? { Some(v) => leaf(v), None => None }
+            }
+            QExpr::Add(a, b) | QExpr::Sub(a, b) | QExpr::Mul(a, b) => {
+                let (Some(x), Some(y)) = (self.quick_num(func, a)?, self.quick_num(func, b)?) else { return Ok(None) };
+                match (e, x, y) {
+                    (QExpr::Add(..), Value::Int(x), Value::Int(y)) => Some(Value::Int(x.wrapping_add(y))),
+                    (QExpr::Add(..), Value::Float(x), Value::Float(y)) => Some(Value::Float(x + y)),
+                    (QExpr::Add(..), Value::Int(x), Value::Float(y)) => Some(Value::Float(x as f64 + y)),
+                    (QExpr::Add(..), Value::Float(x), Value::Int(y)) => Some(Value::Float(x + y as f64)),
+                    (QExpr::Sub(..), Value::Int(x), Value::Int(y)) => x.checked_sub(y).map(Value::Int),
+                    (QExpr::Mul(..), Value::Int(x), Value::Int(y)) => x.checked_mul(y).map(Value::Int),
+                    _ => None,
+                }
+            }
+        })
+    }
+
+    /// The quick way for `Opcode::Fused`: walk the path where the values
+    /// are, with no copies and with each map key tried at its last slot.
+    /// Pushes what the original steps would push and gives true; gives false
+    /// (pushing nothing) for anything else: an object, a frozen root to be
+    /// written, a missing step, or anything that must raise an error.
+    fn fused_quick(&mut self, idx: u16) -> Result<bool, GoblinError> {
+        use crate::opcode::{FusedKey, FusedKind, OpData};
+        let func = self.call_stack.last().unwrap().func.clone();
+        let OpData::Fused(f) = &func.op_data[idx as usize] else { unreachable!("Fused without its data") };
+        match f.kind {
+            FusedKind::Read => {
+                let Some(v) = self.fused_read_ref(&func, f)? else { return Ok(false) };
+                let v = v.clone();
+                self.stack.push(Operand::Val(v));
+                Ok(true)
+            }
+            FusedKind::Check { .. } => {
+                if !self.check_walk(f)? { return Ok(false); }
+                // Push the root and the keys, as the loads would.
+                let frame = self.call_stack.last().unwrap();
+                let mut ops: Vec<Operand> = std::mem::take(&mut self.scratch);
+                ops.clear();
+                ops.push(Operand::Ref(frame.load_local(f.root)?));
+                for seg in &f.segs {
+                    ops.push(match seg.key {
+                        FusedKey::Const(c) => Operand::Val(func.constants[c as usize].clone_fast()),
+                        FusedKey::Local(s) => Operand::Ref(frame.load_local(s)?),
+                    });
+                }
+                self.stack.extend(ops.drain(..));
+                self.scratch = ops;
+                Ok(true)
+            }
+        }
     }
 
     /// `coll[key]` / `coll{key}` read from the top two operands without
@@ -5017,6 +5228,17 @@ fn floor_mod_adjust(r: Value, divisor: &Value) -> Value {
 /// Arrays and strings are indexed with `[]`, maps with `{}` (owner ruling
 /// 2026-10-06). The error for using the other one, if `v` is of a kind that
 /// takes a particular bracket.
+/// `bracket_error(v, brace, _).is_none()`, without building a message.
+#[inline(always)]
+fn bracket_fits(v: &Value, brace: bool) -> bool {
+    match v {
+        Value::Collection(c) => c.is_map() == brace,
+        Value::Map(_) | Value::MapOrd(_) => brace,
+        Value::Array(_) | Value::Str(_) => !brace,
+        _ => true,
+    }
+}
+
 fn bracket_error(v: &Value, brace: bool, label: &str) -> Option<GoblinError> {
     let is_map = match v {
         Value::Map(_) | Value::MapOrd(_) => true,

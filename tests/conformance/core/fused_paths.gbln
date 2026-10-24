@@ -1,0 +1,61 @@
+/// Field reads and writes through paths: shared values, stale slots,
+/// mixed number types, and update! used for its value.
+a | {"x": 1, "y": 2}
+b | a
+:update!(a{"x"}, a{"x"} + 1)
+say(a)
+say(b)
+e | {"n": 1}
+m | {"es": [e, {"n": 5}]}
+:update!(m{"es"}[0]{"n"}, m{"es"}[0]{"n"} + 1)
+:update!(m{"es"}[1]{"n"}, m{"es"}[1]{"n"} * 3)
+say(e)
+say(m)
+rows | [{"a": 1, "b": 2}, {"b": 20, "a": 10}, {"c": 0, "b": 7, "a": 3}]
+i | 0
+while i < :len(rows)
+    :update!(rows[i]{"b"}, rows[i]{"b"} + rows[i]{"a"})
+    i |= i + 1
+xx
+say(rows)
+f | {"v": 1.5, "w": 2}
+:update!(f{"v"}, f{"v"} + f{"w"})
+:update!(f{"w"}, f{"w"} + 0.25)
+say(f)
+s | {"t": "ab"}
+:update!(s{"t"}, s{"t"} + "cd")
+say(s)
+big | {"n": 9223372036854775807}
+:update!(big{"n"}, big{"n"} * 2)
+say(big)
+low | {"n": -9223372036854775807}
+:update!(low{"n"}, low{"n"} - 5)
+say(low)
+r | :update!(a{"y"}, a{"y"} + 10)
+say(a)
+ks | ["x", "y"]
+for k in ks
+    :update!(a{k}, a{k} - 1)
+xx
+say(a)
+grid | [[1, 2], [3, 4]]
+j | 0
+while j < 2
+    if j == 1
+        :update!(grid[j][1], grid[j][1] + 100)
+    xx
+    j |= j + 1
+xx
+say(grid)
+miss | {"p": {"q": 1}}
+say(miss{"p"}{"q"})
+say(miss{"z"})
+n | {"k": nil}
+:update!(n{"k"}, 5)
+say(n)
+shrink | [{"a": 1, "b": 2, "c": 3}, {"c": 4}]
+t | 0
+while t < 2
+    say(shrink[t]{"c"})
+    t |= t + 1
+xx

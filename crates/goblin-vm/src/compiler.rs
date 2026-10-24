@@ -320,6 +320,9 @@ fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
 /// The stateful bytecode compiler.
 /// Maintains a stack of FunctionScopes (one per nested function body).
 pub struct Compiler {
+    /// Compiling the base of a `[]`/`{}` read: the outermost read fuses
+    /// the whole path into one step.
+    in_path: bool,
     /// Innermost scope is at the back.
     scopes: Vec<FunctionScope>,
     /// Registered global names (name → global slot index).
@@ -385,7 +388,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -1345,18 +1348,18 @@ impl Compiler {
 
             // ── Indexing ──────────────────────────────────────────────────────
             // Arrays and strings take `[]`, maps take `{}` (owner, 2026-10-06).
-            Expr::Index(obj, idx, _) => {
-                self.compile_expr(obj)?;
+            Expr::Index(obj, idx, _) | Expr::IndexMap(obj, idx, _) => {
+                let brace = matches!(expr, Expr::IndexMap(..));
+                let outer = !self.in_path;
+                let start = self.scope().bytecode.len();
+                self.in_path = true;
+                let base = self.compile_expr(obj);
+                self.in_path = !outer;
+                base?;
                 self.compile_expr(idx)?;
                 let label = self.add_constant(Value::Str(source_text(obj).into()));
-                self.emit(Opcode::IndexGet(label));
-            }
-
-            Expr::IndexMap(obj, key, _) => {
-                self.compile_expr(obj)?;
-                self.compile_expr(key)?;
-                let label = self.add_constant(Value::Str(source_text(obj).into()));
-                self.emit(Opcode::KeyGet(label));
+                self.emit(if brace { Opcode::KeyGet(label) } else { Opcode::IndexGet(label) });
+                if outer { self.fuse_tail(start); }
             }
 
             Expr::Member(obj, name, _) => {
@@ -2224,6 +2227,84 @@ impl Compiler {
     /// like `update!`). Consumes the value.
     /// Emits CheckPath for the lvalue path `target` (root and keys already on
     /// the stack), so a write through the wrong bracket errors.
+    /// Fuse the steps from `start` to the end of the bytecode into one
+    /// `Opcode::Fused` when they are a plain path read
+    /// (`LoadLocal`, then key loads with `KeyGet`/`IndexGet`) or the start of
+    /// a write through one (`LoadLocal GuardMutable LoadLocal`, key loads,
+    /// `CheckPath`). Keys must be constants or locals. Anything else stays.
+    fn fuse_tail(&mut self, start: usize) {
+        use crate::opcode::{Fused, FusedKey, FusedKind, FusedSeg, OpData};
+        let ops: Vec<Opcode> = self.scope().bytecode[start..].to_vec();
+        let key_of = |op: &Opcode| match *op {
+            Opcode::LoadConst(c) => Some(FusedKey::Const(c)),
+            Opcode::LoadLocal(s) => Some(FusedKey::Local(s)),
+            _ => None,
+        };
+        let seg = |key, brace| FusedSeg { key, brace, slot: Default::default() };
+        let fused = match ops.as_slice() {
+            [Opcode::LoadLocal(r1), Opcode::GuardMutable(guard), Opcode::LoadLocal(r2), keys @ .., Opcode::CheckPath(n, info)]
+                if r1 == r2 && *n as usize == keys.len() && !keys.is_empty() =>
+            {
+                let Some(Value::Array(info)) = self.scope().constants.get(*info as usize) else { return };
+                let mut segs = Vec::new();
+                for (op, inf) in keys.iter().zip(info.iter()) {
+                    let Some(key) = key_of(op) else { return };
+                    let brace = match inf {
+                        Value::Str(s) if s.starts_with('{') => true,
+                        Value::Str(s) if s.starts_with('[') => false,
+                        _ => return,
+                    };
+                    segs.push(seg(key, brace));
+                }
+                Fused { kind: FusedKind::Check { guard: *guard }, root: *r1, segs, ops }
+            }
+            [Opcode::LoadLocal(root), rest @ ..] if !rest.is_empty() && rest.len() % 2 == 0 => {
+                let mut segs = Vec::new();
+                for pair in rest.chunks(2) {
+                    let Some(key) = key_of(&pair[0]) else { return };
+                    let brace = match pair[1] {
+                        Opcode::KeyGet(_) => true,
+                        Opcode::IndexGet(_) => false,
+                        _ => return,
+                    };
+                    segs.push(seg(key, brace));
+                }
+                Fused { kind: FusedKind::Read, root: *root, segs, ops }
+            }
+            _ => return,
+        };
+        let sc = self.scope_mut();
+        let line = sc.line_numbers[start];
+        sc.bytecode.truncate(start);
+        sc.line_numbers.truncate(start);
+        let idx = self.op_data(OpData::Fused(Box::new(fused)));
+        let at = self.emit(Opcode::Fused(idx));
+        self.scope_mut().line_numbers[at] = line;
+    }
+
+    /// The steps from `start` to the end as number arithmetic over
+    /// constants, locals and fused reads, if that is all they are.
+    fn quick_expr(&self, start: usize) -> Option<crate::opcode::QExpr> {
+        use crate::opcode::{FusedKind, OpData, QExpr};
+        let sc = self.scope();
+        let mut st: Vec<QExpr> = Vec::new();
+        for op in &sc.bytecode[start..] {
+            let e = match *op {
+                Opcode::LoadConst(c) if matches!(sc.constants.get(c as usize), Some(Value::Int(_) | Value::Float(_))) => QExpr::Const(c),
+                Opcode::LoadLocal(s) => QExpr::Local(s),
+                Opcode::Fused(i) if matches!(&sc.op_data[i as usize], OpData::Fused(f) if f.kind == FusedKind::Read) => QExpr::Read(i),
+                Opcode::Add | Opcode::Sub | Opcode::Mul => {
+                    let b = Box::new(st.pop()?);
+                    let a = Box::new(st.pop()?);
+                    match *op { Opcode::Add => QExpr::Add(a, b), Opcode::Sub => QExpr::Sub(a, b), _ => QExpr::Mul(a, b) }
+                }
+                _ => return None,
+            };
+            st.push(e);
+        }
+        if st.len() == 1 { st.pop() } else { None }
+    }
+
     fn emit_check_path(&mut self, target: &Expr) -> Result<(), GoblinError> {
         let mut info: Vec<Value> = Vec::new();
         let mut cur = target;
@@ -3078,7 +3159,7 @@ impl Compiler {
                         }
                         let load_op = self.resolve_load(&root_name)
                             .map_err(|e| self.locate_err(e))?;
-                        self.emit(load_op);
+                        let root_at = self.emit(load_op);
                         let mut mask: u16 = 0;
                         for (i, (seg, is_field)) in segs.iter().enumerate() {
                             if *is_field {
@@ -3090,12 +3171,35 @@ impl Compiler {
                                 self.compile_expr(seg)?;
                             }
                         }
+                        // One step per key: the guard, the root and the keys
+                        // then fuse with the check.
+                        let one_op_keys = self.scope().bytecode.len() == root_at + 1 + segs.len();
                         self.emit_check_path(&args[0])?;
+                        if one_op_keys && root_at >= 2 { self.fuse_tail(root_at - 2); }
+                        let fused = match self.scope().bytecode.last() {
+                            Some(Opcode::Fused(i)) if mask == 0 => Some(*i),
+                            _ => None,
+                        };
+                        let value_at = self.scope().bytecode.len();
                         self.compile_expr(&args[1])?;
-                        self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
+                        let quick = fused.and_then(|check| self.quick_expr(value_at).map(|e| (check, e)));
+                        self.emit(match fused {
+                            Some(i) => Opcode::UpdatePathHint(segs.len() as u8, i),
+                            None => Opcode::UpdatePathMut(segs.len() as u8, mask),
+                        });
                         let store_op = self.resolve_store(&root_name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
                         self.emit(store_op);
+                        if let Some((check, expr)) = quick {
+                            // In front of the fused check: the whole statement at once.
+                            let at = value_at - 1;
+                            let skip = (self.scope().bytecode.len() - at) as u32;
+                            let qi = self.op_data(crate::opcode::OpData::QuickSet(Box::new(crate::opcode::QuickSet { check, expr, skip })));
+                            let sc = self.scope_mut();
+                            let line = sc.line_numbers[at];
+                            sc.bytecode.insert(at, Opcode::QuickSet(qi));
+                            sc.line_numbers.insert(at, line);
+                        }
                         let at = self.emit(Opcode::LoadNil);
                         self.scope_mut().unused_nil = Some(at);
                     }
