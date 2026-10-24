@@ -325,6 +325,12 @@ pub enum Opcode {
     /// and binds the pass's names for the loop's kind. Only a condition
     /// loop runs the steps right after this (its test); the others skip them.
     RepeatNext(u16),
+    /// Start of a `repeat`: pops the value it runs over and sets up the
+    /// loop's state (kind, items, limit, counter) in the call frame, from
+    /// op_data[idx] (a `Repeat`).
+    RepeatStart(u16),
+    /// In a condition `repeat`, after its test passed: idx = the counter.
+    RepeatIdx(u16),
 }
 
 impl Opcode {
@@ -390,6 +396,8 @@ impl Opcode {
             Opcode::UpdatePathHint(..) => "UpdatePathHint",
             Opcode::QuickSet(_) => "QuickSet",
             Opcode::RepeatNext(_) => "RepeatNext",
+            Opcode::RepeatStart(_) => "RepeatStart",
+            Opcode::RepeatIdx(_) => "RepeatIdx",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
@@ -466,10 +474,9 @@ pub enum OpData {
 /// The locals a `repeat` loop keeps, and where its pass goes.
 #[derive(Debug, Clone)]
 pub struct RepeatSlots {
-    pub mode: u8,
-    pub iter: u8,
-    pub limit: u8,
-    pub counter: u8,
+    /// Which of the function's loops this is: its state (kind, items,
+    /// limit, counter) lives in the call frame under this number.
+    pub id: u16,
     pub item: u8,
     pub key: u8,
     pub val: u8,

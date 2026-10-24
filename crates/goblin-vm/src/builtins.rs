@@ -2662,30 +2662,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
         BuiltinId::RepeatPrep => {
-            let v = read(0)?;
-            let plan = |mode: i64, iter: Value, limit: i64| Ok(Value::Array(vec![Value::Int(mode), iter, Value::Int(limit)]));
-            match v {
-                Value::Int(n) if n >= 0 => plan(0, Value::Nil, n),
-                Value::Int(n) => Err(GoblinError::Runtime(format!("'repeat' count must be >= 0 (got {n})"))),
-                Value::Nil => plan(3, Value::Nil, i64::MAX),
-                Value::Bool(_) => plan(4, Value::Nil, i64::MAX),
-                Value::Map(_) | Value::MapOrd(_) => {
-                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
-                    let n = collections::element_count(&it) as i64;
-                    plan(2, it, n)
-                }
-                Value::Collection(ref c) if collections::is_map_collection(c) => {
-                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
-                    let n = collections::element_count(&it) as i64;
-                    plan(2, it, n)
-                }
-                Value::Array(_) | Value::Collection(_) | Value::Seq(_) => {
-                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
-                    let n = collections::element_count(&it) as i64;
-                    plan(1, it, n)
-                }
-                other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
-            }
+            let (mode, iter, limit) = repeat_plan(read(0)?, session)?;
+            Ok(Value::Array(vec![Value::Int(mode), iter, Value::Int(limit)]))
         }
         BuiltinId::ToForIter => {
             // The loop reads `iter[i]` each pass, so the iterable must be cheap to
@@ -6071,4 +6049,26 @@ fn big_pow(b: rust_decimal::Decimal, e: i64) -> Result<rust_decimal::Decimal, Go
         if e > 0 { base = base.checked_mul(base).ok_or_else(overflow)?; }
     }
     Ok(acc)
+}
+
+/// How a `repeat` runs over `v`: (mode, iterable, limit). Mode 0 = count
+/// (int), 1 = items (array/collection), 2 = map (iterable of [k, v]),
+/// 3 = forever (nil), 4 = condition (bool; re-evaluated each pass),
+/// matching the interpreter's `repeat` dispatch.
+pub fn repeat_plan(v: Value, session: &mut Session) -> Result<(i64, Value, i64), GoblinError> {
+    let iter_of = |v: Value, session: &mut Session| -> Result<(Value, i64), GoblinError> {
+        let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+        let n = collections::element_count(&it) as i64;
+        Ok((it, n))
+    };
+    match v {
+        Value::Int(n) if n >= 0 => Ok((0, Value::Nil, n)),
+        Value::Int(n) => Err(GoblinError::Runtime(format!("'repeat' count must be >= 0 (got {n})"))),
+        Value::Nil => Ok((3, Value::Nil, i64::MAX)),
+        Value::Bool(_) => Ok((4, Value::Nil, i64::MAX)),
+        Value::Map(_) | Value::MapOrd(_) => { let (it, n) = iter_of(v, session)?; Ok((2, it, n)) }
+        Value::Collection(ref c) if collections::is_map_collection(c) => { let (it, n) = iter_of(v, session)?; Ok((2, it, n)) }
+        Value::Array(_) | Value::Collection(_) | Value::Seq(_) => { let (it, n) = iter_of(v, session)?; Ok((1, it, n)) }
+        other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
+    }
 }

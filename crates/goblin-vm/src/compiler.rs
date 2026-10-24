@@ -42,6 +42,8 @@ struct FunctionScope {
     constants: Vec<Value>,
     /// Total local slots allocated so far.
     next_slot: u8,
+    /// `repeat` loops compiled so far (each gets its own state in the frame).
+    repeat_loops: u16,
     /// How many slots are parameters (always slots 0..params-1).
     params: usize,
     /// Arguments a caller must pass; the rest have defaults.
@@ -77,6 +79,7 @@ impl FunctionScope {
             op_data: Vec::new(),
             constants: Vec::new(),
             next_slot: params as u8,
+            repeat_loops: 0,
             params,
             required_params: params,
             name: name.into(),
@@ -2720,37 +2723,12 @@ impl Compiler {
                 } else {
                     self.compile_expr(&args[0])?;
                 }
-                // RepeatPrep(n) → [mode, iterable, limit]; mode 0 = count (int),
-                // 1 = items (array/collection), 2 = map (iterable of [k, v]),
-                // 3 = forever (nil), 4 = condition (bool; re-evaluated each pass),
-                // matching the interpreter's `repeat` dispatch.
+                // RepeatStart works out the loop's kind from this value
+                // (see builtins::repeat_plan) and sets up its hidden locals.
                 // Loop variables (it, key, val, idx, `as` names) are scoped to the loop.
                 self.scope_mut().begin_block();
-                self.emit(Opcode::CallBuiltin(BuiltinId::RepeatPrep, 1));
-                let prep_slot = self.scope_mut().declare_local("__repeat_prep__");
-                self.emit(Opcode::StoreLocal(prep_slot));
-                let get = |c: &mut Self, slot: u8, i: i64| {
-                    let k = c.scope_mut().add_constant(Value::Int(i));
-                    c.emit(Opcode::LoadLocal(slot));
-                    c.emit(Opcode::LoadConst(k));
-                    c.emit(Opcode::GetIndex);
-                };
-                let mode_slot = self.scope_mut().declare_local("__repeat_mode__");
-                get(self, prep_slot, 0);
-                self.emit(Opcode::StoreLocal(mode_slot));
-                let iter_slot = self.scope_mut().declare_local("__repeat_iter__");
-                get(self, prep_slot, 1);
-                self.emit(Opcode::StoreLocal(iter_slot));
-                let limit_slot = self.scope_mut().declare_local("__repeat_limit__");
-                get(self, prep_slot, 2);
-                self.emit(Opcode::StoreLocal(limit_slot));
-
-                let zero = self.scope_mut().add_constant(Value::Int(0));
-                // RepeatNext moves the counter on before each pass.
-                let minus_one = self.scope_mut().add_constant(Value::Int(-1));
-                self.emit(Opcode::LoadConst(minus_one));
-                let counter_slot = self.scope_mut().declare_local("__repeat_i__");
-                self.emit(Opcode::StoreLocal(counter_slot));
+                let loop_id = self.scope().repeat_loops;
+                self.scope_mut().repeat_loops += 1;
 
                 let name_arg = |e: Option<&Expr>| match e {
                     Some(Expr::Str(s, _)) | Some(Expr::Ident(s, _)) if !s.is_empty() => Some(s.clone()),
@@ -2768,24 +2746,22 @@ impl Compiler {
                 };
                 let val_slot = self.scope_mut().declare_local(val_name.as_deref().unwrap_or("val"));
                 let idx_slot = self.scope_mut().declare_local("idx");
-                self.emit(Opcode::LoadConst(zero));
-                self.emit(Opcode::StoreLocal(idx_slot));
+                let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
+                    id: loop_id, item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                }));
+                // RepeatStart sets the loop up from the value on the stack.
+                self.emit(Opcode::RepeatStart(rep));
 
                 // LOOP START: one RepeatNext per pass. It moves the counter
                 // on, leaves at the limit and binds the names; only a
                 // condition loop runs the test after it.
                 let loop_start = self.scope_mut().bytecode.len();
-                let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
-                    mode: mode_slot, iter: iter_slot, limit: limit_slot, counter: counter_slot,
-                    item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
-                }));
                 self.emit(Opcode::RepeatNext(rep));
                 let cond_start = self.scope_mut().bytecode.len();
                 self.compile_expr(&args[0])?;
                 let cond_exit = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
                 // A condition loop's idx is set after its test, as before.
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::StoreLocal(idx_slot));
+                self.emit(Opcode::RepeatIdx(rep));
                 let cond_len = (self.scope().bytecode.len() - cond_start) as u32;
                 if let crate::opcode::OpData::Repeat(r) = &mut self.scope_mut().op_data[rep as usize] { r.cond_len = cond_len; }
 

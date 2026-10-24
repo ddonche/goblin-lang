@@ -43,6 +43,18 @@ pub struct CallFrame {
     /// If this is a method call, the tether for `self` in the caller's frame.
     /// On return, if the result is an Object with same uuid, overwrite this tether.
     pub self_tether: Option<Tether>,
+    /// State of this call's `repeat` loops, by loop number (grown on use).
+    pub loops: Vec<LoopState>,
+}
+
+/// One running `repeat`: its kind (see builtins::repeat_plan), what it
+/// runs over, where it stops and the pass it is on.
+#[derive(Clone)]
+pub struct LoopState {
+    pub mode: i64,
+    pub iter: Value,
+    pub limit: i64,
+    pub counter: i64,
 }
 
 impl CallFrame {
@@ -52,7 +64,7 @@ impl CallFrame {
             locals: vec![None; n],
             type_locks: vec![None; n],
             hard_type_locks: vec![None; n],
-            upvalues, ip: 0, func, stack_base, self_tether: None,
+            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(),
         }
     }
 
@@ -939,6 +951,14 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_map(pairs)))));
             }
             Opcode::RepeatNext(idx) => return self.repeat_next(idx),
+            Opcode::RepeatStart(idx) => return self.repeat_start(idx),
+            Opcode::RepeatIdx(idx) => {
+                let frame = self.call_stack.last().unwrap();
+                let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatIdx without its data") };
+                let (slot, n) = (r.idx, frame.loops[r.id as usize].counter);
+                self.stack.push(Operand::Val(Value::Int(n)));
+                return self.execute_op(Opcode::StoreLocal(slot));
+            }
             Opcode::QuickSet(idx) => {
                 if let Some(skip) = self.quick_set(idx)? {
                     self.call_stack.last_mut().unwrap().ip += skip as usize;
@@ -2918,55 +2938,64 @@ impl Vm {
         Ok(true)
     }
 
-    /// `Opcode::RepeatNext`: one pass of a `repeat`, as the generic steps
-    /// did it: counter + 1, out at the limit, then by kind (RepeatPrep's
-    /// mode) 0 count, 1 items (bind the item), 2 map (bind key and value),
-    /// 3 forever, 4 condition (run the test that follows). idx = counter.
-    fn repeat_next(&mut self, idx: u16) -> Result<(), GoblinError> {
+    /// `Opcode::RepeatStart`: work out how the loop runs over the value on
+    /// the stack and set its state in the frame, counter -1. A condition
+    /// loop's test can read idx before the first pass, so it starts at 0.
+    fn repeat_start(&mut self, idx: u16) -> Result<(), GoblinError> {
         use crate::opcode::{OpData, Opcode};
         let frame = self.call_stack.last().unwrap();
+        let OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatStart without its data") };
+        let (id, idx_slot) = (r.id as usize, r.idx);
+        let v = self.pop_value()?;
+        let (mode, iter, limit) = crate::builtins::repeat_plan(v, &mut self.session)?;
+        let frame = self.call_stack.last_mut().unwrap();
+        if frame.loops.len() <= id { frame.loops.resize_with(id + 1, || LoopState { mode: 3, iter: Value::Nil, limit: 0, counter: 0 }); }
+        frame.loops[id] = LoopState { mode, iter, limit, counter: -1 };
+        if mode == 4 {
+            self.stack.push(Operand::Val(Value::Int(0)));
+            self.execute_op(Opcode::StoreLocal(idx_slot))?;
+        }
+        Ok(())
+    }
+
+    /// `Opcode::RepeatNext`: one pass of a `repeat`: counter + 1, out at the
+    /// limit, then by kind 0 count, 1 items (bind the item), 2 map (bind key
+    /// and value), 3 forever, 4 condition (run the test that follows, which
+    /// sets idx). idx = counter.
+    fn repeat_next(&mut self, idx: u16) -> Result<(), GoblinError> {
+        use crate::opcode::{OpData, Opcode};
+        let frame = self.call_stack.last_mut().unwrap();
         let OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatNext without its data") };
-        let r = r.clone();
-        let int_at = |vm: &Self, slot: u8| -> Result<i64, GoblinError> {
-            let t = vm.call_stack.last().unwrap().load_local(slot)?;
-            match vm.session.get_stash(&t)?.value {
-                Value::Int(n) => Ok(n),
-                _ => Err(GoblinError::Runtime("repeat: bad loop state".into())),
-            }
-        };
-        let counter = int_at(self, r.counter)? + 1;
-        let ct = self.call_stack.last().unwrap().load_local(r.counter)?;
-        self.session.get_stash_mut(&ct)?.value = Value::Int(counter);
-        if counter >= int_at(self, r.limit)? {
-            self.call_stack.last_mut().unwrap().ip += r.exit as usize;
+        let (id, item_slot, key_slot, val_slot, idx_slot) = (r.id as usize, r.item, r.key, r.val, r.idx);
+        let (exit, cond_len) = (r.exit as usize, r.cond_len as usize);
+        let st = &mut frame.loops[id];
+        st.counter += 1;
+        let counter = st.counter;
+        if counter >= st.limit {
+            frame.ip += exit;
             return Ok(());
         }
-        let mode = int_at(self, r.mode)?;
-        if mode == 4 { return Ok(()); }
-        let item = |vm: &Self| -> Result<Value, GoblinError> {
-            let t = vm.call_stack.last().unwrap().load_local(r.iter)?;
-            crate::collections::get_index(&vm.session.get_stash(&t)?.value, &Value::Int(counter))
-        };
-        match mode {
+        match st.mode {
+            4 => return Ok(()),
             1 => {
-                let v = item(self)?;
+                let v = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
                 self.stack.push(Operand::Val(v));
-                self.execute_op(Opcode::StoreLocal(r.item))?;
+                self.execute_op(Opcode::StoreLocal(item_slot))?;
             }
             2 => {
-                let pair = item(self)?;
+                let pair = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
                 let k = crate::collections::get_index(&pair, &Value::Int(0))?;
                 self.stack.push(Operand::Val(k));
-                self.execute_op(Opcode::StoreLocal(r.key))?;
+                self.execute_op(Opcode::StoreLocal(key_slot))?;
                 let v = crate::collections::get_index(&pair, &Value::Int(1))?;
                 self.stack.push(Operand::Val(v));
-                self.execute_op(Opcode::StoreLocal(r.val))?;
+                self.execute_op(Opcode::StoreLocal(val_slot))?;
             }
             _ => {}
         }
         self.stack.push(Operand::Val(Value::Int(counter)));
-        self.execute_op(Opcode::StoreLocal(r.idx))?;
-        self.call_stack.last_mut().unwrap().ip += r.cond_len as usize;
+        self.execute_op(Opcode::StoreLocal(idx_slot))?;
+        self.call_stack.last_mut().unwrap().ip += cond_len;
         Ok(())
     }
 
