@@ -123,6 +123,10 @@ pub enum Opcode {
     /// Before `name |= v`: stack [v, old]. Pops old; errors (R1300) when old
     /// is a live object and v is not one. constants[idx] = the name.
     GuardObjRebind(u16),
+    /// `LoadLocal(slot); GuardObjRebind(idx)` in one step: errors (R1300)
+    /// when local `slot` holds a live object and the value on top of the
+    /// stack is not one. The stack is left as it was.
+    GuardRebindLocal(u16, u16),
     /// Like GetIndex but key is constants[idx] (string member access).
     GetMember(u16),
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
@@ -387,6 +391,7 @@ impl Opcode {
             Opcode::KeyGet(_)       => "KeyGet",
             Opcode::CheckPath(..)   => "CheckPath",
             Opcode::GuardObjRebind(_) => "GuardObjRebind",
+            Opcode::GuardRebindLocal(..) => "GuardRebindLocal",
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
             Opcode::SetField(_)     => "SetField",

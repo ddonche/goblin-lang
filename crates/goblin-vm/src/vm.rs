@@ -317,6 +317,25 @@ impl Vm {
                     }
                 }
                 let val = self.stack_pop_raw()?;
+                // A variable nothing else holds (no closure, no pending
+                // operand) and no lock to cast for: overwrite its value
+                // instead of making a new stash. Nobody can tell the
+                // difference, and it saves an allocation per assignment.
+                if !matches!(val, Value::Object(_)) {
+                    let frame = self.call_stack.last().unwrap();
+                    if let Some(Some(t)) = frame.locals.get(slot as usize) {
+                        if frame.get_hard_type_lock(slot).is_none()
+                            && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
+                            let addr = t.addr;
+                            if let Ok(stash) = self.session.resolve_mut(addr) {
+                                if stash.tether_count == 1 {
+                                    stash.value = val;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
                     crate::builtins::cast_value_to_lock(val, &lock)?
@@ -606,7 +625,10 @@ impl Vm {
             }
 
             // ── Stack ────────────────────────────────────────────────────────
-            Opcode::Pop => { self.stack_pop()?; }
+            Opcode::Pop => {
+                // Nothing reads the value, so don't fetch it.
+                if self.stack.pop().is_none() { return Err(GoblinError::Runtime("stack underflow".into())); }
+            }
             Opcode::Dup => {
                 // Clone the Operand (cheap for Ref — just 8 bytes; no stash access).
                 let op = self.stack.last()
@@ -1003,18 +1025,27 @@ impl Vm {
                 let result = crate::collections::get_index(&coll_val, &key)?;
                 self.stack.push(Operand::Val(result));
             }
+            Opcode::GuardRebindLocal(slot, name_idx) => {
+                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                let Some(new) = self.stack.last() else {
+                    return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into()));
+                };
+                if self.operand_is_obj(&Operand::Ref(t))? && !self.operand_is_obj(new)? {
+                    let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::new().into(),
+                    };
+                    return Err(GoblinError::Runtime(format!(
+                        "R1300: '{name}' is an object and cannot be rebound to a non-object value")));
+                }
+            }
             Opcode::GuardObjRebind(name_idx) => {
-                let old = self.stack_pop()?;
-                let new = match self.stack.last() {
-                    Some(op) => self.resolve_op(op.clone())?,
-                    None => return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into())),
+                // Looks at both values where they are, copying neither.
+                let old = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow on GuardObjRebind".into()))?;
+                let Some(new) = self.stack.last() else {
+                    return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into()));
                 };
-                let is_obj = |v: &Value| match v {
-                    Value::Object(_) => true,
-                    Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()),
-                    _ => false,
-                };
-                if is_obj(&old) && !is_obj(&new) {
+                if self.operand_is_obj(&old)? && !self.operand_is_obj(new)? {
                     let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
                         Some(Value::Str(s)) => s.clone(),
                         _ => String::new().into(),
@@ -2851,6 +2882,23 @@ impl Vm {
     fn stack_pop(&mut self) -> Result<Value, GoblinError> {
         let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
         self.resolve_op(op)
+    }
+
+    /// Whether an operand's value is an object (directly, by reference, or
+    /// frozen), as reading it would show, without copying it.
+    fn operand_is_obj(&self, op: &Operand) -> Result<bool, GoblinError> {
+        fn is_obj(s: &crate::session::Session, v: &Value) -> bool {
+            match v {
+                Value::Object(_) => true,
+                Value::Ref(uuid) => s.object_store.contains_key(uuid.as_str()),
+                Value::Frozen(f) => is_obj(s, &f.value),
+                _ => false,
+            }
+        }
+        Ok(match op {
+            Operand::Val(v) => is_obj(&self.session, v),
+            Operand::Ref(t) => is_obj(&self.session, &self.session.get_stash(t)?.value),
+        })
     }
 
     /// Pop one operand, resolve it, and dereference Value::Ref through object_store.

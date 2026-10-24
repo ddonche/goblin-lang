@@ -754,15 +754,7 @@ impl Compiler {
         match stmt {
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
-                let sc = self.scope_mut();
-                if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
-                    // `LoadNil; Pop` does nothing: leave both out.
-                    sc.bytecode.pop();
-                    sc.line_numbers.pop();
-                    sc.unused_nil = None;
-                } else {
-                    self.emit(Opcode::Pop); // discard expression result
-                }
+                self.emit_discard();
             }
 
             Stmt::Bind(bind) if self.compile_append_local(bind)? => {}
@@ -1856,7 +1848,9 @@ impl Compiler {
                             self.compile_expr(e)?;
                         } else {
                             self.compile_stmt(s)?;
-                            self.emit(Opcode::LoadNil);
+                            let at = self.emit(Opcode::LoadNil);
+                            // A body whose value is thrown away drops this.
+                            self.scope_mut().unused_nil = Some(at);
                         }
                     } else {
                         self.compile_stmt(s)?;
@@ -2493,11 +2487,28 @@ impl Compiler {
         Ok(true)
     }
 
+    /// Throw away the value just computed: `Pop`, or, when that value is
+    /// a `LoadNil` nothing jumps past (see `unused_nil`), leave both out.
+    fn emit_discard(&mut self) {
+        let sc = self.scope_mut();
+        if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
+            sc.bytecode.pop();
+            sc.line_numbers.pop();
+            sc.unused_nil = None;
+        } else {
+            self.emit(Opcode::Pop);
+        }
+    }
+
     fn emit_obj_rebind_guard(&mut self, name: &str) -> Result<(), GoblinError> {
         let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
-        self.emit(load_op);
         let idx = self.add_constant(Value::Str(name.to_string().into()));
-        self.emit(Opcode::GuardObjRebind(idx));
+        if let Opcode::LoadLocal(slot) = load_op {
+            self.emit(Opcode::GuardRebindLocal(slot, idx));
+        } else {
+            self.emit(load_op);
+            self.emit(Opcode::GuardObjRebind(idx));
+        }
         Ok(())
     }
 
@@ -2685,7 +2696,7 @@ impl Compiler {
                 // Loop context so `skip`/`stop` in the body target this loop.
                 self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[1])?;
-                self.emit(Opcode::Pop); // discard body result
+                self.emit_discard();
                 // Jump back to loop start
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
@@ -2770,7 +2781,7 @@ impl Compiler {
 
                 self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[1])?;
-                self.emit(Opcode::Pop);
+                self.emit_discard();
                 let increment_ip = self.scope_mut().bytecode.len();
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
@@ -2803,58 +2814,33 @@ impl Compiler {
                 };
                 // The loop variable is scoped to the loop (D3).
                 self.scope_mut().begin_block();
-                // Compile iterable; coerce maps/strings/nil to sequential array
+                // Compile iterable; coerce maps/strings/nil to sequential array.
+                // Then it runs as a `repeat` over those items: one step per pass.
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::CallBuiltin(BuiltinId::ToForIter, 1));
-                let iter_slot = self.scope_mut().declare_local("__for_iter__");
-                self.emit(Opcode::StoreLocal(iter_slot));
-                // index = 0
-                let zero = self.scope_mut().add_constant(Value::Int(0));
-                self.emit(Opcode::LoadConst(zero));
-                let idx_slot = self.scope_mut().declare_local("__for_i__");
-                self.emit(Opcode::StoreLocal(idx_slot));
-                // loop variable slot
                 let var_slot = self.scope_mut().declare_local(&var_name);
-                self.emit(Opcode::LoadConst(zero));
-                self.emit(Opcode::StoreLocal(var_slot));
-                // loop_start: idx < count(iter)?
+                let val_slot = self.scope_mut().declare_local("__for_val__");
+                let idx_slot = self.scope_mut().declare_local("__for_i__");
+                let loop_id = self.scope().repeat_loops;
+                self.scope_mut().repeat_loops += 1;
+                let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
+                    id: loop_id, item: var_slot, key: var_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                }));
+                self.emit(Opcode::RepeatStart(rep));
                 let loop_start = self.scope_mut().bytecode.len();
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
-                self.emit(Opcode::Lt);
-                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // elem = iter[idx]
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::GetIndex);
-                self.emit(Opcode::StoreLocal(var_slot));
-                // push loop context for stop/skip
+                self.emit(Opcode::RepeatNext(rep));
                 self.loop_stack.push(LoopCtx::default());
-                // body
                 self.compile_expr(&args[2])?;
-                self.emit(Opcode::Pop);
-                // increment position (skip jumps here)
+                self.emit_discard();
                 let increment_ip = self.scope_mut().bytecode.len();
-                let one = self.scope_mut().add_constant(Value::Int(1));
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::LoadConst(one));
-                self.emit(Opcode::Add);
-                self.emit(Opcode::StoreLocal(idx_slot));
-                // back-jump
-                let cur = self.scope_mut().bytecode.len();
-                let offset = -(((cur - loop_start) as i16) + 1);
+                let offset = -(((increment_ip - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
                 let exit_ip = self.scope_mut().bytecode.len();
-                self.scope_mut().patch_jump(exit_jump);
-                // patch stop/skip jumps
+                let exit = (exit_ip - (loop_start + 1)) as u32;
+                if let crate::opcode::OpData::Repeat(r) = &mut self.scope_mut().op_data[rep as usize] { r.exit = exit; }
                 let ctx = self.loop_stack.pop().unwrap();
-                for idx in ctx.break_patches {
-                    self.scope_mut().patch_jump_to(idx, exit_ip);
-                }
-                for idx in ctx.continue_patches {
-                    self.scope_mut().patch_jump_to(idx, increment_ip);
-                }
+                for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
+                for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, increment_ip); }
                 self.scope_mut().end_block();
                 self.emit(Opcode::LoadNil);
                 Ok(true)

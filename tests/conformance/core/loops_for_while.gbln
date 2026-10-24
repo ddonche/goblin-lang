@@ -1,0 +1,39 @@
+/// for and while after the loop speedups: every iterable kind, skip and
+/// stop, nesting, and reassigning one variable many times in a loop.
+for x in [1, 2, 3]
+    if x == 2
+        skip
+    xx
+    say("a {x}")
+xx
+for p in {"k": 1, "j": 2}
+    say(p)
+xx
+for c in "hi"
+    say(c)
+xx
+for x in [1, 2, 3, 4]
+    if x == 3
+        stop
+    xx
+    for y in [10, 20]
+        say(x * y)
+    xx
+xx
+act sum_to(n)
+    s | 0
+    i | 0
+    while i < n
+        s |= s + i
+        i |= i + 1
+    xx
+    return s
+xx
+say(sum_to(1000))
+t | "a"
+i | 0
+while i < 3
+    t |= t + "b"
+    i |= i + 1
+xx
+say(t)
