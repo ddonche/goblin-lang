@@ -62,8 +62,9 @@ impl CallFrame {
         let n = func.locals;
         CallFrame {
             locals: vec![None; n],
-            type_locks: vec![None; n],
-            hard_type_locks: vec![None; n],
+            // Grown on first use: most calls lock nothing.
+            type_locks: Vec::new(),
+            hard_type_locks: Vec::new(),
             upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(),
         }
     }
@@ -146,6 +147,8 @@ pub struct Vm {
     /// Reused buffer for the resolved keys of an in-place path write.
     key_buf: Vec<Value>,
     num_buf: Vec<Value>,
+    /// The error a step done in the run loop raised (`Step::Failed`).
+    step_err: Option<GoblinError>,
 }
 
 /// How far an actor's handler got in one go.
@@ -160,7 +163,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -236,7 +239,12 @@ impl Vm {
                 op
             };
 
-            match self.execute_op(op) {
+            let r = match self.fast_step(op) {
+                Step::Done => continue,
+                Step::Failed => Err(self.step_err.take().unwrap()),
+                Step::Slow => self.execute_op(op),
+            };
+            match r {
                 Ok(()) => {}
                 Err(e) => {
                     let e = match self.catch_error(e, 0) { Ok(()) => continue, Err(e) => e };
@@ -275,6 +283,97 @@ impl Vm {
             crate::opcode::OpData::Name(n) => n.clone(),
             other => unreachable!("opcode data {other:?} is not a name"),
         }
+    }
+
+    /// The common steps, done right in the run loops: Done when done
+    /// (exactly as `execute_op` would do it; Failed with the error in
+    /// `step_err`), Slow to run `execute_op`.
+    /// Keeps these steps out of `execute_op`, whose size makes every call
+    /// to it cost more than most of these steps themselves.
+    #[inline(always)]
+    fn fast_step(&mut self, op: Opcode) -> Step {
+        macro_rules! done { ($r:expr) => { match $r { Ok(_) => Step::Done, Err(e) => { self.step_err = Some(e); Step::Failed } } } }
+        match op {
+            Opcode::LoadConst(idx) => {
+                let v = self.call_stack.last().unwrap().func.constants[idx as usize].clone_fast();
+                self.stack.push(Operand::Val(v));
+            }
+            Opcode::LoadNil => self.stack.push(Operand::Val(Value::Nil)),
+            Opcode::LoadTrue => self.stack.push(Operand::Val(Value::Bool(true))),
+            Opcode::LoadFalse => self.stack.push(Operand::Val(Value::Bool(false))),
+            Opcode::LoadLocal(slot) => {
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
+                let t = t.clone();
+                self.stack.push(Operand::Ref(t));
+            }
+            Opcode::LoadGlobal(idx) => {
+                let Some(t) = self.session.get_global(idx as usize) else { return Step::Slow };
+                let t = t.clone();
+                self.stack.push(Operand::Ref(t));
+            }
+            Opcode::StoreLocal(slot) => return done!(self.store_local_op(slot, true)),
+            Opcode::BindLocal(slot) => return done!(self.store_local_op(slot, false)),
+            Opcode::Pop => { if self.stack.pop().is_none() { return Step::Slow; } }
+            Opcode::Jump(offset) => {
+                let frame = self.call_stack.last_mut().unwrap();
+                frame.ip = (frame.ip as isize + offset as isize) as usize;
+            }
+            Opcode::JumpIfFalse(offset) | Opcode::JumpIfTrue(offset) => {
+                let Some(Operand::Val(Value::Bool(c))) = self.stack.last() else { return Step::Slow };
+                let jump = *c == matches!(op, Opcode::JumpIfTrue(_));
+                self.stack.pop();
+                if jump {
+                    let frame = self.call_stack.last_mut().unwrap();
+                    frame.ip = (frame.ip as isize + offset as isize) as usize;
+                }
+            }
+            Opcode::Not => {
+                let Some(Operand::Val(Value::Bool(c))) = self.stack.last_mut() else { return Step::Slow };
+                *c = !*c;
+            }
+            Opcode::Add | Opcode::Sub | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne => {
+                let Some((a, b)) = self.top2_ints() else { return Step::Slow };
+                let r = match op {
+                    Opcode::Add => Value::Int(a.wrapping_add(b)),
+                    Opcode::Sub => match a.checked_sub(b) { Some(r) => Value::Int(r), None => return Step::Slow },
+                    Opcode::Lt => Value::Bool(a < b),
+                    Opcode::Le => Value::Bool(a <= b),
+                    Opcode::Gt => Value::Bool(a > b),
+                    Opcode::Ge => Value::Bool(a >= b),
+                    Opcode::Eq => Value::Bool(a == b),
+                    _ => Value::Bool(a != b),
+                };
+                self.stack.pop();
+                *self.stack.last_mut().unwrap() = Operand::Val(r);
+            }
+            Opcode::RepeatNext(idx) => return done!(self.repeat_next(idx)),
+            Opcode::QuickSet(idx) => match self.quick_set(idx) {
+                Ok(Some(skip)) => self.call_stack.last_mut().unwrap().ip += skip as usize,
+                Ok(None) => {}
+                Err(e) => { self.step_err = Some(e); return Step::Failed; }
+            },
+            Opcode::Fused(idx) => return match self.fused_quick(idx) {
+                Ok(true) => Step::Done,
+                Ok(false) => done!(self.fused_steps(idx)),
+                Err(e) => { self.step_err = Some(e); Step::Failed }
+            },
+            _ => return Step::Slow,
+        }
+        Step::Done
+    }
+
+    /// A fused step the quick way didn't take: its original steps, in order.
+    fn fused_steps(&mut self, idx: u16) -> Result<(), GoblinError> {
+        let mut j = 0;
+        loop {
+            let op = match &self.call_stack.last().unwrap().func.op_data[idx as usize] {
+                crate::opcode::OpData::Fused(f) => match f.ops.get(j) { Some(op) => *op, None => break },
+                _ => unreachable!("Fused without its data"),
+            };
+            self.execute_op(op)?;
+            j += 1;
+        }
+        Ok(())
     }
 
     fn execute_op(&mut self, op: Opcode) -> Result<(), GoblinError> {
@@ -961,7 +1060,7 @@ impl Vm {
                 let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatIdx without its data") };
                 let (slot, n) = (r.idx, frame.loops[r.id as usize].counter);
                 self.stack.push(Operand::Val(Value::Int(n)));
-                return self.execute_op(Opcode::BindLocal(slot));
+                return self.store_local_op(slot, false);
             }
             Opcode::QuickSet(idx) => {
                 if let Some(skip) = self.quick_set(idx)? {
@@ -971,15 +1070,7 @@ impl Vm {
             Opcode::Fused(idx) => {
                 if self.fused_quick(idx)? { return Ok(()); }
                 // The quick way didn't apply: run the original steps.
-                let mut j = 0;
-                loop {
-                    let op = match &self.call_stack.last().unwrap().func.op_data[idx as usize] {
-                        crate::opcode::OpData::Fused(f) => match f.ops.get(j) { Some(op) => *op, None => break },
-                        _ => unreachable!("Fused without its data"),
-                    };
-                    self.execute_op(op)?;
-                    j += 1;
-                }
+                return self.fused_steps(idx);
             }
             Opcode::GetIndex => {
                 let key = self.pop_value()?;
@@ -3084,7 +3175,7 @@ impl Vm {
         frame.loops[id] = LoopState { mode, iter, limit, counter: -1 };
         if mode == 4 {
             self.stack.push(Operand::Val(Value::Int(0)));
-            self.execute_op(Opcode::BindLocal(idx_slot))?;
+            self.store_local_op(idx_slot, false)?;
         }
         Ok(())
     }
@@ -3111,21 +3202,21 @@ impl Vm {
             1 => {
                 let v = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
                 self.stack.push(Operand::Val(v));
-                self.execute_op(Opcode::BindLocal(item_slot))?;
+                self.store_local_op(item_slot, false)?;
             }
             2 => {
                 let pair = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
                 let k = crate::collections::get_index(&pair, &Value::Int(0))?;
                 self.stack.push(Operand::Val(k));
-                self.execute_op(Opcode::BindLocal(key_slot))?;
+                self.store_local_op(key_slot, false)?;
                 let v = crate::collections::get_index(&pair, &Value::Int(1))?;
                 self.stack.push(Operand::Val(v));
-                self.execute_op(Opcode::BindLocal(val_slot))?;
+                self.store_local_op(val_slot, false)?;
             }
             _ => {}
         }
         self.stack.push(Operand::Val(Value::Int(counter)));
-        self.execute_op(Opcode::BindLocal(idx_slot))?;
+        self.store_local_op(idx_slot, false)?;
         self.call_stack.last_mut().unwrap().ip += cond_len;
         Ok(())
     }
@@ -3531,11 +3622,17 @@ impl Vm {
                 frame.ip += 1;
                 op
             };
-            if let Err(e) = self.execute_op(op) {
-                self.raise_above(e, base)?;
-            }
-            if let Some(w) = self.suspended.take() {
-                return Ok(Slice::Waiting(w));
+            match self.fast_step(op) {
+                Step::Done => {}
+                step => {
+                    let r = if step == Step::Failed { Err(self.step_err.take().unwrap()) } else { self.execute_op(op) };
+                    if let Err(e) = r {
+                        self.raise_above(e, base)?;
+                    }
+                    if self.suspended.is_some() {
+                        return Ok(Slice::Waiting(self.suspended.take().unwrap()));
+                    }
+                }
             }
             budget -= 1;
             if budget == 0 && self.call_stack.len() > base {
@@ -3568,7 +3665,12 @@ impl Vm {
                 frame.ip += 1;
                 op
             };
-            let result = match self.execute_op(op) {
+            let r = match self.fast_step(op) {
+                Step::Done => continue,
+                Step::Failed => Err(self.step_err.take().unwrap()),
+                Step::Slow => self.execute_op(op),
+            };
+            let result = match r {
                 Ok(()) => Ok(()),
                 // An `attempt` opened inside this nested run catches the error here.
                 Err(e) => self.catch_error(e, target_depth),
@@ -5539,6 +5641,10 @@ fn bracket_error(v: &Value, brace: bool, label: &str) -> Option<GoblinError> {
         None
     }
 }
+
+/// How a step done in the run loop went (see `Vm::fast_step`).
+#[derive(Clone, Copy, PartialEq)]
+enum Step { Done, Slow, Failed }
 
 /// Marking state for `Vm::collect_live_slots`.
 struct Marker {
