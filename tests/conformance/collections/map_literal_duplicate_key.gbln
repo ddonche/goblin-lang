@@ -1,0 +1,16 @@
+/// A key written twice in a map literal keeps its first place and its
+/// last value, and reading it is the same however the map was reached.
+m | {"a": 1, "b": 7, "a": 2}
+say(m)
+say(:len(m))
+act get_a(x)
+    return x{"a"}
+xx
+say(get_a(m))
+say(get_a({"b": 0, "a": 5}))
+say(get_a(m))
+:update!(m{"a"}, m{"a"} + 1)
+say(m)
+big | {"k1": 1, "k2": 2, "k3": 3, "k4": 4, "k5": 5, "k6": 6, "k7": 7, "k8": 8, "k9": 9, "k10": 10, "k11": 11, "k12": 12, "k13": 13, "k14": 14, "k15": 15, "k16": 16, "k17": 17, "k1": 100}
+say(big{"k1"})
+say(:len(big))
