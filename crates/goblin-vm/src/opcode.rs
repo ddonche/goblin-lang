@@ -514,6 +514,9 @@ pub enum QExpr {
     Local(u16),
     /// op_data index of a fused read.
     Read(u16),
+    /// A read of the statement's own target path: its old value, taken
+    /// where the write lands.
+    Target,
     Add(Box<QExpr>, Box<QExpr>),
     Sub(Box<QExpr>, Box<QExpr>),
     Mul(Box<QExpr>, Box<QExpr>),

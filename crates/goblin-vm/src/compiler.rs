@@ -2305,6 +2305,33 @@ impl Compiler {
         if st.len() == 1 { st.pop() } else { None }
     }
 
+    /// Reads in `e` of the same path `check` writes become `QExpr::Target`.
+    fn mark_target(&self, e: crate::opcode::QExpr, check: u16) -> crate::opcode::QExpr {
+        use crate::opcode::{FusedKey, OpData, QExpr};
+        let sc = self.scope();
+        let OpData::Fused(c) = &sc.op_data[check as usize] else { return e };
+        let key_eq = |a: &FusedKey, b: &FusedKey| match (a, b) {
+            (FusedKey::Const(x), FusedKey::Const(y)) => sc.constants[*x as usize] == sc.constants[*y as usize],
+            (FusedKey::Local(x), FusedKey::Local(y)) => x == y,
+            _ => false,
+        };
+        let same = |i: u16| match &sc.op_data[i as usize] {
+            OpData::Fused(r) => r.root == c.root && r.segs.len() == c.segs.len()
+                && r.segs.iter().zip(&c.segs).all(|(a, b)| a.brace == b.brace && key_eq(&a.key, &b.key)),
+            _ => false,
+        };
+        fn walk(e: QExpr, same: &dyn Fn(u16) -> bool) -> QExpr {
+            match e {
+                QExpr::Read(i) if same(i) => QExpr::Target,
+                QExpr::Add(a, b) => QExpr::Add(Box::new(walk(*a, same)), Box::new(walk(*b, same))),
+                QExpr::Sub(a, b) => QExpr::Sub(Box::new(walk(*a, same)), Box::new(walk(*b, same))),
+                QExpr::Mul(a, b) => QExpr::Mul(Box::new(walk(*a, same)), Box::new(walk(*b, same))),
+                other => other,
+            }
+        }
+        walk(e, &same)
+    }
+
     fn emit_check_path(&mut self, target: &Expr) -> Result<(), GoblinError> {
         let mut info: Vec<Value> = Vec::new();
         let mut cur = target;
@@ -3120,7 +3147,7 @@ impl Compiler {
                         };
                         let value_at = self.scope().bytecode.len();
                         self.compile_expr(&args[1])?;
-                        let quick = fused.and_then(|check| self.quick_expr(value_at).map(|e| (check, e)));
+                        let quick = fused.and_then(|check| self.quick_expr(value_at).map(|e| (check, self.mark_target(e, check))));
                         self.emit(match fused {
                             Some(i) => Opcode::UpdatePathHint(segs.len() as u8, i),
                             None => Opcode::UpdatePathMut(segs.len() as u8, mask),

@@ -145,6 +145,7 @@ pub struct Vm {
     scratch: Vec<Operand>,
     /// Reused buffer for the resolved keys of an in-place path write.
     key_buf: Vec<Value>,
+    num_buf: Vec<Value>,
 }
 
 /// How far an actor's handler got in one go.
@@ -159,7 +160,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -3119,8 +3120,10 @@ impl Vm {
             if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return Ok(None); }
         }
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) { return Ok(None); }
-        if !self.check_walk(f)? { return Ok(None); }
-        let Some(val) = self.quick_num(&func, &q.expr)? else { return Ok(None) };
+        // The parts of the new value that don't need the old one, in order.
+        let mut nums = std::mem::take(&mut self.num_buf);
+        nums.clear();
+        if !self.quick_leaves(&func, &q.expr, &mut nums)? { self.num_buf = nums; return Ok(None); }
         let mut keys = std::mem::take(&mut self.key_buf);
         keys.clear();
         let frame = self.call_stack.last().unwrap();
@@ -3128,17 +3131,49 @@ impl Vm {
             let k = match seg.key {
                 FusedKey::Const(c) => func.constants[c as usize].clone_fast(),
                 FusedKey::Local(s) => match frame.locals.get(s as usize) {
-                    Some(Some(kt)) => self.session.read_value(kt)?,
-                    _ => { self.key_buf = keys; return Ok(None) }
+                    Some(Some(kt)) => match &self.session.get_stash(kt)?.value {
+                        Value::Ref(_) => { self.key_buf = keys; self.num_buf = nums; return Ok(None) }
+                        Value::Frozen(fr) => fr.value.clone_fast(),
+                        v => v.clone_fast(),
+                    },
+                    _ => { self.key_buf = keys; self.num_buf = nums; return Ok(None) }
                 },
             };
             keys.push(k);
         }
         let stash = self.session.resolve_mut(t.addr)?;
-        let done = crate::collections::update_path_in_place_hint(&mut stash.value, &keys, val, &f.segs);
+        let expr = &q.expr;
+        let done = crate::collections::update_path_with(&mut stash.value, &keys, &f.segs,
+            &mut |old| quick_eval(expr, &nums, &mut 0, old));
         keys.clear();
+        nums.clear();
         self.key_buf = keys;
+        self.num_buf = nums;
         Ok(done.then_some(q.skip))
+    }
+
+    /// The leaves of a QuickSet value other than its target, in order, as
+    /// numbers; false if one isn't an int or a float.
+    fn quick_leaves(&self, func: &FunctionObject, e: &crate::opcode::QExpr, out: &mut Vec<Value>) -> Result<bool, GoblinError> {
+        use crate::opcode::{OpData, QExpr};
+        let leaf = |v: &Value, out: &mut Vec<Value>| match v {
+            Value::Int(_) | Value::Float(_) => { out.push(v.clone_fast()); true }
+            _ => false,
+        };
+        Ok(match e {
+            QExpr::Target => true,
+            QExpr::Const(c) => leaf(&func.constants[*c as usize], out),
+            QExpr::Local(s) => match self.call_stack.last().unwrap().locals.get(*s as usize) {
+                Some(Some(t)) => leaf(&self.session.get_stash(t)?.value, out),
+                _ => false,
+            },
+            QExpr::Read(i) => {
+                let OpData::Fused(f) = &func.op_data[*i as usize] else { return Ok(false) };
+                match self.fused_read_ref(func, f)? { Some(v) => leaf(v, out), None => false }
+            }
+            QExpr::Add(a, b) | QExpr::Sub(a, b) | QExpr::Mul(a, b) =>
+                self.quick_leaves(func, a, out)? && self.quick_leaves(func, b, out)?,
+        })
     }
 
     /// The bracket checks of a fused check, without errors: true when the
@@ -3214,6 +3249,7 @@ impl Vm {
         use crate::opcode::{OpData, QExpr};
         let leaf = |v: &Value| match v { Value::Int(_) | Value::Float(_) => Some(v.clone_fast()), _ => None };
         Ok(match e {
+            QExpr::Target => None,
             QExpr::Const(c) => leaf(&func.constants[*c as usize]),
             QExpr::Local(s) => match self.call_stack.last().unwrap().locals.get(*s as usize) {
                 Some(Some(t)) => leaf(&self.session.get_stash(t)?.value),
@@ -5414,6 +5450,35 @@ fn floor_mod_adjust(r: Value, divisor: &Value) -> Value {
 /// takes a particular bracket.
 /// `bracket_error(v, brace, _).is_none()`, without building a message.
 #[inline(always)]
+/// A QuickSet value from its leaves (`quick_leaves`, taken in order from
+/// `*at`) and the target's old value, exactly as the steps would work it
+/// out (see `Vm::quick_num`); None otherwise.
+fn quick_eval(e: &crate::opcode::QExpr, nums: &[Value], at: &mut usize, old: &Value) -> Option<Value> {
+    use crate::opcode::QExpr;
+    match e {
+        QExpr::Target => match old { Value::Int(_) | Value::Float(_) => Some(old.clone_fast()), _ => None },
+        QExpr::Const(_) | QExpr::Local(_) | QExpr::Read(_) => {
+            let v = nums.get(*at)?.clone_fast();
+            *at += 1;
+            Some(v)
+        }
+        QExpr::Add(a, b) | QExpr::Sub(a, b) | QExpr::Mul(a, b) => {
+            let x = quick_eval(a, nums, at, old);
+            let y = quick_eval(b, nums, at, old);
+            let (x, y) = (x?, y?);
+            match (e, x, y) {
+                (QExpr::Add(..), Value::Int(x), Value::Int(y)) => Some(Value::Int(x.wrapping_add(y))),
+                (QExpr::Add(..), Value::Float(x), Value::Float(y)) => Some(Value::Float(x + y)),
+                (QExpr::Add(..), Value::Int(x), Value::Float(y)) => Some(Value::Float(x as f64 + y)),
+                (QExpr::Add(..), Value::Float(x), Value::Int(y)) => Some(Value::Float(x + y as f64)),
+                (QExpr::Sub(..), Value::Int(x), Value::Int(y)) => x.checked_sub(y).map(Value::Int),
+                (QExpr::Mul(..), Value::Int(x), Value::Int(y)) => x.checked_mul(y).map(Value::Int),
+                _ => None,
+            }
+        }
+    }
+}
+
 fn bracket_fits(v: &Value, brace: bool) -> bool {
     match v {
         Value::Collection(c) => c.is_map() == brace,

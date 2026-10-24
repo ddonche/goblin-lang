@@ -1,0 +1,29 @@
+/// known-gap: interp adds text and a number ("x" + 1), which is an error by ruling
+/// :update! whose new value reads the same path: worked out from the old value in one step; a missing key or a non-number falls back to the full steps (and their errors).
+act run()
+    es | [{"a": 1, "b": 2}, {"a": 5}]
+    repeat 3
+        :update!(es[0]{"a"}, es[0]{"a"} + 1)
+        :update!(es[1]{"a"}, 2 * es[1]{"a"} - es[0]{"b"})
+    xx
+    :update!(es[1]{"c"}, es[0]{"b"} + 10)
+    say(es)
+    :update!(es[0]{"b"}, es[0]{"b"} + 0.5)
+    say(es[0])
+    s | {"n": "x"}
+    attempt
+        :update!(s{"n"}, s{"n"} + 1)
+    rescue e
+        say("error")
+    xx
+    say(s)
+    m | {"k": 1}
+    attempt
+        :update!(m{"z"}, m{"z"} + 1)
+    rescue e
+        say("error 2")
+    xx
+    say(m)
+    return 0
+xx
+run()

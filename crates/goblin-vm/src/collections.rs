@@ -1869,6 +1869,43 @@ pub fn update_path_in_place_hint(target: &mut Value, keys: &[Value], val: Value,
     !keys.is_empty() && write_in_place(target, keys, val, hints)
 }
 
+/// The write at the end of a fused path, in one walk: each level must
+/// take the bracket its step uses and be changeable in place, and `f` gives
+/// the new value from the old one (nil for a key not there yet), or None to
+/// leave things as they were (the levels walked are only unshared, and
+/// their access counts are taken back).
+pub fn update_path_with(target: &mut Value, keys: &[Value], segs: &[crate::opcode::FusedSeg], f: &mut dyn FnMut(&Value) -> Option<Value>) -> bool {
+    !keys.is_empty() && keys.len() == segs.len() && write_with(target, keys, segs, f)
+}
+
+fn write_with(target: &mut Value, keys: &[Value], segs: &[crate::opcode::FusedSeg], f: &mut dyn FnMut(&Value) -> Option<Value>) -> bool {
+    let Value::Collection(rc) = target else { return false };
+    if rc.is_map() != segs[0].brace { return false; }
+    let last = keys.len() == 1;
+    let Some(p) = probe_key(rc, &keys[0], !last && rc.is_map(), Some(&segs[0].slot)) else { return false };
+    if last {
+        // A new key: work the value out before adding the key.
+        let new = if matches!(p, Probe::Insert) {
+            match f(&Value::Nil) { Some(v) => v, None => return false }
+        } else {
+            let Some(v) = (match &rc.layout {
+                CollectionLayout::SmallMap(pairs) => match p { Probe::At(i) => pairs.get(i).map(|(_, v)| v), _ => None },
+                CollectionLayout::HashMapBackend(m) => match p { Probe::At(i) => m.get_index(i).map(|(_, v)| v), _ => None },
+                CollectionLayout::FlatArray(v) => match p { Probe::At(i) => v.get(i), _ => None },
+                CollectionLayout::RingBuf(rb) => match p { Probe::At(i) => rb.get(i), _ => None },
+                CollectionLayout::ChunkedSeq(cs) => match p { Probe::At(i) => cs.get(i), _ => None },
+            }) else { return false };
+            match f(v) { Some(v) => v, None => return false }
+        };
+        *slot_at(rc, &keys[0], p) = new;
+        return true;
+    }
+    let slot = slot_at(rc, &keys[0], p);
+    if write_with(slot, &keys[1..], &segs[1..], f) { return true; }
+    if let Some(c) = Rc::get_mut(rc) { c.meta.mid_hits = c.meta.mid_hits.saturating_sub(1); }
+    false
+}
+
 /// Where an in-place write at a key lands.
 #[derive(Clone, Copy)]
 enum Probe { At(usize), Insert }
