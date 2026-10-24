@@ -2929,6 +2929,8 @@ impl Vm {
         let OpData::Fused(f) = &func.op_data[q.check as usize] else { unreachable!("QuickSet without its check") };
         let frame = self.call_stack.last().unwrap();
         let Some(Some(t)) = frame.locals.get(f.root as usize) else { return Ok(None) };
+        // A hard type lock casts and checks on the store this would skip.
+        if frame.get_hard_type_lock(f.root).is_some() { return Ok(None); }
         let t = t.clone();
         {
             let stash = self.session.get_stash(&t)?;

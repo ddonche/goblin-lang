@@ -1,0 +1,8 @@
+/// known-gap: interp does not check a type lock on writes through a path
+/// A hard type lock still checks values written through a path.
+act f()
+    x.u8 | {"n": 1}
+    :update!(x{"n"}, x{"n"} + 299)
+    say(x)
+xx
+f()
