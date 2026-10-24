@@ -181,6 +181,8 @@ impl FunctionScope {
 
     /// Patch a previously emitted jump to the current position.
     fn patch_jump(&mut self, jump_idx: usize) {
+        // A jump now lands after the trailing `LoadNil`, so it can't be dropped.
+        self.unused_nil = None;
         let current = self.bytecode.len();
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
@@ -192,6 +194,7 @@ impl FunctionScope {
 
     /// Patch a previously emitted jump to a specific target IP.
     fn patch_jump_to(&mut self, jump_idx: usize, target_ip: usize) {
+        self.unused_nil = None;
         let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
             Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
