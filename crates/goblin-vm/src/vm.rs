@@ -68,7 +68,7 @@ impl CallFrame {
         }
     }
 
-    fn load_local(&self, slot: u8) -> Result<Tether, GoblinError> {
+    fn load_local(&self, slot: u16) -> Result<Tether, GoblinError> {
         match self.locals.get(slot as usize) {
             Some(Some(t)) => Ok(t.clone()),
             Some(None) => Err(GoblinError::Runtime(
@@ -80,7 +80,7 @@ impl CallFrame {
         }
     }
 
-    fn store_local(&mut self, slot: u8, t: Tether, _session: &mut crate::session::Session) {
+    fn store_local(&mut self, slot: u16, t: Tether, _session: &mut crate::session::Session) {
         let idx = slot as usize;
         if idx >= self.locals.len() {
             self.locals.resize(idx + 1, None);
@@ -90,21 +90,21 @@ impl CallFrame {
         self.locals[idx] = Some(t);
     }
 
-    fn get_type_lock(&self, slot: u8) -> Option<&str> {
+    fn get_type_lock(&self, slot: u16) -> Option<&str> {
         self.type_locks.get(slot as usize).and_then(|o| o.as_deref())
     }
 
-    fn get_hard_type_lock(&self, slot: u8) -> Option<&str> {
+    fn get_hard_type_lock(&self, slot: u16) -> Option<&str> {
         self.hard_type_locks.get(slot as usize).and_then(|o| o.as_deref())
     }
 
-    fn set_type_lock(&mut self, slot: u8, lock: String) {
+    fn set_type_lock(&mut self, slot: u16, lock: String) {
         let idx = slot as usize;
         if idx >= self.type_locks.len() { self.type_locks.resize(idx + 1, None); }
         self.type_locks[idx] = Some(lock);
     }
 
-    fn set_hard_type_lock(&mut self, slot: u8, lock: String) {
+    fn set_hard_type_lock(&mut self, slot: u16, lock: String) {
         let idx = slot as usize;
         if idx >= self.hard_type_locks.len() { self.hard_type_locks.resize(idx + 1, None); }
         self.hard_type_locks[idx] = Some(lock);

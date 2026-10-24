@@ -22,13 +22,13 @@ struct FunctionScope {
     /// Maps variable names to local slot indices within this function.
     /// Only the names visible at the current point: a block's locals are
     /// dropped when it closes (the slots are not reused).
-    locals: Vec<(String, u8)>,
+    locals: Vec<(String, u16)>,
     /// Parallel to `locals`.
     local_meta: Vec<LocalMeta>,
     /// `locals.len()` at the start of each open block.
     block_marks: Vec<usize>,
     /// Every local ever declared, for slot names (string interpolation).
-    all_locals: Vec<(String, u8)>,
+    all_locals: Vec<(String, u16)>,
     /// Upvalue captures from enclosing scopes.
     upvalues: Vec<(String, UpvalueDescriptor)>,
     /// Bytecode under construction.
@@ -41,7 +41,7 @@ struct FunctionScope {
     /// Constant pool.
     constants: Vec<Value>,
     /// Total local slots allocated so far.
-    next_slot: u8,
+    next_slot: u16,
     /// `repeat` loops compiled so far (each gets its own state in the frame).
     repeat_loops: u16,
     /// How many slots are parameters (always slots 0..params-1).
@@ -78,7 +78,7 @@ impl FunctionScope {
             unused_nil: None,
             op_data: Vec::new(),
             constants: Vec::new(),
-            next_slot: params as u8,
+            next_slot: params as u16,
             repeat_loops: 0,
             params,
             required_params: params,
@@ -104,7 +104,7 @@ impl FunctionScope {
     }
 
     /// Declare a new local variable in this scope. Returns its slot index.
-    fn declare_local(&mut self, name: &str) -> u8 {
+    fn declare_local(&mut self, name: &str) -> u16 {
         let slot = self.next_slot;
         self.next_slot = self.next_slot.saturating_add(1);
         self.locals.push((name.to_string(), slot));
@@ -116,7 +116,7 @@ impl FunctionScope {
     /// Declare a hoisted local: it has a slot from the start of the function
     /// (so forward references compile), but counts as bound only once its
     /// `x | v` statement is reached.
-    fn declare_hoisted(&mut self, name: &str) -> u8 {
+    fn declare_hoisted(&mut self, name: &str) -> u16 {
         let slot = self.declare_local(name);
         self.local_meta.last_mut().unwrap().bound = false;
         slot
@@ -125,14 +125,14 @@ impl FunctionScope {
     /// Declare parameters (must be called before any other locals).
     fn declare_params(&mut self, names: &[String]) {
         for (i, n) in names.iter().enumerate() {
-            self.locals.push((n.clone(), i as u8));
+            self.locals.push((n.clone(), i as u16));
             self.local_meta.push(LocalMeta { depth: 0, bound: true, imm: false });
-            self.all_locals.push((n.clone(), i as u8));
+            self.all_locals.push((n.clone(), i as u16));
         }
     }
 
     /// The innermost visible local with this name: (index into `locals`, slot).
-    fn find_local_entry(&self, name: &str) -> Option<(usize, u8)> {
+    fn find_local_entry(&self, name: &str) -> Option<(usize, u16)> {
         self.locals.iter().enumerate().rev().find(|(_, (n, _))| n == name).map(|(i, (_, s))| (i, *s))
     }
 
@@ -141,7 +141,7 @@ impl FunctionScope {
     }
 
     /// Stop resolving names to this slot (the slot itself stays allocated).
-    fn hide_local(&mut self, slot: u8) {
+    fn hide_local(&mut self, slot: u16) {
         if let Some(e) = self.locals.iter_mut().rev().find(|(_, s)| *s == slot) {
             e.0 = String::from("\u{0}hidden");
         }
@@ -155,7 +155,7 @@ impl FunctionScope {
     }
 
     /// Look up a local variable by name. Returns its slot, if found.
-    fn find_local(&self, name: &str) -> Option<u8> {
+    fn find_local(&self, name: &str) -> Option<u16> {
         // Search in reverse (innermost binding wins).
         self.locals.iter().rev().find(|(n, _)| n == name).map(|(_, s)| *s)
     }
@@ -2529,9 +2529,9 @@ impl Compiler {
         self.scope_mut().required_params = required;
         for (i, p) in params.iter().enumerate() {
             let Some(default) = &p.default else { continue };
-            let skip = self.emit(Opcode::JumpIfLocalSet(i as u8, 0));
+            let skip = self.emit(Opcode::JumpIfLocalSet(i as u16, 0));
             self.compile_expr(default)?;
-            self.emit(Opcode::StoreLocal(i as u8));
+            self.emit(Opcode::StoreLocal(i as u16));
             self.scope_mut().patch_jump(skip);
         }
         Ok(())
