@@ -1241,7 +1241,7 @@ pub fn into_collection(v: Value) -> Value {
 fn build_map(pairs: Vec<(Value, Value)>, meta: CollectionMeta) -> CollectionValue {
     let len = pairs.len();
     let layout = if len > 16 {
-        let mut m = indexmap::IndexMap::new();
+        let mut m = crate::value::BigMap::with_capacity_and_hasher(len, Default::default());
         for (k, v) in pairs {
             m.insert(k, v);
         }
@@ -1852,31 +1852,189 @@ fn slot_for_key<'a>(rc: &'a mut Rc<CollectionValue>, key: &Value) -> &'a mut Val
     }
 }
 
-fn path_writable(target: &Value, keys: &[Value]) -> bool {
-    let Value::Collection(c) = target else { return false };
-    let last = keys.len() == 1;
-    // A step that descends needs the child to exist (the general path reads
-    // nil for a missing key and then fails on it).
-    if !can_write_key(c, &keys[0], !last && c.is_map()) { return false; }
-    if last { return true; }
-    match get_index(target, &keys[0]) {
-        Ok(child) => path_writable(&child, &keys[1..]),
-        Err(_) => false,
+/// `:update!(x[k1][k2]…, val)` in place: inserts or overwrites a map key,
+/// overwrites an in-range sequence element (as VM::update_path does).
+///
+/// One key lookup per level: each level is checked (as can_write_key
+/// does) and then written through the index that check found. A level
+/// that can't be written stops the walk; the levels above it were only
+/// unshared (same contents), so the caller's general path still applies.
+pub fn update_path_in_place(target: &mut Value, keys: &[Value], val: Value) -> bool {
+    !keys.is_empty() && write_in_place(target, keys, val, &[])
+}
+
+/// `update_path_in_place`, trying each large map's key at the slot in
+/// `hints` first (one hint per key).
+pub fn update_path_in_place_hint(target: &mut Value, keys: &[Value], val: Value, hints: &[crate::opcode::FusedSeg]) -> bool {
+    !keys.is_empty() && write_in_place(target, keys, val, hints)
+}
+
+/// Where an in-place write at a key lands.
+#[derive(Clone, Copy)]
+enum Probe { At(usize), Insert }
+
+/// can_write_key, also giving the slot it found.
+fn probe_key(c: &CollectionValue, key: &Value, must_exist: bool, hint: Option<&crate::opcode::SlotHint>) -> Option<Probe> {
+    match &c.layout {
+        CollectionLayout::SmallMap(pairs) => {
+            // Same rule as can_write_key: only all-string-key maps.
+            let Value::Str(k) = key else { return None };
+            let mut found = None;
+            for (i, (pk, _)) in pairs.iter().enumerate() {
+                let Value::Str(s) = pk else { return None };
+                if found.is_none() && s == k { found = Some(i); }
+            }
+            match found {
+                Some(i) => Some(Probe::At(i)),
+                None if !must_exist && pairs.len() < 16 => Some(Probe::Insert),
+                None => None,
+            }
+        }
+        CollectionLayout::HashMapBackend(m) => {
+            if !matches!(key, Value::Str(_)) { return None; }
+            if let Some(h) = hint {
+                if let Some((k, _)) = m.get_index(h.get() as usize) {
+                    if same_key(k, key) { return Some(Probe::At(h.get() as usize)); }
+                }
+            }
+            match m.get_index_of(key) {
+                Some(i) => { if let Some(h) = hint { h.set(i as u32); } Some(Probe::At(i)) }
+                None if !must_exist => Some(Probe::Insert),
+                None => None,
+            }
+        }
+        layout => {
+            let Value::Int(idx) = key else { return None };
+            let i = resolve_seq_index(*idx, c.len()).ok()?;
+            let mut meta = c.meta.clone();
+            meta.mid_hits = meta.mid_hits.saturating_add(1);
+            keeps_seq_layout(layout, &meta).then_some(Probe::At(i))
+        }
     }
 }
 
-fn write_path(target: &mut Value, keys: &[Value], val: Value) {
-    let Value::Collection(rc) = target else { unreachable!("checked by path_writable") };
-    let slot = slot_for_key(rc, &keys[0]);
-    if keys.len() == 1 { *slot = val } else { write_path(slot, &keys[1..], val) }
+/// The slot probe_key found, unshared, counting the access as slot_for_key does.
+fn slot_at<'a>(rc: &'a mut Rc<CollectionValue>, key: &Value, p: Probe) -> &'a mut Value {
+    let CollectionValue { layout, meta } = Rc::make_mut(rc);
+    meta.mid_hits = meta.mid_hits.saturating_add(1);
+    match (layout, p) {
+        (CollectionLayout::SmallMap(pairs), p) => {
+            let pairs = Rc::make_mut(pairs);
+            let i = match p {
+                Probe::At(i) => i,
+                Probe::Insert => { pairs.push((key.clone(), Value::Nil)); pairs.len() - 1 }
+            };
+            meta.len = pairs.len();
+            &mut pairs[i].1
+        }
+        (CollectionLayout::HashMapBackend(m), p) => {
+            let m = Rc::make_mut(m);
+            let i = match p {
+                Probe::At(i) => i,
+                Probe::Insert => m.insert_full(key.clone(), Value::Nil).0,
+            };
+            meta.len = m.len();
+            m.get_index_mut(i).expect("index from probe_key").1
+        }
+        (CollectionLayout::FlatArray(v), Probe::At(i)) => &mut Rc::make_mut(v)[i],
+        (CollectionLayout::RingBuf(rb), Probe::At(i)) => Rc::make_mut(rb).get_mut(i).expect("index from probe_key"),
+        (CollectionLayout::ChunkedSeq(cs), Probe::At(i)) => Rc::make_mut(cs).get_mut(i).expect("index from probe_key"),
+        (_, Probe::Insert) => unreachable!("probe_key inserts only into maps"),
+    }
 }
 
-/// `:update!(x[k1][k2]…, val)` in place: inserts or overwrites a map key,
-/// overwrites an in-range sequence element (as VM::update_path does).
-pub fn update_path_in_place(target: &mut Value, keys: &[Value], val: Value) -> bool {
-    if keys.is_empty() || !path_writable(target, keys) { return false; }
-    write_path(target, keys, val);
-    true
+fn write_in_place(target: &mut Value, keys: &[Value], val: Value, hints: &[crate::opcode::FusedSeg]) -> bool {
+    let Value::Collection(rc) = target else { return false };
+    let last = keys.len() == 1;
+    // A step that descends needs the child to exist (the general path reads
+    // nil for a missing key and then fails on it).
+    let Some(p) = probe_key(rc, &keys[0], !last && rc.is_map(), hints.first().map(|h| &h.slot)) else { return false };
+    let slot = slot_at(rc, &keys[0], p);
+    if last { *slot = val; return true; }
+    if write_in_place(slot, &keys[1..], val, hints.get(1..).unwrap_or(&[])) { return true; }
+    // A deeper step can't be done here, so the general path will redo this
+    // access and count it; take back the count slot_at added.
+    if let Some(c) = Rc::get_mut(rc) { c.meta.mid_hits = c.meta.mid_hits.saturating_sub(1); }
+    false
+}
+
+/// A child read in place, for walks that only look (CheckPath).
+pub enum ChildRef<'a> {
+    Found(&'a Value),
+    /// The key isn't there (or the index is out of range).
+    Missing,
+    /// A layout this doesn't read in place; use get_index.
+    Other,
+}
+
+/// `value_child_ref`, trying the map slot in `hint` first (where the key
+/// was found last time) and remembering where it was found.
+/// `a == b` for map keys, with the common string case first (and the
+/// same string object, as after interning, without comparing the text).
+#[inline(always)]
+pub fn same_key(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Str(x), Value::Str(y)) => x.same(y) || x.as_str() == y.as_str(),
+        _ => a == b,
+    }
+}
+
+pub fn value_child_hint<'a>(v: &'a Value, key: &Value, hint: &crate::opcode::SlotHint) -> ChildRef<'a> {
+    if let Value::Collection(c) = v {
+        match &c.layout {
+            CollectionLayout::SmallMap(pairs) => {
+                let h = hint.get() as usize;
+                if let Some((k, v)) = pairs.get(h) {
+                    if same_key(k, key) { return ChildRef::Found(v); }
+                }
+                return match pairs.iter().position(|(k, _)| k == key) {
+                    Some(i) => { hint.set(i as u32); ChildRef::Found(&pairs[i].1) }
+                    None => ChildRef::Missing,
+                };
+            }
+            CollectionLayout::HashMapBackend(m) => {
+                if let Some((k, v)) = m.get_index(hint.get() as usize) {
+                    if same_key(k, key) { return ChildRef::Found(v); }
+                }
+                return match m.get_full(key) {
+                    Some((i, _, v)) => { hint.set(i as u32); ChildRef::Found(v) }
+                    None => ChildRef::Missing,
+                };
+            }
+            _ => {}
+        }
+    }
+    value_child_ref(v, key)
+}
+
+pub fn value_child_ref<'a>(v: &'a Value, key: &Value) -> ChildRef<'a> {
+    let seq = |xs: &'a [Value]| {
+        let Value::Int(i) = key else { return ChildRef::Missing };
+        match resolve_seq_index(*i, xs.len()) {
+            Ok(i) => ChildRef::Found(&xs[i]),
+            Err(_) => ChildRef::Missing,
+        }
+    };
+    match v {
+        Value::Array(xs) => seq(xs),
+        Value::Collection(c) => match &c.layout {
+            CollectionLayout::SmallMap(pairs) => pairs.iter().find(|(k, _)| k == key)
+                .map_or(ChildRef::Missing, |(_, v)| ChildRef::Found(v)),
+            CollectionLayout::HashMapBackend(m) => m.get(key).map_or(ChildRef::Missing, ChildRef::Found),
+            CollectionLayout::FlatArray(xs) => seq(xs),
+            layout => {
+                let Value::Int(i) = key else { return ChildRef::Missing };
+                let Ok(i) = resolve_seq_index(*i, c.len()) else { return ChildRef::Missing };
+                let item = match layout {
+                    CollectionLayout::RingBuf(rb) => rb.get(i),
+                    CollectionLayout::ChunkedSeq(cs) => cs.get(i),
+                    _ => None,
+                };
+                item.map_or(ChildRef::Other, ChildRef::Found)
+            }
+        },
+        _ => ChildRef::Other,
+    }
 }
 
 /// `name!(x, args…)` in place for the single-element writes.
@@ -2008,5 +2166,25 @@ mod regex_cache_tests {
     #[test]
     fn invalid_patterns_still_error() {
         assert!(cached_regex("(unclosed").is_err());
+    }
+}
+
+#[cfg(test)]
+mod in_place_tests {
+    use super::*;
+
+    /// A write that can't finish in place counts the outer access once:
+    /// the general path that takes over counts it again.
+    #[test]
+    fn failed_in_place_write_keeps_access_count() {
+        let inner = Value::Array(vec![Value::Int(1)]);
+        let meta = CollectionMeta { len: 1, ..Default::default() };
+        let mut outer = Value::Collection(Rc::new(CollectionValue {
+            layout: CollectionLayout::FlatArray(Rc::new(vec![inner])),
+            meta,
+        }));
+        assert!(!update_path_in_place(&mut outer, &[Value::Int(0), Value::Int(0)], Value::Int(5)));
+        let Value::Collection(c) = &outer else { unreachable!() };
+        assert_eq!(c.meta.mid_hits, 0);
     }
 }

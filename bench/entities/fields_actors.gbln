@@ -1,0 +1,73 @@
+/// 20,000 entities x 20 numbers, split across W actors; one tick = every
+/// actor updates its share, then all report (a barrier).
+ns | :env("ENT_N") ?? "20000"
+n | :int(ns)
+ts | :env("ENT_TICKS") ?? "10"
+ticks | :int(ts)
+ws | :env("ENT_W") ?? "4"
+w | :int(ws)
+keys | []
+repeat 20
+    :put_last!(keys, "f{idx}")
+xx
+act tick(st)
+    repeat :len(st{"es"})
+        :update!(st{"es"}[idx]{"f0"}, st{"es"}[idx]{"f0"} + 1)
+        :update!(st{"es"}[idx]{"f1"}, st{"es"}[idx]{"f1"} + st{"es"}[idx]{"f0"})
+        :update!(st{"es"}[idx]{"f2"}, st{"es"}[idx]{"f2"} + 2)
+        :update!(st{"es"}[idx]{"f3"}, st{"es"}[idx]{"f3"} + 3)
+        :update!(st{"es"}[idx]{"f4"}, st{"es"}[idx]{"f4"} + 4)
+        :update!(st{"es"}[idx]{"f5"}, st{"es"}[idx]{"f5"} + 5)
+        :update!(st{"es"}[idx]{"f6"}, st{"es"}[idx]{"f6"} + 6)
+        :update!(st{"es"}[idx]{"f7"}, st{"es"}[idx]{"f7"} + 7)
+        :update!(st{"es"}[idx]{"f8"}, st{"es"}[idx]{"f8"} + 8)
+        :update!(st{"es"}[idx]{"f9"}, st{"es"}[idx]{"f9"} + 9)
+        :update!(st{"es"}[idx]{"f10"}, st{"es"}[idx]{"f10"} + 1)
+        :update!(st{"es"}[idx]{"f11"}, st{"es"}[idx]{"f11"} + 1)
+        :update!(st{"es"}[idx]{"f12"}, st{"es"}[idx]{"f12"} + 1)
+        :update!(st{"es"}[idx]{"f13"}, st{"es"}[idx]{"f13"} + 1)
+        :update!(st{"es"}[idx]{"f14"}, st{"es"}[idx]{"f14"} + 1)
+        :update!(st{"es"}[idx]{"f15"}, st{"es"}[idx]{"f15"} + 1)
+        :update!(st{"es"}[idx]{"f16"}, st{"es"}[idx]{"f16"} + 1)
+        :update!(st{"es"}[idx]{"f17"}, st{"es"}[idx]{"f17"} + 1)
+        :update!(st{"es"}[idx]{"f18"}, st{"es"}[idx]{"f18"} + 1)
+        :update!(st{"es"}[idx]{"f19"}, st{"es"}[idx]{"f19"} + st{"es"}[idx]{"f18"})
+    xx
+    return st
+xx
+act part(st, msg)
+    st |= tick(st)
+    :post(st{"done"}, 1)
+    return st
+xx
+done | :channel(w)
+hs | []
+repeat :range(0, w) as p
+    es | []
+    i | p
+    repeat i < n
+        e | {}
+        repeat keys as k
+            :update!(e{k}, i % 7)
+        xx
+        :put_last!(es, e)
+        i |= i + w
+    xx
+    :put_last!(hs, :actor({"es": es, "done": done}, part))
+xx
+t0 | :epoch_ms()
+repeat ticks
+    repeat hs as h
+        :post(h, 1)
+    xx
+    repeat hs as h
+        :receive(done)
+    xx
+xx
+t1 | :epoch_ms()
+dt | t1 - t0
+per | dt / ticks
+say("{w} actors: {ticks} ticks in {dt} ms, {per} ms per tick")
+repeat hs as h
+    :halt(h)
+xx

@@ -1,0 +1,4 @@
+/// A frozen snapshot cannot be changed through a path.
+m | :freeze({"a": {"b": 1}})
+:update!(m{"a"}{"b"}, m{"a"}{"b"} + 1)
+say("not reached")

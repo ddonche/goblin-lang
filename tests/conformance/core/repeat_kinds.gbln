@@ -1,0 +1,58 @@
+/// Every kind of repeat: count, items, map, condition and forever, with
+/// skip, stop, idx, nesting, and an empty list.
+repeat 3
+    say("count {idx}")
+xx
+xs | [10, 20, 30, 40]
+repeat xs as x
+    if x == 20
+        skip
+    xx
+    if x == 40
+        stop
+    xx
+    say("item {idx} {x}")
+xx
+repeat xs
+    say("it {it}")
+xx
+m | {"a": 1, "b": 2}
+repeat m as k, v
+    say("map {idx} {k} {v}")
+xx
+repeat m
+    say("kv {key} {val}")
+xx
+n | 0
+repeat n < 3
+    say("cond n={n}")
+    n |= n + 1
+xx
+c | 0
+repeat
+    c |= c + 1
+    if c == 3
+        stop
+    xx
+xx
+say("forever stopped at {c}")
+repeat []
+    say("never")
+xx
+repeat 2
+    repeat ["p", "q"] as y
+        say("nest {idx} {y}")
+    xx
+xx
+act f(k)
+    total | 0
+    repeat k as i
+        total |= total + i
+    xx
+    return total
+xx
+say(f([1, 2, 3]))
+repeat 0
+    say("never")
+xx
+say("done")

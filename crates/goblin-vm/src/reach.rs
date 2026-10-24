@@ -136,7 +136,7 @@ impl Walk<'_> {
                 _ => {}
             }
         }
-        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_))) { self.all = true; return; }
+        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_) | OpData::Fused(_) | OpData::QuickSet(_) | OpData::Repeat(_))) { self.all = true; return; }
         for c in &f.constants { self.constant(c); }
     }
 

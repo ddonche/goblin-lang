@@ -1160,6 +1160,7 @@ version = "0.1.0"
 name = "goblin-vm"
 version = "0.2.0"
 dependencies = [
+ "ahash 0.8.12",
  "chrono",
  "chrono-tz",
  "comrak",

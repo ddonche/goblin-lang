@@ -1,0 +1,5 @@
+/// known-gap: interp does not check [] against {} on a map
+/// [] on a map in a path read is an error.
+m | {"a": {"b": 1}}
+say(m{"a"}["b"])
+say("not reached")

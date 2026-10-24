@@ -23,11 +23,11 @@ pub enum Opcode {
 
     // ── Locals (tether slots) ──────────────────────────────────────────────────
     /// Push a copy of the tether in locals[slot].
-    LoadLocal(u8),
+    LoadLocal(u16),
     /// Pop top and store into locals[slot].
     /// Implements |, |=, and [= — the compiler chooses the opcode at compile time;
     /// at runtime they are all the same operation (store tether into slot).
-    StoreLocal(u8),
+    StoreLocal(u16),
 
     // ── Globals ────────────────────────────────────────────────────────────────
     /// Push a copy of the tether in globals[idx].
@@ -138,7 +138,7 @@ pub enum Opcode {
     UpdatePathMut(u8, u16),
     /// Jump by the offset when local slot `slot` already holds a value; used by
     /// parameter defaults, whose slots stay unset when the caller omits them.
-    JumpIfLocalSet(u8, i16),
+    JumpIfLocalSet(u16, i16),
     /// Inside an `:objects(…)` / `:overlays(…)` predicate: when local 0 (`it`)
     /// is an object with the field constants[idx], push that field's value and
     /// jump by the offset (past the name's ordinary load); otherwise fall through.
@@ -268,25 +268,25 @@ pub enum Opcode {
     // ── Type-lock opcodes ─────────────────────────────────────────────────────
     /// Tether with type lock for a local slot: pop value, cast to lock_type, store in slot,
     /// register lock in BOTH type_locks and hard_type_locks of the current frame.
-    StoreLockLocal(u8, u16),
+    StoreLockLocal(u16, u16),
     /// Same as StoreLockLocal but for a global slot (by index).
     StoreLockGlobal(u16, u16),
 
     /// Cast-bang for a local: read value from slot, cast to cast_type, store back, update
     /// type_locks (NOT hard_type_locks). Push new value onto stack.
-    CastBangLocal(u8, u16),
+    CastBangLocal(u16, u16),
     /// Same as CastBangLocal but for a global slot.
     CastBangGlobal(u16, u16),
 
     /// Get the type lock for a local variable: if type_lock is set push it as a string
     /// (qualified for collections), otherwise fall through to normal TypeOf on the value.
-    GetTypeLockLocal(u8),
+    GetTypeLockLocal(u16),
     /// Same as GetTypeLockLocal but for a global slot.
     GetTypeLockGlobal(u16),
 
     /// Cast member with hard-lock check for a local: read from slot, check hard_type_lock
     /// (error R0215 on mismatch), cast value, push result. Does NOT store back.
-    CastMemberLocal(u8, u16),
+    CastMemberLocal(u16, u16),
     /// Same as CastMemberLocal but for a global slot.
     CastMemberGlobal(u16, u16),
 
@@ -307,12 +307,35 @@ pub enum Opcode {
     /// it to the array in locals[slot] without a full clone.
     /// If tether_count == 1 (sole owner), mutates in place (O(1)).
     /// Otherwise falls back to clone + alloc (O(N)).
-    ArrayPushToLocal(u8),
+    ArrayPushToLocal(u16),
     /// `x |= x + piece` with x in locals[slot]: pops the piece; when x is
     /// text that only this variable holds and the piece is text, adds it to
     /// x in place and pushes x. Otherwise pushes x and the piece and adds
     /// them as `Add` does. The guard and StoreLocal of `|=` follow.
-    AppendLocal(u8),
+    AppendLocal(u16),
+    /// A short run of simple steps done as one: a path read like
+    /// `x{"a"}[i]{"b"}`, or the start of a write through one.
+    /// op_data[idx] = OpData::Fused, which also holds the original steps;
+    /// they run one by one whenever the quick way can't be taken.
+    Fused(u16),
+    /// `UpdatePathMut(n, 0)` after a fused check (op_data[idx]): the same
+    /// write, trying each map key at the slot the check found.
+    UpdatePathHint(u8, u16),
+    /// Before `:update!(path, e)` with `e` plain arithmetic on numbers:
+    /// does the whole statement at once and skips its steps, or does
+    /// nothing so they run. op_data[idx] = OpData::QuickSet.
+    QuickSet(u16),
+    /// One pass of a `repeat` loop (op_data[idx] = OpData::Repeat): moves
+    /// the hidden counter on, leaves the loop when it reaches the limit,
+    /// and binds the pass's names for the loop's kind. Only a condition
+    /// loop runs the steps right after this (its test); the others skip them.
+    RepeatNext(u16),
+    /// Start of a `repeat`: pops the value it runs over and sets up the
+    /// loop's state (kind, items, limit, counter) in the call frame, from
+    /// op_data[idx] (a `Repeat`).
+    RepeatStart(u16),
+    /// In a condition `repeat`, after its test passed: idx = the counter.
+    RepeatIdx(u16),
 }
 
 impl Opcode {
@@ -374,6 +397,12 @@ impl Opcode {
             Opcode::SetField(_)     => "SetField",
             Opcode::UpdatePath(..)  => "UpdatePath",
             Opcode::UpdatePathMut(..) => "UpdatePathMut",
+            Opcode::Fused(_) => "Fused",
+            Opcode::UpdatePathHint(..) => "UpdatePathHint",
+            Opcode::QuickSet(_) => "QuickSet",
+            Opcode::RepeatNext(_) => "RepeatNext",
+            Opcode::RepeatStart(_) => "RepeatStart",
+            Opcode::RepeatIdx(_) => "RepeatIdx",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::AgendaCall(..) => "AgendaCall",
@@ -443,4 +472,99 @@ pub enum OpData {
     ClearLink(Box<goblin_ast::ClearLinkStmt>),
     ObjectDecision { var_name: String, def: Box<goblin_ast::DecisionDef> },
     UnitDecl(Box<goblin_ast::UnitDecl>),
+    Fused(Box<Fused>),
+    QuickSet(Box<QuickSet>),
+    Repeat(RepeatSlots),
+}
+
+/// The locals a `repeat` loop keeps, and where its pass goes.
+#[derive(Debug, Clone)]
+pub struct RepeatSlots {
+    /// Which of the function's loops this is: its state (kind, items,
+    /// limit, counter) lives in the call frame under this number.
+    pub id: u16,
+    pub item: u16,
+    pub key: u16,
+    pub val: u16,
+    pub idx: u16,
+    /// Steps of the condition test that follow RepeatNext.
+    pub cond_len: u32,
+    /// Steps from just after RepeatNext to the loop's exit.
+    pub exit: u32,
+}
+
+/// A whole `:update!(path, e)` statement (see `Opcode::QuickSet`).
+#[derive(Debug, Clone)]
+pub struct QuickSet {
+    /// op_data index of the statement's fused check (the target path).
+    pub check: u16,
+    /// The new value, from the steps `e` compiled to.
+    pub expr: QExpr,
+    /// Steps to skip when done: the rest of the statement.
+    pub skip: u32,
+}
+
+/// Number arithmetic over constants, locals and fused path reads.
+#[derive(Debug, Clone)]
+pub enum QExpr {
+    Const(u16),
+    Local(u16),
+    /// op_data index of a fused read.
+    Read(u16),
+    Add(Box<QExpr>, Box<QExpr>),
+    Sub(Box<QExpr>, Box<QExpr>),
+    Mul(Box<QExpr>, Box<QExpr>),
+}
+
+/// Steps fused into one `Opcode::Fused`.
+#[derive(Debug, Clone)]
+pub struct Fused {
+    pub kind: FusedKind,
+    /// The local the path starts from.
+    pub root: u16,
+    pub segs: Vec<FusedSeg>,
+    /// The original steps, run instead when the quick way can't be taken.
+    pub ops: Vec<Opcode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FusedKind {
+    /// `LoadLocal(root)`, then per level a key load and `KeyGet`/`IndexGet`:
+    /// pushes the value at the path.
+    Read,
+    /// `LoadLocal(root) GuardMutable(name) LoadLocal(root)`, the key loads,
+    /// `CheckPath(n, info)`: leaves the root and the keys on the stack for
+    /// the write that follows.
+    Check { guard: u16 },
+}
+
+#[derive(Debug, Clone)]
+pub struct FusedSeg {
+    pub key: FusedKey,
+    /// `{}` (a map key) rather than `[]`.
+    pub brace: bool,
+    /// Where the key was found in this level's map last time.
+    pub slot: SlotHint,
+}
+
+/// A remembered map slot. Atomic only because compiled code is shared with
+/// worker threads; each use is a plain load or store.
+#[derive(Debug, Default)]
+pub struct SlotHint(std::sync::atomic::AtomicU32);
+
+impl SlotHint {
+    #[inline(always)]
+    pub fn get(&self) -> u32 { self.0.load(std::sync::atomic::Ordering::Relaxed) }
+    #[inline(always)]
+    pub fn set(&self, i: u32) { self.0.store(i, std::sync::atomic::Ordering::Relaxed) }
+}
+
+impl Clone for SlotHint {
+    fn clone(&self) -> Self { SlotHint(std::sync::atomic::AtomicU32::new(self.get())) }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum FusedKey {
+    Const(u16),
+    Local(u16),
 }

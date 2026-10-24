@@ -22,23 +22,28 @@ struct FunctionScope {
     /// Maps variable names to local slot indices within this function.
     /// Only the names visible at the current point: a block's locals are
     /// dropped when it closes (the slots are not reused).
-    locals: Vec<(String, u8)>,
+    locals: Vec<(String, u16)>,
     /// Parallel to `locals`.
     local_meta: Vec<LocalMeta>,
     /// `locals.len()` at the start of each open block.
     block_marks: Vec<usize>,
     /// Every local ever declared, for slot names (string interpolation).
-    all_locals: Vec<(String, u8)>,
+    all_locals: Vec<(String, u16)>,
     /// Upvalue captures from enclosing scopes.
     upvalues: Vec<(String, UpvalueDescriptor)>,
     /// Bytecode under construction.
     bytecode: Vec<Opcode>,
+    /// Position of a `LoadNil` that only gives a statement-like call its
+    /// value; a statement that discards it drops the pair instead.
+    unused_nil: Option<usize>,
     /// Data for opcodes that carry strings or AST.
     op_data: Vec<crate::opcode::OpData>,
     /// Constant pool.
     constants: Vec<Value>,
     /// Total local slots allocated so far.
-    next_slot: u8,
+    next_slot: u16,
+    /// `repeat` loops compiled so far (each gets its own state in the frame).
+    repeat_loops: u16,
     /// How many slots are parameters (always slots 0..params-1).
     params: usize,
     /// Arguments a caller must pass; the rest have defaults.
@@ -70,9 +75,11 @@ impl FunctionScope {
             all_locals: Vec::new(),
             upvalues: Vec::new(),
             bytecode: Vec::new(),
+            unused_nil: None,
             op_data: Vec::new(),
             constants: Vec::new(),
-            next_slot: params as u8,
+            next_slot: params as u16,
+            repeat_loops: 0,
             params,
             required_params: params,
             name: name.into(),
@@ -97,7 +104,7 @@ impl FunctionScope {
     }
 
     /// Declare a new local variable in this scope. Returns its slot index.
-    fn declare_local(&mut self, name: &str) -> u8 {
+    fn declare_local(&mut self, name: &str) -> u16 {
         let slot = self.next_slot;
         self.next_slot = self.next_slot.saturating_add(1);
         self.locals.push((name.to_string(), slot));
@@ -109,7 +116,7 @@ impl FunctionScope {
     /// Declare a hoisted local: it has a slot from the start of the function
     /// (so forward references compile), but counts as bound only once its
     /// `x | v` statement is reached.
-    fn declare_hoisted(&mut self, name: &str) -> u8 {
+    fn declare_hoisted(&mut self, name: &str) -> u16 {
         let slot = self.declare_local(name);
         self.local_meta.last_mut().unwrap().bound = false;
         slot
@@ -118,14 +125,14 @@ impl FunctionScope {
     /// Declare parameters (must be called before any other locals).
     fn declare_params(&mut self, names: &[String]) {
         for (i, n) in names.iter().enumerate() {
-            self.locals.push((n.clone(), i as u8));
+            self.locals.push((n.clone(), i as u16));
             self.local_meta.push(LocalMeta { depth: 0, bound: true, imm: false });
-            self.all_locals.push((n.clone(), i as u8));
+            self.all_locals.push((n.clone(), i as u16));
         }
     }
 
     /// The innermost visible local with this name: (index into `locals`, slot).
-    fn find_local_entry(&self, name: &str) -> Option<(usize, u8)> {
+    fn find_local_entry(&self, name: &str) -> Option<(usize, u16)> {
         self.locals.iter().enumerate().rev().find(|(_, (n, _))| n == name).map(|(i, (_, s))| (i, *s))
     }
 
@@ -134,7 +141,7 @@ impl FunctionScope {
     }
 
     /// Stop resolving names to this slot (the slot itself stays allocated).
-    fn hide_local(&mut self, slot: u8) {
+    fn hide_local(&mut self, slot: u16) {
         if let Some(e) = self.locals.iter_mut().rev().find(|(_, s)| *s == slot) {
             e.0 = String::from("\u{0}hidden");
         }
@@ -148,7 +155,7 @@ impl FunctionScope {
     }
 
     /// Look up a local variable by name. Returns its slot, if found.
-    fn find_local(&self, name: &str) -> Option<u8> {
+    fn find_local(&self, name: &str) -> Option<u16> {
         // Search in reverse (innermost binding wins).
         self.locals.iter().rev().find(|(n, _)| n == name).map(|(_, s)| *s)
     }
@@ -316,6 +323,9 @@ fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
 /// The stateful bytecode compiler.
 /// Maintains a stack of FunctionScopes (one per nested function body).
 pub struct Compiler {
+    /// Compiling the base of a `[]`/`{}` read: the outermost read fuses
+    /// the whole path into one step.
+    in_path: bool,
     /// Innermost scope is at the back.
     scopes: Vec<FunctionScope>,
     /// Registered global names (name → global slot index).
@@ -381,7 +391,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -741,7 +751,15 @@ impl Compiler {
         match stmt {
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
-                self.emit(Opcode::Pop); // discard expression result
+                let sc = self.scope_mut();
+                if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
+                    // `LoadNil; Pop` does nothing: leave both out.
+                    sc.bytecode.pop();
+                    sc.line_numbers.pop();
+                    sc.unused_nil = None;
+                } else {
+                    self.emit(Opcode::Pop); // discard expression result
+                }
             }
 
             Stmt::Bind(bind) if self.compile_append_local(bind)? => {}
@@ -1333,18 +1351,18 @@ impl Compiler {
 
             // ── Indexing ──────────────────────────────────────────────────────
             // Arrays and strings take `[]`, maps take `{}` (owner, 2026-10-06).
-            Expr::Index(obj, idx, _) => {
-                self.compile_expr(obj)?;
+            Expr::Index(obj, idx, _) | Expr::IndexMap(obj, idx, _) => {
+                let brace = matches!(expr, Expr::IndexMap(..));
+                let outer = !self.in_path;
+                let start = self.scope().bytecode.len();
+                self.in_path = true;
+                let base = self.compile_expr(obj);
+                self.in_path = !outer;
+                base?;
                 self.compile_expr(idx)?;
                 let label = self.add_constant(Value::Str(source_text(obj).into()));
-                self.emit(Opcode::IndexGet(label));
-            }
-
-            Expr::IndexMap(obj, key, _) => {
-                self.compile_expr(obj)?;
-                self.compile_expr(key)?;
-                let label = self.add_constant(Value::Str(source_text(obj).into()));
-                self.emit(Opcode::KeyGet(label));
+                self.emit(if brace { Opcode::KeyGet(label) } else { Opcode::IndexGet(label) });
+                if outer { self.fuse_tail(start); }
             }
 
             Expr::Member(obj, name, _) => {
@@ -2212,6 +2230,84 @@ impl Compiler {
     /// like `update!`). Consumes the value.
     /// Emits CheckPath for the lvalue path `target` (root and keys already on
     /// the stack), so a write through the wrong bracket errors.
+    /// Fuse the steps from `start` to the end of the bytecode into one
+    /// `Opcode::Fused` when they are a plain path read
+    /// (`LoadLocal`, then key loads with `KeyGet`/`IndexGet`) or the start of
+    /// a write through one (`LoadLocal GuardMutable LoadLocal`, key loads,
+    /// `CheckPath`). Keys must be constants or locals. Anything else stays.
+    fn fuse_tail(&mut self, start: usize) {
+        use crate::opcode::{Fused, FusedKey, FusedKind, FusedSeg, OpData};
+        let ops: Vec<Opcode> = self.scope().bytecode[start..].to_vec();
+        let key_of = |op: &Opcode| match *op {
+            Opcode::LoadConst(c) => Some(FusedKey::Const(c)),
+            Opcode::LoadLocal(s) => Some(FusedKey::Local(s)),
+            _ => None,
+        };
+        let seg = |key, brace| FusedSeg { key, brace, slot: Default::default() };
+        let fused = match ops.as_slice() {
+            [Opcode::LoadLocal(r1), Opcode::GuardMutable(guard), Opcode::LoadLocal(r2), keys @ .., Opcode::CheckPath(n, info)]
+                if r1 == r2 && *n as usize == keys.len() && !keys.is_empty() =>
+            {
+                let Some(Value::Array(info)) = self.scope().constants.get(*info as usize) else { return };
+                let mut segs = Vec::new();
+                for (op, inf) in keys.iter().zip(info.iter()) {
+                    let Some(key) = key_of(op) else { return };
+                    let brace = match inf {
+                        Value::Str(s) if s.starts_with('{') => true,
+                        Value::Str(s) if s.starts_with('[') => false,
+                        _ => return,
+                    };
+                    segs.push(seg(key, brace));
+                }
+                Fused { kind: FusedKind::Check { guard: *guard }, root: *r1, segs, ops }
+            }
+            [Opcode::LoadLocal(root), rest @ ..] if !rest.is_empty() && rest.len() % 2 == 0 => {
+                let mut segs = Vec::new();
+                for pair in rest.chunks(2) {
+                    let Some(key) = key_of(&pair[0]) else { return };
+                    let brace = match pair[1] {
+                        Opcode::KeyGet(_) => true,
+                        Opcode::IndexGet(_) => false,
+                        _ => return,
+                    };
+                    segs.push(seg(key, brace));
+                }
+                Fused { kind: FusedKind::Read, root: *root, segs, ops }
+            }
+            _ => return,
+        };
+        let sc = self.scope_mut();
+        let line = sc.line_numbers[start];
+        sc.bytecode.truncate(start);
+        sc.line_numbers.truncate(start);
+        let idx = self.op_data(OpData::Fused(Box::new(fused)));
+        let at = self.emit(Opcode::Fused(idx));
+        self.scope_mut().line_numbers[at] = line;
+    }
+
+    /// The steps from `start` to the end as number arithmetic over
+    /// constants, locals and fused reads, if that is all they are.
+    fn quick_expr(&self, start: usize) -> Option<crate::opcode::QExpr> {
+        use crate::opcode::{FusedKind, OpData, QExpr};
+        let sc = self.scope();
+        let mut st: Vec<QExpr> = Vec::new();
+        for op in &sc.bytecode[start..] {
+            let e = match *op {
+                Opcode::LoadConst(c) if matches!(sc.constants.get(c as usize), Some(Value::Int(_) | Value::Float(_))) => QExpr::Const(c),
+                Opcode::LoadLocal(s) => QExpr::Local(s),
+                Opcode::Fused(i) if matches!(&sc.op_data[i as usize], OpData::Fused(f) if f.kind == FusedKind::Read) => QExpr::Read(i),
+                Opcode::Add | Opcode::Sub | Opcode::Mul => {
+                    let b = Box::new(st.pop()?);
+                    let a = Box::new(st.pop()?);
+                    match *op { Opcode::Add => QExpr::Add(a, b), Opcode::Sub => QExpr::Sub(a, b), _ => QExpr::Mul(a, b) }
+                }
+                _ => return None,
+            };
+            st.push(e);
+        }
+        if st.len() == 1 { st.pop() } else { None }
+    }
+
     fn emit_check_path(&mut self, target: &Expr) -> Result<(), GoblinError> {
         let mut info: Vec<Value> = Vec::new();
         let mut cur = target;
@@ -2433,9 +2529,9 @@ impl Compiler {
         self.scope_mut().required_params = required;
         for (i, p) in params.iter().enumerate() {
             let Some(default) = &p.default else { continue };
-            let skip = self.emit(Opcode::JumpIfLocalSet(i as u8, 0));
+            let skip = self.emit(Opcode::JumpIfLocalSet(i as u16, 0));
             self.compile_expr(default)?;
-            self.emit(Opcode::StoreLocal(i as u8));
+            self.emit(Opcode::StoreLocal(i as u16));
             self.scope_mut().patch_jump(skip);
         }
         Ok(())
@@ -2627,38 +2723,12 @@ impl Compiler {
                 } else {
                     self.compile_expr(&args[0])?;
                 }
-                // RepeatPrep(n) → [mode, iterable, limit]; mode 0 = count (int),
-                // 1 = items (array/collection), 2 = map (iterable of [k, v]),
-                // 3 = forever (nil), 4 = condition (bool; re-evaluated each pass),
-                // matching the interpreter's `repeat` dispatch.
+                // RepeatStart works out the loop's kind from this value
+                // (see builtins::repeat_plan) and sets up its hidden locals.
                 // Loop variables (it, key, val, idx, `as` names) are scoped to the loop.
                 self.scope_mut().begin_block();
-                self.emit(Opcode::CallBuiltin(BuiltinId::RepeatPrep, 1));
-                let prep_slot = self.scope_mut().declare_local("__repeat_prep__");
-                self.emit(Opcode::StoreLocal(prep_slot));
-                let get = |c: &mut Self, slot: u8, i: i64| {
-                    let k = c.scope_mut().add_constant(Value::Int(i));
-                    c.emit(Opcode::LoadLocal(slot));
-                    c.emit(Opcode::LoadConst(k));
-                    c.emit(Opcode::GetIndex);
-                };
-                let mode_slot = self.scope_mut().declare_local("__repeat_mode__");
-                get(self, prep_slot, 0);
-                self.emit(Opcode::StoreLocal(mode_slot));
-                let iter_slot = self.scope_mut().declare_local("__repeat_iter__");
-                get(self, prep_slot, 1);
-                self.emit(Opcode::StoreLocal(iter_slot));
-                let limit_slot = self.scope_mut().declare_local("__repeat_limit__");
-                get(self, prep_slot, 2);
-                self.emit(Opcode::StoreLocal(limit_slot));
-
-                let zero = self.scope_mut().add_constant(Value::Int(0));
-                let one = self.scope_mut().add_constant(Value::Int(1));
-                let two = self.scope_mut().add_constant(Value::Int(2));
-                let four = self.scope_mut().add_constant(Value::Int(4));
-                self.emit(Opcode::LoadConst(zero));
-                let counter_slot = self.scope_mut().declare_local("__repeat_i__");
-                self.emit(Opcode::StoreLocal(counter_slot));
+                let loop_id = self.scope().repeat_loops;
+                self.scope_mut().repeat_loops += 1;
 
                 let name_arg = |e: Option<&Expr>| match e {
                     Some(Expr::Str(s, _)) | Some(Expr::Ident(s, _)) if !s.is_empty() => Some(s.clone()),
@@ -2676,64 +2746,36 @@ impl Compiler {
                 };
                 let val_slot = self.scope_mut().declare_local(val_name.as_deref().unwrap_or("val"));
                 let idx_slot = self.scope_mut().declare_local("idx");
-                self.emit(Opcode::LoadConst(zero));
-                self.emit(Opcode::StoreLocal(idx_slot));
+                let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
+                    id: loop_id, item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                }));
+                // RepeatStart sets the loop up from the value on the stack.
+                self.emit(Opcode::RepeatStart(rep));
 
-                // LOOP START: counter < limit
+                // LOOP START: one RepeatNext per pass. It moves the counter
+                // on, leaves at the limit and binds the names; only a
+                // condition loop runs the test after it.
                 let loop_start = self.scope_mut().bytecode.len();
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::LoadLocal(limit_slot));
-                self.emit(Opcode::Lt);
-                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // condition mode: re-evaluate the header expression
-                self.emit(Opcode::LoadLocal(mode_slot));
-                self.emit(Opcode::LoadConst(four));
-                self.emit(Opcode::Eq);
-                let not_cond = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.emit(Opcode::RepeatNext(rep));
+                let cond_start = self.scope_mut().bytecode.len();
                 self.compile_expr(&args[0])?;
                 let cond_exit = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                self.scope_mut().patch_jump(not_cond);
-                // items mode: bind the element
-                self.emit(Opcode::LoadLocal(mode_slot));
-                self.emit(Opcode::LoadConst(one));
-                self.emit(Opcode::Eq);
-                let not_items = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::GetIndex);
-                self.emit(Opcode::StoreLocal(item_slot));
-                self.scope_mut().patch_jump(not_items);
-                // map mode: bind key and value
-                self.emit(Opcode::LoadLocal(mode_slot));
-                self.emit(Opcode::LoadConst(two));
-                self.emit(Opcode::Eq);
-                let not_map = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                for (slot, k) in [(key_slot, zero), (val_slot, one)] {
-                    self.emit(Opcode::LoadLocal(iter_slot));
-                    self.emit(Opcode::LoadLocal(counter_slot));
-                    self.emit(Opcode::GetIndex);
-                    self.emit(Opcode::LoadConst(k));
-                    self.emit(Opcode::GetIndex);
-                    self.emit(Opcode::StoreLocal(slot));
-                }
-                self.scope_mut().patch_jump(not_map);
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::StoreLocal(idx_slot));
+                // A condition loop's idx is set after its test, as before.
+                self.emit(Opcode::RepeatIdx(rep));
+                let cond_len = (self.scope().bytecode.len() - cond_start) as u32;
+                if let crate::opcode::OpData::Repeat(r) = &mut self.scope_mut().op_data[rep as usize] { r.cond_len = cond_len; }
 
                 self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::Pop);
                 let increment_ip = self.scope_mut().bytecode.len();
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::LoadConst(one));
-                self.emit(Opcode::Add);
-                self.emit(Opcode::StoreLocal(counter_slot));
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
                 let exit_ip = self.scope_mut().bytecode.len();
-                self.scope_mut().patch_jump(exit_jump);
                 self.scope_mut().patch_jump(cond_exit);
+                let exit = (exit_ip - (loop_start + 1)) as u32;
+                if let crate::opcode::OpData::Repeat(r) = &mut self.scope_mut().op_data[rep as usize] { r.exit = exit; }
                 let ctx = self.loop_stack.pop().unwrap();
                 for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
                 for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, increment_ip); }
@@ -3066,7 +3108,7 @@ impl Compiler {
                         }
                         let load_op = self.resolve_load(&root_name)
                             .map_err(|e| self.locate_err(e))?;
-                        self.emit(load_op);
+                        let root_at = self.emit(load_op);
                         let mut mask: u16 = 0;
                         for (i, (seg, is_field)) in segs.iter().enumerate() {
                             if *is_field {
@@ -3078,13 +3120,37 @@ impl Compiler {
                                 self.compile_expr(seg)?;
                             }
                         }
+                        // One step per key: the guard, the root and the keys
+                        // then fuse with the check.
+                        let one_op_keys = self.scope().bytecode.len() == root_at + 1 + segs.len();
                         self.emit_check_path(&args[0])?;
+                        if one_op_keys && root_at >= 2 { self.fuse_tail(root_at - 2); }
+                        let fused = match self.scope().bytecode.last() {
+                            Some(Opcode::Fused(i)) if mask == 0 => Some(*i),
+                            _ => None,
+                        };
+                        let value_at = self.scope().bytecode.len();
                         self.compile_expr(&args[1])?;
-                        self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
+                        let quick = fused.and_then(|check| self.quick_expr(value_at).map(|e| (check, e)));
+                        self.emit(match fused {
+                            Some(i) => Opcode::UpdatePathHint(segs.len() as u8, i),
+                            None => Opcode::UpdatePathMut(segs.len() as u8, mask),
+                        });
                         let store_op = self.resolve_store(&root_name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
                         self.emit(store_op);
-                        self.emit(Opcode::LoadNil);
+                        if let Some((check, expr)) = quick {
+                            // In front of the fused check: the whole statement at once.
+                            let at = value_at - 1;
+                            let skip = (self.scope().bytecode.len() - at) as u32;
+                            let qi = self.op_data(crate::opcode::OpData::QuickSet(Box::new(crate::opcode::QuickSet { check, expr, skip })));
+                            let sc = self.scope_mut();
+                            let line = sc.line_numbers[at];
+                            sc.bytecode.insert(at, Opcode::QuickSet(qi));
+                            sc.line_numbers.insert(at, line);
+                        }
+                        let at = self.emit(Opcode::LoadNil);
+                        self.scope_mut().unused_nil = Some(at);
                     }
                     _ => {
                         return Err(GoblinError::CompileError {

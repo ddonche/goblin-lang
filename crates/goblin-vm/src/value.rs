@@ -127,7 +127,12 @@ impl GStr {
     /// marks it charged.
     pub fn take_uncharged(&self) -> bool { !self.0.charged.replace(true) }
 }
-impl PartialEq for GStr { fn eq(&self, o: &GStr) -> bool { self.as_str() == o.as_str() } }
+impl PartialEq for GStr { fn eq(&self, o: &GStr) -> bool { self.same(o) || self.as_str() == o.as_str() } }
+impl GStr {
+    /// The same string object (so certainly the same text).
+    #[inline(always)]
+    pub fn same(&self, o: &GStr) -> bool { Rc::ptr_eq(&self.0, &o.0) }
+}
 impl Eq for GStr {}
 impl std::hash::Hash for GStr { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.as_str().hash(h) } }
 impl PartialOrd for GStr { fn partial_cmp(&self, o: &GStr) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
@@ -627,7 +632,7 @@ pub struct Stash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpvalueDescriptor {
     /// Capture the Tether currently in the enclosing frame's locals[slot].
-    Local(u8),
+    Local(u16),
     /// Forward upvalue[idx] from the enclosing closure.
     Upvalue(u8),
 }
@@ -1251,13 +1256,18 @@ impl CollectionValue {
 }
 
 /// The concrete backend layout Goblin uses for this collection.
+/// The large-map backend. Keys keep insertion order (IndexMap), so the
+/// hasher's per-process random keys never change what a program sees;
+/// aHash is just much faster than the default SipHash.
+pub type BigMap = indexmap::IndexMap<Value, Value, ahash::RandomState>;
+
 #[derive(Debug, Clone)]
 pub enum CollectionLayout {
     FlatArray(Rc<Vec<Value>>),
     RingBuf(Rc<RingBuf>),
     ChunkedSeq(Rc<ChunkedSeq>),
     SmallMap(Rc<Vec<(Value, Value)>>),
-    HashMapBackend(Rc<indexmap::IndexMap<Value, Value>>),
+    HashMapBackend(Rc<BigMap>),
 }
 
 /// Ring buffer for queue/stack semantics.
@@ -1379,7 +1389,21 @@ impl ChunkedSeq {
         self.chunks.iter().flat_map(|c| c.iter().cloned()).collect()
     }
 
+    /// Where `idx` sits when every chunk but the last is full (how
+    /// `from_flat` builds them), so a read doesn't walk the chunks.
+    #[inline]
+    fn direct(&self, idx: usize) -> Option<(usize, usize)> {
+        let last = self.chunks.last()?;
+        if last.len() > Self::CHUNK_SIZE
+            || self.len != (self.chunks.len() - 1) * Self::CHUNK_SIZE + last.len() {
+            return None;
+        }
+        let (c, r) = (idx / Self::CHUNK_SIZE, idx % Self::CHUNK_SIZE);
+        (c < self.chunks.len() && r < self.chunks[c].len()).then_some((c, r))
+    }
+
     pub fn get(&self, idx: usize) -> Option<&Value> {
+        if let Some((c, r)) = self.direct(idx) { return Some(&self.chunks[c][r]); }
         let mut rem = idx;
         for chunk in &self.chunks {
             if rem < chunk.len() {
@@ -1391,6 +1415,7 @@ impl ChunkedSeq {
     }
 
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut Value> {
+        if let Some((c, r)) = self.direct(idx) { return Some(&mut self.chunks[c][r]); }
         let mut rem = idx;
         for chunk in &mut self.chunks {
             if rem < chunk.len() {
