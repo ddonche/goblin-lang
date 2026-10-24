@@ -3133,6 +3133,7 @@ impl Compiler {
                 let load = self.resolve_load(&root).map_err(|e| self.locate_err(e))?;
                 self.emit(load);
                 for k in &keys { self.compile_expr(k)?; }
+                self.emit_check_path(&args[0])?;
                 for a in &args[1..] { self.compile_expr(a)?; }
                 self.emit(Opcode::AgendaCall(bid, args.len() as u8, keys.len() as u8));
                 let tmp = self.scope_mut().declare_local("__agenda_tmp__");
