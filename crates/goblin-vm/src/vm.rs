@@ -2760,6 +2760,8 @@ impl Vm {
             for t in frame.locals.iter().flatten() { m.slot(t.addr.slot); }
             if let Some(t) = &frame.self_tether { m.slot(t.addr.slot); }
             for cell in &frame.upvalues { m.slot(cell.0.borrow().addr.slot); }
+            // What a running repeat walks over can be held nowhere else.
+            for st in &frame.loops { m.value(&st.iter); }
         }
         for t in self.session.globals.iter().flatten() { m.slot(t.addr.slot); }
         for op in &self.stack {
