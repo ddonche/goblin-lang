@@ -938,6 +938,7 @@ impl Vm {
                 }
                 self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_map(pairs)))));
             }
+            Opcode::RepeatNext(idx) => return self.repeat_next(idx),
             Opcode::QuickSet(idx) => {
                 if let Some(skip) = self.quick_set(idx)? {
                     self.call_stack.last_mut().unwrap().ip += skip as usize;
@@ -2915,6 +2916,58 @@ impl Vm {
             }
         }
         Ok(true)
+    }
+
+    /// `Opcode::RepeatNext`: one pass of a `repeat`, as the generic steps
+    /// did it: counter + 1, out at the limit, then by kind (RepeatPrep's
+    /// mode) 0 count, 1 items (bind the item), 2 map (bind key and value),
+    /// 3 forever, 4 condition (run the test that follows). idx = counter.
+    fn repeat_next(&mut self, idx: u16) -> Result<(), GoblinError> {
+        use crate::opcode::{OpData, Opcode};
+        let frame = self.call_stack.last().unwrap();
+        let OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatNext without its data") };
+        let r = r.clone();
+        let int_at = |vm: &Self, slot: u8| -> Result<i64, GoblinError> {
+            let t = vm.call_stack.last().unwrap().load_local(slot)?;
+            match vm.session.get_stash(&t)?.value {
+                Value::Int(n) => Ok(n),
+                _ => Err(GoblinError::Runtime("repeat: bad loop state".into())),
+            }
+        };
+        let counter = int_at(self, r.counter)? + 1;
+        let ct = self.call_stack.last().unwrap().load_local(r.counter)?;
+        self.session.get_stash_mut(&ct)?.value = Value::Int(counter);
+        if counter >= int_at(self, r.limit)? {
+            self.call_stack.last_mut().unwrap().ip += r.exit as usize;
+            return Ok(());
+        }
+        let mode = int_at(self, r.mode)?;
+        if mode == 4 { return Ok(()); }
+        let item = |vm: &Self| -> Result<Value, GoblinError> {
+            let t = vm.call_stack.last().unwrap().load_local(r.iter)?;
+            crate::collections::get_index(&vm.session.get_stash(&t)?.value, &Value::Int(counter))
+        };
+        match mode {
+            1 => {
+                let v = item(self)?;
+                self.stack.push(Operand::Val(v));
+                self.execute_op(Opcode::StoreLocal(r.item))?;
+            }
+            2 => {
+                let pair = item(self)?;
+                let k = crate::collections::get_index(&pair, &Value::Int(0))?;
+                self.stack.push(Operand::Val(k));
+                self.execute_op(Opcode::StoreLocal(r.key))?;
+                let v = crate::collections::get_index(&pair, &Value::Int(1))?;
+                self.stack.push(Operand::Val(v));
+                self.execute_op(Opcode::StoreLocal(r.val))?;
+            }
+            _ => {}
+        }
+        self.stack.push(Operand::Val(Value::Int(counter)));
+        self.execute_op(Opcode::StoreLocal(r.idx))?;
+        self.call_stack.last_mut().unwrap().ip += r.cond_len as usize;
+        Ok(())
     }
 
     /// `Opcode::QuickSet`: the whole `:update!(path, e)` statement, when the

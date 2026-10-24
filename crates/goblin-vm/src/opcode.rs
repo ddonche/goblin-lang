@@ -320,6 +320,11 @@ pub enum Opcode {
     /// does the whole statement at once and skips its steps, or does
     /// nothing so they run. op_data[idx] = OpData::QuickSet.
     QuickSet(u16),
+    /// One pass of a `repeat` loop (op_data[idx] = OpData::Repeat): moves
+    /// the hidden counter on, leaves the loop when it reaches the limit,
+    /// and binds the pass's names for the loop's kind. Only a condition
+    /// loop runs the steps right after this (its test); the others skip them.
+    RepeatNext(u16),
 }
 
 impl Opcode {
@@ -384,6 +389,7 @@ impl Opcode {
             Opcode::Fused(_) => "Fused",
             Opcode::UpdatePathHint(..) => "UpdatePathHint",
             Opcode::QuickSet(_) => "QuickSet",
+            Opcode::RepeatNext(_) => "RepeatNext",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
@@ -454,6 +460,24 @@ pub enum OpData {
     UnitDecl(Box<goblin_ast::UnitDecl>),
     Fused(Box<Fused>),
     QuickSet(Box<QuickSet>),
+    Repeat(RepeatSlots),
+}
+
+/// The locals a `repeat` loop keeps, and where its pass goes.
+#[derive(Debug, Clone)]
+pub struct RepeatSlots {
+    pub mode: u8,
+    pub iter: u8,
+    pub limit: u8,
+    pub counter: u8,
+    pub item: u8,
+    pub key: u8,
+    pub val: u8,
+    pub idx: u8,
+    /// Steps of the condition test that follow RepeatNext.
+    pub cond_len: u32,
+    /// Steps from just after RepeatNext to the loop's exit.
+    pub exit: u32,
 }
 
 /// A whole `:update!(path, e)` statement (see `Opcode::QuickSet`).
