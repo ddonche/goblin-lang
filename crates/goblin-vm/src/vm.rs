@@ -305,54 +305,8 @@ impl Vm {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 self.stack.push(Operand::Ref(t));
             }
-            Opcode::StoreLocal(slot) => {
-                // Storing a variable's own stash back into it (after an
-                // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
-                if let Some(Operand::Ref(t)) = self.stack.last() {
-                    let frame = self.call_stack.last().unwrap();
-                    if frame.locals.get(slot as usize).and_then(|o| o.as_ref()) == Some(t)
-                        && frame.get_hard_type_lock(slot).is_none() {
-                        self.stack.pop();
-                        return Ok(());
-                    }
-                }
-                let val = self.stack_pop_raw()?;
-                // A variable nothing else holds (no closure, no pending
-                // operand) and no lock to cast for: overwrite its value
-                // instead of making a new stash. Nobody can tell the
-                // difference, and it saves an allocation per assignment.
-                if !matches!(val, Value::Object(_)) {
-                    let frame = self.call_stack.last().unwrap();
-                    if let Some(Some(t)) = frame.locals.get(slot as usize) {
-                        if frame.get_hard_type_lock(slot).is_none()
-                            && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
-                            let addr = t.addr;
-                            if let Ok(stash) = self.session.resolve_mut(addr) {
-                                if stash.tether_count == 1 {
-                                    stash.value = val;
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                }
-                // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
-                let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
-                    crate::builtins::cast_value_to_lock(val, &lock)?
-                } else {
-                    val
-                };
-                // Mirror interpreter: store Object in object_store, put Ref in slot.
-                let t = if let Value::Object(ref o) = val {
-                    let uuid = o.uuid.clone();
-                    self.note_object_name(&uuid, NameOf::Local(slot as usize));
-                    self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
-                } else {
-                    self.session.alloc_value(val)
-                };
-                self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
-            }
+            Opcode::StoreLocal(slot) => return self.store_local_op(slot, true),
+            Opcode::BindLocal(slot) => return self.store_local_op(slot, false),
 
             // Collect-loop fast path: append element to array in locals[slot]
             // without a full Vec clone when we have sole ownership.
@@ -610,18 +564,14 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreUpvalue(idx) => {
+                // The variable belongs to the enclosing action too: change
+                // the value both hold.
                 let val = self.stack_pop_raw()?;
-                let t = if let Value::Object(ref o) = val {
-                    let uuid = o.uuid.clone();
-                    self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
-                } else {
-                    self.session.alloc_value(val)
-                };
-                self.call_stack.last_mut().unwrap()
+                let t = self.call_stack.last().unwrap()
                     .upvalues.get(idx as usize)
                     .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?
-                    .set(t);
+                    .get();
+                self.write_shared(&t, val)?;
             }
 
             // ── Stack ────────────────────────────────────────────────────────
@@ -995,7 +945,7 @@ impl Vm {
                 let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatIdx without its data") };
                 let (slot, n) = (r.idx, frame.loops[r.id as usize].counter);
                 self.stack.push(Operand::Val(Value::Int(n)));
-                return self.execute_op(Opcode::StoreLocal(slot));
+                return self.execute_op(Opcode::BindLocal(slot));
             }
             Opcode::QuickSet(idx) => {
                 if let Some(skip) = self.quick_set(idx)? {
@@ -3004,6 +2954,90 @@ impl Vm {
         Ok(true)
     }
 
+    /// `StoreLocal` (`assign`: an update of the variable) and `BindLocal`
+    /// (a new binding: a declaration or a loop's name for this pass).
+    fn store_local_op(&mut self, slot: u16, assign: bool) -> Result<(), GoblinError> {
+                // Storing a variable's own stash back into it (after an
+                // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
+                if let Some(Operand::Ref(t)) = self.stack.last() {
+                    let frame = self.call_stack.last().unwrap();
+                    if frame.locals.get(slot as usize).and_then(|o| o.as_ref()) == Some(t)
+                        && frame.get_hard_type_lock(slot).is_none() {
+                        self.stack.pop();
+                        return Ok(());
+                    }
+                }
+                let val = self.stack_pop_raw()?;
+                // A variable nothing else holds (no closure, no pending
+                // operand) and no lock to cast for: overwrite its value
+                // instead of making a new stash. Nobody can tell the
+                // difference, and it saves an allocation per assignment.
+                if !matches!(val, Value::Object(_)) {
+                    let frame = self.call_stack.last().unwrap();
+                    if let Some(Some(t)) = frame.locals.get(slot as usize) {
+                        if frame.get_hard_type_lock(slot).is_none()
+                            && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
+                            let addr = t.addr;
+                            if let Ok(stash) = self.session.resolve_mut(addr) {
+                                if stash.tether_count == 1 {
+                                    stash.value = val;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
+                let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    crate::builtins::cast_value_to_lock(val, &lock)?
+                } else {
+                    val
+                };
+                // `x |=` on a variable a nested action also uses: change the
+                // one value they share, so each sees the other's writes.
+                if assign {
+                    if let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) {
+                        let t = t.clone();
+                        if self.session.get_stash(&t)?.tether_count > 1 {
+                            if let Value::Object(ref o) = val {
+                                let uuid = o.uuid.clone();
+                                self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                            }
+                            return self.write_shared(&t, val);
+                        }
+                    }
+                }
+                // Mirror interpreter: store Object in object_store, put Ref in slot.
+                let t = if let Value::Object(ref o) = val {
+                    let uuid = o.uuid.clone();
+                    self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.alloc_value(Value::Ref(uuid))
+                } else {
+                    self.session.alloc_value(val)
+                };
+                self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
+                    Ok(())
+    }
+
+    /// Put `val` into a stash other holders (nested actions) share, so all
+    /// of them see it. Pending reads of the old value keep the old value.
+    fn write_shared(&mut self, t: &Tether, val: Value) -> Result<(), GoblinError> {
+        let val = if let Value::Object(o) = val {
+            let uuid = o.uuid.clone();
+            self.session.object_store.insert(uuid.clone(), Value::Object(o));
+            Value::Ref(uuid)
+        } else { val };
+        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
+            let old = self.session.read_value(t)?;
+            for op in self.stack.iter_mut() {
+                if matches!(op, Operand::Ref(u) if u == t) { *op = Operand::Val(old.clone()); }
+            }
+        }
+        self.session.get_stash_mut(t)?.value = val;
+        Ok(())
+    }
+
     /// `Opcode::RepeatStart`: work out how the loop runs over the value on
     /// the stack and set its state in the frame, counter -1. A condition
     /// loop's test can read idx before the first pass, so it starts at 0.
@@ -3019,7 +3053,7 @@ impl Vm {
         frame.loops[id] = LoopState { mode, iter, limit, counter: -1 };
         if mode == 4 {
             self.stack.push(Operand::Val(Value::Int(0)));
-            self.execute_op(Opcode::StoreLocal(idx_slot))?;
+            self.execute_op(Opcode::BindLocal(idx_slot))?;
         }
         Ok(())
     }
@@ -3046,21 +3080,21 @@ impl Vm {
             1 => {
                 let v = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
                 self.stack.push(Operand::Val(v));
-                self.execute_op(Opcode::StoreLocal(item_slot))?;
+                self.execute_op(Opcode::BindLocal(item_slot))?;
             }
             2 => {
                 let pair = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
                 let k = crate::collections::get_index(&pair, &Value::Int(0))?;
                 self.stack.push(Operand::Val(k));
-                self.execute_op(Opcode::StoreLocal(key_slot))?;
+                self.execute_op(Opcode::BindLocal(key_slot))?;
                 let v = crate::collections::get_index(&pair, &Value::Int(1))?;
                 self.stack.push(Operand::Val(v));
-                self.execute_op(Opcode::StoreLocal(val_slot))?;
+                self.execute_op(Opcode::BindLocal(val_slot))?;
             }
             _ => {}
         }
         self.stack.push(Operand::Val(Value::Int(counter)));
-        self.execute_op(Opcode::StoreLocal(idx_slot))?;
+        self.execute_op(Opcode::BindLocal(idx_slot))?;
         self.call_stack.last_mut().unwrap().ip += cond_len;
         Ok(())
     }

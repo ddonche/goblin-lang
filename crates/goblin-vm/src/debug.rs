@@ -48,6 +48,7 @@ pub fn format_op(op: &Opcode, func: &FunctionObject) -> String {
         }
         Opcode::LoadLocal(s)    => format!("LoadLocal({s})"),
         Opcode::StoreLocal(s)   => format!("StoreLocal({s})"),
+        Opcode::BindLocal(s)    => format!("BindLocal({s})"),
         Opcode::ArrayPushToLocal(s) => format!("ArrayPushToLocal({s})"),
         Opcode::AppendLocal(s) => format!("AppendLocal({s})"),
         Opcode::LoadGlobal(i)   => format!("LoadGlobal({i})"),

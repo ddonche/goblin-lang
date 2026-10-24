@@ -28,6 +28,9 @@ pub enum Opcode {
     /// Implements |, |=, and [= — the compiler chooses the opcode at compile time;
     /// at runtime they are all the same operation (store tether into slot).
     StoreLocal(u16),
+    /// Like StoreLocal, but a new binding (`x | v`, `[=`, a loop's name):
+    /// never changes a value a nested action captured from an earlier one.
+    BindLocal(u16),
 
     // ── Globals ────────────────────────────────────────────────────────────────
     /// Push a copy of the tether in globals[idx].
@@ -348,6 +351,7 @@ impl Opcode {
             Opcode::LoadFalse       => "LoadFalse",
             Opcode::LoadLocal(_)    => "LoadLocal",
             Opcode::StoreLocal(_)   => "StoreLocal",
+            Opcode::BindLocal(_)    => "BindLocal",
             Opcode::LoadGlobal(_)   => "LoadGlobal",
             Opcode::StoreGlobal(_)  => "StoreGlobal",
             Opcode::LoadUpvalue(_)  => "LoadUpvalue",
