@@ -964,10 +964,26 @@ impl Vm {
                 let pair_count = n as usize;
                 let start = self.stack.len().saturating_sub(pair_count * 2);
                 let flat = self.drain_operands(start)?;
-                let mut pairs = Vec::with_capacity(pair_count);
+                // A key written twice keeps its first place and its last
+                // value, as the interpreter builds the map.
+                let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(pair_count);
+                let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
                 for chunk in flat.chunks(2) {
                     if let [k, v] = chunk {
-                        pairs.push((k.clone(), v.clone()));
+                        // Small maps (the usual literal) scan; big ones index text keys.
+                        let seen = match k {
+                            Value::Str(s) if pair_count > 16 => at.get(s.as_str()).copied(),
+                            _ => pairs.iter().position(|(pk, _)| pk == k),
+                        };
+                        match seen {
+                            Some(i) => pairs[i].1 = v.clone(),
+                            None => {
+                                if pair_count > 16 {
+                                    if let Value::Str(s) = k { at.insert(s.as_str().to_string(), pairs.len()); }
+                                }
+                                pairs.push((k.clone(), v.clone()));
+                            }
+                        }
                     }
                 }
                 self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_map(pairs)))));
