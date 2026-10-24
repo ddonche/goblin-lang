@@ -329,6 +329,10 @@ pub struct Compiler {
     /// Compiling the base of a `[]`/`{}` read: the outermost read fuses
     /// the whole path into one step.
     in_path: bool,
+    /// Open `attempt`s around the code being compiled (in any action).
+    attempt_depth: usize,
+    /// `x |= f(x)`: the call's argument list and x's slot, for TakeLocal.
+    take_arg: Option<(*const Expr, String, u16)>,
     /// Innermost scope is at the back.
     scopes: Vec<FunctionScope>,
     /// Registered global names (name → global slot index).
@@ -394,7 +398,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -759,7 +763,10 @@ impl Compiler {
 
             Stmt::Bind(bind) if self.compile_append_local(bind)? => {}
             Stmt::Bind(bind) => {
-                self.compile_expr(&bind.expr)?;
+                self.take_arg = self.take_candidate(bind);
+                let r = self.compile_expr(&bind.expr);
+                self.take_arg = None;
+                r?;
 
                 // If this is a typed bind (alice|Person = {...}), instantiate the class.
                 if let Some(ref cn) = bind.class_name {
@@ -1416,7 +1423,16 @@ impl Compiler {
                 if self.user_actions.contains(bare_name) {
                     let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
-                    for arg in args { self.compile_expr(arg)?; }
+                    let take = match self.take_arg.take() {
+                        Some((at, n, slot)) if args.first().map(|a| a as *const Expr) == Some(at) => Some((n, slot)),
+                        _ => None,
+                    };
+                    for arg in args {
+                        match (&take, arg) {
+                            (Some((n, slot)), Expr::Ident(a, _)) if a == n => { self.emit(Opcode::TakeLocal(*slot)); }
+                            _ => self.compile_expr(arg)?,
+                        }
+                    }
                     self.emit(Opcode::Call(args.len() as u8));
                     return Ok(());
                 }
@@ -2305,6 +2321,30 @@ impl Compiler {
         if st.len() == 1 { st.pop() } else { None }
     }
 
+    /// `x |= f(x, …)` on a local of this action, with f a user action and x
+    /// named once in the whole call, as an argument of its own, outside any
+    /// `attempt` (which could see x after a failed call): the argument list
+    /// and x's slot. The argument is then moved to the call (TakeLocal).
+    fn take_candidate(&self, bind: &goblin_ast::BindStmt) -> Option<(*const Expr, String, u16)> {
+        if !matches!(bind.mode, BindMode::Retether) || bind.class_name.is_some() || bind.lock_type.is_some() { return None; }
+        if self.attempt_depth > 0 || self.scope().pred_fields { return None; }
+        let name = &bind.name.0;
+        let Expr::FreeCall(fname, args, _) = &bind.expr else { return None };
+        let bare = fname.trim_start_matches(':');
+        if !self.user_actions.contains(bare) || bare == name { return None; }
+        let slot = self.scope().find_local(name)?;
+        if self.is_imm_name(name) { return None; }
+        let quoted = format!("{name:?}");
+        let mut own = 0;
+        for a in args {
+            match a {
+                Expr::Ident(n, _) if n == name => own += 1,
+                other => if format!("{other:?}").contains(&quoted) { return None; },
+            }
+        }
+        (own == 1).then(|| (args.first().unwrap() as *const Expr, name.clone(), slot))
+    }
+
     /// Reads in `e` of the same path `check` writes become `QExpr::Target`.
     fn mark_target(&self, e: crate::opcode::QExpr, check: u16) -> crate::opcode::QExpr {
         use crate::opcode::{FusedKey, OpData, QExpr};
@@ -2971,6 +3011,7 @@ impl Compiler {
                     self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
+                self.attempt_depth += 1;
                 // Extract first rescue block info if present
                 let first_rescue: Option<(Option<String>, usize)> = if args.len() > 1 {
                     if let Expr::Array(rescue_pairs, _) = &args[1] {
@@ -3068,6 +3109,7 @@ impl Compiler {
 
                 // Result
                 self.emit(Opcode::LoadLocal(result_slot));
+                self.attempt_depth -= 1;
                 Ok(true)
             }
 

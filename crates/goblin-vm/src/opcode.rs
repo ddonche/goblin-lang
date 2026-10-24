@@ -24,6 +24,11 @@ pub enum Opcode {
     // ── Locals (tether slots) ──────────────────────────────────────────────────
     /// Push a copy of the tether in locals[slot].
     LoadLocal(u16),
+    /// `x` as the argument of `x |= f(x)`: like LoadLocal, but when only
+    /// this variable holds its value (no nested action, nothing pending),
+    /// the value is moved out to the call, so the callee can change it in
+    /// place instead of copying it. x is stored right after the call.
+    TakeLocal(u16),
     /// Pop top and store into locals[slot].
     /// Implements |, |=, and [= — the compiler chooses the opcode at compile time;
     /// at runtime they are all the same operation (store tether into slot).
@@ -350,6 +355,7 @@ impl Opcode {
             Opcode::LoadTrue        => "LoadTrue",
             Opcode::LoadFalse       => "LoadFalse",
             Opcode::LoadLocal(_)    => "LoadLocal",
+            Opcode::TakeLocal(_)    => "TakeLocal",
             Opcode::StoreLocal(_)   => "StoreLocal",
             Opcode::BindLocal(_)    => "BindLocal",
             Opcode::LoadGlobal(_)   => "LoadGlobal",

@@ -1321,7 +1321,13 @@ impl Slot {
                     drop(p_msg);
                     let base = self.vm.call_stack.len();
                     self.current = Some(Current { reply, base, wait: None });
-                    let step = self.vm.start_actor_call(self.handler.clone(), vec![self.state.clone(), message]);
+                    // The state is handed to the handler, not copied: the
+                    // handler's result replaces it, and if the handler fails
+                    // the actor restarts from its starting state or ends.
+                    // A copy kept here would make every in-place change the
+                    // handler makes copy the state first.
+                    let state = std::mem::replace(&mut self.state, Value::Nil);
+                    let step = self.vm.start_actor_call(self.handler.clone(), vec![state, message]);
                     match self.after_step(step) {
                         Some(true) => continue,
                         Some(false) => return true,

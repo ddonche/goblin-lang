@@ -47,6 +47,7 @@ pub fn format_op(op: &Opcode, func: &FunctionObject) -> String {
             format!("LoadConst({idx}) ; {preview}")
         }
         Opcode::LoadLocal(s)    => format!("LoadLocal({s})"),
+        Opcode::TakeLocal(s)    => format!("TakeLocal({s})"),
         Opcode::StoreLocal(s)   => format!("StoreLocal({s})"),
         Opcode::BindLocal(s)    => format!("BindLocal({s})"),
         Opcode::ArrayPushToLocal(s) => format!("ArrayPushToLocal({s})"),

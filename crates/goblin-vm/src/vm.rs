@@ -306,6 +306,21 @@ impl Vm {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 self.stack.push(Operand::Ref(t));
             }
+            Opcode::TakeLocal(slot) => {
+                let frame = self.call_stack.last().unwrap();
+                let t = frame.load_local(slot)?;
+                if frame.get_hard_type_lock(slot).is_none()
+                    && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) {
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if stash.tether_count == 1
+                        && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_) | Value::Object(_)) {
+                        let v = std::mem::replace(&mut stash.value, Value::Nil);
+                        self.stack.push(Operand::Val(v));
+                        return Ok(());
+                    }
+                }
+                self.stack.push(Operand::Ref(t));
+            }
             Opcode::StoreLocal(slot) => return self.store_local_op(slot, true),
             Opcode::BindLocal(slot) => return self.store_local_op(slot, false),
 
@@ -1442,7 +1457,22 @@ impl Vm {
                 // Resolve to Value now — callee's frame is about to be popped, after
                 // which its locals are removed from the GC live set. Resolving here
                 // ensures we own the Value before the stash could theoretically be swept.
-                let ret_val = self.resolve_op(ret_op)?;
+                // A local of this call that only it holds is moved out, not
+                // copied: nothing can read it once the frame is gone, and a
+                // copy left behind would make the caller's next in-place
+                // change copy the whole value.
+                let ret_val = match ret_op {
+                    Operand::Ref(t) if self.call_stack.last().unwrap().locals.iter().any(|l| l.as_ref() == Some(&t))
+                        && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) => {
+                        let stash = self.session.resolve_mut(t.addr)?;
+                        if stash.tether_count == 1 && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_)) {
+                            std::mem::replace(&mut stash.value, Value::Nil)
+                        } else {
+                            self.resolve_op(Operand::Ref(t))?
+                        }
+                    }
+                    other => self.resolve_op(other)?,
+                };
 
                 let frame = self.call_stack.pop().unwrap();
                 let _ = frame.self_tether;
