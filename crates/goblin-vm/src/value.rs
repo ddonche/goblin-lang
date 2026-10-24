@@ -627,7 +627,7 @@ pub struct Stash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpvalueDescriptor {
     /// Capture the Tether currently in the enclosing frame's locals[slot].
-    Local(u8),
+    Local(u16),
     /// Forward upvalue[idx] from the enclosing closure.
     Upvalue(u8),
 }
