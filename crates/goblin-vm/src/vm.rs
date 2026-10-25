@@ -346,6 +346,49 @@ impl Vm {
                 self.stack.pop();
                 *self.stack.last_mut().unwrap() = Operand::Val(r);
             }
+            Opcode::Mul | Opcode::MulInt | Opcode::Rem | Opcode::Div => {
+                let Some((a, b)) = self.top2_ints() else { return Step::Slow };
+                let r = match op {
+                    Opcode::Mul => match a.checked_mul(b) { Some(r) => Value::Int(r), None => return Step::Slow },
+                    Opcode::MulInt => Value::Int(a.wrapping_mul(b)),
+                    Opcode::Rem => match a.checked_rem(b) {
+                        Some(r) => Value::Int(if r != 0 && (r < 0) != (b < 0) { r + b } else { r }),
+                        None => return Step::Slow,
+                    },
+                    _ => match num_div(&Value::Int(a), &Value::Int(b)) {
+                        Ok(r) => r,
+                        Err(_) => return Step::Slow,
+                    },
+                };
+                self.stack.pop();
+                *self.stack.last_mut().unwrap() = Operand::Val(r);
+            }
+            Opcode::Neg => {
+                let Some(top) = self.stack.last() else { return Step::Slow };
+                let Some(n) = self.operand_int(top).and_then(i64::checked_neg) else { return Step::Slow };
+                *self.stack.last_mut().unwrap() = Operand::Val(Value::Int(n));
+            }
+            Opcode::Dup => {
+                let Some(top) = self.stack.last() else { return Step::Slow };
+                let top = top.clone();
+                self.stack.push(top);
+            }
+            Opcode::GuardRebindLocal(slot, _) => {
+                // Only an object can't be rebound; a plain local passes.
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
+                let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
+                if matches!(stash.value, Value::Object(_) | Value::Ref(_) | Value::Frozen(_)) { return Step::Slow; }
+                if self.stack.is_empty() { return Step::Slow; }
+            }
+            Opcode::AppendLocal(slot) => {
+                // `x += n` on ints: the sum `op_add` would push.
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
+                let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
+                let Value::Int(a) = stash.value else { return Step::Slow };
+                let Some(top) = self.stack.last() else { return Step::Slow };
+                let Some(b) = self.operand_int(top) else { return Step::Slow };
+                *self.stack.last_mut().unwrap() = Operand::Val(Value::Int(a.wrapping_add(b)));
+            }
             Opcode::RepeatNext(idx) => return done!(self.repeat_next(idx)),
             Opcode::QuickSet(idx) => match self.quick_set(idx) {
                 Ok(Some(skip)) => self.call_stack.last_mut().unwrap().ip += skip as usize,
