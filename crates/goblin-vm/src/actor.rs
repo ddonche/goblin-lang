@@ -1073,6 +1073,8 @@ pub fn missing_object(session: &Session, uuid: &str) -> GoblinError {
 
 /// Objects inside the actor's session live in its object store, as they do
 /// after `StoreLocal`, so field writes find them.
+pub(crate) fn adopt_value(v: Value, s: &mut Session) -> Value { adopt(v, s) }
+
 fn adopt(v: Value, s: &mut Session) -> Value {
     match v {
         Value::Object(mut o) => {
@@ -1332,6 +1334,23 @@ impl Slot {
                         return false;
                     }
                     let (p_msg, reply) = match msg { Msg::Post(p) => (p, None), Msg::Request(p, r) => (p, Some(r)) };
+                    // One tick of a world this actor is a region of.
+                    if let PValue::World(job) = &p_msg {
+                        let mut state = std::mem::replace(&mut self.state, Value::Nil);
+                        let handler = self.handler.clone();
+                        let r = crate::world::region_tick(&mut self.vm, &mut state, &handler, job);
+                        self.state = state;
+                        let reply = reply.expect("a world tick is a request");
+                        match r {
+                            Ok(()) => reply.set(Ok(Arc::new(PValue::Nil))),
+                            Err(e) => {
+                                // The region failed: the tick fails, and so does the actor.
+                                reply.set(Err(format!("C0123: tick-regions: a region failed during tick: {e}")));
+                                if self.fail(e.to_string()) { continue; } else { return false; }
+                            }
+                        }
+                        continue;
+                    }
                     // Converted afresh per message, so nothing from old messages is kept.
                     let message = {
                         let m = snapshot(&p_msg, &mut self.vm.session);
@@ -1738,6 +1757,14 @@ fn post_step(args: Vec<Value>, session: &mut Session) -> Result<PostStep, Goblin
     match h {
         Handle::Actor(a) => {
             let p = ToPortable::new(session).value(msg)?;
+            // From one region to another during a world tick: delivered at
+            // the start of the next tick, in a fixed order.
+            if let Some(c) = session.region.as_mut() {
+                if c.regions.contains(&a.id) {
+                    c.sent.push((crate::world::Dest::Actor(a.id), crate::world::Item::Post(p)));
+                    return Ok(PostStep::Done(Value::Bool(true)));
+                }
+            }
             match a.mailbox.try_push(Msg::Post(p)) {
                 Push::Done => Ok(PostStep::Done(Value::Bool(true))),
                 Push::Full(_) => Err(err(format!(
@@ -1762,6 +1789,36 @@ pub fn post(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinErro
         PostStep::Done(v) => Ok(v),
         PostStep::Wait(w) => wait_here(w, session),
     }
+}
+
+/// The actor a value is, if it is an actor handle.
+pub(crate) fn actor_of(v: &Value) -> Option<Arc<ActorShared>> {
+    match v { Value::Handle(Handle::Actor(a)) => Some(a.clone()), _ => None }
+}
+
+pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
+
+/// Sends a region its part of one world tick (`tick(regions)`).
+pub(crate) fn send_world(a: &Arc<ActorShared>, job: Arc<crate::world::WorldIn>) -> Result<Arc<Reply>, GoblinError> {
+    let reply = Arc::new(Reply {
+        id: next_id(),
+        slot: Mutex::new(ReplySlot { answer: None, waiters: Vec::new() }),
+        actor: a.id,
+    });
+    if current_actor_id() == a.id {
+        return Err(err("C0119: actor-self-wait: a region cannot tick a world it is part of; it would wait forever"));
+    }
+    match a.mailbox.try_push(Msg::Request(PValue::World(job), reply.clone())) {
+        Push::Done => Ok(reply),
+        Push::Full(_) => Err(err(format!(
+            "C0114: actor-mailbox-full: the region's mailbox is full ({} messages); it is not keeping up", a.mailbox.cap))),
+        Push::Closed(_) => Err(a.stopped_error()),
+    }
+}
+
+/// Waits until a region has finished its tick.
+pub(crate) fn wait_reply(r: Arc<Reply>, session: &mut Session) -> Result<(), GoblinError> {
+    wait_here(Wait::Future(r), session).map(|_| ())
 }
 
 /// `:request(handle, message)`: post, and get a future for the answer.

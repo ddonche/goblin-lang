@@ -140,6 +140,10 @@ pub struct Session {
     /// In an actor: objects that stayed with the program that started it
     /// (uuid -> the variable that names them there), for a clear error.
     pub kept_home: HashMap<String, String>,
+    /// The main program's world of regions (`tick(regions)`).
+    pub world: Option<crate::world::World>,
+    /// In a region, while it runs a world tick.
+    pub(crate) region: Option<crate::world::RegionCtx>,
     /// Compiled field defaults that are not plain literals, per (class, field).
     /// Cleared whenever a class is (re)declared.
     pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
@@ -328,6 +332,8 @@ impl Session {
             omitted_globals: Vec::new(),
             handed_off: HashMap::new(),
             kept_home: HashMap::new(),
+            world: None,
+            region: None,
             field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,

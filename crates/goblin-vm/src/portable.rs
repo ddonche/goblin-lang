@@ -69,6 +69,9 @@ pub enum PValue {
     /// A collection or long string holding no session state, converted once
     /// and shared: every actor on one worker reads the same copy.
     Shared(Arc<PValue>),
+    /// One tick of a world, for a region (`tick(regions)`); only ever the
+    /// message of a request to an actor.
+    World(Arc<crate::world::WorldIn>),
 }
 
 #[derive(Debug, Clone)]
@@ -452,6 +455,7 @@ impl FromPortable {
                 Value::Ref(uuid.clone())
             }
             PValue::Shared(inner) => self.shared_value(inner, session),
+            PValue::World(_) => Value::Nil,
         }
     }
 
@@ -632,7 +636,7 @@ pub(crate) fn inert(p: &PValue) -> bool {
             PLayout::SmallMap(p) | PLayout::HashMapBackend(p) => p.iter().all(|(k, v)| inert(k) && inert(v)),
         },
         PValue::Object { .. } | PValue::Closure(..) | PValue::Frozen(_) | PValue::Handle(_)
-        | PValue::HandedOff { .. } | PValue::KeptHome { .. } => false,
+        | PValue::HandedOff { .. } | PValue::KeptHome { .. } | PValue::World(_) => false,
     }
 }
 

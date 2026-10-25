@@ -26,6 +26,7 @@ pub(crate) struct POverlayDef {
     extra_fields: Vec<(String, PValue)>,
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct POverlay {
     overlay_name: String,
     host_var: String,
@@ -83,20 +84,7 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
     img.object_decisions = session.object_decisions.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
     if let Some(objs) = objects {
         for inst in session.overlay_instances.iter().filter(|i| objs.contains(&i.host_uuid)) {
-            img.overlays.push(POverlay {
-                overlay_name: inst.overlay_name.clone(),
-                host_var: inst.host_var.clone(),
-                host_uuid: inst.host_uuid.clone(),
-                strength: inst.strength,
-                age: inst.age,
-                ticks_remaining: inst.ticks_remaining,
-                count: inst.count,
-                original_values: inst.original_values.iter()
-                    .map(|(k, v)| Ok((k.clone(), tp.value(v)?)))
-                    .collect::<Result<_, GoblinError>>()?,
-                extra_fields: pfields(tp, &inst.extra_fields)?,
-                des_id: inst.des_id.0,
-            });
+            img.overlays.push(overlay_to_p(inst, tp)?);
         }
         for u in objs {
             if let Some(n) = session.object_names.get(u) {
@@ -136,19 +124,45 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
         s.object_names.insert(u.clone(), n.clone());
     }
     for o in &img.overlays {
-        let original_values = o.original_values.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
-        let extra_fields = o.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
-        s.overlay_instances.push(OverlayInstance {
-            overlay_name: o.overlay_name.clone(),
-            host_var: o.host_var.clone(),
-            host_uuid: o.host_uuid.clone(),
-            strength: o.strength,
-            age: o.age,
-            ticks_remaining: o.ticks_remaining,
-            count: o.count,
-            original_values,
-            extra_fields,
-            des_id: OverlayInstanceId(o.des_id),
-        });
+        let inst = overlay_from_p(o, fp, s);
+        s.overlay_instances.push(inst);
+    }
+}
+
+impl POverlay {
+    pub(crate) fn host(&self) -> &str { &self.host_uuid }
+}
+
+/// One overlay, ready to cross to another thread.
+pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Result<POverlay, GoblinError> {
+    Ok(POverlay {
+        overlay_name: inst.overlay_name.clone(),
+        host_var: inst.host_var.clone(),
+        host_uuid: inst.host_uuid.clone(),
+        strength: inst.strength,
+        age: inst.age,
+        ticks_remaining: inst.ticks_remaining,
+        count: inst.count,
+        original_values: inst.original_values.iter()
+            .map(|(k, v)| Ok((k.clone(), tp.value(v)?)))
+            .collect::<Result<_, GoblinError>>()?,
+        extra_fields: pfields(tp, &inst.extra_fields)?,
+        des_id: inst.des_id.0,
+    })
+}
+
+/// An overlay rebuilt in this session.
+pub(crate) fn overlay_from_p(o: &POverlay, fp: &mut FromPortable, s: &mut Session) -> OverlayInstance {
+    OverlayInstance {
+        overlay_name: o.overlay_name.clone(),
+        host_var: o.host_var.clone(),
+        host_uuid: o.host_uuid.clone(),
+        strength: o.strength,
+        age: o.age,
+        ticks_remaining: o.ticks_remaining,
+        count: o.count,
+        original_values: o.original_values.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect(),
+        extra_fields: o.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect(),
+        des_id: OverlayInstanceId(o.des_id),
     }
 }

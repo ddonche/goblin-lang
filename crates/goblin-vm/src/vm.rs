@@ -1882,6 +1882,13 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    BuiltinId::Tick if arg_vals.len() == 1 => {
+                        // tick(regions): one tick of every region together.
+                        let list = arg_vals.into_iter().next().unwrap();
+                        let n = crate::world::tick_regions(self, list)?;
+                        self.stack.push(Operand::Val(n));
+                        return Ok(());
+                    }
                     BuiltinId::Tick => {
                         self.vm_tick()?;
                         self.stack.push(Operand::Val(Value::Nil));
@@ -5115,7 +5122,8 @@ impl Vm {
     fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
         use indexmap::IndexMap;
         use std::collections::BTreeSet;
-        let instances = self.session.overlay_instances.clone();
+        let mut instances = self.session.overlay_instances.clone();
+        if self.session.world.is_some() { instances.extend(crate::world::view_overlays(self)); }
         let mut results: Vec<Value> = Vec::new();
         for inst in &instances {
             let mut fields: IndexMap<String, Value> = IndexMap::new();

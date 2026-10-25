@@ -1,0 +1,52 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// tick(regions) ticks every region together. An overlay spreads inside a
+/// region during the tick; one that reaches another region's object
+/// through a link lands there at the start of the next tick. The main
+/// program's :objects() and :overlays() see every region.
+:rand_seed(42)
+<>Person |
+    health: 1
+    town: 0
+xx
+link Person contact by [
+    1 - abs((self >> town) - (target >> town)) * .5
+]
+overlay Flu |
+    hosts Person
+    spreads through contact at .6
+    decays .05
+    modifies:
+        health - .02
+    end
+end
+act make_town(t, n, sick)
+    people | []
+    repeat :range(0, n) as i
+        p <> Person | town: t
+        if i < sick
+            overlay Flu on p at .9
+        xx
+        :put_last!(people, p)
+    xx
+    return {"town": t, "people": people}
+xx
+act town_day(st, msg)
+    return st
+xx
+north | :actor(make_town(0, 3, 1), town_day)
+south | :actor(make_town(.5, 2, 0), town_day)
+repeat :range(1, 4) as d
+    n | tick([north, south])
+    flu | :len(:overlays(it >> overlay_name == "Flu"))
+    hit_n | 0
+    hit_s | 0
+    repeat :objects((it >> health) < 1)
+        if (it >> town) < .25
+            hit_n |= hit_n + 1
+        else
+            hit_s |= hit_s + 1
+        xx
+    xx
+    all | :len(:objects((it >> health) > 0))
+    say("tick {n}: flu {flu}, north {hit_n}, south {hit_s}, people {all}")
+xx

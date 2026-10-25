@@ -722,7 +722,8 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                     .map(|c| c.decision.is_some())
                     .unwrap_or(false)
                     || vm.session.object_decisions.contains_key(uuid.as_str());
-                if has_decision {
+                // Another region's object decides in its own region.
+                if has_decision && !crate::world::is_remote(vm, uuid) {
                     out.push((uuid.clone(), class_name.clone()));
                 }
             }
@@ -847,7 +848,7 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 let has_transitions = vm.session.classes.get(class_name)
                     .map(|c| !c.transitions.is_empty())
                     .unwrap_or(false);
-                if has_transitions { Some((uuid.clone(), class_name.clone())) }
+                if has_transitions && !crate::world::is_remote(vm, uuid) { Some((uuid.clone(), class_name.clone())) }
                 else { None }
             } else { None }
         }).collect();
@@ -987,6 +988,8 @@ pub(crate) fn eval_link_score(
 }
 
 pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
+    // On another region's object: its owner applies it, next tick.
+    if crate::world::send_overlay(vm, &inst) { return; }
     use crate::session::OverlayApplyBehavior;
     let behavior = vm.session.overlay_defs.get(&inst.overlay_name)
         .map(|d| d.apply_behavior.clone())

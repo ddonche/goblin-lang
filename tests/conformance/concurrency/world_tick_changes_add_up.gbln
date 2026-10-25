@@ -1,0 +1,62 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A decision's action that changes another region's object sends the
+/// change to its owner, applied at the start of the next tick; changes to
+/// a number from several regions add up. A :post from one region to
+/// another during a tick arrives at the start of the next one.
+:rand_seed(9)
+<>Sheep |
+    ~fat: 10
+xx
+<>Wolf |
+    hunger: .5
+    score | decision against Sheep by [
+        self >> hunger
+    ]
+    judge using score
+        >= .2: bite(target)
+        else: rest(target)
+    end
+xx
+act bite(w, s)
+    s >> fat |= s >> fat - 1
+xx
+act rest(w, s)
+    return nil
+xx
+act make_zone(z, wolves, sheep)
+    things | []
+    repeat :range(0, wolves)
+        w <> Wolf | hunger: .5
+        :put_last!(things, w)
+    xx
+    repeat :range(0, sheep)
+        s <> Sheep | fat: 10
+        :put_last!(things, s)
+    xx
+    return {"zone": z, "things": things, "peer": nil, "heard": []}
+xx
+act zone_day(st, msg)
+    if :has(msg, "tick")
+        if st{"peer"} != nil
+            :post(st{"peer"}, {"hello": msg{"tick"}})
+        xx
+    elif :has(msg, "peer")
+        :update!(st{"peer"}, msg{"peer"})
+    elif :has(msg, "hello")
+        :put_last!(st{"heard"}, msg{"hello"})
+    xx
+    return st
+xx
+/// Zone 0 has two wolves and no sheep; zone 1 has the only sheep.
+a | :actor(make_zone(0, 2, 0), zone_day)
+b | :actor(make_zone(1, 0, 1), zone_day)
+:post(a, {"peer": b})
+repeat :range(1, 4) as d
+    tick([a, b])
+    repeat :objects(it >> fat > 0)
+        f | it >> fat
+        say("tick {d}: the sheep has {f}")
+    xx
+xx
+heard | :await(:request(b, {"x": 0})){"heard"}
+say("zone 1 heard from zone 0 on ticks {heard}")
