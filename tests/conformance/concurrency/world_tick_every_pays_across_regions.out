@@ -1,0 +1,5 @@
+tick 1: shop 100, workers 0, total 100
+tick 2: shop 70, workers 0, total 70
+tick 3: shop 70, workers 30, total 100
+tick 4: shop 40, workers 30, total 70
+tick 5: shop 40, workers 60, total 100

@@ -300,7 +300,8 @@ fn region_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) 
             }
         }
     }
-    // 3. The DES tick.
+    // 3. The DES tick, numbered as the world's.
+    vm.session.des_ticks = job.tick - 1;
     crate::tick::run_tick(vm)?;
     // 4. What this tick did to other regions' objects goes to their owners.
     let mut changes = Vec::new();

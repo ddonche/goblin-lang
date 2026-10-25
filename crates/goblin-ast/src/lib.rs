@@ -255,6 +255,30 @@ pub struct ClassDecl {
     /// Optional capacity declaration — how many/how much this class can own.
     /// None = infinite capacity.
     pub capacity: Option<CapacityDecl>,
+    /// `every N ticks ... end` blocks: each runs as a method (named
+    /// `action`) on every object of the class, every N ticks.
+    pub every: Vec<EveryDecl>,
+    /// Every decision of the class with its judge, in the order written:
+    /// `shop | decision against Business by [ ... ]` / `judge using shop`.
+    /// `decision` and `judge` above hold the first of them.
+    pub decisions: Vec<NamedDecision>,
+    pub span: Span,
+}
+
+/// One of a class's decisions, with the judge that acts on its score.
+#[derive(Debug, Clone)]
+pub struct NamedDecision {
+    pub name: String,
+    pub decision: DecisionDef,
+    pub judge: Option<JudgeStmt>,
+}
+
+/// `every N ticks ... end` inside a class body.
+#[derive(Debug, Clone)]
+pub struct EveryDecl {
+    pub ticks: u64,
+    /// The class action that holds the block's body.
+    pub action: String,
     pub span: Span,
 }
 

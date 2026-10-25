@@ -78,6 +78,8 @@ enum PExpr {
         judge: Option<ast::JudgeStmt>,
         transitions: Vec<ast::TransitionDef>,
         capacity: Option<ast::CapacityDecl>,
+        every: Vec<(u64, String)>,
+        named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>,
     },
     EnumVariant {
         enum_name: String,
@@ -248,7 +250,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -2685,6 +2687,14 @@ impl<'t> Parser<'t> {
     fn peek(&self) -> Option<&Token> { self.toks.get(self.i) }
 
     #[inline]
+    /// Whether the tokens at `i` read `name | decision`.
+    fn is_named_decision_at(&self, i: usize) -> bool {
+        use goblin_lexer::TokenKind;
+        matches!(self.toks.get(i).map(|t| &t.kind), Some(TokenKind::Ident))
+            && matches!(self.toks.get(i + 1).map(|t| &t.kind), Some(TokenKind::Op(op)) if op == "|")
+            && self.toks.get(i + 2).is_some_and(|t| t.value.as_deref() == Some("decision"))
+    }
+
     fn peek_op(&self, s: &str) -> bool {
         if let Some(t) = self.peek() {
             if let goblin_lexer::TokenKind::Op(ref op) = t.kind {
@@ -3991,6 +4001,16 @@ impl<'t> Parser<'t> {
                 if matches!(tok.kind, TokenKind::Act | TokenKind::Action) {
                     break;
                 }
+                // `name | decision ...` starts a decision.
+                if matches!(tok.kind, TokenKind::Ident) && self.is_named_decision_at(self.i) {
+                    break;
+                }
+                // `every N ticks` starts a block (a field named `every` has a ':').
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("every")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Int))
+                {
+                    break;
+                }
             }
 
             // Check if this is a relation keyword first (BEFORE eating ident)
@@ -4094,7 +4114,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new() });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -4103,6 +4123,9 @@ impl<'t> Parser<'t> {
         let mut judge: Option<ast::JudgeStmt> = None;
         let mut transitions: Vec<ast::TransitionDef> = Vec::new();
         let mut capacity: Option<ast::CapacityDecl> = None;
+        let mut every: Vec<(u64, String)> = Vec::new();
+        // Decisions by name, each with the judge that uses it.
+        let mut named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> = Vec::new();
 
         loop {
             // Skip layout
@@ -4120,7 +4143,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
                 }
             }
 
@@ -4144,7 +4167,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
             }
 
             if self.is_eof() {
@@ -4169,14 +4192,15 @@ impl<'t> Parser<'t> {
 
             // Handle decision formula: `score | decision against TargetClass by [ formula ]`
             let is_decision = matches!(act_tok.kind, TokenKind::Ident)
-                && act_tok.value.as_deref() == Some("score");
+                && (act_tok.value.as_deref() == Some("score") || self.is_named_decision_at(self.i));
+            let decision_name = act_tok.value.clone().unwrap_or_default();
 
             // Handle judge block inside class
             let is_judge = matches!(act_tok.kind, TokenKind::Ident)
                 && act_tok.value.as_deref() == Some("judge");
 
             if is_decision {
-                self.i += 1; // consume 'score'
+                self.i += 1; // consume the decision's name
                 if !self.eat_op("|") {
                     return Err(s_help_site!(
                         "P1400",
@@ -4236,16 +4260,98 @@ impl<'t> Parser<'t> {
                         "Write: score | decision against Fighter by [ self >> aggression ]",
                     ));
                 }
-                decision = Some(PDecisionDef { target_class, formula: Box::new(formula) });
+                if named.iter().any(|(n, _, _)| *n == decision_name) {
+                    return Err(s_help_site!(
+                        "P1407",
+                        &format!("This class already has a decision named '{}'", decision_name),
+                        "Give each decision its own name: shop | decision against Shop by [ ... ], work | decision against Shop by [ ... ]",
+                    ));
+                }
+                let d = PDecisionDef { target_class, formula: Box::new(formula) };
+                if decision.is_none() { decision = Some(d.clone()); }
+                named.push((decision_name, d, None));
                 continue;
             }
 
             if is_judge {
+                // `judge using <name>` acts on that decision's score; a judge
+                // without `using` goes with the first decision.
+                let using = match (self.toks.get(self.i + 1), self.toks.get(self.i + 2)) {
+                    (Some(u), Some(n)) if u.value.as_deref() == Some("using") && matches!(n.kind, TokenKind::Ident) => n.value.clone(),
+                    _ => None,
+                };
                 // Parse the judge block using the existing judge parser
                 let stmt = self.parse_judge_stmt()?;
                 if let ast::Stmt::Judge(js) = stmt {
-                    judge = Some(js);
+                    let slot = match &using {
+                        Some(n) => named.iter().position(|(dn, _, _)| dn == n),
+                        None => if named.is_empty() { None } else { Some(0) },
+                    };
+                    match slot {
+                        Some(i) => {
+                            if named[i].2.is_some() {
+                                return Err(s_help_site!(
+                                    "P1408",
+                                    &format!("The decision '{}' already has a judge", named[i].0),
+                                    "Write one judge per decision: judge using shop ... end",
+                                ));
+                            }
+                            if i == 0 { judge = Some(js.clone()); }
+                            named[i].2 = Some(js);
+                        }
+                        // A judge before its decision, or naming no decision
+                        // here: kept as the class judge, as before.
+                        None => { judge = Some(js); }
+                    }
                 }
+                continue;
+            }
+
+            // `every N ticks` ... `end`: a block DES runs on each object of
+            // the class every N ticks, with `self` the object. It is kept as
+            // a class action named after the block.
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("every") {
+                let every_col = act_tok.span.col_start;
+                let _ = self.eat_ident(); // 'every'
+                let n = match self.peek().cloned() {
+                    Some(t) if matches!(t.kind, TokenKind::Int) => {
+                        self.i += 1;
+                        t.value.as_deref().unwrap_or("0").replace('_', "").parse::<u64>().unwrap_or(0)
+                    }
+                    _ => 0,
+                };
+                let unit = self.eat_ident();
+                if n == 0 || !matches!(unit.as_deref(), Some("tick") | Some("ticks")) {
+                    return Err(s_help_site!(
+                        "P1560",
+                        "Expected a whole number of ticks after 'every'",
+                        "Write: every 1 tick ... end, or every 14 ticks ... end",
+                    ));
+                }
+                let body = self.parse_indented_block(every_col, &["end"])?;
+                self.skip_stmt_separators();
+                if self.block_closed_hard {
+                    self.block_closed_hard = false;
+                } else if self.peek_block_close() {
+                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if col != every_col {
+                        return Err(s_help_site!(
+                            "P0222",
+                            &format!("This closer is misaligned: expected column {}, found column {}", every_col, col),
+                            "Align the closer with its header (same column), placing 'end' or 'xx' (crossbones) directly under 'every'.",
+                        ));
+                    }
+                    self.expect_block_close("every")?;
+                } else if !self.eat_layout_until_close(every_col) {
+                    return Err(s_help_site!(
+                        "P0212",
+                        "This every block is missing its closing 'end' or 'xx' (crossbones).",
+                        "Close the block with 'end' or 'xx' (crossbones).",
+                    ));
+                }
+                let action = format!("every {} ticks #{}", n, every.len() + 1);
+                every.push((n, action.clone()));
+                actions.push(PAction { name: action, params: Vec::new(), body, is_single: false });
                 continue;
             }
 
@@ -4324,7 +4430,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4400,7 +4506,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4549,8 +4655,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named });
                     }
                 }
 
@@ -6655,6 +6761,8 @@ impl<'t> Parser<'t> {
             judge: None,
             transitions: vec![],
             capacity: None,
+            every: vec![],
+            decisions: vec![],
             span: sp.clone(),
         }));
 
@@ -6795,7 +6903,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named } => {
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -6845,6 +6953,15 @@ impl<'t> Parser<'t> {
                         span: sp.clone(),
                     }
                 });
+                let decisions_ast: Vec<ast::NamedDecision> = named.into_iter().map(|(name, d, judge)| {
+                    let formula = self.lower_expr(*d.formula);
+                    let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+                    ast::NamedDecision {
+                        name,
+                        decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, span: sp.clone() },
+                        judge,
+                    }
+                }).collect();
 
                 Ok(ast::Stmt::Class(ast::ClassDecl {
                     name,
@@ -6854,6 +6971,8 @@ impl<'t> Parser<'t> {
                     judge,
                     transitions,
                     capacity,
+                    every: every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
+                    decisions: decisions_ast,
                     span: sp,
                 }))
             }
