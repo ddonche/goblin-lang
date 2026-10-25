@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
+use crate::value::GStr;
 
 use crate::error::GoblinError;
 use crate::session::Session;
@@ -32,7 +33,7 @@ pub enum PValue {
     Big(rust_decimal::Decimal),
     Pct(f64),
     Char(char),
-    Str(String),
+    Str(Arc<str>),
     DateTime(GoblinDateTime),
     Duration(crate::duration::Duration),
     Formatted(Box<PValue>, FormatSpec),
@@ -105,14 +106,20 @@ pub struct ToPortable<'s> {
     session: &'s Session,
     funcs: HashMap<*const FunctionObject, Arc<PFunction>>,
     share: bool,
+    /// Short texts converted so far: map keys and words like "wage" repeat
+    /// in every item, so each is converted once.
+    strs: std::collections::HashSet<Arc<str>>,
 }
+
+/// Texts up to this long are converted once per conversion and shared.
+const SHORT_STR: usize = 64;
 
 /// Strings at least this long are shared like collections.
 const SHARED_STR: usize = 256;
 
 impl<'s> ToPortable<'s> {
     pub fn new(session: &'s Session) -> Self {
-        ToPortable { session, funcs: HashMap::new(), share: false }
+        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default() }
     }
 
     /// Convert collections and long strings that hold no session state once,
@@ -120,6 +127,14 @@ impl<'s> ToPortable<'s> {
     pub fn sharing_values(mut self) -> Self { self.share = true; self }
 
     pub fn is_sharing(&self) -> bool { self.share }
+
+    fn text(&mut self, s: &str) -> Arc<str> {
+        if s.len() > SHORT_STR { return Arc::from(s); }
+        if let Some(a) = self.strs.get(s) { return a.clone(); }
+        let a: Arc<str> = Arc::from(s);
+        self.strs.insert(a.clone());
+        a
+    }
 
     pub fn value(&mut self, v: &Value) -> Result<PValue, GoblinError> {
         Ok(match v {
@@ -132,7 +147,7 @@ impl<'s> ToPortable<'s> {
             Value::Pct(p) => PValue::Pct(*p),
             Value::Char(c) => PValue::Char(*c),
             Value::Str(s) if self.share && s.as_str().len() >= SHARED_STR => self.shared(v)?,
-            Value::Str(s) => PValue::Str(s.to_string()),
+            Value::Str(s) => PValue::Str(self.text(s.as_str())),
             Value::DateTime(d) => PValue::DateTime(*d.clone()),
             Value::Duration(d) => PValue::Duration((**d).clone()),
             Value::Formatted(inner, spec) => PValue::Formatted(Box::new(self.value(inner)?), spec.clone()),
@@ -203,7 +218,7 @@ impl<'s> ToPortable<'s> {
         }
         let p = match v {
             Value::Collection(c) => self.collection(c)?,
-            Value::Str(s) => PValue::Str(s.to_string()),
+            Value::Str(s) => PValue::Str(self.text(s.as_str())),
             _ => unreachable!(),
         };
         if !inert(&p) { return Ok(p); }
@@ -296,6 +311,9 @@ pub struct FromPortable {
     shared: bool,
     /// Rebuilt frozen values, and whether each holds a closure.
     frozen: HashMap<*const PValue, (Rc<Frozen>, bool)>,
+    /// Short texts already rebuilt in this session, by the portable text
+    /// (held here, so its address is not reused while it is a key).
+    strs: HashMap<*const u8, (Arc<str>, GStr)>,
     /// Shared values already rebuilt in this session.
     values: HashMap<*const PValue, Value>,
     global_names: HashMap<Vec<String>, Rc<std::cell::OnceCell<Vec<String>>>>,
@@ -307,7 +325,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new() }
+        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), strs: HashMap::new(), values: HashMap::new(), global_names: HashMap::new() }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -317,6 +335,16 @@ impl FromPortable {
     pub fn forget_values(&mut self) {
         self.frozen.retain(|_, (_, cells)| !*cells);
         self.values.clear();
+        self.strs.clear();
+    }
+
+    fn text(&mut self, s: &Arc<str>) -> GStr {
+        if s.len() > SHORT_STR { return GStr::from(s.to_string()); }
+        if let Some((_, g)) = self.strs.get(&(s.as_ptr())) { return g.clone(); }
+        if self.strs.len() >= 16384 { self.strs.clear(); }
+        let g = GStr::from(s.to_string());
+        self.strs.insert(s.as_ptr(), (s.clone(), g.clone()));
+        g
     }
 
     pub fn value(&mut self, p: &PValue, session: &mut Session) -> Value {
@@ -329,7 +357,7 @@ impl FromPortable {
             PValue::Big(d) => Value::Big(*d),
             PValue::Pct(x) => Value::Pct(*x),
             PValue::Char(c) => Value::Char(*c),
-            PValue::Str(s) => Value::Str(s.clone().into()),
+            PValue::Str(s) => Value::Str(self.text(s)),
             PValue::DateTime(d) => Value::DateTime(Box::new(d.clone())),
             PValue::Duration(d) => Value::Duration(Box::new(d.clone())),
             PValue::Formatted(inner, spec) => Value::Formatted(Box::new(self.value(inner, session)), spec.clone()),

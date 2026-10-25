@@ -1554,7 +1554,7 @@ fn snapshot(p: &PValue, session: &mut Session) -> Value {
                 let new = ids.entry(uuid.clone()).or_insert_with(|| uuid::Uuid::new_v4().to_string()).clone();
                 *uuid = new.clone();
                 for (k, v) in fields.iter_mut() {
-                    if k == "uuid" { *v = PValue::Str(new.clone()); } else { walk(v, ids); }
+                    if k == "uuid" { *v = PValue::Str(new.as_str().into()); } else { walk(v, ids); }
                 }
             }
             PValue::Formatted(v, _) | PValue::CtrlReturn(v) => walk(v, ids),

@@ -377,7 +377,12 @@ pub fn run(
     // Convert everything once, in the calling session.
     let (image, p_items, p_action, p_context) = {
         let mut tp = ToPortable::new(session);
-        let image = image_of(session, &mut tp, None)?;
+        // Each task gets the globals its code can use, not all of them
+        // (the program's top-level data can be large).
+        let mut roots: Vec<&Value> = vec![&action];
+        roots.extend(items.iter());
+        if let Some(c) = &context { roots.push(c); }
+        let image = image_of(session, &mut tp, Some(&roots))?;
         let p_items = items.iter().map(|v| tp.value(v)).collect::<Result<Vec<_>, _>>()?;
         let p_action = tp.value(&action)?;
         let p_context = match &context {

@@ -748,7 +748,7 @@ impl Session {
         if self.omitted_globals.get(idx).copied().unwrap_or(false) {
             let name = self.global_names.get(idx).map(|n| n.rsplit("::").next().unwrap_or(n)).unwrap_or("?");
             return GoblinError::Runtime(format!(
-                "C0121: actor-global-omitted: `{name}` was not copied into this actor, because none of its code uses it by name; pass the value in the actor's state or a message instead"));
+                "C0121: actor-global-omitted: `{name}` was not copied into this actor or swarm task, because none of its code uses it by name; pass the value in instead (an actor's state or message, a swarm task's item or context)"));
         }
         GoblinError::Runtime(format!("global slot {idx} is uninitialized"))
     }
