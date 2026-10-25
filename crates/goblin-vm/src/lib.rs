@@ -5,6 +5,7 @@ pub mod session;
 pub mod grid;
 pub mod vm;
 pub mod collections;
+pub mod agenda;
 pub mod builtins;
 pub mod compiler;
 pub mod debug;

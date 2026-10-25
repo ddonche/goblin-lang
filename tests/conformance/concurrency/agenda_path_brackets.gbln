@@ -1,0 +1,4 @@
+/// [] on a map is an error, also on the path to an agenda.
+st | {"q": :agenda()}
+:schedule!(st["q"], 1, "x")
+say("not reached")
