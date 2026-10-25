@@ -4735,16 +4735,16 @@ impl Vm {
     fn compile_tick_expr(
         &mut self,
         expr: &goblin_ast::Expr,
-        locals: &[(&str, Value)],
+        param_names: &[&str],
     ) -> Result<std::rc::Rc<TickFormula>, GoblinError> {
         // DES formulas live in shared (Rc) definitions, so a formula keeps
         // its address; the key is that address, checked against the
         // formula's span and kind, and the names it is called with.
-        let key = tick_expr_key(expr, locals);
+        let key = tick_expr_key(expr, param_names);
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
-        let param_names: Vec<&str> = locals.iter().map(|(n, _)| *n).collect();
-        let f = Self::compile_expr_fn(expr, &param_names, crate::compiler::Compiler::new())?;
-        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), func: f });
+        let f = Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())?;
+        let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
+        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f });
         // A formula at a passing address (a copy) is compiled each time; keep
         // the table from growing without end.
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
@@ -4796,7 +4796,8 @@ impl Vm {
         expr: &goblin_ast::Expr,
         locals: Vec<(&str, Value)>,
     ) -> Result<Value, GoblinError> {
-        let formula = self.compile_tick_expr(expr, &locals)?;
+        let names: smallvec::SmallVec<[&str; 4]> = locals.iter().map(|(n, _)| *n).collect();
+        let formula = self.compile_tick_expr(expr, &names)?;
         let func_rc = formula.func.clone();
         if locals.len() != func_rc.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
@@ -4804,8 +4805,8 @@ impl Vm {
         // A formula that keeps needing the VM (it errors every time, say)
         // stops being tried directly; one success makes it eligible again.
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
-            match self.run_formula(&func_rc, &refs) {
+            let refs: smallvec::SmallVec<[(&str, &Value); 4]> = locals.iter().map(|(n, v)| (*n, v)).collect();
+            match self.run_formula(&func_rc, &refs, &formula.hints) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
@@ -4845,14 +4846,14 @@ impl Vm {
         locals: &[(&str, &Value)],
     ) -> Result<Value, GoblinError> {
         // compile_tick_expr keys on the names only.
-        let names: Vec<(&str, Value)> = locals.iter().map(|(n, _)| (*n, Value::Nil)).collect();
+        let names: smallvec::SmallVec<[&str; 4]> = locals.iter().map(|(n, _)| *n).collect();
         let formula = self.compile_tick_expr(expr, &names)?;
         let func_rc = formula.func.clone();
         if locals.len() != func_rc.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
         }
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            match self.run_formula(&func_rc, locals) {
+            match self.run_formula(&func_rc, locals, &formula.hints) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
@@ -4880,7 +4881,7 @@ impl Vm {
     /// float, bool or nil in an operation, a missing field, an error), and
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
-    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)]) -> Option<Value> {
+    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>]) -> Option<Value> {
         enum Fv<'a> { Val(Value), Arg(&'a Value) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
@@ -4890,7 +4891,7 @@ impl Vm {
             }
         }
         let code = &f.bytecode;
-        let mut st: Vec<Fv> = Vec::with_capacity(8);
+        let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
         let mut ip = 0usize;
         // Bound the loop: a formula is straight-line code with forward jumps.
         let mut budget = 4 * code.len() + 16;
@@ -4924,7 +4925,16 @@ impl Vm {
                         },
                         _ => return None,
                     };
-                    let v = obj.fields.get(name.as_ref() as &str)?;
+                    let name: &str = name.as_ref();
+                    let hint = hints.get(ip - 1);
+                    let v = match hint.and_then(|h| obj.fields.get_index(h.get() as usize)) {
+                        Some((k, v)) if k.as_str() == name => v,
+                        _ => {
+                            let (i, _, v) = obj.fields.get_full(name)?;
+                            if let Some(h) = hint { h.set(i as u32); }
+                            v
+                        }
+                    };
                     if matches!(v, Value::Frozen(_)) { return None; }
                     st.push(Fv::Val(v.clone_fast()));
                 }
@@ -5630,6 +5640,9 @@ pub(crate) struct TickFormula {
     direct: bool,
     /// Direct runs in a row that had to fall back to the VM.
     misses: std::cell::Cell<u32>,
+    /// Per opcode: where the field a `GetMember` read was found in the
+    /// object's field map last time (objects of one class share a layout).
+    hints: Vec<std::cell::Cell<u32>>,
 }
 
 impl TickFormula {
@@ -5899,7 +5912,8 @@ mod tests {
                     let mut vm = make_vm();
                     let locals = vec![("a", a.clone()), ("b", b.clone()), ("s", s.clone())];
                     let f = Vm::compile_expr_fn(&expr, &["a", "b", "s"], crate::compiler::Compiler::new()).unwrap();
-                    if vm.run_formula(&f, &locals).is_some() { ran_direct += 1; }
+                    let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
+                    if vm.run_formula(&f, &refs, &[]).is_some() { ran_direct += 1; }
                     let fast = vm.eval_tick_expr(&expr, locals);
                     let slow = vm.call_func_value(Value::Function(f), vec![a.clone(), b.clone(), s]);
                     match (&fast, &slow) {
@@ -6295,13 +6309,13 @@ fn concat_text(a: &str, b: &str) -> String {
 /// the parameter names. A freed formula's address could be reused, so the
 /// table is emptied whenever a definition holding formulas is replaced, and
 /// a reused address must also match span and kind.
-fn tick_expr_key(expr: &goblin_ast::Expr, params: &[(&str, Value)]) -> (usize, usize, usize, u32, u32, u64) {
+fn tick_expr_key(expr: &goblin_ast::Expr, params: &[&str]) -> (usize, usize, usize, u32, u32, u64) {
     use std::hash::{Hash, Hasher};
     let sp = expr.span();
     let mut h = rustc_hash::FxHasher::default();
     std::mem::discriminant(expr).hash(&mut h);
     params.len().hash(&mut h);
-    for (n, _) in params { n.hash(&mut h); }
+    for n in params { n.hash(&mut h); }
     sp.file.hash(&mut h);
     (expr as *const goblin_ast::Expr as usize, sp.start, sp.end, sp.line_start, sp.col_start, h.finish())
 }
