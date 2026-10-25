@@ -4038,7 +4038,8 @@ impl Vm {
                         fields: std::rc::Rc::new(fields),
                         readonly_fields: BTreeSet::new(),
                         trait_fields: BTreeSet::new(),
-                        uuid: inst.host_uuid.clone(),
+                        // Its own id: binding it must not replace its host.
+                        uuid: format!("overlay:{}:{}", inst.host_uuid, inst.des_id.0),
                     })));
                 }
                 let _ = pred_fn;
@@ -4150,7 +4151,8 @@ impl Vm {
                 fields: std::rc::Rc::new(fields),
                 readonly_fields: BTreeSet::new(),
                 trait_fields: BTreeSet::new(),
-                uuid: inst.host_uuid.clone(),
+                // Its own id: binding it must not replace its host.
+                uuid: format!("overlay:{}:{}", inst.host_uuid, inst.des_id.0),
             }));
             let include = if let Some(ref pred_fn) = pred {
                 self.query_predicate_holds(pred_fn, &obj)
