@@ -4838,16 +4838,14 @@ impl Vm {
         self.resolve_op(op)
     }
 
-    /// `eval_tick_expr` with borrowed arguments: a formula that runs
-    /// directly reads them in place; only one that needs the VM copies them.
-    pub(crate) fn eval_tick_expr_ref(
-        &mut self,
-        expr: &goblin_ast::Expr,
-        locals: &[(&str, &Value)],
-    ) -> Result<Value, GoblinError> {
-        // compile_tick_expr keys on the names only.
-        let names: smallvec::SmallVec<[&str; 4]> = locals.iter().map(|(n, _)| *n).collect();
-        let formula = self.compile_tick_expr(expr, &names)?;
+    /// A DES formula compiled for these argument names, to run many times
+    /// with `run_tick_formula_ref`.
+    pub(crate) fn tick_formula(&mut self, expr: &goblin_ast::Expr, names: &[&str]) -> Result<std::rc::Rc<TickFormula>, GoblinError> {
+        self.compile_tick_expr(expr, names)
+    }
+
+    /// Runs a compiled DES formula with borrowed arguments.
+    pub(crate) fn run_tick_formula_ref(&mut self, formula: &TickFormula, locals: &[(&str, &Value)]) -> Result<Value, GoblinError> {
         let func_rc = formula.func.clone();
         if locals.len() != func_rc.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
@@ -4882,7 +4880,7 @@ impl Vm {
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
     fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>]) -> Option<Value> {
-        enum Fv<'a> { Val(Value), Arg(&'a Value) }
+        enum Fv<'a> { Val(Value), Arg(&'a Value, usize) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
             match v {
@@ -4892,6 +4890,10 @@ impl Vm {
         }
         let code = &f.bytecode;
         let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
+        // Where each argument that refers to a stored object sits in the
+        // store, looked up on first use (checked against its id when read).
+        const UNSEEN: usize = usize::MAX - 1;
+        let mut at: smallvec::SmallVec<[usize; 4]> = smallvec::smallvec![UNSEEN; args.len()];
         let mut ip = 0usize;
         // Bound the loop: a formula is straight-line code with forward jumps.
         let mut budget = 4 * code.len() + 16;
@@ -4909,19 +4911,31 @@ impl Vm {
                     let a = args.get(slot as usize)?.1;
                     match a {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
-                        Value::Object(_) | Value::Ref(_) => st.push(Fv::Arg(a)),
+                        Value::Object(_) | Value::Ref(_) => {
+                            let pos = at.get_mut(slot as usize)?;
+                            if *pos == UNSEEN {
+                                *pos = match a {
+                                    Value::Ref(uuid) => self.session.object_store.get_index_of(uuid.as_str()).unwrap_or(usize::MAX),
+                                    _ => usize::MAX,
+                                };
+                            }
+                            st.push(Fv::Arg(a, *pos))
+                        }
                         _ => return None,
                     }
                 }
                 Opcode::GetMember(idx) => {
-                    let Some(Fv::Arg(a)) = st.pop() else { return None };
+                    let Some(Fv::Arg(a, pos)) = st.pop() else { return None };
                     // `formula_runs_direct` ruled out names of member builtins.
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
                     let obj = match a {
                         Value::Object(o) => o,
-                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
-                            Some(Value::Object(o)) => o,
-                            _ => return None,
+                        Value::Ref(uuid) => match self.session.object_store.get_index(pos) {
+                            Some((k, Value::Object(o))) if k == uuid => o,
+                            _ => match self.session.object_store.get(uuid.as_str()) {
+                                Some(Value::Object(o)) => o,
+                                _ => return None,
+                            },
                         },
                         _ => return None,
                     };
@@ -4940,7 +4954,7 @@ impl Vm {
                 }
                 Opcode::Pop => { st.pop()?; }
                 Opcode::Dup => {
-                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a) => Fv::Arg(a) };
+                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(a, *p) };
                     st.push(top);
                 }
                 Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
