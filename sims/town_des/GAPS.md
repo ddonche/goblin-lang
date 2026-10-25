@@ -109,7 +109,10 @@ Districts:
          3     250     182      99%              306    52556
 ```
 
-Speed: about 300 ms a day on 4 threads (a year in about 2 minutes),
-against about 8 ms for the plain-map town. Most of that time goes to copying every region's objects
-to the other regions each day, and to scoring 50 businesses twice for each
-of 1,000 residents. It needs its own speed pass.
+Speed: a year takes about 15 seconds on 4 threads (about 41 ms a day) with
+PRs #71 and #72; it took about 2 minutes 12 seconds before them, with the
+same output. #71 stops `pick 1 from 1...200000` from building the whole
+range on every call. #72 speeds up decision scoring and `:objects(...)`
+queries. The plain-map town takes about 8 ms a day. What is left: copying
+every region's objects to the other regions each day, and the actions that
+decisions call.
