@@ -1,0 +1,22 @@
+/// Reading a field off a variable gives the field's current value, for an
+/// object in a top-level variable, a local and an action parameter.
+<>Town |
+    people: 10
+    name: "Ash"
+xx
+ash <> Town | people: 10, name: "Ash"
+say(ash >> people)
+ash >> people |= ash >> people + 5
+say(ash >> people)
+act grow(t)
+    t >> people |= t >> people * 2
+    t >> people
+end
+say(grow(ash))
+say(ash >> people)
+act local_read()
+    b <> Town | people: 3, name: "Birch"
+    b >> name ++ "!"
+end
+say(local_read())
+say(ash >> name >> upper)
