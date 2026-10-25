@@ -4962,7 +4962,11 @@ impl Vm {
                     let v = match hint.and_then(|h| obj.fields.get_index(h.get() as usize)) {
                         Some((k, v)) if k.as_str() == name => v,
                         _ => {
-                            let (i, _, v) = obj.fields.get_full(name)?;
+                            // No such field is an error on the VM (R0403); an
+                            // `:objects` predicate that errors does not match.
+                            let Some((i, _, v)) = obj.fields.get_full(name) else {
+                                return if env.missing_field_is_false { Some(Value::Bool(false)) } else { None };
+                            };
                             if let Some(h) = hint { h.set(i as u32); }
                             v
                         }
@@ -5234,7 +5238,7 @@ impl Vm {
             _ => return None,
         };
         if func.params != 1 || !predicate_runs_direct(func) { return None; }
-        let mut env = FormulaEnv::default();
+        let mut env = FormulaEnv { missing_field_is_false: true, ..Default::default() };
         for c in cells {
             match &self.session.get_stash(&c.get()).ok()?.value {
                 Value::Frozen(_) => return None,
@@ -5724,6 +5728,9 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
 struct FormulaEnv {
     upvalues: Vec<Value>,
     globals: Vec<(u16, Value)>,
+    /// A predicate whose error means "no match": a missing field ends the
+    /// run with false.
+    missing_field_is_false: bool,
 }
 
 pub(crate) struct TickFormula {
