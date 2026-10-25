@@ -4974,6 +4974,25 @@ impl Vm {
                     if matches!(v, Value::Frozen(_)) { return None; }
                     st.push(Fv::Val(v.clone_fast()));
                 }
+                // In a query predicate, a bare name is `it`'s field when it
+                // has one (then skip the name's own load), as on the VM.
+                Opcode::LoadItFieldOrJump(idx, off) => {
+                    let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
+                    let it: &Value = vals.first()?;
+                    let obj = match it {
+                        Value::Object(o) => Some(&**o),
+                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                            Some(Value::Object(o)) => Some(&**o),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(v) = obj.and_then(|o| o.fields.get(name.as_ref() as &str)) {
+                        if matches!(v, Value::Frozen(_)) { return None; }
+                        st.push(Fv::Val(v.clone_fast()));
+                        ip = (ip as isize + off as isize) as usize;
+                    }
+                }
                 Opcode::Pop => { st.pop()?; }
                 Opcode::Dup => {
                     let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(a, *p) };
@@ -5776,7 +5795,7 @@ fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
         Opcode::GetMember(idx) => plain_member(idx),
         op => matches!(op,
         Opcode::LoadConst(_) | Opcode::LoadTrue | Opcode::LoadFalse | Opcode::LoadNil | Opcode::LoadLocal(_)
-        | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_)
+        | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) | Opcode::LoadItFieldOrJump(..)
         | Opcode::Pop | Opcode::Dup
         | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
         | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
