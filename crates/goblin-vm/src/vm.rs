@@ -1342,6 +1342,7 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
+                crate::world::check_view_write(&self.session, &uuid)?;
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     check_field_write(obj, &field_name)?;
                     if let Value::Object(ref mut o) = obj {
@@ -5479,6 +5480,7 @@ impl Vm {
             _ => None,
         };
         if let (Some(uuid), Value::Str(field)) = (container_uuid, key) {
+            crate::world::check_view_write(&self.session, uuid)?;
             if let Some(obj) = self.session.object_store.get(uuid) {
                 check_field_write(obj, field)?;
             }

@@ -258,6 +258,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         if link_score < 0.3 { continue; }
                         let amount = inst.strength * inst.strength * rate * link_score;
                         if amount <= 0.0 { continue; }
+                        if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
                         if already {
                             if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
                                 if eidx < vm.session.overlay_instances.len() {
@@ -280,6 +281,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         let amount = inst.strength * inst.strength * rate;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
+                        if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
                         if already {
                             if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
                                 if eidx < vm.session.overlay_instances.len() {
@@ -308,6 +310,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         let amount = inst.strength * rate;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
+                        if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
                         if already {
                             if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
                                 if eidx < vm.session.overlay_instances.len() {
@@ -340,6 +343,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         let amount = inst.strength * rate;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
+                        if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
                         if already {
                             if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
                                 if eidx < vm.session.overlay_instances.len() {
