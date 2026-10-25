@@ -1,0 +1,16 @@
+/// helper: a class whose method reads this module's variable `lim`
+lim | 3
+<>Gauge |
+    v: 1
+    act check()
+        say("lim {lim}")
+        return v < lim
+    xx
+xx
+act make_gauge(v)
+    g <> Gauge | v: v
+    return g
+xx
+act run_check(g)
+    return g.check()
+xx

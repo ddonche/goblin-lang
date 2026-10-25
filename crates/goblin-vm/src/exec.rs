@@ -92,10 +92,10 @@ pub fn load_box_toml_into_session(session: &mut Session, path: &std::path::Path)
 }
 
 pub fn compile_class_methods_pub(class: &goblin_ast::ClassDecl, session: &mut Session) {
-    compile_class_methods(class, session);
+    compile_class_methods(class, session, None);
 }
 
-fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session) {
+fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session, prefix: Option<&str>) {
     use crate::compiler::Compiler;
     for action in &class.actions {
         // Build a pseudo-ActionDecl with 'self' prepended as the first parameter
@@ -117,7 +117,8 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session) {
         let mut compiler = Compiler::new();
         compiler.is_class_method = true;
         match compiler.compile_action(&pseudo) {
-            Ok(func) => {
+            Ok(mut func) => {
+                func.global_prefix = prefix.map(str::to_string);
                 std::rc::Rc::make_mut(&mut session.compiled_methods).insert(
                     (class.name.clone(), action.name.clone()),
                     std::rc::Rc::new(func),
@@ -152,7 +153,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
     let mut session = Session::new(GcMode::Auto);
     session.global_names = std::rc::Rc::new(compiled.global_names);
     for decl in &compiled.classes {
-        compile_class_methods(decl, &mut session);
+        compile_class_methods(decl, &mut session, None);
     }
     for decl in compiled.classes {
         // Merge logic: if incoming decl has no actions/decision/judge/transitions
@@ -206,7 +207,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
 
     let mut session = Session::new(GcMode::Auto);
     session.global_names = std::rc::Rc::new(compiled.global_names);
-    for decl in &compiled.classes { compile_class_methods(decl, &mut session); }
+    for decl in &compiled.classes { compile_class_methods(decl, &mut session, None); }
     for decl in compiled.classes {
         let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
@@ -270,7 +271,7 @@ pub fn prepare_entry(
         load_box_toml_into_session(&mut session, &box_toml_path)
             .map_err(|e| GoblinError::Runtime(format!("box.toml error: {e}")))?;
     }
-    install_classes(&mut session, compiled.classes, compiled.enums);
+    install_classes(&mut session, compiled.classes, compiled.enums, None);
     if let Some(idx) = session.global_names.iter().position(|n| n == "args") {
         let args_val = Value::Array(extra_args.into_iter().map(|s: String| Value::Str(s.into())).collect());
         let tether = session.alloc_value(args_val);
@@ -281,9 +282,9 @@ pub fn prepare_entry(
 
 /// Registers a compiled module's classes (merging a matrix redeclaration
 /// into the earlier declaration) and enums.
-pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::ClassDecl>, enums: Vec<goblin_ast::EnumDecl>) {
+pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::ClassDecl>, enums: Vec<goblin_ast::EnumDecl>, prefix: Option<&str>) {
     for decl in &classes {
-        compile_class_methods(decl, session);
+        compile_class_methods(decl, session, prefix);
     }
     for decl in classes {
         let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() {
