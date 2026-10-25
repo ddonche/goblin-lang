@@ -660,6 +660,9 @@ pub struct FunctionObject {
     /// The GLAM namespace this function was defined in (top-level actions loaded
     /// via `use <namespace>` only), used by `:need()` to resolve action needs.
     pub owner_glam: Option<String>,
+    /// For a class method from an imported module: that module's global
+    /// prefix, so a name the method reads resolves in the module first.
+    pub global_prefix: Option<String>,
     /// Source file this function was compiled from (empty = unknown).
     pub source_file: String,
     /// Global slot names for this function's compilation unit — parallel to session.globals.

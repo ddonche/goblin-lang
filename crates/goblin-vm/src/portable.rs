@@ -96,6 +96,7 @@ pub struct PFunction {
     pub line_numbers: Vec<u32>,
     pub local_names: Vec<String>,
     pub owner_glam: Option<String>,
+    pub global_prefix: Option<String>,
     pub source_file: String,
     pub global_names: Vec<String>,
 }
@@ -313,6 +314,7 @@ impl<'s> ToPortable<'s> {
             line_numbers: f.line_numbers.clone(),
             local_names: f.local_names.clone(),
             owner_glam: f.owner_glam.clone(),
+            global_prefix: f.global_prefix.clone(),
             source_file: f.source_file.clone(),
             global_names: f.global_names().to_vec(),
         });
@@ -554,6 +556,7 @@ impl FromPortable {
             line_numbers: f.line_numbers.clone(),
             local_names: f.local_names.clone(),
             owner_glam: f.owner_glam.clone(),
+            global_prefix: f.global_prefix.clone(),
             source_file: f.source_file.clone(),
             global_names: names,
         });
