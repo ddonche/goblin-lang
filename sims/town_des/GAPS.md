@@ -52,8 +52,8 @@ money is in flight between districts) the money total never changes.
 
 ## The 365-day run
 
-Every adult who wants a job has one, all 50 businesses stay open, and
-nobody is broke. The money total moves only by what is in flight between
+Nearly every adult has a job, all 50 businesses stay open, and the
+poorest fifth averages 137. The money total moves only by what is in flight between
 districts. It drops most on paydays (day 210 is one), because wages to
 staff in other districts arrive the next day. One person died, and their
 money left with them (gap 5).
