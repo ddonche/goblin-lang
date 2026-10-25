@@ -1,0 +1,34 @@
+/// known-gap: interp has no event queue (VM-only builtins)
+/// :agenda, :schedule!, :unschedule!, :due!: events come out by day, then in the order scheduled; cancelled ones never come out; copies are separate.
+q | :agenda()
+a | :schedule!(q, 5, {"kind": "a"})
+b | :schedule!(q, 3, {"kind": "b"})
+c | :schedule!(q, 5, {"kind": "c"})
+d | :schedule!(q, 9, "d")
+say("ids {a} {b} {c} {d}")
+:unschedule!(q, c)
+:unschedule!(q, 99)
+say(:due!(q, 2))
+say(:due!(q, 5))
+say(:due!(q, 100))
+say(:due!(q, 100))
+/// agenda inside a map, and copies stay separate
+st | {"q": :agenda(), "n": 0}
+x | :schedule!(st{"q"}, 1, "one")
+copy | st
+y | :schedule!(st{"q"}, 1, "two")
+say(:due!(copy{"q"}, 1))
+say(:due!(st{"q"}, 1))
+/// many events, past 16 days
+r | :agenda()
+for i in :range(0, 40)
+    :schedule!(r, 40 - i, i)
+xx
+say(:len(:due!(r, 20)))
+say(:due!(r, 22))
+act f(q)
+    z | :schedule!(q, 1, "in action")
+    return q
+xx
+q2 | f(:agenda())
+say(:due!(q2, 1))
