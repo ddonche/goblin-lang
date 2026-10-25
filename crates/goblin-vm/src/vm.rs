@@ -4880,6 +4880,12 @@ impl Vm {
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
     fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>]) -> Option<Value> {
+        self.run_formula_in(f, args, hints, &FormulaEnv::default())
+    }
+
+    /// `run_formula` for a closure: `env` holds the values its captured
+    /// variables and the globals it reads had when the run started.
+    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
         enum Fv<'a> { Val(Value), Arg(&'a Value, usize) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
@@ -4893,7 +4899,13 @@ impl Vm {
         // Where each argument that refers to a stored object sits in the
         // store, looked up on first use (checked against its id when read).
         const UNSEEN: usize = usize::MAX - 1;
-        let mut at: smallvec::SmallVec<[usize; 4]> = smallvec::smallvec![UNSEEN; args.len()];
+        // Arguments, then captured variables, then globals, in one list.
+        let mut vals: smallvec::SmallVec<[&Value; 8]> = args.iter().map(|(_, v)| *v).collect();
+        vals.extend(env.upvalues.iter());
+        vals.extend(env.globals.iter().map(|(_, v)| v));
+        let ups_at = args.len();
+        let globals_at = ups_at + env.upvalues.len();
+        let mut at: smallvec::SmallVec<[usize; 8]> = smallvec::smallvec![UNSEEN; vals.len()];
         let mut ip = 0usize;
         // Bound the loop: a formula is straight-line code with forward jumps.
         let mut budget = 4 * code.len() + 16;
@@ -4907,12 +4919,18 @@ impl Vm {
                 Opcode::LoadTrue => st.push(Fv::Val(Value::Bool(true))),
                 Opcode::LoadFalse => st.push(Fv::Val(Value::Bool(false))),
                 Opcode::LoadNil => st.push(Fv::Val(Value::Nil)),
-                Opcode::LoadLocal(slot) => {
-                    let a = args.get(slot as usize)?.1;
+                Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
+                    let slot = match op {
+                        Opcode::LoadLocal(s) => { if s as usize >= ups_at { return None; } s as usize }
+                        Opcode::LoadUpvalue(i) => ups_at + i as usize,
+                        Opcode::LoadGlobal(g) => globals_at + env.globals.iter().position(|(n, _)| *n == g)?,
+                        _ => return None,
+                    };
+                    let a: &Value = vals.get(slot)?;
                     match a {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
                         Value::Object(_) | Value::Ref(_) => {
-                            let pos = at.get_mut(slot as usize)?;
+                            let pos = at.get_mut(slot)?;
                             if *pos == UNSEEN {
                                 *pos = match a {
                                     Value::Ref(uuid) => self.session.object_store.get_index_of(uuid.as_str()).unwrap_or(usize::MAX),
@@ -5187,6 +5205,9 @@ impl Vm {
     }
 
     fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
+        if let Some(found) = pred.as_ref().and_then(|p| self.objects_query_direct(p)) {
+            return Ok(Value::Array(found));
+        }
         let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
         let mut results: Vec<Value> = Vec::new();
         for obj in all_values {
@@ -5198,6 +5219,56 @@ impl Vm {
             if include { results.push(obj); }
         }
         Ok(Value::Array(results))
+    }
+
+    /// `:objects(pred)` for a predicate that only reads (fields, numbers,
+    /// comparisons, its captured variables and globals): it is run on each
+    /// object in place, without a call or a copy of every object. Gives what
+    /// the general path gives; None when the predicate needs the VM for some
+    /// object, and the general path then runs from the start (nothing here
+    /// changes anything).
+    fn objects_query_direct(&mut self, pred: &Value) -> Option<Vec<Value>> {
+        let (func, cells): (&std::rc::Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match pred {
+            Value::Closure(c) => (&c.func, &c.upvalues),
+            Value::Function(f) => (f, &[]),
+            _ => return None,
+        };
+        if func.params != 1 || !predicate_runs_direct(func) { return None; }
+        let mut env = FormulaEnv::default();
+        for c in cells {
+            match &self.session.get_stash(&c.get()).ok()?.value {
+                Value::Frozen(_) => return None,
+                v => env.upvalues.push(v.clone_fast()),
+            }
+        }
+        for op in &func.bytecode {
+            if let Opcode::LoadGlobal(g) = op {
+                if env.globals.iter().any(|(n, _)| n == g) { continue; }
+                let t = self.session.get_global(*g as usize)?.clone();
+                match &self.session.get_stash(&t).ok()?.value {
+                    Value::Frozen(_) => return None,
+                    v => env.globals.push((*g, v.clone_fast())),
+                }
+            }
+        }
+        let func = func.clone();
+        let hints: Vec<std::cell::Cell<u32>> = (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
+        let mut found = Vec::new();
+        for i in 0..self.session.object_store.len() {
+            let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
+            let holds = match self.run_formula_in(&func, &[("it", &it)], &hints, &env) {
+                Some(v) => matches!(v, Value::Bool(true)),
+                // Something the direct run leaves to the VM (a missing field,
+                // which is an error there, say): the VM decides for this one.
+                // The predicate only reads, so this changes nothing.
+                None => {
+                    let obj = self.session.object_store.get_index(i)?.1.clone();
+                    self.query_predicate_holds(pred, &obj)
+                }
+            };
+            if holds { found.push(self.session.object_store.get_index(i)?.1.clone()); }
+        }
+        Some(found)
     }
 
     fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
@@ -5648,6 +5719,13 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
 }
 
 /// A compiled DES formula.
+/// What a closure run directly reads besides its arguments.
+#[derive(Default)]
+struct FormulaEnv {
+    upvalues: Vec<Value>,
+    globals: Vec<(u16, Value)>,
+}
+
 pub(crate) struct TickFormula {
     func: std::rc::Rc<crate::value::FunctionObject>,
     /// Every opcode is one `Vm::run_formula` handles.
@@ -5679,6 +5757,23 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
         | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
         | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return
         | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)),
+    })
+}
+
+/// Whether an `:objects` predicate can run on `run_formula_in`: a DES
+/// formula's operations, plus reading captured variables and globals.
+fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
+    let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
+        Some(Value::Str(n)) if member_builtin(n).is_none());
+    f.locals == f.params && f.bytecode.iter().all(|op| match op {
+        Opcode::GetMember(idx) => plain_member(idx),
+        op => matches!(op,
+        Opcode::LoadConst(_) | Opcode::LoadTrue | Opcode::LoadFalse | Opcode::LoadNil | Opcode::LoadLocal(_)
+        | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_)
+        | Opcode::Pop | Opcode::Dup
+        | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
+        | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
+        | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return),
     })
 }
 
