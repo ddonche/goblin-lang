@@ -1,0 +1,50 @@
+/// 20,000 entities x 20 numbers, every number updated every tick.
+ns | :env("ENT_N") ?? "20000"
+n | :int(ns)
+ts | :env("ENT_TICKS") ?? "10"
+ticks | :int(ts)
+keys | []
+for k in :range(0, 20)
+    :put_last!(keys, "f{k}")
+xx
+es | []
+for i in :range(0, n)
+    e | {}
+    for k in keys
+        :update!(e{k}, i % 7)
+    xx
+    :put_last!(es, e)
+xx
+t | 0
+while t < ticks
+    i | 0
+    while i < n
+        :update!(es[i]{"f0"}, es[i]{"f0"} + 1)
+        :update!(es[i]{"f1"}, es[i]{"f1"} + es[i]{"f0"})
+        :update!(es[i]{"f2"}, es[i]{"f2"} + 2)
+        :update!(es[i]{"f3"}, es[i]{"f3"} + 3)
+        :update!(es[i]{"f4"}, es[i]{"f4"} + 4)
+        :update!(es[i]{"f5"}, es[i]{"f5"} + 5)
+        :update!(es[i]{"f6"}, es[i]{"f6"} + 6)
+        :update!(es[i]{"f7"}, es[i]{"f7"} + 7)
+        :update!(es[i]{"f8"}, es[i]{"f8"} + 8)
+        :update!(es[i]{"f9"}, es[i]{"f9"} + 9)
+        :update!(es[i]{"f10"}, es[i]{"f10"} + 1)
+        :update!(es[i]{"f11"}, es[i]{"f11"} + 1)
+        :update!(es[i]{"f12"}, es[i]{"f12"} + 1)
+        :update!(es[i]{"f13"}, es[i]{"f13"} + 1)
+        :update!(es[i]{"f14"}, es[i]{"f14"} + 1)
+        :update!(es[i]{"f15"}, es[i]{"f15"} + 1)
+        :update!(es[i]{"f16"}, es[i]{"f16"} + 1)
+        :update!(es[i]{"f17"}, es[i]{"f17"} + 1)
+        :update!(es[i]{"f18"}, es[i]{"f18"} + 1)
+        :update!(es[i]{"f19"}, es[i]{"f19"} + es[i]{"f18"})
+        i |= i + 1
+    xx
+    t |= t + 1
+xx
+s | 0
+for e in es
+    s |= s + e{"f19"}
+xx
+say("checksum {s}")
