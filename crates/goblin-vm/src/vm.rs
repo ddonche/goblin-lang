@@ -2923,10 +2923,20 @@ impl Vm {
                 .unwrap_or((0, String::new()));
             GoblinError::WithLocation { inner: Box::new(e), line, file }
         };
-        while self.call_stack.len() > target_depth {
-            self.call_stack.pop();
-        }
+        self.unwind_to(target_depth);
         Err(located)
+    }
+
+    /// Drop the frames above `depth` after an uncaught error, and the
+    /// operands they left: everything from the lowest dropped frame's base,
+    /// so the caller's stack is as it was before it pushed that call. Without
+    /// this, every failed nested run (a DES formula, a callback) leaves its
+    /// operands behind and the stack grows for the rest of the program.
+    fn unwind_to(&mut self, depth: usize) {
+        if let Some(base) = self.call_stack.get(depth).map(|f| f.stack_base) {
+            self.call_stack.truncate(depth);
+            self.stack.truncate(base);
+        }
     }
 
     /// Start an actor's handler: push its frame and run it as far as it goes.
@@ -3057,9 +3067,7 @@ impl Vm {
                         .unwrap_or((0, String::new()));
                     GoblinError::WithLocation { inner: Box::new(e), line, file }
                 };
-                while self.call_stack.len() > target_depth {
-                    self.call_stack.pop();
-                }
+                self.unwind_to(target_depth);
                 located
             })?;
         }
@@ -5044,6 +5052,23 @@ mod tests {
             }
         }
         assert!(ran_direct > 80, "only {ran_direct} runs were direct");
+    }
+
+    #[test]
+    fn failed_nested_call_leaves_no_operands() {
+        // A callback that pushes operands and then fails, called the way DES
+        // formulas and builtin callbacks are: the stack must not grow.
+        let mut vm = make_vm();
+        let f = Value::Function(std::rc::Rc::new(simple_func(
+            vec![Opcode::LoadConst(0), Opcode::LoadConst(1), Opcode::LoadConst(0), Opcode::LoadConst(1), Opcode::Mul, Opcode::Return],
+            vec![Value::Str("a".into()), Value::Nil],
+        )));
+        let before = vm.stack.len();
+        for _ in 0..100 {
+            assert!(vm.call_func_value(f.clone(), vec![]).is_err());
+        }
+        assert_eq!(vm.stack.len(), before);
+        assert!(vm.call_stack.is_empty());
     }
 
     #[test]
