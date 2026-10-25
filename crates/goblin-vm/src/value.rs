@@ -127,7 +127,12 @@ impl GStr {
     /// marks it charged.
     pub fn take_uncharged(&self) -> bool { !self.0.charged.replace(true) }
 }
-impl PartialEq for GStr { fn eq(&self, o: &GStr) -> bool { self.as_str() == o.as_str() } }
+impl PartialEq for GStr { fn eq(&self, o: &GStr) -> bool { self.same(o) || self.as_str() == o.as_str() } }
+impl GStr {
+    /// The same string object (so certainly the same text).
+    #[inline(always)]
+    pub fn same(&self, o: &GStr) -> bool { Rc::ptr_eq(&self.0, &o.0) }
+}
 impl Eq for GStr {}
 impl std::hash::Hash for GStr { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.as_str().hash(h) } }
 impl PartialOrd for GStr { fn partial_cmp(&self, o: &GStr) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }

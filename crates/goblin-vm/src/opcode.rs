@@ -313,6 +313,18 @@ pub enum Opcode {
     /// x in place and pushes x. Otherwise pushes x and the piece and adds
     /// them as `Add` does. The guard and StoreLocal of `|=` follow.
     AppendLocal(u8),
+    /// A short run of simple steps done as one: a path read like
+    /// `x{"a"}[i]{"b"}`, or the start of a write through one.
+    /// op_data[idx] = OpData::Fused, which also holds the original steps;
+    /// they run one by one whenever the quick way can't be taken.
+    Fused(u16),
+    /// `UpdatePathMut(n, 0)` after a fused check (op_data[idx]): the same
+    /// write, trying each map key at the slot the check found.
+    UpdatePathHint(u8, u16),
+    /// Before `:update!(path, e)` with `e` plain arithmetic on numbers:
+    /// does the whole statement at once and skips its steps, or does
+    /// nothing so they run. op_data[idx] = OpData::QuickSet.
+    QuickSet(u16),
 }
 
 impl Opcode {
@@ -374,6 +386,9 @@ impl Opcode {
             Opcode::SetField(_)     => "SetField",
             Opcode::UpdatePath(..)  => "UpdatePath",
             Opcode::UpdatePathMut(..) => "UpdatePathMut",
+            Opcode::Fused(_) => "Fused",
+            Opcode::UpdatePathHint(..) => "UpdatePathHint",
+            Opcode::QuickSet(_) => "QuickSet",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::AgendaCall(..) => "AgendaCall",
@@ -443,4 +458,82 @@ pub enum OpData {
     ClearLink(Box<goblin_ast::ClearLinkStmt>),
     ObjectDecision { var_name: String, def: Box<goblin_ast::DecisionDef> },
     UnitDecl(Box<goblin_ast::UnitDecl>),
+    Fused(Box<Fused>),
+    QuickSet(Box<QuickSet>),
+}
+
+/// A whole `:update!(path, e)` statement (see `Opcode::QuickSet`).
+#[derive(Debug, Clone)]
+pub struct QuickSet {
+    /// op_data index of the statement's fused check (the target path).
+    pub check: u16,
+    /// The new value, from the steps `e` compiled to.
+    pub expr: QExpr,
+    /// Steps to skip when done: the rest of the statement.
+    pub skip: u32,
+}
+
+/// Number arithmetic over constants, locals and fused path reads.
+#[derive(Debug, Clone)]
+pub enum QExpr {
+    Const(u16),
+    Local(u8),
+    /// op_data index of a fused read.
+    Read(u16),
+    Add(Box<QExpr>, Box<QExpr>),
+    Sub(Box<QExpr>, Box<QExpr>),
+    Mul(Box<QExpr>, Box<QExpr>),
+}
+
+/// Steps fused into one `Opcode::Fused`.
+#[derive(Debug, Clone)]
+pub struct Fused {
+    pub kind: FusedKind,
+    /// The local the path starts from.
+    pub root: u8,
+    pub segs: Vec<FusedSeg>,
+    /// The original steps, run instead when the quick way can't be taken.
+    pub ops: Vec<Opcode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FusedKind {
+    /// `LoadLocal(root)`, then per level a key load and `KeyGet`/`IndexGet`:
+    /// pushes the value at the path.
+    Read,
+    /// `LoadLocal(root) GuardMutable(name) LoadLocal(root)`, the key loads,
+    /// `CheckPath(n, info)`: leaves the root and the keys on the stack for
+    /// the write that follows.
+    Check { guard: u16 },
+}
+
+#[derive(Debug, Clone)]
+pub struct FusedSeg {
+    pub key: FusedKey,
+    /// `{}` (a map key) rather than `[]`.
+    pub brace: bool,
+    /// Where the key was found in this level's map last time.
+    pub slot: SlotHint,
+}
+
+/// A remembered map slot. Atomic only because compiled code is shared with
+/// worker threads; each use is a plain load or store.
+#[derive(Debug, Default)]
+pub struct SlotHint(std::sync::atomic::AtomicU32);
+
+impl SlotHint {
+    #[inline(always)]
+    pub fn get(&self) -> u32 { self.0.load(std::sync::atomic::Ordering::Relaxed) }
+    #[inline(always)]
+    pub fn set(&self, i: u32) { self.0.store(i, std::sync::atomic::Ordering::Relaxed) }
+}
+
+impl Clone for SlotHint {
+    fn clone(&self) -> Self { SlotHint(std::sync::atomic::AtomicU32::new(self.get())) }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum FusedKey {
+    Const(u16),
+    Local(u8),
 }

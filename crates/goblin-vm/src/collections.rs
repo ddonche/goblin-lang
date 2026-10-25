@@ -1860,7 +1860,13 @@ fn slot_for_key<'a>(rc: &'a mut Rc<CollectionValue>, key: &Value) -> &'a mut Val
 /// that can't be written stops the walk; the levels above it were only
 /// unshared (same contents), so the caller's general path still applies.
 pub fn update_path_in_place(target: &mut Value, keys: &[Value], val: Value) -> bool {
-    !keys.is_empty() && write_in_place(target, keys, val)
+    !keys.is_empty() && write_in_place(target, keys, val, &[])
+}
+
+/// `update_path_in_place`, trying each large map's key at the slot in
+/// `hints` first (one hint per key).
+pub fn update_path_in_place_hint(target: &mut Value, keys: &[Value], val: Value, hints: &[crate::opcode::FusedSeg]) -> bool {
+    !keys.is_empty() && write_in_place(target, keys, val, hints)
 }
 
 /// Where an in-place write at a key lands.
@@ -1868,7 +1874,7 @@ pub fn update_path_in_place(target: &mut Value, keys: &[Value], val: Value) -> b
 enum Probe { At(usize), Insert }
 
 /// can_write_key, also giving the slot it found.
-fn probe_key(c: &CollectionValue, key: &Value, must_exist: bool) -> Option<Probe> {
+fn probe_key(c: &CollectionValue, key: &Value, must_exist: bool, hint: Option<&crate::opcode::SlotHint>) -> Option<Probe> {
     match &c.layout {
         CollectionLayout::SmallMap(pairs) => {
             // Same rule as can_write_key: only all-string-key maps.
@@ -1886,8 +1892,13 @@ fn probe_key(c: &CollectionValue, key: &Value, must_exist: bool) -> Option<Probe
         }
         CollectionLayout::HashMapBackend(m) => {
             if !matches!(key, Value::Str(_)) { return None; }
+            if let Some(h) = hint {
+                if let Some((k, _)) = m.get_index(h.get() as usize) {
+                    if same_key(k, key) { return Some(Probe::At(h.get() as usize)); }
+                }
+            }
             match m.get_index_of(key) {
-                Some(i) => Some(Probe::At(i)),
+                Some(i) => { if let Some(h) = hint { h.set(i as u32); } Some(Probe::At(i)) }
                 None if !must_exist => Some(Probe::Insert),
                 None => None,
             }
@@ -1932,15 +1943,15 @@ fn slot_at<'a>(rc: &'a mut Rc<CollectionValue>, key: &Value, p: Probe) -> &'a mu
     }
 }
 
-fn write_in_place(target: &mut Value, keys: &[Value], val: Value) -> bool {
+fn write_in_place(target: &mut Value, keys: &[Value], val: Value, hints: &[crate::opcode::FusedSeg]) -> bool {
     let Value::Collection(rc) = target else { return false };
     let last = keys.len() == 1;
     // A step that descends needs the child to exist (the general path reads
     // nil for a missing key and then fails on it).
-    let Some(p) = probe_key(rc, &keys[0], !last && rc.is_map()) else { return false };
+    let Some(p) = probe_key(rc, &keys[0], !last && rc.is_map(), hints.first().map(|h| &h.slot)) else { return false };
     let slot = slot_at(rc, &keys[0], p);
     if last { *slot = val; return true; }
-    if write_in_place(slot, &keys[1..], val) { return true; }
+    if write_in_place(slot, &keys[1..], val, hints.get(1..).unwrap_or(&[])) { return true; }
     // A deeper step can't be done here, so the general path will redo this
     // access and count it; take back the count slot_at added.
     if let Some(c) = Rc::get_mut(rc) { c.meta.mid_hits = c.meta.mid_hits.saturating_sub(1); }
@@ -1954,6 +1965,46 @@ pub enum ChildRef<'a> {
     Missing,
     /// A layout this doesn't read in place; use get_index.
     Other,
+}
+
+/// `value_child_ref`, trying the map slot in `hint` first (where the key
+/// was found last time) and remembering where it was found.
+/// `a == b` for map keys, with the common string case first (and the
+/// same string object, as after interning, without comparing the text).
+#[inline(always)]
+pub fn same_key(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Str(x), Value::Str(y)) => x.same(y) || x.as_str() == y.as_str(),
+        _ => a == b,
+    }
+}
+
+pub fn value_child_hint<'a>(v: &'a Value, key: &Value, hint: &crate::opcode::SlotHint) -> ChildRef<'a> {
+    if let Value::Collection(c) = v {
+        match &c.layout {
+            CollectionLayout::SmallMap(pairs) => {
+                let h = hint.get() as usize;
+                if let Some((k, v)) = pairs.get(h) {
+                    if same_key(k, key) { return ChildRef::Found(v); }
+                }
+                return match pairs.iter().position(|(k, _)| k == key) {
+                    Some(i) => { hint.set(i as u32); ChildRef::Found(&pairs[i].1) }
+                    None => ChildRef::Missing,
+                };
+            }
+            CollectionLayout::HashMapBackend(m) => {
+                if let Some((k, v)) = m.get_index(hint.get() as usize) {
+                    if same_key(k, key) { return ChildRef::Found(v); }
+                }
+                return match m.get_full(key) {
+                    Some((i, _, v)) => { hint.set(i as u32); ChildRef::Found(v) }
+                    None => ChildRef::Missing,
+                };
+            }
+            _ => {}
+        }
+    }
+    value_child_ref(v, key)
 }
 
 pub fn value_child_ref<'a>(v: &'a Value, key: &Value) -> ChildRef<'a> {

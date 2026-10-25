@@ -162,7 +162,7 @@ impl Walk<'_> {
                 _ => {}
             }
         }
-        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_))) { self.all = true; return; }
+        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_) | OpData::Fused(_) | OpData::QuickSet(_))) { self.all = true; return; }
         // Labels hold the source text of an index path, for error messages
         // only (`st{"biz"}[b]`): they read nothing by name, so their words
         // count as plain words (a constant can be shared with a real use).
