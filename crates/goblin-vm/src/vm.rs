@@ -626,8 +626,13 @@ impl Vm {
 
             // ── Stack ────────────────────────────────────────────────────────
             Opcode::Pop => {
-                // Nothing reads the value, so don't fetch it.
-                if self.stack.pop().is_none() { return Err(GoblinError::Runtime("stack underflow".into())); }
+                // Nothing uses the value, so don't copy it; reading a name
+                // still fails where a read would (a value handed to an actor).
+                match self.stack.pop() {
+                    Some(Operand::Ref(t)) => self.session.check_readable(&t)?,
+                    Some(_) => {}
+                    None => return Err(GoblinError::Runtime("stack underflow".into())),
+                }
             }
             Opcode::Dup => {
                 // Clone the Operand (cheap for Ref — just 8 bytes; no stash access).
