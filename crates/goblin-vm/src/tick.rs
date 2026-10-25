@@ -810,11 +810,12 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 #[derive(Default)]
 struct Targets {
     seen: Option<(usize, String)>,
-    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<String>>>,
+    /// A `Value::Ref` to each object.
+    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<Value>>>,
 }
 
 impl Targets {
-    fn of(&mut self, vm: &Vm, class: &str) -> std::rc::Rc<Vec<String>> {
+    fn of(&mut self, vm: &Vm, class: &str) -> std::rc::Rc<Vec<Value>> {
         let store = &vm.session.object_store;
         let now = (store.len(), store.last().map(|(k, _)| k.clone()).unwrap_or_default());
         if self.seen.as_ref() != Some(&now) {
@@ -824,7 +825,7 @@ impl Targets {
         self.by_class.entry(class.to_string()).or_insert_with(|| std::rc::Rc::new(
             store.iter()
                 .filter(|(_, v)| matches!(v, Value::Object(o) if o.class_name == class))
-                .map(|(u, _)| u.clone())
+                .map(|(u, _)| Value::Ref(u.clone()))
                 .collect()
         )).clone()
     }
@@ -846,23 +847,23 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     let self_ref = Value::Ref(self_uuid.clone());
 
     let target_candidates = targets.of(vm, &decision.target_class);
-    if !target_candidates.iter().any(|u| *u != self_uuid) { return Ok(()); }
+    let is_self = |v: &Value| matches!(v, Value::Ref(u) if *u == self_uuid);
 
-    // Score all targets
-    let mut scored: Vec<(String, f64)> = Vec::new();
-    for target_uuid in target_candidates.iter().filter(|u| **u != self_uuid) {
-        let target_uuid = target_uuid.clone();
-        let raw_score = match eval_link_score(vm, self_ref.clone(), Value::Ref(target_uuid.clone()), &decision.formula, decision.formula_min, decision.formula_max) {
+    // Score all targets (by position in the list)
+    let mut scored: Vec<(usize, f64)> = Vec::new();
+    for (k, target) in target_candidates.iter().enumerate() {
+        if is_self(target) { continue; }
+        let raw_score = match eval_link_score_ref(vm, &self_ref, target, &decision.formula, decision.formula_min, decision.formula_max) {
             Ok(s) => s,
             Err(_) => continue,
         };
-        scored.push((target_uuid, raw_score));
+        scored.push((k, raw_score));
     }
     if scored.is_empty() { return Ok(()); }
 
     let best = scored.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
 
-    let pool: Vec<(String, f64)> = scored.into_iter()
+    let pool: Vec<(usize, f64)> = scored.into_iter()
         .filter(|(_, s)| *s >= best - margin)
         .collect();
 
@@ -870,7 +871,9 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         let r = vm.session.next_u128() as f64 / u128::MAX as f64;
         (r * pool.len() as f64).floor() as usize % pool.len()
     };
-    let (best_target_uuid, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
+    let (best_k, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
+    let Value::Ref(best_target_uuid) = &target_candidates[best_k] else { return Ok(()) };
+    let best_target_uuid = best_target_uuid.clone();
     let final_score = final_score.clamp(0.0, 1.0);
     let target_ref = Value::Ref(best_target_uuid.clone());
 
@@ -1057,6 +1060,27 @@ pub(crate) fn eval_link_score(
     formula_max: f64,
 ) -> Result<f64, GoblinError> {
     let raw = match vm.eval_tick_expr(formula, vec![("self", self_val), ("target", target_val)])? {
+        Value::Float(f) => f,
+        Value::Int(i) => i as f64,
+        _ => return Ok(0.5),
+    };
+    let range = formula_max - formula_min;
+    let normalized = if range.abs() < 1e-12 { 0.5 } else {
+        ((raw - formula_min) / range).clamp(0.0, 1.0)
+    };
+    Ok(normalized)
+}
+
+/// `eval_link_score` with the objects borrowed (a `Value::Ref` each).
+pub(crate) fn eval_link_score_ref(
+    vm: &mut Vm,
+    self_val: &Value,
+    target_val: &Value,
+    formula: &goblin_ast::Expr,
+    formula_min: f64,
+    formula_max: f64,
+) -> Result<f64, GoblinError> {
+    let raw = match vm.eval_tick_expr_ref(formula, &[("self", self_val), ("target", target_val)])? {
         Value::Float(f) => f,
         Value::Int(i) => i as f64,
         _ => return Ok(0.5),

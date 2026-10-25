@@ -175,7 +175,9 @@ pub struct Session {
     /// Object store: uuid → Value (for DES/overlay system).
     /// Objects in creation order, so DES passes and `:objects()` visit them
     /// the same way every run (the interpreter keeps creation order too).
-    pub object_store: indexmap::IndexMap<String, Value>,
+    /// Fx hashing: object ids are long strings looked up on every field
+    /// read through a reference; order is insertion order either way.
+    pub object_store: indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>,
     /// The variable each object was first stored in (uuid -> name, and
     /// whether that variable is top-level). DES
     /// overlays report their host by this name (`host_var`), as the
@@ -344,7 +346,7 @@ impl Session {
             rng_state: seed,
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
-            object_store: indexmap::IndexMap::new(),
+            object_store: Default::default(),
             object_names: HashMap::new(),
             overlay_instances: Vec::new(),
             response: ResponseState::default(),
