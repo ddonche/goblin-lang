@@ -1,0 +1,17 @@
+/// A nested action's `x |=` on a type-locked outer variable is cast to
+/// the lock: a value that doesn't fit is an error and x keeps its value.
+act outer()
+    x.u8 | 1
+    act bump(v)
+        x |= v
+    xx
+    bump(5)
+    say(x)
+    attempt
+        bump(300)
+    rescue e
+        say("error")
+    xx
+    say(x)
+xx
+outer()
