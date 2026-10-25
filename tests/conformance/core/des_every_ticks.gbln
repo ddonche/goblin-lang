@@ -1,0 +1,39 @@
+/// known-gap: interp has no `every N ticks` blocks (VM only, owner 2026-10-25)
+/// `every N ticks ... end` in a class runs on each of its objects, with
+/// `self` the object, on every tick N divides, before decisions. An error
+/// in the block stops the tick.
+<>Person |
+    ~age: 0
+    ~money: 0
+    every 1 tick
+        self >> age |= self >> age + 1
+    end
+    every 3 ticks
+        self >> money |= self >> money + 10
+    xx
+xx
+<>Clock |
+    ~left: 2
+    every 1 tick
+        self >> left |= self >> left - 1
+        if self >> left < 0
+            x | 1 / 0
+        xx
+    end
+xx
+a <> Person | age: 5
+b <> Person | age: 40
+repeat :range(1, 7) as t
+    tick()
+    x | a >> age
+    y | b >> age
+    m | a >> money
+    say("tick {t}: ages {x} {y}, money {m}")
+xx
+c <> Clock | left: 1
+tick()
+attempt
+    tick()
+rescue e
+    say(:has("{e}", "division"))
+xx

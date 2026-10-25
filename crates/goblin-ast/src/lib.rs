@@ -255,6 +255,18 @@ pub struct ClassDecl {
     /// Optional capacity declaration — how many/how much this class can own.
     /// None = infinite capacity.
     pub capacity: Option<CapacityDecl>,
+    /// `every N ticks ... end` blocks: each runs as a method (named
+    /// `action`) on every object of the class, every N ticks.
+    pub every: Vec<EveryDecl>,
+    pub span: Span,
+}
+
+/// `every N ticks ... end` inside a class body.
+#[derive(Debug, Clone)]
+pub struct EveryDecl {
+    pub ticks: u64,
+    /// The class action that holds the block's body.
+    pub action: String,
     pub span: Span,
 }
 

@@ -196,6 +196,8 @@ pub struct Session {
 
     /// Pre-compiled class methods: (class_name, method_name) -> FunctionObject
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
+    /// DES ticks run so far (`every N ticks` counts on it).
+    pub des_ticks: i64,
 
     /// Enum definitions registered at runtime.
     pub enums: Rc<HashMap<String, EnumDecl>>,
@@ -349,6 +351,7 @@ impl Session {
             grid_store: GridStore::new(),
             classes: Default::default(),
             compiled_methods: Default::default(),
+            des_ticks: 0,
             enums: Default::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),

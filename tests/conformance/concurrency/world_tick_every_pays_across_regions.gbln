@@ -1,0 +1,53 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An `every` block in one region can change another region's objects:
+/// a shop pays its staff, who live in another district, every 2 ticks.
+/// The pay lands at the start of the next tick, like any change to another
+/// region's object: on a payday the total is short by the pay in flight,
+/// and it is whole again the tick after.
+<>Shop |
+    ~code: 0
+    ~cash: 100
+    ~wage: 10
+    every 2 ticks
+        repeat :objects(it >> employer == self >> code)
+            it >> money |= it >> money + self >> wage
+            self >> cash |= self >> cash - self >> wage
+        xx
+    end
+xx
+<>Worker |
+    ~employer: 0
+    ~money: 0
+xx
+act make_shop()
+    s <> Shop | code: 7
+    return {"things": [s]}
+xx
+act make_workers()
+    things | []
+    repeat :range(0, 3)
+        w <> Worker | employer: 7
+        :put_last!(things, w)
+    xx
+    return {"things": things}
+xx
+act day(st, msg)
+    return st
+xx
+shops | :actor(make_shop(), day)
+homes | :actor(make_workers(), day)
+repeat :range(1, 6) as t
+    tick([shops, homes])
+    cash | 0
+    repeat :objects(it >> cash > -1)
+        c | it >> cash
+        cash |= cash + c
+    xx
+    paid | 0
+    repeat :objects(it >> employer == 7)
+        m | it >> money
+        paid |= paid + m
+    xx
+    total | cash + paid
+    say("tick {t}: shop {cash}, workers {paid}, total {total}")
+xx

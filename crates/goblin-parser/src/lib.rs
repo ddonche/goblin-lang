@@ -78,6 +78,7 @@ enum PExpr {
         judge: Option<ast::JudgeStmt>,
         transitions: Vec<ast::TransitionDef>,
         capacity: Option<ast::CapacityDecl>,
+        every: Vec<(u64, String)>,
     },
     EnumVariant {
         enum_name: String,
@@ -248,7 +249,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -3991,6 +3992,12 @@ impl<'t> Parser<'t> {
                 if matches!(tok.kind, TokenKind::Act | TokenKind::Action) {
                     break;
                 }
+                // `every N ticks` starts a block (a field named `every` has a ':').
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("every")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Int))
+                {
+                    break;
+                }
             }
 
             // Check if this is a relation keyword first (BEFORE eating ident)
@@ -4094,7 +4101,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new() });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -4103,6 +4110,7 @@ impl<'t> Parser<'t> {
         let mut judge: Option<ast::JudgeStmt> = None;
         let mut transitions: Vec<ast::TransitionDef> = Vec::new();
         let mut capacity: Option<ast::CapacityDecl> = None;
+        let mut every: Vec<(u64, String)> = Vec::new();
 
         loop {
             // Skip layout
@@ -4120,7 +4128,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every });
                 }
             }
 
@@ -4144,7 +4152,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every });
             }
 
             if self.is_eof() {
@@ -4249,6 +4257,54 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
+            // `every N ticks` ... `end`: a block DES runs on each object of
+            // the class every N ticks, with `self` the object. It is kept as
+            // a class action named after the block.
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("every") {
+                let every_col = act_tok.span.col_start;
+                let _ = self.eat_ident(); // 'every'
+                let n = match self.peek().cloned() {
+                    Some(t) if matches!(t.kind, TokenKind::Int) => {
+                        self.i += 1;
+                        t.value.as_deref().unwrap_or("0").replace('_', "").parse::<u64>().unwrap_or(0)
+                    }
+                    _ => 0,
+                };
+                let unit = self.eat_ident();
+                if n == 0 || !matches!(unit.as_deref(), Some("tick") | Some("ticks")) {
+                    return Err(s_help_site!(
+                        "P1560",
+                        "Expected a whole number of ticks after 'every'",
+                        "Write: every 1 tick ... end, or every 14 ticks ... end",
+                    ));
+                }
+                let body = self.parse_indented_block(every_col, &["end"])?;
+                self.skip_stmt_separators();
+                if self.block_closed_hard {
+                    self.block_closed_hard = false;
+                } else if self.peek_block_close() {
+                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if col != every_col {
+                        return Err(s_help_site!(
+                            "P0222",
+                            &format!("This closer is misaligned: expected column {}, found column {}", every_col, col),
+                            "Align the closer with its header (same column), placing 'end' or 'xx' (crossbones) directly under 'every'.",
+                        ));
+                    }
+                    self.expect_block_close("every")?;
+                } else if !self.eat_layout_until_close(every_col) {
+                    return Err(s_help_site!(
+                        "P0212",
+                        "This every block is missing its closing 'end' or 'xx' (crossbones).",
+                        "Close the block with 'end' or 'xx' (crossbones).",
+                    ));
+                }
+                let action = format!("every {} ticks #{}", n, every.len() + 1);
+                every.push((n, action.clone()));
+                actions.push(PAction { name: action, params: Vec::new(), body, is_single: false });
+                continue;
+            }
+
             // Handle transition declaration inside class body
             let is_transition = matches!(act_tok.kind, TokenKind::Ident)
                 && act_tok.value.as_deref() == Some("transition");
@@ -4324,7 +4380,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4400,7 +4456,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4549,8 +4605,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every });
                     }
                 }
 
@@ -6655,6 +6711,7 @@ impl<'t> Parser<'t> {
             judge: None,
             transitions: vec![],
             capacity: None,
+            every: vec![],
             span: sp.clone(),
         }));
 
@@ -6795,7 +6852,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every } => {
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -6854,6 +6911,7 @@ impl<'t> Parser<'t> {
                     judge,
                     transitions,
                     capacity,
+                    every: every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
                     span: sp,
                 }))
             }

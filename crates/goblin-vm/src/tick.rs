@@ -16,6 +16,7 @@ use crate::value::Value;
 use crate::vm::Vm;
 
 pub fn run_tick(vm: &mut Vm) -> Result<(), GoblinError> {
+    vm.session.des_ticks += 1;
     vm.session.des_tick_runner.begin_tick();
     grids_tick_begin(vm);
     overlay_tick(vm)?;
@@ -208,7 +209,8 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         vm.session.overlay_instances.retain(|inst| live.contains(&inst.host_uuid));
     }
 
-    // ── Pass 8: Decision tick ─────────────────────────────────────────────────
+    // ── Pass 8: `every N ticks` blocks, then decisions ────────────────────────
+    every_tick(vm)?;
     decision_tick(vm)?;
 
     // ── Pass 9: Object transition tick ────────────────────────────────────────
@@ -714,6 +716,34 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 }
 
 // ── Decision tick ─────────────────────────────────────────────────────────────
+
+/// Runs each class's `every N ticks` blocks on its objects, in the order
+/// the objects were made, on the ticks N divides. Another region's object
+/// runs them in its own region. An error in a block stops the tick.
+fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
+    let tick = vm.session.des_ticks;
+    let classes = vm.session.classes.clone();
+    if classes.values().all(|c| c.every.is_empty()) { return Ok(()); }
+    let selves: Vec<(String, String)> = vm.session.object_store.iter()
+        .filter_map(|(u, v)| match v {
+            Value::Object(o) if classes.get(&o.class_name).is_some_and(|c| !c.every.is_empty()) =>
+                Some((u.clone(), o.class_name.clone())),
+            _ => None,
+        })
+        .filter(|(u, _)| !crate::world::is_remote(vm, u))
+        .collect();
+    for (uuid, class_name) in selves {
+        let Some(class) = classes.get(&class_name) else { continue };
+        for e in &class.every {
+            if tick % e.ticks as i64 != 0 { continue; }
+            // Erased by an earlier block this tick: nothing to run.
+            if !vm.session.object_store.contains_key(&uuid) { break; }
+            let Some(f) = vm.session.compiled_methods.get(&(class_name.clone(), e.action.clone())).cloned() else { continue };
+            vm.call_callable(Value::Function(f), vec![Value::Ref(uuid.clone())])?;
+        }
+    }
+    Ok(())
+}
 
 fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     // Find all objects with a decision formula
