@@ -1,0 +1,13 @@
+/// `x |= f(x, "{x}")`: the string still sees x's value, not an emptied one.
+act keep(a, b)
+    say(b)
+    return a + 1
+xx
+act run()
+    x | 7
+    x |= keep(x, "{x}")
+    say(x)
+    x |= keep(x, "was {x + 0}")
+    say(x)
+xx
+run()
