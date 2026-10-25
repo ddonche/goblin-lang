@@ -885,9 +885,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
                     } else {
-                        let mut idxs: Vec<usize> = (0..arr.len()).collect();
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); result.push(arr[idxs[i]].clone()); }
+                        for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -899,9 +898,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
                     } else {
-                        let mut idxs: Vec<usize> = (0..arr.len()).collect();
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); result.push(arr[idxs[i]].clone()); }
+                        for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -913,9 +911,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| { let (k, v) = &entries[rng_bounded(session, entries.len() as u64) as usize]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); Value::Map(m) }).collect()
                     } else {
-                        let mut idxs: Vec<usize> = (0..entries.len()).collect();
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (entries.len() - i) as u64) as usize; idxs.swap(i, j); let (k, v) = &entries[idxs[i]]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
+                        for k in pick_indices(session, entries.len(), n_out) { let (k, v) = &entries[k]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -938,9 +935,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                             (0..n_out).map(|_| Value::Char(pool[rng_bounded(session, pool.len() as u64) as usize])).collect()
                         } else {
                             if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique chars", n_out, pool.len()))); }
-                            let mut idxs: Vec<usize> = (0..pool.len()).collect();
                             let mut result = Vec::with_capacity(n_out);
-                            for i in 0..n_out { let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize; idxs.swap(i, j); result.push(Value::Char(pool[idxs[i]])); }
+                            for k in pick_indices(session, pool.len(), n_out) { result.push(Value::Char(pool[k])); }
                             result
                         };
                         // char picks always join into a string (matching interpreter behaviour)
@@ -954,11 +950,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| Value::Int(range_start + rng_bounded(session, range) as i64)).collect()
                     } else {
-                        let pool: Vec<i64> = (range_start..range_end).collect();
-                        if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique ints", n_out, pool.len()))); }
-                        let mut idxs: Vec<usize> = (0..pool.len()).collect();
+                        let len = range as usize;
+                        if n_out > len { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique ints", n_out, len))); }
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize; idxs.swap(i, j); result.push(Value::Int(pool[idxs[i]])); }
+                        for k in pick_indices(session, len, n_out) { result.push(Value::Int(range_start + k as i64)); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -5568,6 +5563,22 @@ fn fisher_yates_shuffle(items: &mut Vec<Value>, session: &mut Session) {
         let j = rng_bounded(session, (i + 1) as u64) as usize;
         items.swap(i, j);
     }
+}
+
+/// `n` distinct positions out of `0..len`, in the order a partial
+/// Fisher-Yates shuffle of `0..len` gives them (same random draws), without
+/// building the whole list: only the swapped positions are remembered.
+fn pick_indices(session: &mut Session, len: usize, n: usize) -> Vec<usize> {
+    let mut moved: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = i + rng_bounded(session, (len - i) as u64) as usize;
+        let at_j = moved.get(&j).copied().unwrap_or(j);
+        let at_i = moved.get(&i).copied().unwrap_or(i);
+        moved.insert(j, at_i);
+        out.push(at_j);
+    }
+    out
 }
 
 fn rng_bounded(session: &mut Session, bound: u64) -> u64 {
