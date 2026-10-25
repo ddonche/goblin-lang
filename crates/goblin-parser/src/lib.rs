@@ -4126,6 +4126,8 @@ impl<'t> Parser<'t> {
         let mut every: Vec<(u64, String)> = Vec::new();
         // Decisions by name, each with the judge that uses it.
         let mut named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> = Vec::new();
+        // Judges written before their decision: paired when it appears.
+        let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
 
         loop {
             // Skip layout
@@ -4269,7 +4271,14 @@ impl<'t> Parser<'t> {
                 }
                 let d = PDecisionDef { target_class, formula: Box::new(formula) };
                 if decision.is_none() { decision = Some(d.clone()); }
-                named.push((decision_name, d, None));
+                let first = named.is_empty();
+                let early = waiting.iter().position(|(u, _)| match u {
+                    Some(n) => *n == decision_name,
+                    None => first,
+                });
+                let js = early.map(|k| waiting.remove(k).1);
+                if first { if let Some(j) = &js { judge = Some(j.clone()); } }
+                named.push((decision_name, d, js));
                 continue;
             }
 
@@ -4299,9 +4308,20 @@ impl<'t> Parser<'t> {
                             if i == 0 { judge = Some(js.clone()); }
                             named[i].2 = Some(js);
                         }
-                        // A judge before its decision, or naming no decision
-                        // here: kept as the class judge, as before.
-                        None => { judge = Some(js); }
+                        // A judge before its decision: kept as the class
+                        // judge, as before, and paired when the decision
+                        // appears.
+                        None => {
+                            if waiting.iter().any(|(u, _)| *u == using) {
+                                return Err(s_help_site!(
+                                    "P1408",
+                                    &format!("The decision '{}' already has a judge", using.clone().unwrap_or_else(|| "score".to_string())),
+                                    "Write one judge per decision: judge using shop ... end",
+                                ));
+                            }
+                            judge = Some(js.clone());
+                            waiting.push((using, js));
+                        }
                     }
                 }
                 continue;

@@ -1,0 +1,24 @@
+/// known-gap: interp ignores a judge written before its decision (VM only)
+/// A judge can come before the decision it uses: it is paired with that
+/// decision by name (or, without `using`, with the first decision).
+<>Shop |
+    cheap: .8
+xx
+<>Person |
+    ~bought: 0
+    judge using score
+        >= .5: buy(target)
+    end
+    score | decision against Shop by [
+        target >> cheap
+    ]
+xx
+act buy(p, s)
+    p >> bought |= p >> bought + 1
+xx
+s <> Shop | cheap: .8
+p <> Person | bought: 0
+tick()
+tick()
+b | p >> bought
+say("bought {b}")
