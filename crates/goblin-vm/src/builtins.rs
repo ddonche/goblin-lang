@@ -3838,12 +3838,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_object! can only delete objects".into())),
             };
+            crate::world::check_view_write(session, &uuid)?;
             erase_object(session, &var_name, &uuid);
             Ok(Value::Nil)
         }
         BuiltinId::DeleteObject => {
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
+            crate::world::check_view_write(session, &uuid)?;
             session.object_store.shift_remove(uuid.as_str());
             Ok(Value::Nil)
         }
@@ -3854,6 +3856,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_overlays_on! can only target object instances".into())),
             };
+            crate::world::check_view_write(session, &host_uuid)?;
             drop_overlays_for(session, &host_var, &host_uuid);
             Ok(Value::Nil)
         }
