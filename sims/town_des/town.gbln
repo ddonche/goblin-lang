@@ -1,0 +1,122 @@
+/// Town on DES: the town sim rebuilt with DES classes, decisions and
+/// transitions, with each district a region ticked by tick(regions).
+///
+/// This is the first pass of the rebuild. It covers what DES can express
+/// today: residents age, shop at a business (a decision), and die (a
+/// transition). Jobs, wages, rent, births and moves are not here yet; see
+/// GAPS.md for what stops each one.
+
+:rand_seed(42)
+n_districts | 4
+n_residents | 1000
+n_businesses | 50
+days | 365
+if :env("TOWN_DAYS") != ""
+    days |= :int(:env("TOWN_DAYS"))
+xx
+
+<>Business |
+    ~cash: 6000
+    ~price: 15
+    ~sales: 0
+    ~district: 0
+xx
+
+<>Resident |
+    ~age: 0
+    ~money: 500
+    ~district: 0
+    margin: .1
+    /// Cheaper is better. Prices run 15 to 24.
+    score | decision against Business by [
+        1 - ((target >> price) - 15) / 10
+    ]
+    judge using score
+        >= 0: shop(target)
+    end
+    /// Death: rare until old age (one in 200,000 a day; 1 in 2,500 past 70).
+    transition erase when (self >> age) > 70 * 365 and (pick 1 from 1...2500) == 1
+    end
+    transition erase when (pick 1 from 1...200000) == 1
+    end
+xx
+
+act shop(r, b)
+    price | b >> price
+    if (r >> money) >= price
+        r >> money |= r >> money - price
+        b >> cash |= b >> cash + price
+        b >> sales |= b >> sales + price
+    xx
+xx
+
+act make_district(d)
+    things | []
+    b | d
+    repeat b < n_businesses
+        price | 15 + (pick 1 from 0...9)
+        biz <> Business | price: price, district: d
+        :put_last!(things, biz)
+        b |= b + n_districts
+    xx
+    repeat :range(0, n_residents / n_districts)
+        age | 18 * 365 + (pick 1 from 0...(50 * 365))
+        money | 400 + (pick 1 from 0...299)
+        r <> Resident | age: age, money: money, district: d
+        :put_last!(things, r)
+    xx
+    return {"d": d, "things": things}
+xx
+
+/// A district's own code each day: everyone gets a day older.
+act district_day(st, msg)
+    if :has(msg, "tick")
+        repeat :objects(it >> age > -1)
+            it >> age |= it >> age + 1
+        xx
+    xx
+    return st
+xx
+
+districts | []
+repeat :range(0, n_districts) as d
+    :put_last!(districts, :actor(make_district(d), district_day))
+xx
+
+act money_total()
+    total | 0
+    repeat :objects(it >> money > -1)
+        m | it >> money
+        total |= total + m
+    xx
+    repeat :objects(it >> cash > -1)
+        c | it >> cash
+        total |= total + c
+    xx
+    return total
+xx
+
+say("town on DES: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days")
+repeat :range(1, days + 1) as t
+    tick(districts)
+    if t % 30 == 0 or t == days
+        pop | :len(:objects(it >> age > -1))
+        money | money_total()
+        say("day {t}: population {pop}, money {money}")
+    xx
+xx
+
+say("--- businesses: sales by price ---")
+repeat :range(15, 25) as p
+    n | 0
+    sales | 0
+    repeat :objects(it >> price == p)
+        n |= n + 1
+        s | it >> sales
+        sales |= sales + s
+    xx
+    if n > 0
+        each | :floor(sales / n)
+        say("price {p}: {n} businesses, {each} sales each")
+    xx
+xx
