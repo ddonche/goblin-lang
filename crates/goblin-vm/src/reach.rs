@@ -8,7 +8,10 @@
 //! be called by name, or runs when an object is made).
 //! A global is reachable when such code reads or writes it, names it in a
 //! string constant (interpolation, `alias::var`), or when it holds code
-//! itself (a closure kept in a reachable global). Builtins that find a
+//! itself (a closure kept in a reachable global). A plain string that is
+//! just a global's name (`"mail"`, a map key) only reaches that global when
+//! it holds an action, since a plain string can be called but cannot read
+//! a variable by itself. Builtins that find a
 //! variable by a name computed at run time (`:clone_object("x")`, DES ticks
 //! and links, `:resolve_token`) make every global reachable.
 
@@ -31,6 +34,8 @@ pub(crate) struct Base {
     /// Global slots by the names a string constant can use for them: the
     /// full name, and the part after a module prefix.
     tokens: HashMap<String, Vec<usize>>,
+    /// Globals named by a plain string: reached only while they hold code.
+    maybe: Vec<usize>,
     /// Field defaults compiled for the walk, kept alive so their addresses
     /// in `seen` are never reused by other functions.
     _defaults: Vec<Rc<FunctionObject>>,
@@ -54,6 +59,7 @@ impl Base {
             all: false,
             pending: Vec::new(),
             objects: HashSet::new(),
+            maybe: Vec::new(),
         };
         for v in session.named_values.values() { w.value(v, session); }
         for list in session.action_file_map.values() {
@@ -74,8 +80,8 @@ impl Base {
         }
         // The values these globals hold now are walked for each actor, as
         // they can change between actors.
-        let (all, slots, seen) = (w.all, w.slots, w.seen);
-        Base { all, slots, seen, tokens, _defaults: defaults }
+        let (all, slots, seen, maybe) = (w.all, w.slots, w.seen, w.maybe);
+        Base { all, slots, seen, tokens, maybe, _defaults: defaults }
     }
 }
 
@@ -94,14 +100,23 @@ pub(crate) fn reachable(base: &Base, roots: &[&Value], session: &Session) -> Opt
         all: false,
         pending,
         objects: HashSet::new(),
+        maybe: base.maybe.clone(),
     };
     for r in roots { w.value(r, session); }
-    while let Some(i) = w.pending.pop() {
-        if w.all { return None; }
-        let Some(Some(t)) = session.globals.get(i) else { continue };
-        let Ok(stash) = session.get_stash(t) else { continue };
-        let v = stash.value.clone();
-        w.value(&v, session);
+    loop {
+        while let Some(i) = w.pending.pop() {
+            if w.all { return None; }
+            let Some(Some(t)) = session.globals.get(i) else { continue };
+            let Ok(stash) = session.get_stash(t) else { continue };
+            let v = stash.value.clone();
+            w.value(&v, session);
+        }
+        // Globals named by a plain string count when they hold code now.
+        let maybe = std::mem::take(&mut w.maybe);
+        for i in maybe {
+            if holds_code(session, i) { w.mark(i); }
+        }
+        if w.pending.is_empty() { break; }
     }
     if w.all { None } else { Some(w.slots) }
 }
@@ -115,6 +130,17 @@ struct Walk<'a> {
     /// Slots newly reached whose values are still to be walked.
     pending: Vec<usize>,
     objects: HashSet<String>,
+    /// Globals named by a plain string constant, decided by what they hold.
+    maybe: Vec<usize>,
+}
+
+/// Whether global `i` holds code (an action or closure), or nothing yet.
+fn holds_code(session: &Session, i: usize) -> bool {
+    let Some(Some(t)) = session.globals.get(i) else { return true };
+    match session.get_stash(t) {
+        Ok(stash) => matches!(stash.value, Value::Function(_) | Value::Closure(_) | Value::Nil),
+        Err(_) => true,
+    }
 }
 
 impl Walk<'_> {
@@ -137,7 +163,18 @@ impl Walk<'_> {
             }
         }
         if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_) | OpData::Fused(_) | OpData::QuickSet(_) | OpData::Repeat(_))) { self.all = true; return; }
-        for c in &f.constants { self.constant(c); }
+        // Labels hold the source text of an index path, for error messages
+        // only (`st{"biz"}[b]`): they read nothing by name, so their words
+        // count as plain words (a constant can be shared with a real use).
+        let labels: HashSet<usize> = f.bytecode.iter()
+            .filter_map(|op| match *op {
+                Opcode::CheckPath(_, idx) | Opcode::IndexGet(idx) | Opcode::KeyGet(idx) => Some(idx as usize),
+                _ => None,
+            })
+            .collect();
+        for (i, c) in f.constants.iter().enumerate() {
+            if labels.contains(&i) { self.label(c) } else { self.constant(c) }
+        }
     }
 
     /// A function's constant: nested functions, and names in its strings.
@@ -156,11 +193,28 @@ impl Walk<'_> {
         }
     }
 
+    /// A label constant: its words, as plain words.
+    fn label(&mut self, c: &Value) {
+        match c {
+            Value::Str(s) => self.words(s.as_str(), false),
+            Value::Array(a) => for v in a { self.label(v) },
+            other => self.constant(other),
+        }
+    }
+
     fn names_in(&mut self, s: &str) {
+        // A template (`"{x}"`) or a module path (`"m::x"`) can read any
+        // global it names; a plain word can only call one.
+        self.words(s, s.contains('{') || s.contains("::"));
+    }
+
+    fn words(&mut self, s: &str, reads: bool) {
         for word in s.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
             if word.is_empty() { continue; }
             if let Some(slots) = self.tokens.get(word) {
-                for &i in slots { self.mark(i); }
+                for &i in slots {
+                    if reads { self.mark(i) } else { self.maybe.push(i) }
+                }
             }
         }
     }
