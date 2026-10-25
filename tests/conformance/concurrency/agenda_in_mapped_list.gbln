@@ -1,0 +1,11 @@
+/// known-gap: interp has no event queue (VM-only builtins)
+/// An agenda inside a list made by :map_fn can be changed in place.
+act mk(x)
+    return :agenda()
+xx
+queues | :map_fn([1, 2], mk)
+:schedule!(queues[0], 1, "first")
+:schedule!(queues[1], 2, "second")
+say(:due!(queues[0], 1))
+say(:due!(queues[1], 2))
+say(:due!(queues[0], 1))

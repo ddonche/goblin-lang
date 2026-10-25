@@ -231,6 +231,18 @@ pub fn call(id: BuiltinId, q: &mut Value, args: &[Value]) -> Result<Value, Gobli
 pub fn path_mut<'a>(root: &'a mut Value, keys: &[Value]) -> Result<&'a mut Value, GoblinError> {
     let mut cur = root;
     for k in keys {
+        // Lists made by :map_fn / :filter_fn are plain arrays.
+        if let Value::Array(v) = cur {
+            let Value::Int(i) = k else {
+                return Err(GoblinError::Runtime("agenda: a list index must be a whole number".into()));
+            };
+            let len = v.len() as i64;
+            let i = if *i < 0 { *i + len } else { *i };
+            cur = (if i < 0 || i >= len { None } else { v.get_mut(i as usize) })
+                .ok_or_else(|| GoblinError::Runtime(format!(
+                    "agenda: nothing at {} on the path to the agenda", crate::collections::fmt_value_raw(k))))?;
+            continue;
+        }
         let Value::Collection(rc) = cur else {
             return Err(GoblinError::Runtime("agenda: the path to the agenda must go through maps and lists".into()));
         };
