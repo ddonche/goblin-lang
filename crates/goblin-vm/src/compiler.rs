@@ -2392,7 +2392,7 @@ impl Compiler {
         if let Some(ref lock) = lock_type {
             { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockLocal(slot, n)); }
         } else {
-            self.emit(Opcode::StoreLocal(slot));
+            self.emit(Opcode::BindLocal(slot));
         }
         Ok(())
     }
