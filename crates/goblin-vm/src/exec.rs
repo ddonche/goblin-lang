@@ -158,13 +158,14 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
         // Merge logic: if incoming decl has no actions/decision/judge/transitions
         // (i.e., it's a matrix-synthesized class), preserve those from the existing class
         // and also preserve fields that the matrix didn't redefine — matching interpreter behavior.
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
                 let mut merged = decl.clone();
                 merged.actions = existing.actions.clone();
                 merged.decision = existing.decision.clone();
                 merged.judge = existing.judge.clone();
                 merged.transitions = existing.transitions.clone();
+                merged.every = existing.every.clone();
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
@@ -207,13 +208,14 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
     session.global_names = std::rc::Rc::new(compiled.global_names);
     for decl in &compiled.classes { compile_class_methods(decl, &mut session); }
     for decl in compiled.classes {
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
                 let mut merged = decl.clone();
                 merged.actions = existing.actions.clone();
                 merged.decision = existing.decision.clone();
                 merged.judge = existing.judge.clone();
                 merged.transitions = existing.transitions.clone();
+                merged.every = existing.every.clone();
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
@@ -284,13 +286,14 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
         compile_class_methods(decl, session);
     }
     for decl in classes {
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
                 let mut merged = decl.clone();
                 merged.actions = existing.actions.clone();
                 merged.decision = existing.decision.clone();
                 merged.judge = existing.judge.clone();
                 merged.transitions = existing.transitions.clone();
+                merged.every = existing.every.clone();
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
