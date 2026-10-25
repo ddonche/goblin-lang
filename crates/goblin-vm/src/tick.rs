@@ -772,101 +772,123 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         let classes = vm.session.classes.clone();
         let Some(class) = classes.get(&class_name) else { continue };
         let obj_decision = vm.session.object_decisions.get(&self_uuid).cloned();
-        let decision: &goblin_ast::DecisionDef = match (&obj_decision, &class.decision) {
-            (Some(d), _) => d,
-            (None, Some(d)) => d,
-            (None, None) => continue,
-        };
-        let Some(judge) = &class.judge else { continue };
-
-        let margin = match vm.session.object_store.get(&self_uuid) {
-            Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
-                Value::Float(f) => Some(*f),
-                Value::Int(i) => Some(*i as f64),
-                _ => None,
-            }).unwrap_or(0.0),
-            Some(_) => 0.0,
-            None => continue,
-        };
-        // Formulas see `self` and `target` by reference: they read fields
-        // where the objects live instead of copying every candidate.
-        let self_ref = Value::Ref(self_uuid.clone());
-
-        let target_candidates: Vec<String> = vm.session.object_store.iter()
-            .filter(|(uuid, v)| *uuid != &self_uuid && matches!(v, Value::Object(o) if o.class_name == decision.target_class))
-            .map(|(uuid, _)| uuid.clone())
-            .collect();
-
-        if target_candidates.is_empty() { continue; }
-
-        // Score all targets
-        let mut scored: Vec<(String, f64)> = Vec::new();
-        for target_uuid in target_candidates {
-            let raw_score = match eval_link_score(vm, self_ref.clone(), Value::Ref(target_uuid.clone()), &decision.formula, decision.formula_min, decision.formula_max) {
-                Ok(s) => s,
-                Err(_) => continue,
+        // The object's decisions in order, each with its judge and the name
+        // its score goes by. An object-level decision replaces the first.
+        let mut list: Vec<(&str, &goblin_ast::DecisionDef, &goblin_ast::JudgeStmt)> = Vec::new();
+        if class.decisions.is_empty() {
+            let decision = match (&obj_decision, &class.decision) {
+                (Some(d), _) => d,
+                (None, Some(d)) => d,
+                (None, None) => continue,
             };
-            scored.push((target_uuid, raw_score));
+            let Some(judge) = &class.judge else { continue };
+            list.push(("score", decision, judge));
+        } else {
+            for (i, nd) in class.decisions.iter().enumerate() {
+                let Some(judge) = &nd.judge else { continue };
+                let d = match (&obj_decision, i) { (Some(d), 0) => d, _ => &nd.decision };
+                list.push((nd.name.as_str(), d, judge));
+            }
         }
-        if scored.is_empty() { continue; }
+        for (name, decision, judge) in list {
+            // Erased by an earlier decision's action: nothing more to decide.
+            if !vm.session.object_store.contains_key(&self_uuid) { break; }
+            decide(vm, &self_uuid, name, decision, judge)?;
+        }
+    }
 
-        let best = scored.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
+    Ok(())
+}
 
-        let pool: Vec<(String, f64)> = scored.into_iter()
-            .filter(|(_, s)| *s >= best - margin)
-            .collect();
+/// One decision of one object: score the targets, pick the best (within
+/// the object's `margin`), and run the action its judge picks.
+fn decide(vm: &mut Vm, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<(), GoblinError> {
+    let self_uuid = self_uuid.to_string();
+    let margin = match vm.session.object_store.get(&self_uuid) {
+        Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
+            Value::Float(f) => Some(*f),
+            Value::Int(i) => Some(*i as f64),
+            _ => None,
+        }).unwrap_or(0.0),
+        Some(_) => 0.0,
+        None => return Ok(()),
+    };
+    // Formulas see `self` and `target` by reference: they read fields
+    // where the objects live instead of copying every candidate.
+    let self_ref = Value::Ref(self_uuid.clone());
 
-        let chosen_idx = if pool.len() == 1 { 0 } else {
-            let r = vm.session.next_u128() as f64 / u128::MAX as f64;
-            (r * pool.len() as f64).floor() as usize % pool.len()
+    let target_candidates: Vec<String> = vm.session.object_store.iter()
+        .filter(|(uuid, v)| *uuid != &self_uuid && matches!(v, Value::Object(o) if o.class_name == decision.target_class))
+        .map(|(uuid, _)| uuid.clone())
+        .collect();
+
+    if target_candidates.is_empty() { return Ok(()); }
+
+    // Score all targets
+    let mut scored: Vec<(String, f64)> = Vec::new();
+    for target_uuid in target_candidates {
+        let raw_score = match eval_link_score(vm, self_ref.clone(), Value::Ref(target_uuid.clone()), &decision.formula, decision.formula_min, decision.formula_max) {
+            Ok(s) => s,
+            Err(_) => continue,
         };
-        let (best_target_uuid, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
-        let final_score = final_score.clamp(0.0, 1.0);
-        let target_ref = Value::Ref(best_target_uuid.clone());
+        scored.push((target_uuid, raw_score));
+    }
+    if scored.is_empty() { return Ok(()); }
 
-        // Run judge to find selected action
-        let mut selected_action: Option<String> = None;
-        let mut else_action: Option<String> = None;
+    let best = scored.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
 
-        for arm in &judge.arms {
-            match &arm.condition {
-                None => {
-                    if let Some(name) = extract_action_call_name(&arm.body) {
-                        else_action = Some(name);
-                    }
+    let pool: Vec<(String, f64)> = scored.into_iter()
+        .filter(|(_, s)| *s >= best - margin)
+        .collect();
+
+    let chosen_idx = if pool.len() == 1 { 0 } else {
+        let r = vm.session.next_u128() as f64 / u128::MAX as f64;
+        (r * pool.len() as f64).floor() as usize % pool.len()
+    };
+    let (best_target_uuid, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
+    let final_score = final_score.clamp(0.0, 1.0);
+    let target_ref = Value::Ref(best_target_uuid.clone());
+
+    // Run judge to find selected action
+    let mut selected_action: Option<String> = None;
+    let mut else_action: Option<String> = None;
+
+    for arm in &judge.arms {
+        match &arm.condition {
+            None => {
+                if let Some(name) = extract_action_call_name(&arm.body) {
+                    else_action = Some(name);
                 }
-                Some(cond) => {
-                    let fires = vm.eval_tick_expr_bool(
-                        cond,
-                        vec![
-                            ("score", Value::Float(final_score)),
-                            ("self", self_ref.clone()),
-                            ("target", target_ref.clone()),
-                        ],
-                    );
-                    if fires {
-                        if let Some(name) = extract_action_call_name(&arm.body) {
-                            selected_action = Some(name);
-                            break;
-                        }
+            }
+            Some(cond) => {
+                let mut bind = vec![
+                    ("score", Value::Float(final_score)),
+                    ("self", self_ref.clone()),
+                    ("target", target_ref.clone()),
+                ];
+                if name != "score" { bind.push((name, Value::Float(final_score))); }
+                let fires = vm.eval_tick_expr_bool(cond, bind);
+                if fires {
+                    if let Some(name) = extract_action_call_name(&arm.body) {
+                        selected_action = Some(name);
+                        break;
                     }
                 }
             }
         }
-
-        let action_name = selected_action.or(else_action).unwrap_or_default();
-        if !action_name.is_empty() {
-            // The action gets the objects as they are now (nothing above
-            // changes them), the same values it was given before.
-            let (Some(self_val), Some(target_val)) = (
-                vm.session.object_store.get(&self_uuid).cloned(),
-                vm.session.object_store.get(&best_target_uuid).cloned(),
-            ) else { continue };
-            let _ = vm.call_named(&action_name, vec![self_val, target_val]);
-            // Ignore errors — decisions are best-effort
-        }
     }
 
+    let action_name = selected_action.or(else_action).unwrap_or_default();
+    if !action_name.is_empty() {
+        // The action gets the objects as they are now (nothing above
+        // changes them), the same values it was given before.
+        let (Some(self_val), Some(target_val)) = (
+            vm.session.object_store.get(&self_uuid).cloned(),
+            vm.session.object_store.get(&best_target_uuid).cloned(),
+        ) else { return Ok(()) };
+        let _ = vm.call_named(&action_name, vec![self_val, target_val]);
+        // Ignore errors — decisions are best-effort
+    }
     Ok(())
 }
 
