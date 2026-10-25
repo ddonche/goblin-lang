@@ -206,11 +206,13 @@ pub struct Session {
     pub imported: Rc<std::collections::HashSet<String>>,
 
     // ── DES / Overlay / Link state ───────────────────────────────────────────
-    pub overlay_defs: HashMap<String, OverlayDef>,
-    pub link_defs: HashMap<(String, String), LinkDef>,
-    pub object_link_defs: HashMap<(String, String), LinkDef>,
-    pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>>,
-    pub object_decisions: HashMap<String, goblin_ast::DecisionDef>,
+    // Definitions are shared (Rc), so a tick that copies a table copies
+    // pointers, and each formula keeps one address for the tick-expr cache.
+    pub overlay_defs: HashMap<String, Rc<OverlayDef>>,
+    pub link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
+    pub object_link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
+    pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>,
+    pub object_decisions: HashMap<String, Rc<goblin_ast::DecisionDef>>,
     pub unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     pub des_store: EntityStore,
     pub des_index: EntityIndex,
@@ -342,9 +344,9 @@ impl Session {
             project_root: std::env::current_dir().unwrap_or_default(),
             imported: Default::default(),
             overlay_defs: HashMap::new(),
-            link_defs: HashMap::new(),
-            object_link_defs: HashMap::new(),
-            link_offsets: HashMap::new(),
+            link_defs: Default::default(),
+            object_link_defs: Default::default(),
+            link_offsets: Default::default(),
             object_decisions: HashMap::new(),
             unit_registry: Default::default(),
             des_store: EntityStore::new(),
